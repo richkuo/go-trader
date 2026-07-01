@@ -18,6 +18,10 @@ Rules (long; short is the mirror)
                   ``vol_mult`` <= 0.
 
 Emits ``signal = 1`` (long) / ``-1`` (short) on the trigger bar, else 0.
+
+Optional volatility-targeted entry sizing (#980, default OFF): when
+``vol_target_atr_pct > 0`` an ``entry_fraction`` column scales the notional
+committed at open inversely with ATR/close. Signals are never affected.
 """
 
 import numpy as np
@@ -37,6 +41,9 @@ def momentum_pro_core(
     pullback_touch_buffer_pct: float = 0.0,
     vol_period: int = 20,
     vol_mult: float = 1.2,
+    vol_target_atr_pct: float = 0.0,
+    vol_target_atr_period: int = 14,
+    vol_target_min_fraction: float = 0.10,
 ) -> pd.DataFrame:
     """Generate trend-pullback momentum signals (bidirectional).
 
@@ -50,6 +57,17 @@ def momentum_pro_core(
         as a pullback tag (0 = a plain touch qualifies)
     vol_period : SMA lookback for the volume baseline
     vol_mult : entry-bar volume must exceed vol_mult × SMA(volume); <= 0 disables
+    vol_target_atr_pct : volatility-targeted entry sizing (#980, default OFF).
+        When > 0, emit an ``entry_fraction`` column scaling the notional
+        committed at open inversely with realized vol:
+        ``clip(vol_target_atr_pct / (ATR / close), vol_target_min_fraction, 1.0)``
+        — full size when ATR/close <= the target, proportionally smaller when
+        the market is more volatile. Signals are NEVER changed by this knob;
+        <= 0 (the default) emits no column and is byte-identical to today.
+        Deliberately NOT a registered default param (``--list-json`` stays
+        byte-identical); reach it via ``--params``.
+    vol_target_atr_period : rolling True-Range mean lookback for the sizing ATR
+    vol_target_min_fraction : floor on the emitted fraction (avoids dust entries)
 
     Returns
     -------
@@ -58,6 +76,8 @@ def momentum_pro_core(
         ema_fast / ema_mid / ema_long : the regime EMAs
         adx        : Wilder ADX (0 during warmup)
         vol_sma    : SMA(volume, vol_period)
+        entry_fraction : only when ``vol_target_atr_pct > 0`` — per-bar entry
+            size fraction in (0, 1] (NaN during ATR warmup = full notional)
     """
     result = df.copy()
     result["signal"] = 0
@@ -123,4 +143,25 @@ def momentum_pro_core(
 
     result.loc[long_mask, "signal"] = 1
     result.loc[short_mask, "signal"] = -1
+
+    # #980: volatility-targeted entry sizing (default OFF — no column, and no
+    # effect on signals either way). ATR follows the standard_atr convention
+    # (rolling-mean True Range, integer-round only when ATR >= 100 — keep in
+    # sync with shared_tools/atr.py and the other inline copies).
+    if vol_target_atr_pct > 0:
+        prev_close = close.shift(1)
+        tr = pd.concat(
+            [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.rolling(window=vol_target_atr_period).mean()
+        atr = atr.where(atr < 100, atr.round(0))
+        atr_pct = atr / close
+        fraction = (vol_target_atr_pct / atr_pct).clip(
+            lower=vol_target_min_fraction, upper=1.0,
+        )
+        # Warmup / degenerate ATR (NaN or <= 0) → NaN = "no opinion"; the
+        # engine resolves NaN to full notional, today's behavior.
+        result["entry_fraction"] = fraction.where(atr_pct > 0)
+
     return result

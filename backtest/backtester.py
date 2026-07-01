@@ -17,6 +17,11 @@ closed data:
                          at row N+1's open in the per-bar entry block.
   • ``_open_action``   — shift(1) in the open/close-split normalization block.
   • ``_close_fraction`` (column-based) — shift(1) in the same block.
+  • ``_entry_fraction`` (column-based, #980) — shift(1) alongside the signal;
+                         scales the notional committed at open (1.0 = full
+                         notional; remainder stays as a cash reserve).
+                         Backtest-research surface only: live order sizing is
+                         config-driven and ignores the column entirely.
   • ``regime``         — shift(1) in the regime-shift block (post-injection,
                          #730) so entries gate on bar N's regime, not N+1's.
 
@@ -541,6 +546,26 @@ def _max_close_fraction_series(df: pd.DataFrame) -> pd.Series:
         values = sorted(set(fractions[bad].stack().tolist()))
         raise ValueError(f"close_fraction values must be in [0, 1] — got {values}")
     return fractions.max(axis=1)
+
+
+def _validated_entry_fraction_series(df: pd.DataFrame) -> pd.Series:
+    """Validate the strategy-emitted ``entry_fraction`` column (#980).
+
+    Values must be in (0, 1]: 1.0 = full notional (today's behavior), a
+    fraction commits that share of flat-state cash at the open and leaves the
+    remainder as a cash reserve. NaN means "no opinion" and resolves to full
+    notional downstream. 0 is rejected rather than treated as "skip the
+    entry" — suppressing an entry is the signal's job, and a 0-fraction open
+    would book a zero-share phantom trade.
+    """
+    vals = df["entry_fraction"].astype(float)
+    bad = vals[vals.notna() & ((vals <= 0) | (vals > 1))]
+    if not bad.empty:
+        values = sorted(set(bad.tolist()))
+        raise ValueError(
+            f"entry_fraction values must be in (0, 1] — got {values}"
+        )
+    return vals
 
 
 class Trade:
@@ -1396,6 +1421,17 @@ class Backtester:
             df["_open_action"] = open_actions.shift(1).fillna("none")
             df["_close_fraction"] = _max_close_fraction_series(df).shift(1).fillna(0.0)
 
+        # #980: per-bar entry sizing. ``entry_fraction`` is a decision input
+        # computed from bar N's closed data, so it shifts forward with the
+        # signal; the shift hole and NaN (warmup / no opinion) resolve to
+        # 1.0 = full notional, today's behavior. Applies to every open path
+        # (plain long/short, open/close engine, profile allocation — the
+        # column is profile-independent, like ``_close_fraction``).
+        if "entry_fraction" in df.columns:
+            df["_entry_fraction"] = (
+                _validated_entry_fraction_series(df).shift(1).fillna(1.0)
+            )
+
         # Regime: inject vectorized labels before the per-bar loop so each bar
         # can gate new entries. Mirrors the live path: latest_regime(df) on the
         # same OHLCV window → identical label by construction (same algorithm).
@@ -1671,10 +1707,18 @@ class Backtester:
         book_funding = "funding_accrual" in df.columns
         total_funding_pnl = 0.0
 
+        has_entry_fraction = "_entry_fraction" in df.columns
+
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
             signal = row["signal"]
+            # #980: fraction of flat-state cash committed if an entry fills at
+            # this bar's open. Normalized/validated pre-loop; 1.0 = full
+            # notional (the only value when no ``entry_fraction`` column).
+            entry_fraction = (
+                float(row["_entry_fraction"]) if has_entry_fraction else 1.0
+            )
             # #998: regime-profile allocation — advance the flat-only, confirm_bars
             # hysteresis switch and read the active profile's signal for this bar.
             # ``flat`` is the position carried into the bar (= the position state at
@@ -1905,11 +1949,15 @@ class Backtester:
                 # included: it would book a zero-share phantom trade.
                 if open_action == "long" and position == 0 and cash > 0 and not regime_blocked:
                     effective_price = fill_price * (1 + self.slippage_pct)
-                    commission = cash * self.commission_pct
-                    available = cash - commission
+                    # #980: commit entry_fraction of flat-state cash; the
+                    # remainder stays as a reserve (fraction 1.0 = full
+                    # notional, today's math exactly).
+                    invest = cash * entry_fraction
+                    commission = invest * self.commission_pct
+                    available = invest - commission
                     shares = available / effective_price
                     position = shares
-                    cash = 0.0
+                    cash -= invest
 
                     current_trade = Trade(idx, effective_price, "long")
                     current_trade.shares = shares
@@ -1956,10 +2004,15 @@ class Backtester:
                         sl_high_water_px = mark_price
                 elif open_action == "short" and position == 0 and cash > 0 and not regime_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
-                    commission = cash * self.commission_pct
-                    notional = cash - commission
+                    # #980: entry_fraction of flat-state cash is the committed
+                    # margin; pay commission from it, receive the short-sale
+                    # proceeds on top of the untouched reserve (fraction 1.0
+                    # reduces to cash = 2 * notional, today's math exactly).
+                    margin = cash * entry_fraction
+                    commission = margin * self.commission_pct
+                    notional = margin - commission
                     shares = notional / effective_price
-                    cash = 2 * notional  # pay commission, receive short-sale proceeds
+                    cash += 2 * notional - margin
                     position = -shares
 
                     current_trade = Trade(idx, effective_price, "short")
@@ -2098,7 +2151,10 @@ class Backtester:
                 effective_price = fill_price * (1 - self.slippage_pct)
                 proceeds = position * effective_price
                 commission = proceeds * self.commission_pct
-                cash = proceeds - commission
+                # #980: additive — a fractional entry leaves a cash reserve
+                # (and funding accrual lands in cash) that an overwrite here
+                # would silently destroy. Identical when cash == 0.
+                cash += proceeds - commission
                 position = 0.0
                 if current_trade:
                     current_trade.close(idx, effective_price)
@@ -2150,14 +2206,16 @@ class Backtester:
             # long/flat path can't reach negative cash today, but carries the
             # same guard so the invariant holds by construction.
             if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked:
-                # SELL — open short with full notional. Mirrors the engine
-                # path's short-open mechanics: pay commission, receive the
-                # short-sale proceeds (cash = 2 * notional).
+                # SELL — open short. Mirrors the engine path's short-open
+                # mechanics: pay commission from the committed margin, receive
+                # the short-sale proceeds (#980: entry_fraction scales the
+                # committed margin; 1.0 reduces to cash = 2 * notional).
                 effective_price = fill_price * (1 - self.slippage_pct)
-                commission = cash * self.commission_pct
-                notional = cash - commission
+                margin = cash * entry_fraction
+                commission = margin * self.commission_pct
+                notional = margin - commission
                 shares = notional / effective_price
-                cash = 2 * notional
+                cash += 2 * notional - margin
                 position = -shares
 
                 current_trade = Trade(idx, effective_price, "short")
@@ -2208,13 +2266,15 @@ class Backtester:
                 self._run_position_regime = ""
 
             elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked:
-                # BUY — go long with all available cash
+                # BUY — go long (#980: entry_fraction of flat-state cash;
+                # 1.0 = all available cash, today's math exactly)
                 effective_price = fill_price * (1 + self.slippage_pct)
-                commission = cash * self.commission_pct
-                available = cash - commission
+                invest = cash * entry_fraction
+                commission = invest * self.commission_pct
+                available = invest - commission
                 shares = available / effective_price
                 position = shares
-                cash = 0.0
+                cash -= invest
 
                 current_trade = Trade(idx, effective_price, "long")
                 current_trade.shares = shares
@@ -2249,7 +2309,9 @@ class Backtester:
                 effective_price = fill_price * (1 - self.slippage_pct)
                 proceeds = position * effective_price
                 commission = proceeds * self.commission_pct
-                cash = proceeds - commission
+                # #980: additive — preserve any fractional-entry cash reserve
+                # (identical when cash == 0, the full-notional case).
+                cash += proceeds - commission
                 position = 0.0
 
                 if current_trade:

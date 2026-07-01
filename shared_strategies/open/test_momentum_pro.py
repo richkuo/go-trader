@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from momentum_pro import momentum_pro_core
 
@@ -102,3 +103,62 @@ def test_downtrend_pullback_fires_short():
     df = make_ohlcv(opens, highs, lows, closes, vol)
     out = momentum_pro_core(df, vol_mult=1.2)
     assert (out["signal"] == -1).any(), "expected a short entry on the breakdown bar"
+
+
+# ─── #980: volatility-targeted entry sizing (default OFF) ────────────────────
+
+
+def test_vol_target_off_by_default_no_entry_fraction_column():
+    df = build_uptrend_with_pullback()
+    out = momentum_pro_core(df)
+    assert "entry_fraction" not in out.columns
+
+
+def test_vol_target_zero_is_byte_identical_to_default():
+    df = build_uptrend_with_pullback()
+    base = momentum_pro_core(df)
+    off = momentum_pro_core(df, vol_target_atr_pct=0.0)
+    pd.testing.assert_frame_equal(base, off)
+
+
+def test_vol_target_never_changes_signals():
+    df = build_uptrend_with_pullback()
+    base = momentum_pro_core(df)
+    sized = momentum_pro_core(df, vol_target_atr_pct=0.01)
+    pd.testing.assert_series_equal(base["signal"], sized["signal"])
+
+
+def test_vol_target_emits_fraction_scaled_by_atr():
+    # Flat bars: high-low = 2 around close 100 → TR 2, ATR 2, ATR/close 0.02.
+    # Target 0.01 → fraction 0.5 once the ATR window is warm.
+    n = 260
+    closes = np.full(n, 100.0)
+    df = make_ohlcv(closes, closes + 1.0, closes - 1.0, closes,
+                    np.full(n, 100.0))
+    out = momentum_pro_core(df, vol_target_atr_pct=0.01)
+    assert "entry_fraction" in out.columns
+    warm = out["entry_fraction"].iloc[50:]
+    assert warm.notna().all()
+    assert warm.iloc[-1] == pytest.approx(0.5)
+    assert ((warm > 0) & (warm <= 1)).all()
+
+
+def test_vol_target_fraction_floors_at_min_fraction():
+    n = 260
+    closes = np.full(n, 100.0)
+    df = make_ohlcv(closes, closes + 1.0, closes - 1.0, closes,
+                    np.full(n, 100.0))
+    out = momentum_pro_core(df, vol_target_atr_pct=0.0001,
+                            vol_target_min_fraction=0.10)
+    warm = out["entry_fraction"].iloc[50:]
+    assert np.allclose(warm, 0.10)
+
+
+def test_vol_target_caps_fraction_at_one_in_quiet_markets():
+    n = 260
+    closes = np.full(n, 100.0)
+    df = make_ohlcv(closes, closes + 1.0, closes - 1.0, closes,
+                    np.full(n, 100.0))
+    out = momentum_pro_core(df, vol_target_atr_pct=0.50)
+    warm = out["entry_fraction"].iloc[50:]
+    assert np.allclose(warm, 1.0)
