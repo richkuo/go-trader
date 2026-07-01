@@ -427,6 +427,16 @@ func EffectiveDirectionForPositionGated(sc StrategyConfig, currentRegime, posReg
 	return EffectiveDirectionForRegimeGated(sc, regime, certStates)
 }
 
+// EffectiveInvertSignalForPositionGated is the invert-signal sibling of
+// EffectiveDirectionForPositionGated (#1157 /status parity).
+func EffectiveInvertSignalForPositionGated(sc StrategyConfig, currentRegime, posRegime string, posQty float64, certStates map[string]string) bool {
+	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
+	if entry, honored := gatedDirectionalEntry(sc, regime, certStates); honored {
+		return entry.InvertSignal
+	}
+	return sc.InvertSignal
+}
+
 // policyAllowsPositionSide reports whether posSide is permitted under at least
 // one entry in regime_directional_policy. Used when pos.Regime is empty
 // (legacy / pre-#741) so validation does not false-positive a side that some

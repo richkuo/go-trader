@@ -233,6 +233,56 @@ func TestDirectionalCertStartupSummary(t *testing.T) {
 	}
 }
 
+func TestDirectionalCertStartupLinesNeedingOwnerDM(t *testing.T) {
+	lines := []string{
+		"[#1085] active: regime_directional_policy CERTIFIED for (BTC,1h,adx) — directional selection ACTIVE",
+		"[#1085] dir: regime_directional_policy DEFAULT-OFF — no certified directional edge for (BTC,1h,adx)",
+		"[#1085] dir: regime_directional_policy certification EXPIRED for (ETH,1h,adx)",
+		"[#1085] dir: regime_directional_policy configured but symbol/timeframe unresolvable — policy inert (base direction)",
+	}
+	got := directionalCertStartupLinesNeedingOwnerDM(lines)
+	if len(got) != 3 {
+		t.Fatalf("want 3 owner-DM lines, got %d: %v", len(got), got)
+	}
+}
+
+func TestNotifyDirectionalCertStartupSummary(t *testing.T) {
+	mock := &mockNotifier{}
+	mn := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner1"})
+	lines := []string{
+		"[#1085] ok: regime_directional_policy CERTIFIED for (BTC,1h,adx) — directional selection ACTIVE",
+		"[#1085] dir: regime_directional_policy DEFAULT-OFF — no certified directional edge for (BTC,1h,adx)",
+	}
+	notifyDirectionalCertStartupSummary(mn, lines)
+	if len(mock.dms) != 1 {
+		t.Fatalf("want 1 owner DM, got %d: %v", len(mock.dms), mock.dms)
+	}
+	if !strings.Contains(mock.dms[0].content, "DEFAULT-OFF") {
+		t.Fatalf("DM should carry DEFAULT-OFF line, got: %q", mock.dms[0].content)
+	}
+}
+
+func TestDirectionalCertOperatorNotes(t *testing.T) {
+	prev := getDirectionalCertStore()
+	setDirectionalCertStore(emptyDirectionalCertSet())
+	defer setDirectionalCertStore(prev)
+
+	rc := &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
+	strategies := []StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Args: []string{"vwap", "ETH", "1h"},
+		RegimeDirectionalPolicy: &RegimeDirectionalPolicy{
+			TrendRegime: map[string]RegimeDirectionalEntry{"trending_down": {Direction: DirectionShort}},
+		},
+	}}
+	note := directionalCertOperatorNotes(strategies, rc)
+	if !strings.Contains(note, "hl-eth=DEFAULT-OFF") {
+		t.Fatalf("expected DEFAULT-OFF note, got: %q", note)
+	}
+	if directionalCertOperatorNotes(nil, rc) != "" {
+		t.Fatal("nil strategies should yield empty note")
+	}
+}
+
 // Review finding 1: DirectionCertifiedAtOpen must survive a daemon restart
 // (SQLite round-trip). Without persistence a CERTIFIED-at-open position reloads
 // as false and is migrated to base direction (req-2 violation). Covers both

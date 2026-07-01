@@ -208,6 +208,20 @@ func TestEffectiveDirectionForPositionGated(t *testing.T) {
 	}
 }
 
+func TestEffectiveInvertSignalForPositionGated(t *testing.T) {
+	policy := &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
+		"trending_down": {Direction: DirectionShort, InvertSignal: true},
+	}}
+	sc := StrategyConfig{Direction: DirectionLong, InvertSignal: false, RegimeDirectionalPolicy: policy}
+	certAll := map[string]string{"trending_down": DirectionShort}
+	if got := EffectiveInvertSignalForPositionGated(sc, "trending_down", "", 0, certAll); !got {
+		t.Error("certified flat should honor policy invert")
+	}
+	if got := EffectiveInvertSignalForPositionGated(sc, "trending_down", "", 0, nil); got {
+		t.Error("uncertified flat should fall back to base invert=false")
+	}
+}
+
 func TestPolicyAllowsPositionSide(t *testing.T) {
 	policy := &RegimeDirectionalPolicy{TrendRegime: map[string]RegimeDirectionalEntry{
 		"trending_up":   {Direction: DirectionLong},

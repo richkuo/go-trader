@@ -429,3 +429,61 @@ func directionalCertSignMismatches(sc StrategyConfig, certStates map[string]stri
 	sort.Strings(out)
 	return out
 }
+
+// directionalCertStartupLinesNeedingOwnerDM filters startup-summary lines that
+// should reach the owner DM (#1157): DEFAULT-OFF, EXPIRED, or unresolvable
+// policy cells. Active certification lines are informational stdout only.
+func directionalCertStartupLinesNeedingOwnerDM(lines []string) []string {
+	var out []string
+	for _, line := range lines {
+		if strings.Contains(line, "DEFAULT-OFF") ||
+			strings.Contains(line, "EXPIRED") ||
+			strings.Contains(line, "policy inert") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// notifyDirectionalCertStartupSummary forwards filtered #1085 startup-summary
+// lines to the owner DM so uncertified policy is visible outside boot stdout.
+func notifyDirectionalCertStartupSummary(notifier *MultiNotifier, lines []string) {
+	if notifier == nil || !notifier.HasOwner() {
+		return
+	}
+	for _, line := range directionalCertStartupLinesNeedingOwnerDM(lines) {
+		notifier.SendOwnerDM("[state] " + line)
+	}
+}
+
+// directionalCertOperatorNotes returns a compact operator suffix for status
+// surfaces (Discord /status) listing strategies whose directional policy is not
+// actively certified. Empty when every configured policy is CertActive.
+func directionalCertOperatorNotes(strategies []StrategyConfig, rc *RegimeConfig) string {
+	if len(strategies) == 0 {
+		return ""
+	}
+	now := time.Now().UTC()
+	cfg := &Config{Regime: rc}
+	var parts []string
+	for _, sc := range strategies {
+		if !sc.RegimeDirectionalPolicy.IsConfigured() {
+			continue
+		}
+		switch strategyDirectionalCertStatus(sc, rc, now) {
+		case CertActive:
+			continue
+		case CertExpired:
+			_, cell := directionalCertInspectStatus(sc, cfg)
+			parts = append(parts, fmt.Sprintf("%s=EXPIRED %s", sc.ID, cell))
+		default:
+			_, cell := directionalCertInspectStatus(sc, cfg)
+			parts = append(parts, fmt.Sprintf("%s=DEFAULT-OFF %s", sc.ID, cell))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	return " | directional_policy: " + strings.Join(parts, "; ")
+}

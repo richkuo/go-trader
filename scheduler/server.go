@@ -286,26 +286,28 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer ss.mu.RUnlock()
 
 	type StratStatus struct {
-		ID                      string                     `json:"id"`
-		Type                    string                     `json:"type"`
-		Cash                    float64                    `json:"cash"`
-		InitialCapital          float64                    `json:"initial_capital"`
-		Positions               map[string]*Position       `json:"positions"`
-		OptionPositions         map[string]*OptionPosition `json:"option_positions"`
-		TradeCount              int                        `json:"trade_count"`
-		PortfolioValue          float64                    `json:"portfolio_value"`
-		PnL                     float64                    `json:"pnl"`
-		PnLPct                  float64                    `json:"pnl_pct"`
-		RiskState               RiskState                  `json:"risk_state"`
-		Regime                  string                     `json:"regime,omitempty"`
-		BaseDirection           string                     `json:"base_direction,omitempty"`            // #779: base direction from config (pre-policy resolution)
-		BaseInvertSignal        bool                       `json:"base_invert_signal,omitempty"`        // #779: base invert from config (pre-policy resolution)
-		EffectiveDirection      string                     `json:"effective_direction,omitempty"`       // #779: resolved direction for the active regime (policy override or base)
-		EffectiveInvertSignal   bool                       `json:"effective_invert_signal,omitempty"`   // #779: resolved invert for the active regime
-		RegimeDirectionalPolicy bool                       `json:"regime_directional_policy,omitempty"` // #779: true when strategy has a policy block configured
-		EffectivePolicyRegime   string                     `json:"effective_policy_regime,omitempty"`   // #779: regime key the resolver used (pos.Regime while open, current regime when flat); shown only when policy is configured
-		RegimeDivergence        *RegimeDivergenceState     `json:"regime_divergence,omitempty"`         // #907: active window-divergence state; nil when none
-		RegimeProfile           *RegimeProfileState        `json:"regime_profile,omitempty"`            // #998: active regime-profile allocation switch state; nil when none
+		ID                             string                     `json:"id"`
+		Type                           string                     `json:"type"`
+		Cash                           float64                    `json:"cash"`
+		InitialCapital                 float64                    `json:"initial_capital"`
+		Positions                      map[string]*Position       `json:"positions"`
+		OptionPositions                map[string]*OptionPosition `json:"option_positions"`
+		TradeCount                     int                        `json:"trade_count"`
+		PortfolioValue                 float64                    `json:"portfolio_value"`
+		PnL                            float64                    `json:"pnl"`
+		PnLPct                         float64                    `json:"pnl_pct"`
+		RiskState                      RiskState                  `json:"risk_state"`
+		Regime                         string                     `json:"regime,omitempty"`
+		BaseDirection                  string                     `json:"base_direction,omitempty"`                   // #779: base direction from config (pre-policy resolution)
+		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`               // #779: base invert from config (pre-policy resolution)
+		EffectiveDirection             string                     `json:"effective_direction,omitempty"`              // #779: resolved direction for the active regime (policy override or base)
+		EffectiveInvertSignal          bool                       `json:"effective_invert_signal,omitempty"`          // #779: resolved invert for the active regime
+		RegimeDirectionalPolicy        bool                       `json:"regime_directional_policy,omitempty"`        // #779: true when strategy has a policy block configured
+		EffectivePolicyRegime          string                     `json:"effective_policy_regime,omitempty"`          // #779: regime key the resolver used (pos.Regime while open, current regime when flat); shown only when policy is configured
+		DirectionalCertificationStatus string                     `json:"directional_certification_status,omitempty"` // #1157: certified|expired|uncertified for the strategy's (asset,tf,classifier) cell
+		DirectionalCertificationCell   string                     `json:"directional_certification_cell,omitempty"`   // #1157: (asset,timeframe,classifier) certification key
+		RegimeDivergence               *RegimeDivergenceState     `json:"regime_divergence,omitempty"`                // #907: active window-divergence state; nil when none
+		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`                   // #998: active regime-profile allocation switch state; nil when none
 	}
 
 	type StatusResp struct {
@@ -363,46 +365,54 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		effDir := baseDir
 		effInvert := baseInvert
 		var effRegimeKey string
+		var certStatusStr, certCell string
 		policyConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
 		if policyConfigured {
 			posQty := 0.0
 			posRegime := ""
+			var certStates map[string]string
 			for _, p := range s.Positions {
 				if p != nil && p.Quantity > 0 {
 					posQty = p.Quantity
 					posRegime = positionDirectionalRegimeLabel(p, sc)
+					certStates = p.DirectionCertifiedStatesAtOpen
 					break
 				}
 			}
 			currentDirRegime := strategyCurrentDirectionalRegime(s, sc)
 			effRegimeKey = effectiveRegimeForPolicy(currentDirRegime, posRegime, posQty)
-			if entry, ok := sc.RegimeDirectionalPolicy.Resolve(effRegimeKey); ok {
-				effDir = entry.Direction
-				effInvert = entry.InvertSignal
+			if posQty <= 0 {
+				certStates, _ = strategyDirectionalCertified(sc, ss.regime, time.Now().UTC())
 			}
+			effDir = EffectiveDirectionForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+			effInvert = EffectiveInvertSignalForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+			certStatusStr = strategyDirectionalCertStatus(sc, ss.regime, time.Now().UTC()).String()
+			_, certCell = directionalCertInspectStatus(sc, &Config{Regime: ss.regime})
 		}
 
 		resp.Strategies[id] = StratStatus{
-			ID:                      s.ID,
-			Type:                    s.Type,
-			Cash:                    s.Cash,
-			InitialCapital:          initCap,
-			Positions:               s.Positions,
-			OptionPositions:         s.OptionPositions,
-			TradeCount:              len(s.TradeHistory),
-			PortfolioValue:          pv,
-			PnL:                     pnl,
-			PnLPct:                  pnlPct,
-			RiskState:               s.RiskState,
-			Regime:                  s.Regime,
-			BaseDirection:           baseDir,
-			BaseInvertSignal:        baseInvert,
-			EffectiveDirection:      effDir,
-			EffectiveInvertSignal:   effInvert,
-			RegimeDirectionalPolicy: policyConfigured,
-			EffectivePolicyRegime:   effRegimeKey,
-			RegimeDivergence:        s.RegimeDivergence,
-			RegimeProfile:           s.RegimeProfile,
+			ID:                             s.ID,
+			Type:                           s.Type,
+			Cash:                           s.Cash,
+			InitialCapital:                 initCap,
+			Positions:                      s.Positions,
+			OptionPositions:                s.OptionPositions,
+			TradeCount:                     len(s.TradeHistory),
+			PortfolioValue:                 pv,
+			PnL:                            pnl,
+			PnLPct:                         pnlPct,
+			RiskState:                      s.RiskState,
+			Regime:                         s.Regime,
+			BaseDirection:                  baseDir,
+			BaseInvertSignal:               baseInvert,
+			EffectiveDirection:             effDir,
+			EffectiveInvertSignal:          effInvert,
+			RegimeDirectionalPolicy:        policyConfigured,
+			EffectivePolicyRegime:          effRegimeKey,
+			DirectionalCertificationStatus: certStatusStr,
+			DirectionalCertificationCell:   certCell,
+			RegimeDivergence:               s.RegimeDivergence,
+			RegimeProfile:                  s.RegimeProfile,
 		}
 	}
 

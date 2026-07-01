@@ -116,7 +116,8 @@ func main() {
 	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, f+"\n", a...)
 	}))
-	for _, line := range directionalCertStartupSummary(cfg) {
+	directionalCertSummaryLines := directionalCertStartupSummary(cfg)
+	for _, line := range directionalCertSummaryLines {
 		fmt.Println(line)
 	}
 
@@ -384,6 +385,9 @@ func main() {
 		}
 	}
 
+	// #1157: surface uncertified/expired directional policy to owner DM at startup.
+	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
+
 	// #339: Forward the missing-state-DB warning to the owner. Captured before
 	// OpenStateDB ran (which would have created an empty DB), surfaced here
 	// once the notifier is available.
@@ -551,9 +555,11 @@ func main() {
 		setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 			fmt.Fprintf(os.Stderr, "[reload] "+f+"\n", a...)
 		}))
-		for _, line := range directionalCertStartupSummary(cfg) {
+		reloadCertLines := directionalCertStartupSummary(cfg)
+		for _, line := range reloadCertLines {
 			fmt.Printf("[reload] %s\n", line)
 		}
+		notifyDirectionalCertStartupSummary(notifier, reloadCertLines)
 
 		if len(changes) == 0 {
 			fmt.Println("[reload] Config reload applied: no hot-reloadable changes")

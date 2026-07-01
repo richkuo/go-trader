@@ -182,6 +182,62 @@ func TestHandleStatusWithBearerToken(t *testing.T) {
 	}
 }
 
+func TestHandleStatusUncertifiedPolicyGatedDirection(t *testing.T) {
+	prev := getDirectionalCertStore()
+	setDirectionalCertStore(emptyDirectionalCertSet())
+	defer setDirectionalCertStore(prev)
+
+	policy := &RegimeDirectionalPolicy{
+		TrendRegime: map[string]RegimeDirectionalEntry{
+			"trending_down": {Direction: DirectionShort},
+		},
+	}
+	strategies := []StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+		Direction: DirectionLong, Args: []string{"vwap", "ETH", "1h"},
+		RegimeDirectionalPolicy: policy,
+	}}
+	state := NewAppState()
+	state.Strategies["hl-eth"] = &StrategyState{
+		ID:              "hl-eth",
+		Type:            "perps",
+		Regime:          "trending_down",
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+	}
+	var mu sync.RWMutex
+	ss := NewStatusServer(state, &mu, "", strategies, nil)
+	ss.SetConfigContext("", &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20})
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	w := httptest.NewRecorder()
+	ss.handleStatus(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		Strategies map[string]struct {
+			EffectiveDirection             string `json:"effective_direction"`
+			DirectionalCertificationStatus string `json:"directional_certification_status"`
+			DirectionalCertificationCell   string `json:"directional_certification_cell"`
+		} `json:"strategies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	st := resp.Strategies["hl-eth"]
+	if st.EffectiveDirection != DirectionLong {
+		t.Errorf("effective_direction = %q, want %q (gated to base when uncertified)", st.EffectiveDirection, DirectionLong)
+	}
+	if st.DirectionalCertificationStatus != "uncertified" {
+		t.Errorf("directional_certification_status = %q, want uncertified", st.DirectionalCertificationStatus)
+	}
+	if st.DirectionalCertificationCell == "" {
+		t.Error("expected directional_certification_cell to be set")
+	}
+}
+
 func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	strategies := []StrategyConfig{
 		{Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},

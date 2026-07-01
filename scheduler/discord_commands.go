@@ -484,7 +484,7 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 	// subprocess + venue HTTP, which can exceed Discord's 3s deadline — so ACK
 	// first (deferred), then deliver the built response via a follow-up.
 	case "status":
-		d.respondReadOnlyDeferred(s, i, func() string { return d.buildReadOnly(formatStatusResponse) })
+		d.respondReadOnlyDeferred(s, i, d.buildDiscordStatus)
 	case "positions":
 		d.respondReadOnlyDeferred(s, i, func() string { return d.buildReadOnly(formatPositionsResponse) })
 	case "pnl":
@@ -646,6 +646,22 @@ func (d *DiscordNotifier) buildReadOnly(fn func(*AppState, map[string]float64) s
 	d.ss.mu.RLock()
 	defer d.ss.mu.RUnlock()
 	return fn(d.ss.state, prices)
+}
+
+// buildDiscordStatus is the /status slash-command builder: portfolio summary plus
+// any uncertified/expired regime_directional_policy notes (#1157).
+func (d *DiscordNotifier) buildDiscordStatus() string {
+	if d.ss == nil || d.cfg == nil {
+		return "status server not wired"
+	}
+	prices := d.ss.fetchLiveMarkPrices()
+	d.ss.mu.RLock()
+	defer d.ss.mu.RUnlock()
+	base := formatStatusResponse(d.ss.state, prices)
+	if note := directionalCertOperatorNotes(d.cfg.Strategies, d.cfg.Regime); note != "" {
+		return base + note
+	}
+	return base
 }
 
 func (d *DiscordNotifier) buildHealth() string {
