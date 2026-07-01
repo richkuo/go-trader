@@ -91,7 +91,7 @@ jobs:
 
           case "$MODEL_SHORT" in
             opus)    MODEL_ID="claude-opus-4-8[1m]" ;;
-            sonnet)  MODEL_ID="claude-sonnet-4-6" ;;
+            sonnet)  MODEL_ID="claude-sonnet-5" ;;
             fable)   MODEL_ID="claude-fable-5" ;;
             *)       MODEL_ID="claude-opus-4-8[1m]" ;;  # default (no model specified)
           esac
@@ -264,7 +264,7 @@ jobs:
         run: |
           case "$MODEL_ID" in
             "claude-opus-4-8[1m]")   MODEL_NAME="Claude Opus 4.8 (1M)" ;;
-            claude-sonnet-4-6)       MODEL_NAME="Claude Sonnet 4.6" ;;
+            claude-sonnet-5)         MODEL_NAME="Claude Sonnet 5" ;;
             claude-fable-5)          MODEL_NAME="Claude Fable 5" ;;
             *)                       MODEL_NAME="$MODEL_ID" ;;
           esac
@@ -314,7 +314,7 @@ jobs:
         run: |
           case "$MODEL_ID" in
             "claude-opus-4-8[1m]")   MODEL_NAME="Claude Opus 4.8 (1M)" ;;
-            claude-sonnet-4-6)       MODEL_NAME="Claude Sonnet 4.6" ;;
+            claude-sonnet-5)         MODEL_NAME="Claude Sonnet 5" ;;
             claude-fable-5)          MODEL_NAME="Claude Fable 5" ;;
             "")                      MODEL_NAME="(model not resolved)" ;;
             *)                       MODEL_NAME="$MODEL_ID" ;;
