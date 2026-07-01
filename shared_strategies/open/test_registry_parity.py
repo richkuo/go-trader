@@ -182,6 +182,19 @@ def test_deprecated_vol_momentum_hidden_but_loadable(spot_shim, futures_shim, co
     assert futures_shim.STRATEGY_REGISTRY["vol_momentum"]["default_params"]["allow_short"] is True
 
 
+def test_deprecated_donchian_breakout_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+    # #985: full M1 (long + short legs, ADX + composite regime gates, M4 dual
+    # profile) — no mechanism clears protocol OOS AND the held-out windows
+    # (best: gated short at 1/3). Hidden from discovery but kept registered so
+    # explicit existing configs/backtests still resolve it (both registries).
+    for shim in (spot_shim, futures_shim):
+        assert "donchian_breakout" not in shim.list_strategies()
+        assert "donchian_breakout" in shim.STRATEGY_REGISTRY
+        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
+        result = shim.apply_strategy("donchian_breakout", df)
+        assert "signal" in result.columns
+
+
 def test_deprecated_amd_ifvg_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
     # #1023: DST/session-timing corrected (NY-anchored ICT killzones) and
     # rebaselined at the designed 15m timeframe; the corrected baseline passes

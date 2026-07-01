@@ -377,6 +377,71 @@ def test_validate_candidate_rejects_malformed_allowed_regimes():
         ew.validate_candidate({"name": "x", "allowed_regimes": ["trending_down", 123]})
 
 
+def test_run_leg_threads_regime_windows_spec_composite_gate(monkeypatch):
+    """#985: a composite windows spec must reach the Backtester so composite
+    labels can gate entries on the M1 bar. With the spec threaded, the
+    Backtester classifies the primary window as composite (#1058) — a gate
+    allowing only an ADX-vocabulary label that composite never emits
+    ("trending_up") must then block every entry. Without threading, the
+    legacy ADX classifier would emit exactly that label on trending stretches
+    and the leg would keep trading — so an identical-trade result here means
+    the spec never reached the engine."""
+    df = _synthetic_df(n=240)
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    spec = {"medium": {"classifier": "composite", "period": 14}}
+    plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None))
+    gated = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None),
+                       allowed_regimes=["trending_up"],
+                       regime_windows_spec=spec)
+    assert plain is not None and plain.get("trades", 0) > 0
+    assert gated is not None
+    assert gated.get("trades", -1) == 0, (
+        "composite windows spec did not reach the Backtester — the gate "
+        "classified with the legacy ADX vocabulary and let entries through")
+
+
+def test_validate_candidate_normalizes_regime_windows_spec():
+    # Valid spec: normalized through parse_regime_windows_spec_json (bare int
+    # → ADX spec), kept on the candidate.
+    c = {"name": "x", "regime_windows_spec": {"medium": 14}}
+    assert ew.validate_candidate(c) is c
+    assert c["regime_windows_spec"]["medium"]["classifier"] == "adx"
+    assert c["regime_windows_spec"]["medium"]["period"] == 14
+
+    # Composite spec passes through with its classifier intact.
+    c2 = {"name": "x",
+          "regime_windows_spec": {"medium": {"classifier": "composite",
+                                             "period": 14}},
+          "allowed_regimes": ["trending_up_clean"]}
+    assert ew.validate_candidate(c2) is c2
+    assert c2["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
+    # Empty dict = no spec (normalized away, legacy gate).
+    c3 = {"name": "x", "regime_windows_spec": {}}
+    assert ew.validate_candidate(c3) is c3
+    assert "regime_windows_spec" not in c3
+
+
+def test_validate_candidate_rejects_malformed_regime_windows_spec():
+    # Non-dict shapes fail loudly instead of silently classifying legacy.
+    with pytest.raises(ValueError, match="regime_windows_spec"):
+        ew.validate_candidate({"name": "x", "regime_windows_spec": "medium"})
+
+    # Reserved window name (parser rule) surfaces through the candidate guard.
+    with pytest.raises(ValueError, match="reserved"):
+        ew.validate_candidate(
+            {"name": "x", "regime_windows_spec": {"regime": 14}})
+
+    # Malformed inner spec (non-int, non-object) rejected by the parser.
+    with pytest.raises(ValueError, match="regime_windows_spec"):
+        ew.validate_candidate(
+            {"name": "x", "regime_windows_spec": {"medium": "fast"}})
+
+
 def test_validate_candidate_stop_owners_mutually_exclusive():
     # #996: one ATR stop owner is fine; both together mirror the live
     # config's exclusive stop fields and are rejected.

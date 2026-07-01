@@ -49,6 +49,7 @@ func TestStrategyAuditPageRendersData(t *testing.T) {
 		"M5 gross &lt;= 0",
 		"short leg failed bull-year held-outs", // #1031 session_breakout
 		"NY-anchored ICT killzones",            // #1023 amd_ifvg
+		"no gate/profile clears protocol OOS",  // #985 donchian_breakout ("+ held-outs" tail omitted: "+" renders as &#43;)
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("audit page missing %q", want)
@@ -61,8 +62,8 @@ func TestStrategyAuditDatasetIntegrity(t *testing.T) {
 	if len(d.Ranking) != 40 {
 		t.Errorf("ranking rows = %d, want 40", len(d.Ranking))
 	}
-	if len(d.Deprecations) != 17 {
-		t.Errorf("deprecation count = %d, want 17", len(d.Deprecations))
+	if len(d.Deprecations) != 18 {
+		t.Errorf("deprecation count = %d, want 18", len(d.Deprecations))
 	}
 	if len(d.Candidates) != 5 {
 		t.Errorf("candidate verdicts = %d, want 5", len(d.Candidates))

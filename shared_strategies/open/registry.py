@@ -66,6 +66,7 @@ STRATEGIES: Dict[str, Dict[str, Any]] = {}
 # discovery surfaces such as --list-json and generated defaults.
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "amd_ifvg",
+    "donchian_breakout",
     "range_scalper",
     "session_breakout",
     "vol_momentum",

@@ -267,6 +267,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             trailing_stop_atr_mult: Optional[float] = None,
             profile_allocation: Optional[dict] = None,
             allowed_regimes: Optional[list[str]] = None,
+            regime_windows_spec: Optional[dict] = None,
             regime_enabled: bool = False,
             regime_period: int = 14,
             regime_adx_threshold: float = 20.0,
@@ -284,8 +285,13 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     annualize trade counts.
 
     allowed_regimes (when provided) turns on the regime entry gate for this
-    leg using the legacy single-lookback; regime_enabled is forced true in
-    that case so the Backtester injects the regime column and applies the gate.
+    leg; regime_enabled is forced true in that case so the Backtester injects
+    the regime column and applies the gate. Without regime_windows_spec the
+    gate classifies with the legacy single-lookback ADX; with a windows spec
+    (#985, parsed shape from parse_regime_windows_spec_json) the Backtester's
+    #1058 path classifies the PRIMARY (medium-first) window instead — composite
+    (9-state) or ADX per the spec — so composite labels can gate entries on the
+    M1 bar.
     """
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
@@ -327,8 +333,11 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             df_signals = ensure_atr_indicator(df_signals)
 
     # Regime gate support for M1: if allowed_regimes given, enable the
-    # (legacy) regime computation so the gate can filter entries on the bar.
-    use_regime = regime_enabled or bool(allowed_regimes)
+    # regime computation so the gate can filter entries on the bar. A windows
+    # spec alone also enables it (the spec exists only to pick the gate's
+    # classifier, so threading it without computing the column would be a
+    # silent no-op).
+    use_regime = regime_enabled or bool(allowed_regimes) or bool(regime_windows_spec)
     bt_kwargs = dict(
         initial_capital=capital, platform=PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
@@ -341,6 +350,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         regime_period=regime_period,
         regime_adx_threshold=regime_adx_threshold,
         allowed_regimes=allowed_regimes,
+        regime_windows_spec=regime_windows_spec,
         # commission_pct=None keeps the Backtester's platform-derived fee — the
         # M1 default; an explicit 0.0 (fee audit gross run) overrides it.
         commission_pct=commission_pct,
@@ -447,6 +457,30 @@ def validate_candidate(candidate: dict) -> dict:
                 "candidate.allowed_regimes entries must all be strings")
         if len(ar) == 0:
             candidate.pop("allowed_regimes", None)
+
+    # #985: optional windows spec selecting the entry gate's classifier
+    # (composite 9-state or ADX) via the Backtester's #1058 primary-window
+    # path. Validated/normalized with the same parser the live config and
+    # run_backtest --config use, so a malformed spec fails loudly here
+    # instead of silently classifying with the legacy default.
+    rws = candidate.get("regime_windows_spec")
+    if rws is not None:
+        if not isinstance(rws, dict):
+            raise ValueError(
+                "candidate.regime_windows_spec must be an object "
+                "{window_name: {classifier, period, ...}} (or omitted for "
+                "the legacy single-lookback ADX gate)")
+        if not rws:
+            # Empty object = no spec (legacy gate), same normalization as an
+            # empty allowed_regimes list.
+            candidate.pop("regime_windows_spec", None)
+        else:
+            from regime import parse_regime_windows_spec_json
+            try:
+                normalized = parse_regime_windows_spec_json(json.dumps(rws))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"candidate.regime_windows_spec: {exc}")
+            candidate["regime_windows_spec"] = normalized
     return candidate
 
 
@@ -478,6 +512,7 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
             trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
             profile_allocation=candidate.get("profile_allocation"),
             allowed_regimes=candidate.get("allowed_regimes"),
+            regime_windows_spec=candidate.get("regime_windows_spec"),
         )
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
@@ -599,9 +634,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Path to a candidate JSON file: {name, params, "
                         "close_strategies?, direction?, invert_signal?, "
                         "stop_loss_atr_mult?, trailing_stop_atr_mult?, "
-                        "allowed_regimes?, profile_allocation?}. "
+                        "allowed_regimes?, regime_windows_spec?, "
+                        "profile_allocation?}. "
                         "Overrides --strategy/--params. allowed_regimes enables "
-                        "the entry gate on the M1 bar (legacy lookback).")
+                        "the entry gate on the M1 bar (legacy lookback unless "
+                        "regime_windows_spec picks another classifier).")
     p.add_argument("--registry", choices=["spot", "futures"], default="spot")
     p.add_argument("--direction", default=None,
                    choices=["long", "short", "both"],
@@ -615,8 +652,16 @@ def build_parser() -> argparse.ArgumentParser:
                    metavar="LABEL",
                    help="Regime label to allow entries (repeatable). Enables "
                         "the backtester entry gate for this candidate on the "
-                        "M1 incumbent-relative bar (uses the legacy single-"
-                        "lookback ADX regime).")
+                        "M1 incumbent-relative bar (legacy single-lookback "
+                        "ADX unless --regime-windows-spec picks another "
+                        "classifier).")
+    p.add_argument("--regime-windows-spec", default=None, metavar="JSON",
+                   help="#985 windows spec JSON selecting the entry gate's "
+                        "classifier ({name: {classifier: composite|adx, "
+                        "period, ...}}); the Backtester classifies the "
+                        "PRIMARY (medium-first) window (#1058) so composite "
+                        "labels work in --allowed-regimes. Omit for the "
+                        "legacy ADX gate.")
     p.add_argument("--windows", default=None,
                    help=f"Comma list of windows (default: all). "
                         f"Known: {', '.join(WINDOWS)}")
@@ -661,6 +706,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.allowed_regimes:
         candidate["allowed_regimes"] = list(args.allowed_regimes)
+
+    if args.regime_windows_spec:
+        candidate["regime_windows_spec"] = json.loads(args.regime_windows_spec)
 
     try:
         validate_candidate(candidate)
