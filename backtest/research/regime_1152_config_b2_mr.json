@@ -1,0 +1,23 @@
+{
+  "config_version": 16,
+  "regime": {
+    "enabled": true,
+    "period": 20,
+    "windows": {
+      "medium": {"classifier": "composite", "period": 20}
+    }
+  },
+  "strategies": [
+    {
+      "id": "m6-1152-b2-mr",
+      "type": "perps",
+      "direction": "both",
+      "open_strategy": {"name": "mean_reversion", "params": {}},
+      "close_strategy": {
+        "name": "tiered_tp_atr_regime",
+        "params": {"use_defaults": true}
+      },
+      "stop_loss_atr_mult": 1.5
+    }
+  ]
+}

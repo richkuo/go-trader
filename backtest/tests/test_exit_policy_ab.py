@@ -294,6 +294,25 @@ def test_replayable_false_for_open_as_close_and_unknown():
     assert not m.candidate_is_replayable([{"name": "some_signal_reversal_close"}])
 
 
+def test_replayable_true_for_ratchet_and_frozen_regime_tp():
+    # #1152: the ratchet ladders and the frozen-at-open regime TP fire off
+    # price/ATR/the regime stamped at open (bar data), never off later signals,
+    # so the single-entry replay isolates them faithfully.
+    assert m.candidate_is_replayable([{"name": "trailing_tp_ratchet", "params": {}}])
+    assert m.candidate_is_replayable(
+        [{"name": "trailing_tp_ratchet_regime", "params": {"use_defaults": True}}])
+    assert m.candidate_is_replayable([{"name": "tiered_tp_atr_regime", "params": {}}])
+
+
+def test_replayable_false_for_per_tick_regime_variants():
+    # Per-tick re-resolution variants stay out of the set until validated:
+    # tiered_tp_atr_live_regime_dynamic is HL-live-only (load_strategy_config
+    # rejects it), and tiered_tp_atr_live_regime has no #1152 evidence run.
+    assert not m.candidate_is_replayable([{"name": "tiered_tp_atr_live_regime"}])
+    assert not m.candidate_is_replayable(
+        [{"name": "tiered_tp_atr_live_regime_dynamic"}])
+
+
 # --------------------------------------------------------------------------
 # paired_delta_summary structure
 # --------------------------------------------------------------------------

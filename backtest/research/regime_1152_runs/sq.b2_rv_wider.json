@@ -1,0 +1,1410 @@
+{
+  "open": {
+    "name": "squeeze_momentum",
+    "params": null,
+    "direction": "both"
+  },
+  "incumbent_close": [
+    {
+      "name": "tiered_tp_atr_regime",
+      "params": {
+        "use_defaults": true
+      }
+    }
+  ],
+  "candidate_close": [
+    {
+      "name": "tiered_tp_atr",
+      "params": {
+        "tp_tiers": [
+          {
+            "atr_multiple": 0.75,
+            "close_fraction": 0.5
+          },
+          {
+            "atr_multiple": 1.5,
+            "close_fraction": 1.0
+          }
+        ]
+      }
+    }
+  ],
+  "control_stops": {
+    "stop_loss_atr_mult": 1.5
+  },
+  "candidate_stops": {
+    "stop_loss_atr_mult": 1.5
+  },
+  "candidate_stops_mode": "inherit",
+  "replayable": true,
+  "regime_cfg": {
+    "period": 14,
+    "adx_threshold": 20.0,
+    "gate_window": "",
+    "classifier": "composite",
+    "windows_spec": {
+      "medium": {
+        "classifier": "composite",
+        "period": 20
+      }
+    }
+  },
+  "gate_allowed_regimes": [
+    "ranging_volatile"
+  ],
+  "registry": "futures",
+  "windows": {
+    "is": [
+      "2025-06-10",
+      "2026-01-01"
+    ],
+    "oos": [
+      "2026-01-01",
+      null
+    ]
+  },
+  "datasets": [
+    "BTC/USDT 1h",
+    "BTC/USDT 4h",
+    "ETH/USDT 1h",
+    "ETH/USDT 4h",
+    "SOL/USDT 1h",
+    "SOL/USDT 4h"
+  ],
+  "bootstrap": {
+    "n_resamples": 10000,
+    "ci": 0.95,
+    "seed": 1066
+  },
+  "results": {
+    "is": [
+      {
+        "dataset": "BTC/USDT 1h",
+        "control_arm": {
+          "trades": 28,
+          "entries": 18,
+          "win_rate": 0.5556,
+          "mean_net_pct": -0.249,
+          "total_net_pct": -4.4818,
+          "total_return_pct": -4.48,
+          "max_drawdown_pct": -6.08,
+          "sharpe": -1.27,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 28,
+          "entries": 18,
+          "win_rate": 0.5556,
+          "mean_net_pct": -0.2623,
+          "total_net_pct": -4.7218,
+          "total_return_pct": -4.72,
+          "max_drawdown_pct": -5.89,
+          "sharpe": -1.057,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": -0.013333,
+          "lo": -0.721951,
+          "hi": 0.671674,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 18,
+          "paired": 18,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 18,
+            "control_mean_net_pct": -0.249,
+            "candidate_mean_net_pct": -0.2623,
+            "control_total_net_pct": -4.4818,
+            "candidate_total_net_pct": -4.7218,
+            "control_win_rate": 0.5556,
+            "candidate_win_rate": 0.5556,
+            "delta_win_rate": 0.0,
+            "control_median_mae_pct": -0.4224,
+            "candidate_median_mae_pct": -0.5154,
+            "control_median_mfe_pct": 0.5388,
+            "candidate_median_mfe_pct": 0.8032,
+            "paired_delta": {
+              "n": 18,
+              "mean": -0.013333,
+              "median": 0.0,
+              "sign_test": {
+                "n": 18,
+                "n_pos": 12,
+                "n_neg": 6,
+                "n_zero": 0,
+                "p_value": 0.237885
+              },
+              "signed_rank": {
+                "n": 18,
+                "w": 113.0,
+                "z": 1.1759,
+                "p_value": 0.239651
+              },
+              "bootstrap": {
+                "point": -0.013333,
+                "lo": -0.140278,
+                "hi": 0.088333,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 18,
+              "control_mean_net_pct": -0.249,
+              "candidate_mean_net_pct": -0.2623,
+              "control_total_net_pct": -4.4818,
+              "candidate_total_net_pct": -4.7218,
+              "control_win_rate": 0.5556,
+              "candidate_win_rate": 0.5556,
+              "delta_win_rate": 0.0,
+              "control_median_mae_pct": -0.4224,
+              "candidate_median_mae_pct": -0.5154,
+              "control_median_mfe_pct": 0.5388,
+              "candidate_median_mfe_pct": 0.8032,
+              "paired_delta": {
+                "n": 18,
+                "mean": -0.013333,
+                "median": 0.0,
+                "sign_test": {
+                  "n": 18,
+                  "n_pos": 12,
+                  "n_neg": 6,
+                  "n_zero": 0,
+                  "p_value": 0.237885
+                },
+                "signed_rank": {
+                  "n": 18,
+                  "w": 113.0,
+                  "z": 1.1759,
+                  "p_value": 0.239651
+                },
+                "bootstrap": {
+                  "point": -0.013333,
+                  "lo": -0.140278,
+                  "hi": 0.088333,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "BTC/USDT 4h",
+        "control_arm": {
+          "trades": 9,
+          "entries": 7,
+          "win_rate": 0.5714,
+          "mean_net_pct": -0.4558,
+          "total_net_pct": -3.1907,
+          "total_return_pct": -3.27,
+          "max_drawdown_pct": -5.2,
+          "sharpe": -0.779,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 9,
+          "entries": 6,
+          "win_rate": 0.6667,
+          "mean_net_pct": -0.0951,
+          "total_net_pct": -0.5707,
+          "total_return_pct": -0.51,
+          "max_drawdown_pct": -5.22,
+          "sharpe": -0.128,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": 0.360706,
+          "lo": -1.481217,
+          "hi": 2.231426,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 7,
+          "paired": 7,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 7,
+            "control_mean_net_pct": -0.4558,
+            "candidate_mean_net_pct": -0.5487,
+            "control_total_net_pct": -3.1907,
+            "candidate_total_net_pct": -3.8408,
+            "control_win_rate": 0.5714,
+            "candidate_win_rate": 0.5714,
+            "delta_win_rate": 0.0,
+            "control_median_mae_pct": -0.8956,
+            "candidate_median_mae_pct": -1.6576,
+            "control_median_mfe_pct": 1.3514,
+            "candidate_median_mfe_pct": 1.3514,
+            "paired_delta": {
+              "n": 7,
+              "mean": -0.092864,
+              "median": -0.0,
+              "sign_test": {
+                "n": 6,
+                "n_pos": 2,
+                "n_neg": 4,
+                "n_zero": 1,
+                "p_value": 0.6875
+              },
+              "signed_rank": {
+                "n": 6,
+                "w": 7.0,
+                "z": -0.629,
+                "p_value": 0.529368
+              },
+              "bootstrap": {
+                "point": -0.092864,
+                "lo": -0.342879,
+                "hi": 0.064286,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 7,
+              "control_mean_net_pct": -0.4558,
+              "candidate_mean_net_pct": -0.5487,
+              "control_total_net_pct": -3.1907,
+              "candidate_total_net_pct": -3.8408,
+              "control_win_rate": 0.5714,
+              "candidate_win_rate": 0.5714,
+              "delta_win_rate": 0.0,
+              "control_median_mae_pct": -0.8956,
+              "candidate_median_mae_pct": -1.6576,
+              "control_median_mfe_pct": 1.3514,
+              "candidate_median_mfe_pct": 1.3514,
+              "paired_delta": {
+                "n": 7,
+                "mean": -0.092864,
+                "median": -0.0,
+                "sign_test": {
+                  "n": 6,
+                  "n_pos": 2,
+                  "n_neg": 4,
+                  "n_zero": 1,
+                  "p_value": 0.6875
+                },
+                "signed_rank": {
+                  "n": 6,
+                  "w": 7.0,
+                  "z": -0.629,
+                  "p_value": 0.529368
+                },
+                "bootstrap": {
+                  "point": -0.092864,
+                  "lo": -0.342879,
+                  "hi": 0.064286,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "ETH/USDT 1h",
+        "control_arm": {
+          "trades": 29,
+          "entries": 20,
+          "win_rate": 0.45,
+          "mean_net_pct": -0.3824,
+          "total_net_pct": -7.647,
+          "total_return_pct": -7.48,
+          "max_drawdown_pct": -9.37,
+          "sharpe": -1.289,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 29,
+          "entries": 20,
+          "win_rate": 0.5,
+          "mean_net_pct": -0.3344,
+          "total_net_pct": -6.687,
+          "total_return_pct": -6.61,
+          "max_drawdown_pct": -10.06,
+          "sharpe": -1.058,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": 0.048,
+          "lo": -0.608506,
+          "hi": 0.705506,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 20,
+          "paired": 20,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 20,
+            "control_mean_net_pct": -0.3824,
+            "candidate_mean_net_pct": -0.3344,
+            "control_total_net_pct": -7.647,
+            "candidate_total_net_pct": -6.687,
+            "control_win_rate": 0.45,
+            "candidate_win_rate": 0.5,
+            "delta_win_rate": 0.05,
+            "control_median_mae_pct": -1.1531,
+            "candidate_median_mae_pct": -1.1531,
+            "control_median_mfe_pct": 0.8097,
+            "candidate_median_mfe_pct": 0.9582,
+            "paired_delta": {
+              "n": 20,
+              "mean": 0.048,
+              "median": 0.0,
+              "sign_test": {
+                "n": 20,
+                "n_pos": 15,
+                "n_neg": 5,
+                "n_zero": 0,
+                "p_value": 0.041389
+              },
+              "signed_rank": {
+                "n": 20,
+                "w": 167.0,
+                "z": 2.296,
+                "p_value": 0.021678
+              },
+              "bootstrap": {
+                "point": 0.048,
+                "lo": -0.082006,
+                "hi": 0.158513,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 20,
+              "control_mean_net_pct": -0.3824,
+              "candidate_mean_net_pct": -0.3344,
+              "control_total_net_pct": -7.647,
+              "candidate_total_net_pct": -6.687,
+              "control_win_rate": 0.45,
+              "candidate_win_rate": 0.5,
+              "delta_win_rate": 0.05,
+              "control_median_mae_pct": -1.1531,
+              "candidate_median_mae_pct": -1.1531,
+              "control_median_mfe_pct": 0.8097,
+              "candidate_median_mfe_pct": 0.9582,
+              "paired_delta": {
+                "n": 20,
+                "mean": 0.048,
+                "median": 0.0,
+                "sign_test": {
+                  "n": 20,
+                  "n_pos": 15,
+                  "n_neg": 5,
+                  "n_zero": 0,
+                  "p_value": 0.041389
+                },
+                "signed_rank": {
+                  "n": 20,
+                  "w": 167.0,
+                  "z": 2.296,
+                  "p_value": 0.021678
+                },
+                "bootstrap": {
+                  "point": 0.048,
+                  "lo": -0.082006,
+                  "hi": 0.158513,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "ETH/USDT 4h",
+        "control_arm": {
+          "trades": 4,
+          "entries": 3,
+          "win_rate": 1.0,
+          "mean_net_pct": 2.6332,
+          "total_net_pct": 7.8997,
+          "total_return_pct": 8.04,
+          "max_drawdown_pct": -1.84,
+          "sharpe": 1.566,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 5,
+          "entries": 3,
+          "win_rate": 1.0,
+          "mean_net_pct": 3.2299,
+          "total_net_pct": 9.6897,
+          "total_return_pct": 9.95,
+          "max_drawdown_pct": -1.84,
+          "sharpe": 1.896,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": 0.596667,
+          "lo": -2.26,
+          "hi": 3.376667,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 3,
+          "paired": 3,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 3,
+            "control_mean_net_pct": 2.6332,
+            "candidate_mean_net_pct": 3.2299,
+            "control_total_net_pct": 7.8997,
+            "candidate_total_net_pct": 9.6897,
+            "control_win_rate": 1.0,
+            "candidate_win_rate": 1.0,
+            "delta_win_rate": 0.0,
+            "control_median_mae_pct": -1.4476,
+            "candidate_median_mae_pct": -1.4476,
+            "control_median_mfe_pct": 2.6465,
+            "candidate_median_mfe_pct": 3.6884,
+            "paired_delta": {
+              "n": 3,
+              "mean": 0.596667,
+              "median": 0.48,
+              "sign_test": {
+                "n": 3,
+                "n_pos": 3,
+                "n_neg": 0,
+                "n_zero": 0,
+                "p_value": 0.25
+              },
+              "signed_rank": {
+                "n": 3,
+                "w": 6.0,
+                "z": 1.3363,
+                "p_value": 0.181449
+              },
+              "bootstrap": {
+                "point": 0.596667,
+                "lo": 0.0,
+                "hi": 1.31,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 3,
+              "control_mean_net_pct": 2.6332,
+              "candidate_mean_net_pct": 3.2299,
+              "control_total_net_pct": 7.8997,
+              "candidate_total_net_pct": 9.6897,
+              "control_win_rate": 1.0,
+              "candidate_win_rate": 1.0,
+              "delta_win_rate": 0.0,
+              "control_median_mae_pct": -1.4476,
+              "candidate_median_mae_pct": -1.4476,
+              "control_median_mfe_pct": 2.6465,
+              "candidate_median_mfe_pct": 3.6884,
+              "paired_delta": {
+                "n": 3,
+                "mean": 0.596667,
+                "median": 0.48,
+                "sign_test": {
+                  "n": 3,
+                  "n_pos": 3,
+                  "n_neg": 0,
+                  "n_zero": 0,
+                  "p_value": 0.25
+                },
+                "signed_rank": {
+                  "n": 3,
+                  "w": 6.0,
+                  "z": 1.3363,
+                  "p_value": 0.181449
+                },
+                "bootstrap": {
+                  "point": 0.596667,
+                  "lo": 0.0,
+                  "hi": 1.31,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "SOL/USDT 1h",
+        "control_arm": {
+          "trades": 28,
+          "entries": 17,
+          "win_rate": 0.5882,
+          "mean_net_pct": -0.1207,
+          "total_net_pct": -2.0517,
+          "total_return_pct": -2.19,
+          "max_drawdown_pct": -8.24,
+          "sharpe": -0.374,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 27,
+          "entries": 17,
+          "win_rate": 0.5294,
+          "mean_net_pct": -0.0319,
+          "total_net_pct": -0.5417,
+          "total_return_pct": -0.79,
+          "max_drawdown_pct": -8.24,
+          "sharpe": -0.083,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": 0.088824,
+          "lo": -0.964412,
+          "hi": 1.153831,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 17,
+          "paired": 17,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 17,
+            "control_mean_net_pct": -0.1207,
+            "candidate_mean_net_pct": -0.0319,
+            "control_total_net_pct": -2.0517,
+            "candidate_total_net_pct": -0.5417,
+            "control_win_rate": 0.5882,
+            "candidate_win_rate": 0.5294,
+            "delta_win_rate": -0.0588,
+            "control_median_mae_pct": -0.9123,
+            "candidate_median_mae_pct": -0.9405,
+            "control_median_mfe_pct": 1.0593,
+            "candidate_median_mfe_pct": 1.1949,
+            "paired_delta": {
+              "n": 17,
+              "mean": 0.088823,
+              "median": -0.0,
+              "sign_test": {
+                "n": 16,
+                "n_pos": 6,
+                "n_neg": 10,
+                "n_zero": 1,
+                "p_value": 0.454498
+              },
+              "signed_rank": {
+                "n": 16,
+                "w": 64.0,
+                "z": -0.181,
+                "p_value": 0.856383
+              },
+              "bootstrap": {
+                "point": 0.088823,
+                "lo": -0.235,
+                "hi": 0.448529,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 17,
+              "control_mean_net_pct": -0.1207,
+              "candidate_mean_net_pct": -0.0319,
+              "control_total_net_pct": -2.0517,
+              "candidate_total_net_pct": -0.5417,
+              "control_win_rate": 0.5882,
+              "candidate_win_rate": 0.5294,
+              "delta_win_rate": -0.0588,
+              "control_median_mae_pct": -0.9123,
+              "candidate_median_mae_pct": -0.9405,
+              "control_median_mfe_pct": 1.0593,
+              "candidate_median_mfe_pct": 1.1949,
+              "paired_delta": {
+                "n": 17,
+                "mean": 0.088823,
+                "median": -0.0,
+                "sign_test": {
+                  "n": 16,
+                  "n_pos": 6,
+                  "n_neg": 10,
+                  "n_zero": 1,
+                  "p_value": 0.454498
+                },
+                "signed_rank": {
+                  "n": 16,
+                  "w": 64.0,
+                  "z": -0.181,
+                  "p_value": 0.856383
+                },
+                "bootstrap": {
+                  "point": 0.088823,
+                  "lo": -0.235,
+                  "hi": 0.448529,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "SOL/USDT 4h",
+        "control_arm": {
+          "trades": 5,
+          "entries": 3,
+          "win_rate": 1.0,
+          "mean_net_pct": 2.5049,
+          "total_net_pct": 7.5147,
+          "total_return_pct": 7.7,
+          "max_drawdown_pct": -1.72,
+          "sharpe": 1.549,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 5,
+          "entries": 3,
+          "win_rate": 0.6667,
+          "mean_net_pct": 2.7466,
+          "total_net_pct": 8.2397,
+          "total_return_pct": 8.35,
+          "max_drawdown_pct": -3.95,
+          "sharpe": 1.568,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": 0.241667,
+          "lo": -3.121667,
+          "hi": 3.141667,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 3,
+          "paired": 3,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 3,
+            "control_mean_net_pct": 2.5049,
+            "candidate_mean_net_pct": 2.7466,
+            "control_total_net_pct": 7.5147,
+            "candidate_total_net_pct": 8.2397,
+            "control_win_rate": 1.0,
+            "candidate_win_rate": 0.6667,
+            "delta_win_rate": -0.3333,
+            "control_median_mae_pct": -1.1875,
+            "candidate_median_mae_pct": -2.1063,
+            "control_median_mfe_pct": 4.0774,
+            "candidate_median_mfe_pct": 4.5418,
+            "paired_delta": {
+              "n": 3,
+              "mean": 0.241667,
+              "median": 1.335,
+              "sign_test": {
+                "n": 3,
+                "n_pos": 2,
+                "n_neg": 1,
+                "n_zero": 0,
+                "p_value": 1.0
+              },
+              "signed_rank": {
+                "n": 3,
+                "w": 3.0,
+                "z": 0.0,
+                "p_value": 1.0
+              },
+              "bootstrap": {
+                "point": 0.241667,
+                "lo": -3.005,
+                "hi": 2.395,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 3,
+              "control_mean_net_pct": 2.5049,
+              "candidate_mean_net_pct": 2.7466,
+              "control_total_net_pct": 7.5147,
+              "candidate_total_net_pct": 8.2397,
+              "control_win_rate": 1.0,
+              "candidate_win_rate": 0.6667,
+              "delta_win_rate": -0.3333,
+              "control_median_mae_pct": -1.1875,
+              "candidate_median_mae_pct": -2.1063,
+              "control_median_mfe_pct": 4.0774,
+              "candidate_median_mfe_pct": 4.5418,
+              "paired_delta": {
+                "n": 3,
+                "mean": 0.241667,
+                "median": 1.335,
+                "sign_test": {
+                  "n": 3,
+                  "n_pos": 2,
+                  "n_neg": 1,
+                  "n_zero": 0,
+                  "p_value": 1.0
+                },
+                "signed_rank": {
+                  "n": 3,
+                  "w": 3.0,
+                  "z": 0.0,
+                  "p_value": 1.0
+                },
+                "bootstrap": {
+                  "point": 0.241667,
+                  "lo": -3.005,
+                  "hi": 2.395,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      }
+    ],
+    "oos": [
+      {
+        "dataset": "BTC/USDT 1h",
+        "control_arm": {
+          "trades": 14,
+          "entries": 11,
+          "win_rate": 0.3636,
+          "mean_net_pct": -0.4937,
+          "total_net_pct": -5.4311,
+          "total_return_pct": -5.34,
+          "max_drawdown_pct": -5.34,
+          "sharpe": -1.53,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 15,
+          "entries": 11,
+          "win_rate": 0.3636,
+          "mean_net_pct": -0.4992,
+          "total_net_pct": -5.4911,
+          "total_return_pct": -5.4,
+          "max_drawdown_pct": -5.4,
+          "sharpe": -1.535,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": -0.005455,
+          "lo": -0.773182,
+          "hi": 0.762307,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 11,
+          "paired": 11,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 11,
+            "control_mean_net_pct": -0.4937,
+            "candidate_mean_net_pct": -0.4992,
+            "control_total_net_pct": -5.4311,
+            "candidate_total_net_pct": -5.4911,
+            "control_win_rate": 0.3636,
+            "candidate_win_rate": 0.3636,
+            "delta_win_rate": 0.0,
+            "control_median_mae_pct": -1.014,
+            "candidate_median_mae_pct": -1.014,
+            "control_median_mfe_pct": 0.3961,
+            "candidate_median_mfe_pct": 0.3961,
+            "paired_delta": {
+              "n": 11,
+              "mean": -0.005455,
+              "median": 0.0,
+              "sign_test": {
+                "n": 10,
+                "n_pos": 6,
+                "n_neg": 4,
+                "n_zero": 1,
+                "p_value": 0.753906
+              },
+              "signed_rank": {
+                "n": 10,
+                "w": 37.0,
+                "z": 0.9174,
+                "p_value": 0.358951
+              },
+              "bootstrap": {
+                "point": -0.005455,
+                "lo": -0.143636,
+                "hi": 0.096364,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 11,
+              "control_mean_net_pct": -0.4937,
+              "candidate_mean_net_pct": -0.4992,
+              "control_total_net_pct": -5.4311,
+              "candidate_total_net_pct": -5.4911,
+              "control_win_rate": 0.3636,
+              "candidate_win_rate": 0.3636,
+              "delta_win_rate": 0.0,
+              "control_median_mae_pct": -1.014,
+              "candidate_median_mae_pct": -1.014,
+              "control_median_mfe_pct": 0.3961,
+              "candidate_median_mfe_pct": 0.3961,
+              "paired_delta": {
+                "n": 11,
+                "mean": -0.005455,
+                "median": 0.0,
+                "sign_test": {
+                  "n": 10,
+                  "n_pos": 6,
+                  "n_neg": 4,
+                  "n_zero": 1,
+                  "p_value": 0.753906
+                },
+                "signed_rank": {
+                  "n": 10,
+                  "w": 37.0,
+                  "z": 0.9174,
+                  "p_value": 0.358951
+                },
+                "bootstrap": {
+                  "point": -0.005455,
+                  "lo": -0.143636,
+                  "hi": 0.096364,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "BTC/USDT 4h",
+        "control_arm": {
+          "trades": 5,
+          "entries": 3,
+          "win_rate": 0.6667,
+          "mean_net_pct": 0.0899,
+          "total_net_pct": 0.2697,
+          "total_return_pct": 0.25,
+          "max_drawdown_pct": -4.2,
+          "sharpe": 0.128,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 5,
+          "entries": 3,
+          "win_rate": 0.6667,
+          "mean_net_pct": 0.2249,
+          "total_net_pct": 0.6747,
+          "total_return_pct": 0.65,
+          "max_drawdown_pct": -4.2,
+          "sharpe": 0.279,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": 0.135,
+          "lo": -2.135,
+          "hi": 2.405,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 3,
+          "paired": 3,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 3,
+            "control_mean_net_pct": 0.0899,
+            "candidate_mean_net_pct": 0.2249,
+            "control_total_net_pct": 0.2697,
+            "candidate_total_net_pct": 0.6747,
+            "control_win_rate": 0.6667,
+            "candidate_win_rate": 0.6667,
+            "delta_win_rate": 0.0,
+            "control_median_mae_pct": -1.3427,
+            "candidate_median_mae_pct": -1.3427,
+            "control_median_mfe_pct": 1.6545,
+            "candidate_median_mfe_pct": 1.7452,
+            "paired_delta": {
+              "n": 3,
+              "mean": 0.135,
+              "median": 0.0,
+              "sign_test": {
+                "n": 2,
+                "n_pos": 2,
+                "n_neg": 0,
+                "n_zero": 1,
+                "p_value": 0.5
+              },
+              "signed_rank": {
+                "n": 2,
+                "w": 3.0,
+                "z": 0.8944,
+                "p_value": 0.371093
+              },
+              "bootstrap": {
+                "point": 0.135,
+                "lo": 0.0,
+                "hi": 0.405,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 3,
+              "control_mean_net_pct": 0.0899,
+              "candidate_mean_net_pct": 0.2249,
+              "control_total_net_pct": 0.2697,
+              "candidate_total_net_pct": 0.6747,
+              "control_win_rate": 0.6667,
+              "candidate_win_rate": 0.6667,
+              "delta_win_rate": 0.0,
+              "control_median_mae_pct": -1.3427,
+              "candidate_median_mae_pct": -1.3427,
+              "control_median_mfe_pct": 1.6545,
+              "candidate_median_mfe_pct": 1.7452,
+              "paired_delta": {
+                "n": 3,
+                "mean": 0.135,
+                "median": 0.0,
+                "sign_test": {
+                  "n": 2,
+                  "n_pos": 2,
+                  "n_neg": 0,
+                  "n_zero": 1,
+                  "p_value": 0.5
+                },
+                "signed_rank": {
+                  "n": 2,
+                  "w": 3.0,
+                  "z": 0.8944,
+                  "p_value": 0.371093
+                },
+                "bootstrap": {
+                  "point": 0.135,
+                  "lo": 0.0,
+                  "hi": 0.405,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "ETH/USDT 1h",
+        "control_arm": {
+          "trades": 12,
+          "entries": 10,
+          "win_rate": 0.1,
+          "mean_net_pct": -1.2426,
+          "total_net_pct": -12.426,
+          "total_return_pct": -11.78,
+          "max_drawdown_pct": -11.78,
+          "sharpe": -2.984,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 12,
+          "entries": 10,
+          "win_rate": 0.0,
+          "mean_net_pct": -1.3481,
+          "total_net_pct": -13.481,
+          "total_return_pct": -12.7,
+          "max_drawdown_pct": -12.7,
+          "sharpe": -3.204,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": -0.1055,
+          "lo": -0.952512,
+          "hi": 0.723,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 10,
+          "paired": 10,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 10,
+            "control_mean_net_pct": -1.2426,
+            "candidate_mean_net_pct": -1.3481,
+            "control_total_net_pct": -12.426,
+            "candidate_total_net_pct": -13.481,
+            "control_win_rate": 0.1,
+            "candidate_win_rate": 0.0,
+            "delta_win_rate": -0.1,
+            "control_median_mae_pct": -1.3784,
+            "candidate_median_mae_pct": -1.5074,
+            "control_median_mfe_pct": 0.1102,
+            "candidate_median_mfe_pct": 0.1102,
+            "paired_delta": {
+              "n": 10,
+              "mean": -0.1055,
+              "median": 0.0,
+              "sign_test": {
+                "n": 9,
+                "n_pos": 5,
+                "n_neg": 4,
+                "n_zero": 1,
+                "p_value": 1.0
+              },
+              "signed_rank": {
+                "n": 9,
+                "w": 27.0,
+                "z": 0.4739,
+                "p_value": 0.635586
+              },
+              "bootstrap": {
+                "point": -0.1055,
+                "lo": -0.387,
+                "hi": 0.0705,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 10,
+              "control_mean_net_pct": -1.2426,
+              "candidate_mean_net_pct": -1.3481,
+              "control_total_net_pct": -12.426,
+              "candidate_total_net_pct": -13.481,
+              "control_win_rate": 0.1,
+              "candidate_win_rate": 0.0,
+              "delta_win_rate": -0.1,
+              "control_median_mae_pct": -1.3784,
+              "candidate_median_mae_pct": -1.5074,
+              "control_median_mfe_pct": 0.1102,
+              "candidate_median_mfe_pct": 0.1102,
+              "paired_delta": {
+                "n": 10,
+                "mean": -0.1055,
+                "median": 0.0,
+                "sign_test": {
+                  "n": 9,
+                  "n_pos": 5,
+                  "n_neg": 4,
+                  "n_zero": 1,
+                  "p_value": 1.0
+                },
+                "signed_rank": {
+                  "n": 9,
+                  "w": 27.0,
+                  "z": 0.4739,
+                  "p_value": 0.635586
+                },
+                "bootstrap": {
+                  "point": -0.1055,
+                  "lo": -0.387,
+                  "hi": 0.0705,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "ETH/USDT 4h",
+        "control_arm": {
+          "trades": 0,
+          "entries": 0,
+          "win_rate": null,
+          "mean_net_pct": null,
+          "total_net_pct": null,
+          "total_return_pct": 0.0,
+          "max_drawdown_pct": 0.0,
+          "sharpe": 0.0,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 0,
+          "entries": 0,
+          "win_rate": null,
+          "mean_net_pct": null,
+          "total_net_pct": null,
+          "total_return_pct": 0.0,
+          "max_drawdown_pct": 0.0,
+          "sharpe": 0.0,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": null,
+          "lo": null,
+          "hi": null,
+          "n_resamples": 0
+        },
+        "paired_diag": {
+          "schedule_entries": 0,
+          "paired": 0,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": null
+      },
+      {
+        "dataset": "SOL/USDT 1h",
+        "control_arm": {
+          "trades": 15,
+          "entries": 9,
+          "win_rate": 0.6667,
+          "mean_net_pct": 0.0249,
+          "total_net_pct": 0.2241,
+          "total_return_pct": 0.17,
+          "max_drawdown_pct": -2.38,
+          "sharpe": 0.095,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 13,
+          "entries": 9,
+          "win_rate": 0.5556,
+          "mean_net_pct": -0.0984,
+          "total_net_pct": -0.8859,
+          "total_return_pct": -0.98,
+          "max_drawdown_pct": -3.35,
+          "sharpe": -0.237,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": -0.123333,
+          "lo": -1.256667,
+          "hi": 1.034,
+          "n_resamples": 10000
+        },
+        "paired_diag": {
+          "schedule_entries": 9,
+          "paired": 9,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 9,
+            "control_mean_net_pct": 0.0249,
+            "candidate_mean_net_pct": -0.0984,
+            "control_total_net_pct": 0.2241,
+            "candidate_total_net_pct": -0.8859,
+            "control_win_rate": 0.6667,
+            "candidate_win_rate": 0.5556,
+            "delta_win_rate": -0.1111,
+            "control_median_mae_pct": -0.8156,
+            "candidate_median_mae_pct": -1.3651,
+            "control_median_mfe_pct": 1.2719,
+            "candidate_median_mfe_pct": 1.3234,
+            "paired_delta": {
+              "n": 9,
+              "mean": -0.123333,
+              "median": 0.0,
+              "sign_test": {
+                "n": 9,
+                "n_pos": 5,
+                "n_neg": 4,
+                "n_zero": 0,
+                "p_value": 1.0
+              },
+              "signed_rank": {
+                "n": 9,
+                "w": 23.0,
+                "z": 0.0,
+                "p_value": 1.0
+              },
+              "bootstrap": {
+                "point": -0.123333,
+                "lo": -0.61,
+                "hi": 0.314444,
+                "n_resamples": 10000
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 9,
+              "control_mean_net_pct": 0.0249,
+              "candidate_mean_net_pct": -0.0984,
+              "control_total_net_pct": 0.2241,
+              "candidate_total_net_pct": -0.8859,
+              "control_win_rate": 0.6667,
+              "candidate_win_rate": 0.5556,
+              "delta_win_rate": -0.1111,
+              "control_median_mae_pct": -0.8156,
+              "candidate_median_mae_pct": -1.3651,
+              "control_median_mfe_pct": 1.2719,
+              "candidate_median_mfe_pct": 1.3234,
+              "paired_delta": {
+                "n": 9,
+                "mean": -0.123333,
+                "median": 0.0,
+                "sign_test": {
+                  "n": 9,
+                  "n_pos": 5,
+                  "n_neg": 4,
+                  "n_zero": 0,
+                  "p_value": 1.0
+                },
+                "signed_rank": {
+                  "n": 9,
+                  "w": 23.0,
+                  "z": 0.0,
+                  "p_value": 1.0
+                },
+                "bootstrap": {
+                  "point": -0.123333,
+                  "lo": -0.61,
+                  "hi": 0.314444,
+                  "n_resamples": 10000
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "dataset": "SOL/USDT 4h",
+        "control_arm": {
+          "trades": 2,
+          "entries": 1,
+          "win_rate": 0.0,
+          "mean_net_pct": -0.7901,
+          "total_net_pct": -0.7901,
+          "total_return_pct": -0.79,
+          "max_drawdown_pct": -1.84,
+          "sharpe": -0.729,
+          "liquidated": false
+        },
+        "candidate_arm": {
+          "trades": 2,
+          "entries": 1,
+          "win_rate": 0.0,
+          "mean_net_pct": -0.6701,
+          "total_net_pct": -0.6701,
+          "total_return_pct": -0.67,
+          "max_drawdown_pct": -1.72,
+          "sharpe": -0.619,
+          "liquidated": false
+        },
+        "unpaired_delta_net_pct": {
+          "point": 0.12,
+          "lo": 0.12,
+          "hi": 0.12,
+          "n_resamples": 0
+        },
+        "paired_diag": {
+          "schedule_entries": 1,
+          "paired": 1,
+          "unmatched": 0,
+          "replayable": true
+        },
+        "per_regime": {
+          "all": {
+            "n": 1,
+            "control_mean_net_pct": -0.7901,
+            "candidate_mean_net_pct": -0.6701,
+            "control_total_net_pct": -0.7901,
+            "candidate_total_net_pct": -0.6701,
+            "control_win_rate": 0.0,
+            "candidate_win_rate": 0.0,
+            "delta_win_rate": 0.0,
+            "control_median_mae_pct": -3.143,
+            "candidate_median_mae_pct": -3.143,
+            "control_median_mfe_pct": 2.3213,
+            "candidate_median_mfe_pct": 2.3213,
+            "paired_delta": {
+              "n": 1,
+              "mean": 0.12,
+              "median": 0.12,
+              "sign_test": {
+                "n": 1,
+                "n_pos": 1,
+                "n_neg": 0,
+                "n_zero": 0,
+                "p_value": 1.0
+              },
+              "signed_rank": {
+                "n": 1,
+                "w": 1.0,
+                "z": 0.0,
+                "p_value": 1.0
+              },
+              "bootstrap": {
+                "point": 0.12,
+                "lo": 0.12,
+                "hi": 0.12,
+                "n_resamples": 0
+              }
+            }
+          },
+          "by_regime": {
+            "ranging_volatile": {
+              "n": 1,
+              "control_mean_net_pct": -0.7901,
+              "candidate_mean_net_pct": -0.6701,
+              "control_total_net_pct": -0.7901,
+              "candidate_total_net_pct": -0.6701,
+              "control_win_rate": 0.0,
+              "candidate_win_rate": 0.0,
+              "delta_win_rate": 0.0,
+              "control_median_mae_pct": -3.143,
+              "candidate_median_mae_pct": -3.143,
+              "control_median_mfe_pct": 2.3213,
+              "candidate_median_mfe_pct": 2.3213,
+              "paired_delta": {
+                "n": 1,
+                "mean": 0.12,
+                "median": 0.12,
+                "sign_test": {
+                  "n": 1,
+                  "n_pos": 1,
+                  "n_neg": 0,
+                  "n_zero": 0,
+                  "p_value": 1.0
+                },
+                "signed_rank": {
+                  "n": 1,
+                  "w": 1.0,
+                  "z": 0.0,
+                  "p_value": 1.0
+                },
+                "bootstrap": {
+                  "point": 0.12,
+                  "lo": 0.12,
+                  "hi": 0.12,
+                  "n_resamples": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

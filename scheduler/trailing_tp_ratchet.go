@@ -78,10 +78,17 @@ func defaultTrailingRatchetTiers() []trailingRatchetTier {
 // Each group's first-rung trail couples to that group's opening trail in
 // regimeATRDefaults.Trailing (#1120: clean 2.5 / choppy 2.25 / ranging_quiet 1.0
 // / ranging_volatile 1.25 / ranging_directional* 1.5), so
-// every first rung is <= 1.0 for the ranging substates. The split values are
-// starting priors — validate via the #1058 7-state backtester (item 4) before
-// relying on the exact geometry. Mirrors DEFAULT_RATCHET_TIERS_BY_GROUP in
-// shared_strategies/close/trailing_tp_ratchet.py.
+// every first rung is <= 1.0 for the ranging substates.
+//
+// #1152 validated the ranging split with M6 entry-locked replay
+// (docs/research/1152-ranging-exit-geometry-m6.md): volatile candidates
+// (wider AND tighter) were non-significant in both directions — the middle
+// incumbent stands; the directional let-ride runner survived its inverse
+// check (removing rung 4 lost significantly on 3 datasets in-sample under
+// mean-reversion entries). ranging_quiet is UNEVALUABLE on the audit data
+// (label ~0.2-0.9% of bars, zero gated entries) and keeps its pre-#1059
+// geometry on that documented evidence gap. Mirrors
+// DEFAULT_RATCHET_TIERS_BY_GROUP in shared_strategies/close/trailing_tp_ratchet.py.
 var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 	"clean": {
 		{ATRMultiple: 3.0, CloseFraction: 0, TrailingMultAfter: 1.5},

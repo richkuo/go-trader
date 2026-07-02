@@ -544,6 +544,16 @@ _REPLAYABLE_CLOSE_NAMES = {
     "trailing_stop_atr_mult",
     "trailing_stop_atr_regime",
     "stop_loss_atr_mult",
+    # #1152: the ratchet ladders and the frozen-at-open regime TP are
+    # self-contained — they fire off price/ATR/the regime label stamped at open
+    # (a pure function of bar data the replay preserves), never off later
+    # signals, so the single-entry replay isolates them faithfully. The
+    # per-tick re-resolution variants (tiered_tp_atr_live_regime*) stay out:
+    # _dynamic is HL-live-only (load_strategy_config rejects it) and the plain
+    # live_regime variant has no validation run behind it yet.
+    "trailing_tp_ratchet",
+    "trailing_tp_ratchet_regime",
+    "tiered_tp_atr_regime",
 }
 
 
