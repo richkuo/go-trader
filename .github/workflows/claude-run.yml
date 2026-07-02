@@ -1,0 +1,243 @@
+name: Claude Code run
+
+# Reusable body shared by the review and implement jobs in claude.yml (#1178).
+# The GITHUB_TOKEN permissions are NOT declared here on purpose: a called
+# workflow inherits the caller job's permissions, so the least-privilege
+# review job and the write-capable implement job differ only at the call
+# site. Mode-dependent behavior inside:
+#   - review:    the agent is bound to the job-scoped token via github_token
+#                (with app auth, its push power would come from the Claude
+#                GitHub App installation token, which the job permissions do
+#                not cap), the Bash allowlist drops commit/push rules, and
+#                comments post as github-actions[bot].
+#   - implement: app auth (claude[bot]) with contents: write, plus the
+#                CLAUDE.md-revision follow-up when commits were made.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'review or implement'
+        required: true
+        type: string
+      model_id:
+        description: 'Resolved model id for claude_args'
+        required: true
+        type: string
+      effort:
+        description: 'Resolved effort level for claude_args'
+        required: true
+        type: string
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Bound hung runs (GitHub default is 360 minutes); recorded runs peak at 15.
+    timeout-minutes: 45
+    env:
+      CLAUDE_HARNESS: anthropics/claude-code-action@v1
+      # With github_token bound (review mode) the agent's comments post as
+      # github-actions[bot]; the comment-patch steps must target that author.
+      BOT_LOGIN: ${{ inputs.mode == 'review' && 'github-actions[bot]' || 'claude[bot]' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Set up Python (uv)
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --extra test
+
+      - name: Clean up lockfile changes before Claude checkout
+        run: git checkout -- uv.lock
+
+      - name: Record HEAD sha before Claude runs
+        if: inputs.mode == 'implement'
+        id: pre_claude
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          BASELINE_SHA="$PR_HEAD_SHA"
+          if [ -z "$BASELINE_SHA" ] && [ -n "$ISSUE_NUMBER" ]; then
+            BASELINE_SHA=$(gh pr view "$ISSUE_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null || true)
+          fi
+          if [ -z "$BASELINE_SHA" ]; then
+            BASELINE_SHA=$(git rev-parse HEAD)
+          fi
+          echo "sha=$BASELINE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Compose review prompt
+        id: compose_prompt
+        env:
+          MODEL_ID: ${{ inputs.model_id }}
+          EFFORT: ${{ inputs.effort }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          # Single source of truth for the PR-review output contract lives in
+          # .github/prompts/pr-review-format.md (pure prompt text). Flatten it to
+          # one line and inject as --append-system-prompt. The allowedTools list
+          # is workflow capability (not review format), so it stays here.
+          PROMPT=$(tr '\n' ' ' < .github/prompts/pr-review-format.md | sed -e 's/[[:space:]]\{2,\}/ /g' -e 's/^ *//' -e 's/ *$//')
+          # claude_args is shell-evaluated downstream: a double quote breaks the
+          # quoting, and a backtick or dollar sign would expand or execute.
+          if printf '%s' "$PROMPT" | grep -q '["`$]'; then
+            echo "::error::pr-review-format.md must not contain double quotes, backticks, or dollar signs (claude_args is shell-evaluated)."
+            exit 1
+          fi
+          # git/gh are narrowed as defense-in-depth, not a hard boundary: an
+          # allowed interpreter (python3, go, uv run) can still shell out to
+          # gh/git directly. The hard boundary is the job token (#1178): the
+          # review job binds the agent to a contents: read token, so a
+          # prompt-injected diff cannot push or merge even through an
+          # interpreter. Within the allowlist: push rules are exact-match (no
+          # trailing wildcard), so a refspec (HEAD:main) or --force does not
+          # match, and gh api is dropped entirely (its --method flag reaches
+          # every mutating endpoint). No CI readers (gh pr checks / gh run *):
+          # reviews intentionally do not gate on CI, which outlasts the review.
+          ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr comment*),Bash(gh issue view*)'
+          # Only the implement job may mutate history; review runs never
+          # commit or push, so those rules stay off its allowlist.
+          if [ "$MODE" = "implement" ]; then
+            ALLOWED="$ALLOWED,Bash(git add*),Bash(git commit*),Bash(git push origin HEAD),Bash(git push -u origin HEAD),Bash(git push --set-upstream origin HEAD)"
+          fi
+          ARGS="--model ${MODEL_ID} --effort ${EFFORT} --append-system-prompt \"${PROMPT}\" --allowedTools \"${ALLOWED}\""
+          {
+            printf 'claude_args<<CLAUDE_ARGS_EOF\n'
+            printf '%s\n' "$ARGS"
+            printf 'CLAUDE_ARGS_EOF\n'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # Review runs are bound to the job-scoped token (contents: read) so
+          # a prompt-injected diff cannot push/merge; an empty string is
+          # equivalent to unset, so implement runs keep Claude App auth,
+          # whose token the action mints via OIDC (#1178).
+          github_token: ${{ inputs.mode == 'review' && github.token || '' }}
+
+          # Allow Claude's own bot user to trigger reviews on its own PRs
+          allowed_bots: 'claude'
+
+          # Show full output in the job summary (important for code review results)
+          show_full_output: true
+
+          # Load the code-review plugin so @claude review uses structured review skill
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+
+          # Optional: Add claude_args to customize behavior and configuration
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
+          claude_args: ${{ steps.compose_prompt.outputs.claude_args }}
+
+      - name: Fail if Claude Code returned an error
+        if: steps.claude.outcome == 'success'
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          if [ -z "$EXECUTION_FILE" ] || [ ! -f "$EXECUTION_FILE" ]; then
+            echo "::error::Claude Code execution output file is missing."
+            exit 1
+          fi
+
+          RESULT=$(jq -s '
+            def records:
+              .[] | if type == "array" then .[] else . end;
+            [records | select(type == "object" and .type == "result")] | last // {}
+          ' "$EXECUTION_FILE")
+          IS_ERROR=$(printf '%s' "$RESULT" | jq -r '.is_error // false')
+          if [ "$IS_ERROR" = "true" ]; then
+            API_STATUS=$(printf '%s' "$RESULT" | jq -r '.api_error_status // empty')
+            MESSAGE=$(printf '%s' "$RESULT" | jq -r '.result // "Claude Code reported an error."')
+            if [ -n "$API_STATUS" ]; then
+              echo "::error::Claude Code failed with API status ${API_STATUS}: ${MESSAGE}"
+            else
+              echo "::error::Claude Code failed: ${MESSAGE}"
+            fi
+            exit 1
+          fi
+
+      - name: Detect if Claude made commits
+        if: inputs.mode == 'implement' && steps.claude.outcome == 'success'
+        id: claude_changes
+        env:
+          PRE_SHA: ${{ steps.pre_claude.outputs.sha }}
+        run: |
+          git fetch --quiet origin "$GITHUB_REF_NAME" 2>/dev/null || true
+          CURRENT_SHA=$(git rev-parse HEAD)
+          if [ "$PRE_SHA" != "$CURRENT_SHA" ] || ! git diff --quiet || [ -n "$(git status --porcelain)" ]; then
+            echo "made_commits=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "made_commits=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Claude made no code changes — skipping CLAUDE.md revision."
+          fi
+
+      - name: Revise CLAUDE.md with session learnings
+        if: inputs.mode == 'implement' && steps.claude.outcome == 'success' && steps.claude_changes.outputs.made_commits == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Use the Skill tool to invoke the 'claude-md-management:revise-claude-md' skill. Review the changes made in this session (use git log and git diff to inspect them) and update CLAUDE.md with any new patterns, conventions, or important context learned. If you modified CLAUDE.md, you MUST persist it: commit it on the current branch following the repository commit conventions and push with git push origin HEAD — an uncommitted edit is discarded when this job ends."
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-code.git
+            https://github.com/anthropics/claude-plugins-official.git
+          plugins: |
+            code-review@claude-code-plugins
+            claude-md-management@claude-plugins-official
+          claude_args: --model ${{ inputs.model_id }} --effort ${{ inputs.effort }} --allowedTools "Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git add*),Bash(git commit*),Bash(git push origin HEAD),Edit,Read,Grep,Glob,Write"
+
+      # Footer composition and comment patching live in .github/scripts
+      # (patch_claude_comment.sh + compose_claude_comment.py) — shared with the
+      # cancellation/failure step below and unit-tested. BOT_LOGIN (job env)
+      # targets github-actions[bot] in review mode, claude[bot] otherwise.
+      - name: Append LLM footer to Claude comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODEL_ID: ${{ inputs.model_id }}
+          EFFORT: ${{ inputs.effort }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/patch_claude_comment.sh
+
+      - name: Mark cancellation for downstream status note
+        if: always() && cancelled()
+        run: echo "IS_CANCELLED=true" >> "$GITHUB_ENV"
+
+      - name: Note workflow cancellation/failure on Claude comment
+        if: always() && (cancelled() || failure())
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODEL_ID: ${{ inputs.model_id }}
+          EFFORT: ${{ inputs.effort }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # A failure before (or during) checkout leaves no scripts to run with.
+          if [ ! -f .github/scripts/patch_claude_comment.sh ]; then
+            echo "::notice::Checkout unavailable — cannot patch the Claude comment."
+            exit 0
+          fi
+
+          if [ "${IS_CANCELLED:-}" = "true" ]; then
+            STATUS_NOTE="**Workflow cancelled before completion.** See [run log]($RUN_URL)."
+          else
+            STATUS_NOTE="**Workflow failed before completion.** See [run log]($RUN_URL)."
+          fi
+          export STATUS_NOTE
+
+          bash .github/scripts/patch_claude_comment.sh
