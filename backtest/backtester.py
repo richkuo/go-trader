@@ -1539,6 +1539,11 @@ class Backtester:
             std = roll.std(ddof=0)
             zscore_series = (closes - roll.mean()) / std.replace(0.0, float("nan"))
 
+        # #1196: the open strategy's anchored VWAP line for avwap_stop. Same
+        # current-bar end-of-bar access contract as ATR below; the column is
+        # causal (the AVWAP anchor at bar b uses only pivots confirmed by b).
+        avwap_series = df["avwap"] if "avwap" in df.columns else None
+
         atr_series = df["atr"] if "atr" in df.columns else None
         # An ATR-multiple stop/trail needs an `atr` series to stamp entry_atr;
         # without it the stop silently no-ops (entry_atr stays 0). Strategies that
@@ -2076,6 +2081,7 @@ class Backtester:
                         market_regime=_bar_close_regime(row),
                         bars_held=hold.bars,
                         zscore_series=zscore_series,
+                        avwap_series=avwap_series,
                     )
                     if (
                         trailing_ratchet_active
@@ -2454,7 +2460,8 @@ class Backtester:
                                    position_regime: str = "",
                                    market_regime: str = "",
                                    bars_held: int = 0,
-                                   zscore_series: Optional[pd.Series] = None
+                                   zscore_series: Optional[pd.Series] = None,
+                                   avwap_series: Optional[pd.Series] = None
                                    ) -> Tuple[float, str]:
         """Run every configured close evaluator against the simulated position
         and return ``(max close_fraction, reason of the winning evaluator)``.
@@ -2510,6 +2517,17 @@ class Backtester:
                 z = float("nan")
             if z == z:  # not NaN
                 market_dict["zscore"] = z
+
+        # #1196: live re-anchored AVWAP for avwap_stop. Current-bar (closed)
+        # value, same N-close -> N+1-open fill alignment as ATR above. NaN
+        # warmup rows (pre-anchor) are omitted so the evaluator no-ops on them.
+        if avwap_series is not None:
+            try:
+                avwap_value = float(avwap_series.loc[idx])
+            except (KeyError, TypeError, ValueError):
+                avwap_value = float("nan")
+            if avwap_value == avwap_value and avwap_value > 0:
+                market_dict["avwap"] = avwap_value
 
         best = 0.0
         best_reason = ""

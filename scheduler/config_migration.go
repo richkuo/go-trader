@@ -588,6 +588,11 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"time_stop":     {"max_bars": {}},
 	"atr_stop":      {"atr_mult": {}, "atr_source": {}},
 	"zscore_target": {"lookback": {}, "z_target": {}},
+	// #1196 AVWAP loss-of-line exit. Post-v13 (no legacy migration story);
+	// listed for the Python registry mirror test + unknown-key hints. Virtual
+	// exit only — never added to the on-chain TP sets in
+	// hyperliquid_protection.go (the line moves every bar; no static trigger).
+	"avwap_stop": {"buffer_atr_mult": {}, "atr_source": {}},
 }
 
 // migrateV14Direction translates the legacy boolean `allow_shorts` field on

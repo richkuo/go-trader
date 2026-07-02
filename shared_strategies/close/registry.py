@@ -25,6 +25,7 @@ from tiered_tp_pct import evaluate as tiered_tp_pct_evaluate
 from time_stop import evaluate as time_stop_evaluate
 from atr_stop import evaluate as atr_stop_evaluate
 from zscore_target import evaluate as zscore_target_evaluate
+from avwap_stop import evaluate as avwap_stop_evaluate
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures", "options")
 
@@ -186,3 +187,12 @@ register(
     "Z-score target exit — full close when price stretches z_target sigma in favour (default-off; needs zscore context)",
     {"lookback": 0, "z_target": 0.0},
 )(zscore_target_evaluate)
+
+# #1196 AVWAP loss-of-line exit. Reads market["avwap"] — the live re-anchored
+# line injected from the AVWAP-family open strategy's own `avwap` column by
+# evaluate_open_close (live) and the backtester; fails safe (no-op) without it.
+register(
+    "avwap_stop",
+    "AVWAP loss-of-line exit — full close when the mark breaches the anchored VWAP by buffer_atr_mult ATR (needs market avwap context; atr_source: live|entry)",
+    {"buffer_atr_mult": 0.25, "atr_source": "live"},
+)(avwap_stop_evaluate)

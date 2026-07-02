@@ -554,3 +554,91 @@ def test_seeded_position_without_entry_atr_stop_stays_unarmed():
     # Rides to the forced end-of-run close at 95 — exactly one forced close.
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_date"] == str(idx[-1])
+
+
+# --------------------------------------------------------------------------
+# #1196 avwap_stop — loss-of-line exit against the df's `avwap` column
+# --------------------------------------------------------------------------
+
+def _df_avwap_hold(opens, closes, avwaps, atrs):
+    n = len(closes)
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    return pd.DataFrame({
+        "open": opens, "close": closes,
+        "open_action": ["long"] + ["none"] * (n - 1),
+        "avwap": avwaps, "atr": atrs,
+    }, index=idx)
+
+
+def test_avwap_stop_fires_on_loss_of_line():
+    # Opens at bar 1's open ($100). Bar 2 closes at 95, below
+    # avwap(100) - 0.5*atr(2) = 99 → evaluator fires end of bar 2,
+    # filled at bar 3's open ($95).
+    df = _df_avwap_hold(
+        opens=[100, 100, 100, 95, 95],
+        closes=[100, 100, 95, 95, 95],
+        avwaps=[100.0] * 5,
+        atrs=[2.0] * 5,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["entry_price"] == 100.0
+    assert result["trades"][0]["exit_price"] == 95.0
+
+
+def test_avwap_stop_holds_above_buffered_line():
+    # Close never breaches avwap - buffer → held to the final bar.
+    df = _df_avwap_hold(
+        opens=[100, 100, 100, 100, 100],
+        closes=[100, 100, 99.5, 99.5, 99.5],
+        avwaps=[100.0] * 5,
+        atrs=[2.0] * 5,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 99.5
+
+
+def test_avwap_stop_noops_without_avwap_column():
+    # No avwap column → market["avwap"] never injected → evaluator no-ops
+    # (fail-safe) and the position rides to the end.
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 95, 95],
+        closes=[100, 100, 95, 95, 95],
+        atrs=[2.0] * 5,
+    )
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    # Exit reason is the end-of-data close, not the evaluator.
+    assert "avwap_stop" not in str(result["trades"][0].get("exit_reason", ""))
+
+
+def test_avwap_stop_short_side_fires_on_reclaim():
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 105, 105],
+        "close": [100, 100, 105, 105, 105],
+        "open_action": ["short"] + ["none"] * 4,
+        "avwap": [100.0] * 5,
+        "atr": [2.0] * 5,
+    }, index=pd.date_range("2024-01-01", periods=5, freq="D"))
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["side"] == "short"
+    assert result["trades"][0]["exit_price"] == 105.0

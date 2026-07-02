@@ -333,6 +333,18 @@ def evaluate_open_close(
     open_signal = _last_signal(open_result)
     close_evals: list[CloseEvaluation] = []
     market = market_ctx if market_ctx is not None else _default_market_ctx(df)
+    # #1196: expose the open strategy's anchored VWAP line (last closed bar) to
+    # close evaluators as market["avwap"], so avwap_stop exits against the same
+    # line the entry was built on. NaN (pre-anchor warmup) and non-positive
+    # values are skipped — the evaluator no-ops without the key. Copy-on-write
+    # so the caller's market_ctx dict is never mutated.
+    if not open_result.empty and "avwap" in open_result.columns:
+        try:
+            avwap_value = float(open_result["avwap"].iloc[-1])
+        except (TypeError, ValueError):
+            avwap_value = float("nan")
+        if avwap_value == avwap_value and avwap_value > 0:
+            market = {**market, "avwap": avwap_value}
     for name in close_names:
         resolved, _ = rewrite_deprecated_close_ref(name, None)
         # #640: per-close params arrive via close_params_by_name (carried on the

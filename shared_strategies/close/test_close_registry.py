@@ -33,6 +33,7 @@ def test_build_close_registry_filters_valid_platforms(registry):
             "time_stop",
             "atr_stop",
             "zscore_target",
+            "avwap_stop",
         }
 
 

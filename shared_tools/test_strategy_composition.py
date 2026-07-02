@@ -254,3 +254,79 @@ def test_tp_at_pct_position_aware_close_handles_missing_and_hit():
     )
     assert hit["close_fraction"] == 1.0
     assert hit["reason"] == "tiered_tp_pct:0.05"
+
+
+def test_evaluate_open_close_injects_avwap_from_open_result():
+    # #1196: the open strategy's `avwap` column (last bar) is exposed to close
+    # evaluators as market["avwap"] so avwap_stop exits against the same line
+    # the entry was built on.
+    captured = []
+    df = pd.DataFrame({"close": [100, 106]})
+
+    def get_strategy(name):
+        pass
+
+    def apply_strategy(name, data, params=None):
+        result = data.copy()
+        result["signal"] = [0, 0]
+        result["avwap"] = [float("nan"), 101.5]
+        return result
+
+    def close_evaluate(name, position, market, params=None):
+        captured.append(dict(market))
+        return {"close_fraction": 0.0, "reason": "noop"}
+
+    caller_market = {"mark_price": 106}
+    evaluate_open_close(
+        apply_strategy,
+        get_strategy,
+        df,
+        positional_strategy="legacy",
+        open_strategy="open",
+        close_strategies=["avwap_stop"],
+        position_side="long",
+        position_ctx={"side": "long", "avg_cost": 100, "current_quantity": 1.0},
+        close_evaluate=close_evaluate,
+        market_ctx=caller_market,
+    )
+    assert captured == [{"mark_price": 106, "avwap": 101.5}]
+    # The caller's market_ctx dict is never mutated.
+    assert caller_market == {"mark_price": 106}
+
+
+def test_evaluate_open_close_skips_avwap_when_nan_or_absent():
+    captured = []
+    df = pd.DataFrame({"close": [100, 106]})
+
+    def get_strategy(name):
+        pass
+
+    def close_evaluate(name, position, market, params=None):
+        captured.append(dict(market))
+        return {"close_fraction": 0.0, "reason": "noop"}
+
+    def apply_nan_avwap(name, data, params=None):
+        result = data.copy()
+        result["signal"] = [0, 0]
+        result["avwap"] = [float("nan"), float("nan")]
+        return result
+
+    evaluate_open_close(
+        apply_nan_avwap, get_strategy, df,
+        positional_strategy="legacy", open_strategy="open",
+        close_strategies=["avwap_stop"], position_side="long",
+        close_evaluate=close_evaluate, market_ctx={"mark_price": 106},
+    )
+
+    def apply_no_avwap(name, data, params=None):
+        result = data.copy()
+        result["signal"] = [0, 0]
+        return result
+
+    evaluate_open_close(
+        apply_no_avwap, get_strategy, df,
+        positional_strategy="legacy", open_strategy="open",
+        close_strategies=["avwap_stop"], position_side="long",
+        close_evaluate=close_evaluate, market_ctx={"mark_price": 106},
+    )
+    assert captured == [{"mark_price": 106}, {"mark_price": 106}]
