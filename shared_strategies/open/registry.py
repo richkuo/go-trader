@@ -56,6 +56,7 @@ from vwap_rejection_st import vwap_rejection_st_core
 from vol_momentum import vol_momentum_core
 from anchored_vwap import anchored_vwap_core
 from anchored_vwap_channel import anchored_vwap_channel_core
+from anchored_vwap_reversion import anchored_vwap_reversion_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -1156,6 +1157,21 @@ def anchored_vwap_channel_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "anchored_vwap_reversion",
+    "Anchored VWAP Reversion — fades an ATR-measured stretch beyond the pivot-anchored VWAP; long a buffered snap-back from below the band, short the mirror above",
+    {
+        "pivot_strength": 5,
+        "entry_atr_mult": 1.5,
+        "buffer_atr_mult": 0.25,
+        "confirm_bars": 2,
+        "atr_period": 14,
+    },
+)
+def anchored_vwap_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return anchored_vwap_reversion_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1333,7 +1349,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "rsi_macd_combo", "stoch_rsi", "supertrend", "ichimoku_cloud",
         "pairs_spread", "squeeze_momentum", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "anchored_vwap",
-        "anchored_vwap_channel", "chart_pattern",
+        "anchored_vwap_channel", "anchored_vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
         "momentum_pro", "mean_reversion_pro", "atr_band_revert", "mtf_confluence",
@@ -1346,7 +1362,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "mean_reversion", "rsi", "macd", "breakout", "stoch_rsi", "supertrend",
         "squeeze_momentum", "ichimoku_cloud", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "anchored_vwap",
-        "anchored_vwap_channel", "chart_pattern",
+        "anchored_vwap_channel", "anchored_vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",

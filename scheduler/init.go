@@ -35,54 +35,55 @@ type stratDef struct {
 
 // knownShortNames maps strategy IDs to abbreviated config ID prefixes.
 var knownShortNames = map[string]string{
-	"sma_crossover":         "sma",
-	"ema_crossover":         "ema",
-	"momentum":              "momentum",
-	"rsi":                   "rsi",
-	"bollinger_bands":       "bb",
-	"macd":                  "macd",
-	"mean_reversion":        "mr",
-	"volume_weighted":       "vw",
-	"triple_ema":            "tema",
-	"triple_ema_bidir":      "temab",
-	"tema_cross":            "temac",
-	"tema_cross_bd":         "temacb",
-	"rsi_macd_combo":        "rmc",
-	"vol_mean_reversion":    "vol",
-	"momentum_options":      "mom",
-	"protective_puts":       "pput",
-	"covered_calls":         "ccall",
-	"breakout":              "bo",
-	"atr_breakout":          "atrbo",
-	"stoch_rsi":             "stochrsi",
-	"ichimoku_cloud":        "ichi",
-	"order_blocks":          "ob",
-	"vwap_reversion":        "vwap",
-	"anchored_vwap":         "avwap",
-	"anchored_vwap_channel": "avwapch",
-	"chart_pattern":         "cpat",
-	"liquidity_sweeps":      "liqsw",
-	"parabolic_sar":         "psar",
-	"delta_neutral_funding": "dnf",
-	"funding_skew":          "fskew",
-	"supertrend":            "st",
-	"squeeze_momentum":      "sqm",
-	"heikin_ashi_ema":       "hae",
-	"range_scalper":         "rs",
-	"sweep_squeeze_combo":   "ssc",
-	"adx_trend":             "adxt",
-	"donchian_breakout":     "dbo",
-	"session_breakout":      "sbo",
-	"bear_pullback_st":      "bps",
-	"vwap_rejection_st":     "vrs",
-	"momentum_pro":          "mompro",
-	"mean_reversion_pro":    "mrpro",
-	"consolidation_range":   "cr",
-	"atr_band_revert":       "abr",
-	"mtf_confluence":        "mtfc",
-	"vol_momentum":          "volmom",
-	"regime_adaptive":       "regad",
-	"regime_adaptive_htf":   "rahtf",
+	"sma_crossover":           "sma",
+	"ema_crossover":           "ema",
+	"momentum":                "momentum",
+	"rsi":                     "rsi",
+	"bollinger_bands":         "bb",
+	"macd":                    "macd",
+	"mean_reversion":          "mr",
+	"volume_weighted":         "vw",
+	"triple_ema":              "tema",
+	"triple_ema_bidir":        "temab",
+	"tema_cross":              "temac",
+	"tema_cross_bd":           "temacb",
+	"rsi_macd_combo":          "rmc",
+	"vol_mean_reversion":      "vol",
+	"momentum_options":        "mom",
+	"protective_puts":         "pput",
+	"covered_calls":           "ccall",
+	"breakout":                "bo",
+	"atr_breakout":            "atrbo",
+	"stoch_rsi":               "stochrsi",
+	"ichimoku_cloud":          "ichi",
+	"order_blocks":            "ob",
+	"vwap_reversion":          "vwap",
+	"anchored_vwap":           "avwap",
+	"anchored_vwap_channel":   "avwapch",
+	"anchored_vwap_reversion": "avwaprev",
+	"chart_pattern":           "cpat",
+	"liquidity_sweeps":        "liqsw",
+	"parabolic_sar":           "psar",
+	"delta_neutral_funding":   "dnf",
+	"funding_skew":            "fskew",
+	"supertrend":              "st",
+	"squeeze_momentum":        "sqm",
+	"heikin_ashi_ema":         "hae",
+	"range_scalper":           "rs",
+	"sweep_squeeze_combo":     "ssc",
+	"adx_trend":               "adxt",
+	"donchian_breakout":       "dbo",
+	"session_breakout":        "sbo",
+	"bear_pullback_st":        "bps",
+	"vwap_rejection_st":       "vrs",
+	"momentum_pro":            "mompro",
+	"mean_reversion_pro":      "mrpro",
+	"consolidation_range":     "cr",
+	"atr_band_revert":         "abr",
+	"mtf_confluence":          "mtfc",
+	"vol_momentum":            "volmom",
+	"regime_adaptive":         "regad",
+	"regime_adaptive_htf":     "rahtf",
 }
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
@@ -90,24 +91,25 @@ var knownShortNames = map[string]string{
 // set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
-	"triple_ema_bidir":      true,
-	"tema_cross_bd":         true,
-	"session_breakout":      true,
-	"donchian_breakout":     true, // emits short on lower-channel breakdown (#649)
-	"chart_pattern":         true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
-	"liquidity_sweeps":      true, // emits short on stop-hunt wicks above swing highs (#649)
-	"bear_pullback_st":      true, // dedicated short-only strategy for bear-market rally rejections (#651)
-	"vwap_rejection_st":     true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
-	"anchored_vwap":         true, // single-AVWAP S/R flip; emits short on a buffered breakdown below the line (#1016)
-	"anchored_vwap_channel": true, // dual-AVWAP channel; emits short on a buffered rejection off the resistance line (#1169)
-	"momentum_pro":          true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
-	"mean_reversion_pro":    true, // emits short on overbought reversion in no-trend regimes
-	"consolidation_range":   true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
-	"atr_band_revert":       true, // futures variant (allow_short) shorts the upper ATR band in ranging conditions
-	"mtf_confluence":        true, // futures variant (allow_short) shorts LTF pullback rallies in HTF downtrends (#957)
-	"vol_momentum":          true, // emits short on ATR-normalized negative momentum with efficiency confirmation (#959)
-	"funding_skew":          true, // shorts crowded-long funding extremes on EMA breakdown (#960)
-	"regime_adaptive":       true, // futures variant (allow_short) shorts clean downtrend breakouts and fades range tops (#958)
+	"triple_ema_bidir":        true,
+	"tema_cross_bd":           true,
+	"session_breakout":        true,
+	"donchian_breakout":       true, // emits short on lower-channel breakdown (#649)
+	"chart_pattern":           true, // emits short on bearish patterns (double top, H&S, bear flag) (#649)
+	"liquidity_sweeps":        true, // emits short on stop-hunt wicks above swing highs (#649)
+	"bear_pullback_st":        true, // dedicated short-only strategy for bear-market rally rejections (#651)
+	"vwap_rejection_st":       true, // dedicated short-only strategy for VWAP/EMA rally rejections in bearish regime (#652)
+	"anchored_vwap":           true, // single-AVWAP S/R flip; emits short on a buffered breakdown below the line (#1016)
+	"anchored_vwap_channel":   true, // dual-AVWAP channel; emits short on a buffered rejection off the resistance line (#1169)
+	"anchored_vwap_reversion": true, // single-AVWAP stretch fade; emits short on a buffered snap-back from above the band (#1170)
+	"momentum_pro":            true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
+	"mean_reversion_pro":      true, // emits short on overbought reversion in no-trend regimes
+	"consolidation_range":     true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
+	"atr_band_revert":         true, // futures variant (allow_short) shorts the upper ATR band in ranging conditions
+	"mtf_confluence":          true, // futures variant (allow_short) shorts LTF pullback rallies in HTF downtrends (#957)
+	"vol_momentum":            true, // emits short on ATR-normalized negative momentum with efficiency confirmation (#959)
+	"funding_skew":            true, // shorts crowded-long funding extremes on EMA breakdown (#960)
+	"regime_adaptive":         true, // futures variant (allow_short) shorts clean downtrend breakouts and fades range tops (#958)
 }
 
 func isBidirectionalPerpsStrategy(id string) bool {
@@ -127,6 +129,9 @@ var strategiesDefaultingToCompositeRangingGate = map[string][]string{
 	// anchored_vwap_channel fades both edges of an AVWAP channel — the same
 	// range-edge mean-reversion class, gated for the same reason (#1169).
 	"anchored_vwap_channel": {"ranging_quiet", "ranging_volatile"},
+	// anchored_vwap_reversion fades ATR-measured stretches beyond the anchored
+	// line — same mean-reversion class, gated for the same reason (#1170).
+	"anchored_vwap_reversion": {"ranging_quiet", "ranging_volatile"},
 }
 
 // defaultCompositeRangingGate returns a fresh copy of the default composite
@@ -175,6 +180,7 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
+	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},
@@ -204,6 +210,7 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
+	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
 	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
@@ -229,6 +236,7 @@ var defaultFuturesStrategies = []stratDef{
 	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
+	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "parabolic_sar", ShortName: "psar"},

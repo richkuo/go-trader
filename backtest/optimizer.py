@@ -734,6 +734,12 @@ DEFAULT_PARAM_RANGES = {
         "confirm_bars": [1, 2, 3],
         "min_width_atr_mult": [1.0, 1.5, 2.5],
     },
+    "anchored_vwap_reversion": {
+        "pivot_strength": [3, 5, 8],
+        "entry_atr_mult": [1.0, 1.5, 2.0],
+        "buffer_atr_mult": [0.1, 0.25, 0.5],
+        "confirm_bars": [1, 2, 3],
+    },
     "chart_pattern": {
         "pivot_lookback": [3, 5, 7],
         "tolerance": [0.02, 0.03, 0.05],
