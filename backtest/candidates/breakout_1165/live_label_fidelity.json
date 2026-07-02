@@ -1,0 +1,415 @@
+{
+  "gate": {
+    "label": "trending_up_clean",
+    "period": 21,
+    "lookback": 200,
+    "agreement_threshold": 0.95,
+    "min_agreement_bars": 30
+  },
+  "windows": [
+    "is",
+    "oos"
+  ],
+  "rows": [
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "window": "is",
+      "n_eval_bars": 4921,
+      "label_drift": {
+        "n": 4900,
+        "agreement": 0.9973469387755102,
+        "disagreements": 13,
+        "transitions": {
+          "ranging_volatile->ranging_directional_down": 3,
+          "ranging_volatile->ranging_directional_up": 10
+        }
+      },
+      "adx_drift": {
+        "n": 4900,
+        "mean_abs": 0.07381901106768288,
+        "median_abs": 8.695312613582473e-05,
+        "p95_abs": 0.0005100248961111831,
+        "max_abs": 29.72670461130841,
+        "mean_rel": 0.001989849569357033,
+        "p95_rel": 1.981357542333142e-05,
+        "corr": 0.9948852404400537
+      },
+      "verdict": {
+        "n": 4900,
+        "agreement": 0.9973469387755102,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "window": "oos",
+      "n_eval_bars": 3697,
+      "label_drift": {
+        "n": 3676,
+        "agreement": 0.9983677910772579,
+        "disagreements": 6,
+        "transitions": {
+          "ranging_directional_down->ranging_volatile": 3,
+          "ranging_directional_up->ranging_volatile": 1,
+          "trending_up_choppy->trending_up_clean": 2
+        }
+      },
+      "adx_drift": {
+        "n": 3676,
+        "mean_abs": 0.14515886533535077,
+        "median_abs": 8.642605192399344e-05,
+        "p95_abs": 0.0006675609518449477,
+        "max_abs": 33.59277732033872,
+        "mean_rel": 0.002291142941145596,
+        "p95_rel": 3.261641272208983e-05,
+        "corr": 0.9921550444668995
+      },
+      "verdict": {
+        "n": 3676,
+        "agreement": 0.9983677910772579,
+        "gate_membership_flips": 2,
+        "gate_membership_agreement": 0.999455930359086,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "window": "is",
+      "n_eval_bars": 1231,
+      "label_drift": {
+        "n": 1210,
+        "agreement": 0.9867768595041322,
+        "disagreements": 16,
+        "transitions": {
+          "ranging_directional_down->ranging_volatile": 12,
+          "ranging_directional_up->ranging_volatile": 3,
+          "trending_down_choppy->trending_down_clean": 1
+        }
+      },
+      "adx_drift": {
+        "n": 1210,
+        "mean_abs": 0.4488869550772479,
+        "median_abs": 8.303581788204895e-05,
+        "p95_abs": 0.9561764996343088,
+        "max_abs": 29.114470339063104,
+        "mean_rel": 0.008886290734341818,
+        "p95_rel": 0.02396733600551699,
+        "corr": 0.9736511898591835
+      },
+      "verdict": {
+        "n": 1210,
+        "agreement": 0.9867768595041322,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "window": "oos",
+      "n_eval_bars": 928,
+      "label_drift": {
+        "n": 907,
+        "agreement": 0.9988974641675854,
+        "disagreements": 1,
+        "transitions": {
+          "trending_up_choppy->trending_up_clean": 1
+        }
+      },
+      "adx_drift": {
+        "n": 907,
+        "mean_abs": 0.7850529694738908,
+        "median_abs": 9.125559227030067e-05,
+        "p95_abs": 1.337693091587515,
+        "max_abs": 43.438435753686186,
+        "mean_rel": 0.010907164609939433,
+        "p95_rel": 0.06638612701499635,
+        "corr": 0.9423794053585218
+      },
+      "verdict": {
+        "n": 907,
+        "agreement": 0.9988974641675854,
+        "gate_membership_flips": 1,
+        "gate_membership_agreement": 0.9988974641675854,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "window": "is",
+      "n_eval_bars": 4921,
+      "label_drift": {
+        "n": 4900,
+        "agreement": 0.9979591836734694,
+        "disagreements": 10,
+        "transitions": {
+          "ranging_volatile->ranging_directional_down": 5,
+          "ranging_volatile->ranging_directional_up": 4,
+          "trending_down_choppy->trending_down_clean": 1
+        }
+      },
+      "adx_drift": {
+        "n": 4900,
+        "mean_abs": 0.10988275565502045,
+        "median_abs": 7.467307016106872e-05,
+        "p95_abs": 0.0004220452338493886,
+        "max_abs": 41.25642477693557,
+        "mean_rel": 0.00267838691808798,
+        "p95_rel": 2.1305443735506625e-05,
+        "corr": 0.9900817182683903
+      },
+      "verdict": {
+        "n": 4900,
+        "agreement": 0.9979591836734694,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "window": "oos",
+      "n_eval_bars": 3908,
+      "label_drift": {
+        "n": 3887,
+        "agreement": 0.998970928736815,
+        "disagreements": 4,
+        "transitions": {
+          "ranging_directional_down->ranging_volatile": 3,
+          "ranging_directional_up->ranging_volatile": 1
+        }
+      },
+      "adx_drift": {
+        "n": 3887,
+        "mean_abs": 0.11045137354298959,
+        "median_abs": 8.451907905637768e-05,
+        "p95_abs": 0.0004971992205032193,
+        "max_abs": 24.366347423004164,
+        "mean_rel": 0.0016368629402478245,
+        "p95_rel": 2.4021255700349687e-05,
+        "corr": 0.9957470660827097
+      },
+      "verdict": {
+        "n": 3887,
+        "agreement": 0.998970928736815,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "window": "is",
+      "n_eval_bars": 1231,
+      "label_drift": {
+        "n": 1210,
+        "agreement": 0.9950413223140496,
+        "disagreements": 6,
+        "transitions": {
+          "ranging_volatile->ranging_directional_down": 2,
+          "trending_down_choppy->trending_down_clean": 4
+        }
+      },
+      "adx_drift": {
+        "n": 1210,
+        "mean_abs": 0.2796405492712268,
+        "median_abs": 7.630417681170343e-05,
+        "p95_abs": 0.40710608411610133,
+        "max_abs": 34.89673118163211,
+        "mean_rel": 0.0050123994928374625,
+        "p95_rel": 0.006947481241562653,
+        "corr": 0.9809927580256937
+      },
+      "verdict": {
+        "n": 1210,
+        "agreement": 0.9950413223140496,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "window": "oos",
+      "n_eval_bars": 928,
+      "label_drift": {
+        "n": 907,
+        "agreement": 0.9922822491730982,
+        "disagreements": 7,
+        "transitions": {
+          "trending_down_clean->trending_down_choppy": 1,
+          "trending_up_choppy->trending_up_clean": 6
+        }
+      },
+      "adx_drift": {
+        "n": 907,
+        "mean_abs": 0.5830784755609477,
+        "median_abs": 9.278051771133278e-05,
+        "p95_abs": 0.6869318378736444,
+        "max_abs": 47.184703954865526,
+        "mean_rel": 0.006029858857140124,
+        "p95_rel": 0.027029641286732593,
+        "corr": 0.9499237925158283
+      },
+      "verdict": {
+        "n": 907,
+        "agreement": 0.9922822491730982,
+        "gate_membership_flips": 6,
+        "gate_membership_agreement": 0.9933847850055126,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "window": "is",
+      "n_eval_bars": 4921,
+      "label_drift": {
+        "n": 4900,
+        "agreement": 1.0,
+        "disagreements": 0,
+        "transitions": {}
+      },
+      "adx_drift": {
+        "n": 4900,
+        "mean_abs": 0.05176447773317934,
+        "median_abs": 7.08778162881174e-05,
+        "p95_abs": 0.0004068593084560317,
+        "max_abs": 32.605804610759265,
+        "mean_rel": 0.00045353110845757204,
+        "p95_rel": 1.9071303437680558e-05,
+        "corr": 0.9952166004930632
+      },
+      "verdict": {
+        "n": 4900,
+        "agreement": 1.0,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "window": "oos",
+      "n_eval_bars": 3908,
+      "label_drift": {
+        "n": 3887,
+        "agreement": 0.9981991252894263,
+        "disagreements": 7,
+        "transitions": {
+          "ranging_directional_down->ranging_volatile": 1,
+          "ranging_directional_up->ranging_volatile": 1,
+          "ranging_volatile->ranging_directional_up": 5
+        }
+      },
+      "adx_drift": {
+        "n": 3887,
+        "mean_abs": 0.16463606632778158,
+        "median_abs": 7.804836586444708e-05,
+        "p95_abs": 0.0005099555279322478,
+        "max_abs": 57.51548078646959,
+        "mean_rel": 0.0014978197557275082,
+        "p95_rel": 2.6439110881360282e-05,
+        "corr": 0.9794402927145861
+      },
+      "verdict": {
+        "n": 3887,
+        "agreement": 0.9981991252894263,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "window": "is",
+      "n_eval_bars": 1231,
+      "label_drift": {
+        "n": 1210,
+        "agreement": 0.9983471074380166,
+        "disagreements": 2,
+        "transitions": {
+          "ranging_directional_up->ranging_volatile": 1,
+          "trending_down_choppy->trending_down_clean": 1
+        }
+      },
+      "adx_drift": {
+        "n": 1210,
+        "mean_abs": 0.18711592151190093,
+        "median_abs": 7.841291173349418e-05,
+        "p95_abs": 0.16834707738619403,
+        "max_abs": 30.908796749659068,
+        "mean_rel": 0.0012255172956640078,
+        "p95_rel": 0.002849356835881268,
+        "corr": 0.9775564961434633
+      },
+      "verdict": {
+        "n": 1210,
+        "agreement": 0.9983471074380166,
+        "gate_membership_flips": 0,
+        "gate_membership_agreement": 1.0,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "window": "oos",
+      "n_eval_bars": 928,
+      "label_drift": {
+        "n": 907,
+        "agreement": 0.9933847850055126,
+        "disagreements": 6,
+        "transitions": {
+          "ranging_directional_up->ranging_volatile": 4,
+          "trending_up_choppy->trending_up_clean": 2
+        }
+      },
+      "adx_drift": {
+        "n": 907,
+        "mean_abs": 0.5424899169016445,
+        "median_abs": 8.619717824132067e-05,
+        "p95_abs": 1.3880936079386428,
+        "max_abs": 39.2552359806205,
+        "mean_rel": 0.008687900722925659,
+        "p95_rel": 0.042342147647588216,
+        "corr": 0.9648711565195103
+      },
+      "verdict": {
+        "n": 907,
+        "agreement": 0.9933847850055126,
+        "gate_membership_flips": 2,
+        "gate_membership_agreement": 0.9977949283351709,
+        "passes": true,
+        "blocking_reasons": []
+      }
+    }
+  ],
+  "verdict": {
+    "promote": true,
+    "blocking_reasons": []
+  }
+}
