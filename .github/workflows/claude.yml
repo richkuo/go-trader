@@ -33,9 +33,6 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      # Read-only CI results, so the reviewer can enforce the CI-status LGTM
-      # precondition (gh pr checks / gh run view).
-      actions: read
     steps:
       - name: Verify @claude is an actual invocation (not in a code block or example)
         id: verify_invocation
@@ -179,9 +176,12 @@ jobs:
           # git/gh are narrowed instead of wildcarded: Claude reads untrusted PR
           # content while the job token can write contents and merge PRs, so a
           # prompt-injected diff must not reach gh pr merge or push outside the
-          # working branch (push origin HEAD only). No gh api — its --method
-          # flag reaches every mutating endpoint.
-          ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(git add*),Bash(git commit*),Bash(git push origin HEAD*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr checks*),Bash(gh pr comment*),Bash(gh issue view*),Bash(gh run view*),Bash(gh run list*)'
+          # current branch. The push rules are exact-match (no trailing
+          # wildcard): a refspec (HEAD:main) or --force does not match. No
+          # gh api — its --method flag reaches every mutating endpoint. No CI
+          # readers (gh pr checks / gh run *): reviews intentionally do not
+          # gate on CI, which outlasts the review.
+          ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(git add*),Bash(git commit*),Bash(git push origin HEAD),Bash(git push -u origin HEAD),Bash(git push --set-upstream origin HEAD),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr comment*),Bash(gh issue view*)'
           ARGS="--model ${MODEL_ID} --effort ${EFFORT} --append-system-prompt \"${PROMPT}\" --allowedTools \"${ALLOWED}\""
           {
             printf 'claude_args<<CLAUDE_ARGS_EOF\n'
@@ -268,7 +268,7 @@ jobs:
           plugins: |
             code-review@claude-code-plugins
             claude-md-management@claude-plugins-official
-          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git add*),Bash(git commit*),Bash(git push origin HEAD*),Edit,Read,Grep,Glob,Write"
+          claude_args: --model ${{ steps.resolve_model.outputs.model_id }} --effort ${{ steps.resolve_model.outputs.effort }} --allowedTools "Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git add*),Bash(git commit*),Bash(git push origin HEAD),Edit,Read,Grep,Glob,Write"
 
       # Footer composition and comment patching live in .github/scripts
       # (patch_claude_comment.sh + compose_claude_comment.py) — shared with the
