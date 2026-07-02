@@ -15,6 +15,15 @@ Run (needs the OHLCV cache reachable from shared_tools/):
 
 Parameterized by --symbol/--timeframe so #1083 (multi-asset) can reuse it. Read-only;
 no live or Go path touched. Economic payoff (vs flat-ATR) is #1081, not decided here.
+
+EVIDENCE STATUS (downgraded, #1095 item 4c / PR #1168): the OOS run reported below measured
+the hand-rule incumbent at p=10/201~=0.0498 with n_perm=200 -- a knife-edge pass, flagged as
+such by this script's own knife_edge/permutation_steps_to_alpha audit fields (added in #1160).
+Re-measured at n_perm=1799 in #1095, the incumbent's OOS forward-volatility separation is NOT
+significant: p=0.105 (canonical/funding/volume masks) / p=0.113 (htf/all_enriched masks),
+knife_edge=false. gate_verdict's incumbent_trustworthy check already abstains on an
+untrustworthy incumbent regardless of n_perm, so no runtime behavior changes -- but any reader
+of this script's original evidence should not treat the p=0.0498 result as replicating.
 """
 from __future__ import annotations
 import math
