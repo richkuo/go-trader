@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import sys
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 
@@ -190,6 +191,32 @@ def canonical_close_name(name: str) -> str:
     return _DEPRECATED_CLOSE_NAMES.get(name, name)
 
 
+def close_names_include_avwap_stop(close_names: Iterable[str]) -> bool:
+    """True when ``avwap_stop`` is among the (canonicalized) close names (#1196)."""
+    return any(canonical_close_name(name) == "avwap_stop" for name in close_names)
+
+
+def warn_avwap_stop_missing_context() -> None:
+    """Warn (stderr) that ``avwap_stop`` is configured but has no usable line (#1196 review).
+
+    ``avwap_stop`` no-ops on every bar when the resolved open strategy never
+    emits a positive ``avwap`` value — a misconfiguration such as a typo'd or
+    non-AVWAP open, or an anchor whose warmup never confirms across the run.
+    This fails safe (the engine stop-loss still protects the position) but
+    silently disables the intended exit, so surface it to the operator instead
+    of no-opping in silence. Warn-once is enforced by *call placement* (once per
+    live check subprocess / once per ``Backtester.run``), not by module state —
+    so multiple runs in one process and per-test assertions each see it.
+    """
+    print(
+        "[WARN] close strategy 'avwap_stop' is configured but the open strategy "
+        "produced no usable 'avwap' value; the AVWAP exit can never fire and the "
+        "position is protected only by the engine stop-loss. Verify the open "
+        "strategy is an AVWAP-family strategy that emits an 'avwap' column (#1196).",
+        file=sys.stderr,
+    )
+
+
 def rewrite_deprecated_close_ref(name: str, params: Optional[dict]) -> tuple[str, Optional[dict]]:
     """One-window shim: tp_at_pct → single-tier tiered_tp_pct (#841)."""
     name = (name or "").strip()
@@ -338,6 +365,7 @@ def evaluate_open_close(
     # line the entry was built on. NaN (pre-anchor warmup) and non-positive
     # values are skipped — the evaluator no-ops without the key. Copy-on-write
     # so the caller's market_ctx dict is never mutated.
+    avwap_injected = False
     if not open_result.empty and "avwap" in open_result.columns:
         try:
             avwap_value = float(open_result["avwap"].iloc[-1])
@@ -345,6 +373,13 @@ def evaluate_open_close(
             avwap_value = float("nan")
         if avwap_value == avwap_value and avwap_value > 0:
             market = {**market, "avwap": avwap_value}
+            avwap_injected = True
+    # #1196 review: if avwap_stop is configured but no usable line was injected
+    # (typo'd/non-AVWAP open, or an anchor that never confirmed), the exit can
+    # never fire — warn the operator once per check invocation rather than
+    # no-opping silently. Fails safe either way (engine SL still protects).
+    if not avwap_injected and close_names_include_avwap_stop(close_names):
+        warn_avwap_stop_missing_context()
     for name in close_names:
         resolved, _ = rewrite_deprecated_close_ref(name, None)
         # #640: per-close params arrive via close_params_by_name (carried on the

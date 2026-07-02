@@ -642,3 +642,64 @@ def test_avwap_stop_short_side_fires_on_reclaim():
     assert result["total_trades"] == 1
     assert result["trades"][0]["side"] == "short"
     assert result["trades"][0]["exit_price"] == 105.0
+
+
+# --------------------------------------------------------------------------
+# #1196 review: warn once per run when avwap_stop is configured but the open
+# strategy never produces a usable avwap line (no column / all-NaN).
+# --------------------------------------------------------------------------
+
+_AVWAP_WARN_MARK = "avwap_stop"
+
+
+def _run_avwap_stop_backtest(df, close_strategies):
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=close_strategies,
+    )
+    return bt.run(df, save=False)
+
+
+def test_avwap_stop_warns_once_when_column_absent(capsys):
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 95, 95],
+        closes=[100, 100, 95, 95, 95],
+        atrs=[2.0] * 5,
+    )
+    _run_avwap_stop_backtest(df, [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}])
+    err = capsys.readouterr().err
+    assert err.count(_AVWAP_WARN_MARK) == 1
+
+
+def test_avwap_stop_warns_once_when_column_all_nan(capsys):
+    df = _df_avwap_hold(
+        opens=[100, 100, 100, 95, 95],
+        closes=[100, 100, 95, 95, 95],
+        avwaps=[float("nan")] * 5,
+        atrs=[2.0] * 5,
+    )
+    _run_avwap_stop_backtest(df, [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}])
+    err = capsys.readouterr().err
+    assert err.count(_AVWAP_WARN_MARK) == 1
+
+
+def test_avwap_stop_does_not_warn_when_line_usable(capsys):
+    df = _df_avwap_hold(
+        opens=[100, 100, 100, 95, 95],
+        closes=[100, 100, 95, 95, 95],
+        avwaps=[100.0] * 5,
+        atrs=[2.0] * 5,
+    )
+    _run_avwap_stop_backtest(df, [{"name": "avwap_stop", "params": {"buffer_atr_mult": 0.5}}])
+    err = capsys.readouterr().err
+    assert _AVWAP_WARN_MARK not in err
+
+
+def test_avwap_stop_does_not_warn_when_not_configured(capsys):
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 103, 103],
+        closes=[100, 100, 103, 103, 103],
+    )
+    _run_avwap_stop_backtest(df, [{"name": "tp_at_pct", "params": {"pct": 0.03}}])
+    err = capsys.readouterr().err
+    assert _AVWAP_WARN_MARK not in err

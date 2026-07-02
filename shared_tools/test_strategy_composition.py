@@ -330,3 +330,69 @@ def test_evaluate_open_close_skips_avwap_when_nan_or_absent():
         close_evaluate=close_evaluate, market_ctx={"mark_price": 106},
     )
     assert captured == [{"mark_price": 106}, {"mark_price": 106}]
+
+
+# --------------------------------------------------------------------------
+# #1196 review: warn once when avwap_stop is configured but no usable avwap
+# context is ever produced by the open strategy (the exit can never fire).
+# --------------------------------------------------------------------------
+
+_AVWAP_WARN_MARK = "avwap_stop"
+
+
+def _noop_close_evaluate(name, position, market, params=None):
+    return {"close_fraction": 0.0, "reason": "noop"}
+
+
+def _run_avwap_open_close(apply_strategy, close_strategies):
+    df = pd.DataFrame({"close": [100, 106]})
+    evaluate_open_close(
+        apply_strategy,
+        lambda name: None,
+        df,
+        positional_strategy="legacy",
+        open_strategy="open",
+        close_strategies=close_strategies,
+        position_side="long",
+        close_evaluate=_noop_close_evaluate,
+        market_ctx={"mark_price": 106},
+    )
+
+
+def _apply_with_avwap(values):
+    def _apply(name, data, params=None):
+        result = data.copy()
+        result["signal"] = [0] * len(result)
+        result["avwap"] = values
+        return result
+    return _apply
+
+
+def _apply_without_avwap(name, data, params=None):
+    result = data.copy()
+    result["signal"] = [0] * len(result)
+    return result
+
+
+def test_avwap_stop_warns_once_when_column_absent(capsys):
+    _run_avwap_open_close(_apply_without_avwap, ["avwap_stop"])
+    err = capsys.readouterr().err
+    assert err.count(_AVWAP_WARN_MARK) == 1
+
+
+def test_avwap_stop_warns_once_when_column_all_nan(capsys):
+    _run_avwap_open_close(_apply_with_avwap([float("nan"), float("nan")]), ["avwap_stop"])
+    err = capsys.readouterr().err
+    assert err.count(_AVWAP_WARN_MARK) == 1
+
+
+def test_avwap_stop_does_not_warn_when_avwap_present(capsys):
+    _run_avwap_open_close(_apply_with_avwap([float("nan"), 101.5]), ["avwap_stop"])
+    err = capsys.readouterr().err
+    assert _AVWAP_WARN_MARK not in err
+
+
+def test_avwap_stop_does_not_warn_when_not_configured(capsys):
+    _run_avwap_open_close(_apply_without_avwap, ["tiered_tp_atr_live"])
+    err = capsys.readouterr().err
+    assert _AVWAP_WARN_MARK not in err

@@ -1543,6 +1543,18 @@ class Backtester:
         # current-bar end-of-bar access contract as ATR below; the column is
         # causal (the AVWAP anchor at bar b uses only pivots confirmed by b).
         avwap_series = df["avwap"] if "avwap" in df.columns else None
+        # #1196 review: if avwap_stop is configured but the open strategy never
+        # produces a usable avwap line (no column, or all-NaN/non-positive across
+        # the whole run), the exit can never fire — warn once per run rather than
+        # no-opping silently on every bar. Fails safe either way (engine SL still
+        # protects the position).
+        if self._close_names_include_avwap_stop():
+            avwap_usable = avwap_series is not None and bool(
+                (pd.to_numeric(avwap_series, errors="coerce") > 0).any()
+            )
+            if not avwap_usable:
+                from strategy_composition import warn_avwap_stop_missing_context
+                warn_avwap_stop_missing_context()
 
         atr_series = df["atr"] if "atr" in df.columns else None
         # An ATR-multiple stop/trail needs an `atr` series to stamp entry_atr;
@@ -2449,6 +2461,11 @@ class Backtester:
         if value > 0.5 * entry_price:
             return 0.0
         return value
+
+    def _close_names_include_avwap_stop(self) -> bool:
+        """True when ``avwap_stop`` is among the configured close names (#1196)."""
+        from strategy_composition import close_names_include_avwap_stop
+        return close_names_include_avwap_stop(self.close_strategies)
 
     def _evaluate_close_strategies(self, position: float, avg_cost: float,
                                    initial_quantity: float,
