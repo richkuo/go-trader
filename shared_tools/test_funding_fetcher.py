@@ -120,6 +120,67 @@ def test_partial_fetch_does_not_claim_tail_coverage():
     os.unlink(db)
 
 
+def test_disjoint_fetches_do_not_poison_middle():
+    """#1176 regression: a recent-range fetch followed by a disjoint historical
+    fetch must NOT mark the unfetched middle as covered. The old ledger widened
+    coverage by min/max union across disjoint fetches, so requesting the middle
+    was a false cache hit that returned zero rows (the 2024 funding hole)."""
+    db = _tmp_db()
+    stub = StubAdapter(_BASE_MS, hours=24 * 300)
+    # Recent range first (like live/backtest use), then a disjoint historical
+    # range (like the #1095 "2023" audit window).
+    load_cached_funding("BTC", "2026-07-20", "2026-07-30", adapter=stub, db_path=db)
+    assert stub.calls == 1
+    load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
+    assert stub.calls == 2
+    # The middle was never fetched — it must hit the API, not the cache.
+    middle = load_cached_funding("BTC", "2026-03-01", "2026-03-10",
+                                 adapter=stub, db_path=db)
+    assert stub.calls == 3, "unfetched middle must refetch, not false-cache-hit"
+    assert not middle.empty
+    assert int(middle["timestamp"].iloc[0]) >= _to_ms("2026-03-01")
+    os.unlink(db)
+
+
+def test_adjacent_fetches_merge_into_one_covered_interval():
+    """Back-to-back window fetches (2023 window then 2024 window style) must
+    coalesce: a request spanning the shared boundary is a cache hit."""
+    db = _tmp_db()
+    stub = StubAdapter(_BASE_MS, hours=24 * 20)
+    load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
+    load_cached_funding("BTC", "2026-01-10", "2026-01-20", adapter=stub, db_path=db)
+    assert stub.calls == 2
+    spanning = load_cached_funding("BTC", "2026-01-05", "2026-01-15",
+                                   adapter=stub, db_path=db)
+    assert stub.calls == 2, "range inside two touching fetches must be a cache hit"
+    assert not spanning.empty
+    os.unlink(db)
+
+
+def test_gap_spanning_request_backfills_and_heals_coverage():
+    """A request spanning a real gap between two covered intervals must fetch,
+    and afterwards the whole span (including the former gap) is one covered
+    interval — the repeat request is a cache hit."""
+    db = _tmp_db()
+    stub = StubAdapter(_BASE_MS, hours=24 * 300)
+    load_cached_funding("BTC", "2026-01-01", "2026-01-10", adapter=stub, db_path=db)
+    load_cached_funding("BTC", "2026-07-20", "2026-07-30", adapter=stub, db_path=db)
+    assert stub.calls == 2
+    spanning = load_cached_funding("BTC", "2026-01-05", "2026-07-25",
+                                   adapter=stub, db_path=db)
+    assert stub.calls == 3
+    assert not spanning.empty
+    again = load_cached_funding("BTC", "2026-01-05", "2026-07-25",
+                                adapter=stub, db_path=db)
+    assert stub.calls == 3, "backfilled span must now be covered"
+    assert len(again) == len(spanning)
+    os.unlink(db)
+
+
+def _to_ms(date_str):
+    return int(pd.Timestamp(date_str, tz="UTC").timestamp() * 1000)
+
+
 def test_timestamp_end_date_accepted():
     """run_backtest passes df.index[-1] (a Timestamp, possibly tz-naive) as
     end_date — both naive and aware must work and hit the cache."""

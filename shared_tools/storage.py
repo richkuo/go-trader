@@ -70,7 +70,7 @@ def init_db(db_path: str = DB_PATH):
             coin TEXT NOT NULL,
             start_ts INTEGER NOT NULL,
             end_ts INTEGER NOT NULL,
-            UNIQUE(exchange, coin)
+            UNIQUE(exchange, coin, start_ts)
         );
 
         CREATE TABLE IF NOT EXISTS backtest_results (
@@ -95,9 +95,39 @@ def init_db(db_path: str = DB_PATH):
             trades_json TEXT  -- JSON string of all trades
         );
     """)
+    _migrate_funding_coverage_to_intervals(conn)
     conn.commit()
     conn.close()
     _SCHEMA_READY.add(db_path)
+
+
+def _migrate_funding_coverage_to_intervals(conn: sqlite3.Connection):
+    """#1176: migrate a pre-interval funding_coverage table (one row per
+    (exchange, coin), widened by min/max union) to the interval-set schema.
+    Existing rows are DROPPED, not carried over: a min/max-unioned row may
+    claim never-fetched middles as covered (that is exactly the bug — it
+    manufactured the 2024 BTC funding hole), and there is no way to tell
+    which parts of the range were actually fetched. Refetching is the only
+    safe recovery; the rates themselves are untouched. Idempotent: the check
+    keys off the old schema's UNIQUE(exchange, coin) constraint."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='funding_coverage'"
+    ).fetchone()
+    if not row or not row[0]:
+        return
+    normalized = row[0].lower().replace(" ", "").replace("\n", "")
+    if "unique(exchange,coin)" not in normalized:
+        return  # already the interval schema (UNIQUE(exchange, coin, start_ts))
+    conn.executescript("""
+        DROP TABLE funding_coverage;
+        CREATE TABLE funding_coverage (
+            exchange TEXT NOT NULL,
+            coin TEXT NOT NULL,
+            start_ts INTEGER NOT NULL,
+            end_ts INTEGER NOT NULL,
+            UNIQUE(exchange, coin, start_ts)
+        );
+    """)
 
 
 def store_ohlcv(df: pd.DataFrame, exchange: str, symbol: str, timeframe: str,
@@ -191,34 +221,46 @@ def load_funding_rates(exchange: str, coin: str,
 
 
 def load_funding_coverage(exchange: str, coin: str,
-                          db_path: str = DB_PATH) -> Optional[tuple]:
-    """Return the (start_ts, end_ts) range already fetched from the API for
-    this coin, or None. Distinct from the stored rates themselves: a coin
-    listed mid-range has rates starting later than the fetched-from point, and
-    only the coverage row proves nothing earlier exists to fetch."""
+                          db_path: str = DB_PATH) -> list:
+    """Return the DISJOINT [start_ts, end_ts] intervals already fetched from
+    the API for this coin, sorted ascending ([] when never fetched). Distinct
+    from the stored rates themselves: a coin listed mid-range has rates
+    starting later than the fetched-from point, and only the coverage
+    intervals prove nothing earlier exists to fetch."""
     conn = get_connection(db_path)
-    row = conn.execute(
-        "SELECT start_ts, end_ts FROM funding_coverage WHERE exchange=? AND coin=?",
+    rows = conn.execute(
+        "SELECT start_ts, end_ts FROM funding_coverage WHERE exchange=? AND coin=?"
+        " ORDER BY start_ts ASC",
         (exchange, coin),
-    ).fetchone()
+    ).fetchall()
     conn.close()
-    return (int(row[0]), int(row[1])) if row else None
+    return [(int(s), int(e)) for s, e in rows]
 
 
 def store_funding_coverage(exchange: str, coin: str,
                            start_ts: int, end_ts: int,
                            db_path: str = DB_PATH):
-    """Record that [start_ts, end_ts] has been fetched, widening (never
-    shrinking) any existing coverage row."""
-    existing = load_funding_coverage(exchange, coin, db_path=db_path)
-    if existing:
-        start_ts = min(start_ts, existing[0])
-        end_ts = max(end_ts, existing[1])
+    """Record that [start_ts, end_ts] has been fetched. Coverage is a set of
+    DISJOINT intervals: the new range merges only with intervals it overlaps
+    or touches — NEVER min/max across disjoint fetches (#1176: that unioned an
+    early historical fetch and a recent fetch into one row that falsely
+    claimed the never-fetched middle as covered)."""
+    intervals = load_funding_coverage(exchange, coin, db_path=db_path)
+    intervals.append((int(start_ts), int(end_ts)))
+    intervals.sort()
+    merged = []
+    for s, e in intervals:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
     conn = get_connection(db_path)
-    conn.execute(
-        "INSERT OR REPLACE INTO funding_coverage (exchange, coin, start_ts, end_ts)"
+    conn.execute("DELETE FROM funding_coverage WHERE exchange=? AND coin=?",
+                 (exchange, coin))
+    conn.executemany(
+        "INSERT INTO funding_coverage (exchange, coin, start_ts, end_ts)"
         " VALUES (?, ?, ?, ?)",
-        (exchange, coin, int(start_ts), int(end_ts)),
+        [(exchange, coin, s, e) for s, e in merged],
     )
     conn.commit()
     conn.close()

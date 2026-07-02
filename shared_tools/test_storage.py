@@ -302,3 +302,94 @@ class TestBacktestRoundTrip:
         df = get_backtest_results(db_path=db_path)
         assert len(df) == 3
         assert list(df["strategy_name"]) == ["strategy_2", "strategy_1", "strategy_0"]
+
+
+# ─── Funding coverage ledger (#1176) ──────────────────────────────
+
+
+class TestFundingCoverage:
+    """Interval-set semantics for funding_coverage: disjoint fetches stay
+    disjoint (never min/max-unioned), overlapping/touching fetches merge."""
+
+    def _load(self, db_path, exchange="hyperliquid", coin="BTC"):
+        from storage import load_funding_coverage
+        return load_funding_coverage(exchange, coin, db_path=db_path)
+
+    def test_empty_coverage(self, db_path):
+        assert self._load(db_path) == []
+
+    def test_single_interval_roundtrip(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        assert self._load(db_path) == [(100, 200)]
+
+    def test_disjoint_intervals_stay_disjoint(self, db_path):
+        """#1176 regression: the old ledger widened by min/max union, so two
+        disjoint fetches falsely claimed the unfetched middle as covered."""
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 1000, 2000, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        assert self._load(db_path) == [(100, 200), (1000, 2000)]
+
+    def test_overlapping_intervals_merge(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 150, 300, db_path=db_path)
+        assert self._load(db_path) == [(100, 300)]
+
+    def test_touching_intervals_merge(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 200, 300, db_path=db_path)
+        assert self._load(db_path) == [(100, 300)]
+
+    def test_bridging_interval_collapses_neighbors(self, db_path):
+        """A fetch spanning the gap between two intervals merges all three."""
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 400, 500, db_path=db_path)
+        store_funding_coverage("hyperliquid", "BTC", 150, 450, db_path=db_path)
+        assert self._load(db_path) == [(100, 500)]
+
+    def test_coins_and_exchanges_isolated(self, db_path):
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        store_funding_coverage("hyperliquid", "ETH", 300, 400, db_path=db_path)
+        assert self._load(db_path, coin="BTC") == [(100, 200)]
+        assert self._load(db_path, coin="ETH") == [(300, 400)]
+        assert self._load(db_path, coin="SOL") == []
+
+    def test_old_single_row_schema_migrates_and_drops_rows(self, tmp_path):
+        """A DB created with the pre-#1176 one-row-per-coin schema (UNIQUE on
+        (exchange, coin), min/max-union widened) migrates to the interval
+        schema and DROPS its rows — a unioned row may claim never-fetched
+        middles as covered, so refetch is the only safe recovery."""
+        path = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE funding_coverage (
+                exchange TEXT NOT NULL,
+                coin TEXT NOT NULL,
+                start_ts INTEGER NOT NULL,
+                end_ts INTEGER NOT NULL,
+                UNIQUE(exchange, coin)
+            )
+        """)
+        conn.execute("INSERT INTO funding_coverage VALUES ('hyperliquid', 'BTC', 100, 99999)")
+        conn.commit()
+        conn.close()
+
+        init_db(path)
+        assert self._load(path) == [], "poisoned min/max-union row must be dropped"
+        # And the migrated table accepts multiple intervals per coin.
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=path)
+        store_funding_coverage("hyperliquid", "BTC", 400, 500, db_path=path)
+        assert self._load(path) == [(100, 200), (400, 500)]
+
+    def test_new_schema_not_re_migrated(self, db_path):
+        """init_db on an already-migrated DB must keep its coverage rows."""
+        from storage import store_funding_coverage
+        store_funding_coverage("hyperliquid", "BTC", 100, 200, db_path=db_path)
+        init_db(db_path)
+        assert self._load(db_path) == [(100, 200)]

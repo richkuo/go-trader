@@ -64,10 +64,15 @@ def load_cached_funding(coin: str,
     with a known window end — e.g. a backtest's last bar — should pass it so
     a repeat run is a cache hit regardless of elapsed wall-clock time).
 
-    Cache hits are decided by the ``funding_coverage`` ledger (the range
-    already fetched from the API), not by the stored rates: a coin listed
-    mid-range legitimately has no rates near the range start, and only the
-    coverage row distinguishes "nothing exists to fetch" from "never fetched".
+    Cache hits are decided by the ``funding_coverage`` ledger (the DISJOINT
+    intervals already fetched from the API), not by the stored rates: a coin
+    listed mid-range legitimately has no rates near the range start, and only
+    a coverage interval distinguishes "nothing exists to fetch" from "never
+    fetched". The requested range must sit inside ONE covered interval —
+    overlapping/touching fetches merge at store time, so a miss means part of
+    the range was genuinely never fetched (#1176: the old single min/max row
+    falsely claimed never-fetched middles between disjoint fetches as
+    covered, which is what emptied the 2024 audit window).
 
     Returns DataFrame(timestamp, rate) with a UTC DatetimeIndex (may be empty
     when the API has no data for the range — e.g. a coin listed later).
@@ -78,7 +83,7 @@ def load_cached_funding(coin: str,
     db_kwargs = {"db_path": db_path} if db_path else {}
     tol = _EDGE_TOLERANCE_HOURS * _HOUR_MS
     coverage = load_funding_coverage(exchange, coin, **db_kwargs)
-    if coverage and coverage[0] <= start_ts + tol and coverage[1] >= end_ts - tol:
+    if any(s <= start_ts + tol and e >= end_ts - tol for s, e in coverage):
         return load_funding_rates(exchange, coin, start_ts, end_ts, **db_kwargs)
 
     if adapter is None:
