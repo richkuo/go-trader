@@ -104,7 +104,7 @@ Other dirs (guardrails; inventories in ARCHITECTURE.md):
 - **Concurrency:** `group: claude-<issue/PR number>`, `cancel-in-progress: false` — serializes runs so overlapping runs don't stamp each other's comment.
 - **`claude_args` tool allowlist is defense-in-depth, not a hard boundary** (`python3`/`go`/`uv run` can shell to `gh`/`git`) — the hard boundary is the review job's bound token above. Commit/push rules are implement-mode-only, **exact-match** (never trailing-wildcard — matches refspecs/`--force`); `gh api` dropped entirely (`--method` reaches every mutating endpoint).
 - **Prompt-file shell-injection guard:** `pr-review-format.md` must not contain `"`, `` ` ``, or `$` — `claude_args` is shell-evaluated downstream.
-- **CLAUDE.md revision step** must explicitly instruct `git commit`+`git push origin HEAD` — uncommitted edits are discarded when the runner ends.
+- **CLAUDE.md revision step** must explicitly instruct `git commit`+`git push origin HEAD` — uncommitted edits are discarded when the runner ends. **Known stray-revert:** invoking the revision step/skill has twice (#1205) silently reset the working-tree `CLAUDE.md` to `origin/main`, discarding prior commits' doc additions on the branch, before any new edit was made — always `git diff HEAD -- CLAUDE.md` (and compare against `git diff origin/main -- CLAUDE.md`) right after invoking it and before writing new edits; if the two diffs match, the file was reverted, not freshly edited — restore the pre-existing branch content first.
 - `timeout-minutes: 45`. `issues: types: [opened]` only — no `assigned` (would duplicate a run on assigning an already-open issue).
 
 ### Addressing review findings
