@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -183,6 +184,93 @@ func parseRegimeGateSelection(reply string, n int) (int, bool) {
 	return num - 1, true
 }
 
+// regimeDetectionEnabled reports whether root["regime"].enabled is currently
+// true. An absent or unparseable regime block reads as disabled, matching the
+// load-time gate semantics (config.go treats regime==nil || !enabled as off).
+func regimeDetectionEnabled(root map[string]json.RawMessage) bool {
+	raw, ok := root["regime"]
+	if !ok {
+		return false
+	}
+	var regime struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &regime); err != nil {
+		return false
+	}
+	return regime.Enabled
+}
+
+// regimeGateSideEffectStrategies returns the sorted IDs of strategies OTHER than
+// targetID whose entry-gating would be newly activated as a side effect of this
+// apply flipping regime.enabled from false→true.
+//
+// A strategy's regime entry-gate (any non-empty allowed_regimes) is a no-op
+// while regime detection is off — config.go WARNs on exactly this state. Wiring
+// the target's gate enables regime detection for the whole config, so every
+// other strategy that already carries allowed_regimes (whether via a
+// regime_gate_window or the legacy single-lookback gate) also becomes live on
+// the restart, changing an entry behavior the operator never selected. These are
+// surfaced in the confirm prompt so the operator sees the full blast radius.
+//
+// When regime detection is already enabled there is no flip and hence no side
+// effect, so this returns nil — the prompt must not then falsely warn.
+func regimeGateSideEffectStrategies(root map[string]json.RawMessage, targetID string) ([]string, error) {
+	if regimeDetectionEnabled(root) {
+		return nil, nil
+	}
+	list, err := configStrategies(root)
+	if err != nil {
+		return nil, err
+	}
+	targetID = strings.TrimSpace(targetID)
+	var out []string
+	for _, raw := range list {
+		id := strategyRawID(raw)
+		if id == "" || id == targetID {
+			continue
+		}
+		var item struct {
+			AllowedRegimes []string `json:"allowed_regimes"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			continue
+		}
+		if len(item.AllowedRegimes) > 0 {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// formatStrategyIDList renders IDs as a comma-separated, backticked list for a
+// DM message.
+func formatStrategyIDList(ids []string) string {
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = "`" + id + "`"
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// buildRegimeGateConfirmMessage renders the confirm DM shown before the write.
+// alsoActivated is the set of OTHER strategies whose already-configured but
+// currently-dormant allowed_regimes gates would become live because this apply
+// flips regime.enabled on (see regimeGateSideEffectStrategies); listing them lets
+// the operator confirm the full blast radius rather than only the selected
+// strategy. It is empty when regime detection is already enabled (no flip, no
+// side effect), in which case no warning is appended.
+func buildRegimeGateConfirmMessage(preset regimeGatePreset, targetID string, alsoActivated []string) string {
+	msg := fmt.Sprintf("Apply regime gate **%s** (%s) to strategy `%s`?\nThis sets `regime_gate_window`=`%s` and `allowed_regimes`=%v, enables regime detection, and adds the `%s` window if missing. It only blocks ENTRIES outside the allowed regime — closes/management always run. Applied via a service restart.",
+		preset.Name, preset.Label, targetID, preset.WindowKey, preset.AllowedRegimes, preset.WindowKey)
+	if len(alsoActivated) > 0 {
+		msg += fmt.Sprintf("\n\n⚠️ Enabling regime detection also activates previously-dormant `allowed_regimes` entry-gates on %d other strategy(ies) you did NOT select: %s. Regime detection is off today so those gates are no-ops, but they will gate new entries after the restart. Open positions are unaffected — management and closes always run; only fresh entries are gated. To leave one ungated, clear its `allowed_regimes` first.",
+			len(alsoActivated), formatStrategyIDList(alsoActivated))
+	}
+	return msg
+}
+
 // ensureRegimeGateWindow enables regime detection and adds the preset's window
 // to root["regime"].windows if absent. If the window key already exists with a
 // matching classifier+period it is left as-is; if it exists with a different
@@ -357,8 +445,22 @@ func (d *DiscordNotifier) handleApplyRegimeGate(s *discordgo.Session, i *discord
 		return
 	}
 
-	confirmMsg := fmt.Sprintf("Apply regime gate **%s** (%s) to strategy `%s`?\nThis sets `regime_gate_window`=`%s` and `allowed_regimes`=%v, enables regime detection, and adds the `%s` window if missing. It only blocks ENTRIES outside the allowed regime — closes/management always run. Applied via a service restart.",
-		preset.Name, preset.Label, target.sc.ID, preset.WindowKey, preset.AllowedRegimes, preset.WindowKey)
+	// Enabling regime detection to wire the target's gate also activates any
+	// OTHER strategy that already carries allowed_regimes but is dormant because
+	// detection is currently off (config.go WARNs on exactly this state). Read
+	// the on-disk config — the same source mutateConfig will operate on — and
+	// surface that blast radius so the operator isn't silently changing an
+	// unselected strategy's entry behavior. A read/parse failure here only drops
+	// the advisory; the authoritative re-read + validation happens in the write.
+	var alsoActivated []string
+	if raw, rerr := os.ReadFile(path); rerr == nil {
+		var previewRoot map[string]json.RawMessage
+		if json.Unmarshal(raw, &previewRoot) == nil {
+			alsoActivated, _ = regimeGateSideEffectStrategies(previewRoot, target.sc.ID)
+		}
+	}
+
+	confirmMsg := buildRegimeGateConfirmMessage(preset, target.sc.ID, alsoActivated)
 	if !d.confirmDestructive(userID, confirmMsg) {
 		followupText(s, i, "Cancelled — no confirmation received.")
 		return

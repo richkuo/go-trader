@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -233,6 +234,115 @@ func TestApplyRegimeGateToRoot_AlongsideExistingADXWindow(t *testing.T) {
 	}
 	if _, ok := cfg.Regime.Windows["comp_p21"]; !ok {
 		t.Error("comp_p21 window must be added")
+	}
+}
+
+// ─── #1205 review: enabling regime detection must surface the blast radius ───
+//
+// Wiring a gate onto one strategy flips regime.enabled on for the whole config,
+// which silently activates every OTHER strategy that already carries a dormant
+// allowed_regimes gate. These tests pin that the confirm prompt lists that blast
+// radius (and only when the flip actually happens).
+
+// When the apply flips regime.enabled false→true, every OTHER strategy carrying
+// allowed_regimes is newly activated and must be listed — whether via a
+// regime_gate_window or the legacy single-lookback gate (allowed_regimes with no
+// window). The target itself, empty allowed_regimes, and ungated strategies are
+// excluded.
+func TestRegimeGateSideEffectStrategies_FlipActivatesOthers(t *testing.T) {
+	root := rootFromJSON(t, `{
+	  "regime": {"enabled": false, "windows": {"comp_p21": {"classifier": "composite", "period": 21}}},
+	  "strategies": [
+	    {"id": "target", "type": "perps", "allowed_regimes": ["trending_up_clean"], "regime_gate_window": "comp_p21"},
+	    {"id": "gated-window", "type": "perps", "allowed_regimes": ["trending_up_clean"], "regime_gate_window": "comp_p21"},
+	    {"id": "gated-legacy", "type": "futures", "allowed_regimes": ["trending"]},
+	    {"id": "ungated-empty", "type": "perps", "allowed_regimes": []},
+	    {"id": "ungated-none", "type": "spot"}
+	  ]
+	}`)
+	got, err := regimeGateSideEffectStrategies(root, "target")
+	if err != nil {
+		t.Fatalf("regimeGateSideEffectStrategies: %v", err)
+	}
+	want := []string{"gated-legacy", "gated-window"} // sorted; excludes target/empty/none
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// Must-survive (1): when regime detection is already enabled there is no flip, so
+// no strategy is newly activated and the prompt must not falsely warn.
+func TestRegimeGateSideEffectStrategies_AlreadyEnabledNoWarn(t *testing.T) {
+	root := rootFromJSON(t, `{
+	  "regime": {"enabled": true, "windows": {"comp_p21": {"classifier": "composite", "period": 21}}},
+	  "strategies": [
+	    {"id": "target", "type": "perps"},
+	    {"id": "other", "type": "perps", "allowed_regimes": ["trending_up_clean"]}
+	  ]
+	}`)
+	got, err := regimeGateSideEffectStrategies(root, "target")
+	if err != nil {
+		t.Fatalf("regimeGateSideEffectStrategies: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("regime already enabled → no side effect expected, got %v", got)
+	}
+}
+
+// An absent regime block reads as disabled, so the flip still happens and other
+// gated strategies are activated.
+func TestRegimeGateSideEffectStrategies_AbsentRegimeBlockActivates(t *testing.T) {
+	root := rootFromJSON(t, `{
+	  "strategies": [
+	    {"id": "target", "type": "perps"},
+	    {"id": "other", "type": "perps", "allowed_regimes": ["trending_up_clean"]}
+	  ]
+	}`)
+	got, err := regimeGateSideEffectStrategies(root, "target")
+	if err != nil {
+		t.Fatalf("regimeGateSideEffectStrategies: %v", err)
+	}
+	if len(got) != 1 || got[0] != "other" {
+		t.Errorf("absent regime block reads as disabled → other must be listed, got %v", got)
+	}
+}
+
+func TestBuildRegimeGateConfirmMessage(t *testing.T) {
+	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
+
+	// No side effects → the warning block must be absent.
+	msg := buildRegimeGateConfirmMessage(preset, "hl-momentum-eth", nil)
+	if strings.Contains(msg, "also activates") {
+		t.Errorf("no side effects but warning present:\n%s", msg)
+	}
+	for _, want := range []string{"hl-momentum-eth", "comp_up_clean_p21", "comp_p21"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("confirm message missing core field %q:\n%s", want, msg)
+		}
+	}
+
+	// Side effects → the warning lists the other strategies and their count.
+	msg = buildRegimeGateConfirmMessage(preset, "hl-momentum-eth", []string{"gated-legacy", "gated-window"})
+	for _, want := range []string{"also activates", "2 other", "`gated-legacy`", "`gated-window`"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("confirm message missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+// Must-survive (3): a strategy newly gated by the regime flip must still manage
+// an open position it already holds — regimeBlocksOpen short-circuits on
+// posQty>0 regardless of the (dis)allowed regime, so only fresh entries are
+// gated. This backs the "Open positions are unaffected" claim in the prompt.
+func TestRegimeGateDoesNotBlockOpenPositionManagement(t *testing.T) {
+	allowed := []string{"trending_up_clean"}
+	// Sanity: a disallowed current regime blocks a fresh entry (flat).
+	if !regimeBlocksOpen(allowed, "ranging", 0) {
+		t.Fatal("a disallowed regime must block a fresh entry (posQty=0)")
+	}
+	// With an open position it must NOT block — management passes through.
+	if regimeBlocksOpen(allowed, "ranging", 1.5) {
+		t.Error("a newly-activated gate must not block management of an open position")
 	}
 }
 
