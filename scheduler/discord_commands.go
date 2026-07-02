@@ -39,15 +39,16 @@ var readOnlyCommandNames = map[string]bool{
 // mutating set (config/add-strategy/remove-strategy/add-platform/paper-to-live)
 // changes the config file, so it gets the same owner-DM-only gate.
 var opsCommandNames = map[string]bool{
-	"restart":         true,
-	"backtest":        true,
-	"logs":            true,
-	"report-an-issue": true,
-	"config":          true,
-	"add-strategy":    true,
-	"remove-strategy": true,
-	"add-platform":    true,
-	"paper-to-live":   true,
+	"restart":           true,
+	"backtest":          true,
+	"logs":              true,
+	"report-an-issue":   true,
+	"config":            true,
+	"add-strategy":      true,
+	"remove-strategy":   true,
+	"add-platform":      true,
+	"paper-to-live":     true,
+	"apply-regime-gate": true,
 }
 
 // authorizeCommand decides whether invokerID may run command `name`. Read-only
@@ -442,6 +443,9 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "paper-to-live", Description: "Switch a strategy from paper to live (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID to switch to live", Required: true},
 		}},
+		{Name: commandPrefix + "apply-regime-gate", Description: "Interactively wire a regime entry-gate onto a strategy (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "gate", Description: "Gate preset (default comp_up_clean_p21)"},
+		}},
 	}
 }
 
@@ -529,6 +533,8 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handleAddPlatform(s, i, data.Options)
 	case "paper-to-live":
 		d.handlePaperToLive(s, i, data.Options)
+	case "apply-regime-gate":
+		d.handleApplyRegimeGate(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}
