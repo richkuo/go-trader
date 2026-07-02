@@ -297,7 +297,10 @@ func truncateToWordCap(text string, n int) string {
 
 // formatLLMEntryAnalysisDigest renders the Discord/Telegram digest: one tight
 // blurb per topic, analyst keys sorted (map iteration is randomized).
-func formatLLMEntryAnalysisDigest(job llmEntryAnalysisJob, res *LLMEntryAnalysisResult) string {
+// plainText mirrors the FormatTradeDM/FormatTradeDMPlain split on the
+// canonical trade-alert path (sendTradeAlerts) — plainText backends
+// (Telegram, route.plainText) must not receive literal markdown bold.
+func formatLLMEntryAnalysisDigest(job llmEntryAnalysisJob, res *LLMEntryAnalysisResult, plainText bool) string {
 	mode := "paper"
 	if job.IsLive {
 		mode = "live"
@@ -305,7 +308,11 @@ func formatLLMEntryAnalysisDigest(job llmEntryAnalysisJob, res *LLMEntryAnalysis
 	var b strings.Builder
 	fmt.Fprintf(&b, "🧠 LLM entry analysis — [%s] %s %s @ $%.2f (%s)\n",
 		job.StrategyID, strings.ToUpper(job.Side), job.Symbol, job.EntryPrice, mode)
-	fmt.Fprintf(&b, "**Verdict: %s** — %s", strings.ToUpper(res.Verdict), res.Rationale)
+	if plainText {
+		fmt.Fprintf(&b, "Verdict: %s — %s", strings.ToUpper(res.Verdict), res.Rationale)
+	} else {
+		fmt.Fprintf(&b, "**Verdict: %s** — %s", strings.ToUpper(res.Verdict), res.Rationale)
+	}
 	keys := make([]string, 0, len(res.PerAnalyst))
 	for k := range res.PerAnalyst {
 		keys = append(keys, k)

@@ -343,11 +343,14 @@ func main() {
 			}
 		},
 		func(job llmEntryAnalysisJob, res *LLMEntryAnalysisResult) {
-			msg := formatLLMEntryAnalysisDigest(job, res)
 			// Routing is per-strategy (#1137): DM on by default, channel off by
 			// default. Both resolved into job.Params at dispatch so the async
 			// digest honors the config in effect at open time.
 			for _, route := range notifier.tradeAlertRoutes(job.Platform, job.StratType, job.IsLive) {
+				// Per-route rendering mirrors sendTradeAlerts: plainText
+				// backends (e.g. Telegram) must not see literal markdown
+				// bold in the verdict line.
+				msg := formatLLMEntryAnalysisDigest(job, res, route.plainText)
 				if job.Params.NotifyDM && route.dmDest != "" {
 					if err := sendTradeDestination(route.notifier, route.dmDest, msg); err != nil {
 						fmt.Printf("[notify] LLM analysis DM failed: %v\n", err)

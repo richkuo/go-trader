@@ -299,16 +299,39 @@ func TestFormatLLMEntryAnalysisDigestSortedAndLabeled(t *testing.T) {
 		Verdict: "mixed", Rationale: "cuts both ways",
 		PerAnalyst: map[string]string{"technical": "t-note", "derivatives": "d-note"},
 	}
-	msg := formatLLMEntryAnalysisDigest(job, res)
+	msg := formatLLMEntryAnalysisDigest(job, res, false)
 	if !strings.Contains(msg, "[hl-btc] LONG BTC @ $50000.00 (live)") {
 		t.Fatalf("header wrong: %q", msg)
 	}
-	if !strings.Contains(msg, "Verdict: MIXED") || !strings.Contains(msg, "cuts both ways") {
+	if !strings.Contains(msg, "**Verdict: MIXED**") || !strings.Contains(msg, "cuts both ways") {
 		t.Fatalf("verdict line wrong: %q", msg)
 	}
 	// Map iteration is randomized; the digest must be deterministic (sorted keys).
 	if strings.Index(msg, "derivatives:") > strings.Index(msg, "technical:") {
 		t.Fatalf("analyst topics not sorted: %q", msg)
+	}
+}
+
+// TestFormatLLMEntryAnalysisDigestPlainTextOmitsMarkdown guards #1208 review
+// feedback: a plainText route (e.g. Telegram, notifier.go plainText:true)
+// must not receive literal "**" bold markers, matching how sendTradeAlerts
+// swaps FormatTradeDM for FormatTradeDMPlain on the canonical trade-alert
+// path (main.go:3172). A markdown route must still get the bold verdict.
+func TestFormatLLMEntryAnalysisDigestPlainTextOmitsMarkdown(t *testing.T) {
+	job := llmEntryAnalysisJob{StrategyID: "hl-btc", Symbol: "BTC", Side: "long", EntryPrice: 50000, IsLive: true}
+	res := &LLMEntryAnalysisResult{Verdict: "bullish", Rationale: "clean breakout"}
+
+	plain := formatLLMEntryAnalysisDigest(job, res, true)
+	if strings.Contains(plain, "**") {
+		t.Fatalf("plainText digest must not contain literal markdown bold: %q", plain)
+	}
+	if !strings.Contains(plain, "Verdict: BULLISH") || !strings.Contains(plain, "clean breakout") {
+		t.Fatalf("plainText digest missing verdict content: %q", plain)
+	}
+
+	markdown := formatLLMEntryAnalysisDigest(job, res, false)
+	if !strings.Contains(markdown, "**Verdict: BULLISH**") {
+		t.Fatalf("markdown digest must still bold the verdict: %q", markdown)
 	}
 }
 
