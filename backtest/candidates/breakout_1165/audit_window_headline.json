@@ -1,0 +1,350 @@
+{
+  "window": {
+    "start": "2025-06-10",
+    "end": null
+  },
+  "effective_range": {
+    "BTC/USDT 1h": {
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2026-06-04 00:00:00",
+      "bars": 8617
+    },
+    "BTC/USDT 4h": {
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2026-06-04 12:00:00",
+      "bars": 2158
+    },
+    "ETH/USDT 1h": {
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2026-06-12 19:00:00",
+      "bars": 8828
+    },
+    "ETH/USDT 4h": {
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2026-06-04 12:00:00",
+      "bars": 2158
+    },
+    "SOL/USDT 1h": {
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2026-06-12 19:00:00",
+      "bars": 8828
+    },
+    "SOL/USDT 4h": {
+      "first_bar": "2025-06-10 00:00:00",
+      "last_bar": "2026-06-04 12:00:00",
+      "bars": 2158
+    }
+  },
+  "candidates": {
+    "baseline": {
+      "BTC/USDT 1h": {
+        "sharpe": -0.67,
+        "return_pct": -20.61,
+        "max_dd_pct": -27.19,
+        "ddadj": -0.758,
+        "trades": 66,
+        "bh_return_pct": -41.47,
+        "liquidated": false,
+        "span_days": 359.0
+      },
+      "BTC/USDT 4h": {
+        "sharpe": -0.633,
+        "return_pct": -17.75,
+        "max_dd_pct": -30.83,
+        "ddadj": -0.576,
+        "trades": 18,
+        "bh_return_pct": -41.68,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "ETH/USDT 1h": {
+        "sharpe": 1.05,
+        "return_pct": 44.63,
+        "max_dd_pct": -29.68,
+        "ddadj": 1.504,
+        "trades": 72,
+        "bh_return_pct": -37.91,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "ETH/USDT 4h": {
+        "sharpe": 0.724,
+        "return_pct": 23.65,
+        "max_dd_pct": -35.79,
+        "ddadj": 0.661,
+        "trades": 15,
+        "bh_return_pct": -33.66,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "SOL/USDT 1h": {
+        "sharpe": -0.173,
+        "return_pct": -18.9,
+        "max_dd_pct": -47.85,
+        "ddadj": -0.395,
+        "trades": 73,
+        "bh_return_pct": -58.23,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "SOL/USDT 4h": {
+        "sharpe": -0.175,
+        "return_pct": -17.53,
+        "max_dd_pct": -52.17,
+        "ddadj": -0.336,
+        "trades": 16,
+        "bh_return_pct": -56.03,
+        "liquidated": false,
+        "span_days": 359.5
+      }
+    },
+    "comp_up_clean": {
+      "BTC/USDT 1h": {
+        "sharpe": -0.494,
+        "return_pct": -9.52,
+        "max_dd_pct": -14.74,
+        "ddadj": -0.646,
+        "trades": 24,
+        "bh_return_pct": -41.47,
+        "liquidated": false,
+        "span_days": 359.0
+      },
+      "BTC/USDT 4h": {
+        "sharpe": 0.323,
+        "return_pct": 4.25,
+        "max_dd_pct": -14.21,
+        "ddadj": 0.299,
+        "trades": 8,
+        "bh_return_pct": -41.68,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "ETH/USDT 1h": {
+        "sharpe": 1.235,
+        "return_pct": 35.27,
+        "max_dd_pct": -21.95,
+        "ddadj": 1.607,
+        "trades": 25,
+        "bh_return_pct": -37.91,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "ETH/USDT 4h": {
+        "sharpe": 0.208,
+        "return_pct": 1.95,
+        "max_dd_pct": -29.66,
+        "ddadj": 0.066,
+        "trades": 7,
+        "bh_return_pct": -33.66,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "SOL/USDT 1h": {
+        "sharpe": 0.54,
+        "return_pct": 12.85,
+        "max_dd_pct": -17.86,
+        "ddadj": 0.719,
+        "trades": 20,
+        "bh_return_pct": -58.23,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "SOL/USDT 4h": {
+        "sharpe": -0.87,
+        "return_pct": -23.42,
+        "max_dd_pct": -41.16,
+        "ddadj": -0.569,
+        "trades": 7,
+        "bh_return_pct": -56.03,
+        "liquidated": false,
+        "span_days": 359.5
+      }
+    },
+    "comp_up_clean_p21": {
+      "BTC/USDT 1h": {
+        "sharpe": -0.589,
+        "return_pct": -8.51,
+        "max_dd_pct": -15.83,
+        "ddadj": -0.538,
+        "trades": 17,
+        "bh_return_pct": -41.47,
+        "liquidated": false,
+        "span_days": 359.0
+      },
+      "BTC/USDT 4h": {
+        "sharpe": -0.084,
+        "return_pct": -2.6,
+        "max_dd_pct": -13.53,
+        "ddadj": -0.192,
+        "trades": 7,
+        "bh_return_pct": -41.68,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "ETH/USDT 1h": {
+        "sharpe": 1.558,
+        "return_pct": 41.13,
+        "max_dd_pct": -11.67,
+        "ddadj": 3.524,
+        "trades": 18,
+        "bh_return_pct": -37.91,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "ETH/USDT 4h": {
+        "sharpe": 1.229,
+        "return_pct": 30.43,
+        "max_dd_pct": -19.22,
+        "ddadj": 1.583,
+        "trades": 4,
+        "bh_return_pct": -33.66,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "SOL/USDT 1h": {
+        "sharpe": 0.226,
+        "return_pct": 2.56,
+        "max_dd_pct": -18.43,
+        "ddadj": 0.139,
+        "trades": 17,
+        "bh_return_pct": -58.23,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "SOL/USDT 4h": {
+        "sharpe": 0.346,
+        "return_pct": 5.51,
+        "max_dd_pct": -23.18,
+        "ddadj": 0.238,
+        "trades": 4,
+        "bh_return_pct": -56.03,
+        "liquidated": false,
+        "span_days": 359.5
+      }
+    },
+    "m4_bear_off": {
+      "BTC/USDT 1h": {
+        "sharpe": -0.375,
+        "return_pct": -12.25,
+        "max_dd_pct": -20.97,
+        "ddadj": -0.584,
+        "trades": 54,
+        "bh_return_pct": -41.47,
+        "liquidated": false,
+        "span_days": 359.0
+      },
+      "BTC/USDT 4h": {
+        "sharpe": -0.266,
+        "return_pct": -8.67,
+        "max_dd_pct": -23.61,
+        "ddadj": -0.367,
+        "trades": 15,
+        "bh_return_pct": -41.68,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "ETH/USDT 1h": {
+        "sharpe": 1.184,
+        "return_pct": 47.9,
+        "max_dd_pct": -27.46,
+        "ddadj": 1.744,
+        "trades": 60,
+        "bh_return_pct": -37.91,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "ETH/USDT 4h": {
+        "sharpe": 0.561,
+        "return_pct": 15.54,
+        "max_dd_pct": -39.56,
+        "ddadj": 0.393,
+        "trades": 15,
+        "bh_return_pct": -33.66,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "SOL/USDT 1h": {
+        "sharpe": 0.072,
+        "return_pct": -6.74,
+        "max_dd_pct": -37.13,
+        "ddadj": -0.182,
+        "trades": 62,
+        "bh_return_pct": -58.23,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "SOL/USDT 4h": {
+        "sharpe": 0.445,
+        "return_pct": 10.22,
+        "max_dd_pct": -36.73,
+        "ddadj": 0.278,
+        "trades": 12,
+        "bh_return_pct": -56.03,
+        "liquidated": false,
+        "span_days": 359.5
+      }
+    },
+    "m4_bear_selective": {
+      "BTC/USDT 1h": {
+        "sharpe": -0.407,
+        "return_pct": -13.89,
+        "max_dd_pct": -23.19,
+        "ddadj": -0.599,
+        "trades": 51,
+        "bh_return_pct": -41.47,
+        "liquidated": false,
+        "span_days": 359.0
+      },
+      "BTC/USDT 4h": {
+        "sharpe": -0.266,
+        "return_pct": -8.67,
+        "max_dd_pct": -23.61,
+        "ddadj": -0.367,
+        "trades": 15,
+        "bh_return_pct": -41.68,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "ETH/USDT 1h": {
+        "sharpe": 1.184,
+        "return_pct": 47.9,
+        "max_dd_pct": -27.46,
+        "ddadj": 1.744,
+        "trades": 60,
+        "bh_return_pct": -37.91,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "ETH/USDT 4h": {
+        "sharpe": 0.561,
+        "return_pct": 15.54,
+        "max_dd_pct": -39.56,
+        "ddadj": 0.393,
+        "trades": 15,
+        "bh_return_pct": -33.66,
+        "liquidated": false,
+        "span_days": 359.5
+      },
+      "SOL/USDT 1h": {
+        "sharpe": 0.421,
+        "return_pct": 9.24,
+        "max_dd_pct": -37.13,
+        "ddadj": 0.249,
+        "trades": 58,
+        "bh_return_pct": -58.23,
+        "liquidated": false,
+        "span_days": 367.7917
+      },
+      "SOL/USDT 4h": {
+        "sharpe": 0.445,
+        "return_pct": 10.22,
+        "max_dd_pct": -36.73,
+        "ddadj": 0.278,
+        "trades": 12,
+        "bh_return_pct": -56.03,
+        "liquidated": false,
+        "span_days": 359.5
+      }
+    }
+  }
+}
