@@ -2012,3 +2012,90 @@ func TestPlanKillSwitchClose_TSFetcherUnwiredLatches(t *testing.T) {
 		t.Errorf("expected log line mentioning TSFetcher unwired, got: %v", plan.LogLines)
 	}
 }
+
+// #1190: killSwitchInstanceLabel derives an operator-facing identifier from
+// the deployed config path so concurrent instances (live vs. paper, or
+// per-asset systemd %i deployments) are distinguishable in kill-switch DMs.
+func TestKillSwitchInstanceLabel_UsesConfigDirBasename(t *testing.T) {
+	got := killSwitchInstanceLabel("/var/lib/go-trader/live/config.json")
+	if got != "live" {
+		t.Errorf("killSwitchInstanceLabel(.../live/config.json) = %q, want %q", got, "live")
+	}
+	got = killSwitchInstanceLabel("/var/lib/go-trader/paper-hl-eth/config.json")
+	if got != "paper-hl-eth" {
+		t.Errorf("killSwitchInstanceLabel(.../paper-hl-eth/config.json) = %q, want %q", got, "paper-hl-eth")
+	}
+}
+
+func TestKillSwitchInstanceLabel_FallsBackWhenPathGivesNothingUseful(t *testing.T) {
+	// A bare filename ("config.json") has a "." dir component; must not
+	// surface that as the label — fall back to hostname or the static default.
+	got := killSwitchInstanceLabel("config.json")
+	if got == "." {
+		t.Errorf("killSwitchInstanceLabel(%q) = %q, want a real fallback, not \".\"", "config.json", got)
+	}
+	if got == "" {
+		t.Error("killSwitchInstanceLabel must never return an empty label")
+	}
+}
+
+// #1190: formatKillSwitchResetPrompt replaces the old bare "Kill switch
+// active. Reply 'reset' to resume trading." sentence with a message that
+// carries the same reason/close-report context already broadcast via
+// formatKillSwitchMessage, plus identity and accurate reset semantics.
+func TestFormatKillSwitchResetPrompt_ConfirmedFlatIncludesContextAndIdentity(t *testing.T) {
+	plan := KillSwitchClosePlan{
+		OnChainConfirmedFlat: true,
+		DiscordMessage:       "**PORTFOLIO KILL SWITCH**\nportfolio drawdown 25.0% exceeds limit 20.0%\nHL closes: [ETH]. Virtual state cleared. Manual reset required.",
+	}
+
+	got := formatKillSwitchResetPrompt("live", "0xabc123", plan)
+
+	if !strings.Contains(got, "live") || !strings.Contains(got, "0xabc123") {
+		t.Errorf("expected instance label and HL address in prompt, got: %s", got)
+	}
+	if !strings.Contains(got, "portfolio drawdown 25.0%") {
+		t.Errorf("expected reused drawdown reason in prompt, got: %s", got)
+	}
+	if !strings.Contains(got, "HL closes: [ETH]") {
+		t.Errorf("expected reused close report in prompt, got: %s", got)
+	}
+	if !strings.Contains(got, "does not itself close or protect any position") {
+		t.Errorf("expected explicit reset semantics in prompt, got: %s", got)
+	}
+	if strings.Contains(got, "still retrying") {
+		t.Errorf("confirmed-flat prompt must not claim the close is still retrying, got: %s", got)
+	}
+}
+
+func TestFormatKillSwitchResetPrompt_LatchedRetryingWarnsProtectionMayBeGone(t *testing.T) {
+	plan := KillSwitchClosePlan{
+		OnChainConfirmedFlat: false,
+		DiscordMessage:       "**PORTFOLIO KILL SWITCH (LATCHED, RETRYING)**\nportfolio drawdown 25.0% exceeds limit 20.0%\nHL live close errors — ETH: timeout. Virtual state preserved. Next cycle will retry.",
+	}
+
+	got := formatKillSwitchResetPrompt("live", "0xabc123", plan)
+
+	if !strings.Contains(got, "still retrying") {
+		t.Errorf("expected a not-yet-confirmed-flat warning in prompt, got: %s", got)
+	}
+	if !strings.Contains(got, "stop-losses may already be cancelled") {
+		t.Errorf("expected the naked-stop-loss risk to be called out while retrying, got: %s", got)
+	}
+}
+
+func TestFormatKillSwitchResetPrompt_OmitsAddressWhenHLNotConfigured(t *testing.T) {
+	plan := KillSwitchClosePlan{
+		OnChainConfirmedFlat: true,
+		DiscordMessage:       "**PORTFOLIO KILL SWITCH**\nreason\nHL not configured. Virtual state cleared. Manual reset required.",
+	}
+
+	got := formatKillSwitchResetPrompt("paper-hl-eth", "", plan)
+
+	if strings.Contains(got, "Hyperliquid ") && strings.Contains(got, "()") {
+		t.Errorf("expected no dangling empty-address parenthetical, got: %s", got)
+	}
+	if !strings.Contains(got, "paper-hl-eth") {
+		t.Errorf("expected instance label present regardless of HL address, got: %s", got)
+	}
+}

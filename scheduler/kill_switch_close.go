@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -731,4 +733,45 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 	}
 
 	return fmt.Sprintf("**PORTFOLIO KILL SWITCH (LATCHED, RETRYING)**\n%s\n%s. Virtual state preserved. Next cycle will retry.", portfolioReason, strings.Join(segments, " | "))
+}
+
+// killSwitchInstanceLabel derives a human-readable identifier for this
+// trader process from its config file path, so operator-facing kill-switch
+// messages can distinguish between concurrent deployments (e.g. live vs.
+// paper, or per-asset instances under systemd/go-trader@.service %i, whose
+// out-of-tree config lives at /var/lib/go-trader/<instance>/config.json —
+// see #1056). Falls back to the hostname, then a static default, when the
+// config path itself gives nothing useful (e.g. the repo-relative dev
+// default "scheduler/config.json").
+func killSwitchInstanceLabel(configPath string) string {
+	dir := filepath.Base(filepath.Dir(configPath))
+	if dir != "" && dir != "." && dir != string(filepath.Separator) {
+		return dir
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		return host
+	}
+	return "go-trader"
+}
+
+// formatKillSwitchResetPrompt builds the DM sent to solicit the operator's
+// 'reset' reply (#1190). It reuses the same reason/close-report context
+// already broadcast to all channels via formatKillSwitchMessage
+// (plan.DiscordMessage) — the bare "Kill switch active..." sentence this
+// replaces carried none of that context — and states plainly what 'reset'
+// does and does not do: it only clears the KillSwitchActive latch (see
+// main.go), never itself opening, closing, or protecting a position. When
+// the close plan hasn't confirmed flat (LATCHED, RETRYING), resting
+// stop-losses may already have been cancelled ahead of the flatten attempt,
+// so the prompt must not imply positions are still protected in that state.
+func formatKillSwitchResetPrompt(instanceLabel, hlAddr string, plan KillSwitchClosePlan) string {
+	identity := instanceLabel
+	if hlAddr != "" {
+		identity = fmt.Sprintf("%s (Hyperliquid %s)", identity, hlAddr)
+	}
+	resetNote := "Replying 'reset' only clears the kill switch latch so trading can resume next cycle — it does not itself close or protect any position."
+	if !plan.OnChainConfirmedFlat {
+		resetNote += " On-chain close is still retrying and resting stop-losses may already be cancelled ahead of the flatten attempt — verify positions manually before assuming they're protected."
+	}
+	return fmt.Sprintf("[KILL SWITCH] %s\n%s\n\n%s\nReply 'reset' to proceed.", identity, plan.DiscordMessage, resetNote)
 }
