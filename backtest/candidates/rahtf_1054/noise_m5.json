@@ -343,7 +343,9 @@
       "dataset": "SOL/USDT 4h"
     }
   ],
-  "pooled_duplicates_dropped": 0,
+  "pooled_exact_duplicates_dropped": 0,
+  "pooled_overlap_entries_dropped": 0,
+  "window_overlaps": [],
   "trade_level": {
     "summary": {
       "n": 37,

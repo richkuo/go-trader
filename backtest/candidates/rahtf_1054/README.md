@@ -25,12 +25,16 @@ block).
   +0.082%/trade, permutation p=0.3913, bootstrap 95% CI [-0.510, +0.671] →
   `INDISTINGUISHABLE_FROM_ZERO`.
 - `noise_all.json` — noise check pooled across is,oos,2023,2024,2025H1:
-  n=176, mean -0.026%/trade (leg-level -0.180%/leg) → `NO_POSITIVE_EDGE`.
-  Sign test 111/176 positive (p=0.0007) with a negative mean = the classic
-  fade shape: frequent small wins, fat left tail (min -11.70%).
+  n=173 after calendar-coverage dedupe (the is∩2025H1 overlap fires
+  non-identical entries per window — 3 dropped; PR #1172 review finding),
+  mean -0.022%/trade (leg-level -0.180%/leg, 21-day overlap disclosed) →
+  `NO_POSITIVE_EDGE`. Sign test 110/173 positive (p=0.0004) with a negative
+  mean = the classic fade shape: frequent small wins, fat left tail
+  (min -11.70%).
 - `entry_condition_split.py` (+ `entry_condition_split.json`,
   `entry_condition_split_allwin.json`) — signal-bar regime-label join:
-  **every** trade (37/37 on the M5 slices, 176/176 all-window) entered on
+  **every** trade (37/37 on the M5 slices, 176/176 across the raw window
+  slices) entered on
   `ranging_volatile`; `ranging_quiet` never fires. There is no second regime
   axis for a selectivity knob to isolate, and the timeframe split flips sign
   between pools (1h +0.61 → -0.06; 4h -1.17 → +0.10) — noise.

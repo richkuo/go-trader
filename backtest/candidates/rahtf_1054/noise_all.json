@@ -1163,43 +1163,55 @@
       "dataset": "SOL/USDT 4h"
     }
   ],
-  "pooled_duplicates_dropped": 0,
+  "pooled_exact_duplicates_dropped": 0,
+  "pooled_overlap_entries_dropped": 3,
+  "window_overlaps": [
+    {
+      "windows": [
+        "is",
+        "2025H1"
+      ],
+      "start": "2025-06-10",
+      "end": "2025-07-01",
+      "days": 21.0
+    }
+  ],
   "trade_level": {
     "summary": {
-      "n": 176,
-      "mean": -0.026307,
-      "median": 0.375,
+      "n": 173,
+      "mean": -0.022254,
+      "median": 0.43,
       "min": -11.7,
       "max": 6.24,
-      "n_pos": 111,
-      "n_neg": 65,
+      "n_pos": 110,
+      "n_neg": 63,
       "n_zero": 0
     },
     "permutation": {
-      "n": 176,
-      "mean": -0.026307,
-      "p_value": 0.551845,
+      "n": 173,
+      "mean": -0.022254,
+      "p_value": 0.551645,
       "n_resamples": 10000
     },
     "bootstrap": {
-      "point": -0.026307,
-      "lo": -0.404841,
-      "hi": 0.330741,
+      "point": -0.022254,
+      "lo": -0.419717,
+      "hi": 0.340464,
       "n_resamples": 10000
     },
-    "bootstrap_p_mean_le_zero": 0.551,
+    "bootstrap_p_mean_le_zero": 0.5407,
     "sign_test": {
-      "n": 176,
-      "n_pos": 111,
-      "n_neg": 65,
+      "n": 173,
+      "n_pos": 110,
+      "n_neg": 63,
       "n_zero": 0,
-      "p_value": 0.000651
+      "p_value": 0.000437
     },
     "wilcoxon": {
-      "n": 176,
-      "w": 9718.5,
-      "z": 2.8513,
-      "p_value": 0.004355
+      "n": 173,
+      "w": 9435.5,
+      "z": 2.8945,
+      "p_value": 0.003798
     },
     "alpha": 0.05,
     "verdict": "no_positive_edge"

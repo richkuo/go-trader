@@ -34,8 +34,18 @@ Supporting views are reported, never blended into the verdict — one
 pre-registered test, no p-hacking across four.
 
 Overlapping windows (e.g. ``is`` and ``2025H1`` share 2025-06-10→07-01) would
-double-count entries in the pooled sample; duplicates are deduplicated by
-(dataset, entry_date) and the dropped count is reported, never silent.
+double-count the overlap period in the pooled sample — and NOT as byte-equal
+duplicates: each leg's indicators warm up from its own window start, so the
+same calendar period fires *non-identical* entries across windows and an
+exact (dataset, entry_date) key would drop nothing. The trade-level pool
+therefore dedupes by CALENDAR COVERAGE: per dataset, the first window pooled
+claims its full [start, end) range, and any later-pooled trade whose entry
+falls inside an already-claimed range is dropped (first-window-wins, order =
+the --windows order); exact-duplicate keys are dropped too. Both dropped
+counts are reported, never silent. Per-LEG returns are atomic (one compounded
+number per whole window), so the leg-level pool cannot be partially deduped —
+instead any pairwise window overlap is computed and disclosed alongside the
+leg-level stats.
 
 All statistics are stdlib-only and deterministic under ``--seed`` (same
 conventions as exit_policy_ab.py); the pure helpers are unit-tested without
@@ -173,11 +183,31 @@ def bootstrap_p_mean_le_zero(values: Sequence[float],
     return round(le_zero / n_resamples, 6)
 
 
+def _entry_in_range(entry_date: str, window_range: tuple) -> bool:
+    """Is an ISO ``entry_date`` inside a window's [start, end) calendar range?
+
+    Comparison is lexicographic, valid for zero-padded ISO timestamps (the
+    Backtester stamps ``str(pd.Timestamp)``); ``end=None`` means open-ended.
+    A bare-date bound compares correctly against a full timestamp: a start
+    of "2025-06-10" precedes "2025-06-10 00:00:00", and an end of
+    "2025-07-01" excludes "2025-07-01 00:00:00".
+    """
+    start, end = window_range
+    if start and entry_date < start:
+        return False
+    if end and entry_date >= end:
+        return False
+    return True
+
+
 def dedupe_samples(samples: List[dict]) -> tuple:
     """Drop pooled trades that are the same physical entry counted twice.
 
-    Key = (dataset, entry_date): overlapping windows (``is`` ∩ ``2025H1``)
-    replay the identical entry, and its return must count once. Returns
+    Key = (dataset, entry_date) — the byte-identical replay case (e.g. the
+    same window listed twice). The real overlap case (per-window warmup
+    makes overlap entries NON-identical, so this key never collides) is
+    handled by the calendar-coverage guard in ``pool_trade_samples``, which
+    needs leg structure this flat view lacks. Returns
     (deduped_list, n_dropped); order is preserved (first occurrence wins).
     """
     seen = set()
@@ -191,6 +221,47 @@ def dedupe_samples(samples: List[dict]) -> tuple:
         seen.add(key)
         out.append(s)
     return out, dropped
+
+
+def window_overlaps(window_names: List[str],
+                    windows: Optional[dict] = None) -> List[dict]:
+    """Pairwise calendar overlaps among the requested windows (leg-level
+    disclosure: a leg's return is one atomic number per window, so an
+    overlap cannot be partially deduped out of the leg pool — it is
+    reported instead).
+
+    Returns [{"windows": (a, b), "start": ..., "end": ..., "days": float}]
+    for every pair whose [start, end) ranges intersect; ``end=None`` is
+    open-ended. Dates are ISO strings; days is the intersection length.
+    """
+    from datetime import datetime
+
+    if windows is None:
+        windows = WINDOWS
+
+    def _parse(bound: Optional[str], default: str) -> datetime:
+        if bound is None:
+            return datetime.fromisoformat(default)
+        return datetime.fromisoformat(bound[:19])
+
+    out = []
+    far_future = "9999-01-01"
+    for i, a in enumerate(window_names):
+        for b in window_names[i + 1:]:
+            a_start = _parse(windows[a][0], "0001-01-01")
+            a_end = _parse(windows[a][1], far_future)
+            b_start = _parse(windows[b][0], "0001-01-01")
+            b_end = _parse(windows[b][1], far_future)
+            lo = max(a_start, b_start)
+            hi = min(a_end, b_end)
+            if lo < hi:
+                out.append({
+                    "windows": (a, b),
+                    "start": lo.date().isoformat(),
+                    "end": hi.date().isoformat(),
+                    "days": round((hi - lo).total_seconds() / 86400.0, 2),
+                })
+    return out
 
 
 def noise_verdict(mean: Optional[float], permutation_p: float,
@@ -255,15 +326,54 @@ def collect_gross_legs(reg, name: str, params: Optional[dict],
     return legs
 
 
-def pool_trade_samples(legs: List[dict]) -> tuple:
-    """(deduped trade samples, n_dropped) pooled across the collected legs."""
+def pool_trade_samples(legs: List[dict],
+                       windows: Optional[dict] = None) -> tuple:
+    """Pool per-trade samples across legs, counting each calendar period once.
+
+    Two first-window-wins guards (pooling order = the --windows order):
+
+    1. exact key (dataset, entry_date) — byte-identical replays;
+    2. calendar coverage — per dataset, every leg already pooled claims its
+       window's full [start, end) range (claimed even when the leg fired no
+       trades: the strategy sampled that period and chose not to enter). A
+       later leg from a different window drops any trade whose entry falls
+       inside a claimed range, even though warmup divergence means its
+       timestamp never collides with the first window's trades — the real
+       overlap case an exact key cannot catch (``is`` ∩ ``2025H1`` fire
+       non-identical entries over 2025-06-10→07-01).
+
+    ``windows`` defaults to the harness WINDOWS map (injectable for tests).
+    Returns (samples, n_exact_dropped, n_overlap_dropped); both drop counts
+    are surfaced by the caller, never silent.
+    """
+    if windows is None:
+        windows = WINDOWS
+    covered: dict = {}  # dataset -> [(window_name, (start, end)), ...]
+    seen = set()
     pooled = []
+    dropped_exact = 0
+    dropped_overlap = 0
     for leg in legs:
+        ds = leg["dataset"]
+        wname = leg["window"]
+        wrange = windows[wname]
+        claimed = covered.setdefault(ds, [])
         for s in leg.get("trade_samples") or []:
-            pooled.append({"dataset": leg["dataset"], "window": leg["window"],
+            key = (ds, s["entry_date"])
+            if key in seen:
+                dropped_exact += 1
+                continue
+            if any(w != wname and _entry_in_range(s["entry_date"], r)
+                   for w, r in claimed):
+                dropped_overlap += 1
+                continue
+            seen.add(key)
+            pooled.append({"dataset": ds, "window": wname,
                            "entry_date": s["entry_date"],
                            "pnl_pct": s["pnl_pct"]})
-    return dedupe_samples(pooled)
+        if all(w != wname for w, _ in claimed):
+            claimed.append((wname, wrange))
+    return pooled, dropped_exact, dropped_overlap
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +385,8 @@ def _fmt(v, prec=3):
 
 
 def format_report(name: str, registry: str, window_names: List[str],
-                  legs: List[dict], n_dropped: int,
+                  legs: List[dict], n_exact_dropped: int,
+                  n_overlap_dropped: int, overlaps: List[dict],
                   trade_stats: dict, leg_stats: dict) -> str:
     lines = [
         f"gross-edge noise check: {name} ({registry} registry, "
@@ -290,10 +401,16 @@ def format_report(name: str, registry: str, window_names: List[str],
     ts, ls = trade_stats["summary"], leg_stats["summary"]
     tp, lp = trade_stats["permutation"], leg_stats["permutation"]
     tb, lb = trade_stats["bootstrap"], leg_stats["bootstrap"]
+    drop_notes = []
+    if n_exact_dropped:
+        drop_notes.append(f"{n_exact_dropped} exact duplicate(s) dropped")
+    if n_overlap_dropped:
+        drop_notes.append(f"{n_overlap_dropped} window-overlap entr(ies) "
+                          f"dropped by calendar coverage")
     lines += [
         "",
         f"pooled trade-level gross returns: n={ts['n']}"
-        + (f" ({n_dropped} overlap duplicate(s) dropped)" if n_dropped else "")
+        + (f" ({'; '.join(drop_notes)})" if drop_notes else "")
         + (f", mean {_fmt(ts['mean'])}%/trade, median {_fmt(ts['median'])}, "
            f"min {_fmt(ts['min'], 2)}, max {_fmt(ts['max'], 2)}, "
            f"positive {ts['n_pos']}/{ts['n']}" if ts["n"] else ""),
@@ -321,6 +438,12 @@ def format_report(name: str, registry: str, window_names: List[str],
             f"  bootstrap 95% CI on mean: [{_fmt(lb['lo'])}, {_fmt(lb['hi'])}], "
             f"P(mean<=0) = {leg_stats['bootstrap_p_mean_le_zero']:.4f}",
         ]
+    if overlaps:
+        pairs = "; ".join(f"{a}∩{b} {o['start']}→{o['end']} ({o['days']}d)"
+                          for o in overlaps for a, b in [o["windows"]])
+        lines.append(
+            f"  CAVEAT: leg returns are atomic per window, so the leg-level "
+            f"pool counts overlapping windows wholesale — overlap: {pairs}")
     lines += [
         "",
         f"verdict (trade-level primary, alpha={trade_stats['alpha']}): "
@@ -382,7 +505,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     legs = collect_gross_legs(reg, args.strategy, params, datasets,
                               window_names, capital=args.capital,
                               direction=args.direction)
-    samples, n_dropped = pool_trade_samples(legs)
+    samples, n_exact, n_overlap = pool_trade_samples(legs)
+    overlaps = window_overlaps(window_names)
     trade_values = [s["pnl_pct"] for s in samples]
     leg_values = [leg["return_pct"] for leg in legs]
 
@@ -392,7 +516,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                                seed=args.seed, alpha=args.alpha)
 
     print(format_report(args.strategy, args.registry, window_names, legs,
-                        n_dropped, trade_stats, leg_stats))
+                        n_exact, n_overlap, overlaps, trade_stats, leg_stats))
 
     if args.json_out:
         payload = {
@@ -407,7 +531,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "seed": args.seed,
             "alpha": args.alpha,
             "legs": legs,
-            "pooled_duplicates_dropped": n_dropped,
+            "pooled_exact_duplicates_dropped": n_exact,
+            "pooled_overlap_entries_dropped": n_overlap,
+            "window_overlaps": overlaps,
             "trade_level": trade_stats,
             "leg_level": leg_stats,
         }

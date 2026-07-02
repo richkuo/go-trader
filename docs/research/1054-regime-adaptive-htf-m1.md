@@ -73,21 +73,26 @@ Verdict: **INDISTINGUISHABLE FROM ZERO**. The +0.27%/leg headline is a
 mean-zero draw at every level tested.
 
 **Pooled across all five protocol/held-out windows (is, oos, 2023, 2024,
-2025H1)** — the wider sample the thin screen pair couldn't provide:
+2025H1)** — the wider sample the thin screen pair couldn't provide. The
+``is`` ∩ ``2025H1`` calendar overlap (2025-06-10→07-01) fires *non-identical*
+entries in each window (per-window indicator warmup), so the pool dedupes by
+calendar coverage — first-pooled-window-wins per dataset — which dropped 3
+overlap entries; the leg-level view cannot be partially deduped (one atomic
+return per window) and carries the disclosed 21-day overlap instead:
 
 | statistic | value |
 |---|---|
-| n | 176 |
-| mean / median | **-0.026%** / +0.375% per trade |
-| positive trades | 111/176 (sign test p = 0.0007) |
-| sign-flip permutation (primary) | p = 0.5518 |
-| bootstrap 95% CI on mean | [-0.405, +0.331] |
-| per-leg view | n=30 legs, mean **-0.180%/leg** |
+| n | 173 (3 window-overlap entries dropped by calendar coverage) |
+| mean / median | **-0.022%** / +0.430% per trade |
+| positive trades | 110/173 (sign test p = 0.0004) |
+| sign-flip permutation (primary) | p = 0.5516 |
+| bootstrap 95% CI on mean | [-0.420, +0.340] |
+| per-leg view | n=30 legs, mean **-0.180%/leg** (is∩2025H1 21d counted wholesale) |
 
-Verdict: **NO_POSITIVE_EDGE** — with 4.8× the sample, the gross mean is
+Verdict: **NO_POSITIVE_EDGE** — with 4.7× the sample, the gross mean is
 negative. The significant sign test alongside a negative mean is the
 diagnostic signature, not a contradiction: the fade wins small often
-(median +0.375%) and loses big rarely (left tail to -11.70%). The mean —
+(median +0.430%) and loses big rarely (left tail to -11.70%). The mean —
 the thing that compounds into equity and that the M5 salvage test measures —
 is zero-to-negative; the 37-trade +0.27% was the lucky draw of a
 median-positive, mean-zero distribution.
@@ -102,7 +107,8 @@ signal-bar `rah_label` join per the fills-at-N+1 contract) confirms there is
 nothing for a knob to isolate anyway:
 
 - **One entry condition.** Every trade — 37/37 on the M5 slices, 176/176
-  all-window — entered on `ranging_volatile`. `ranging_quiet` never fires (a
+  across the five raw window slices (173 in the coverage-deduped pool) —
+  entered on `ranging_volatile`. `ranging_quiet` never fires (a
   2σ z-excursion inside a quiet range is self-contradictory), so
   `fade_labels` has no sub-vocabulary to tighten.
 - **The only visible splits flip sign between pools.** Timeframe: 1h
