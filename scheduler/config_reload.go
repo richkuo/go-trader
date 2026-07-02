@@ -90,6 +90,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].notify_ratchet_triggers: %s -> %s", sc.ID, formatNotifyRatchetTriggers(sc.NotifyRatchetTriggers), formatNotifyRatchetTriggers(ns.NotifyRatchetTriggers))
 			sc.NotifyRatchetTriggers = ns.NotifyRatchetTriggers
 		}
+		// #1137: llm_entry_analysis is hot-reloadable always, including while a
+		// position is open — advisory commentary only, never position/order
+		// state. New opens read the reloaded block at dispatch; in-flight jobs
+		// keep their snapshotted params.
+		if !llmEntryAnalysisConfigEqual(sc.LLMEntryAnalysis, ns.LLMEntryAnalysis) {
+			addChange("strategy[%s].llm_entry_analysis: %s -> %s", sc.ID, formatLLMEntryAnalysis(sc.LLMEntryAnalysis), formatLLMEntryAnalysis(ns.LLMEntryAnalysis))
+			sc.LLMEntryAnalysis = ns.LLMEntryAnalysis
+		}
 		// #1150: per-strategy pause is hot-reloadable always, including while a
 		// position is open — pausing only holds position-increasing signals from
 		// the next cycle (closes, trailing SL, ratchet, and protection sync keep
@@ -657,6 +665,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.CircuitBreaker = nil        // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
 	sc.NotifyRatchetTriggers = nil // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
 	sc.Paused = false              // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
+	sc.LLMEntryAnalysis = nil      // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0

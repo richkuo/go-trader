@@ -97,6 +97,14 @@ type Position struct {
 	// because the live regime label was unavailable. The next trailing walker may
 	// widen exactly once to the configured regime trail, then clears this flag.
 	RatchetFallbackNormalizePending bool `json:"-"`
+	// #1137 LLM entry analysis (advisory-only). LLMAnalysisRequested is the
+	// idempotency marker set at dispatch — at most one analysis per opened
+	// position, surviving restarts. LLMVerdict is the pipeline's read on the
+	// entry (bullish/bearish/mixed), stamped when the async job completes and
+	// copied into trade_diagnostics.llm_verdict at close; "" = analysis
+	// disabled, failed, or not finished before the close.
+	LLMAnalysisRequested bool   `json:"llm_analysis_requested,omitempty"`
+	LLMVerdict           string `json:"llm_verdict,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are

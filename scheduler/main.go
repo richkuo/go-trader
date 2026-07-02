@@ -321,6 +321,49 @@ func main() {
 	defer cleanupNotifier()
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
 
+	// #1137 LLM entry analysis: dedicated async lane (own queue + concurrency
+	// cap, own per-job deadline — never the shared pythonSemaphore path). Rides
+	// shutdownReadOnlyCtx so in-flight analyses are cancelled immediately at
+	// SIGTERM instead of joining the side-effect drain. Advisory-only: the
+	// verdict stamp and channel digest are the only outputs.
+	llmWorker := newLLMEntryAnalysisWorker(
+		runLLMEntryAnalysisScript,
+		func(job llmEntryAnalysisJob, verdict string) {
+			mu.Lock()
+			defer mu.Unlock()
+			s, ok := state.Strategies[job.StrategyID]
+			if !ok {
+				return
+			}
+			// Stamp only the exact position the analysis was dispatched for; a
+			// close/flip in the interim means the verdict has no home (the
+			// diagnostics row for that close keeps llm_verdict NULL).
+			if pos := s.Positions[job.Symbol]; pos != nil && pos.TradePositionID == job.PositionID {
+				pos.LLMVerdict = verdict
+			}
+		},
+		func(job llmEntryAnalysisJob, res *LLMEntryAnalysisResult) {
+			msg := formatLLMEntryAnalysisDigest(job, res)
+			for _, route := range notifier.tradeAlertRoutes(job.Platform, job.StratType, job.IsLive) {
+				if route.channel != "" {
+					if err := route.notifier.SendMessage(route.channel, msg); err != nil {
+						fmt.Printf("[notify] LLM analysis digest failed: %v\n", err)
+					}
+				}
+				if route.liveChan != "" {
+					if err := route.notifier.SendMessage(route.liveChan, msg); err != nil {
+						fmt.Printf("[notify] LLM analysis digest (live channel) failed: %v\n", err)
+					}
+				}
+			}
+		},
+	)
+	llmEntryAnalysisEnqueue = llmWorker.Enqueue
+	go llmWorker.run(shutdownReadOnlyCtx)
+	if anyStrategyUsesLLMEntryAnalysis(cfg) && os.Getenv(llmEntryAnalysisAPIKeyEnv) == "" {
+		fmt.Printf("[WARN] llm_entry_analysis enabled but %s is not set — analyses will fail (advisory only, trading unaffected)\n", llmEntryAnalysisAPIKeyEnv)
+	}
+
 	// Attach Discord slash commands (issue #212). Non-fatal: registration
 	// failures are logged + DM'd to the owner but never stop the daemon.
 	if d := notifier.DiscordBackend(); d != nil {
@@ -2918,6 +2961,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
+	queueLLMEntryAnalysisIfOpened(sc, s, result.Symbol, trades, exec.OpenTrade, result.Indicators)
 
 	detail := ""
 	if trades > 0 {
@@ -3645,6 +3689,11 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 
+	// #1137: fresh-open LLM analysis. Placed after the immediate-SL branch so
+	// an open that stopped out at submit (trades==2, position already gone)
+	// never dispatches.
+	queueLLMEntryAnalysisIfOpened(sc, s, result.Symbol, trades, openTrade, result.Indicators)
+
 	detail := ""
 	if trades > 0 {
 		prefix := ""
@@ -3858,6 +3907,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
+	queueLLMEntryAnalysisIfOpened(sc, s, result.Symbol, trades, exec.OpenTrade, result.Indicators)
 
 	detail := ""
 	if trades > 0 {
@@ -4029,6 +4079,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
+	queueLLMEntryAnalysisIfOpened(sc, s, result.Symbol, trades, exec.OpenTrade, result.Indicators)
 
 	detail := ""
 	if trades > 0 {
@@ -4248,6 +4299,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
+	queueLLMEntryAnalysisIfOpened(sc, s, result.Symbol, trades, exec.OpenTrade, result.Indicators)
 
 	detail := ""
 	if trades > 0 {

@@ -156,7 +156,17 @@ func runPython(parentCtx context.Context, script string, args []string, stdinDat
 func runPythonWithTimeout(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration) ([]byte, []byte, error) {
 	pythonSemaphore <- struct{}{}
 	defer func() { <-pythonSemaphore }()
+	return spawnPythonProcess(parentCtx, script, args, stdinData, timeout)
+}
 
+// spawnPythonProcess is the semaphore-free spawn core shared by
+// runPythonWithTimeout and the #1137 LLM entry-analysis lane. The LLM lane
+// deliberately bypasses pythonSemaphore — a multi-minute LLM pipeline holding
+// one of the 4 trading-path slots would starve signal checks — and bounds
+// itself with its own worker-level concurrency cap instead. Every other
+// caller must go through runPython*/runPythonWithTimeout so trading-path
+// subprocesses stay capped.
+func spawnPythonProcess(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration) ([]byte, []byte, error) {
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 

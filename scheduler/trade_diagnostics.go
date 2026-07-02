@@ -106,6 +106,13 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 		ClosedAt:        closedAt,
 		MetricsStatus:   diagMetricsPending,
 	}
+	// #1137: carry the completed LLM entry-analysis verdict (if any) into the
+	// reserved llm_verdict column. Empty = analysis disabled, failed, or not
+	// finished before the close — stays NULL.
+	if pos.LLMVerdict != "" {
+		v := pos.LLMVerdict
+		row.LLMVerdict = &v
+	}
 	if err := tradeDiagnosticsRecorder(&row); err != nil {
 		log.Printf("[diagnostics] insert row for %s %s: %v", s.ID, pos.Symbol, err)
 		return

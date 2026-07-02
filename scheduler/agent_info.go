@@ -85,6 +85,7 @@ type agentEnvVar struct {
 // agentInfoEnvVars is the curated env-var registry. TestAgentInfoEnvVarsCoverSource
 // cross-checks it against every os.Getenv("...") literal in scheduler/*.go.
 var agentInfoEnvVars = []agentEnvVar{
+	{Name: "ANTHROPIC_API_KEY", Purpose: "Anthropic API key for the #1137 LLM entry-analysis pipeline (shared_scripts/llm_review.py); Go only checks presence to warn when analysis is enabled without it.", Secret: true},
 	{Name: "DISCORD_BOT_TOKEN", Purpose: "Discord bot token for notifications.", Secret: true},
 	{Name: "DISCORD_OWNER_ID", Purpose: "Discord user ID that receives owner-only DMs and mutating commands.", Secret: false},
 	{Name: "GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (fallback to GO_TRADER_GITHUB_TOKEN).", Secret: true},

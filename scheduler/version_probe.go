@@ -69,6 +69,10 @@ var fetchATRProbeArgv = []string{
 // fail on the first signal-fire rather than at startup. --mode=paper so the
 // probe never enters the live-credentials branch; --probe-only short-circuits
 // at the top of run_execute before any adapter or order code runs.
+// llmReviewProbeArgv probes shared_scripts/llm_review.py (#1137).
+// --probe-only short-circuits before any stdin read, env access, or network.
+var llmReviewProbeArgv = []string{"--probe-only"}
+
 var executeProbeArgv = []string{
 	"--execute",
 	"--symbol=BTC", "--side=buy", "--size=0",
@@ -173,6 +177,14 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {
 				return err
 			}
+		}
+	}
+	// #1137: probe the LLM entry-analysis pipeline only when a strategy opts
+	// in, so an asymmetric deploy (new Go dispatching to a missing/stale
+	// llm_review.py) fails at startup instead of on the first open.
+	if anyStrategyUsesLLMEntryAnalysis(cfg) {
+		if err := probeOneCheckScriptFn(llmEntryAnalysisScript, llmReviewProbeArgv); err != nil {
+			return err
 		}
 	}
 	if len(scripts) > 0 {
