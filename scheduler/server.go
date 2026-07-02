@@ -403,7 +403,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PnL:                            pnl,
 			PnLPct:                         pnlPct,
 			RiskState:                      s.RiskState,
-			Regime:                         s.Regime,
+			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
 			BaseDirection:                  baseDir,
 			BaseInvertSignal:               baseInvert,
 			EffectiveDirection:             effDir,

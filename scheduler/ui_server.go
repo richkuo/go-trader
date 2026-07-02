@@ -459,7 +459,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		PnLPct:           pnlPct,
 		WinRate:          winRate,
 		Sharpe:           sharpe,
-		Regime:           snapshot.Regime,
+		Regime:           strategyDisplayRegimeLabel(&snapshot, sc, ss.regime),
 		Direction:        strategyDisplayDirection(sc),
 		PnL:              pnl,
 		PortfolioValue:   pv,

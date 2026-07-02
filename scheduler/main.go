@@ -2489,7 +2489,7 @@ func main() {
 					pv = displayStrategyValue(stratState, prices)
 					posCount := len(stratState.Positions) + len(stratState.OptionPositions)
 					cash := stratState.Cash
-					regimeLabel := stratState.Regime
+					regimeLabel := strategyDisplayRegimeLabel(stratState, sc, cfg.Regime)
 					mu.RUnlock()
 
 					logger.Info("%s", formatStatusLine(cash, posCount, pv, trades, regimeLabel))

@@ -200,3 +200,74 @@ func TestValidateRegimeWindowsConfig_RejectsReservedWindowName(t *testing.T) {
 		t.Fatalf("errs = %v", errs)
 	}
 }
+
+// #1189: the operator-facing display label must match the strategy's
+// configured gate window, not the shared-default window used for
+// stratState.Regime.
+func TestStrategyDisplayRegimeLabel_UsesGateWindowOverride(t *testing.T) {
+	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
+	st := &StrategyState{
+		Regime: "ranging", // shared-default ("medium") window label
+		RegimeWindows: map[string]string{
+			"medium":         "ranging",
+			"composite_long": "trending_down_choppy",
+		},
+	}
+	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "trending_down_choppy" {
+		t.Fatalf("strategyDisplayRegimeLabel = %q, want trending_down_choppy", got)
+	}
+}
+
+func TestStrategyDisplayRegimeLabel_FallsBackWhenGateWindowUnset(t *testing.T) {
+	sc := StrategyConfig{} // no regime_gate_window override
+	st := &StrategyState{
+		Regime:        "ranging",
+		RegimeWindows: map[string]string{"medium": "ranging", "composite_long": "trending_down_choppy"},
+	}
+	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "ranging" {
+		t.Fatalf("strategyDisplayRegimeLabel = %q, want ranging (fallback to shared default)", got)
+	}
+}
+
+func TestStrategyDisplayRegimeLabel_FallsBackWhenWindowLabelMissing(t *testing.T) {
+	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
+	st := &StrategyState{
+		Regime:        "ranging",
+		RegimeWindows: map[string]string{"medium": "ranging"}, // composite_long not populated yet
+	}
+	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "ranging" {
+		t.Fatalf("strategyDisplayRegimeLabel = %q, want ranging (fallback, gate label not yet captured)", got)
+	}
+}
+
+func TestStrategyDisplayRegimeLabel_NilStratState(t *testing.T) {
+	sc := StrategyConfig{RegimeGateWindow: "composite_long"}
+	if got := strategyDisplayRegimeLabel(nil, sc, nil); got != "" {
+		t.Fatalf("strategyDisplayRegimeLabel = %q, want empty", got)
+	}
+}
+
+// #1189 regression: a strategy that overrides ONLY regime_gate_window must
+// keep resolving its ATR/directional fallbacks (and therefore the #822
+// orphan-close and dynamic-regime-close tier resolution) from the shared
+// stratState.Regime — strategyDisplayRegimeLabel must never be substituted
+// into those call sites.
+func TestStrategyDisplayRegimeLabel_DoesNotAffectATRDirectionalFallbacks(t *testing.T) {
+	sc := StrategyConfig{RegimeGateWindow: "composite_long"} // ATR/directional windows left unset
+	st := &StrategyState{
+		Regime: "ranging",
+		RegimeWindows: map[string]string{
+			"medium":         "ranging",
+			"composite_long": "trending_down_choppy",
+		},
+	}
+	if got := strategyDisplayRegimeLabel(st, sc, nil); got != "trending_down_choppy" {
+		t.Fatalf("display label = %q, want trending_down_choppy", got)
+	}
+	if got := strategyCurrentATRRegime(st, sc); got != "ranging" {
+		t.Fatalf("strategyCurrentATRRegime = %q, want ranging (unaffected shared-default fallback)", got)
+	}
+	if got := strategyCurrentDirectionalRegime(st, sc); got != "ranging" {
+		t.Fatalf("strategyCurrentDirectionalRegime = %q, want ranging (unaffected shared-default fallback)", got)
+	}
+}

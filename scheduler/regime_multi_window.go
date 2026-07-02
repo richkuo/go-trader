@@ -502,6 +502,32 @@ func strategyCurrentDirectionalRegime(stratState *StrategyState, sc StrategyConf
 	return strings.TrimSpace(stratState.Regime)
 }
 
+// strategyDisplayRegimeLabel resolves the regime label for operator-facing
+// status surfaces (Phase 6 status log, /status API, dashboard) using the
+// strategy's configured gate window (regime_gate_window) instead of the
+// shared-default window, so the displayed label matches what the strategy's
+// entry gate is actually evaluating (#1189).
+//
+// Display-only: stratState.Regime itself must stay untouched. It is also the
+// live fallback consulted by strategyCurrentDirectionalRegime/
+// strategyCurrentATRRegime whenever regime_directional_window/regime_atr_window
+// is left unset, which feeds the #822 orphan auto-close and dynamic-regime
+// close SL/TP tier resolution — repointing the shared field itself (rather
+// than adding this separate resolver) would silently change those live
+// trading decisions for any strategy overriding only regime_gate_window.
+func strategyDisplayRegimeLabel(stratState *StrategyState, sc StrategyConfig, rc *RegimeConfig) string {
+	if stratState == nil {
+		return ""
+	}
+	key := normalizeRegimeWindowKey(sc.RegimeGateWindow)
+	if key != "" && key != regimeWindowDefaultKey && len(stratState.RegimeWindows) > 0 {
+		if label, ok := stratState.RegimeWindows[key]; ok && strings.TrimSpace(label) != "" {
+			return strings.TrimSpace(label)
+		}
+	}
+	return strings.TrimSpace(stratState.Regime)
+}
+
 func positionCtxForCheck(sc StrategyConfig, pos *Position, regime *RegimeConfig) PositionCtx {
 	ctx := positionCtxFromPosition(pos)
 	if pos == nil {
