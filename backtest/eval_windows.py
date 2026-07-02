@@ -282,6 +282,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             profile_allocation: Optional[dict] = None,
             allowed_regimes: Optional[list[str]] = None,
             regime_windows_spec: Optional[dict] = None,
+            regime_directional_policy: Optional[dict] = None,
             regime_enabled: bool = False,
             regime_period: int = 14,
             regime_adx_threshold: float = 20.0,
@@ -309,6 +310,15 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     #1058 path classifies the PRIMARY (medium-first) window instead — composite
     (9-state) or ADX per the spec — so composite labels can gate entries on the
     M1 bar.
+
+    regime_directional_policy (#1166, #1025 shape {trend_regime: {label:
+    {direction, invert_signal?}}}) resolves the entry direction per bar
+    regime so directional-gated candidates can be scored on the M1 bar. It is
+    a RESEARCH-MODE surface: the leg passes the Backtester's #1085 certified
+    input explicitly (True), deliberately bypassing the default-off live
+    evidence gate for measurement — never wire a shipped certification
+    artifact through here. regime_enabled is forced true when a policy is
+    present (the Backtester rejects a policy without regime compute).
     """
     from atr import ensure_atr_indicator
     from data_fetcher import load_cached_data
@@ -354,7 +364,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     # spec alone also enables it (the spec exists only to pick the gate's
     # classifier, so threading it without computing the column would be a
     # silent no-op).
-    use_regime = regime_enabled or bool(allowed_regimes) or bool(regime_windows_spec)
+    use_regime = (regime_enabled or bool(allowed_regimes)
+                  or bool(regime_windows_spec)
+                  or bool(regime_directional_policy))
     bt_kwargs = dict(
         initial_capital=capital, platform=PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
@@ -376,6 +388,14 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     # default stands (passing None would zero it out via the constructor).
     if slippage_pct is not None:
         bt_kwargs["slippage_pct"] = slippage_pct
+    # #1166: keys added ONLY when a policy is present so legs without one
+    # build byte-identical Backtester kwargs. The certified override is
+    # explicit research mode — without it the #1085 evidence gate nulls the
+    # policy to base direction (matching live default-off) and the run would
+    # silently score the ungated config.
+    if regime_directional_policy:
+        bt_kwargs["regime_directional_policy"] = regime_directional_policy
+        bt_kwargs["regime_directional_certified"] = True
     bt = Backtester(**bt_kwargs)
     results = bt.run(df_signals, strategy_name=name, symbol=symbol,
                      timeframe=timeframe, params=strat_params, save=False)
@@ -500,6 +520,47 @@ def validate_candidate(candidate: dict) -> dict:
             except (ValueError, TypeError) as exc:
                 raise ValueError(f"candidate.regime_windows_spec: {exc}")
             candidate["regime_windows_spec"] = normalized
+
+    # #1166: regime_directional_policy (per-regime entry direction, #1025
+    # shape) is threadable so directional-gated candidates can be scored on
+    # the M1 bar. Normalize with the Backtester's own parser so a malformed
+    # policy fails loudly at the gate instead of deep in the leg run. Any
+    # state resolving direction='both' opens a two-sided book for that
+    # regime, which the plain signal path cannot model (the Backtester
+    # rejects it at run) — require close refs up front, mirroring the
+    # candidate-level direction='both' guard.
+    rdp = candidate.get("regime_directional_policy")
+    if rdp is not None:
+        if not isinstance(rdp, dict):
+            raise ValueError(
+                "candidate.regime_directional_policy must be an object "
+                "{trend_regime: {label: {direction, invert_signal?}}} "
+                "(or omitted for no directional gate)")
+        if not rdp:
+            candidate.pop("regime_directional_policy", None)
+        else:
+            from backtester import _normalize_regime_directional_policy
+            try:
+                normalized_rdp = _normalize_regime_directional_policy(rdp)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"candidate.regime_directional_policy: {exc}")
+            both_labels = sorted(
+                label for label, entry in (normalized_rdp or {}).items()
+                if entry.get("direction") == "both")
+            if both_labels and not close_refs:
+                raise ValueError(
+                    "candidate.regime_directional_policy resolves "
+                    f"direction='both' for {both_labels} but the candidate "
+                    "has no close_strategies. The plain signal path runs one "
+                    "leg at a time, so a both-sided regime would be rejected "
+                    "by the Backtester (or silently mis-scored). Add "
+                    "close_strategies (the open/close engine models both "
+                    "sides) or drop the both-states.")
+            # Keep the full {trend_regime: ...} shape the Backtester
+            # constructor takes, with the compacted per-label entries.
+            candidate["regime_directional_policy"] = {
+                "trend_regime": normalized_rdp}
     return candidate
 
 
@@ -532,6 +593,8 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
             profile_allocation=candidate.get("profile_allocation"),
             allowed_regimes=candidate.get("allowed_regimes"),
             regime_windows_spec=candidate.get("regime_windows_spec"),
+            regime_directional_policy=candidate.get(
+                "regime_directional_policy"),
         )
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
@@ -654,7 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "close_strategies?, direction?, invert_signal?, "
                         "stop_loss_atr_mult?, trailing_stop_atr_mult?, "
                         "allowed_regimes?, regime_windows_spec?, "
-                        "profile_allocation?}. "
+                        "regime_directional_policy?, profile_allocation?}. "
                         "Overrides --strategy/--params. allowed_regimes enables "
                         "the entry gate on the M1 bar (legacy lookback unless "
                         "regime_windows_spec picks another classifier).")
@@ -681,6 +744,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "PRIMARY (medium-first) window (#1058) so composite "
                         "labels work in --allowed-regimes. Omit for the "
                         "legacy ADX gate.")
+    p.add_argument("--regime-directional-policy", default=None, metavar="JSON",
+                   help="#1166 directional-policy JSON (#1025 shape: "
+                        "{trend_regime: {label: {direction: long|short|both, "
+                        "invert_signal?}}}) resolving the entry direction per "
+                        "bar regime. RESEARCH MODE: the leg passes the #1085 "
+                        "certified input explicitly, so the default-off live "
+                        "gate is bypassed deliberately for measurement. "
+                        "both-states require close_strategies.")
     p.add_argument("--windows", default=None,
                    help=f"Comma list of windows (default: all). "
                         f"Known: {', '.join(WINDOWS)}")
@@ -728,6 +799,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.regime_windows_spec:
         candidate["regime_windows_spec"] = json.loads(args.regime_windows_spec)
+
+    if args.regime_directional_policy:
+        candidate["regime_directional_policy"] = json.loads(
+            args.regime_directional_policy)
 
     try:
         validate_candidate(candidate)

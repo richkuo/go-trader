@@ -457,3 +457,162 @@ def test_evaluate_window_validates_before_any_work():
     with pytest.raises(ValueError, match="silently dropped"):
         ew.evaluate_window(None, {"name": "x", "direction": "both"},
                            [("BTC/USDT", "1h")], "oos", 1000.0, {})
+
+
+# ---------------------------------------------------------------------------
+# #1166: regime_directional_policy threading (M1 directional-gate candidates)
+# ---------------------------------------------------------------------------
+
+def test_validate_candidate_accepts_regime_directional_policy():
+    # Valid #1025-shaped policy: normalized through the Backtester's own
+    # parser (invert_signal defaulted, unknown keys rejected there) and kept
+    # on the candidate in the full {trend_regime: ...} shape the Backtester
+    # constructor takes.
+    c = {"name": "x", "direction": "both",
+         "close_strategies": [{"name": "atr_stop",
+                               "params": {"atr_mult": 2.0}}],
+         "regime_directional_policy": {"trend_regime": {
+             "trending_up": {"direction": "long"},
+             "trending_down": {"direction": "both"}}}}
+    assert ew.validate_candidate(c) is c
+    assert c["regime_directional_policy"]["trend_regime"]["trending_up"] == {
+        "direction": "long", "invert_signal": False}
+
+    # Empty dict = no policy (normalized away, like allowed_regimes/spec).
+    c2 = {"name": "x", "regime_directional_policy": {}}
+    assert ew.validate_candidate(c2) is c2
+    assert "regime_directional_policy" not in c2
+
+
+def test_validate_candidate_rejects_malformed_regime_directional_policy():
+    # Non-dict shapes fail loudly.
+    with pytest.raises(ValueError, match="regime_directional_policy"):
+        ew.validate_candidate(
+            {"name": "x", "regime_directional_policy": "trending_up"})
+    # Missing trend_regime wrapper (the #1025 shape) surfaces the parser error.
+    with pytest.raises(ValueError, match="trend_regime"):
+        ew.validate_candidate(
+            {"name": "x", "regime_directional_policy": {
+                "trending_up": {"direction": "long"}}})
+    # Bad direction value rejected by the parser.
+    with pytest.raises(ValueError, match="regime_directional_policy"):
+        ew.validate_candidate(
+            {"name": "x", "regime_directional_policy": {"trend_regime": {
+                "trending_up": {"direction": "flat"}}}})
+
+
+def test_validate_candidate_rejects_both_state_policy_without_close_refs():
+    # A both-state resolves a two-sided book for that regime; the plain
+    # signal path cannot model it (Backtester rejects at run) — fail at the
+    # gate, mirroring the direction='both' guard.
+    with pytest.raises(ValueError, match="close_strategies"):
+        ew.validate_candidate(
+            {"name": "x", "regime_directional_policy": {"trend_regime": {
+                "trending_down": {"direction": "both"}}}})
+
+
+def test_run_leg_omits_policy_kwargs_without_policy(monkeypatch):
+    """#1166 regression: legs without a directional policy must build
+    byte-identical Backtester kwargs — the new keys are only ever added when
+    a policy is present, so existing candidates cannot change behavior."""
+    df = _synthetic_df()
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    import backtester as bt_mod
+    real = bt_mod.Backtester
+    calls = []
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(bt_mod, "Backtester", _spy, raising=True)
+    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                     ("2026-01-01", None))
+    assert leg is not None and calls
+    assert "regime_directional_policy" not in calls[0]
+    assert "regime_directional_certified" not in calls[0]
+
+
+def test_run_leg_threads_regime_directional_policy_research_certified(monkeypatch):
+    """#1166: the policy must reach the Backtester with the EXPLICIT
+    research-mode certified override (else the #1085 evidence gate nulls it
+    to base direction — matching live default-off — and the measurement
+    silently scores the ungated config), and regime compute must be forced
+    on (the Backtester rejects a policy with regime_enabled=False)."""
+    df = _synthetic_df()
+    df = df.copy()
+    df["regime"] = "trending_up"
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    import backtester as bt_mod
+    real = bt_mod.Backtester
+    calls = []
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(bt_mod, "Backtester", _spy, raising=True)
+    policy = {"trend_regime": {"trending_up": {"direction": "short"}}}
+    leg = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                     ("2026-01-01", None),
+                     regime_directional_policy=policy)
+    assert leg is not None and calls
+    kw = calls[0]
+    assert kw["regime_directional_policy"] == policy
+    assert kw["regime_directional_certified"] is True
+    assert kw["regime_enabled"] is True
+
+
+def test_run_leg_policy_switches_plain_path_side(monkeypatch):
+    """#1166 behavioral: with every bar classified trending_up and a
+    trending_up→short policy, the plain path runs the short/flat mirror for
+    those bars instead of long/flat — the leg must differ from the ungated
+    long run. Identical legs mean the policy never reached the engine (or
+    the #1085 gate nulled it because the certified override was dropped)."""
+    df = _synthetic_df(n=240)
+    df = df.copy()
+    df["regime"] = "trending_up"
+    import data_fetcher
+    monkeypatch.setattr(data_fetcher, "load_cached_data",
+                        lambda *a, **k: df, raising=True)
+    plain = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None))
+    gated = ew.run_leg(_FakeRegistry(), "alternator", None, "BTC/USDT", "1h",
+                       ("2026-01-01", None),
+                       regime_directional_policy={"trend_regime": {
+                           "trending_up": {"direction": "short"}}})
+    assert plain is not None and plain.get("trades", 0) > 0
+    assert gated is not None and gated.get("trades", 0) > 0
+    assert (gated["return_pct"], gated["max_dd_pct"]) != \
+        (plain["return_pct"], plain["max_dd_pct"]), (
+        "trending_up→short policy produced a leg identical to the ungated "
+        "long run — the policy never reached the Backtester")
+
+
+def test_evaluate_window_threads_regime_directional_policy(monkeypatch):
+    """#1166: the candidate key must flow evaluate_window → run_leg."""
+    seen = {}
+
+    def _fake_run_leg(reg, name, params, symbol, timeframe, window, **kwargs):
+        seen.update(kwargs)
+        return {"sharpe": 1.0, "return_pct": 1.0, "max_dd_pct": 1.0,
+                "ddadj": 1.0, "trades": 1, "bh_return_pct": 0.0,
+                "span_days": 30.0}
+
+    monkeypatch.setattr(ew, "run_leg", _fake_run_leg, raising=True)
+    monkeypatch.setattr(ew, "incumbent_bars", lambda legs: {}, raising=True)
+    monkeypatch.setattr(ew, "compute_incumbent_legs",
+                        lambda *a, **k: {}, raising=True)
+    policy = {"trend_regime": {"trending_up": {"direction": "long"}}}
+    cand = {"name": "x", "direction": "both",
+            "close_strategies": [{"name": "atr_stop",
+                                  "params": {"atr_mult": 2.0}}],
+            "regime_directional_policy": policy}
+    ew.evaluate_window(None, cand, [("BTC/USDT", "1h")], "oos", 1000.0, {})
+    # validate_candidate normalizes (invert_signal defaulted) and re-wraps.
+    assert seen.get("regime_directional_policy") == {"trend_regime": {
+        "trending_up": {"direction": "long", "invert_signal": False}}}
