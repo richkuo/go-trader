@@ -1,10 +1,11 @@
 {
   "study": "squeeze_momentum_1198_suggest",
   "registry": "spot",
-  "harnesses": ["m1_noise", "m1", "m3", "m5"],
-  "windows": ["is", "oos"],
+  "harnesses": ["m1_noise", "m1", "m3", "m5", "m6"],
+  "windows": ["is", "oos", "2023", "2024", "2025H1"],
   "datasets": null,
   "correction": {"method": "benjamini_hochberg", "alpha": 0.05},
+  "base": {"name": "squeeze_momentum", "direction": "long"},
   "candidates": [
     {
       "key": "baseline",
@@ -21,5 +22,51 @@
       "candidate": "comp_up_family.json",
       "hypothesis": "gate entries to the composite trending_up family (clean+choppy)"
     }
-  ]
+  ],
+  "sweep": {"kc_mult": [1.0, 1.5], "mom_lookback": [12, 16]},
+  "gate_variants": [
+    {
+      "label": "adx_up",
+      "allowed_regimes": ["trending_up", "ranging"],
+      "regime_windows_spec": {"medium": {"classifier": "adx", "period": 14, "adx_threshold": 20.0}}
+    },
+    {
+      "label": "comp_up",
+      "allowed_regimes": ["trending_up_clean", "trending_up_choppy"],
+      "regime_windows_spec": {"medium": {"classifier": "composite", "period": 14}}
+    }
+  ],
+  "m6": {
+    "strategy_id": "squeeze_momentum",
+    "incumbent_close": [
+      {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+        {"atr_multiple": 0.5, "close_fraction": 0.5},
+        {"atr_multiple": 1.0, "close_fraction": 1.0}
+      ]}}
+    ],
+    "candidate_close_variants": [
+      {
+        "key": "wider_tp",
+        "hypothesis": "widen the 2-rung ranging TP so noise doesn't cash the whole position at 0.5 ATR",
+        "candidate_close": [
+          {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 0.75, "close_fraction": 0.5},
+            {"atr_multiple": 1.5, "close_fraction": 1.0}
+          ]}}
+        ],
+        "candidate_stops": "inherit"
+      },
+      {
+        "key": "atr_trail",
+        "hypothesis": "replace the tiered TP with a 3x ATR trailing stop (let winners run)",
+        "candidate_close": [
+          {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3.0}}
+        ],
+        "candidate_stops": "drop"
+      }
+    ],
+    "close_stack_specs": [
+      {"close": {"name": "atr_stop", "params": {"atr_mult": [2.0, 2.5]}}}
+    ]
+  }
 }

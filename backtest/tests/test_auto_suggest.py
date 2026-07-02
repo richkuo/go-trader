@@ -153,6 +153,46 @@ def test_non_replayable_m6_close_excluded():
     assert entries["m6.good"]["precondition_errors"] == []
 
 
+def test_m6_requires_exactly_one_incumbent_source():
+    base = dict(candidates=[])
+    both = _base_spec(**base, m6={"strategy_id": "s", "baseline_config": "cfg.json",
+                                  "incumbent_close": [{"name": "tiered_tp_atr"}],
+                                  "candidate_close_variants": []})
+    with pytest.raises(ValueError, match="EXACTLY one"):
+        asug.load_spec(both, _STUDY_DIR)
+    neither = _base_spec(**base, m6={"strategy_id": "s",
+                                     "candidate_close_variants": []})
+    with pytest.raises(ValueError, match="EXACTLY one"):
+        asug.load_spec(neither, _STUDY_DIR)
+
+
+def test_m6_incumbent_close_only_spec_loads():
+    spec = asug.load_spec(_base_spec(candidates=[], m6={
+        "strategy_id": "squeeze_momentum",
+        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+        "candidate_close_variants": [
+            {"key": "v", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]},
+    ), _STUDY_DIR)
+    entries = asug.expand_candidates(spec)
+    ab = [e for e in entries if e["kind"] == "exit_ab"]
+    assert len(ab) == 1 and ab[0]["precondition_errors"] == []
+    assert ab[0]["candidate"]["baseline_config"] is None
+
+
+def test_shipped_full_options_spec_loads_and_expands():
+    # The committed all-options default must load and expand cleanly (guards the
+    # demo from silently rotting — every generator + M6 exercised).
+    with open(os.path.join(_STUDY_DIR, "suggest.json")) as fh:
+        raw = json.load(fh)
+    spec = asug.load_spec(raw, _STUDY_DIR)
+    entries = asug.expand_candidates(spec)
+    kinds = {e["kind"] for e in entries}
+    assert kinds == {"open", "exit_ab"}          # both harness families present
+    ab = [e for e in entries if e["kind"] == "exit_ab"]
+    assert all(e["precondition_errors"] == [] for e in ab)   # all M6 closes replayable
+    assert len({e["key"] for e in entries}) == len(entries)  # keys unique
+
+
 def test_m5_params_limitation_flagged():
     spec = asug.load_spec(_base_spec(
         harnesses=["m5"],
@@ -197,6 +237,25 @@ def test_m6_argv_tail_repeats_allowed_regimes():
     assert tail.count("--allowed-regimes") == 2
     assert "--bootstrap-resamples" in tail and "10000" in tail
     assert "--candidate-stops" in tail and "inherit" in tail
+
+
+def test_m6_argv_tail_baseline_config_path():
+    m6c = {"baseline_config": "/cfg.json", "strategy_id": "s",
+           "candidate_close": [{"name": "atr_stop"}]}
+    tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
+    assert "--baseline-config" in tail and "/cfg.json" in tail
+    assert "--incumbent-close" not in tail  # exactly one incumbent source
+
+
+def test_m6_argv_tail_incumbent_close_path_omits_baseline():
+    # The self-contained path: no baseline_config, an explicit incumbent ladder.
+    m6c = {"strategy_id": "squeeze_momentum",
+           "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+           "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}
+    tail = asug.m6_argv_tail(m6c, "spot", ["oos"], None, 100, 1066, "/t/m6.json")
+    assert "--baseline-config" not in tail
+    assert "--incumbent-close" in tail
+    assert "--strategy" in tail and "squeeze_momentum" in tail
 
 
 def test_m5_argv_tail():
