@@ -103,14 +103,33 @@ func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) 
 		keys = append(keys, k)
 	}
 	userEntry, hasUserEntry := closeDefaultsEntry(userClose, e.Name)
-	_, registryHasTPTiers := e.DefaultParams["tp_tiers"]
-	if hasUserEntry && !registryHasTPTiers {
-		// Some override-eligible evaluators (e.g. trailing_tp_ratchet_regime)
-		// ship empty registry default_params — the operator-configured
-		// tp_tiers is the only value that ever runs, so surface it even
-		// though the registry itself has no tp_tiers key to iterate.
-		if tp, ok := userEntry["tp_tiers"]; ok && tp != nil {
-			keys = append(keys, "tp_tiers")
+	// overrideKeys are the user_defaults.close keys whose configured value, if
+	// present, is the effective value shown here (marked as an override). Every
+	// override-eligible evaluator honors tp_tiers; trailing_tp_ratchet_regime
+	// additionally honors the coupled trailing_stop_atr_regime SL owner (the
+	// only evaluator for which close_defaults.go allows that key — see
+	// validateUserCloseDefaults). Both ship absent from the registry
+	// default_params, so surface them even though the registry never lists them.
+	overrideKeys := []string{"tp_tiers"}
+	if strings.ToLower(strings.TrimSpace(e.Name)) == trailingTPRatchetRegimeCloseName {
+		overrideKeys = append(overrideKeys, userCloseDefaultTrailingStopATRRegimeKey)
+	}
+	isOverrideKey := func(k string) bool {
+		for _, ok := range overrideKeys {
+			if k == ok {
+				return true
+			}
+		}
+		return false
+	}
+	if hasUserEntry {
+		for _, ok := range overrideKeys {
+			if _, registryHas := e.DefaultParams[ok]; registryHas {
+				continue // already iterated from the registry default_params
+			}
+			if v, present := userEntry[ok]; present && v != nil {
+				keys = append(keys, ok)
+			}
 		}
 	}
 	sort.Strings(keys)
@@ -118,9 +137,9 @@ func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) 
 		sb.WriteString("  params: (none)\n")
 	}
 	for _, k := range keys {
-		if k == "tp_tiers" && hasUserEntry {
-			if tp, ok := userEntry["tp_tiers"]; ok && tp != nil {
-				fmt.Fprintf(&sb, "  %s=%s (user_defaults.close override)\n", k, jsonInline(tp))
+		if hasUserEntry && isOverrideKey(k) {
+			if v, ok := userEntry[k]; ok && v != nil {
+				fmt.Fprintf(&sb, "  %s=%s (user_defaults.close override)\n", k, jsonInline(v))
 				continue
 			}
 		}

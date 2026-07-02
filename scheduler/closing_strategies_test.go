@@ -86,6 +86,71 @@ func TestFormatClosingStrategiesResponseOverrideSurfacesWhenRegistryDefaultIsEmp
 	}
 }
 
+func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
+	// trailing_tp_ratchet_regime is the one evaluator whose user_defaults.close
+	// entry may carry a coupled trailing_stop_atr_regime SL owner in addition to
+	// tp_tiers (close_defaults.go validateUserCloseDefaults / applyUserClose
+	// DefaultRatchetRegimeTrail). Both effective override keys must be surfaced
+	// and each marked as an override — the catalog exists so an operator can see
+	// what actually runs without reading source.
+	entries := []closeRegistryEntry{
+		{Name: "trailing_tp_ratchet_regime", Description: "Regime ratchet", DefaultParams: map[string]interface{}{}, Platforms: []string{"spot"}},
+	}
+
+	// Case 1: both tp_tiers and trailing_stop_atr_regime configured — both shown,
+	// both marked as overrides.
+	cfgBoth := &Config{
+		UserDefaults: &UserDefaultsConfig{
+			Close: CloseDefaultsMap{
+				"trailing_tp_ratchet_regime": {
+					"tp_tiers": []interface{}{
+						map[string]interface{}{"atr_multiple": 1.0, "trailing_stop_mult_after": 0.5},
+					},
+					"trailing_stop_atr_regime": map[string]interface{}{
+						"use_defaults": true,
+					},
+				},
+			},
+		},
+	}
+	body := formatClosingStrategiesResponse(cfgBoth, entries)[0]
+	if !strings.Contains(body, "tp_tiers=") || !strings.Contains(body, "trailing_stop_atr_regime=") {
+		t.Fatalf("expected both tp_tiers and trailing_stop_atr_regime surfaced, got: %s", body)
+	}
+	if strings.Count(body, "user_defaults.close override") != 2 {
+		t.Fatalf("expected both override keys marked as overrides, got: %s", body)
+	}
+	if strings.Contains(body, "params: (none)") {
+		t.Fatalf("configured overrides must not be hidden behind the (none) marker, got: %s", body)
+	}
+
+	// Case 2: tp_tiers only — no spurious trailing_stop_atr_regime line.
+	cfgTPOnly := &Config{
+		UserDefaults: &UserDefaultsConfig{
+			Close: CloseDefaultsMap{
+				"trailing_tp_ratchet_regime": {
+					"tp_tiers": []interface{}{
+						map[string]interface{}{"atr_multiple": 1.0, "trailing_stop_mult_after": 0.5},
+					},
+				},
+			},
+		},
+	}
+	body = formatClosingStrategiesResponse(cfgTPOnly, entries)[0]
+	if strings.Contains(body, "trailing_stop_atr_regime") {
+		t.Fatalf("no trailing_stop_atr_regime configured — must not emit a spurious SL line, got: %s", body)
+	}
+	if !strings.Contains(body, "tp_tiers=") || !strings.Contains(body, "user_defaults.close override") {
+		t.Fatalf("expected tp_tiers override surfaced, got: %s", body)
+	}
+
+	// Case 3: no user_defaults.close entry at all — no override note anywhere.
+	body = formatClosingStrategiesResponse(&Config{}, entries)[0]
+	if strings.Contains(body, "override") || strings.Contains(body, "trailing_stop_atr_regime") {
+		t.Fatalf("no user_defaults.close entry exists — must not claim any override, got: %s", body)
+	}
+}
+
 func TestFormatClosingStrategiesResponseUserDefaultsOverride(t *testing.T) {
 	cfg := &Config{
 		UserDefaults: &UserDefaultsConfig{
