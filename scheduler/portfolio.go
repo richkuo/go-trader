@@ -194,6 +194,10 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 		CloseReason:     reason,
 		DurationSeconds: duration,
 	})
+	// #1147: every full-close path funnels through here, so this is the
+	// diagnostics capture choke point. Eager identity insert only — the
+	// hold-window OHLCV fetch happens in the async worker, outside mu.
+	captureTradeDiagnostics(s, pos, closePrice, realizedPnL, reason, closedAt)
 }
 
 // closePositionIsCorrupt reports whether a position's structural fields make a

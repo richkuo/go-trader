@@ -70,6 +70,7 @@ var agentInfoCommands = []agentCommand{
 	{Name: "backfill", Summary: "Backfill derived data (trade-ledger fees/PnL, HL fees).", Usage: "go-trader backfill <trade-ledger|hl-fees> [...]"},
 	{Name: "probe", Summary: "Run startup probes against the configured check scripts.", Usage: "go-trader probe [--config <path>]"},
 	{Name: "inspect", Summary: "Print a strategy's effective (post-migration, post-default) config.", Usage: "go-trader inspect [--config <path>] [--json] <strategy-id>|--all"},
+	{Name: "diagnostics", Summary: "Read-only per-strategy trade-quality report (MFE/MAE/capture ratio) with backtestable tuning hypotheses (#1147).", Usage: "go-trader diagnostics [--config <path>] [--db <path>] [--strategy <id>] [--min-trades N] [--min-bucket N]", Flags: []string{"--config", "--db", "--strategy", "--min-trades", "--min-bucket"}},
 	{Name: "version", Summary: "Print the binary version.", Usage: "go-trader version"},
 }
 

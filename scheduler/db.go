@@ -339,6 +339,37 @@ CREATE TABLE IF NOT EXISTS pending_limit_orders (
     expires_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+-- #1147 per-trade trade-quality diagnostics: one row per closed position,
+-- inserted eagerly at close; nullable quality metrics filled asynchronously.
+CREATE TABLE IF NOT EXISTS trade_diagnostics (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    position_id TEXT NOT NULL DEFAULT '',
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL DEFAULT '',
+    timeframe TEXT NOT NULL DEFAULT '',
+    regime_at_open TEXT NOT NULL DEFAULT '',
+    close_reason TEXT NOT NULL DEFAULT '',
+    entry_price REAL NOT NULL DEFAULT 0,
+    exit_price REAL NOT NULL DEFAULT 0,
+    quantity REAL NOT NULL DEFAULT 0,
+    realized_pnl REAL NOT NULL DEFAULT 0,
+    entry_atr REAL NOT NULL DEFAULT 0,
+    stop_loss_atr_mult REAL,
+    opened_at TEXT NOT NULL DEFAULT '',
+    closed_at TEXT NOT NULL DEFAULT '',
+    mfe_price REAL,
+    mae_price REAL,
+    favorable_pct REAL,
+    adverse_pct REAL,
+    capture_ratio REAL,
+    metrics_status TEXT NOT NULL DEFAULT 'pending',
+    llm_verdict TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_diag_strategy ON trade_diagnostics(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_trade_diag_position ON trade_diagnostics(strategy_id, position_id);
 `
 
 // StateDB wraps a SQLite database for persistent state storage.

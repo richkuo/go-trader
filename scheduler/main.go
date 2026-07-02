@@ -31,6 +31,7 @@ var knownSubcommands = []string{
 	"probe",
 	"inspect",
 	"agent-info",
+	"diagnostics",
 	"version",
 }
 
@@ -83,6 +84,8 @@ func main() {
 			os.Exit(runInspect(os.Args[2:]))
 		case "agent-info":
 			os.Exit(runAgentInfo(os.Args[2:]))
+		case "diagnostics":
+			os.Exit(runDiagnostics(os.Args[2:]))
 		case "version", "--version", "-version":
 			fmt.Println(Version)
 			os.Exit(0)
@@ -291,6 +294,17 @@ func main() {
 	// cleanupNotifier in LIFO order) waits for in-flight side-effecting
 	// subprocesses and persists state before the notifier flushes.
 	initShutdownContexts()
+
+	// #1147 trade-quality diagnostics: eager row insert on every full close
+	// (hook fires inside recordClosedPosition, under mu — same cost class as
+	// the tradeRecorder insert), async MFE/MAE enrichment outside mu. The
+	// worker's candle fetches ride runPythonReadOnly, so they cancel on drain.
+	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, stateDB.UpdateTradeDiagnosticsMetrics)
+	diagWorker.UpdateStrategies(cfg.Strategies)
+	tradeDiagnosticsRecorder = stateDB.InsertTradeDiagnostics
+	tradeDiagnosticsEnqueue = diagWorker.Enqueue
+	go diagWorker.run(shutdownReadOnlyCtx)
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -546,6 +560,10 @@ func main() {
 		tickSeconds = schedulerTickSeconds(cfg)
 		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
 		mu.Unlock()
+
+		// #1147: refresh the diagnostics worker's strategy-ID → config
+		// snapshot so post-reload closes resolve the right fetch metadata.
+		diagWorker.UpdateStrategies(cfg.Strategies)
 
 		// #1085: refresh the directional-certification artifact on SIGHUP so a
 		// re-run of regime_1076_certify.py takes effect without a restart.
