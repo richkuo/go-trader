@@ -321,12 +321,53 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 			t.Fatal("must not fetch a window it cannot cover")
 		}
 	})
-	t.Run("missing timeframe defaults to 1h", func(t *testing.T) {
+	t.Run("missing timeframe defaults to 1h and fetches at 1h", func(t *testing.T) {
+		// Manual strategy with no sc.Timeframe and <3 args (the exact case the
+		// default targets): window math AND the candle fetch must use 1h, so the
+		// row reaches metrics_status=ok rather than fetch_failed.
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Unix(), 3000, 3200, 2980, 3100)}, nil)
 		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "manual", Symbol: "ETH"}})
 		f.worker.process(diagTestRow(opened, closed))
+		if f.updates[0] != diagMetricsOK {
+			t.Fatalf("status = %q, want %q", f.updates[0], diagMetricsOK)
+		}
 		if f.tfs[0] != diagDefaultTimeframe {
 			t.Fatalf("timeframe = %q, want %q", f.tfs[0], diagDefaultTimeframe)
+		}
+		if f.fetched[0].Strategy.Timeframe != diagDefaultTimeframe {
+			t.Fatalf("fetch timeframe = %q, want %q", f.fetched[0].Strategy.Timeframe, diagDefaultTimeframe)
+		}
+	})
+	t.Run("unknown timeframe token uses 1h for both window math and fetch", func(t *testing.T) {
+		// diagTimeframeDuration rejects the token: the window math falls back to
+		// 1h, and the fetch must be re-pointed at 1h too (not the bad token).
+		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Unix(), 3000, 3200, 2980, 3100)}, nil)
+		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Timeframe: "bogus"}})
+		f.worker.process(diagTestRow(opened, closed))
+		if f.updates[0] != diagMetricsOK {
+			t.Fatalf("status = %q, want %q", f.updates[0], diagMetricsOK)
+		}
+		if f.tfs[0] != diagDefaultTimeframe {
+			t.Fatalf("timeframe = %q, want %q", f.tfs[0], diagDefaultTimeframe)
+		}
+		if f.fetched[0].Strategy.Timeframe != diagDefaultTimeframe {
+			t.Fatalf("fetch timeframe = %q, want %q", f.fetched[0].Strategy.Timeframe, diagDefaultTimeframe)
+		}
+	})
+	t.Run("explicit timeframe fetches unchanged", func(t *testing.T) {
+		// A valid explicit timeframe must reach the fetch verbatim — no regression
+		// from the resolution→fetch wiring.
+		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Truncate(15*time.Minute).Unix(), 3000, 3200, 2980, 3100)}, nil)
+		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Symbol: "ETH", Timeframe: "15m"}})
+		f.worker.process(diagTestRow(opened, closed))
+		if f.updates[0] != diagMetricsOK {
+			t.Fatalf("status = %q, want %q", f.updates[0], diagMetricsOK)
+		}
+		if f.tfs[0] != "15m" {
+			t.Fatalf("timeframe = %q, want 15m", f.tfs[0])
+		}
+		if f.fetched[0].Strategy.Timeframe != "15m" {
+			t.Fatalf("fetch timeframe = %q, want 15m", f.fetched[0].Strategy.Timeframe)
 		}
 	})
 }

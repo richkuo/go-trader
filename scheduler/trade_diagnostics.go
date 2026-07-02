@@ -326,6 +326,12 @@ func (w *tradeDiagnosticsWorker) computeRowMetrics(row TradeDiagnosticsRow) (str
 	if !ok {
 		tfDur, tf = time.Hour, diagDefaultTimeframe
 	}
+	// Stamp the resolved timeframe back onto the local (value-copy) config so
+	// FetchUICandles fetches the same timeframe used for the window/bar math.
+	// Without this, a strategy whose timeframe only defaults here (unset
+	// sc.Timeframe/args, or an unknown token) would fetch at a different — or
+	// empty, hence rejected — timeframe and land in fetch_failed instead of ok.
+	sc.Timeframe = tf
 	from := row.OpenedAt.UTC().Truncate(tfDur)
 	to := row.ClosedAt.UTC()
 	if to.Before(from) {
