@@ -123,13 +123,13 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             finalize_decision,
             normalize_signal,
             parse_close_strategies,
+            reject_backtest_only_strategies,
             validate_close_strategy_names,
         )
 
         open_close_enabled = bool(open_strategy or close_strategies)
         configured_names = [open_strategy or strategy_name]
-        for name in configured_names:
-            get_strategy(name)
+        reject_backtest_only_strategies(configured_names, get_strategy)
         validate_close_strategy_names(
             parse_close_strategies(close_strategies),
             get_strategy,

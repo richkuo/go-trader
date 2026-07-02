@@ -742,6 +742,13 @@ DEFAULT_PARAM_RANGES = {
         "buffer_atr_mult": [0.1, 0.25, 0.5],
         "confirm_bars": [1, 2, 3],
     },
+    # Backtest-only research strategy (#1138) — never wired live.
+    "analog_retrieval": {
+        "horizon": [6, 12, 24],
+        "k_neighbors": [15, 25, 50],
+        "min_t_stat": [1.5, 2.0, 2.5],
+        "min_edge_atr": [0.1, 0.25, 0.5],
+    },
     "chart_pattern": {
         "pivot_lookback": [3, 5, 7],
         "tolerance": [0.02, 0.03, 0.05],

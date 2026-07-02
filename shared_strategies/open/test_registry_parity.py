@@ -227,3 +227,25 @@ def test_variant_descriptions_land_on_the_right_platform(spot_shim, futures_shim
     # Sanity spot-check a variant-bearing strategy description.
     assert "buy at oversold" in spot_shim.STRATEGY_REGISTRY["rsi"]["description"]
     assert "for futures" in futures_shim.STRATEGY_REGISTRY["rsi"]["description"]
+
+
+def test_backtest_only_analog_retrieval_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+    # #1138: offline research strategy — hidden from discovery, kept loadable
+    # for backtests, and flagged backtest_only so live check scripts refuse it
+    # (reject_backtest_only_strategies in shared_tools/strategy_composition.py).
+    for shim in (spot_shim, futures_shim):
+        assert "analog_retrieval" not in shim.list_strategies()
+        assert "analog_retrieval" in shim.STRATEGY_REGISTRY
+        assert shim.STRATEGY_REGISTRY["analog_retrieval"]["backtest_only"] is True
+        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
+        result = shim.apply_strategy("analog_retrieval", df)
+        assert "signal" in result.columns
+        # 80 bars is far below the strategy's index warmup — never fires.
+        assert (result["signal"] == 0).all()
+
+
+def test_backtest_only_flag_defaults_false_for_all_other_strategies(registry):
+    for platform in registry.VALID_PLATFORMS:
+        full = registry.build_registry(platform, include_hidden=True)
+        for name, entry in full.items():
+            assert entry["backtest_only"] is (name == "analog_retrieval"), name
