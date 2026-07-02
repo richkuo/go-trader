@@ -273,11 +273,11 @@ guards, tested in the same file):
    (Step 6 above): the live-label fidelity bar passed on all 12 rows, the
    operator config shape + gate semantics are pinned by
    `scheduler/regime_comp_up_clean_gate_test.go`, and the config edit itself
-   is operator-side (out-of-tree, #1056). Remaining follow-on (own issue):
-   re-run this directory against `squeeze_momentum` (#983, same DD
-   conclusion, -58.5%): the drivers are strategy-parameterized
-   (`--strategy/--registry/--direction`; `driver_common.py` holds the
-   breakout-specific M4 param sets).
+   is operator-side (out-of-tree, #1056). The other named follow-on — the
+   `squeeze_momentum` re-run of this directory (#983, same DD conclusion,
+   -58.5%) — ran as **#1198** via the strategy-parameterized drivers
+   (`backtest/candidates/squeeze_momentum_1198/`, PR 1201): **negative**;
+   the gate does not transfer to that entry.
 
 A positive result still ships as evidence, not a config change (#995 step 4
 symmetry: documented, not deployed).
