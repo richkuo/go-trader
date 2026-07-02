@@ -369,7 +369,14 @@ def _htf_trend_series(symbol: str, timeframe: str, ltf_index: pd.Index,
         index=htf_df.index,
         dtype=int,
     )
-    return trend.reindex(ltf_index, method="ffill").fillna(0).astype(int)
+    # Shift one HTF row before reindexing — same open-vs-close-time leak as
+    # ``_aligned_regime_columns``/``_profile_label_series`` (#1153):
+    # ``load_cached_data`` indexes each HTF candle by its OPEN time, so a
+    # row's trend (derived from that candle's full close) is only known once
+    # the candle CLOSES, i.e. at the next HTF row's index. Without the shift
+    # an LTF bar inside a still-forming HTF candle would see that candle's
+    # final close (#1154).
+    return trend.shift(1).reindex(ltf_index, method="ffill").fillna(0).astype(int)
 
 
 def _apply_htf_filter_to_df(df: pd.DataFrame, symbol: str,

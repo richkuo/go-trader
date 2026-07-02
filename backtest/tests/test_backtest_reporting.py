@@ -268,6 +268,51 @@ def test_htf_trend_series_aligns_on_datetime_indexed_frames(monkeypatch):
     assert (trend == 1).any(), "expected bullish bars in upward-drift series"
 
 
+def test_htf_trend_series_uses_last_closed_htf_bar_no_lookahead(monkeypatch):
+    """#1154: ``load_cached_data`` indexes each HTF candle by its OPEN time,
+    and a row's trend derives from that candle's full close — so it isn't
+    actually known until the candle CLOSES (the next HTF row's open). An LTF
+    bar inside a still-forming HTF candle must see the PRIOR (closed)
+    candle's trend, never the forming candle's final close — the same
+    open-vs-close-time leak fixed for regime alignment in #1153."""
+    import run_backtest
+
+    # 59 rising closes (bullish vs EMA), then a crash on the final —
+    # still-forming — candle that flips its trend bearish.
+    n = 60
+    closes = [100.0 + i for i in range(n - 1)] + [1.0]
+    idx = pd.date_range("2024-01-01", periods=n, freq="D", name="datetime")
+    htf_df = pd.DataFrame(
+        {"open": closes, "high": closes, "low": closes,
+         "close": closes, "volume": [1.0] * n},
+        index=idx,
+    )
+    monkeypatch.setattr(run_backtest, "load_cached_data",
+                        lambda *a, **kw: htf_df)
+
+    # Sanity: same EMA formula as _htf_trend_series — last CLOSED candle is
+    # bullish, the forming candle's final close is bearish.
+    ema = htf_df["close"].ewm(span=50, adjust=False).mean()
+    assert closes[-2] > ema.iloc[-2]
+    assert closes[-1] < ema.iloc[-1]
+
+    # LTF bars falling inside the final (still-forming) HTF candle.
+    ltf_index = pd.DatetimeIndex(
+        [idx[-1] + pd.Timedelta(hours=h) for h in (0, 6, 12)],
+        name="datetime",
+    )
+    trend = run_backtest._htf_trend_series("BTC/USDT", "1h", ltf_index)
+    assert list(trend) == [1, 1, 1], (
+        "LTF bars inside the forming HTF candle must see the last CLOSED "
+        "candle's trend (1), not the forming candle's final close (-1)")
+
+    # Before the first HTF candle has closed no trend is known yet → neutral.
+    early = run_backtest._htf_trend_series(
+        "BTC/USDT", "1h",
+        pd.DatetimeIndex([idx[0] + pd.Timedelta(hours=6)], name="datetime"))
+    assert list(early) == [0]
+
+
 def test_run_single_backtest_with_htf_filter(monkeypatch):
     """End-to-end: run_single_backtest(..., htf_filter=True) against a
     mocked ``load_cached_data`` must not raise and must produce a result
