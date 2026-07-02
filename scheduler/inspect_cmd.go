@@ -507,6 +507,11 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.Type != "manual" && !sc.CircuitBreakerEnabled() {
 		fmt.Fprintf(&b, "  circuit_breaker:     off (explicit) — drawdown + consecutive-loss halt disabled\n")
 	}
+	// #1150: pause state. Surface only when paused so the normal case stays
+	// uncluttered.
+	if sc.Paused {
+		fmt.Fprintf(&b, "  paused:              true — position-increasing signals held; closes and SL/TP management still run\n")
+	}
 	if sc.IntervalSeconds > 0 {
 		fmt.Fprintf(&b, "  interval_seconds:    %d\n", sc.IntervalSeconds)
 	} else if cfg != nil {
@@ -566,6 +571,10 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 	if sc.Type != "manual" && !sc.CircuitBreakerEnabled() {
 		parts = append(parts, "cb=off")
 	}
+	// #1150: surface a paused strategy in the startup summary line.
+	if sc.Paused {
+		parts = append(parts, "paused")
+	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
 }
 
@@ -603,6 +612,8 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["circuit_breaker_enabled"] = sc.CircuitBreakerEnabled()
 		out["circuit_breaker_explicit"] = explicit["circuit_breaker"]
 	}
+	// #1150: pause state, always emitted so dashboards can key off it.
+	out["paused"] = sc.Paused
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows
 		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)

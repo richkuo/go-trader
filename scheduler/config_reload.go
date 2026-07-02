@@ -90,6 +90,15 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].notify_ratchet_triggers: %s -> %s", sc.ID, formatNotifyRatchetTriggers(sc.NotifyRatchetTriggers), formatNotifyRatchetTriggers(ns.NotifyRatchetTriggers))
 			sc.NotifyRatchetTriggers = ns.NotifyRatchetTriggers
 		}
+		// #1150: per-strategy pause is hot-reloadable always, including while a
+		// position is open — pausing only holds position-increasing signals from
+		// the next cycle (closes, trailing SL, ratchet, and protection sync keep
+		// running), and resuming just lets entries flow again. The dispatch reads
+		// sc.Paused from the reloaded config, so no state mutation is needed.
+		if sc.Paused != ns.Paused {
+			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
+			sc.Paused = ns.Paused
+		}
 		if sc.CapitalPct == 0 && sc.Capital != ns.Capital {
 			addChange("strategy[%s].capital: $%.2f -> $%.2f", sc.ID, sc.Capital, ns.Capital)
 			sc.Capital = ns.Capital
@@ -647,6 +656,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MaxDrawdownPct = 0
 	sc.CircuitBreaker = nil        // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
 	sc.NotifyRatchetTriggers = nil // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
+	sc.Paused = false              // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0

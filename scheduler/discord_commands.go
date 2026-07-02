@@ -658,10 +658,27 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	d.ss.mu.RLock()
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
+	base += pausedStrategiesNote(d.cfg.Strategies)
 	if note := directionalCertOperatorNotes(d.cfg.Strategies, d.cfg.Regime); note != "" {
 		return base + note
 	}
 	return base
+}
+
+// pausedStrategiesNote lists paused strategies (#1150) for /status. Empty
+// string when none are paused. IDs are sorted for stable operator output.
+func pausedStrategiesNote(strategies []StrategyConfig) string {
+	var paused []string
+	for _, sc := range strategies {
+		if sc.Paused {
+			paused = append(paused, sc.ID)
+		}
+	}
+	if len(paused) == 0 {
+		return ""
+	}
+	sort.Strings(paused)
+	return fmt.Sprintf("\n⏸️ paused: %s", strings.Join(paused, ", "))
 }
 
 func (d *DiscordNotifier) buildHealth() string {

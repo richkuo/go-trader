@@ -1723,6 +1723,13 @@ func main() {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
+								// #1150: paused — hold position-increasing signals (fresh open, add,
+								// flip); position-reducing actions pass so open positions ride their
+								// natural exit. The Signal==0 manage path below keeps running.
+								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
+									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -1753,6 +1760,13 @@ func main() {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
+								// #1150: paused — hold position-increasing signals (fresh open, add,
+								// flip); position-reducing actions pass so open positions ride their
+								// natural exit. The Signal==0 manage path below keeps running.
+								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
+									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -1781,6 +1795,13 @@ func main() {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 								result.Signal = 0
 							}
+							// #1150: paused — hold position-increasing signals (fresh open, add,
+							// flip); position-reducing actions pass so open positions ride their
+							// natural exit. The Signal==0 manage path below keeps running.
+							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
+								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+								result.Signal = 0
+							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, logger)
@@ -1788,6 +1809,16 @@ func main() {
 						}
 					case "options":
 						if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
+							// #1150: paused — drop open actions ("buy"/"sell" both OPEN
+							// option legs); "close" actions and the theta-harvest walker
+							// below still manage existing positions.
+							if sc.Paused {
+								kept, dropped := pausedOptionsActions(result.Actions)
+								if dropped > 0 {
+									logger.Info("Paused: %d option open action(s) dropped — close actions still execute (#1150)", dropped)
+								}
+								result.Actions = kept
+							}
 							// #879: options regime now comes from the global store's
 							// (underlying, 4h, ADX-default) bundle instead of the
 							// check script's inline fetch; the injected payload keeps
@@ -1835,6 +1866,13 @@ func main() {
 									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
 									result.Signal = 0
 								}
+								// #1150: paused — hold position-increasing signals (fresh open, add,
+								// flip); position-reducing actions pass so open positions ride their
+								// natural exit. The Signal==0 manage path below keeps running.
+								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -1871,6 +1909,13 @@ func main() {
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								result.Signal = 0
+							}
+							// #1150: paused — hold position-increasing signals (fresh open, add,
+							// flip); position-reducing actions pass so open positions ride their
+							// natural exit. The Signal==0 manage path below keeps running.
+							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
 							mu.Lock()
@@ -2157,6 +2202,13 @@ func main() {
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, tsContracts); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								result.Signal = 0
+							}
+							// #1150: paused — hold position-increasing signals (fresh open, add,
+							// flip); position-reducing actions pass so open positions ride their
+							// natural exit. The Signal==0 manage path below keeps running.
+							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, false) {
+								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
 							mu.Lock()
