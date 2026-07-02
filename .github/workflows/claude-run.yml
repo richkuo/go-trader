@@ -203,7 +203,11 @@ jobs:
       # Footer composition and comment patching live in .github/scripts
       # (patch_claude_comment.sh + compose_claude_comment.py) — shared with the
       # cancellation/failure step below and unit-tested. BOT_LOGIN (job env)
-      # targets github-actions[bot] in review mode, claude[bot] otherwise.
+      # targets github-actions[bot] in review mode, claude[bot] otherwise;
+      # RUN_ID pins the selection to this run's tracking comment (its body
+      # links /actions/runs/<run_id>), since github-actions[bot] is shared by
+      # every workflow and latest-by-author alone could stamp a foreign
+      # comment.
       - name: Append LLM footer to Claude comment
         env:
           GH_TOKEN: ${{ github.token }}
@@ -211,6 +215,7 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: bash .github/scripts/patch_claude_comment.sh
 
       - name: Mark cancellation for downstream status note
@@ -225,6 +230,7 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # A failure before (or during) checkout leaves no scripts to run with.
