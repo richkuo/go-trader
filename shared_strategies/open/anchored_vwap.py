@@ -33,12 +33,28 @@ def _inline_atr(df: pd.DataFrame, period: int) -> pd.Series:
     return atr.where(atr < 100, atr.round(0))
 
 
+def _inline_rsi(close: pd.Series, period: int) -> pd.Series:
+    """Wilder RSI, same convention as the registry's rsi strategy
+    (``ewm(alpha=1/period, min_periods=period, adjust=False)``): NaN through
+    the warmup window, 100 when the window has no losses."""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
 def anchored_vwap_core(
     df: pd.DataFrame,
     pivot_strength: int = 5,
     buffer_atr_mult: float = 0.25,
     confirm_bars: int = 2,
     atr_period: int = 14,
+    gate_rsi_period: int = 0,
+    gate_rsi_level: float = 50.0,
+    gate_ema_period: int = 0,
 ) -> pd.DataFrame:
     """Single-AVWAP support/resistance-flip signals.
 
@@ -53,6 +69,18 @@ def anchored_vwap_core(
     confirm_bars : bars the close must hold on the correct side of the AVWAP
         (inclusive of the breach bar) before a signal fires.
     atr_period : lookback for the inline ATR.
+    gate_rsi_period : momentum gate (#1017, default-off): when > 0, a long
+        only fires with RSI(gate_rsi_period) >= gate_rsi_level on the signal
+        bar and a short only with RSI <= gate_rsi_level (equality passes both
+        ways). NaN warmup bars pass — the same fail-open semantics as the
+        #982 ``htf_gate_mode="veto"`` neutral state. 0 disables the gate and
+        the output is bit-identical to the pre-gate strategy.
+    gate_rsi_level : RSI midline the gate compares against.
+    gate_ema_period : trend gate (#1017, default-off): when > 0, a long only
+        fires with the signal-bar close >= EMA(gate_ema_period) and a short
+        only with close <= it (equality passes). Bars before the EMA has
+        accrued ``gate_ema_period`` inputs are warmup and pass (mirrors the
+        #982 EMA-warmup convention). 0 disables the gate.
 
     Returns
     -------
@@ -61,6 +89,8 @@ def anchored_vwap_core(
         avwap        : anchored VWAP (NaN before the first confirmed anchor)
         anchor_index : bar index of the active anchor (-1 before the first one)
         atr          : inline ATR
+        gate_rsi     : gate RSI series (only when gate_rsi_period > 0)
+        gate_ema     : gate EMA series (only when gate_ema_period > 0)
     """
     result = df.copy()
     n = len(result)
@@ -138,6 +168,27 @@ def anchored_vwap_core(
                 and close[b] <= avwap[b] - buf
                 and close[b - 1] > avwap[b - 1]):
             sig[nbar] = -1
+
+    # --- momentum/trend gate (#1017 rider B, default-off) ---
+    # Applied after the flip trigger so the gates see exactly the signals the
+    # strategy would otherwise emit (same layering as the #982 chart_pattern
+    # HTF gate). Warmup bars fail open: a gate with no data never blocks.
+    if gate_rsi_period and int(gate_rsi_period) > 0:
+        rsi = _inline_rsi(result["close"].astype(float), int(gate_rsi_period))
+        result["gate_rsi"] = rsi
+        r = rsi.to_numpy()
+        level = float(gate_rsi_level)
+        blocked = ((sig == 1) & (r < level)) | ((sig == -1) & (r > level))
+        blocked &= ~np.isnan(r)
+        sig[blocked] = 0
+    if gate_ema_period and int(gate_ema_period) > 0:
+        p = int(gate_ema_period)
+        ema = result["close"].astype(float).ewm(span=p, adjust=False).mean()
+        result["gate_ema"] = ema
+        e = ema.to_numpy()
+        warm = np.arange(n) >= p
+        blocked = warm & (((sig == 1) & (close < e)) | ((sig == -1) & (close > e)))
+        sig[blocked] = 0
     result["signal"] = sig
 
     return result

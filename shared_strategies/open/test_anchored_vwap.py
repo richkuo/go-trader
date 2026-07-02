@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from anchored_vwap import anchored_vwap_core
+from anchored_vwap import _inline_rsi, anchored_vwap_core
 
 
 def _hourly_index(n, start="2026-01-01 00:00:00"):
@@ -127,6 +127,133 @@ def test_nan_atr_warmup_yields_no_signal():
     df = _long_reclaim_df()
     out = anchored_vwap_core(df, pivot_strength=2, buffer_atr_mult=0.25, confirm_bars=2, atr_period=99)
     assert (out["signal"] == 0).all()
+
+
+# --- Momentum/trend gate (#1017 rider B) ----------------------------------------
+
+_GATE_BASE_KW = dict(pivot_strength=2, buffer_atr_mult=0.0, confirm_bars=2, atr_period=3)
+
+
+def _high_prior_long_reclaim_df():
+    """Long reclaim identical in shape to _long_reclaim_df but preceded by a
+    much higher regime, so a long EMA still sits far above the signal-bar
+    close — the counter-trend case the EMA gate must block."""
+    closes = [140, 138, 136, 134, 132, 100,
+              100.5, 100.2, 99.8, 99.5,
+              103.5, 104.0, 104.5, 105.0]
+    return _ohlcv(closes, volume=10.0)
+
+
+def test_inline_rsi_extremes_and_warmup():
+    rising = pd.Series(np.linspace(100, 113, 14))
+    rsi = _inline_rsi(rising, 3)
+    assert rsi.iloc[:3].isna().all()          # min_periods warmup
+    assert (rsi.iloc[3:] == 100.0).all()      # no losses -> 100
+    falling = pd.Series(np.linspace(113, 100, 14))
+    assert (_inline_rsi(falling, 3).iloc[3:] == 0.0).all()
+
+
+def test_gate_default_off_is_bit_identical():
+    df = _long_reclaim_df()
+    base = anchored_vwap_core(df, **_GATE_BASE_KW)
+    off = anchored_vwap_core(df, **_GATE_BASE_KW, gate_rsi_period=0, gate_ema_period=0)
+    assert (base["signal"] == off["signal"]).all()
+    assert "gate_rsi" not in off.columns and "gate_ema" not in off.columns
+
+
+def test_rsi_gate_blocks_long_below_level_and_passes_above():
+    df = _long_reclaim_df()
+    base = anchored_vwap_core(df, **_GATE_BASE_KW)
+    b = int(np.where(base["signal"].to_numpy() == 1)[0][0])
+    probe = anchored_vwap_core(df, **_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=0.0)
+    assert probe["signal"].iloc[b] == 1       # level 0 never blocks a long
+    rsi_b = float(probe["gate_rsi"].iloc[b])
+    assert not np.isnan(rsi_b)
+    blocked = anchored_vwap_core(
+        df, **_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=rsi_b + 1.0)
+    assert blocked["signal"].iloc[b] == 0
+    assert (blocked["signal"] == 0).all()     # nothing else fires either
+    passed = anchored_vwap_core(
+        df, **_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=rsi_b - 1.0)
+    assert passed["signal"].iloc[b] == 1
+
+
+def test_rsi_gate_blocks_short_above_level_mirror():
+    closes = [90, 92, 94, 96, 98, 100,
+              99.5, 99.8, 100.2, 100.5,
+              96.5, 96.0, 95.5, 95.0]
+    df = _ohlcv(closes, volume=10.0)
+    base = anchored_vwap_core(df, **_GATE_BASE_KW)
+    b = int(np.where(base["signal"].to_numpy() == -1)[0][0])
+    probe = anchored_vwap_core(df, **_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=100.0)
+    assert probe["signal"].iloc[b] == -1      # level 100 never blocks a short
+    rsi_b = float(probe["gate_rsi"].iloc[b])
+    blocked = anchored_vwap_core(
+        df, **_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=rsi_b - 1.0)
+    assert blocked["signal"].iloc[b] == 0
+    passed = anchored_vwap_core(
+        df, **_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=rsi_b + 1.0)
+    assert passed["signal"].iloc[b] == -1
+
+
+def test_rsi_gate_warmup_nan_fails_open():
+    df = _long_reclaim_df()
+    base = anchored_vwap_core(df, **_GATE_BASE_KW)
+    b = int(np.where(base["signal"].to_numpy() == 1)[0][0])
+    gated = anchored_vwap_core(
+        df, **_GATE_BASE_KW, gate_rsi_period=13, gate_rsi_level=100.0)
+    assert np.isnan(gated["gate_rsi"].iloc[b])
+    assert (gated["signal"] == base["signal"]).all()
+
+
+def test_ema_gate_blocks_counter_trend_long():
+    df = _high_prior_long_reclaim_df()
+    base = anchored_vwap_core(df, **_GATE_BASE_KW)
+    longs = np.where(base["signal"].to_numpy() == 1)[0]
+    assert len(longs) == 1
+    b = int(longs[0])
+    gated = anchored_vwap_core(df, **_GATE_BASE_KW, gate_ema_period=10)
+    assert b >= 10                            # past EMA warmup
+    assert float(gated["gate_ema"].iloc[b]) > float(df["close"].iloc[b])
+    assert (gated["signal"] == 0).all()
+
+
+def test_ema_gate_passes_aligned_long_and_short():
+    long_df = _high_prior_long_reclaim_df()
+    base = anchored_vwap_core(long_df, **_GATE_BASE_KW)
+    b = int(np.where(base["signal"].to_numpy() == 1)[0][0])
+    gated = anchored_vwap_core(long_df, **_GATE_BASE_KW, gate_ema_period=3)
+    assert float(gated["gate_ema"].iloc[b]) < float(long_df["close"].iloc[b])
+    assert gated["signal"].iloc[b] == 1
+    short_df = _ohlcv([90, 92, 94, 96, 98, 100,
+                       99.5, 99.8, 100.2, 100.5,
+                       96.5, 96.0, 95.5, 95.0], volume=10.0)
+    sbase = anchored_vwap_core(short_df, **_GATE_BASE_KW)
+    sb = int(np.where(sbase["signal"].to_numpy() == -1)[0][0])
+    sgated = anchored_vwap_core(short_df, **_GATE_BASE_KW, gate_ema_period=3)
+    assert float(sgated["gate_ema"].iloc[sb]) > float(short_df["close"].iloc[sb])
+    assert sgated["signal"].iloc[sb] == -1
+
+
+def test_ema_gate_warmup_fails_open():
+    df = _high_prior_long_reclaim_df()
+    base = anchored_vwap_core(df, **_GATE_BASE_KW)
+    b = int(np.where(base["signal"].to_numpy() == 1)[0][0])
+    gated = anchored_vwap_core(df, **_GATE_BASE_KW, gate_ema_period=12)
+    assert b < 12                             # signal bar inside the warmup window
+    assert (gated["signal"] == base["signal"]).all()
+
+
+def test_gated_signal_independent_of_future_bars():
+    df = _high_prior_long_reclaim_df()
+    kw = dict(_GATE_BASE_KW, gate_rsi_period=6, gate_rsi_level=50.0, gate_ema_period=3)
+    full = anchored_vwap_core(df, **kw)
+    for k in range(8, len(df)):
+        partial = anchored_vwap_core(df.iloc[:k + 1], **kw)
+        assert (
+            partial["signal"].to_numpy()
+            == full["signal"].to_numpy()[:k + 1]
+        ).all(), k
 
 
 # --- Task 5: registry ----------------------------------------------------------

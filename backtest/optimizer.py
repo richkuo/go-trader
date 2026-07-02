@@ -727,6 +727,8 @@ DEFAULT_PARAM_RANGES = {
         "pivot_strength": [3, 5, 8],
         "buffer_atr_mult": [0.1, 0.25, 0.5],
         "confirm_bars": [1, 2, 3],
+        "gate_rsi_period": [0, 14, 21],
+        "gate_ema_period": [0, 100, 200],
     },
     "anchored_vwap_channel": {
         "pivot_strength": [3, 5, 8],

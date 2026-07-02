@@ -1135,6 +1135,8 @@ def vwap_rejection_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "buffer_atr_mult": 0.25,
         "confirm_bars": 2,
         "atr_period": 14,
+        "gate_rsi_period": 0, "gate_rsi_level": 50.0,
+        "gate_ema_period": 0,
     },
 )
 def anchored_vwap_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
