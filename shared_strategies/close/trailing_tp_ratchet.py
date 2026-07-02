@@ -46,8 +46,11 @@ DEFAULT_RATCHET_TIERS = [
 # Each group's first rung couples to that group's opening trail in
 # REGIME_ATR_DEFAULTS_TRAILING (#1120: clean 2.5 / choppy 2.25 / ranging_quiet 1.0
 # / ranging_volatile 1.25 / ranging_directional* 1.5).
-# Split values are starting priors — validate via the #1058 7-state backtester
-# before relying on the exact geometry.
+# #1152 validated the ranging split with M6 entry-locked replay (see
+# docs/research/1152-ranging-exit-geometry-m6.md): volatile + directional
+# incumbents stand (directional's let-ride runner survived its inverse check);
+# ranging_quiet is unevaluable on the audit data (label ≈0.2–0.9% of bars) and
+# keeps its pre-#1059 geometry on that documented evidence gap.
 DEFAULT_RATCHET_TIERS_BY_GROUP = {
     "clean": [
         {"atr_multiple": 3.0, "trailing_mult_after": 1.5, "close_fraction": 0.0},

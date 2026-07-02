@@ -311,6 +311,13 @@ def _load_trailing_ratchet():
     global _trailing_ratchet_module
     if _trailing_ratchet_module is not None:
         return _trailing_ratchet_module
+    # trailing_tp_ratchet.py does `from _helpers import …` / `from regime_atr
+    # import …` at module level — both live in shared_strategies/close, so the
+    # dir must be importable BEFORE exec_module. The constructor's own
+    # _ensure_close_strategies_path() call runs after the ratchet load (#1152:
+    # a ratchet close ref in a process that never imported the close registry —
+    # e.g. exit_policy_ab — crashed here on ModuleNotFoundError: _helpers).
+    _ensure_close_strategies_path()
     import importlib.util
     name = "_go_trader_trailing_ratchet"
     path = os.path.abspath(os.path.join(

@@ -328,6 +328,14 @@ func regimeCloseDefaultGroup(label string) (string, bool) {
 // clean lets trends run (4 patient rungs), choppy mirrors the scalar default (3
 // rungs), ranging scales out fast (2 rungs). Cumulative close fractions; the
 // final rung is coerced to 1.0 by finalizeProtectionTiers.
+//
+// #1152 evaluated splitting the collapsed ranging group per composite substate
+// with M6 entry-locked replay (docs/research/1152-ranging-exit-geometry-m6.md)
+// and kept the collapse: directional patience was refuted outright, quiet is
+// unevaluable on the audit data, and the one near-miss (a wider volatile
+// ladder, 0.75/1.5) passed under mean-reversion entries but contradicted
+// out-of-sample under squeeze entries — re-run the b2_rv_wider arms before
+// reconsidering.
 var regimeTPTierGroupDefaults = map[string][]hlProtectionTier{
 	"clean":   {{Multiple: 2.5, Fraction: 0.25}, {Multiple: 4.0, Fraction: 0.50}, {Multiple: 5.5, Fraction: 0.75}, {Multiple: 7.0, Fraction: 1.00}},
 	"choppy":  {{Multiple: 1.5, Fraction: 0.40}, {Multiple: 3.0, Fraction: 0.80}, {Multiple: 5.0, Fraction: 1.00}},

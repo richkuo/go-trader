@@ -1,0 +1,23 @@
+{
+  "config_version": 16,
+  "regime": {
+    "enabled": true,
+    "period": 20,
+    "windows": {
+      "medium": {"classifier": "composite", "period": 20}
+    }
+  },
+  "strategies": [
+    {
+      "id": "m6-1152-ratchet",
+      "type": "perps",
+      "direction": "both",
+      "open_strategy": {"name": "squeeze_momentum", "params": {}},
+      "close_strategy": {
+        "name": "trailing_tp_ratchet_regime",
+        "params": {"use_defaults": true}
+      },
+      "trailing_stop_atr_regime": {"use_defaults": true}
+    }
+  ]
+}

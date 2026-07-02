@@ -156,6 +156,9 @@ REGIME_ATR_DEFAULTS_TRAILING: Dict[str, RegimeATREntry] = {
 # cumulative_close_fraction); the final rung is coerced to 1.0 by the consumer.
 # Tier counts are ragged by design: clean lets trends run (4 rungs), choppy
 # mirrors the scalar default (3), ranging scales out fast (2).
+# #1152 evaluated a per-substate split of the collapsed ranging group with M6
+# entry-locked replay and kept the collapse — see
+# docs/research/1152-ranging-exit-geometry-m6.md.
 REGIME_TP_TIER_GROUP_DEFAULTS: Dict[str, List[Tuple[float, float]]] = {
     "clean": [(2.5, 0.25), (4.0, 0.50), (5.5, 0.75), (7.0, 1.00)],
     "choppy": [(1.5, 0.40), (3.0, 0.80), (5.0, 1.00)],
