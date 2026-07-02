@@ -40,3 +40,34 @@ def get_strategy(name: str) -> dict:
 
 def list_strategies() -> list[str]:
     return list(_load_registry().STRATEGIES.keys())
+
+
+def list_strategies_detailed() -> list[dict]:
+    """Full catalog for operator-facing surfaces (#1203): one dict per
+    registered evaluator with its description, default params, and supported
+    platforms. Sorted by name so output is deterministic across runs."""
+    registry = _load_registry().STRATEGIES
+    return [
+        {
+            "name": name,
+            "description": registry[name]["description"],
+            "default_params": registry[name]["default_params"],
+            "platforms": list(registry[name]["platforms"]),
+        }
+        for name in sorted(registry.keys())
+    ]
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+
+    if "--list-json" in sys.argv:
+        try:
+            print(json.dumps(list_strategies_detailed()))
+        except Exception as exc:  # subprocess contract: JSON to stdout even on error
+            print(json.dumps({"error": str(exc)}))
+            sys.exit(1)
+    else:
+        print(json.dumps({"error": "usage: close_registry_loader.py --list-json"}))
+        sys.exit(1)

@@ -23,14 +23,15 @@ const commandPrefix = "go-trader-"
 
 // readOnlyCommandNames are usable in a guild or in DMs by anyone.
 var readOnlyCommandNames = map[string]bool{
-	"status":           true,
-	"health":           true,
-	"positions":        true,
-	"pnl":              true,
-	"leaderboard":      true,
-	"circuit-breakers": true,
-	"dead-strategies":  true,
-	"correlation":      true,
+	"status":             true,
+	"health":             true,
+	"positions":          true,
+	"pnl":                true,
+	"leaderboard":        true,
+	"circuit-breakers":   true,
+	"dead-strategies":    true,
+	"correlation":        true,
+	"closing-strategies": true,
 }
 
 // opsCommandNames mutate state, run heavy work, or expose operator-sensitive
@@ -406,6 +407,7 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "circuit-breakers", Description: "Active circuit breakers and kill-switch state"},
 		{Name: commandPrefix + "dead-strategies", Description: "Strategies that have never opened a position"},
 		{Name: commandPrefix + "correlation", Description: "Correlation / concentration warnings"},
+		{Name: commandPrefix + "closing-strategies", Description: "Registered close evaluators and their config params"},
 		{Name: commandPrefix + "logs", Description: "Recent journalctl lines (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionInteger, Name: "n", Description: "Number of lines (default 50, max 200)"},
 		}},
@@ -501,6 +503,8 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.respondReadOnlyInline(s, i, d.buildDeadStrategies())
 	case "correlation":
 		d.respondReadOnlyInline(s, i, d.buildCorrelation())
+	case "closing-strategies":
+		d.handleClosingStrategies(s, i)
 	// Ops (owner DM only).
 	case "logs":
 		respondText(s, i, runLogs(optionInt(data.Options, "n", 50)))
@@ -739,6 +743,33 @@ func (d *DiscordNotifier) buildCorrelation() string {
 	d.ss.mu.RLock()
 	defer d.ss.mu.RUnlock()
 	return formatCorrelationResponse(d.ss.state.CorrelationSnapshot)
+}
+
+// handleClosingStrategies answers /closing-strategies (#1203) with the full
+// close-evaluator catalog. Deferred + multi-followup because the first call
+// after startup spawns the close-registry subprocess (cached after that, see
+// fetchCloseRegistryCatalog) and the catalog may span more than one Discord
+// message.
+func (d *DiscordNotifier) handleClosingStrategies(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	flags := d.readOnlyReplyFlags()
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: flags},
+	})
+	entries, err := fetchCloseRegistryCatalog()
+	if err != nil {
+		_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: truncateForDiscord(fmt.Sprintf("closing-strategies: %v", err)),
+			Flags:   flags,
+		})
+		return
+	}
+	for _, page := range formatClosingStrategiesResponse(d.cfg, entries) {
+		_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: truncateForDiscord(page),
+			Flags:   flags,
+		})
+	}
 }
 
 // lifetimeStats fetches per-strategy lifetime stats from SQLite (independent of mu).
