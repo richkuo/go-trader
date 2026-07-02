@@ -237,6 +237,29 @@ def rewrite_deprecated_close_ref(name: str, params: Optional[dict]) -> tuple[str
     return resolved, out
 
 
+def reject_backtest_only_strategies(
+    names: Iterable[str],
+    get_strategy: Callable[[str], dict],
+) -> None:
+    """Refuse live evaluation of registry entries flagged ``backtest_only``.
+
+    Live check scripts call this on their configured open-strategy names in
+    place of the bare existence loop — it validates existence exactly like
+    ``get_strategy(name)`` did (unknown names raise the registry's ValueError)
+    and additionally fails closed on offline research strategies (#1138),
+    which must only ever run through the backtester / M1 harness.
+    """
+    for name in names:
+        entry = get_strategy(name)
+        if isinstance(entry, dict) and entry.get("backtest_only"):
+            raise ValueError(
+                f"Strategy '{name}' is registered backtest_only (offline "
+                "research, #1138) — it must not be evaluated on a live check "
+                "path. Wiring it to live requires explicit human sign-off "
+                "after parity/Sharpe/M1 checks."
+            )
+
+
 def validate_close_strategy_names(
     close_names: Iterable[str],
     get_open_strategy: Callable[[str], object],
@@ -253,14 +276,21 @@ def validate_close_strategy_names(
         except ValueError:
             pass
         try:
-            get_open_strategy(resolved)
-            continue
+            entry = get_open_strategy(resolved)
         except ValueError as exc:
             raise ValueError(
                 f"Unknown close strategy: {name}. "
                 f"Available close strategies: {_safe_list_strategy_names(list_close_strategies)}; "
                 f"fallback open strategies: {_safe_list_strategy_names(list_open_strategies)}"
             ) from exc
+        # The open-as-close fallback is a live path too — a backtest_only open
+        # strategy must not sneak in as a close evaluator (#1138).
+        if isinstance(entry, dict) and entry.get("backtest_only"):
+            raise ValueError(
+                f"Close strategy '{name}' resolves to the backtest_only open "
+                "strategy fallback (offline research, #1138) — it must not be "
+                "evaluated on a live check path."
+            )
 
 
 def _last_signal(result_df: pd.DataFrame) -> int:

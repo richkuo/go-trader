@@ -57,6 +57,7 @@ from vol_momentum import vol_momentum_core
 from anchored_vwap import anchored_vwap_core
 from anchored_vwap_channel import anchored_vwap_channel_core
 from anchored_vwap_reversion import anchored_vwap_reversion_core
+from analog_retrieval import analog_retrieval_core
 
 
 VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
@@ -68,6 +69,7 @@ STRATEGIES: Dict[str, Dict[str, Any]] = {}
 # discovery surfaces such as --list-json and generated defaults.
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "amd_ifvg",
+    "analog_retrieval",
     "donchian_breakout",
     "range_scalper",
     "session_breakout",
@@ -81,12 +83,17 @@ def register(
     default_params: dict,
     platforms: Tuple[str, ...] = ("spot", "futures"),
     variants: Optional[Dict[str, Dict[str, Any]]] = None,
+    backtest_only: bool = False,
 ):
     """Register a strategy once.
 
     ``variants`` maps platform -> {"description": ..., "default_params": {...}}
     for per-platform overrides. Variant ``default_params`` is merged on top of
     the base ``default_params`` (variant wins on key collision).
+
+    ``backtest_only`` marks offline research strategies: kept resolvable for
+    ``run_backtest.py`` / the M1 harness, but every live check script refuses
+    to evaluate them (#1138). Pair it with ``DISCOVERY_HIDDEN_STRATEGIES``.
     """
     if name in STRATEGIES:
         raise ValueError(f"Strategy '{name}' is already registered")
@@ -113,6 +120,7 @@ def register(
             "default_params": dict(default_params),
             "platforms": platforms,
             "variants": variants,
+            "backtest_only": bool(backtest_only),
         }
         return fn
 
@@ -158,6 +166,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
                 **entry["default_params"],
                 **variant.get("default_params", {}),
             },
+            "backtest_only": entry.get("backtest_only", False),
         }
     return out
 
@@ -1174,6 +1183,26 @@ def anchored_vwap_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame
 
 
 @register(
+    "analog_retrieval",
+    "RESEARCH, backtest-only (#1138) — k-NN analog retrieval: matches the current bar's scale-free state vector (return efficiency, ATR-normalized momentum, ATR%, vol regime, trend) against strictly-prior windows with realized forward returns and votes them into a t-stat- and ATR-edge-gated direction signal. Refused by every live check script; promotion to live requires explicit human sign-off after parity/Sharpe/M1 checks",
+    {
+        "feat_window": 20,
+        "atr_period": 14,
+        "vol_baseline": 100,
+        "horizon": 12,
+        "k_neighbors": 25,
+        "min_index": 200,
+        "max_index": 5000,
+        "min_t_stat": 2.0,
+        "min_edge_atr": 0.25,
+    },
+    backtest_only=True,
+)
+def analog_retrieval_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return analog_retrieval_core(df, **params)
+
+
+@register(
     "momentum_pro",
     "Momentum Pro — trend-pullback entries in a stacked-EMA trend, ADX-confirmed, on a volume-backed resumption",
     {
@@ -1356,6 +1385,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
         "momentum_pro", "mean_reversion_pro", "atr_band_revert", "mtf_confluence",
         "vol_momentum", "regime_adaptive", "regime_adaptive_htf",
+        "analog_retrieval",
         "hold",
     ],
     "futures": [
@@ -1370,6 +1400,6 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
         "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
-        "regime_adaptive", "regime_adaptive_htf", "hold",
+        "regime_adaptive", "regime_adaptive_htf", "analog_retrieval", "hold",
     ],
 }

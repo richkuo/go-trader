@@ -396,3 +396,42 @@ def test_avwap_stop_does_not_warn_when_not_configured(capsys):
     _run_avwap_open_close(_apply_without_avwap, ["tiered_tp_atr_live"])
     err = capsys.readouterr().err
     assert _AVWAP_WARN_MARK not in err
+
+
+def test_reject_backtest_only_strategies_validates_and_refuses():
+    import pytest
+    from strategy_composition import reject_backtest_only_strategies
+
+    def get_strategy(name):
+        if name == "normal":
+            return {"backtest_only": False}
+        if name == "research":
+            return {"backtest_only": True}
+        raise ValueError(f"Unknown strategy: {name}")
+
+    # Existence validation is preserved for normal entries…
+    reject_backtest_only_strategies(["normal"], get_strategy)
+    with pytest.raises(ValueError, match="Unknown strategy: missing"):
+        reject_backtest_only_strategies(["missing"], get_strategy)
+    # …and a backtest_only entry fails closed on the live path (#1138).
+    with pytest.raises(ValueError, match="backtest_only"):
+        reject_backtest_only_strategies(["normal", "research"], get_strategy)
+
+
+def test_validate_close_strategy_names_rejects_backtest_only_open_fallback():
+    import pytest
+
+    def get_open_strategy(name):
+        if name == "research_open":
+            return {"backtest_only": True}
+        raise ValueError("open missing")
+
+    def get_close_strategy(name):
+        raise ValueError("close missing")
+
+    # The open-as-close fallback is a live path — backtest_only entries are
+    # refused there too (#1138), with the same loud ValueError.
+    with pytest.raises(ValueError, match="backtest_only"):
+        validate_close_strategy_names(
+            ["research_open"], get_open_strategy, get_close_strategy
+        )
