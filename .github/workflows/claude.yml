@@ -66,6 +66,20 @@ jobs:
           # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
           STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
 
+          # Single source of truth for the stripped body: classify_mode (the
+          # token-split security gate) and resolve_model consume this output,
+          # so the text that gates "is @claude invoked" and the text that
+          # gates "does this run earn push access" can never diverge. The
+          # heredoc delimiter is random because the body is attacker-
+          # influenced — a fixed delimiter inside the body could inject
+          # additional outputs.
+          DELIM="STRIPPED_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            printf 'stripped<<%s\n' "$DELIM"
+            printf '%s\n' "$STRIPPED"
+            printf '%s\n' "$DELIM"
+          } >> "$GITHUB_OUTPUT"
+
           # @claude is a real invocation only when it appears at the start of a line
           if printf '%s' "$STRIPPED" | grep -qE '(^|(\r?\n))[[:space:]]*@claude([[:space:]]|$)'; then
             echo "invoked=true" >> "$GITHUB_OUTPUT"
@@ -79,8 +93,7 @@ jobs:
         id: classify_mode
         env:
           EVENT_NAME: ${{ github.event_name }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
         run: |
           # Fail-closed routing (#1178): when in doubt, classify as review —
           # the review job cannot push, so a misrouted implementation ask
@@ -92,23 +105,15 @@ jobs:
           #   - Elsewhere, any mention of the word "review" outside code
           #     blocks routes to review ("@claude review and fix" loses push
           #     on purpose; re-ask without "review" to implement).
+          # $STRIPPED is verify_invocation's code-fence-stripped body — the
+          # exact text the invocation gate saw, by construction.
           case "$EVENT_NAME" in
             pull_request_review|pull_request_review_comment)
               echo "mode=review" >> "$GITHUB_OUTPUT"
               echo "::notice::Mode: review (PR-review surface)"
               exit 0
               ;;
-            issue_comment)
-              BODY="$COMMENT_BODY"
-              ;;
-            issues)
-              BODY="$ISSUE_BODY"
-              ;;
           esac
-
-          # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
-          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
-          STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
 
           if printf '%s' "$STRIPPED" | grep -qiE '\breview\b'; then
             MODE=review
@@ -122,27 +127,10 @@ jobs:
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: resolve_model
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          REVIEW_BODY: ${{ github.event.review.body }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
+          STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
         run: |
-          # Select body based on event type
-          case "$EVENT_NAME" in
-            issue_comment|pull_request_review_comment)
-              BODY="$COMMENT_BODY"
-              ;;
-            pull_request_review)
-              BODY="$REVIEW_BODY"
-              ;;
-            issues)
-              BODY="$ISSUE_BODY"
-              ;;
-          esac
-
-          # Strip fenced code blocks (``` ... ```) and inline code spans (` ... `)
-          # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
-          STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
+          # $STRIPPED is verify_invocation's code-fence-stripped body — the
+          # exact text the invocation gate saw, by construction.
 
           # Extract optional model shorthand after @claude on a line boundary
           # e.g. "@claude sonnet fix this" → "sonnet"

@@ -222,6 +222,10 @@ jobs:
         if: always() && cancelled()
         run: echo "IS_CANCELLED=true" >> "$GITHUB_ENV"
 
+      # ON_MISS=post: a failure before the action creates its tracking
+      # comment (checkout, uv sync, prompt composition) has no comment to
+      # patch — the note is posted as a NEW comment so it still reaches the
+      # thread instead of vanishing (or landing on an older run's comment).
       - name: Note workflow cancellation/failure on Claude comment
         if: always() && (cancelled() || failure())
         env:
@@ -231,6 +235,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          ON_MISS: post
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # A failure before (or during) checkout leaves no scripts to run with.

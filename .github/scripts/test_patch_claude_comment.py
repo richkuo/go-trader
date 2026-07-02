@@ -152,3 +152,45 @@ def test_run_id_also_constrains_default_claude_bot(tmp_path):
 def test_no_matching_comment_is_a_clean_noop(tmp_path):
     patched = run_patch_script(tmp_path, {"BOT_LOGIN": "nobody[bot]"})
     assert patched == ""
+
+
+def test_on_miss_post_creates_new_status_comment(tmp_path):
+    # Must survive: uv sync / checkout failing before the tracking comment
+    # exists — the failure note must still surface in the thread, as a NEW
+    # comment (never misattributed to an older run's comment).
+    patched = run_patch_script(
+        tmp_path,
+        {
+            "BOT_LOGIN": "github-actions[bot]",
+            "RUN_ID": "555",
+            "ON_MISS": "post",
+            "STATUS_NOTE": "**Workflow failed before completion.** See run log.",
+        },
+    )
+    assert "--method\nPOST" in patched
+    assert "repos/richkuo/go-trader/issues/1178/comments" in patched
+    assert "Workflow failed before completion" in patched
+    assert "PATCH" not in patched
+
+
+def test_on_miss_post_still_patches_when_own_comment_exists(tmp_path):
+    patched = run_patch_script(
+        tmp_path,
+        {
+            "BOT_LOGIN": "github-actions[bot]",
+            "RUN_ID": "222",
+            "ON_MISS": "post",
+            "STATUS_NOTE": "**Workflow failed before completion.** See run log.",
+        },
+    )
+    assert "repos/richkuo/go-trader/issues/comments/202" in patched
+    assert "--method\nPOST" not in patched
+
+
+def test_on_miss_post_without_status_note_is_a_noop(tmp_path):
+    # A footer-only comment with no status note is pure noise — don't post it.
+    patched = run_patch_script(
+        tmp_path,
+        {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555", "ON_MISS": "post"},
+    )
+    assert patched == ""

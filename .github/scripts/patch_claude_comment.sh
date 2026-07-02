@@ -12,8 +12,15 @@
 #      /actions/runs/<RUN_ID> link qualify. github-actions[bot] is a shared
 #      author (any workflow posts as it), so latest-by-author alone could
 #      stamp a foreign comment; the action's tracking comment always links
-#      its own run. Deliberately no fallback on miss: a missing footer is
-#      benign, patching another workflow's comment is not.
+#      its own run. Deliberately no PATCH fallback on miss: a missing footer
+#      is benign, patching another workflow's comment is not.
+#      ON_MISS (optional, default skip) — "post" makes a miss post a NEW
+#      comment carrying STATUS_NOTE instead of exiting silently. Set by the
+#      cancellation/failure step: a failure before the action creates its
+#      tracking comment (checkout, uv sync, prompt composition) must still
+#      surface in the thread — the only channel the user watches — without
+#      misattributing the note to an older run's comment. Requires a
+#      non-empty STATUS_NOTE (a footer-only comment is noise).
 #
 # Fetches ALL comment pages (--paginate --slurp; gh api returns 30 comments
 # per page, and long review threads exceed that) so the true latest bot
@@ -24,6 +31,7 @@ set -euo pipefail
 
 BOT_LOGIN="${BOT_LOGIN:-claude[bot]}"
 RUN_ID="${RUN_ID:-}"
+ON_MISS="${ON_MISS:-skip}"
 
 # --slurp wraps each page in an outer array; .[][] flattens to comments.
 # The run-id match is boundary-anchored so run 22 never matches runs/222.
@@ -37,6 +45,13 @@ COMMENT=$(gh api --paginate --slurp "repos/${REPO}/issues/${ISSUE_NUMBER}/commen
 COMMENT_ID=$(printf '%s' "$COMMENT" | jq -r '.id')
 
 if [ -z "$COMMENT_ID" ] || [ "$COMMENT_ID" = "null" ]; then
+  if [ "$ON_MISS" = "post" ] && [ -n "${STATUS_NOTE:-}" ]; then
+    NEW_BODY=$(BODY_IN="" python3 .github/scripts/compose_claude_comment.py)
+    gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
+      --method POST \
+      --field body="$NEW_BODY"
+    exit 0
+  fi
   echo "No ${BOT_LOGIN} comment found — nothing to update."
   exit 0
 fi
