@@ -46,7 +46,9 @@ def compose(
         f"---\nLLM: {model_display_name(model_id)}"
         f" | {effort or 'unknown'} | Harness: {harness}"
     )
-    parts = [body]
+    # body is empty when composing a standalone status comment (ON_MISS=post
+    # in patch_claude_comment.sh) — omit it so the note leads the comment.
+    parts = [body] if body else []
     if status_note:
         parts.append(status_note)
     parts.append(footer)

@@ -56,6 +56,14 @@ class ComposeTest(unittest.TestCase):
             out.endswith("LLM: (model not resolved) | unknown | Harness: " + HARNESS)
         )
 
+    def test_empty_body_composes_standalone_status_comment(self):
+        # patch_claude_comment.sh ON_MISS=post composes a NEW comment from an
+        # empty body — no leading blank lines before the status note.
+        note = "**Workflow failed before completion.** See [run log](http://x)."
+        out = compose("", "claude-sonnet-5", "high", HARNESS, note)
+        self.assertTrue(out.startswith("**Workflow failed before completion.**"))
+        self.assertIn("LLM: Claude Sonnet 5 | high", out)
+
     def test_stale_status_note_stripped_on_success_retry(self):
         note = "**Workflow cancelled before completion.** See [run log](http://x)."
         failed = compose("body", "claude-sonnet-5", "high", HARNESS, note)
