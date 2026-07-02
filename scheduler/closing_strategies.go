@@ -98,15 +98,25 @@ func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) 
 	sort.Strings(platforms)
 	fmt.Fprintf(&sb, "  platforms: %s\n", strings.Join(platforms, ", "))
 
-	keys := make([]string, 0, len(e.DefaultParams))
+	keys := make([]string, 0, len(e.DefaultParams)+1)
 	for k := range e.DefaultParams {
 		keys = append(keys, k)
+	}
+	userEntry, hasUserEntry := closeDefaultsEntry(userClose, e.Name)
+	_, registryHasTPTiers := e.DefaultParams["tp_tiers"]
+	if hasUserEntry && !registryHasTPTiers {
+		// Some override-eligible evaluators (e.g. trailing_tp_ratchet_regime)
+		// ship empty registry default_params — the operator-configured
+		// tp_tiers is the only value that ever runs, so surface it even
+		// though the registry itself has no tp_tiers key to iterate.
+		if tp, ok := userEntry["tp_tiers"]; ok && tp != nil {
+			keys = append(keys, "tp_tiers")
+		}
 	}
 	sort.Strings(keys)
 	if len(keys) == 0 {
 		sb.WriteString("  params: (none)\n")
 	}
-	userEntry, hasUserEntry := closeDefaultsEntry(userClose, e.Name)
 	for _, k := range keys {
 		if k == "tp_tiers" && hasUserEntry {
 			if tp, ok := userEntry["tp_tiers"]; ok && tp != nil {

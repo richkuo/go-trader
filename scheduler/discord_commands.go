@@ -764,7 +764,18 @@ func (d *DiscordNotifier) handleClosingStrategies(s *discordgo.Session, i *disco
 		})
 		return
 	}
-	for _, page := range formatClosingStrategiesResponse(d.cfg, entries) {
+	// cfg.UserDefaults is a hot-reloadable field mutated under d.ss.mu.Lock()
+	// on SIGHUP (config_reload.go); hold the read lock across the format call
+	// (not across the subprocess above, which can run up to scriptTimeout).
+	var pages []string
+	if d.ss == nil {
+		pages = formatClosingStrategiesResponse(d.cfg, entries)
+	} else {
+		d.ss.mu.RLock()
+		pages = formatClosingStrategiesResponse(d.cfg, entries)
+		d.ss.mu.RUnlock()
+	}
+	for _, page := range pages {
 		_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 			Content: truncateForDiscord(page),
 			Flags:   flags,

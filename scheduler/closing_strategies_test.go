@@ -61,6 +61,31 @@ func TestFormatClosingStrategiesResponseNoParams(t *testing.T) {
 	}
 }
 
+func TestFormatClosingStrategiesResponseOverrideSurfacesWhenRegistryDefaultIsEmpty(t *testing.T) {
+	// trailing_tp_ratchet_regime (and any override-eligible evaluator with
+	// empty registry default_params) must still show the operator's
+	// configured tp_tiers — that's the only value that ever runs for it.
+	cfg := &Config{
+		UserDefaults: &UserDefaultsConfig{
+			Close: CloseDefaultsMap{
+				"trailing_tp_ratchet_regime": {"tp_tiers": []interface{}{
+					map[string]interface{}{"atr_multiple": 1.0, "trailing_stop_mult_after": 0.5},
+				}},
+			},
+		},
+	}
+	entries := []closeRegistryEntry{
+		{Name: "trailing_tp_ratchet_regime", Description: "Regime ratchet", DefaultParams: map[string]interface{}{}, Platforms: []string{"spot"}},
+	}
+	body := formatClosingStrategiesResponse(cfg, entries)[0]
+	if strings.Contains(body, "params: (none)") {
+		t.Fatalf("configured override must not be hidden behind the empty-registry-default (none) marker, got: %s", body)
+	}
+	if !strings.Contains(body, "tp_tiers=") || !strings.Contains(body, "user_defaults.close override") {
+		t.Fatalf("expected tp_tiers override to be surfaced, got: %s", body)
+	}
+}
+
 func TestFormatClosingStrategiesResponseUserDefaultsOverride(t *testing.T) {
 	cfg := &Config{
 		UserDefaults: &UserDefaultsConfig{
