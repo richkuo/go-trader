@@ -1,0 +1,25 @@
+{
+  "name": "squeeze_momentum",
+  "direction": "long",
+  "profile_allocation": {
+    "window_spec": {
+      "classifier": "adx",
+      "period": 14,
+      "adx_threshold": 20.0
+    },
+    "profiles": {
+      "trending_up": "on",
+      "ranging": "on",
+      "trending_down": "off"
+    },
+    "param_sets": {
+      "on": {},
+      "off": {
+        "kc_mult": 1.3,
+        "mom_lookback": 16
+      }
+    },
+    "confirm_bars": 2,
+    "initial_profile": "on"
+  }
+}
