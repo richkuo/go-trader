@@ -178,6 +178,78 @@ entry): the gate removes entries, so drag falls with trade count — and p21's
 gross return is *above* baseline's (+15.2% vs +13.3%): the removed trades
 were net losers before fees, not just fee victims.
 
+## Step 6 — live-label fidelity gate (#1197 wiring evidence)
+
+Everything above scored `trending_up_clean` labels computed over the **full
+cached history**; the live gate reads them from `check_regime.py`, which
+recomputes the composite over a **bounded 200-bar fetch** each cycle — the
+ADX sub-recursion seeds differently, so the same calendar bar can label
+differently live vs in this evidence (#1082). Before wiring, this step
+measures that drift with the same hand-rule arm the #1074 promotion gate
+uses (`regime_bounded_window_validate.validate`, `model=None` — no fitted
+model, so `gate_verdict`/provenance don't apply), applied fail-closed
+(#1082 bar: agreement ≥ 0.95 on ≥ 30 comparable bars, per dataset × window;
+a short/missing row blocks, never vacuously passes):
+
+```
+uv run --no-sync python backtest/candidates/breakout_1165/live_label_fidelity.py \
+    --json backtest/candidates/breakout_1165/live_label_fidelity.json
+```
+
+**Result: PASS on all 12 rows** (6 datasets × is/oos). Worst all-label
+agreement 0.98678 (BTC/4h is); worst gate-membership agreement — the exact
+`trending_up_clean` bit `allowed_regimes` consumes — 0.99338 (ETH/4h oos,
+6 flips on 907 bars). 8 of 12 rows have zero gate flips; the bounded window
+the live scheduler sees reproduces the labels this evidence scored.
+
+| | 1h is | 1h oos | 4h is | 4h oos |
+|---|---:|---:|---:|---:|
+| BTC/USDT | 0.99735 / 0 | 0.99837 / 2 | 0.98678 / 0 | 0.99890 / 1 |
+| ETH/USDT | 0.99796 / 0 | 0.99897 / 0 | 0.99504 / 0 | 0.99228 / 6 |
+| SOL/USDT | 1.00000 / 0 | 0.99820 / 0 | 0.99835 / 0 | 0.99338 / 2 |
+
+(all-label agreement / gate-membership flips; n per row: 1h is 4900,
+1h oos 3676–3887, 4h is 1210, 4h oos 907)
+
+### The wiring itself (operator config, out-of-tree per #1056)
+
+The live config lives at `/var/lib/go-trader[/<instance>]/config.json`, not
+in the repo, so the deployment is an operator edit. The exact shape — pinned
+by `scheduler/regime_comp_up_clean_gate_test.go` so it can never silently
+drift from what was validated:
+
+```jsonc
+"regime": {
+  "enabled": true,
+  "windows": {
+    "comp_p21": { "classifier": "composite", "period": 21 }
+    // …existing windows (e.g. an ADX "medium") stay as they are
+  }
+},
+// on the breakout futures strategy:
+"regime_gate_window": "comp_p21",
+"allowed_regimes": ["trending_up_clean"]
+```
+
+Deployment constraints (all enforced by config validation / hot-reload
+guards, tested in the same file):
+
+- **Set `regime_gate_window` explicitly.** Without it the gate reads the
+  PRIMARY window ("medium" when present) — if that's an existing ADX window,
+  its 3-label vocabulary lacks `trending_up_clean` and config load rejects;
+  if the composite window itself happens to be named "medium" it works, but
+  only by deployment-order luck. The explicit key makes the wiring
+  independent of what other windows exist.
+- Composite thresholds stay the shared defaults (this evidence ran them);
+  the label pairing is validated against the gate window's classifier
+  (`validateStrategyRegimeVocabulary`).
+- **Apply while the strategy is flat**: SIGHUP hot-reload blocks
+  `regime_gate_window`/classifier changes on a referenced window while a
+  position is open (`config_reload.go`).
+- Gate semantics live: entries blocked when the medium-window label ≠
+  `trending_up_clean`, **closes and position management always execute** —
+  the same asymmetry every backtest row above relied on.
+
 ## Verdict
 
 1. **The -52.2% DD is regime exposure, and a label set that separates the
@@ -197,14 +269,15 @@ were net losers before fees, not just fee victims.
    the IS peak); the judged OOS window was looked at once per shortlist
    member (M1 step 5 discipline held: selection was IS-only); all evidence
    is one asset class (BTC/ETH/SOL × 1h/4h) on the audit frame.
-4. **This changes no live config.** Follow-on (own issue): wire the gate
-   into the live breakout futures strategy via `allowed_regimes:
-   ["trending_up_clean"]` + a composite `regime.windows` medium window at
-   period 21 — a live config change with its own #1074-class classifier
-   evidence requirements — and re-run this directory against
-   `squeeze_momentum` (#983, same DD conclusion, -58.5%): the drivers are
-   strategy-parameterized (`--strategy/--registry/--direction`;
-   `driver_common.py` holds the breakout-specific M4 param sets).
+4. **Steps 1–5 changed no live config.** The wiring follow-on is **#1197**
+   (Step 6 above): the live-label fidelity bar passed on all 12 rows, the
+   operator config shape + gate semantics are pinned by
+   `scheduler/regime_comp_up_clean_gate_test.go`, and the config edit itself
+   is operator-side (out-of-tree, #1056). Remaining follow-on (own issue):
+   re-run this directory against `squeeze_momentum` (#983, same DD
+   conclusion, -58.5%): the drivers are strategy-parameterized
+   (`--strategy/--registry/--direction`; `driver_common.py` holds the
+   breakout-specific M4 param sets).
 
 A positive result still ships as evidence, not a config change (#995 step 4
 symmetry: documented, not deployed).
