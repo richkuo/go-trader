@@ -1,0 +1,25 @@
+{
+  "study": "squeeze_momentum_1198_suggest",
+  "registry": "spot",
+  "harnesses": ["m1_noise", "m1", "m3", "m5"],
+  "windows": ["is", "oos"],
+  "datasets": null,
+  "correction": {"method": "benjamini_hochberg", "alpha": 0.05},
+  "candidates": [
+    {
+      "key": "baseline",
+      "candidate": "baseline.json",
+      "hypothesis": "ungated squeeze_momentum long — the incumbent bar"
+    },
+    {
+      "key": "adx_not_down",
+      "candidate": "adx_not_down.json",
+      "hypothesis": "gate entries to ADX trending_up/ranging (exclude trending_down)"
+    },
+    {
+      "key": "comp_up_family",
+      "candidate": "comp_up_family.json",
+      "hypothesis": "gate entries to the composite trending_up family (clean+choppy)"
+    }
+  ]
+}
