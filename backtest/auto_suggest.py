@@ -495,7 +495,15 @@ def collect_family_pvalues(entries: list) -> list:
                 seen_noise.add(fam)
                 p = noise.get("permutation_p")
                 if p is not None:
+                    # The noise p is deduped to ONE test per family (keeping the
+                    # BH family size honest — the same noise run must not be
+                    # counted once per sibling), but it is the shared evidence for
+                    # EVERY entry in the family, so it is keyed by noise_family_key
+                    # and looked up by family in candidate_verdict — not by the
+                    # first sibling's candidate_key (which would let the other
+                    # siblings skip the BH downgrade and promote on a failed p).
                     tests.append({"candidate_key": e["key"], "harness": "m1_noise",
+                                  "noise_family_key": fam,
                                   "window": None, "dataset": None, "p": float(p),
                                   "effect_positive": (noise.get("mean") or 0) > 0})
         m6 = (r.get("m6") or {}).get("data")
@@ -547,6 +555,13 @@ def candidate_verdict(entry: dict, tests: list) -> str:
         return "run_failed"
 
     my_tests = _tests_for(entry, tests)
+    # The noise p is deduped to one family-keyed test (see collect_family_pvalues),
+    # so it lives under the FIRST sibling's candidate_key, not this entry's. Match
+    # it across the whole family by noise_family_key so every sibling sharing the
+    # family gets the same BH-survival verdict.
+    fam = entry.get("noise_family_key")
+    noise_t = next((t for t in tests if t["harness"] == "m1_noise"
+                    and t.get("noise_family_key") == fam), None)
 
     if entry["kind"] == "open":
         noise = (r.get("m1_noise") or {}).get("data")
@@ -558,7 +573,6 @@ def candidate_verdict(entry: dict, tests: list) -> str:
             # gate alone when present.
             if noise is None:
                 return "inconclusive"
-            noise_t = next((t for t in my_tests if t["harness"] == "m1_noise"), None)
             if noise.get("verdict") == "distinguishable_positive":
                 if noise_t and not noise_t.get("bh_pass"):
                     return "positive_uncorrected_only"
@@ -572,7 +586,6 @@ def candidate_verdict(entry: dict, tests: list) -> str:
             return "incumbent_stands"
         # M1 protocol passed. If a noise p is in the family, gate the survivor
         # call on it surviving the correction.
-        noise_t = next((t for t in my_tests if t["harness"] == "m1_noise"), None)
         if noise_t and not noise_t.get("bh_pass"):
             return "positive_uncorrected_only"
         return "survivor"
@@ -703,6 +716,13 @@ def _noise_family_key(candidate: dict) -> str:
     }, sort_keys=True)
 
 
+def _m5_family_key(candidate: dict) -> str:
+    # fee_audit screens registry defaults by name+direction (no --params surface),
+    # so params are deliberately excluded — one m5 run covers a name+direction.
+    return json.dumps({"name": candidate.get("name"),
+                       "direction": _direction_for(candidate)}, sort_keys=True)
+
+
 def _run_harness(harness: str, tail: list, out_json: str) -> dict:
     argv = [sys.executable, HARNESS_ABS[harness]] + tail
     proc = subprocess.run(argv, capture_output=True, text=True)
@@ -736,6 +756,26 @@ def ensure_noise(entry: dict, spec: dict, out_dir: str, noise_cache: dict) -> No
         if run["status"] == "ok":
             run["data"] = extract_noise(run.pop("payload"))
         noise_cache[fam] = run
+
+
+def ensure_m5(entry: dict, spec: dict, out_dir: str, m5_cache: dict) -> None:
+    """Run (or reuse) the family-level M5 fee audit. Like the noise gate, this
+    MUST be primed serially before the parallel map — otherwise two entries
+    sharing an m5 family race on the same fee_audit output path and a read can
+    hit a half-written file. Per (name, direction) results are memoized."""
+    cand = entry["candidate"]
+    if "m5" not in entry["harnesses"]:
+        return
+    fam = _m5_family_key(cand)
+    if fam not in m5_cache:
+        direction = _direction_for(cand)
+        out = os.path.join(out_dir, f"m5.{cand['name']}.{direction or 'long'}.json")
+        tail = m5_argv_tail(cand["name"], spec["registry"], direction,
+                            spec["windows"], spec["datasets"], out)
+        run = _run_harness("m5", tail, out)
+        if run["status"] == "ok":
+            run["data"] = extract_m5(run.pop("payload"), cand["name"])
+        m5_cache[fam] = run
 
 
 def run_open_entry(entry: dict, spec: dict, out_dir: str,
@@ -772,16 +812,13 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         results["m3"] = run
 
     if "m5" in entry["harnesses"]:
-        fam = json.dumps({"name": cand["name"], "direction": _direction_for(cand)},
-                         sort_keys=True)
-        if fam not in m5_cache:
-            out = os.path.join(out_dir, f"m5.{cand['name']}.{_direction_for(cand) or 'long'}.json")
-            tail = m5_argv_tail(cand["name"], reg, _direction_for(cand), windows, datasets, out)
-            run = _run_harness("m5", tail, out)
-            if run["status"] == "ok":
-                run["data"] = extract_m5(run.pop("payload"), cand["name"])
-            m5_cache[fam] = run
-        results["m5"] = m5_cache[fam]
+        # m5 is family-level (fee_audit screens registry defaults by name, no
+        # --params surface). It MUST be primed serially by ensure_m5 before the
+        # parallel map — a check-then-run here would let two threads sharing an
+        # m5 family both miss the cache, both spawn fee_audit writing the same
+        # output path, and a read racing that rewrite would raise JSONDecodeError
+        # and abort the whole suggester. By this point the cache is populated.
+        results["m5"] = m5_cache[_m5_family_key(cand)]
 
     entry["results"] = results
     return entry
@@ -909,9 +946,11 @@ def main(argv=None) -> int:
     ab_entries = [e for e in entries if e["kind"] == "exit_ab"]
 
     # Noise gate FIRST (M1 step-2 precondition), serialized so the family cache
-    # is populated before selectivity work; then parallel per-entry harnesses.
+    # is populated before selectivity work; the family-level M5 audit is primed
+    # in the same serial pass so concurrent entries never race its output path.
     for e in open_entries:
         ensure_noise(e, spec, out_dir, noise_cache)
+        ensure_m5(e, spec, out_dir, m5_cache)
 
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
         list(ex.map(lambda e: run_open_entry(e, spec, out_dir, noise_cache, m5_cache),

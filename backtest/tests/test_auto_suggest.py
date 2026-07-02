@@ -318,14 +318,20 @@ def test_collect_family_pvalues_dedupes_noise_and_excludes_m3_m5():
 # 7. Promotion gate (verdict matrix)
 # --------------------------------------------------------------------------
 
-def _open_entry(key, noise=None, m1=None, harnesses=("m1_noise", "m1")):
+def _open_entry(key, noise=None, m1=None, harnesses=("m1_noise", "m1"), fam=None):
     results = {}
     if noise is not None:
         results["m1_noise"] = {"status": "ok", "data": noise}
     if m1 is not None:
         results["m1"] = {"status": "ok", "data": m1}
     return {"key": key, "kind": "open", "harnesses": list(harnesses),
-            "precondition_errors": [], "results": results}
+            "precondition_errors": [], "noise_family_key": fam or f"fam::{key}",
+            "results": results}
+
+
+def _noise_test(fam, key, p, bh_pass, positive=True):
+    return {"candidate_key": key, "harness": "m1_noise", "noise_family_key": fam,
+            "p": p, "effect_positive": positive, "bh_pass": bh_pass}
 
 
 def test_verdict_run_failed_never_survivor():
@@ -347,21 +353,55 @@ def test_verdict_noise_gate_blocks_before_selectivity():
 
 
 def test_verdict_open_survivor_requires_bh_survival():
-    e = _open_entry("x", noise={"verdict": "distinguishable_positive", "mean": 0.3},
+    e = _open_entry("x", fam="F", noise={"verdict": "distinguishable_positive", "mean": 0.3},
                     m1={"is": {"verdict": "pass"}, "oos": {"verdict": "pass"}})
-    tests = [{"candidate_key": "x", "harness": "m1_noise", "p": 0.001,
-              "effect_positive": True, "bh_pass": True}]
+    tests = [_noise_test("F", "x", 0.001, True)]
     assert asug.candidate_verdict(e, tests) == "survivor"
     tests[0]["bh_pass"] = False
     assert asug.candidate_verdict(e, tests) == "positive_uncorrected_only"
 
 
 def test_verdict_open_m1_fail_is_incumbent_stands():
-    e = _open_entry("x", noise={"verdict": "distinguishable_positive", "mean": 0.3},
+    e = _open_entry("x", fam="F", noise={"verdict": "distinguishable_positive", "mean": 0.3},
                     m1={"is": {"verdict": "pass"}, "oos": {"verdict": "fail"}})
-    tests = [{"candidate_key": "x", "harness": "m1_noise", "p": 0.001,
-              "effect_positive": True, "bh_pass": True}]
+    tests = [_noise_test("F", "x", 0.001, True)]
     assert asug.candidate_verdict(e, tests) == "incumbent_stands"
+
+
+def test_gated_siblings_share_noise_bh_verdict():
+    # #1210 review (Needs Fixing): candidates differing only by gate share ONE
+    # noise_family_key. The deduped noise p is attached to the FIRST sibling's
+    # candidate_key only, so lookup-by-family (not by candidate_key) is required
+    # or the other siblings skip the BH downgrade and promote on a failed p.
+    fam = "shared"
+    m1_pass = {"is": {"verdict": "pass"}, "oos": {"verdict": "pass"}}
+    noise = {"verdict": "distinguishable_positive", "mean": 0.3}
+    siblings = [_open_entry(k, fam=fam, noise=noise, m1=m1_pass)
+                for k in ("baseline", "adx_gate", "comp_gate")]
+    # The deduped noise test lives under the FIRST sibling only, and it FAILS BH.
+    tests = [_noise_test(fam, "baseline", 0.049, bh_pass=False)]
+    verdicts = [asug.candidate_verdict(e, tests) for e in siblings]
+    # (a) NONE may be survivor — every sibling gets the downgrade.
+    assert verdicts == ["positive_uncorrected_only"] * 3
+    # (c) reordering the entries must not change any verdict.
+    verdicts_rev = [asug.candidate_verdict(e, tests) for e in reversed(siblings)]
+    assert set(verdicts_rev) == {"positive_uncorrected_only"}
+    # When the shared noise p SURVIVES BH, all three become survivors together.
+    tests[0]["bh_pass"] = True
+    assert [asug.candidate_verdict(e, tests) for e in siblings] == ["survivor"] * 3
+
+
+def test_distinct_param_families_keep_independent_noise_tests():
+    # (b) same name+direction, different params => distinct families => two noise
+    # tests, each governing its own candidate.
+    e_a = {"key": "a", "kind": "open", "noise_family_key": "famA",
+           "results": {"m1_noise": {"data": {"permutation_p": 0.01, "mean": 0.2}}}}
+    e_b = {"key": "b", "kind": "open", "noise_family_key": "famB",
+           "results": {"m1_noise": {"data": {"permutation_p": 0.30, "mean": 0.1}}}}
+    tests = asug.collect_family_pvalues([e_a, e_b])
+    noise_tests = [t for t in tests if t["harness"] == "m1_noise"]
+    assert len(noise_tests) == 2
+    assert {t["noise_family_key"] for t in noise_tests} == {"famA", "famB"}
 
 
 def _ab_entry(key, is_pooled, oos_pooled):
