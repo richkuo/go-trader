@@ -26,7 +26,12 @@ import (
 //   - A regime entry-gate rebinds the stamped regime semantics of any open
 //     position, so the target MUST be flat — refused (before AND after the
 //     confirm, since a position can open mid-prompt) rather than queued.
-//   - An explicit DM confirm precedes the write.
+//   - An explicit DM confirm precedes the write. The confirm message's
+//     blast-radius list (other strategies a regime.enabled flip would newly
+//     activate) is recomputed immediately before the write and the write is
+//     refused if it grew past what was confirmed (regimeGateBlastRadiusGrew)
+//     — a concurrent config edit during the confirm wait must not silently
+//     widen what the operator agreed to.
 //   - The write goes through mutateConfig → writeValidatedConfigRoot (atomic
 //     temp → LoadConfigForProbe validation → rename, serialized on
 //     configWriteMu). Apply is via restart: adding a regime.windows entry is
@@ -242,6 +247,38 @@ func regimeGateSideEffectStrategies(root map[string]json.RawMessage, targetID st
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// regimeGateBlastRadiusGrew returns the entries in fresh that are absent from
+// shown — the strategies that would be newly activated by the write beyond
+// what the operator was shown at confirm time. A concurrent config edit
+// during the picker/confirm prompts (another Discord session, or the /config
+// web UI) can change the blast radius between when it was computed for the
+// confirm message and when the write actually happens; recomputing it right
+// before the write and refusing only on growth means:
+//   - an edit that ADDS allowed_regimes to a strategy the operator was never
+//     shown is caught (fresh gains an id absent from shown);
+//   - an edit that REMOVES allowed_regimes from a previously-listed strategy
+//     does not block the write (shown may be a superset of fresh — a strictly
+//     safer outcome than what was confirmed, not a reason to refuse);
+//   - a concurrent toggle of regime.enabled itself only ever shrinks or
+//     empties fresh relative to shown (turning the flip into a no-op), which
+//     is also not growth.
+//
+// Both inputs are expected pre-sorted, as returned by
+// regimeGateSideEffectStrategies.
+func regimeGateBlastRadiusGrew(fresh, shown []string) []string {
+	shownSet := make(map[string]bool, len(shown))
+	for _, id := range shown {
+		shownSet[id] = true
+	}
+	var grew []string
+	for _, id := range fresh {
+		if !shownSet[id] {
+			grew = append(grew, id)
+		}
+	}
+	return grew
 }
 
 // formatStrategyIDList renders IDs as a comma-separated, backticked list for a
@@ -469,6 +506,24 @@ func (d *DiscordNotifier) handleApplyRegimeGate(s *discordgo.Session, i *discord
 	// Re-check flat: a position may have opened during the picker/confirm prompts.
 	if d.ss.strategyHasOpenPosition(target.sc.ID) {
 		followupText(s, i, fmt.Sprintf("Refused: strategy `%s` opened a position while confirming — cannot gate while open. Nothing changed.", target.sc.ID))
+		return
+	}
+
+	// The blast-radius list the operator just confirmed was computed before the
+	// 60s confirm wait; a concurrent config edit in that window (another Discord
+	// session, or the /config web UI) can grow it past what was shown. Recompute
+	// it fresh and refuse rather than silently writing a wider blast radius than
+	// the operator agreed to — a shrunk or unchanged set is not a refusal reason
+	// (see regimeGateBlastRadiusGrew).
+	var freshAlsoActivated []string
+	if raw, rerr := os.ReadFile(path); rerr == nil {
+		var freshRoot map[string]json.RawMessage
+		if json.Unmarshal(raw, &freshRoot) == nil {
+			freshAlsoActivated, _ = regimeGateSideEffectStrategies(freshRoot, target.sc.ID)
+		}
+	}
+	if grew := regimeGateBlastRadiusGrew(freshAlsoActivated, alsoActivated); len(grew) > 0 {
+		followupText(s, i, fmt.Sprintf("Refused: the regime-gate blast radius changed while you were confirming — strategy(ies) %s would now also be newly activated, which you were not shown. Nothing changed. Re-run `/apply-regime-gate` to review and confirm the current set.", formatStrategyIDList(grew)))
 		return
 	}
 

@@ -346,6 +346,59 @@ func TestRegimeGateDoesNotBlockOpenPositionManagement(t *testing.T) {
 	}
 }
 
+// ─── #1206 review: the confirm-time blast radius must be re-verified, not
+// trusted stale, immediately before the write ────────────────────────────────
+//
+// The confirm message's blast-radius list is computed once, before the (up to
+// 60s) confirm wait. regimeGateBlastRadiusGrew is what the handler calls right
+// before the write to decide whether a concurrent edit during that wait
+// invalidated what the operator agreed to.
+
+// Must-survive (1): a concurrent edit adds allowed_regimes to a strategy the
+// operator was never shown — the fresh set gains an id, which must be
+// reported as growth so the handler refuses the write.
+func TestRegimeGateBlastRadiusGrew_ConcurrentAddIsGrowth(t *testing.T) {
+	shown := []string{"gated-window"}
+	fresh := []string{"gated-window", "surprise-strategy"}
+	got := regimeGateBlastRadiusGrew(fresh, shown)
+	if !reflect.DeepEqual(got, []string{"surprise-strategy"}) {
+		t.Errorf("got %v, want [surprise-strategy]", got)
+	}
+}
+
+// Must-survive (2): a concurrent edit removes allowed_regimes from a
+// previously-listed strategy — fresh shrinks relative to shown, which must
+// NOT be treated as growth (the write must still proceed).
+func TestRegimeGateBlastRadiusGrew_ConcurrentRemovalIsNotGrowth(t *testing.T) {
+	shown := []string{"gated-legacy", "gated-window"}
+	fresh := []string{"gated-window"}
+	if got := regimeGateBlastRadiusGrew(fresh, shown); len(got) != 0 {
+		t.Errorf("a shrunk set must not be reported as growth, got %v", got)
+	}
+}
+
+// Must-survive (3): regime detection itself gets enabled by a concurrent edit
+// during the confirm wait, turning what was a real flip (shown non-empty)
+// into a no-op (fresh empty, since regimeGateSideEffectStrategies returns nil
+// once already enabled). That is a shrink to empty, not growth — the write
+// must still proceed with the now-safe (no-op) flip.
+func TestRegimeGateBlastRadiusGrew_ConcurrentEnableCollapsesToNoGrowth(t *testing.T) {
+	shown := []string{"gated-legacy", "gated-window"}
+	var fresh []string // regime.enabled flipped true meanwhile → no side effect
+	if got := regimeGateBlastRadiusGrew(fresh, shown); len(got) != 0 {
+		t.Errorf("a concurrent enable collapsing the flip to a no-op must not be growth, got %v", got)
+	}
+}
+
+// Baseline: an unchanged blast radius is never reported as growth.
+func TestRegimeGateBlastRadiusGrew_UnchangedIsNotGrowth(t *testing.T) {
+	shown := []string{"gated-legacy", "gated-window"}
+	fresh := []string{"gated-legacy", "gated-window"}
+	if got := regimeGateBlastRadiusGrew(fresh, shown); len(got) != 0 {
+		t.Errorf("an unchanged set must not be reported as growth, got %v", got)
+	}
+}
+
 func TestBuildRegimeGatePickerMessage(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 	candidates := []gateCandidate{
