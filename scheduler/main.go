@@ -2207,7 +2207,13 @@ func main() {
 							// #1150: paused — hold position-increasing signals (fresh open, add,
 							// flip); position-reducing actions pass so open positions ride their
 							// natural exit. The Signal==0 manage path below keeps running.
-							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, false) {
+							// allowsLong=allowsShort=true: ExecuteFuturesSignal is
+							// unconditionally bidirectional — a sell on a long (closeFraction
+							// 0) closes AND opens a fresh short ("Open short … after closing
+							// long"), and a buy on a short mirrors it — so an opposite-side
+							// signal is never a pure close; only close-registry actions
+							// (closeFraction>0) reduce without reopening.
+							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}

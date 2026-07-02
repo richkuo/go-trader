@@ -54,6 +54,17 @@ func TestPausedBlocksSignal(t *testing.T) {
 		// Legacy edge (#656): buy on a short under direction="long" fresh-sizes
 		// a new long without offset — exposure grows, so it is held.
 		{"legacy buy on short under long", 1, 0, 2, "short", true, false, true},
+
+		// Futures dispatch args (allowsLong=allowsShort=true):
+		// ExecuteFuturesSignal is unconditionally bidirectional — a sell on a
+		// long (closeFraction 0) closes AND opens a fresh short, a buy on a
+		// short mirrors it — so opposite-side signals are held; only
+		// close-registry actions pass, and flat signals are fresh opens.
+		{"futures long sell flip", -1, 0, 3, "long", true, true, true},
+		{"futures short buy flip", 1, 0, 3, "short", true, true, true},
+		{"futures long partial registry close", -1, 0.5, 3, "long", true, true, false},
+		{"futures long full registry close", -1, 1.0, 3, "long", true, true, false},
+		{"futures flat sell fresh short", -1, 0, 0, "", true, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
