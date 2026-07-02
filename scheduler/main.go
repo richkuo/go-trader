@@ -344,15 +344,25 @@ func main() {
 		},
 		func(job llmEntryAnalysisJob, res *LLMEntryAnalysisResult) {
 			msg := formatLLMEntryAnalysisDigest(job, res)
+			// Routing is per-strategy (#1137): DM on by default, channel off by
+			// default. Both resolved into job.Params at dispatch so the async
+			// digest honors the config in effect at open time.
 			for _, route := range notifier.tradeAlertRoutes(job.Platform, job.StratType, job.IsLive) {
-				if route.channel != "" {
-					if err := route.notifier.SendMessage(route.channel, msg); err != nil {
-						fmt.Printf("[notify] LLM analysis digest failed: %v\n", err)
+				if job.Params.NotifyDM && route.dmDest != "" {
+					if err := sendTradeDestination(route.notifier, route.dmDest, msg); err != nil {
+						fmt.Printf("[notify] LLM analysis DM failed: %v\n", err)
 					}
 				}
-				if route.liveChan != "" {
-					if err := route.notifier.SendMessage(route.liveChan, msg); err != nil {
-						fmt.Printf("[notify] LLM analysis digest (live channel) failed: %v\n", err)
+				if job.Params.NotifyChannel {
+					if route.channel != "" {
+						if err := route.notifier.SendMessage(route.channel, msg); err != nil {
+							fmt.Printf("[notify] LLM analysis digest failed: %v\n", err)
+						}
+					}
+					if route.liveChan != "" {
+						if err := route.notifier.SendMessage(route.liveChan, msg); err != nil {
+							fmt.Printf("[notify] LLM analysis digest (live channel) failed: %v\n", err)
+						}
 					}
 				}
 			}

@@ -63,6 +63,31 @@ type LLMEntryAnalysisConfig struct {
 	MaxDebateRounds *int `json:"max_debate_rounds,omitempty"`
 	// TimeoutS is the whole-pipeline subprocess deadline. 0 = default 120s.
 	TimeoutS int `json:"timeout_s,omitempty"`
+	// NotifyDM controls whether the digest is delivered to the strategy's
+	// trade-alert DM destination (dm_channels). nil = default ON — DMs are the
+	// primary, quiet channel for advisory commentary.
+	NotifyDM *bool `json:"notify_dm,omitempty"`
+	// NotifyChannel controls whether the digest is posted to the strategy's
+	// trade-alert channel(s). nil = default OFF — channels are noisy and shared,
+	// so advisory entry commentary stays out of them unless explicitly opted in.
+	NotifyChannel *bool `json:"notify_channel,omitempty"`
+}
+
+// llmNotifyDM resolves whether the digest is DM'd (nil field -> default true).
+func (sc *StrategyConfig) llmNotifyDM() bool {
+	if sc == nil || sc.LLMEntryAnalysis == nil || sc.LLMEntryAnalysis.NotifyDM == nil {
+		return true
+	}
+	return *sc.LLMEntryAnalysis.NotifyDM
+}
+
+// llmNotifyChannel resolves whether the digest is posted to trade-alert
+// channels (nil field -> default false).
+func (sc *StrategyConfig) llmNotifyChannel() bool {
+	if sc == nil || sc.LLMEntryAnalysis == nil || sc.LLMEntryAnalysis.NotifyChannel == nil {
+		return false
+	}
+	return *sc.LLMEntryAnalysis.NotifyChannel
 }
 
 // LLMEntryAnalysisEnabled reports whether the strategy opted in.
@@ -76,6 +101,10 @@ type llmEntryAnalysisParams struct {
 	Model           string
 	MaxDebateRounds int
 	Timeout         time.Duration
+	// NotifyDM/NotifyChannel are the resolved routing gates, snapshotted at
+	// dispatch so an async digest honors the config in effect at open time.
+	NotifyDM      bool
+	NotifyChannel bool
 }
 
 func resolveLLMEntryAnalysisParams(sc StrategyConfig) llmEntryAnalysisParams {
@@ -83,6 +112,8 @@ func resolveLLMEntryAnalysisParams(sc StrategyConfig) llmEntryAnalysisParams {
 		Model:           llmEntryAnalysisDefaultModel,
 		MaxDebateRounds: llmEntryAnalysisDefaultRounds,
 		Timeout:         llmEntryAnalysisDefaultTimeoutS * time.Second,
+		NotifyDM:        sc.llmNotifyDM(),
+		NotifyChannel:   sc.llmNotifyChannel(),
 	}
 	c := sc.LLMEntryAnalysis
 	if c == nil {
@@ -129,7 +160,8 @@ func formatLLMEntryAnalysis(c *LLMEntryAnalysisConfig) string {
 		return "off"
 	}
 	p := resolveLLMEntryAnalysisParams(StrategyConfig{LLMEntryAnalysis: c})
-	return fmt.Sprintf("on(model=%s, rounds=%d, timeout=%s)", p.Model, p.MaxDebateRounds, p.Timeout)
+	return fmt.Sprintf("on(model=%s, rounds=%d, timeout=%s, dm=%t, channel=%t)",
+		p.Model, p.MaxDebateRounds, p.Timeout, p.NotifyDM, p.NotifyChannel)
 }
 
 // llmEntryAnalysisJob is the immutable context snapshot for one analysis,

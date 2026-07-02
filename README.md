@@ -223,7 +223,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `capital` | Starting capital in USD | 1000 |
 | `max_drawdown_pct` | Per-strategy CB; peak-relative (spot/options/futures), margin-relative (perps) | spot 5, options 10, perps 5 |
 | `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains | enabled |
-| `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s}` — post-open LLM multi-agent entry commentary (advisory only; posts a digest to the strategy channel, never touches the trade) | disabled |
+| `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` — post-open LLM multi-agent entry commentary (advisory only; never touches the trade). Digest defaults to DM (`notify_dm` on); the shared channel is opt-in (`notify_channel` off) | disabled |
 | `interval_seconds` | Check interval (0 → global) | 0 |
 | `htf_filter` | Higher-timeframe trend filter | false |
 | `open_strategy` | Co-located ref `{name, params}` overriding entry; falls back to `args[0]` | null |

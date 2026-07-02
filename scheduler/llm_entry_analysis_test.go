@@ -20,6 +20,10 @@ func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 	if p.Model != llmEntryAnalysisDefaultModel || p.MaxDebateRounds != llmEntryAnalysisDefaultRounds || p.Timeout != llmEntryAnalysisDefaultTimeoutS*time.Second {
 		t.Fatalf("defaults wrong: %+v", p)
 	}
+	// Routing defaults: DM on, channel off.
+	if !p.NotifyDM || p.NotifyChannel {
+		t.Fatalf("routing defaults wrong: dm=%t channel=%t (want dm=true channel=false)", p.NotifyDM, p.NotifyChannel)
+	}
 
 	zero := 0
 	sc.LLMEntryAnalysis = &LLMEntryAnalysisConfig{Enabled: true, Model: " claude-opus-4-8 ", MaxDebateRounds: &zero, TimeoutS: 300}
@@ -29,6 +33,39 @@ func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 	p = resolveLLMEntryAnalysisParams(sc)
 	if p.Model != "claude-opus-4-8" || p.MaxDebateRounds != 0 || p.Timeout != 300*time.Second {
 		t.Fatalf("overrides wrong: %+v", p)
+	}
+}
+
+// Routing is per-strategy: DM defaults on, channel defaults off, both
+// overridable independently. The resolved gates are snapshotted into Params.
+func TestLLMEntryAnalysisNotifyRouting(t *testing.T) {
+	// nil block -> defaults (dm on, channel off).
+	var sc StrategyConfig
+	if !sc.llmNotifyDM() || sc.llmNotifyChannel() {
+		t.Fatalf("nil block: dm=%t channel=%t (want dm=true channel=false)", sc.llmNotifyDM(), sc.llmNotifyChannel())
+	}
+
+	// Explicit block, fields unset -> same defaults.
+	sc.LLMEntryAnalysis = &LLMEntryAnalysisConfig{Enabled: true}
+	if !sc.llmNotifyDM() || sc.llmNotifyChannel() {
+		t.Fatalf("unset fields: dm=%t channel=%t (want dm=true channel=false)", sc.llmNotifyDM(), sc.llmNotifyChannel())
+	}
+
+	// Independent overrides: DM off, channel on.
+	off, on := false, true
+	sc.LLMEntryAnalysis = &LLMEntryAnalysisConfig{Enabled: true, NotifyDM: &off, NotifyChannel: &on}
+	if sc.llmNotifyDM() || !sc.llmNotifyChannel() {
+		t.Fatalf("overrides: dm=%t channel=%t (want dm=false channel=true)", sc.llmNotifyDM(), sc.llmNotifyChannel())
+	}
+	p := resolveLLMEntryAnalysisParams(sc)
+	if p.NotifyDM || !p.NotifyChannel {
+		t.Fatalf("params snapshot: dm=%t channel=%t (want dm=false channel=true)", p.NotifyDM, p.NotifyChannel)
+	}
+
+	// Both off is legal (analysis still stamps the verdict, just posts nothing).
+	sc.LLMEntryAnalysis = &LLMEntryAnalysisConfig{Enabled: true, NotifyDM: &off, NotifyChannel: &off}
+	if sc.llmNotifyDM() || sc.llmNotifyChannel() {
+		t.Fatalf("both off: dm=%t channel=%t (want both false)", sc.llmNotifyDM(), sc.llmNotifyChannel())
 	}
 }
 
