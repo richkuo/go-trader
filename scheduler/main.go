@@ -1349,9 +1349,10 @@ func main() {
 			// Kill switch reset goroutine: prompt owner to reset via DM.
 			if killSwitchFired && notifier.HasOwner() && !resetGoroutineRunning {
 				resetGoroutineRunning = true
+				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, plan)
 				go func() {
 					defer func() { resetGoroutineRunning = false }()
-					resp, err := notifier.AskOwnerDM("Kill switch active. Reply 'reset' to resume trading.", 30*time.Minute)
+					resp, err := notifier.AskOwnerDM(resetPrompt, 30*time.Minute)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
 						return
