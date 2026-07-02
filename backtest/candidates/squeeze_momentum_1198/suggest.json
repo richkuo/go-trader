@@ -62,7 +62,7 @@
         "candidate_close": [
           {"name": "trailing_stop_atr_mult", "params": {"atr_mult": 3.0}}
         ],
-        "candidate_stops": "drop"
+        "candidate_stops": "inherit"
       }
     ],
     "close_stack_specs": [
