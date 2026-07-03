@@ -373,8 +373,10 @@ CREATE TABLE IF NOT EXISTS trade_diagnostics (
 CREATE INDEX IF NOT EXISTS idx_trade_diag_strategy ON trade_diagnostics(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_trade_diag_position ON trade_diagnostics(strategy_id, position_id);
 
--- #1224 per-window regime label history: one row per cycle per (bundle key,
--- window). Raw, never debounced; pruned by regime.transitions.retention_days.
+-- #1224 per-window regime label history: at most one row per closed bar per
+-- (bundle key, window) — the processor skips re-recording a bar already stored,
+-- so the debounce run counts distinct bars, not raw per-cycle populations.
+-- Raw, never debounced; pruned by regime.transitions.retention_days.
 CREATE TABLE IF NOT EXISTS regime_window_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,

@@ -291,11 +291,20 @@ func transitionsTestRegimeConfig() *RegimeConfig {
 	}
 }
 
+// runTransitionsCycle models one cycle at a distinct closed bar (interval ==
+// regime timeframe: BarTime derived from now, so every cycle is a new bar).
 func runTransitionsCycle(db *StateDB, rc *RegimeConfig, windows map[string]RegimeSnapshot, now time.Time) {
+	runTransitionsCycleAtBar(db, rc, windows, now, now.UTC().Format(time.RFC3339))
+}
+
+// runTransitionsCycleAtBar drives one cycle with an explicit BarTime, so tests
+// can model a strategy interval shorter than the regime timeframe (several
+// cycles sharing one bar).
+func runTransitionsCycleAtBar(db *StateDB, rc *RegimeConfig, windows map[string]RegimeSnapshot, now time.Time, barTime string) {
 	key := regimeBundleKey{Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", SpecJSON: regimeWindowsSpecJSON(rc)}
 	store := &RegimeStore{}
 	gen := store.resetForCycle(now)
-	store.set(&RegimeBundle{Key: key, Payload: RegimePayload{MultiMode: true, Windows: windows}, BarTime: "2026-07-01T00:00:00Z"}, gen)
+	store.set(&RegimeBundle{Key: key, Payload: RegimePayload{MultiMode: true, Windows: windows}, BarTime: barTime}, gen)
 	processRegimeTransitionAlerts(db, store, rc, nil, now)
 }
 
@@ -397,6 +406,121 @@ func TestProcessRegimeTransitions_FlapBackNoDM(t *testing.T) {
 	pending, _ := db.UnalertedRegimeWindowTransitions(key, "1d")
 	if len(pending) != 0 {
 		t.Errorf("flap rows must be marked alerted, still pending: %v", pending)
+	}
+}
+
+// Must-survive (a): strategy interval << regime timeframe. Each closed bar
+// yields many identical per-cycle populations; a genuine single-bar A→B→A flap
+// must still produce ZERO DMs (bar-accurate debounce), where a per-population
+// count would confirm B within one bar and fire A→B then B→A.
+func TestProcessRegimeTransitions_SubBarFlapNoSpuriousDM(t *testing.T) {
+	resetRegimeTransitionGlobals(t)
+	var dms []string
+	regimeAlertSendFn = func(_ *MultiNotifier, msg string) { dms = append(dms, msg) }
+	db := newTransitionsTestDB(t)
+	rc := transitionsTestRegimeConfig()
+	// Single-window payload keeps the cross-window reversal path inert.
+	up := map[string]RegimeSnapshot{"1d": {Regime: "trending_up"}}
+	down := map[string]RegimeSnapshot{"1d": {Regime: "trending_down"}}
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// Four bars, each recomputed 3× (interval a third of the regime timeframe):
+	// A (bar0), B (bar1 — the one-bar flap), A (bar2), A (bar3 — reconfirms A).
+	bars := []struct {
+		hour    int
+		windows map[string]RegimeSnapshot
+	}{{0, up}, {1, down}, {2, up}, {3, up}}
+	cycle := 0
+	for _, bar := range bars {
+		barTime := time.Date(2026, 7, 1, bar.hour, 0, 0, 0, time.UTC).Format(time.RFC3339)
+		for pop := 0; pop < 3; pop++ {
+			runTransitionsCycleAtBar(db, rc, bar.windows, base.Add(time.Duration(cycle)*time.Minute), barTime)
+			cycle++
+		}
+	}
+	if len(dms) != 0 {
+		t.Fatalf("sub-bar single-bar flap must never DM, got %v", dms)
+	}
+	// One row per bar, not per population (4 bars → 4 history rows).
+	key := regimeBundleKey{Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", SpecJSON: regimeWindowsSpecJSON(rc)}
+	if rows, _ := db.RegimeWindowTrailingLabels(key, "1d", 100); len(rows) != 4 {
+		t.Errorf("history must hold one row per bar (4), got %d: %v", len(rows), rows)
+	}
+	// The flap's transition rows are consumed once A reconfirms — never left to
+	// fire late.
+	if pending, _ := db.UnalertedRegimeWindowTransitions(key, "1d"); len(pending) != 0 {
+		t.Errorf("flap transitions must be marked alerted, still pending: %v", pending)
+	}
+}
+
+// Must-survive (c): the strategy is not due for several bars (no populations at
+// all), then resumes with a changed, sustained label. Exactly one net-change DM
+// fires and no intermediate transition is fabricated for the skipped span.
+func TestProcessRegimeTransitions_SkippedBarsSingleNetDM(t *testing.T) {
+	resetRegimeTransitionGlobals(t)
+	var dms []string
+	regimeAlertSendFn = func(_ *MultiNotifier, msg string) { dms = append(dms, msg) }
+	db := newTransitionsTestDB(t)
+	rc := transitionsTestRegimeConfig()
+	up := map[string]RegimeSnapshot{"1d": {Regime: "trending_up"}}
+	down := map[string]RegimeSnapshot{"1d": {Regime: "trending_down"}}
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	// Baseline bar, then a multi-bar gap (bars 1–4 never processed), then resume
+	// at bars 5 and 6 with a sustained new label.
+	runTransitionsCycleAtBar(db, rc, up, base, base.Format(time.RFC3339))
+	runTransitionsCycleAtBar(db, rc, down, base.Add(5*time.Hour),
+		time.Date(2026, 7, 1, 5, 0, 0, 0, time.UTC).Format(time.RFC3339))
+	if len(dms) != 0 {
+		t.Fatalf("first post-gap bar must not DM yet (debounce 2), got %v", dms)
+	}
+	runTransitionsCycleAtBar(db, rc, down, base.Add(6*time.Hour),
+		time.Date(2026, 7, 1, 6, 0, 0, 0, time.UTC).Format(time.RFC3339))
+	if len(dms) != 1 || !strings.Contains(dms[0], "1d: trending_up → trending_down") {
+		t.Fatalf("resumed sustained change must DM exactly once, got %v", dms)
+	}
+	// No fabricated intermediate: exactly one transition row across the gap.
+	if rows, _ := db.RecentRegimeWindowTransitions(100); len(rows) != 1 {
+		t.Errorf("skipped bars must not fabricate transitions, got %d: %v", len(rows), rows)
+	}
+}
+
+// The reversal-pattern debounce is bar-accurate too: many identical populations
+// within one bar must not confirm the pattern; it takes `debounce` distinct
+// bars. A per-population counter would fire mid-first-bar.
+func TestProcessRegimeReversal_SubBarDebounce(t *testing.T) {
+	resetRegimeTransitionGlobals(t)
+	var dms []string
+	regimeAlertSendFn = func(_ *MultiNotifier, msg string) { dms = append(dms, msg) }
+	db := newTransitionsTestDB(t)
+	rc := transitionsTestRegimeConfig()
+	up := RegimeSnapshot{Regime: "trending_up"}
+	down := RegimeSnapshot{Regime: "trending_down"}
+	reversal := map[string]RegimeSnapshot{"1d": up, "3d": up, "30d": down}
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+
+	reversalCount := func() int {
+		n := 0
+		for _, m := range dms {
+			if strings.Contains(m, "reversal") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Bar 0, recomputed 5× — a per-population debounce (2) would fire here.
+	barZero := base.Format(time.RFC3339)
+	for pop := 0; pop < 5; pop++ {
+		runTransitionsCycleAtBar(db, rc, reversal, base.Add(time.Duration(pop)*time.Minute), barZero)
+	}
+	if reversalCount() != 0 {
+		t.Fatalf("reversal must not confirm within a single bar, got %v", dms)
+	}
+	// A second distinct bar reaches debounce=2 bars → exactly one DM.
+	runTransitionsCycleAtBar(db, rc, reversal, base.Add(time.Hour),
+		time.Date(2026, 7, 1, 1, 0, 0, 0, time.UTC).Format(time.RFC3339))
+	if reversalCount() != 1 {
+		t.Fatalf("reversal must confirm after 2 distinct bars exactly once, got %v", dms)
 	}
 }
 

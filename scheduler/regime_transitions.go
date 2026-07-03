@@ -5,12 +5,17 @@ package main
 //
 // Every cycle, after the regime-store population wait returns (the store is
 // stable from that point — seal() only fires on budget exhaustion), the
-// processor persists each bundle's per-window labels into SQLite
-// (regime_window_history), diffs each (bundle key, window) against its last
-// stored label, and records a transition row on change. After a new label
-// persists for debounce_cycles consecutive populations, the operator gets
-// exactly one DM per net label change — a flap that returns to the original
-// label within the debounce window is marked handled without a DM.
+// processor persists each bundle's per-window label into SQLite
+// (regime_window_history) — at most one row per (bundle key, window, closed
+// bar), since a label only changes on a new bar and the store repopulates every
+// cycle — diffs each (bundle key, window) against its last stored label, and
+// records a transition row on change. After a new label persists for
+// debounce_cycles consecutive closed bars, the operator gets exactly one DM per
+// net label change — a flap that returns to the original label within the
+// debounce window is marked handled without a DM. Counting distinct bars (not
+// raw per-cycle populations) keeps that guarantee intact even when a strategy's
+// interval is shorter than the regime timeframe. (When a bundle carries no bar
+// time, dedup is impossible and the processor falls back to per-cycle rows.)
 //
 // On top of raw transitions, a reversal-pattern classifier flags "the longest
 // configured window reads direction X while the shorter windows read the
@@ -56,7 +61,7 @@ var regimeTransitionPruneInterval = time.Hour
 // Alerting-only and hot-reloadable via SIGHUP (config_reload.go copies it).
 type RegimeTransitionAlertsConfig struct {
 	Enabled bool `json:"enabled"`
-	// DebounceCycles is how many consecutive populations a new label must
+	// DebounceCycles is how many consecutive closed bars a new label must
 	// persist before the transition DM fires (raw history rows are never
 	// debounced). 0 means the default; the minimum effective value is 1.
 	DebounceCycles int `json:"debounce_cycles,omitempty"`
@@ -130,11 +135,20 @@ type RegimeWindowTransitionRow struct {
 
 // ─── StateDB layer ───────────────────────────────────────────────────────────
 
-// RegimeWindowTrailingLabels returns the most-recent-first labels stored for
-// (key, window), capped at limit. Used both as the transition baseline
-// (index 0 is the last stored label) and as the debounce run.
-func (sdb *StateDB) RegimeWindowTrailingLabels(key regimeBundleKey, window string, limit int) ([]string, error) {
-	rows, err := sdb.db.Query(`SELECT label FROM regime_window_history
+// RegimeWindowHistoryEntry is one stored per-bar observation (label + the
+// closed-bar timestamp that produced it).
+type RegimeWindowHistoryEntry struct {
+	Label   string
+	BarTime string
+}
+
+// RegimeWindowTrailing returns the most-recent-first history entries stored for
+// (key, window), capped at limit. entry[0] is the last stored observation — its
+// Label is the transition baseline and its BarTime is the last recorded bar (so
+// the caller can skip re-recording a bar it has already seen). The Labels form
+// the debounce run.
+func (sdb *StateDB) RegimeWindowTrailing(key regimeBundleKey, window string, limit int) ([]RegimeWindowHistoryEntry, error) {
+	rows, err := sdb.db.Query(`SELECT label, bar_time FROM regime_window_history
 		WHERE platform = ? AND symbol = ? AND timeframe = ? AND spec_json = ? AND window = ?
 		ORDER BY id DESC LIMIT ?`,
 		key.Platform, key.Symbol, key.Timeframe, key.SpecJSON, window, limit)
@@ -142,15 +156,30 @@ func (sdb *StateDB) RegimeWindowTrailingLabels(key regimeBundleKey, window strin
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
+	var out []RegimeWindowHistoryEntry
 	for rows.Next() {
-		var label string
-		if err := rows.Scan(&label); err != nil {
+		var e RegimeWindowHistoryEntry
+		if err := rows.Scan(&e.Label, &e.BarTime); err != nil {
 			return nil, err
 		}
-		out = append(out, label)
+		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// RegimeWindowTrailingLabels returns the most-recent-first labels stored for
+// (key, window), capped at limit — a thin label-only view over
+// RegimeWindowTrailing.
+func (sdb *StateDB) RegimeWindowTrailingLabels(key regimeBundleKey, window string, limit int) ([]string, error) {
+	entries, err := sdb.RegimeWindowTrailing(key, window, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.Label
+	}
+	return out, nil
 }
 
 // InsertRegimeWindowHistoryRow appends one raw per-cycle label observation.
@@ -272,8 +301,8 @@ func (sdb *StateDB) ClearRegimeReversalSignature(key regimeBundleKey) error {
 // ─── Pure detection helpers (Go CI must not depend on the DB or Python) ─────
 
 // regimeTransitionConfirmed reports whether currentLabel has persisted for at
-// least debounce consecutive populations: the current observation plus the
-// leading run of identical labels in trailing (most-recent-first labels
+// least debounce consecutive closed bars: the current observation plus the
+// leading run of identical labels in trailing (most-recent-first per-bar labels
 // stored BEFORE the current one).
 func regimeTransitionConfirmed(currentLabel string, trailing []string, debounce int) bool {
 	if debounce < 1 {
@@ -435,6 +464,11 @@ type regimeReversalPending struct {
 	sig      string
 	count    int
 	inactive int
+	// lastBarTime gates the debounce counters to advance at most once per
+	// closed bar, so the pattern must hold for `debounce` distinct bars — not
+	// `debounce` per-cycle populations — before it confirms/clears. "" means no
+	// bar recorded yet (fresh/restart) or the bundle carries no bar time.
+	lastBarTime string
 }
 
 var regimeReversalPendingState = map[regimeBundleKey]*regimeReversalPending{}
@@ -464,25 +498,41 @@ func processRegimeTransitionAlerts(sdb *StateDB, store *RegimeStore, rc *RegimeC
 			if label == "" {
 				continue
 			}
-			trailing, err := sdb.RegimeWindowTrailingLabels(b.Key, window, debounce)
+			trailing, err := sdb.RegimeWindowTrailing(b.Key, window, debounce)
 			if err != nil {
 				fmt.Printf("[WARN] regime transitions %s/%s: history read failed: %v\n", b.Key, window, err)
 				continue
+			}
+			// Bar-accurate debounce: a regime label only changes on a new closed
+			// bar, but the store is repopulated every cycle. Record at most one
+			// observation per (key, window, closed bar) so the debounce run and
+			// flap-back suppression count distinct bars, not raw per-cycle
+			// populations — otherwise a strategy whose interval is shorter than
+			// the regime timeframe yields many identical populations per bar and
+			// a genuine one-bar A→B→A flap confirms B and fires two DMs instead
+			// of the documented zero. When BarTime is empty (unknown bar), we
+			// can't dedupe, so fall back to the per-population behavior.
+			if b.BarTime != "" && len(trailing) > 0 && trailing[0].BarTime == b.BarTime {
+				continue
+			}
+			labels := make([]string, len(trailing))
+			for i, e := range trailing {
+				labels[i] = e.Label
 			}
 			if err := sdb.InsertRegimeWindowHistoryRow(b.Key, window, label, b.BarTime, ts); err != nil {
 				fmt.Printf("[WARN] regime transitions %s/%s: history write failed: %v\n", b.Key, window, err)
 				continue
 			}
-			// Transition event within one cycle of the flip. No prior row
+			// Transition event within one bar of the flip. No prior row
 			// (first cycle ever, or first after a retention prune of a dead
 			// key) is NOT a transition — boot must not false-alert.
-			if len(trailing) > 0 && trailing[0] != label {
-				if err := sdb.InsertRegimeWindowTransition(b.Key, window, trailing[0], label, b.BarTime, ts); err != nil {
+			if len(trailing) > 0 && trailing[0].Label != label {
+				if err := sdb.InsertRegimeWindowTransition(b.Key, window, trailing[0].Label, label, b.BarTime, ts); err != nil {
 					fmt.Printf("[WARN] regime transitions %s/%s: transition write failed: %v\n", b.Key, window, err)
 					continue
 				}
 			}
-			if !regimeTransitionConfirmed(label, trailing, debounce) {
+			if !regimeTransitionConfirmed(label, labels, debounce) {
 				continue
 			}
 			pending, err := sdb.UnalertedRegimeWindowTransitions(b.Key, window)
@@ -550,6 +600,15 @@ func processRegimeReversal(sdb *StateDB, b *RegimeBundle, rc *RegimeConfig, noti
 		pending = &regimeReversalPending{}
 		regimeReversalPendingState[b.Key] = pending
 	}
+	// Bar-accurate debounce: the pattern is recomputed every cycle but only
+	// changes on a new closed bar. Advance the counters at most once per bar so
+	// confirm/clear require `debounce` distinct bars regardless of how many
+	// times per bar the store repopulates. Empty BarTime (unknown bar) falls
+	// back to per-population advancement.
+	if b.BarTime != "" && pending.lastBarTime == b.BarTime {
+		return
+	}
+	pending.lastBarTime = b.BarTime
 	if !active {
 		pending.sig = ""
 		pending.count = 0
