@@ -30,23 +30,37 @@ def gate_verdict(handrule_report: dict, model_report: dict, primary: str = "h4")
     # the model's OWN forward separation to be statistically real (block-shuffle
     # permutation p <= alpha), not merely "not much worse than a weak incumbent".
     model_separation_real = md_p <= SIGNIFICANCE_ALPHA
-    # Abstain when the incumbent shows no significant separation on this window: there is
-    # no trustworthy baseline to validate a live-classifier replacement against, so we must
-    # not ship off it regardless of how the model scores. On the forward-return target the
-    # hand-rule is never significant (#1073), so this abstained on every window; on the
-    # forward-volatility target it is significant on 4/5 windows (PR #1077), so the gate can
-    # now honestly ship a stability-improved model.
+    # #1211 gate-semantics v2: the incumbent's OWN forward-volatility significance is NO LONGER a
+    # hard precondition for shipping (it was, keyed on hr_p <= alpha for a single window). Decision
+    # record: docs/ARCHITECTURE.md § Backtest harnesses "#1211", backed by
+    # backtest/research/regime_1211_incumbent_baseline.py + regime_1211_baseline_remeasure.json.
+    # Why the veto was wrong: the hand-rule's separation IS real on 1h fixed held-out windows across
+    # BTC/ETH/SOL (p at the permutation floor), but it does NOT clear a family-corrected bar across
+    # the full 24-cell window x asset grid (11/24 significant at alpha/24, n_perm=1799) — the 4h and
+    # rolling OOS cells fall short. The single rolling OOS window #1080/#1177 keyed on is NOT an
+    # underpower artifact (a minimum-detectable-effect check finds it adequately powered, MDE lam~0.88,
+    # power~0.95 for an in-sample-sized effect) — it is a genuinely fragile measurement that flips
+    # across cache snapshots (p=0.105 at #1177 vs p=0.005 now, same window; even 0.005 fails alpha/24).
+    # Hard-gating promotion on that one verdict made EVERY
+    # candidate abstain regardless of its own quality (the #1095 bake-off abstained all), an
+    # unreachable gate. v2 ships on the CANDIDATE's own evidence instead: its separation must be
+    # statistically real (model_separation_real, above), non-inferior to the incumbent's on the
+    # scored window (the relative KW-H tolerance in separation_ok), and stability-improving.
+    # incumbent_trustworthy is retained as a DIAGNOSTIC only. Rejected alternatives: raising
+    # SIGNIFICANCE_ALPHA, lowering n_perm, or dropping model_separation_real / non-inferiority — each
+    # RELAXES the bar rather than re-targeting it. The rest of the promotion chain is unchanged
+    # (#1080 non-degeneracy, #1082 bounded-window ADX, #1081 economic, #1074 live parity).
     incumbent_trustworthy = hr_p <= SIGNIFICANCE_ALPHA
     separation_ok = (md_h >= hr_h * (1.0 - SEPARATION_TOLERANCE)) and model_separation_real
     stability_ok = (hr_tr - md_tr) >= STABILITY_MIN_GAIN
-    ship = separation_ok and stability_ok and incumbent_trustworthy
+    ship = separation_ok and stability_ok
     return {
         "target": target,
+        "gate_semantics": "candidate-self-v2 (#1211)",
         "separation_ok": bool(separation_ok),
         "stability_ok": bool(stability_ok),
         "model_separation_real": bool(model_separation_real),
         "incumbent_trustworthy": bool(incumbent_trustworthy),
-        "abstained": bool(not incumbent_trustworthy),
         "ship": bool(ship),
         "detail": {"handrule_kruskal_h": hr_h, "model_kruskal_h": md_h,
                    "handrule_p_value": hr_p, "model_p_value": md_p,

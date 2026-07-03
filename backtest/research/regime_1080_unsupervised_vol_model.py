@@ -21,9 +21,16 @@ the hand-rule incumbent at p=10/201~=0.0498 with n_perm=200 -- a knife-edge pass
 such by this script's own knife_edge/permutation_steps_to_alpha audit fields (added in #1160).
 Re-measured at n_perm=1799 in #1095, the incumbent's OOS forward-volatility separation is NOT
 significant: p=0.105 (canonical/funding/volume masks) / p=0.113 (htf/all_enriched masks),
-knife_edge=false. gate_verdict's incumbent_trustworthy check already abstains on an
-untrustworthy incumbent regardless of n_perm, so no runtime behavior changes -- but any reader
-of this script's original evidence should not treat the p=0.0498 result as replicating.
+knife_edge=false. RESOLVED by #1211 (gate-semantics v2): the incumbent's separation was
+re-measured across a 24-cell window x asset family
+(backtest/research/regime_1211_incumbent_baseline.py); it is strong on 1h fixed held-out windows
+but does NOT clear a family-corrected bar overall (11/24 significant at alpha/24, n_perm=1799),
+and the rolling OOS window it was keyed on flips sign across snapshots. So gate_verdict's
+incumbent-trustworthy check was DROPPED as a ship precondition (`gate_semantics`
+"candidate-self-v2 (#1211)"): a candidate now promotes on its OWN significant separation +
+non-inferiority + stability, not on the incumbent's significance. Runtime behavior DID change --
+the bake-off can now surface a gate-passing winner instead of abstaining every verdict. Do not
+treat the original p=0.0498 as replicating.
 """
 from __future__ import annotations
 import math

@@ -24,6 +24,13 @@ baseline" and the incumbent-trustworthy verdict are compared at one resolution â
 evidence was measured at 200 permutations with the incumbent at a knife-edge (OOS p = 10/201).
 Each subset's hand-rule baseline reports `permutation_steps_to_alpha` + `knife_edge`.
 
+#1211 UPDATE: this run abstained every verdict because gate_verdict hard-gated `ship` on the
+incumbent's own significance, which the #1095 re-measurement found unmet. #1211 re-measured that
+significance across a 24-cell window x asset family and DROPPED the incumbent-trustworthy
+precondition (gate-semantics "candidate-self-v2"); a candidate now ships on its OWN significant
+separation + non-inferiority + stability. Re-running this bake-off under v2 can now surface a
+gate-passing winner instead of a blanket abstain. See regime_1211_incumbent_baseline.py.
+
 Fairness: each subset's enriched matrix has its own NaN warmup (funding / HTF / volume), so the
 candidate AND the hand-rule baseline are BOTH scored on that subset's identical valid-bar mask â€”
 gate_verdict then compares like-for-like retained bars. Non-degeneracy thresholds stay locked from

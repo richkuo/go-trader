@@ -36,16 +36,19 @@ def test_gate_blocks_when_no_stability_gain():
 
 
 # --- absolute separation floor (bot review #1071) -------------------------------------
+# The floor is what keeps the degenerate cases blocked WITHOUT the incumbent veto (dropped in
+# #1211 v2): model_separation_real requires the candidate's OWN block-shuffle p <= alpha.
 
 def test_gate_blocks_useless_model_when_incumbent_also_useless():
     # (a) hr_h ~ 0 and md_h ~ 0: relative tolerance passes (0.1 >= 0.1*0.95) but the model
-    # separates nothing (p high) -> must NOT ship, and must abstain on the weak incumbent.
+    # separates nothing (p high) -> must NOT ship. Under v2 this is caught by the candidate's
+    # own significance floor, NOT by an incumbent veto (the incumbent is also non-significant).
     hr = _report(0.1, 0.40, p_value=0.90)
     md = _report(0.1, 0.05, p_value=0.95)
     v = gate_verdict(hr, md)
     assert v["ship"] is False
     assert v["model_separation_real"] is False
-    assert v["abstained"] is True
+    assert v["incumbent_trustworthy"] is False   # kept as a diagnostic; no longer vetoes
 
 
 def test_gate_blocks_degenerate_constant_label_model():
@@ -56,8 +59,7 @@ def test_gate_blocks_degenerate_constant_label_model():
     v = gate_verdict(hr, md)
     assert v["ship"] is False
     assert v["stability_ok"] is True        # the trap: stability looks perfect
-    assert v["model_separation_real"] is False
-    assert v["abstained"] is True
+    assert v["model_separation_real"] is False   # the floor blocks it, not the incumbent
 
 
 def test_gate_ships_strong_incumbent_with_model_within_tolerance():
@@ -67,18 +69,60 @@ def test_gate_ships_strong_incumbent_with_model_within_tolerance():
     md = _report(12.4, 0.25, p_value=0.005)
     v = gate_verdict(hr, md)
     assert v["ship"] is True
-    assert v["abstained"] is False
+    assert v["incumbent_trustworthy"] is True
 
 
-def test_gate_abstains_when_incumbent_not_significant():
-    # A strong, significant model cannot ship off a window where the incumbent baseline
-    # shows no significant separation — there is nothing trustworthy to validate against.
-    hr = _report(0.5, 0.40, p_value=0.30)   # incumbent separation not significant
-    md = _report(5.0, 0.20, p_value=0.01)   # model strong and significant
+# --- #1211 v2: the incumbent's OWN significance is no longer a ship precondition ---------
+# The deadlock #1211 fixes: on the forward-volatility target the incumbent's single-window
+# significance is fragile/underpowered (11/24 held-out cells clear alpha/24; the rolling OOS
+# window flips 0.105 -> 0.005 across snapshots), so the old veto abstained EVERY candidate
+# regardless of quality. v2 ships on the CANDIDATE's own evidence: own significance +
+# non-inferiority + stability gain. Invariant: ship == (separation_ok and stability_ok), with
+# incumbent_trustworthy retained only as a diagnostic.
+
+def test_gate_v2_ships_self_significant_noninferior_model_over_insignificant_incumbent():
+    # The case v1 wrongly abstained: incumbent NOT significant, but the candidate separates
+    # significantly on its own, is non-inferior (md_h >= hr_h*0.95), and improves stability.
+    hr = _report(0.5, 0.40, p_value=0.30)   # incumbent separation NOT significant
+    md = _report(5.0, 0.20, p_value=0.01)   # candidate strong + significant + more stable
     v = gate_verdict(hr, md)
     assert v["model_separation_real"] is True
-    assert v["incumbent_trustworthy"] is False
-    assert v["abstained"] is True
+    assert v["incumbent_trustworthy"] is False   # diagnostic only
+    assert v["separation_ok"] is True and v["stability_ok"] is True
+    assert v["ship"] is True                       # v1 abstained here; v2 ships
+    assert v["gate_semantics"] == "candidate-self-v2 (#1211)"
+
+
+def test_gate_v2_blocks_insignificant_candidate_even_if_incumbent_insignificant():
+    # Inverse of the deadlock case: insignificant incumbent + candidate NOT self-significant
+    # -> must NOT ship. Dropping the veto must not open a hole for a non-separating candidate.
+    hr = _report(0.5, 0.40, p_value=0.30)
+    md = _report(5.0, 0.20, p_value=0.06)   # md_p just above alpha -> not real separation
+    v = gate_verdict(hr, md)
+    assert v["model_separation_real"] is False
+    assert v["separation_ok"] is False
+    assert v["ship"] is False
+
+
+def test_gate_v2_blocks_self_significant_but_inferior_candidate():
+    # Must-survive: insignificant incumbent + a self-significant candidate that is BELOW the
+    # KW-H non-inferiority tolerance -> must NOT ship. Non-inferiority still bites under v2.
+    hr = _report(100.0, 0.40, p_value=0.30)  # incumbent insignificant but high raw H
+    md = _report(50.0, 0.20, p_value=0.01)   # significant but md_h < hr_h*0.95 -> inferior
+    v = gate_verdict(hr, md)
+    assert v["model_separation_real"] is True
+    assert v["separation_ok"] is False       # non-inferiority fails
+    assert v["ship"] is False
+
+
+def test_gate_v2_blocks_self_significant_noninferior_but_no_stability_gain():
+    # Must-survive: insignificant incumbent + self-significant + non-inferior candidate whose
+    # stability gain is below the floor -> must NOT ship. The stability arm still bites.
+    hr = _report(5.0, 0.40, p_value=0.30)
+    md = _report(5.0, 0.39, p_value=0.01)    # gain 0.01 < STABILITY_MIN_GAIN
+    v = gate_verdict(hr, md)
+    assert v["separation_ok"] is True
+    assert v["stability_ok"] is False
     assert v["ship"] is False
 
 
@@ -101,7 +145,6 @@ def test_gate_ships_on_trustworthy_volatility_incumbent():
     md = _report(88.0, 0.30, p_value=0.005, target="volatility")  # within tol, whipsaw down
     v = gate_verdict(hr, md)
     assert v["incumbent_trustworthy"] is True
-    assert v["abstained"] is False
     assert v["separation_ok"] and v["stability_ok"]
     assert v["ship"] is True
 
@@ -122,7 +165,6 @@ def test_engaged_gate_rejects_degenerate_but_perfectly_stable_model():
     md = _report(0.0, 0.0, p_value=1.0, target="volatility")  # perfect stability, zero separation
     v = gate_verdict(hr, md)
     assert v["incumbent_trustworthy"] is True
-    assert v["abstained"] is False           # engaged, NOT the weak-incumbent abstain path
     assert v["stability_ok"] is True          # the trap: stability looks perfect
     assert v["model_separation_real"] is False
     assert v["separation_ok"] is False
@@ -137,7 +179,6 @@ def test_engaged_gate_blocks_model_that_keeps_separation_but_loses_stability_gai
     md = _report(88.0, 0.44, p_value=0.005, target="volatility")  # gain 0.01 < STABILITY_MIN_GAIN
     v = gate_verdict(hr, md)
     assert v["incumbent_trustworthy"] is True
-    assert v["abstained"] is False
     assert v["separation_ok"] is True
     assert v["stability_ok"] is False
     assert v["ship"] is False
@@ -157,7 +198,6 @@ def test_engaged_gate_ships_at_inclusive_floor_boundaries():
     assert (hr["stability"]["transition_rate"] - md["stability"]["transition_rate"]) == STABILITY_MIN_GAIN
     v = gate_verdict(hr, md)
     assert v["incumbent_trustworthy"] is True
-    assert v["abstained"] is False
     assert v["model_separation_real"] is True   # md_p == alpha is inside the floor
     assert v["separation_ok"] is True
     assert v["stability_ok"] is True            # gain == STABILITY_MIN_GAIN is inside the floor
@@ -175,7 +215,6 @@ def test_engaged_gate_blocks_stability_gain_one_ulp_below_floor():
     assert (hr_tr - 0.0) < STABILITY_MIN_GAIN
     v = gate_verdict(hr, md)
     assert v["incumbent_trustworthy"] is True
-    assert v["abstained"] is False
     assert v["separation_ok"] is True           # separation arm green — only stability blocks
     assert v["stability_ok"] is False
     assert v["ship"] is False
@@ -191,7 +230,6 @@ def test_engaged_gate_blocks_model_p_one_ulp_above_alpha():
     assert md_p > SIGNIFICANCE_ALPHA
     v = gate_verdict(hr, md)
     assert v["incumbent_trustworthy"] is True
-    assert v["abstained"] is False
     assert v["stability_ok"] is True            # stability arm green — only separation blocks
     assert v["model_separation_real"] is False
     assert v["separation_ok"] is False
