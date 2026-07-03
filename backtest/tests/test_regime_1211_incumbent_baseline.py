@@ -290,7 +290,21 @@ def test_load_cell_rejects_non_monotonic_index(monkeypatch):
 
 def test_load_cell_on_cached_data_if_available():
     """If the BTC/USDT 1h OOS cache exists, load_cell returns a scoreable cell whose kruskal_h
-    matches run_window's h4 (proving the harness mirrors the incumbent measurement exactly)."""
+    matches run_window's h4 (proving the harness mirrors the incumbent measurement exactly).
+
+    Both load_cell and run_window fall back to a *live* exchange fetch when the local cache is
+    empty (data_fetcher.load_cached_data). Two independent live fetches issued a few seconds
+    apart race the market and can disagree by more than pytest.approx's tolerance, so this must
+    check the cache directly and skip BEFORE calling either -- never let the live-fetch fallback
+    fire here (that's what made this test flaky in CI, which has no pre-populated cache)."""
+    import pandas as pd
+    import storage
+    from eval_windows import WINDOWS, PLATFORM
+    start, end = WINDOWS["oos"]
+    start_ts = int(pd.Timestamp(start).timestamp() * 1000) if start else None
+    end_ts = int(pd.Timestamp(end).timestamp() * 1000) if end else None
+    if storage.load_ohlcv(PLATFORM, "BTC/USDT", "1h", start_ts, end_ts).empty:
+        pytest.skip("no cached data: BTC/USDT 1h oos not pre-populated locally")
     cell = M.load_cell("BTC/USDT", "1h", "oos")
     if cell["status"] != "available":
         pytest.skip(f"no cached data: {cell.get('reason')}")
