@@ -8,14 +8,20 @@
 //
 // It documents every SUGGEST-SPEC WRAPPER option the loader (load_spec /
 // expand_candidates) accepts — study/registry/harnesses/windows/datasets/
-// correction and the candidate sources. The inner candidate-json dicts (the
-// `candidate` field, `base`, gate_variants, m6 close-refs) carry their OWN
-// richer schema, validated by eval_windows.validate_candidate — beyond the
+// correction and the candidate sources. The inner OPEN-candidate dicts (the
+// `candidate` field, and `base`/gate_variants which expand into open
+// candidates) carry their OWN richer schema, validated at load by
+// eval_windows.validate_candidate — beyond the
 // name/direction/params/allowed_regimes/regime_windows_spec shown here it also
 // accepts close_strategies (required for direction "both"), type, invert_signal,
 // stop_loss_atr_mult/trailing_stop_atr_mult, profile_allocation, and
 // regime_directional_policy (#1166). See eval_windows.py's validate_candidate
 // for that full candidate-json schema; this template does not re-list it.
+// The m6 close-refs (incumbent_close / candidate_close) are a DIFFERENT shape
+// — close-strategy references like {name, params} — and get NO shape validation
+// at load: the only load-time check is a name whitelist (candidate_is_replayable
+// in exit_policy_ab.py); a malformed close-ref params shape fails later inside
+// the exit_policy_ab.py subprocess, not here.
 // Only `study` + at least one candidate source (`candidates`, or
 // `base`+`sweep`/`gate_variants`, or `m6`) are required; every other wrapper
 // key has the default noted inline, so a minimal real spec is much shorter.
