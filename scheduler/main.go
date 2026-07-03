@@ -1582,6 +1582,10 @@ func main() {
 				// consumer — wait (bounded by regimeStorePhaseBudget) for the
 				// population kicked off before the risk phase.
 				regimeStoreReady()
+				// #1224: persist per-window labels, detect transitions, and
+				// alert on cross-window reversals. Sequential main loop,
+				// outside mu; fail-open — never blocks the dispatch below.
+				processRegimeTransitionAlerts(stateDB, globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {

@@ -56,6 +56,11 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("regime.timeframe: %q -> %q", normalizeRegimeTimeframe(cfg.Regime.Timeframe), normalizeRegimeTimeframe(next.Regime.Timeframe))
 		cfg.Regime.Timeframe = normalizeRegimeTimeframe(next.Regime.Timeframe)
 	}
+	// #1224: transitions alerting is alerting-only — always hot-reloadable.
+	if cfg.Regime != nil && next.Regime != nil && !reflect.DeepEqual(cfg.Regime.Transitions, next.Regime.Transitions) {
+		addChange("regime.transitions: %+v -> %+v", cfg.Regime.Transitions, next.Regime.Transitions)
+		cfg.Regime.Transitions = next.Regime.Transitions
+	}
 
 	nextByID := strategyConfigByID(next.Strategies)
 	for i := range cfg.Strategies {
