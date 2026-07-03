@@ -108,7 +108,36 @@ def _diag_logprob(z, mu, var):
     return -0.5 * (np.log(2 * np.pi * var) + diff ** 2 / var).sum(1)
 
 
-def fit_gmm(z, k, *, seed=0, iters=100, var_floor=1e-3, tol=1e-4):
+def _neutralize_dead_components(mu, var, soft_mass, *, min_soft_mass=1.0):
+    """Park truly-dead mixture/state components so they can never win the decoder argmax.
+
+    forward_filter_labels (regime_hmm.py) decodes purely on emission geometry + transitions and
+    NEVER reads the hard `n` count, so a component the fit collapsed toward the standardized origin
+    at `var_floor` forms a sharp Gaussian that can hijack near-mean (z~=0) bars at decode time.
+
+    Classify by SOFT mass (GMM responsibilities / HMM gammas), NOT the hard argmax/Viterbi count:
+      * benign  — real soft mass that merely never won a hard assignment. Its emission is legitimately
+                  soft-fitted from real data and MUST decode unchanged, so it is left untouched.
+      * truly-dead — soft mass below one effective observation (`min_soft_mass`): a numerical ghost
+                  collapsed to origin at `var_floor`. Re-anchor it at the standardized origin with
+                  unit variance — the SAME uninformative emission fit_label_anchored_hmm assigns its
+                  degenerate states (regime_hmm.py) — so any real component always out-scores it.
+
+    We PARK rather than exclude-from-decode because the decoder is shared with the label-anchored
+    HMM (whose n=0/n=1 anchored states must keep decoding); a decoder-side `n`-skip would break it,
+    whereas parking is a pure fit-time emission edit that leaves the decoder byte-identical.
+
+    Mutates mu/var in place; returns the boolean dead mask. No-op (byte-identical fit) when every
+    component clears the threshold."""
+    soft_mass = np.asarray(soft_mass, dtype=float)
+    dead = soft_mass < float(min_soft_mass)
+    if dead.any():
+        mu[dead] = 0.0    # standardized origin
+        var[dead] = 1.0   # unit variance -> maximally flat, mirrors fit_label_anchored_hmm anchor
+    return dead
+
+
+def fit_gmm(z, k, *, seed=0, iters=100, var_floor=1e-3, tol=1e-4, min_soft_mass=1.0):
     z = np.asarray(z, dtype=float)
     n = z.shape[0]
     assign0, mu, var, _ = fit_kmeans(z, k, seed=seed)
@@ -139,6 +168,10 @@ def fit_gmm(z, k, *, seed=0, iters=100, var_floor=1e-3, tol=1e-4):
         log_resp[:, j] = np.log(weights[j] + 1e-300) + _diag_logprob(z, mu[j], var[j])
     assign = log_resp.argmax(1)
     counts = np.array([int((assign == j).sum()) for j in range(k)], dtype=int)
+    # Soft responsibility mass under the FINAL params (the mass that shaped mu/var); a truly-dead
+    # component reads ~0 here even when its hard `n` (counts) is 0 for a benign reason.
+    soft_mass = np.exp(log_resp - _logsumexp_rows(log_resp)[:, None]).sum(0)
+    _neutralize_dead_components(mu, var, soft_mass, min_soft_mass=min_soft_mass)
     return assign, mu, var, counts
 
 
@@ -159,7 +192,7 @@ def _viterbi(z, mu, var, A, pi):
     return path
 
 
-def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4):
+def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4, min_soft_mass=1.0):
     z = np.asarray(z, dtype=float)
     n = len(z)
     _, mu, var, _ = fit_kmeans(z, k, seed=seed)
@@ -201,6 +234,9 @@ def fit_hmm(z, k, *, seed=0, iters=50, var_floor=1e-3, tol=1e-4):
         prev_ll = ll
     assign = _viterbi(z, mu, var, A, pi)
     counts = np.array([int((assign == j).sum()) for j in range(k)], dtype=int)
+    # gamma (last E-step) IS the responsibility mass that produced the final mu/var (line above);
+    # a truly-dead state reads ~0 expected occupancy here. Same post-loop-local pattern as A/pi.
+    _neutralize_dead_components(mu, var, gamma.sum(0), min_soft_mass=min_soft_mass)
     return assign, mu, var, counts
 
 

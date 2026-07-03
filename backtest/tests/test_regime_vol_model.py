@@ -10,6 +10,7 @@ for _p in (_BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
         sys.path.insert(0, _p)
 
 import regime_vol_model as rvm
+from regime_hmm import forward_filter_labels
 
 
 def test_standardize_masks_nan_rows_and_floors_zero_std():
@@ -536,3 +537,161 @@ def test_score_labels_default_n_perm_is_byte_identical():
     explicit = score_labels(close, labels, feats, target="volatility", n_perm=200)
     assert (json.dumps(base, default=float, sort_keys=True)
             == json.dumps(explicit, default=float, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
+# #1219: neutralize truly-dead n=0 decoder states in fitted GMM/HMM models.
+# The causal decoder (regime_hmm.forward_filter_labels) ignores the hard `n`
+# count and decodes purely on emission geometry, so a component the fit collapsed
+# toward the standardized origin at var_floor forms a sharp Gaussian that can win
+# for bars near the global mean. The fit-time neutralizer classifies by SOFT mass
+# (responsibility / gamma), NOT the hard count, and PARKS truly-dead components at
+# origin + unit variance (mirroring fit_label_anchored_hmm's degenerate anchor).
+# ---------------------------------------------------------------------------
+
+def _decoder_model(em_mean, em_var, states, *, filter_window=8):
+    """A minimal forward_filter_labels-decodable model in raw z-space (identity standardization)."""
+    k = len(states)
+    return {"states": list(states),
+            "feature_means": [0.0, 0.0, 0.0, 0.0], "feature_stds": [1.0, 1.0, 1.0, 1.0],
+            "emissions": [{"mean": list(m), "var": list(v), "n": 0}
+                          for m, v in zip(em_mean, em_var)],
+            "init": [1.0 / k] * k, "transition": [[1.0 / k] * k for _ in range(k)],
+            "filter_window": int(filter_window)}
+
+
+def test_neutralize_dead_components_classifies_by_soft_mass_not_geometry():
+    # Two components sit at the identical sharp-origin geometry a dead collapse produces
+    # (mean==origin, var==var_floor). ONLY soft mass distinguishes them: the low-mass one is a
+    # ghost and must be parked; the high-mass one is a legitimate soft-fitted mode and must NOT be
+    # touched — proving the classifier keys off soft mass, never hard count or geometry.
+    mu = np.array([[0.0, 0.0, 0.0, 0.0],       # ghost: negligible soft mass
+                   [0.0, 0.0, 0.0, 0.0],       # benign: real soft mass, same geometry
+                   [3.0, 3.0, 3.0, 3.0]], dtype=float)   # a normal live component
+    var = np.array([[1e-3, 1e-3, 1e-3, 1e-3],
+                    [1e-3, 1e-3, 1e-3, 1e-3],
+                    [0.4, 0.4, 0.4, 0.4]], dtype=float)
+    dead = rvm._neutralize_dead_components(mu, var, np.array([1e-9, 250.0, 250.0]),
+                                           min_soft_mass=1.0)
+    assert dead.tolist() == [True, False, False]
+    assert np.array_equal(mu[0], [0.0, 0.0, 0.0, 0.0]) and np.array_equal(var[0], [1.0, 1.0, 1.0, 1.0])
+    # benign component untouched despite identical sharp geometry
+    assert np.array_equal(var[1], [1e-3, 1e-3, 1e-3, 1e-3])
+    # live component untouched
+    assert np.array_equal(mu[2], [3.0, 3.0, 3.0, 3.0]) and np.array_equal(var[2], [0.4, 0.4, 0.4, 0.4])
+
+
+def test_neutralize_dead_components_is_noop_when_all_components_alive():
+    mu = np.array([[1.0, 2.0, 3.0, 4.0], [-1.0, -2.0, -3.0, -4.0]], dtype=float)
+    var = np.array([[0.5, 0.6, 0.7, 0.8], [0.9, 1.1, 1.2, 1.3]], dtype=float)
+    mu0, var0 = mu.copy(), var.copy()
+    dead = rvm._neutralize_dead_components(mu, var, np.array([500.0, 500.0]), min_soft_mass=1.0)
+    assert not dead.any()
+    assert np.array_equal(mu, mu0) and np.array_equal(var, var0)   # byte-identical: pure no-op
+
+
+def test_truly_dead_component_cannot_win_near_mean_bars_after_parking():
+    # Acceptance (a). A real broad component (A) legitimately owns the near-mean region; a sharp
+    # ghost (C) collapsed to origin at var_floor is the truly-dead state. Decode a block of
+    # near-mean bars. PRE-parking the ghost hijacks every bar; POST-parking (unit variance) it is
+    # flat and the real component A wins back its region.
+    em_mean = [[0.3, 0.3, 0.3, 0.3], [3.0, 3.0, 3.0, 3.0], [0.0, 0.0, 0.0, 0.0]]
+    em_var = [[0.5, 0.5, 0.5, 0.5], [1.0, 1.0, 1.0, 1.0], [1e-3, 1e-3, 1e-3, 1e-3]]
+    states = ["A", "B", "C_ghost"]
+    near_mean = np.full((8, 4), 0.01)                    # bars sitting on the global mean (z~=0)
+
+    labels_bug, _ = forward_filter_labels(near_mean, _decoder_model(em_mean, em_var, states))
+    assert set(labels_bug) == {"C_ghost"}                # bug reproduced: sharp ghost hijacks
+
+    mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
+    dead = rvm._neutralize_dead_components(mu, var, np.array([500.0, 500.0, 1e-9]), min_soft_mass=1.0)
+    assert dead.tolist() == [False, False, True]
+    labels_fixed, _ = forward_filter_labels(near_mean, _decoder_model(mu, var, states))
+    assert set(labels_fixed) == {"A"}                    # fixed: real near-mean component wins
+
+
+def test_benign_zero_hard_count_component_decodes_unchanged():
+    # Acceptance (b). A component with real soft mass that merely never won a hard assignment must
+    # keep decoding exactly as before — classifying on hard n would wrongly flatten it and mislabel
+    # the bars it legitimately owns.
+    em_mean = [[2.0, 2.0, 2.0, 2.0], [-2.0, -2.0, -2.0, -2.0]]
+    em_var = [[1.0, 1.0, 1.0, 1.0], [0.8, 0.8, 0.8, 0.8]]   # both broad, real emissions
+    states = ["X", "Y_benign"]
+    in_Y = np.full((6, 4), -2.0)                          # bars in the benign component's region
+
+    before, _ = forward_filter_labels(in_Y, _decoder_model(em_mean, em_var, states))
+    assert set(before) == {"Y_benign"}
+
+    mu = np.array(em_mean, dtype=float); var = np.array(em_var, dtype=float)
+    dead = rvm._neutralize_dead_components(mu, var, np.array([300.0, 300.0]), min_soft_mass=1.0)
+    assert not dead.any()                                 # high soft mass -> never parked
+    after, _ = forward_filter_labels(in_Y, _decoder_model(mu, var, states))
+    assert list(after) == list(before)                    # decode byte-identical
+
+
+@pytest.mark.parametrize("fitter", ["gmm", "hmm"])
+def test_fitters_pass_valid_soft_mass_to_neutralizer(fitter, monkeypatch):
+    # Integration/wiring red->green: pre-fix the neutralizer did not exist / was never called.
+    # The mass a fitter hands it must be a length-k, finite, non-negative vector that sums to the
+    # observation count (GMM responsibilities partition unity; HMM gamma occupancy sums to n) — the
+    # exact quantity that shaped the stored emissions, so a ~0 entry truly flags a dead component.
+    z, _ = _three_blobs(seed=0)
+    captured = {}
+    orig = rvm._neutralize_dead_components
+
+    def spy(mu, var, soft_mass, **kw):
+        captured["soft_mass"] = np.asarray(soft_mass, dtype=float).copy()
+        captured["calls"] = captured.get("calls", 0) + 1
+        return orig(mu, var, soft_mass, **kw)
+
+    monkeypatch.setattr(rvm, "_neutralize_dead_components", spy)
+    (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
+    assert captured.get("calls") == 1
+    sm = captured["soft_mass"]
+    assert sm.shape == (3,) and np.isfinite(sm).all() and (sm >= 0).all()
+    assert sm.sum() == pytest.approx(len(z), rel=1e-6)
+
+
+@pytest.mark.parametrize("fitter", ["gmm", "hmm"])
+def test_healthy_fit_parks_nothing(fitter):
+    # No-op guarantee on healthy data: three well-separated blobs (all away from origin) leave every
+    # component with ample soft mass, so the neutralizer parks nothing and the fit is unchanged from
+    # its pre-#1219 behavior. A component parked at origin+unit variance would be the tell of a
+    # spurious neutralization.
+    z, _ = _three_blobs(seed=2)
+    _, mu, var, _ = (rvm.fit_gmm if fitter == "gmm" else rvm.fit_hmm)(z, 3, seed=0)
+    for j in range(3):
+        parked = np.allclose(mu[j], 0.0, atol=1e-6) and np.allclose(var[j], 1.0, atol=1e-9)
+        assert not parked, f"component {j} was spuriously parked on healthy data"
+
+
+def test_label_anchored_hmm_degenerate_anchor_is_unchanged():
+    # Acceptance (c). fit_label_anchored_hmm (regime_hmm.py, untouched by #1219) intentionally
+    # anchors degenerate states at standardized origin + UNIT variance and flags them via n. The
+    # #1219 fit-time change lives entirely in regime_vol_model.py and must not perturb this path,
+    # nor may any decoder-side reinterpretation treat these anchored states as dead.
+    from regime_hmm import fit_label_anchored_hmm
+    rng = np.random.default_rng(0)
+    feats = rng.normal([1.0, 1.0, 1.0, 1.0], 0.2, size=(60, 4))
+    labels = np.array(["ranging_quiet"] * 60, dtype=object)   # 'trending_up_clean' has 0 members
+    model = fit_label_anchored_hmm(feats, labels, ["ranging_quiet", "trending_up_clean"],
+                                   filter_window=16)
+    degenerate = model["emissions"][1]
+    assert degenerate["mean"] == [0.0, 0.0, 0.0, 0.0]     # standardized origin
+    assert degenerate["var"] == [1.0, 1.0, 1.0, 1.0]      # UNIT variance (not var_floor) — flat, safe
+    assert degenerate["n"] == 0
+    labels_out, _ = forward_filter_labels(feats, model)   # decodes without error over the anchor
+    assert len(labels_out) == len(feats)
+
+
+def test_kmeans_path_unaffected_by_neutralizer():
+    # Acceptance (d). fit_kmeans has its own empty-cluster re-seed and never routes through the
+    # soft-mass neutralizer (it has no soft mass): it must gain no min_soft_mass knob and never
+    # yield an origin+unit-variance parked component.
+    import inspect
+    assert "min_soft_mass" not in inspect.signature(rvm.fit_kmeans).parameters
+    z, _ = _three_blobs(seed=0)
+    _, mu, var, counts = rvm.fit_kmeans(z, 3, seed=0)
+    assert counts.sum() == len(z)
+    for j in range(3):
+        assert not (np.allclose(mu[j], 0.0, atol=1e-6) and np.allclose(var[j], 1.0, atol=1e-9))
