@@ -69,6 +69,7 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 | `research/regime_1095_enriched_vol_model.py` | Evidence run extending the bake-off to the enriched feature matrix. | one-shot | #1095 |
 | `research/regime_1120_trail_validation.py` | Incumbent vs proposed regime opening-trail defaults. | one-shot | #1120 |
 | `research/regime_1152_exit_retune.py` | M6 entry-locked retune of ranging ratchet ladders + B2 ranging TP group. | one-shot | #1152 |
+| `research/regime_1211_incumbent_baseline.py` | Re-measures whether the promotion gate's incumbent baseline is trustworthy, or whether the shipping rule must be redesigned. | one-shot | #1211 |
 | `consolidation_research.py` | Consolidation characterization study — segments consolidation regions in history. | one-shot | consolidation |
 | `consolidation_strategy_sim.py` | `consolidation_range` entry/exit rules over history, look-ahead safe. | one-shot | consolidation |
 | `consolidation_strategy_sweep.py` | Parameter sweep for `consolidation_range` with in-sample/out-of-sample split. | one-shot | consolidation |
