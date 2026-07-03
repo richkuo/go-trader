@@ -1,10 +1,13 @@
 # Backtesting & Research Harness Registry
 
-Single map of every backtesting and offline-research tool in `backtest/`. The
-sprawl (core simulators, the M1–M6 validation series, the regime-promotion
-pipeline, and a long tail of one-shot research scripts) is otherwise untracked
-and undiscoverable. This file is the source of truth; the per-subsystem
-mechanics live in [`docs/ARCHITECTURE.md` § Backtest harnesses](ARCHITECTURE.md).
+Map of the backtesting and offline-research harnesses in `backtest/`. The
+reusable tools — core simulators, the M1–M6 validation series, the
+regime-promotion pipeline, and the one-shot research scripts — are listed
+individually below; the per-study candidate suites under `backtest/candidates/`
+(each a self-contained set of executable driver scripts plus specs) are indexed
+by study rather than enumerated script-by-script. This file is the source of
+truth; the per-subsystem mechanics live in
+[`docs/ARCHITECTURE.md` § Backtest harnesses](ARCHITECTURE.md).
 
 **Upkeep rule:** any PR that adds, deprecates, or repurposes a harness updates
 its row here in the same PR. A new row is part of the change, not a follow-up.
@@ -16,6 +19,7 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 - **Regime-promotion pipeline** — the offline machinery (#1065–#1097) that decides whether a market-regime *classifier* may replace the incumbent hand-rule.
 - **Support library** — shared, non-executable infrastructure imported by the above.
 - **Research one-shot** — reproducible evidence for a single closed issue; run to regenerate a documented result, not a maintained tool.
+- **Candidate study** — a per-strategy directory under `backtest/candidates/<study>/` bundling that study's own executable driver scripts (screens/gates) and specs; indexed by study below.
 
 ## Core simulators
 
@@ -85,12 +89,27 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 
 ## Candidate studies (`backtest/candidates/`)
 
-Declarative candidate specs consumed by `eval_windows.py` / `auto_suggest.py`
-(`--candidate-json`), not harnesses themselves. Add a `<study>/suggest.json` (or
-`--candidate-json`) per study; `suggest.template.jsonc` is the annotated template.
+Each `backtest/candidates/<study>/` is a self-contained study for one strategy.
+Most bundle **executable driver scripts** — per-study screens and gates that
+shell out to the M-series harnesses above (M1 shortlist scoring, M2 close-stack
+sweeps, M4 regime-gate sweeps, walk-forward fold stability, fee-drag screens,
+continuous-audit headlines, live-label fidelity) — alongside JSON specs (fed to
+`eval_windows.py` / `auto_suggest.py` via `--candidate-json`) and a `README.md`
+recording the study's steps. Two studies share a `driver_common.py` library. A
+study may also be spec-only (e.g. `ichimoku_997`: JSON configs + README, no
+drivers). The drivers are study-local and largely parallel across studies, so
+they are indexed by study here, not enumerated script-by-script.
 
-Current studies: `breakout_984`, `breakout_1165`, `ichimoku_997`, `rahtf_1054`,
-`squeeze_983`, `squeeze_momentum_1198`.
+| Study | What it screens | Drivers | Origin |
+|-------|-----------------|---------|--------|
+| `breakout_984` | `breakout` close-stack (M2) sweeps, walk-forward, fee-drag, M1 shortlist, audit headline. | 6 | #984 |
+| `breakout_1165` | `breakout` regime-gate (M4) sweep, fee-drag, M1 shortlist, audit headline, live-label fidelity (+`driver_common.py`). | 5 + lib | #1165 |
+| `squeeze_983` | `squeeze_momentum` close-stack (M2) sweeps, walk-forward, M1 shortlist, audit headline. | 5 | #983 |
+| `squeeze_momentum_1198` | `squeeze_momentum` regime-gate (M4) sweep, fee-drag, M1 shortlist, audit headline (+`driver_common.py`). | 4 + lib | #1198 |
+| `rahtf_1054` | `regime_adaptive_htf` entry-condition split behind the M1 noise verdict. | 1 | #1054 |
+| `ichimoku_997` | Spec-only — `atr_stop`/`time_stop`/`zscore` close-config candidates + README, no drivers. | 0 | #997 |
+
+`suggest.template.jsonc` is the annotated spec template for a new study.
 
 ## Where results are recorded
 
