@@ -57,9 +57,11 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		cfg.Regime.Timeframe = normalizeRegimeTimeframe(next.Regime.Timeframe)
 	}
 	// #1224: transitions alerting is alerting-only — always hot-reloadable.
+	// Masked in regimeConfigEqualIgnoringReloadableFields so the pre-flight
+	// compat gate above doesn't reject the reload before this copy runs.
 	if cfg.Regime != nil && next.Regime != nil && !reflect.DeepEqual(cfg.Regime.Transitions, next.Regime.Transitions) {
 		addChange("regime.transitions: %+v -> %+v", cfg.Regime.Transitions, next.Regime.Transitions)
-		cfg.Regime.Transitions = next.Regime.Transitions
+		cfg.Regime.Transitions = cloneRegimeTransitionAlertsConfig(next.Regime.Transitions)
 	}
 
 	nextByID := strategyConfigByID(next.Strategies)
@@ -337,10 +339,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 }
 
 // regimeConfigEqualIgnoringReloadableFields reports whether two regime configs
-// are identical except for hot-reloadable fields (#1062/#1139). nil-vs-non-nil
-// counts as a difference (regime add/remove is restart-required). Copies the
-// structs before zeroing fields so the live configs are untouched; Windows (a
-// map) is only read by DeepEqual.
+// are identical except for hot-reloadable fields (#1062/#1139/#1224). nil-vs-
+// non-nil counts as a difference (regime add/remove is restart-required).
+// Copies the structs before zeroing fields so the live configs are untouched;
+// Windows (a map) is only read by DeepEqual. Every field masked here MUST have
+// a matching copy branch in applyHotReloadConfig — otherwise the field is
+// documented as hot-reloadable but this gate rejects the reload before the
+// copy logic ever runs.
 func regimeConfigEqualIgnoringReloadableFields(a, b *RegimeConfig) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -350,6 +355,8 @@ func regimeConfigEqualIgnoringReloadableFields(a, b *RegimeConfig) bool {
 	bc.DisplayWindows = nil
 	ac.Timeframe = ""
 	bc.Timeframe = ""
+	ac.Transitions = nil
+	bc.Transitions = nil
 	return reflect.DeepEqual(ac, bc)
 }
 
@@ -850,6 +857,19 @@ func clonePortfolioRiskConfig(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
 		return nil
 	}
 	cp := *pr
+	return &cp
+}
+
+// cloneRegimeTransitionAlertsConfig deep-copies the #1224 transitions-alerting
+// block for hot-reload. The struct is flat (bool + three ints, no nested
+// pointers/slices) so a shallow copy is a full deep copy; mirrors the
+// defensive posture of clonePortfolioRiskConfig even though the freshly
+// LoadConfig'd `next` this is copied from is discarded after the reload call.
+func cloneRegimeTransitionAlertsConfig(t *RegimeTransitionAlertsConfig) *RegimeTransitionAlertsConfig {
+	if t == nil {
+		return nil
+	}
+	cp := *t
 	return &cp
 }
 
