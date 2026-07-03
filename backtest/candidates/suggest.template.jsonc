@@ -129,7 +129,11 @@
           {"atr_multiple": 0.75, "close_fraction": 0.5},
           {"atr_multiple": 1.5, "close_fraction": 1.0}
         ]}}],
-        "candidate_stops": "inherit",      // "inherit" (keep incumbent stops) | "drop"
+        // "inherit" keeps the incumbent's stops; "drop" measures the candidate
+        // stop alone. NOTE: "drop" is a NO-OP that prints a [WARN] on the
+        // incumbent_close path this template uses (no strategy-level stops
+        // resolve without baseline_config) — only meaningful with baseline_config.
+        "candidate_stops": "inherit",
         "allowed_regimes": ["ranging"]     // optional M6 entry gate (ADX labels
                                            // under the default classifier)
       }

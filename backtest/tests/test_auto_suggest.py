@@ -179,6 +179,50 @@ def test_m6_incumbent_close_only_spec_loads():
     assert ab[0]["candidate"]["baseline_config"] is None
 
 
+def test_m6_missing_strategy_id_everywhere_fails_at_load():
+    # (a) incumbent_close set, no strategy_id at m6 OR variant level -> must
+    # raise at load, not surface as a broken '--strategy None' subprocess.
+    bad = _base_spec(candidates=[], m6={
+        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+        "candidate_close_variants": [
+            {"key": "v", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]})
+    with pytest.raises(ValueError, match="strategy_id"):
+        asug.load_spec(bad, _STUDY_DIR)
+
+
+def test_m6_per_variant_strategy_id_override_loads_without_m6_default():
+    # (b) m6 block omits strategy_id but each variant supplies its own -> legit.
+    spec = asug.load_spec(_base_spec(candidates=[], m6={
+        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+        "candidate_close_variants": [
+            {"key": "v", "strategy_id": "squeeze_momentum",
+             "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]},
+    ), _STUDY_DIR)
+    ab = [e for e in asug.expand_candidates(spec) if e["kind"] == "exit_ab"]
+    assert len(ab) == 1 and ab[0]["candidate"]["strategy_id"] == "squeeze_momentum"
+
+
+def test_m6_close_stack_specs_require_m6_level_strategy_id():
+    # close_stack variants are generated and cannot carry a per-variant
+    # strategy_id, so an m6-level default is mandatory when they are present.
+    bad = _base_spec(candidates=[], m6={
+        "incumbent_close": [{"name": "tiered_tp_atr", "params": {}}],
+        "candidate_close_variants": [],
+        "close_stack_specs": [{"close": {"name": "atr_stop", "params": {"atr_mult": [2.0]}}}]})
+    with pytest.raises(ValueError, match="close_stack_specs"):
+        asug.load_spec(bad, _STUDY_DIR)
+
+
+def test_m6_baseline_config_path_also_requires_strategy_id():
+    # (c) the baseline_config path embeds --strategy too; same missing-value guard.
+    bad = _base_spec(candidates=[], m6={
+        "baseline_config": "cfg.json",
+        "candidate_close_variants": [
+            {"key": "v", "candidate_close": [{"name": "atr_stop", "params": {"atr_mult": 2}}]}]})
+    with pytest.raises(ValueError, match="strategy_id"):
+        asug.load_spec(bad, _STUDY_DIR)
+
+
 def test_shipped_full_options_spec_loads_and_expands():
     # The committed all-options default must load and expand cleanly (guards the
     # demo from silently rotting — every generator + M6 exercised).
