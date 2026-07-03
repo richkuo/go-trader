@@ -66,6 +66,9 @@
     },
     {
       "key": "inline_example",
+      // optional per-candidate harness override; defaults to the spec-wide
+      // "harnesses" above. Narrow it for e.g. an M1-only smoke candidate.
+      "harnesses": ["m1_noise", "m1"],
       "candidate": {
         "name": "squeeze_momentum",   // registered open-strategy name (required)
         "direction": "long",          // long | short | both (both needs close_strategies)
@@ -115,6 +118,11 @@
   // reported "excluded_not_replayable" and never run.
   "m6": {
     "strategy_id": "squeeze_momentum",
+    // Optional m6-level entry gate applied to close_stack_specs-generated
+    // variants (which have no per-variant allowed_regimes of their own); the
+    // ONLY way to gate them. Explicit candidate_close_variants use their own
+    // allowed_regimes (below) instead. ADX labels under the default classifier.
+    "allowed_regimes": ["ranging"],
     "incumbent_close": [
       {"name": "tiered_tp_atr", "params": {"tp_tiers": [
         {"atr_multiple": 0.5, "close_fraction": 0.5},
