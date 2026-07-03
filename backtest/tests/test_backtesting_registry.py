@@ -85,17 +85,17 @@ def test_every_candidate_study_has_exactly_one_row():
 
 
 def test_registry_rows_reference_no_nonexistent_target():
-    """Inverse: no phantom rows — every table-row token maps to a real file or study."""
+    """Inverse: no phantom rows — EVERY table-row token must resolve to a real
+    target (a file under backtest/ or a candidates/<study>/ directory). No token
+    shape is exempt: a dotted non-.py row (e.g. a `.jsonc` spec, or a study dir
+    whose name contains a dot) is existence-checked like any other.
+    """
     phantom = []
     for tok in sorted(_row_tokens()):
-        if tok.endswith(".py"):
-            if not (BACKTEST / tok).exists():
-                phantom.append(f"{tok} (no such file)")
-        elif "." not in tok:
-            # bare token → a candidate study directory
-            if not (CANDIDATES / tok).is_dir():
-                phantom.append(f"{tok} (no such candidate study)")
+        if (BACKTEST / tok).exists() or (CANDIDATES / tok).is_dir():
+            continue
+        phantom.append(tok)
     assert not phantom, (
-        "docs/backtesting-registry.md has rows pointing at things that do not exist: "
-        f"{phantom}"
+        "docs/backtesting-registry.md has rows pointing at things that do not exist "
+        f"(no matching file under backtest/ or candidates/<study>/ dir): {phantom}"
     )
