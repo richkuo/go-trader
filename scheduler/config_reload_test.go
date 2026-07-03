@@ -982,6 +982,116 @@ func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
 	})
 }
 
+// #1224 — regime.transitions is alerting-only and documented as always
+// hot-reloadable, including while positions are open. The pre-flight compat
+// gate (regimeConfigEqualIgnoringReloadableFields) must mask this field the
+// same way it masks DisplayWindows/Timeframe, or the copy branch in
+// applyHotReloadConfig is unreachable dead code.
+func TestApplyHotReloadConfigRegimeTransitions(t *testing.T) {
+	regimeWith := func(tr *RegimeTransitionAlertsConfig) *RegimeConfig {
+		return &RegimeConfig{
+			Enabled: true, Period: 14, ADXThreshold: 20,
+			Transitions: tr,
+		}
+	}
+	openState := func() *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long", Regime: "ranging"},
+			}},
+		}}
+	}
+	stratWith := func(r *RegimeConfig) *Config {
+		c := minimalReloadConfig([]StrategyConfig{{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+			Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+			Leverage: 5, MarginMode: "isolated",
+		}})
+		c.Regime = r
+		return c
+	}
+
+	// (a) nil on both sides must stay a no-op — existing behavior must keep working.
+	t.Run("nil to nil is a no-op", func(t *testing.T) {
+		cfg := stratWith(regimeWith(nil))
+		next := stratWith(regimeWith(nil))
+		changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+		if err != nil {
+			t.Fatalf("nil transitions on both sides should hot-reload cleanly, got: %v", err)
+		}
+		if cfg.Regime.Transitions != nil {
+			t.Fatalf("Transitions should remain nil, got: %+v", cfg.Regime.Transitions)
+		}
+		if joined := strings.Join(changes, " | "); strings.Contains(joined, "regime.transitions") {
+			t.Fatalf("expected no regime.transitions change entry, got: %v", changes)
+		}
+	})
+
+	// nil -> enabled must be accepted (not rejected by the pre-flight compat
+	// gate) and copied onto cfg, even with an open position (alerting-only,
+	// never state-shifting) — and the copy must not alias next's struct.
+	t.Run("nil to enabled is accepted and copied", func(t *testing.T) {
+		cfg := stratWith(regimeWith(nil))
+		nextTransitions := &RegimeTransitionAlertsConfig{Enabled: true, DebounceCycles: 3, RetentionDays: 30, ReversalMinOpposing: 2}
+		next := stratWith(regimeWith(nextTransitions))
+		changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+		if err != nil {
+			t.Fatalf("enabling regime.transitions should hot-reload even with an open position, got: %v", err)
+		}
+		if cfg.Regime.Transitions == nil || *cfg.Regime.Transitions != *nextTransitions {
+			t.Fatalf("Transitions not applied: %+v", cfg.Regime.Transitions)
+		}
+		if cfg.Regime.Transitions == nextTransitions {
+			t.Fatal("Transitions should be deep-copied, not aliased to next's struct")
+		}
+		if joined := strings.Join(changes, " | "); !strings.Contains(joined, "regime.transitions") {
+			t.Fatalf("expected a regime.transitions change entry, got: %v", changes)
+		}
+		nextTransitions.DebounceCycles = 99 // mutating next afterward must not leak into cfg
+		if cfg.Regime.Transitions.DebounceCycles == 99 {
+			t.Fatal("cfg.Regime.Transitions aliases next's struct")
+		}
+	})
+
+	// (b) feature already enabled; only debounce_cycles/retention_days/
+	// reversal_min_opposing differ. Must hot-reload — even with an open
+	// position — and the new tunables take effect.
+	t.Run("tunable-only change while enabled applies with open position", func(t *testing.T) {
+		cfg := stratWith(regimeWith(&RegimeTransitionAlertsConfig{Enabled: true, DebounceCycles: 1, RetentionDays: 14, ReversalMinOpposing: 0}))
+		next := stratWith(regimeWith(&RegimeTransitionAlertsConfig{Enabled: true, DebounceCycles: 3, RetentionDays: 30, ReversalMinOpposing: 2}))
+		changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+		if err != nil {
+			t.Fatalf("tunable-only regime.transitions change should hot-reload, got: %v", err)
+		}
+		if cfg.Regime.Transitions.DebounceCycles != 3 || cfg.Regime.Transitions.RetentionDays != 30 || cfg.Regime.Transitions.ReversalMinOpposing != 2 {
+			t.Fatalf("Transitions tunables not applied: %+v", cfg.Regime.Transitions)
+		}
+		if joined := strings.Join(changes, " | "); !strings.Contains(joined, "regime.transitions") {
+			t.Fatalf("expected a regime.transitions change entry, got: %v", changes)
+		}
+	})
+
+	// (c) regime.transitions changing together with a genuinely incompatible
+	// field (db_file) must still be rejected for the real reason — masking
+	// Transitions alone must not let an unrelated restart-required change
+	// silently pass.
+	t.Run("compound change with genuinely incompatible field still rejects", func(t *testing.T) {
+		cfg := stratWith(regimeWith(nil))
+		next := stratWith(regimeWith(&RegimeTransitionAlertsConfig{Enabled: true}))
+		next.DBFile = "scheduler/other.db"
+		_, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+		if err == nil {
+			t.Fatal("db_file change compounded with regime.transitions must still require restart")
+		}
+		if !strings.Contains(err.Error(), "db_file changed") {
+			t.Fatalf("expected db_file rejection reason, got: %v", err)
+		}
+		if cfg.Regime.Transitions != nil {
+			t.Fatalf("rejected reload must not mutate Transitions: %+v", cfg.Regime.Transitions)
+		}
+	})
+}
+
 // #1139 — regime.timeframe is live reloadable only while affected non-options
 // strategies are flat. It changes the regime bundle/certification key, so open
 // positions must preserve their original regime-timeframe interpretation.

@@ -669,6 +669,7 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
+	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
 	if note := directionalCertOperatorNotes(d.cfg.Strategies, d.cfg.Regime); note != "" {
 		return base + note
 	}

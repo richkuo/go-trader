@@ -85,6 +85,9 @@ type RegimeConfig struct {
 	// populated label, the summary falls back to the single primary regime
 	// string (same fallback as the multi-window-disabled path).
 	DisplayWindows []string `json:"display_windows,omitempty"`
+	// Transitions enables per-window regime transition history + operator
+	// alerting (#1224). Alerting-only; hot-reloadable via SIGHUP.
+	Transitions *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
 }
 
 var regimeTimeframeAllowSet = map[string]bool{
@@ -2162,6 +2165,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
+	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
 
 	// Warn when allowed_regimes is configured but regime.enabled=false — the
 	// gate reads result.Regime from the check script output, which requires

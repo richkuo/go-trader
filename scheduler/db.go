@@ -372,6 +372,55 @@ CREATE TABLE IF NOT EXISTS trade_diagnostics (
 
 CREATE INDEX IF NOT EXISTS idx_trade_diag_strategy ON trade_diagnostics(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_trade_diag_position ON trade_diagnostics(strategy_id, position_id);
+
+-- #1224 per-window regime label history: at most one row per closed bar per
+-- (bundle key, window) — the processor skips re-recording a bar already stored,
+-- so the debounce run counts distinct bars, not raw per-cycle populations.
+-- Raw, never debounced; pruned by regime.transitions.retention_days.
+CREATE TABLE IF NOT EXISTS regime_window_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    window TEXT NOT NULL,
+    label TEXT NOT NULL,
+    bar_time TEXT NOT NULL DEFAULT '',
+    ts TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_regime_hist_key ON regime_window_history(platform, symbol, timeframe, spec_json, window, id);
+CREATE INDEX IF NOT EXISTS idx_regime_hist_ts ON regime_window_history(ts);
+
+-- #1224 per-window label transitions (old -> new). alerted_at is the
+-- persisted exactly-once marker for the operator DM (restart/SIGHUP safe).
+CREATE TABLE IF NOT EXISTS regime_window_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    window TEXT NOT NULL,
+    old_label TEXT NOT NULL,
+    new_label TEXT NOT NULL,
+    bar_time TEXT NOT NULL DEFAULT '',
+    ts TEXT NOT NULL,
+    alerted_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_regime_trans_key ON regime_window_transitions(platform, symbol, timeframe, spec_json, window, id);
+CREATE INDEX IF NOT EXISTS idx_regime_trans_ts ON regime_window_transitions(ts);
+
+-- #1224 last-alerted reversal-pattern signature per bundle key (DM dedupe).
+CREATE TABLE IF NOT EXISTS regime_reversal_alerts (
+    platform TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    alerted_at TEXT NOT NULL,
+    PRIMARY KEY (platform, symbol, timeframe, spec_json)
+);
 `
 
 // StateDB wraps a SQLite database for persistent state storage.
