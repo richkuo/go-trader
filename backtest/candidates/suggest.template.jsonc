@@ -133,6 +133,11 @@
       {
         "key": "wider_tp",                 // -> candidate key "m6.wider_tp"
         "hypothesis": "widen the 2-rung TP",
+        // optional per-variant strategy_id override; falls back to the m6-level
+        // strategy_id above. Lets one variant target a different open-strategy
+        // (or config strategy id under baseline_config). close_stack-generated
+        // variants cannot set this — they always use the m6-level default.
+        "strategy_id": "squeeze_momentum",
         "candidate_close": [{"name": "tiered_tp_atr", "params": {"tp_tiers": [
           {"atr_multiple": 0.75, "close_fraction": 0.5},
           {"atr_multiple": 1.5, "close_fraction": 1.0}

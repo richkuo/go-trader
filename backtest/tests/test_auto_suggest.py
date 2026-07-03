@@ -223,6 +223,29 @@ def test_m6_baseline_config_path_also_requires_strategy_id():
         asug.load_spec(bad, _STUDY_DIR)
 
 
+_TEMPLATE = os.path.join(os.path.dirname(_STUDY_DIR), "suggest.template.jsonc")
+
+
+def _load_template_json():
+    import re
+    return json.loads(re.sub(r"//.*", "", open(_TEMPLATE).read()))
+
+
+def test_template_documents_every_variant_and_candidate_option():
+    # The template header asserts it "documents EVERY option the loader accepts";
+    # three prior review rounds each found one omitted key. Lock in the fixes so
+    # a future edit can't silently regress the completeness claim.
+    raw = _load_template_json()
+    # per-candidate harness override (auto_suggest.py: c.get("harnesses"))
+    assert any("harnesses" in c for c in raw["candidates"]), "template omits per-candidate harnesses"
+    m6 = raw["m6"]
+    # m6-level allowed_regimes default (seeds close_stack variants)
+    assert "allowed_regimes" in m6, "template omits m6-level allowed_regimes"
+    # per-variant strategy_id override (variant.get("strategy_id"))
+    assert any("strategy_id" in v for v in m6["candidate_close_variants"]), \
+        "template omits per-variant strategy_id override"
+
+
 def test_shipped_full_options_spec_loads_and_expands():
     # The committed all-options default must load and expand cleanly (guards the
     # demo from silently rotting — every generator + M6 exercised).
