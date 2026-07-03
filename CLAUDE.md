@@ -126,6 +126,7 @@ Before implementing `@claude review` findings: restate each item as an invariant
 
 ## Backtest
 **Mechanics, harness flags, and #951/#983/#989/#1005 detail → `docs/ARCHITECTURE.md` § Backtest harnesses. Guardrails + run commands below.**
+- **Harness registry SSoT → `docs/backtesting-registry.md`** — the map of every `backtest/` tool (core simulators, M1–M6 validators, regime-promotion pipeline, research one-shots). **Any PR that adds/deprecates/repurposes a harness updates its row there in the same PR** (a new row is part of the change, not a follow-up).
 - Run: `uv run --no-sync python backtest/run_backtest.py --strategy <n> --symbol BTC/USDT --timeframe 1h --mode single`; `backtest_options.py`/`backtest_theta.py --underlying BTC --since YYYY-MM-DD --capital 10000`; `backtest_pairs.py` (beta-hedged z-score, no live path).
 - `--config <path> --strategy <id>` reads the single `close_strategy`. **#951: `--config` gates on `config_version>=15`** (pre-v15 legacy close keys silently no-op vs live → reject with migrate text). Entry ATR guard 50%-of-AvgCost; bar-level only.
 - Regime: entries blocked when `bar_regime ∉ allowed_regimes`; closes always execute; options unsupported. **#1025** `--config` threads `allowed_regimes` (CLI flag rejected); named `regime_gate_window` rejected at load when gate active. **#1058** composite 9-state via `regime.windows` (#1124 `ranging_directional_up`/`_down`, bare-covers-subs in the bar-regime gate); **#1067** open name falls back to `args[0]`. **Regime parity detail → ARCHITECTURE.md.**
