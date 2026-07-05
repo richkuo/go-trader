@@ -263,3 +263,31 @@ def test_composite_explicit_sublabel_wins_over_bare(regime_atr):
     assert errs == [], errs
     assert block.resolve("ranging_directional_up").atr == 0.9
     assert block.resolve("ranging_directional_down").atr == 1.5  # bare fallback
+
+
+def test_tier_sl_after_sibling_stripped_before_atr_parse(regime_atr):
+    # #1228 parity: Go strips both close_fraction AND sl_after before the
+    # ATR-block allowlist parse (scheduler/regime_atr.go). A per-tier
+    # sl_after on a regime TP tier must not trip the unknown-key check.
+    raw_tiers = [
+        {
+            regime_atr.REGIME_CLASSIFIER_KEY: {
+                "trending_up": {"atr_multiple": 3.0, "close_fraction": 0.4},
+                "trending_down": {"atr_multiple": 3.0, "close_fraction": 0.4},
+                "ranging": {"atr_multiple": 1.5, "close_fraction": 0.6},
+            },
+            "sl_after": "breakeven",
+        },
+        {
+            regime_atr.REGIME_CLASSIFIER_KEY: {
+                "trending_up": {"atr_multiple": 5.0, "close_fraction": 1.0},
+                "trending_down": {"atr_multiple": 5.0, "close_fraction": 1.0},
+                "ranging": {"atr_multiple": 3.0, "close_fraction": 1.0},
+            },
+        },
+    ]
+    specs, errs = regime_atr.parse_regime_tp_tiers(
+        raw_tiers, "tiered_tp_atr_regime", False
+    )
+    assert errs == [], errs
+    assert len(specs) == 2

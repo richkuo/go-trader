@@ -233,8 +233,14 @@ def _result_metric(result: dict, metric: str) -> float:
     ``dd_adjusted_return`` is derived (return / |max DD|, the #963 DDadj
     definition mirrored from eval_windows.dd_adjusted_return — zero-DD legs
     score 0.0 so untraded combos never win); other metrics are read directly.
+
+    #1005/#1228: a liquidated combo is floored to −100 (mirrors
+    eval_windows.LIQUIDATED_DDADJ_FLOOR) — its raw DDadj would be −1.0,
+    letting a blown-up combo outrank a surviving losing one.
     """
     if metric == "dd_adjusted_return":
+        if result.get("liquidated"):
+            return -100.0
         ret = float(result.get("total_return_pct", 0) or 0)
         dd = float(result.get("max_drawdown_pct", 0) or 0)
         return ret / abs(dd) if dd else 0.0

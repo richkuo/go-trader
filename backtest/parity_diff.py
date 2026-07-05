@@ -196,7 +196,12 @@ def config_from_live_config(config_path: str, strategy_id: str,
     timeframe / registry / regime settings the loader doesn't return.
     """
     from run_backtest import load_strategy_config
-    loaded = load_strategy_config(config_path, strategy_id)
+    # #1228: live applies user_defaults.{close,regime_atr,manual}
+    # unconditionally in loadConfig, so a live-parity replay must inject them
+    # too — without this the diff could report CLEAN against effective params
+    # live never runs.
+    loaded = load_strategy_config(config_path, strategy_id,
+                                  inject_user_defaults=True)
     with open(config_path) as fh:
         raw = json.load(fh)
     entry = next(

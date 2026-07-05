@@ -287,3 +287,29 @@ def test_render_markdown_liquidated_section_only_when_present():
     clean = fa.aggregate_strategy("ok", "spot", [_fa_leg(False)])
     md_clean = fa.render_markdown(fa.rank_rows([clean]), meta)
     assert "## Liquidated legs" not in md_clean
+
+
+# ---------------------------------------------------------------------------
+# #1228: DDadj liquidation floor — a dead account must never outrank a
+# surviving losing leg on the ddadj axis (raw DDadj of a blown leg is
+# −100/|−100| = −1.0, better than a −50%/25%-DD survivor's −2.0).
+# ---------------------------------------------------------------------------
+
+def test_liquidated_ddadj_floor_constant_mirrors_backtester():
+    from backtester import LIQUIDATED_METRIC_FLOOR
+    assert ew.LIQUIDATED_DDADJ_FLOOR == -LIQUIDATED_METRIC_FLOOR
+
+
+def test_leg_from_results_floors_ddadj_when_liquidated():
+    blown = ew.leg_from_results(_results())
+    assert blown["ddadj"] == ew.LIQUIDATED_DDADJ_FLOOR
+    survivor = ew.leg_from_results(
+        _results(ret=-50.0, dd=-25.0, sharpe=-1.0, liquidated=False))
+    assert survivor["ddadj"] == pytest.approx(-2.0)
+    # The whole point: the survivor must outrank the blown leg.
+    assert survivor["ddadj"] > blown["ddadj"]
+
+
+def test_leg_from_results_ddadj_unfloored_when_not_liquidated():
+    leg = ew.leg_from_results(_results(ret=30.0, dd=-15.0, liquidated=False))
+    assert leg["ddadj"] == pytest.approx(2.0)

@@ -7,6 +7,7 @@ applied at the next bar's open (same fill alignment as the column-based
 close_fraction path).
 """
 import pandas as pd
+import pytest
 
 from backtester import Backtester
 
@@ -703,3 +704,95 @@ def test_avwap_stop_does_not_warn_when_not_configured(capsys):
     _run_avwap_stop_backtest(df, [{"name": "tp_at_pct", "params": {"pct": 0.03}}])
     err = capsys.readouterr().err
     assert _AVWAP_WARN_MARK not in err
+
+
+# ---------------------------------------------------------------------------
+# #841/#1228: unified per-regime close block — the close ref owns the
+# per-regime stop loss. Pre-fix the backtester dropped it entirely (a unified
+# close with stop_loss_atr simulated with NO stop), inflating results vs live.
+# ---------------------------------------------------------------------------
+
+_UNIFIED_CLOSE = {
+    "name": "tiered_tp_atr_regime",
+    # #841 unified shape: one trend_regime block holding each label's whole
+    # exit plan (tp_tiers + stop_loss_atr).
+    "params": {"trend_regime": {
+        "ranging": {
+            "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "stop_loss_atr": 1.0,
+        },
+        "trending_up": {
+            "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "stop_loss_atr": 2.0,
+        },
+        "trending_down": {
+            "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "stop_loss_atr": 2.0,
+        },
+    }},
+}
+
+
+def _df_unified():
+    # Bar 0 emits long + regime "ranging" -> fill at bar 1 open ($100) with
+    # stamped regime ranging (shifted read of bar 0). Entry ATR = bar 0's
+    # closed ATR = 2. ranging stop_loss_atr 1.0 -> trigger 98. Bar 2 close 96
+    # breaches -> SL fill at bar 3 OPEN ($95).
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    return pd.DataFrame({
+        "open": [100, 100, 100, 95, 95, 95],
+        "close": [100, 100, 96, 95, 95, 95],
+        "atr": [2, 2, 2, 2, 2, 2],
+        "regime": ["ranging"] * 6,
+        "open_action": ["long", "none", "none", "none", "none", "none"],
+    }, index=idx)
+
+
+def test_unified_regime_close_arms_per_regime_stop_loss():
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[_UNIFIED_CLOSE],
+    )
+    result = bt.run(_df_unified(), save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    assert result["trades"][0]["exit_date"] == str(_df_unified().index[3])
+
+
+def test_unified_regime_close_no_stop_without_breach():
+    # Same config, price never reaches the 98 trigger -> holds to end of data.
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 99, 99],
+        "close": [100, 100, 99, 99, 99],
+        "atr": [2, 2, 2, 2, 2],
+        "regime": ["ranging"] * 5,
+        "open_action": ["long", "none", "none", "none", "none"],
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[_UNIFIED_CLOSE],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_date"] == str(idx[4])
+
+
+def test_unified_regime_close_rejects_second_sl_owner():
+    # Mirrors Go validateUnifiedCloseSoleOwner: the unified block owns the SL.
+    with pytest.raises(ValueError, match="unified per-regime close"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            stop_loss_atr_mult=1.5,
+            close_strategies=[_UNIFIED_CLOSE],
+        )
+    with pytest.raises(ValueError, match="unified per-regime close"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            stop_loss_atr_regime={"trend_regime": {
+                "ranging": {"atr_multiple": 1.0},
+                "trending_up": {"atr_multiple": 1.0},
+                "trending_down": {"atr_multiple": 1.0},
+            }},
+            close_strategies=[_UNIFIED_CLOSE],
+        )

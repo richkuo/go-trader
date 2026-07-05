@@ -578,3 +578,44 @@ def test_anchored_vwap_reversion_no_lookahead():
     assert not np.array_equal(bf[:cut], bt), (
         "forward-peeking variant should break truncation-invariance — the test "
         "is not sensitive to look-ahead")
+
+
+# ---------------------------------------------------------------------------
+# #1228: EntryATR stamp must read the last CLOSED bar before the fill bar.
+# The fill happens at bar N+1's open, when that bar's own high/low/close (and
+# hence its ATR) are still unknown — stamping the fill bar's ATR leaked its
+# own range into the stop/TP geometry.
+# ---------------------------------------------------------------------------
+
+def test_entry_atr_stamped_from_bar_before_fill():
+    # Bar 0 emits long -> fill at bar 1 open. Closed-bar ATR at order time is
+    # bar 0's (5); the fill bar's ATR (20) must NOT be stamped. With a 1xATR
+    # tier, bar 2 close 110 (=100+2x5) fires only under the closed-bar stamp
+    # (a 20-ATR stamp would need 120).
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 110, 110],
+        "close": [100, 100, 110, 110, 110],
+        "atr": [5, 20, 20, 20, 20],
+        "open_action": ["long", "none", "none", "none", "none"],
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[{"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 1.0, "close_fraction": 1.0},
+        ]}}],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 110.0
+    assert result["trades"][0]["exit_date"] == str(idx[3])
+
+
+def test_entry_atr_stamp_no_prior_bar_returns_zero():
+    # A fill on the very first bar has no closed prior bar -> no usable ATR
+    # (evaluators that need it no-op), never the fill bar's own value.
+    bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0)
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    atr = pd.Series([5.0, 6.0, 7.0], index=idx)
+    assert bt._stamp_entry_atr(atr, idx[0], 100.0) == 0.0
+    assert bt._stamp_entry_atr(atr, idx[2], 100.0) == 6.0

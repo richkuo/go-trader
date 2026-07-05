@@ -230,6 +230,18 @@ def _gate_directional_policy_by_states(
       - dict  -> keep only the per-state-supported overrides."""
     if not policy:
         return policy
+    # #1124/#1228: live Resolve falls back from a sub-label stamp to the bare
+    # ranging_directional policy entry (exact match wins first). Mirror that by
+    # expanding a bare entry onto its uncovered subs before the per-state gate,
+    # so a cert for e.g. ranging_directional_up honors a bare-only policy the
+    # way live does.
+    from regime import RANGING_DIRECTIONAL_BARE, RANGING_DIRECTIONAL_SUBS
+    bare_entry = policy.get(RANGING_DIRECTIONAL_BARE)
+    if isinstance(bare_entry, dict):
+        expanded = dict(policy)
+        for sub in sorted(RANGING_DIRECTIONAL_SUBS):
+            expanded.setdefault(sub, bare_entry)
+        policy = expanded
     if cert_states is None:
         return policy
     gated = {}
@@ -257,6 +269,12 @@ def _resolve_regime_directional_entry(
     if position_qty > 0 and str(position_regime or "").strip():
         regime = str(position_regime or "").strip()
     entry = policy.get(regime)
+    if not isinstance(entry, dict):
+        # #1124/#1228: mirror live Resolve — a sub-label stamp falls back to
+        # the bare ranging_directional entry (exact match wins first).
+        from regime import RANGING_DIRECTIONAL_BARE, RANGING_DIRECTIONAL_SUBS
+        if regime in RANGING_DIRECTIONAL_SUBS:
+            entry = policy.get(RANGING_DIRECTIONAL_BARE)
     return dict(entry) if isinstance(entry, dict) else None
 
 
@@ -884,6 +902,11 @@ class Backtester:
         self._uses_regime_tiered_close = _close_refs_use_regime_tiered_tp(
             self._close_refs,
         )
+        # #841 unified per-regime close SL ownership; populated below when the
+        # regime-ATR helpers are imported (unified requires a regime tiered
+        # close, which forces that import path).
+        self._unified_close_params: Optional[dict] = None
+        self._unified_scalar_params = None
         self._uses_trailing_ratchet_close = any(
             (r.get("name") or "").strip().lower()
             in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime")
@@ -954,9 +977,51 @@ class Backtester:
             from regime_atr import (  # type: ignore
                 SURFACE_STOP_LOSS,
                 SURFACE_TRAILING,
+                close_params_are_unified_regime,
                 parse_regime_atr_block,
                 resolve_regime_atr,
+                unified_regime_scalar_params,
             )
+
+            # #841 unified per-regime close block: the close ref owns the
+            # per-regime stop loss (stop_loss_atr inside each label entry).
+            # Mirrors Go: unifiedCloseStopLossATR arms the SL, and
+            # validateUnifiedCloseSoleOwner forbids any strategy-level stop
+            # owner alongside the block. Without this, a unified close with
+            # stop_loss_atr backtested with no stop at all (#1228 audit).
+            self._unified_close_params = None
+            self._unified_scalar_params = unified_regime_scalar_params
+            for _ref in self._close_refs:
+                _n = (_ref.get("name") or "").strip().lower()
+                if _n not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+                    continue
+                _params = _ref.get("params") or {}
+                if close_params_are_unified_regime(_params):
+                    self._unified_close_params = dict(_params)
+                break
+            if self._unified_close_params is not None:
+                _sole_owner_conflicts = [
+                    ("stop_loss_atr_mult", self.stop_loss_atr_mult),
+                    ("stop_loss_pct", self.stop_loss_pct),
+                    ("stop_loss_margin_pct", self.stop_loss_margin_pct),
+                    ("trailing_stop_atr_mult", self.trailing_stop_atr_mult),
+                    ("trailing_stop_pct", self.trailing_stop_pct),
+                ]
+                for _field, _val in _sole_owner_conflicts:
+                    if _val is not None and _val > 0:
+                        raise ValueError(
+                            f"{_field} is not allowed alongside a unified "
+                            "per-regime close — the close owns the SL via "
+                            "per-regime stop_loss_atr"
+                        )
+                if self.stop_loss_atr_regime is not None or (
+                    self.trailing_stop_atr_regime is not None
+                ):
+                    raise ValueError(
+                        "stop_loss_atr_regime/trailing_stop_atr_regime are not "
+                        "allowed alongside a unified per-regime close — the "
+                        "close owns the SL via per-regime stop_loss_atr"
+                    )
 
             regime_errs: list[str] = []
             if self.stop_loss_atr_regime is not None:
@@ -1636,6 +1701,20 @@ class Backtester:
                     self._run_trailing_stop_atr_mult = self._resolve_regime_atr(
                         self._trailing_stop_regime_block, lab,
                     )
+            # #841 unified per-regime close: the block owns the SL — resolve
+            # the stamped regime's stop_loss_atr as the run's fixed-SL mult
+            # (mirrors unifiedCloseStopLossATR in scheduler/regime_unified.go).
+            if (
+                self._run_stop_loss_atr_mult is None
+                and self._unified_close_params is not None
+                and self._unified_scalar_params is not None
+                and lab
+            ):
+                _, _usl = self._unified_scalar_params(
+                    self._unified_close_params, lab
+                )
+                if _usl and _usl > 0:
+                    self._run_stop_loss_atr_mult = float(_usl)
             if self._run_stop_loss_atr_mult is None:
                 if (
                     self.stop_loss_atr_mult is not None
@@ -2449,19 +2528,33 @@ class Backtester:
 
     def _stamp_entry_atr(self, atr_series: Optional[pd.Series], idx,
                          entry_price: float) -> float:
-        """Return the ATR at ``idx`` for stamping ``Position.EntryATR``.
+        """Return the ATR to stamp as ``Position.EntryATR`` for a fill at
+        ``idx``.
 
-        Mirrors ``stampEntryATRIfOpened`` in scheduler/main.go: rejects NaN
-        and any value greater than 50% of the entry price as a plausibility
-        guard. Returns 0.0 when no usable ATR is available — close evaluators
-        that require ATR (``tiered_tp_atr``) then fall through with a no-op
-        until a position with a valid ATR is opened.
+        Reads the bar BEFORE ``idx``: the fill happens at ``idx``'s open, when
+        that bar's own high/low/close (and hence its ATR) are still unknown.
+        Live stamps the last closed bar's ATR at order time (signal bar N; the
+        fill bar is N+1), so the closed-bar value is bar N's — reading the
+        fill bar's ATR leaked that bar's own range into the stop/TP geometry
+        (#1228 audit). Mirrors ``stampEntryATRIfOpened`` in scheduler/main.go:
+        rejects NaN and any value greater than 50% of the entry price as a
+        plausibility guard. Returns 0.0 when no usable ATR is available —
+        close evaluators that require ATR (``tiered_tp_atr``) then fall
+        through with a no-op until a position with a valid ATR is opened.
         """
         if atr_series is None or entry_price <= 0:
             return 0.0
         try:
-            value = float(atr_series.loc[idx])
+            pos = int(atr_series.index.get_loc(idx))
         except (KeyError, TypeError, ValueError):
+            # Missing label, or a non-unique index where get_loc returns a
+            # slice/mask — no unambiguous prior bar; treat as no usable ATR.
+            return 0.0
+        if pos < 1:
+            return 0.0
+        try:
+            value = float(atr_series.iloc[pos - 1])
+        except (TypeError, ValueError):
             return 0.0
         if not (value > 0):  # rejects NaN, 0, negative
             return 0.0

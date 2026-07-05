@@ -164,3 +164,34 @@ def test_repo_artifact_is_empty_and_valid():
                             "regime_directional_certifications.json")
     certs = load_certifications(artifact)
     assert certs == {}, "the shipped artifact must certify nothing (#1076)"
+
+
+def test_gate_expands_bare_policy_onto_certified_subs():
+    # #1124/#1228: live Resolve falls back from a sub-label stamp to the bare
+    # ranging_directional policy entry. A cert for ranging_directional_up must
+    # therefore honor a bare-only policy the way live does.
+    from backtester import _gate_directional_policy_by_states
+    bare_only = {"ranging_directional": {"direction": "long"}}
+    gated = _gate_directional_policy_by_states(
+        bare_only, {"ranging_directional_up": "long"})
+    assert gated == {"ranging_directional_up": {"direction": "long"}}
+    # Contradicting cert still drops the expanded entry.
+    assert _gate_directional_policy_by_states(
+        bare_only, {"ranging_directional_up": "short"}) == {}
+    # An explicit sub key wins over the bare expansion (exact match first).
+    mixed = {
+        "ranging_directional": {"direction": "long"},
+        "ranging_directional_up": {"direction": "both"},
+    }
+    gated = _gate_directional_policy_by_states(
+        mixed, {"ranging_directional_up": "short"})
+    assert gated == {"ranging_directional_up": {"direction": "both"}}
+
+
+def test_resolve_directional_entry_bare_fallback_for_subs():
+    from backtester import _resolve_regime_directional_entry
+    policy = {"ranging_directional": {"direction": "short"}}
+    assert _resolve_regime_directional_entry(
+        policy, "ranging_directional_down") == {"direction": "short"}
+    # Exact sub key still wins; bare never covers non-family labels.
+    assert _resolve_regime_directional_entry(policy, "trending_up") is None

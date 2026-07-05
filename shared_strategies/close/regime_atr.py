@@ -498,8 +498,14 @@ def parse_regime_tp_tiers(
         )
         # Strip non-classifier keys we recognize at the tier level before
         # parsing so the inner allowlist check focuses on the trend_regime
-        # block shape.
-        tier_subset = {k: v for k, v in item.items() if k != "close_fraction"}
+        # block shape. Mirrors Go (scheduler/regime_atr.go): close_fraction is
+        # handled by the tier-fraction logic below and sl_after by
+        # parse_strategy_tp_sl_after_rules — without stripping sl_after, a
+        # per-tier sl_after on a regime close failed the parse AND silently
+        # never armed at fire time, since the fire path re-parses through here.
+        tier_subset = {
+            k: v for k, v in item.items() if k not in ("close_fraction", "sl_after")
+        }
         sub_label = f"{ctx_label}.tiers[{idx}]"
         block, sub_errs = parse_regime_atr_block(
             tier_subset,
