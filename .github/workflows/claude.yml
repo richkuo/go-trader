@@ -100,9 +100,16 @@ jobs:
             # when its stripped body is exactly a one-line review trigger (optional
             # model shorthand + effort token). Review output that merely quotes
             # @claude at a line start must never chain another run.
-            TRIMMED=$(printf '%s' "$STRIPPED" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-            if [ "$(printf '%s' "$TRIMMED" | wc -l)" -eq 0 ] && \
-               printf '%s' "$TRIMMED" | grep -qE '^@claude([[:space:]]+[a-z]+)?[[:space:]]+review([[:space:]]+effort:(low|medium|high|xhigh))?$'; then
+            # Normalize CRLF, trim each line, and DROP blank lines so whitespace
+            # padding (leading/trailing spaces, blank lines, or a stray CR) around
+            # an otherwise exact one-line "@claude review" trigger cannot defeat
+            # the guard. Any real content on a second non-blank line keeps
+            # NONBLANK_LINES > 1, so multi-line review output that merely quotes
+            # @claude at a line start never chains another run.
+            NONBLANK=$(printf '%s' "$STRIPPED" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d')
+            NONBLANK_LINES=$(printf '%s' "$NONBLANK" | awk 'END{print NR}')
+            if [ "$NONBLANK_LINES" -eq 1 ] && \
+               printf '%s' "$NONBLANK" | grep -qE '^@claude([[:space:]]+[a-z]+)?[[:space:]]+review([[:space:]]+effort:(low|medium|high|xhigh))?$'; then
               echo "invoked=true" >> "$GITHUB_OUTPUT"
             else
               echo "invoked=false" >> "$GITHUB_OUTPUT"
@@ -219,8 +226,15 @@ jobs:
     needs: classify
     if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'review'
     permissions:
+      # Untrusted-content path: read-only on code AND on the PR. This repo is
+      # PUBLIC, so external fork-PR reviews run here — the agent posts its review
+      # through the issue-comments endpoint (issues: write covers gh pr comment +
+      # the footer PATCH) and only needs to READ PR context, so pull-requests
+      # stays read. Dropping write removes the ability to close, edit, retitle, or
+      # relabel a PR through an allowed interpreter acting on a prompt-injected
+      # diff — contents: read already blocks push/merge.
       contents: read
-      pull-requests: write
+      pull-requests: read
       issues: write
     uses: ./.github/workflows/claude-run.yml
     with:

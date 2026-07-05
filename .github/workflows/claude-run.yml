@@ -186,6 +186,21 @@ jobs:
             echo "::notice::Claude made no code changes — skipping CLAUDE.md revision."
           fi
 
+      # Pin the footer target BEFORE the revise pass. The revise step below posts
+      # its OWN claude[bot] comment carrying this run's /actions/runs/<id> link,
+      # which would win the footer step's latest-by-updated_at selection; capture
+      # the primary work comment id now so the footer lands on it, not on revise.
+      - name: Capture primary Claude comment before revise pass
+        if: inputs.mode == 'implement' && steps.claude.outcome == 'success'
+        id: primary_comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SELECT_ONLY: '1'
+        run: echo "id=$(bash .github/scripts/patch_claude_comment.sh)" >> "$GITHUB_OUTPUT"
+
       - name: Revise CLAUDE.md with session learnings
         if: inputs.mode == 'implement' && steps.claude.outcome == 'success' && steps.claude_changes.outputs.made_commits == 'true'
         uses: anthropics/claude-code-action@v1
@@ -216,6 +231,10 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
+          # Implement mode pins the primary work comment captured before the
+          # revise pass; empty in review mode, where the RUN_ID selection applies
+          # (no revise pass runs, so no competing comment exists).
+          TARGET_COMMENT_ID: ${{ steps.primary_comment.outputs.id }}
         run: bash .github/scripts/patch_claude_comment.sh
 
       - name: Mark cancellation for downstream status note
