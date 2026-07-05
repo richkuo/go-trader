@@ -242,15 +242,17 @@ jobs:
     needs: classify
     if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'review'
     permissions:
-      # Untrusted-content path: read-only on code AND on the PR. This repo is
-      # PUBLIC, so external fork-PR reviews run here — the agent posts its review
-      # through the issue-comments endpoint (issues: write covers gh pr comment +
-      # the footer PATCH) and only needs to READ PR context, so pull-requests
-      # stays read. Dropping write removes the ability to close, edit, retitle, or
-      # relabel a PR through an allowed interpreter acting on a prompt-injected
-      # diff — contents: read already blocks push/merge.
+      # Untrusted-content path (this repo is PUBLIC, so external fork-PR reviews
+      # run here): read-only on CODE — contents: read blocks push/merge, so a
+      # prompt-injected diff can never ship. pull-requests: write is REQUIRED, not
+      # optional: a review comment targets a PR, and GitHub authorizes
+      # POST /issues/{n}/comments by the target's type — for a pull request that
+      # is pull-requests: write, NOT issues: write (which only covers real
+      # issues). The residual power it grants (close/edit/retitle a PR via an
+      # allowed interpreter on a prompt-injected diff) is the accepted cost of
+      # posting the review at all; merge still requires contents: write.
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: write
     uses: ./.github/workflows/claude-run.yml
     with:
