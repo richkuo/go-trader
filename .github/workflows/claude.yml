@@ -123,7 +123,7 @@ jobs:
             echo "::notice::@claude found but only inside code blocks or examples — skipping."
           fi
 
-      - name: Classify invocation as review or implement
+      - name: Classify invocation route (review, implement, or fix-pr-review)
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: classify_mode
         env:
@@ -137,23 +137,30 @@ jobs:
           PR_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
           PR_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
         run: |
-          # Fail-closed routing (#1178): when in doubt, classify as review —
-          # the review job cannot push, so a misrouted implementation ask
-          # fails with a 403 instead of a misrouted review ask running with
-          # contents: write while reading untrusted PR content.
+          # Fail-closed routing (#1178), keyed on the FIRST word after @claude
+          # (an optional model shorthand — opus/sonnet/fable — is skipped):
+          # when in doubt, classify as review — the review job cannot push, so
+          # a misrouted implementation ask fails with a 403 instead of a
+          # misrouted review ask running with contents: write while reading
+          # untrusted PR content.
           #   - PR-review surfaces (pull_request_review, and inline
           #     pull_request_review_comment) are always review-scoped, even
           #     for inline "@claude fix X" asks.
-          #   - Any mention of the word "review" outside code blocks routes to
-          #     review ("@claude review and fix" loses push on purpose; re-ask
-          #     without "review" to implement).
-          #   - An issue_comment ON A PR earns the write-capable implement path
-          #     ONLY when the PR author is trusted (owner/member/collaborator, or
-          #     claude[bot]'s own work-on-issue PR); an external/fork-authored PR
-          #     stays review-only, so the agent never writes while reading an
-          #     untrusted author's diff. Issues and issue_comments on issues stay
-          #     implement — the author gate already restricts them to a trusted
-          #     human.
+          #   - Route keyword "review" ("@claude review ...") routes to review
+          #     on any surface. NOTE: only the keyword position counts;
+          #     "review" later in the sentence ("@claude fix the review
+          #     comments") no longer forces read-only.
+          #   - Route keyword "fix-pr" on a trusted-author PR comment routes to
+          #     fix-pr-review — the review-fixing playbook (validate all review
+          #     feedback against the code, fix what survives, disposition
+          #     comment, re-review trigger).
+          #   - Any other issue_comment ON A PR earns the write-capable
+          #     implement path ONLY when the PR author is trusted
+          #     (owner/member/collaborator, or claude[bot]'s own work-on-issue
+          #     PR); an external/fork-authored PR stays review-only, so the
+          #     agent never writes while reading an untrusted author's diff.
+          #     Issues and issue_comments on issues stay implement — the author
+          #     gate already restricts them to a trusted human.
           # $STRIPPED is verify_invocation's code-fence-stripped body — the
           # exact text the invocation gate saw, by construction.
           case "$EVENT_NAME" in
@@ -164,9 +171,16 @@ jobs:
               ;;
           esac
 
-          if printf '%s' "$STRIPPED" | grep -qiE '\breview\b'; then
+          # Route keyword = first token after @claude on its invocation line,
+          # skipping an optional model shorthand.
+          KEYWORD=$(printf '%s' "$STRIPPED" | tr -d '\r' \
+            | sed -n 's/^[[:space:]]*@claude[[:space:]]\{1,\}//p' | head -n 1 \
+            | awk '{ if ($1 == "opus" || $1 == "sonnet" || $1 == "fable") { print $2 } else { print $1 } }' \
+            | tr '[:upper:]' '[:lower:]')
+
+          if [ "$KEYWORD" = "review" ]; then
             echo "mode=review" >> "$GITHUB_OUTPUT"
-            echo "::notice::Mode: review (word 'review' present)"
+            echo "::notice::Mode: review (review keyword)"
             exit 0
           fi
 
@@ -178,10 +192,12 @@ jobs:
             if [ "$PR_AUTHOR_LOGIN" = "claude[bot]" ]; then
               PR_AUTHOR_TRUSTED=true
             fi
-            if [ "$PR_AUTHOR_TRUSTED" = "true" ]; then
-              MODE=implement
-            else
+            if [ "$PR_AUTHOR_TRUSTED" != "true" ]; then
               MODE=review
+            elif [ "$KEYWORD" = "fix-pr" ]; then
+              MODE=fix-pr-review
+            else
+              MODE=implement
             fi
           else
             MODE=implement
@@ -270,6 +286,35 @@ jobs:
     uses: ./.github/workflows/claude-run.yml
     with:
       mode: implement
+      model_id: ${{ needs.classify.outputs.model_id }}
+      effort: ${{ needs.classify.outputs.effort }}
+    secrets: inherit
+
+  # The "@claude fix-pr" keyword route: same push capability and the same
+  # independent trusted-PR-author re-assertion as implement (see above), but
+  # runs the review-fixing playbook prompt — fetch all review feedback,
+  # validate each finding against the code, fix what survives, post a
+  # per-finding disposition comment, and trigger a fresh @claude review.
+  # Unlike implement's `if` there is no pull_request == null escape: this
+  # mode is only ever set for a PR comment, so trust must be positively
+  # asserted from the PR author.
+  fix-pr-review:
+    needs: classify
+    if: >
+      needs.classify.outputs.invoked == 'true' &&
+      needs.classify.outputs.mode == 'fix-pr-review' &&
+      (
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) ||
+        github.event.issue.user.login == 'claude[bot]'
+      )
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    uses: ./.github/workflows/claude-run.yml
+    with:
+      mode: fix-pr-review
       model_id: ${{ needs.classify.outputs.model_id }}
       effort: ${{ needs.classify.outputs.effort }}
     secrets: inherit

@@ -30,7 +30,7 @@ HERE = os.path.dirname(__file__)
 CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml"))
 
 VERIFY_STEP = "Verify @claude is an actual invocation (not in a code block or example)"
-CLASSIFY_MODE_STEP = "Classify invocation as review or implement"
+CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, or fix-pr-review)"
 
 # A PR issue_comment carries a non-empty pull_request.url; an issue comment does not.
 PR_URL = "https://api.github.com/repos/o/r/pulls/5"
@@ -184,15 +184,63 @@ def test_contributor_author_pr_comment_is_review_only():
     ) == "review"
 
 
-def test_review_word_forces_review_even_for_trusted_author():
+def test_review_keyword_forces_review_even_for_trusted_author():
     assert run_classify_mode(
         "issue_comment", "@claude review this carefully", pr_url=PR_URL, pr_author_assoc="MEMBER"
+    ) == "review"
+
+
+def test_review_keyword_after_model_shorthand_is_review():
+    assert run_classify_mode(
+        "issue_comment", "@claude sonnet review", pr_url=PR_URL, pr_author_assoc="MEMBER"
     ) == "review"
 
 
 def test_review_and_fix_loses_push_on_purpose():
     assert run_classify_mode(
         "issue_comment", "@claude review and fix it", pr_url=PR_URL, pr_author_assoc="OWNER"
+    ) == "review"
+
+
+def test_review_word_later_in_sentence_no_longer_forces_review():
+    # Keyword routing: only the FIRST word after @claude counts, so an
+    # instruction that merely mentions review keeps the push-capable route.
+    assert run_classify_mode(
+        "issue_comment", "@claude fix the review comments", pr_url=PR_URL, pr_author_assoc="MEMBER"
+    ) == "implement"
+
+
+def test_fix_pr_keyword_routes_to_fix_pr_review():
+    assert run_classify_mode(
+        "issue_comment", "@claude fix-pr", pr_url=PR_URL, pr_author_assoc="MEMBER"
+    ) == "fix-pr-review"
+
+
+def test_fix_pr_keyword_after_model_shorthand_routes_to_fix_pr_review():
+    assert run_classify_mode(
+        "issue_comment", "@claude opus fix-pr and be thorough", pr_url=PR_URL, pr_author_assoc="OWNER"
+    ) == "fix-pr-review"
+
+
+def test_fix_pr_keyword_untrusted_pr_author_is_review_only():
+    # Must survive: the fix-pr keyword never earns push over an
+    # external-author PR — fail-closed to read-only review (PUBLIC repo).
+    assert run_classify_mode(
+        "issue_comment", "@claude fix-pr", pr_url=PR_URL, pr_author_assoc="NONE"
+    ) == "review"
+
+
+def test_fix_pr_keyword_on_plain_issue_is_implement():
+    # No PR context: the issue path wins before keyword routing.
+    assert run_classify_mode(
+        "issue_comment", "@claude fix-pr", pr_url="", pr_author_assoc="MEMBER"
+    ) == "implement"
+
+
+def test_fix_pr_keyword_on_inline_review_surface_stays_review():
+    # PR-review surfaces are always read-only regardless of keyword.
+    assert run_classify_mode(
+        "pull_request_review_comment", "@claude fix-pr", pr_url=PR_URL, pr_author_assoc="OWNER"
     ) == "review"
 
 

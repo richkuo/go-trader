@@ -12,11 +12,16 @@ name: Claude Code run
 #                comments post as github-actions[bot].
 #   - implement: app auth (claude[bot]) with contents: write, plus the
 #                CLAUDE.md-revision follow-up when commits were made.
+#   - fix-pr-review: app auth (claude[bot]) with contents: write; routes to
+#                the review-fixing playbook prompt (validate all review
+#                feedback against the code, fix what survives, disposition
+#                comment, re-review trigger). Only reached for trusted-author
+#                PR comments (gated in claude.yml).
 on:
   workflow_call:
     inputs:
       mode:
-        description: 'review or implement'
+        description: 'review, implement, or fix-pr-review'
         required: true
         type: string
       model_id:
@@ -83,15 +88,22 @@ jobs:
           EFFORT: ${{ inputs.effort }}
           MODE: ${{ inputs.mode }}
         run: |
-          # Single source of truth for the PR-review output contract lives in
-          # .github/prompts/pr-review-format.md (pure prompt text). Flatten it to
-          # one line and inject as --append-system-prompt. The allowedTools list
-          # is workflow capability (not review format), so it stays here.
-          PROMPT=$(tr '\n' ' ' < .github/prompts/pr-review-format.md | sed -e 's/[[:space:]]\{2,\}/ /g' -e 's/^ *//' -e 's/ *$//')
+          # Single source of truth for prompt text lives in .github/prompts/*.md
+          # (pure prompt text). Flatten to one line and inject as
+          # --append-system-prompt. The allowedTools list is workflow capability
+          # (not prompt format), so it stays here. fix-pr-review runs the
+          # review-fixing playbook; review and implement keep the PR-review
+          # output contract.
+          if [ "$MODE" = "fix-pr-review" ]; then
+            PROMPT_FILE=.github/prompts/fix-pr-review.md
+          else
+            PROMPT_FILE=.github/prompts/pr-review-format.md
+          fi
+          PROMPT=$(tr '\n' ' ' < "$PROMPT_FILE" | sed -e 's/[[:space:]]\{2,\}/ /g' -e 's/^ *//' -e 's/ *$//')
           # claude_args is shell-evaluated downstream: a double quote breaks the
           # quoting, and a backtick or dollar sign would expand or execute.
           if printf '%s' "$PROMPT" | grep -q '["`$]'; then
-            echo "::error::pr-review-format.md must not contain double quotes, backticks, or dollar signs (claude_args is shell-evaluated)."
+            echo "::error::$PROMPT_FILE must not contain double quotes, backticks, or dollar signs (claude_args is shell-evaluated)."
             exit 1
           fi
           # git/gh are narrowed as defense-in-depth, not a hard boundary: an
@@ -105,10 +117,19 @@ jobs:
           # every mutating endpoint). No CI readers (gh pr checks / gh run *):
           # reviews intentionally do not gate on CI, which outlasts the review.
           ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr comment*),Bash(gh issue view*)'
-          # Only the implement job may mutate history; review runs never
+          # Only the write-capable modes may mutate history; review runs never
           # commit or push, so those rules stay off its allowlist.
           if [ "$MODE" = "implement" ]; then
             ALLOWED="$ALLOWED,Bash(git add*),Bash(git commit*),Bash(git push origin HEAD),Bash(git push -u origin HEAD),Bash(git push --set-upstream origin HEAD)"
+          elif [ "$MODE" = "fix-pr-review" ]; then
+            # Review-fixing playbook: write verbs plus gh pr checkout (get onto
+            # the PR head branch), gh api graphql (inline review threads carry
+            # resolution state only via GraphQL), gh issue create (Create
+            # Follow-up Issue dispositions), and the edit tools. Like implement
+            # this path is trusted-author only and the allowlist is intent, not
+            # a hard boundary (interpreters can shell out; graphql can express
+            # mutations) — the trust gate in claude.yml is the boundary.
+            ALLOWED="$ALLOWED,Bash(git add*),Bash(git commit*),Bash(git push origin HEAD),Bash(gh pr checkout*),Bash(gh issue create*),Bash(gh api graphql*),Read,Edit,Write,MultiEdit,Glob,Grep"
           fi
           ARGS="--model ${MODEL_ID} --effort ${EFFORT} --append-system-prompt \"${PROMPT}\" --allowedTools \"${ALLOWED}\""
           {
