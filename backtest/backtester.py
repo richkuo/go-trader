@@ -268,13 +268,14 @@ def _resolve_regime_directional_entry(
     regime = str(current_regime or "").strip()
     if position_qty > 0 and str(position_regime or "").strip():
         regime = str(position_regime or "").strip()
+    # Exact match ONLY — deliberately no bare→sub fallback here. Runtime
+    # always resolves the ALREADY-GATED policy
+    # (_gate_directional_policy_by_states expands a bare ranging_directional
+    # entry onto its subs SUBJECT TO each sub's own per-state certification),
+    # so a bare-certified-but-sub-uncertified stamp must miss and fall back to
+    # base, mirroring live's fail-closed gatedDirectionalEntry (#1085/#1124
+    # exact-match cert, no family fallback).
     entry = policy.get(regime)
-    if not isinstance(entry, dict):
-        # #1124/#1228: mirror live Resolve — a sub-label stamp falls back to
-        # the bare ranging_directional entry (exact match wins first).
-        from regime import RANGING_DIRECTIONAL_BARE, RANGING_DIRECTIONAL_SUBS
-        if regime in RANGING_DIRECTIONAL_SUBS:
-            entry = policy.get(RANGING_DIRECTIONAL_BARE)
     return dict(entry) if isinstance(entry, dict) else None
 
 

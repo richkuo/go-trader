@@ -69,7 +69,12 @@ input assembly and parsing mirrors:
   entry cover `_up`/`_down` stamps, exact match winning first; cert gating stays exact
   per #1124). Inert while the cert artifact is empty, but a real mirror gap once any cert
   lands. The backtest gate now expands a bare entry onto uncovered subs before the
-  per-state cert check, and runtime resolution falls back bare→sub like live.
+  per-state cert check — so a sub honors the bare override only when that sub's OWN
+  certification passes; runtime resolution against the gated policy stays exact-match,
+  matching live's fail-closed `gatedDirectionalEntry` (a bare cert never certifies an
+  uncertified sub). The shared `unified_regime_scalar_params` helper also gained the
+  live bare→sub fallback (review round 1) so a bare-only unified close block arms its
+  SL/TPs for a directional sub-label stamp.
 - Verified PARITY: regime gating (#1025/#1124 one-directional family rule), #1085
   evidence gate (default-off, fail-closed, exact cert lookup), reject list otherwise
   exhaustive against `closeStrategyOwnedKeys` (mirror-enforced by Go test), default
