@@ -53,18 +53,22 @@ COMMENTS_PAGE = [
 ]
 
 FAKE_GH = """#!/usr/bin/env bash
-# Fake gh for tests: --paginate fetch prints the canned comments page;
-# the PATCH call records its argv (one arg per line) and prints nothing.
+# Fake gh for tests: a --paginate fetch prints the canned comments page; a
+# --method call (PATCH/POST) records its argv (one arg per line) and prints
+# nothing; a bare `gh api repos/.../issues/comments/<id>` GET (the
+# TARGET_COMMENT_ID path) prints the canned single comment.
 set -euo pipefail
 if printf '%s\\n' "$@" | grep -q -- '--paginate'; then
   cat "$GH_STUB_COMMENTS"
-else
+elif printf '%s\\n' "$@" | grep -q -- '--method'; then
   printf '%s\\n' "$@" >> "$GH_STUB_PATCH_LOG"
+else
+  cat "${GH_STUB_SINGLE:-/dev/null}"
 fi
 """
 
 
-def run_patch_script(tmp_path, extra_env):
+def run_patch_script(tmp_path, extra_env, single_comment=None, capture_stdout=False):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -89,6 +93,12 @@ def run_patch_script(tmp_path, extra_env):
             "CLAUDE_HARNESS": "anthropics/claude-code-action@v1",
         }
     )
+    # The TARGET_COMMENT_ID path fetches one comment by id (a non-paginate,
+    # non-method GET); stub its response when a test needs that path.
+    if single_comment is not None:
+        single = tmp_path / "single.json"
+        single.write_text(json.dumps(single_comment))
+        env["GH_STUB_SINGLE"] = str(single)
     env.update(extra_env)
 
     result = subprocess.run(
@@ -99,7 +109,10 @@ def run_patch_script(tmp_path, extra_env):
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    return patch_log.read_text() if patch_log.exists() else ""
+    log = patch_log.read_text() if patch_log.exists() else ""
+    if capture_stdout:
+        return result.stdout, log
+    return log
 
 
 def test_default_bot_login_patches_claude_bot_comment(tmp_path):
@@ -194,3 +207,45 @@ def test_on_miss_post_without_status_note_is_a_noop(tmp_path):
         {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555", "ON_MISS": "post"},
     )
     assert patched == ""
+
+
+def test_select_only_emits_run_matched_comment_id_without_patching(tmp_path):
+    # The pre-revise capture step resolves the primary comment (id 202, run 222)
+    # to stdout and must never patch — SELECT_ONLY leaves the log empty.
+    out, log = run_patch_script(
+        tmp_path,
+        {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "222", "SELECT_ONLY": "1"},
+        capture_stdout=True,
+    )
+    assert out == "202"
+    assert log == ""
+
+
+def test_select_only_emits_empty_string_on_miss(tmp_path):
+    # No comment from this run — capture emits nothing so the footer step falls
+    # back to its own selection instead of pinning a wrong id.
+    out, log = run_patch_script(
+        tmp_path,
+        {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555", "SELECT_ONLY": "1"},
+        capture_stdout=True,
+    )
+    assert out == ""
+    assert log == ""
+
+
+def test_target_comment_id_patches_that_comment_bypassing_selection(tmp_path):
+    # The footer step pins the captured primary comment id and patches it
+    # directly — never the newer revise-pass comment that a run-id +
+    # latest-by-updated_at select would otherwise win. Proven by pinning id 202
+    # while the default claude[bot] selection would have chosen id 101.
+    single = {
+        "id": 202,
+        "user": {"login": "claude[bot]"},
+        "updated_at": "2026-07-01T01:00:00Z",
+        "body": "primary work comment from claude[bot]",
+    }
+    patched = run_patch_script(tmp_path, {"TARGET_COMMENT_ID": "202"}, single_comment=single)
+    assert "repos/richkuo/go-trader/issues/comments/202" in patched
+    assert "primary work comment" in patched
+    assert "--method\nPATCH" in patched
+    assert "issues/comments/101" not in patched
