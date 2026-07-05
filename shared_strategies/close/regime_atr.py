@@ -64,7 +64,16 @@ def unified_regime_scalar_params(params: dict, regime: str):
     trend = params.get(REGIME_CLASSIFIER_KEY)
     if not isinstance(trend, dict):
         return None, 0.0
-    label = trend.get((regime or "").strip())
+    r = (regime or "").strip()
+    label = trend.get(r)
+    if not isinstance(label, dict):
+        # #1124: a ranging_directional_up/_down stamp falls back to the bare
+        # ranging_directional entry (exact match wins first). The unified close
+        # is the sole SL owner, so without this fallback a bare-only block
+        # yields no SL *and* no TPs for a sub-label stamp. Mirrors
+        # unifiedRegimeScalarParams in scheduler/regime_unified.go.
+        if r in ("ranging_directional_up", "ranging_directional_down"):
+            label = trend.get("ranging_directional")
     if not isinstance(label, dict) or "tp_tiers" not in label:
         return None, 0.0
     scalar = {"tp_tiers": label["tp_tiers"]}

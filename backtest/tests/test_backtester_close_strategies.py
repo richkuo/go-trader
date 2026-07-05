@@ -796,3 +796,34 @@ def test_unified_regime_close_rejects_second_sl_owner():
             }},
             close_strategies=[_UNIFIED_CLOSE],
         )
+
+
+def test_unified_regime_close_bare_block_arms_sl_for_directional_sub_stamp():
+    # #1124/#1228 review: a bare-only ranging_directional unified block must
+    # arm its stop for a position stamped with the _up/_down sub-label, like
+    # live's unifiedRegimeScalarParams bare fallback.
+    close_ref = {
+        "name": "tiered_tp_atr_regime",
+        "params": {"trend_regime": {
+            "ranging_directional": {
+                "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
+                "stop_loss_atr": 1.0,
+            },
+        }},
+    }
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 95, 95, 95],
+        "close": [100, 100, 96, 95, 95, 95],
+        "atr": [2, 2, 2, 2, 2, 2],
+        "regime": ["ranging_directional_up"] * 6,
+        "open_action": ["long", "none", "none", "none", "none", "none"],
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[close_ref],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    assert result["trades"][0]["exit_date"] == str(idx[3])

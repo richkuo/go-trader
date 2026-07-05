@@ -291,3 +291,59 @@ def test_tier_sl_after_sibling_stripped_before_atr_parse(regime_atr):
     )
     assert errs == [], errs
     assert len(specs) == 2
+
+
+def test_unified_scalar_params_bare_covers_directional_subs(regime_atr):
+    # #1124/#1228 review: a bare-only unified block must resolve for a
+    # ranging_directional_up/_down stamp (mirrors Go unifiedRegimeScalarParams
+    # — the unified close is the sole SL owner, so a miss means no SL AND no
+    # TPs for the sub-label stamp).
+    params = {
+        "trend_regime": {
+            "ranging_directional": {
+                "tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}],
+                "stop_loss_atr": 1.5,
+            },
+        },
+    }
+    for sub in ("ranging_directional_up", "ranging_directional_down"):
+        scalar, sl = regime_atr.unified_regime_scalar_params(params, sub)
+        assert scalar == {"tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}]}
+        assert sl == 1.5
+
+
+def test_unified_scalar_params_explicit_sub_wins_over_bare(regime_atr):
+    params = {
+        "trend_regime": {
+            "ranging_directional": {
+                "tp_tiers": [{"atr_multiple": 2.0, "close_fraction": 1.0}],
+                "stop_loss_atr": 1.5,
+            },
+            "ranging_directional_up": {
+                "tp_tiers": [{"atr_multiple": 4.0, "close_fraction": 1.0}],
+                "stop_loss_atr": 0.9,
+            },
+        },
+    }
+    scalar, sl = regime_atr.unified_regime_scalar_params(
+        params, "ranging_directional_up")
+    assert scalar["tp_tiers"][0]["atr_multiple"] == 4.0
+    assert sl == 0.9
+    # The sibling sub still rides the bare entry.
+    _, sl_down = regime_atr.unified_regime_scalar_params(
+        params, "ranging_directional_down")
+    assert sl_down == 1.5
+
+
+def test_unified_scalar_params_no_bare_no_sub_misses(regime_atr):
+    params = {"trend_regime": {
+        "trending_up": {"tp_tiers": [], "stop_loss_atr": 1.0},
+    }}
+    scalar, sl = regime_atr.unified_regime_scalar_params(
+        params, "ranging_directional_up")
+    assert scalar is None and sl == 0.0
+    # Bare never covers non-family labels either.
+    scalar, sl = regime_atr.unified_regime_scalar_params(
+        {"trend_regime": {"ranging_directional": {
+            "tp_tiers": [], "stop_loss_atr": 1.0}}}, "trending_down")
+    assert scalar is None and sl == 0.0
