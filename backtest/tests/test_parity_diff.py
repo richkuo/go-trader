@@ -636,3 +636,30 @@ def test_registry_close_advances_quantity_ladder():
     assert fracs[40] == pytest.approx(2.0 / 3.0)
     assert contexts[41]["current_quantity"] == pytest.approx(0.2)
     assert fracs[41] == pytest.approx(0.0)
+
+
+def test_config_mode_injects_user_close_defaults(tmp_path):
+    """#1228: live applies user_defaults unconditionally at loadConfig, so the
+    parity replay must inject them too — otherwise the diff replays params
+    live never runs and can report CLEAN against the wrong effective config."""
+    import json as _json
+    cfg_path = tmp_path / "config.json"
+    ladder = [
+        {"atr_multiple": 1.0, "close_fraction": 0.5},
+        {"atr_multiple": 2.0, "close_fraction": 1.0},
+    ]
+    cfg_path.write_text(_json.dumps({
+        "config_version": 16,
+        "user_defaults": {"close": {"tiered_tp_atr": {"tp_tiers": ladder}}},
+        "strategies": [{
+            "id": "hl-sma-btc",
+            "type": "perps",
+            "script": "shared_scripts/check_hyperliquid.py",
+            "args": ["sma_crossover", "BTC/USDT", "4h"],
+            "open_strategy": {"name": "sma_crossover", "params": {}},
+            "close_strategy": {"name": "tiered_tp_atr",
+                               "params": {"use_defaults": True}},
+        }],
+    }))
+    cfg = config_from_live_config(str(cfg_path), "hl-sma-btc")
+    assert cfg.close_refs[0]["params"].get("tp_tiers") == ladder

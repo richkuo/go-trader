@@ -120,20 +120,33 @@ def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
     return return_pct / abs(max_dd_pct)
 
 
+# #1005/#1228: mirrors backtest/backtester.py LIQUIDATED_METRIC_FLOOR (kept in
+# sync by test_eval_windows). A liquidated leg reads return −100% / DD −100%,
+# so raw DDadj is −1.0 — OUTRANKING a surviving losing leg (e.g. −50% return
+# on 25% DD scores −2.0). Floor the axis like Sharpe so a dead account always
+# sorts below any survivor.
+LIQUIDATED_DDADJ_FLOOR = -100.0
+
+
 def leg_from_results(results: dict, bh_return_pct: Optional[float] = None) -> dict:
     """Collapse a Backtester result dict to the per-leg metrics M1 reports."""
     ret = float(results["total_return_pct"])
     dd = float(results["max_drawdown_pct"])
+    liquidated = bool(results.get("liquidated"))
     return {
         "sharpe": float(results["sharpe_ratio"]),
         "return_pct": ret,
         "max_dd_pct": dd,
-        "ddadj": round(dd_adjusted_return(ret, dd), 3),
+        "ddadj": (
+            LIQUIDATED_DDADJ_FLOOR
+            if liquidated
+            else round(dd_adjusted_return(ret, dd), 3)
+        ),
         "trades": int(results["total_trades"]),
         "bh_return_pct": bh_return_pct,
         # #1005: equity hit 0 — metrics are floored at the bust bar (return
         # and DD read −100%); surfaced so blown legs are never silent.
-        "liquidated": bool(results.get("liquidated")),
+        "liquidated": liquidated,
     }
 
 

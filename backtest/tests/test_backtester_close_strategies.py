@@ -7,6 +7,7 @@ applied at the next bar's open (same fill alignment as the column-based
 close_fraction path).
 """
 import pandas as pd
+import pytest
 
 from backtester import Backtester
 
@@ -703,3 +704,211 @@ def test_avwap_stop_does_not_warn_when_not_configured(capsys):
     _run_avwap_stop_backtest(df, [{"name": "tp_at_pct", "params": {"pct": 0.03}}])
     err = capsys.readouterr().err
     assert _AVWAP_WARN_MARK not in err
+
+
+# ---------------------------------------------------------------------------
+# #841/#1228: unified per-regime close block — the close ref owns the
+# per-regime stop loss. Pre-fix the backtester dropped it entirely (a unified
+# close with stop_loss_atr simulated with NO stop), inflating results vs live.
+# ---------------------------------------------------------------------------
+
+_UNIFIED_CLOSE = {
+    "name": "tiered_tp_atr_regime",
+    # #841 unified shape: one trend_regime block holding each label's whole
+    # exit plan (tp_tiers + stop_loss_atr).
+    "params": {"trend_regime": {
+        "ranging": {
+            "tp_tiers": [{"atr_multiple": 98.0, "close_fraction": 0.5},
+                         {"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "stop_loss_atr": 1.0,
+        },
+        "trending_up": {
+            "tp_tiers": [{"atr_multiple": 98.0, "close_fraction": 0.5},
+                         {"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "stop_loss_atr": 2.0,
+        },
+        "trending_down": {
+            "tp_tiers": [{"atr_multiple": 98.0, "close_fraction": 0.5},
+                         {"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "stop_loss_atr": 2.0,
+        },
+    }},
+}
+
+
+def _df_unified():
+    # Bar 0 emits long + regime "ranging" -> fill at bar 1 open ($100) with
+    # stamped regime ranging (shifted read of bar 0). Entry ATR = bar 0's
+    # closed ATR = 2. ranging stop_loss_atr 1.0 -> trigger 98. Bar 2 close 96
+    # breaches -> SL fill at bar 3 OPEN ($95).
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    return pd.DataFrame({
+        "open": [100, 100, 100, 95, 95, 95],
+        "close": [100, 100, 96, 95, 95, 95],
+        "atr": [2, 2, 2, 2, 2, 2],
+        "regime": ["ranging"] * 6,
+        "open_action": ["long", "none", "none", "none", "none", "none"],
+    }, index=idx)
+
+
+def test_unified_regime_close_arms_per_regime_stop_loss():
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[_UNIFIED_CLOSE],
+    )
+    result = bt.run(_df_unified(), save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    assert result["trades"][0]["exit_date"] == str(_df_unified().index[3])
+
+
+def test_unified_regime_close_no_stop_without_breach():
+    # Same config, price never reaches the 98 trigger -> holds to end of data.
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 99, 99],
+        "close": [100, 100, 99, 99, 99],
+        "atr": [2, 2, 2, 2, 2],
+        "regime": ["ranging"] * 5,
+        "open_action": ["long", "none", "none", "none", "none"],
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        close_strategies=[_UNIFIED_CLOSE],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_date"] == str(idx[4])
+
+
+def test_unified_regime_close_rejects_second_sl_owner():
+    # Mirrors Go validateUnifiedCloseSoleOwner: the unified block owns the SL.
+    with pytest.raises(ValueError, match="unified per-regime close"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            stop_loss_atr_mult=1.5,
+            close_strategies=[_UNIFIED_CLOSE],
+        )
+    with pytest.raises(ValueError, match="unified per-regime close"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            stop_loss_atr_regime={"trend_regime": {
+                "ranging": {"atr_multiple": 1.0},
+                "trending_up": {"atr_multiple": 1.0},
+                "trending_down": {"atr_multiple": 1.0},
+            }},
+            close_strategies=[_UNIFIED_CLOSE],
+        )
+
+
+_COMPOSITE_SPEC_1228 = {"medium": {"classifier": "composite", "period": 21}}
+
+
+def _unified_composite_block(bare_sl=1.0, include_bare_sl=True):
+    """Exhaustive 7-key composite unified block (bare ranging_directional
+    covers _up/_down per #1124); never-firing far TPs; stop_loss_atr 99 on
+    non-directional labels so only the bare SL is exercised."""
+    far = [{"atr_multiple": 98.0, "close_fraction": 0.5},
+           {"atr_multiple": 99.0, "close_fraction": 1.0}]
+    bare = {"tp_tiers": [dict(t) for t in far]}
+    if include_bare_sl:
+        bare["stop_loss_atr"] = bare_sl
+    block = {"ranging_directional": bare}
+    for lab in ("ranging_quiet", "ranging_volatile", "trending_up_clean",
+                "trending_up_choppy", "trending_down_clean",
+                "trending_down_choppy"):
+        block[lab] = {"tp_tiers": [dict(t) for t in far], "stop_loss_atr": 99.0}
+    return block
+
+
+def test_unified_regime_close_bare_block_arms_sl_for_directional_sub_stamp():
+    # #1124/#1228 review: a bare-only ranging_directional unified block must
+    # arm its stop for a position stamped with the _up/_down sub-label, like
+    # live's unifiedRegimeScalarParams bare fallback.
+    close_ref = {
+        "name": "tiered_tp_atr_regime",
+        "params": {"trend_regime": _unified_composite_block(bare_sl=1.0)},
+    }
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame({
+        "open": [100, 100, 100, 95, 95, 95],
+        "close": [100, 100, 96, 95, 95, 95],
+        "atr": [2, 2, 2, 2, 2, 2],
+        "regime": ["ranging_directional_up"] * 6,
+        "open_action": ["long", "none", "none", "none", "none", "none"],
+    }, index=idx)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_windows_spec=_COMPOSITE_SPEC_1228,
+        close_strategies=[close_ref],
+    )
+    result = bt.run(df, save=False)
+    assert result["total_trades"] == 1
+    assert result["trades"][0]["exit_price"] == 95.0
+    assert result["trades"][0]["exit_date"] == str(idx[3])
+
+
+# ---------------------------------------------------------------------------
+# #1228 review round 3: mirror live validateUnifiedRegimeClose — a unified
+# label with tp_tiers but no positive stop_loss_atr must be REJECTED at load
+# (live refuses to start on it), never simulated stopless.
+# ---------------------------------------------------------------------------
+
+def _unified_adx_block(sl_overrides=None, drop_sl_for=()):
+    far = [{"atr_multiple": 98.0, "close_fraction": 0.5},
+           {"atr_multiple": 99.0, "close_fraction": 1.0}]
+    block = {}
+    for lab in ("ranging", "trending_up", "trending_down"):
+        entry = {"tp_tiers": [dict(t) for t in far]}
+        if lab not in drop_sl_for:
+            entry["stop_loss_atr"] = (sl_overrides or {}).get(lab, 1.0)
+        block[lab] = entry
+    return {"name": "tiered_tp_atr_regime", "params": {"trend_regime": block}}
+
+
+def test_unified_close_missing_stop_loss_atr_rejected_at_load():
+    with pytest.raises(ValueError, match="stop_loss_atr"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_unified_adx_block(drop_sl_for=("trending_up",))],
+        )
+
+
+def test_unified_close_nonpositive_stop_loss_atr_rejected_at_load():
+    with pytest.raises(ValueError, match="must be > 0"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_unified_adx_block(sl_overrides={"ranging": 0})],
+        )
+    with pytest.raises(ValueError, match="must be > 0"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_unified_adx_block(sl_overrides={"ranging": -1.5})],
+        )
+
+
+def test_unified_close_bare_block_without_sl_rejected_at_load():
+    # Compound of round 1 + round 3: the bare entry serving _up/_down through
+    # the #1124 fallback must itself carry the SL, or the config is rejected.
+    close_ref = {
+        "name": "tiered_tp_atr_regime",
+        "params": {"trend_regime": _unified_composite_block(
+            include_bare_sl=False)},
+    }
+    with pytest.raises(ValueError, match="stop_loss_atr"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            regime_windows_spec=_COMPOSITE_SPEC_1228,
+            close_strategies=[close_ref],
+        )
+
+
+def test_unified_close_single_tier_rejected_at_load():
+    ref = _unified_adx_block()
+    ref["params"]["trend_regime"]["ranging"]["tp_tiers"] = [
+        {"atr_multiple": 2.0, "close_fraction": 1.0}]
+    with pytest.raises(ValueError, match="at least 2 tiers"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[ref],
+        )

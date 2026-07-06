@@ -164,3 +164,69 @@ def test_repo_artifact_is_empty_and_valid():
                             "regime_directional_certifications.json")
     certs = load_certifications(artifact)
     assert certs == {}, "the shipped artifact must certify nothing (#1076)"
+
+
+def test_gate_expands_bare_policy_onto_certified_subs():
+    # #1124/#1228: live Resolve falls back from a sub-label stamp to the bare
+    # ranging_directional policy entry. A cert for ranging_directional_up must
+    # therefore honor a bare-only policy the way live does.
+    from backtester import _gate_directional_policy_by_states
+    bare_only = {"ranging_directional": {"direction": "long"}}
+    gated = _gate_directional_policy_by_states(
+        bare_only, {"ranging_directional_up": "long"})
+    assert gated == {"ranging_directional_up": {"direction": "long"}}
+    # Contradicting cert still drops the expanded entry.
+    assert _gate_directional_policy_by_states(
+        bare_only, {"ranging_directional_up": "short"}) == {}
+    # An explicit sub key wins over the bare expansion (exact match first).
+    mixed = {
+        "ranging_directional": {"direction": "long"},
+        "ranging_directional_up": {"direction": "both"},
+    }
+    gated = _gate_directional_policy_by_states(
+        mixed, {"ranging_directional_up": "short"})
+    assert gated == {"ranging_directional_up": {"direction": "both"}}
+
+
+def test_resolve_directional_entry_is_exact_match_only():
+    # #1228 review round 2: runtime resolution runs against the ALREADY-GATED
+    # policy, whose gate expands bare->subs subject to each sub's own cert. A
+    # resolve-level bare fallback would resurrect the override for a sub the
+    # gate dropped as uncertified — diverging from live's fail-closed
+    # gatedDirectionalEntry. So resolution is exact-match only.
+    from backtester import _resolve_regime_directional_entry
+    bare_only = {"ranging_directional": {"direction": "short"}}
+    assert _resolve_regime_directional_entry(
+        bare_only, "ranging_directional_down") is None
+    assert _resolve_regime_directional_entry(bare_only, "trending_up") is None
+    assert _resolve_regime_directional_entry(
+        bare_only, "ranging_directional") == {"direction": "short"}
+
+
+def test_gate_then_resolve_matches_live_cert_semantics():
+    # End-to-end gate+resolve composition, the three review must-survive cases.
+    from backtester import (
+        _gate_directional_policy_by_states,
+        _resolve_regime_directional_entry,
+    )
+    bare_policy = {"ranging_directional": {"direction": "long"}}
+    # (1) bare policy + bare-only cert + stamped _down -> BASE (live
+    # fails-closed: cert lookup is exact on the stamped sub).
+    gated = _gate_directional_policy_by_states(
+        bare_policy, {"ranging_directional": "long"})
+    assert _resolve_regime_directional_entry(
+        gated, "ranging_directional_down") is None
+    # ...while a bare stamp still honors the bare override.
+    assert _resolve_regime_directional_entry(
+        gated, "ranging_directional") == {"direction": "long"}
+    # (2) bare policy + sub cert + stamped _up -> bare override honored via
+    # the gate's cert-aware expansion.
+    gated = _gate_directional_policy_by_states(
+        bare_policy, {"ranging_directional_up": "long"})
+    assert _resolve_regime_directional_entry(
+        gated, "ranging_directional_up") == {"direction": "long"}
+    # (3) bare direction contradicts the sub's certified sign -> base.
+    gated = _gate_directional_policy_by_states(
+        bare_policy, {"ranging_directional_up": "short"})
+    assert _resolve_regime_directional_entry(
+        gated, "ranging_directional_up") is None

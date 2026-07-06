@@ -376,3 +376,39 @@ def test_validate_breakeven_rejects_regime_block():
     rule = SLAfterRule(kind="breakeven", atr_regime=object())  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         validate_sl_after_rule(rule)
+
+
+def test_parse_strategy_tp_sl_after_rules_regime_close_per_tier_sl_after():
+    # #1228 parity: a per-tier sl_after on a tiered_tp_atr_regime close loads
+    # in Go but errored in the Python mirror (parse_regime_tp_tiers rejected
+    # the sl_after sibling key), so the rule silently never armed at fire
+    # time. The regime-resolved parse must succeed and align the rule.
+    close_refs = [
+        {
+            "name": "tiered_tp_atr_regime",
+            "params": {
+                "tp_tiers": [
+                    {
+                        "trend_regime": {
+                            "trending_up": {"atr_multiple": 2.0, "close_fraction": 0.5},
+                            "trending_down": {"atr_multiple": 2.0, "close_fraction": 0.5},
+                            "ranging": {"atr_multiple": 1.5, "close_fraction": 0.5},
+                        },
+                        "sl_after": "breakeven",
+                    },
+                    {
+                        "trend_regime": {
+                            "trending_up": {"atr_multiple": 4.0, "close_fraction": 1.0},
+                            "trending_down": {"atr_multiple": 4.0, "close_fraction": 1.0},
+                            "ranging": {"atr_multiple": 3.0, "close_fraction": 1.0},
+                        },
+                    },
+                ],
+            },
+        }
+    ]
+    rules, errs = parse_strategy_tp_sl_after_rules(close_refs, regime="ranging")
+    assert errs == [], errs
+    assert len(rules.per_tier) == 2
+    assert rules.per_tier[0].kind == "breakeven"
+    assert rules.per_tier[1].kind == ""
