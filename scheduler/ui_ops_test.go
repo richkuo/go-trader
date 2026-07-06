@@ -269,8 +269,15 @@ func TestAPICashflowEmptyAndPopulated(t *testing.T) {
 	}
 }
 
-func TestAPICashflowDriftSnapshot(t *testing.T) {
+func TestAPICashflowNilDB503(t *testing.T) {
 	ss := newOpsTestServer(t, nil, NewAppState(), false)
+	if w := opsGet(ss, ss.handleAPICashflow, "/api/cashflow"); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("nil-DB cashflow = %d, want 503 (a failed money-path read must not render as a clean empty journal)", w.Code)
+	}
+}
+
+func TestAPICashflowDriftSnapshot(t *testing.T) {
+	ss := newOpsTestServer(t, nil, NewAppState(), true)
 	key := "test-drift-wallet-1231"
 	now := time.Now()
 	sharedWalletDriftTracker.Record(key, 1.23, []string{"BTC"}, now)

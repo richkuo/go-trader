@@ -196,11 +196,20 @@ func (ss *StatusServer) handleAPICashflow(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	wallets := []CashflowJournalWalletStatus{}
-	if ss.stateDB != nil {
-		if listed, err := ss.stateDB.ListCashflowJournalWallets(); err == nil && listed != nil {
-			wallets = listed
-		}
+	// Money-path display fidelity: a failed journal read must fail open to the
+	// panel's "-" fallback, never render as a clean empty journal — mirror the
+	// /api/diagnostics error contract (nil DB → 503, query error → 500).
+	if ss.stateDB == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "database not available")
+		return
+	}
+	wallets, err := ss.stateDB.ListCashflowJournalWallets()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if wallets == nil {
+		wallets = []CashflowJournalWalletStatus{}
 	}
 	writeJSON(w, map[string]any{
 		"wallets":       wallets,
