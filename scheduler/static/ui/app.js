@@ -1085,7 +1085,7 @@
   // dead strategies / close evaluators. Rendered in table view; every panel is
   // best-effort — a failing endpoint renders "-" and never breaks the page.
 
-  function pnlClass(v) {
+  function opsPnlClass(v) {
     return v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : "";
   }
 
@@ -1099,8 +1099,8 @@
         return "<tr>" +
           "<td>" + (i + 1) + "</td>" +
           "<td>" + escapeHTML(e.id) + "</td>" +
-          '<td class="' + pnlClass(e.pnl_pct) + '">' + escapeHTML(fmtPct(e.pnl_pct)) + "</td>" +
-          '<td class="' + pnlClass(e.pnl) + '">' + escapeHTML(fmtMoney(e.pnl)) + "</td>" +
+          '<td class="' + opsPnlClass(e.pnl_pct) + '">' + escapeHTML(fmtPct(e.pnl_pct)) + "</td>" +
+          '<td class="' + opsPnlClass(e.pnl) + '">' + escapeHTML(fmtMoney(e.pnl)) + "</td>" +
           "<td>" + escapeHTML(String(e.positions_opened || 0)) + "</td>" +
           "<td>" + escapeHTML((e.wins || 0) + "/" + (e.losses || 0)) + "</td>" +
           "<td>" + escapeHTML(fmtMoney(e.value)) + "</td>" +
@@ -1137,7 +1137,7 @@
           "<td>" + escapeHTML(row.strategy_id) + "</td>" +
           "<td>" + escapeHTML(row.symbol || "-") + "</td>" +
           "<td>" + escapeHTML(row.side || "-") + "</td>" +
-          '<td class="' + pnlClass(row.net_pnl) + '">' + escapeHTML(fmtMoney(row.net_pnl)) + "</td>" +
+          '<td class="' + opsPnlClass(row.net_pnl) + '">' + escapeHTML(fmtMoney(row.net_pnl)) + "</td>" +
           "<td>" + escapeHTML(pending ? "pending" : diagPct(row.favorable_pct)) + "</td>" +
           "<td>" + escapeHTML(pending ? "pending" : diagPct(row.adverse_pct)) + "</td>" +
           "<td>" + escapeHTML(capture) + "</td>" +
