@@ -1094,6 +1094,9 @@
     try {
       const resp = await getJSON("/api/leaderboard");
       const entries = resp.entries || [];
+      // Restore the friendly empty copy — a prior error cycle may have
+      // mutated this node to "-", and it must reflect the latest fetch.
+      els.leaderboardEmpty.textContent = "No strategies to rank";
       els.leaderboardEmpty.hidden = entries.length > 0;
       els.leaderboardBody.innerHTML = entries.map(function (e, i) {
         return "<tr>" +
@@ -1123,6 +1126,7 @@
     try {
       const resp = await getJSON("/api/diagnostics?limit=25");
       const rows = resp.rows || [];
+      els.diagnosticsEmpty.textContent = "No diagnostics rows yet";
       els.diagnosticsEmpty.hidden = rows.length > 0;
       els.diagnosticsBody.innerHTML = rows.map(function (row) {
         const when = row.closed_at ? new Date(row.closed_at).toLocaleString(undefined, {

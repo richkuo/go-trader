@@ -129,23 +129,29 @@ func (ss *StatusServer) handleAPIDiagnostics(w http.ResponseWriter, r *http.Requ
 		offset = v
 	}
 
-	rows, err := ss.stateDB.TradeDiagnosticsRows(strategyID)
+	// Bounded queries only — this endpoint is polled on the dashboard refresh
+	// interval, so per-call cost must track the page size, not the lifetime
+	// row count: SQL-side LIMIT/OFFSET for the page, and the trades net-PnL
+	// join scoped to just the page's position IDs.
+	rows, total, err := ss.stateDB.TradeDiagnosticsRowsPage(strategyID, limit, offset)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	netByPos, err := ss.stateDB.NetPnLByPosition(strategyID)
+	positionIDs := make([]string, 0, len(rows))
+	for _, rrow := range rows {
+		if rrow.PositionID != "" {
+			positionIDs = append(positionIDs, rrow.PositionID)
+		}
+	}
+	netByPos, err := ss.stateDB.NetPnLForPositions(strategyID, positionIDs)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// TradeDiagnosticsRows returns oldest-first; the dashboard wants the most
-	// recent closes on page one.
-	total := len(rows)
-	out := make([]uiDiagnosticsRow, 0, limit)
-	for i := total - 1 - offset; i >= 0 && len(out) < limit; i-- {
-		rrow := rows[i]
+	out := make([]uiDiagnosticsRow, 0, len(rows))
+	for _, rrow := range rows {
 		out = append(out, uiDiagnosticsRow{
 			StrategyID:    rrow.StrategyID,
 			PositionID:    rrow.PositionID,

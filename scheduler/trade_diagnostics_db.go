@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // StateDB persistence for #1147 trade diagnostics. Insert runs eagerly on the
@@ -88,6 +89,52 @@ func (sdb *StateDB) TradeDiagnosticsRows(strategyID string) ([]TradeDiagnosticsR
 		return nil, fmt.Errorf("query trade diagnostics: %w", err)
 	}
 	defer rows.Close()
+	return scanTradeDiagnosticsRows(rows)
+}
+
+// TradeDiagnosticsRowsPage loads one page of diagnostics rows, NEWEST close
+// first, plus the total (filtered) row count — the bounded query for the
+// polled #1231 /api/diagnostics endpoint. Unlike TradeDiagnosticsRows (the
+// one-shot CLI reader), the LIMIT/OFFSET run in SQL so per-call cost tracks
+// the page size, not the lifetime table size.
+func (sdb *StateDB) TradeDiagnosticsRowsPage(strategyID string, limit, offset int) ([]TradeDiagnosticsRow, int, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, 0, fmt.Errorf("state db unavailable")
+	}
+	countQuery := `SELECT COUNT(*) FROM trade_diagnostics`
+	query := `SELECT rowid, strategy_id, position_id, symbol, side, timeframe, regime_at_open, close_reason,
+			entry_price, exit_price, quantity, realized_pnl, entry_atr, stop_loss_atr_mult,
+			opened_at, closed_at, mfe_price, mae_price, favorable_pct, adverse_pct, capture_ratio,
+			metrics_status, llm_verdict
+		FROM trade_diagnostics`
+	var countArgs, args []interface{}
+	if strategyID != "" {
+		countQuery += ` WHERE strategy_id = ?`
+		countArgs = append(countArgs, strategyID)
+		query += ` WHERE strategy_id = ?`
+		args = append(args, strategyID)
+	}
+	var total int
+	if err := sdb.db.QueryRow(countQuery, countArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count trade diagnostics: %w", err)
+	}
+	query += ` ORDER BY closed_at DESC, rowid DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	rows, err := sdb.db.Query(query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query trade diagnostics page: %w", err)
+	}
+	defer rows.Close()
+	out, err := scanTradeDiagnosticsRows(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// scanTradeDiagnosticsRows scans a trade_diagnostics result set (the shared
+// column list used by TradeDiagnosticsRows and TradeDiagnosticsRowsPage).
+func scanTradeDiagnosticsRows(rows *sql.Rows) ([]TradeDiagnosticsRow, error) {
 	var out []TradeDiagnosticsRow
 	for rows.Next() {
 		var r TradeDiagnosticsRow
@@ -113,6 +160,50 @@ func (sdb *StateDB) TradeDiagnosticsRows(strategyID string) ([]TradeDiagnosticsR
 			r.LLMVerdict = &v
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// NetPnLForPositions is the page-scoped variant of NetPnLByPosition: it sums
+// net close-leg PnL only for the given position IDs (deduped by the caller or
+// not — the IN list tolerates duplicates), so a polled endpoint's trades scan
+// is bounded by the page, not the lifetime trade count.
+func (sdb *StateDB) NetPnLForPositions(strategyID string, positionIDs []string) (map[string]map[string]float64, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	out := make(map[string]map[string]float64)
+	if len(positionIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.Repeat("?,", len(positionIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+	query := `SELECT strategy_id, position_id, SUM(` + tradeNetPnLSQL + `)
+		FROM trades WHERE is_close = 1 AND position_id IN (` + placeholders + `)`
+	args := make([]interface{}, 0, len(positionIDs)+1)
+	for _, pid := range positionIDs {
+		args = append(args, pid)
+	}
+	if strategyID != "" {
+		query += ` AND strategy_id = ?`
+		args = append(args, strategyID)
+	}
+	query += ` GROUP BY strategy_id, position_id`
+	rows, err := sdb.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query net pnl for positions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid, pid string
+		var net float64
+		if err := rows.Scan(&sid, &pid, &net); err != nil {
+			return nil, fmt.Errorf("scan net pnl for positions: %w", err)
+		}
+		if out[sid] == nil {
+			out[sid] = make(map[string]float64)
+		}
+		out[sid][pid] = net
 	}
 	return out, rows.Err()
 }
