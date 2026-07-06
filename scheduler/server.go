@@ -247,6 +247,11 @@ func (ss *StatusServer) Start(port int) {
 	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
 	if ss.statusToken != "" {
 		fmt.Printf("[server] Dashboard API requires the configured status token\n")
+	} else {
+		// #1229/#1256: mutations (incl. leverage/direction/stop-loss via the
+		// tuner) are open to any loopback client when no token is set. Fine on
+		// a single-user host; on a shared host, set status_token.
+		fmt.Printf("[server] NOTE: status_token unset — dashboard mutations are open to any local (loopback) client; set status_token if other users can reach this host\n")
 	}
 	go func() {
 		if err := http.Serve(listener, mux); err != nil {
