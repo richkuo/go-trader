@@ -718,15 +718,18 @@ _UNIFIED_CLOSE = {
     # exit plan (tp_tiers + stop_loss_atr).
     "params": {"trend_regime": {
         "ranging": {
-            "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "tp_tiers": [{"atr_multiple": 98.0, "close_fraction": 0.5},
+                         {"atr_multiple": 99.0, "close_fraction": 1.0}],
             "stop_loss_atr": 1.0,
         },
         "trending_up": {
-            "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "tp_tiers": [{"atr_multiple": 98.0, "close_fraction": 0.5},
+                         {"atr_multiple": 99.0, "close_fraction": 1.0}],
             "stop_loss_atr": 2.0,
         },
         "trending_down": {
-            "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
+            "tp_tiers": [{"atr_multiple": 98.0, "close_fraction": 0.5},
+                         {"atr_multiple": 99.0, "close_fraction": 1.0}],
             "stop_loss_atr": 2.0,
         },
     }},
@@ -798,18 +801,33 @@ def test_unified_regime_close_rejects_second_sl_owner():
         )
 
 
+_COMPOSITE_SPEC_1228 = {"medium": {"classifier": "composite", "period": 21}}
+
+
+def _unified_composite_block(bare_sl=1.0, include_bare_sl=True):
+    """Exhaustive 7-key composite unified block (bare ranging_directional
+    covers _up/_down per #1124); never-firing far TPs; stop_loss_atr 99 on
+    non-directional labels so only the bare SL is exercised."""
+    far = [{"atr_multiple": 98.0, "close_fraction": 0.5},
+           {"atr_multiple": 99.0, "close_fraction": 1.0}]
+    bare = {"tp_tiers": [dict(t) for t in far]}
+    if include_bare_sl:
+        bare["stop_loss_atr"] = bare_sl
+    block = {"ranging_directional": bare}
+    for lab in ("ranging_quiet", "ranging_volatile", "trending_up_clean",
+                "trending_up_choppy", "trending_down_clean",
+                "trending_down_choppy"):
+        block[lab] = {"tp_tiers": [dict(t) for t in far], "stop_loss_atr": 99.0}
+    return block
+
+
 def test_unified_regime_close_bare_block_arms_sl_for_directional_sub_stamp():
     # #1124/#1228 review: a bare-only ranging_directional unified block must
     # arm its stop for a position stamped with the _up/_down sub-label, like
     # live's unifiedRegimeScalarParams bare fallback.
     close_ref = {
         "name": "tiered_tp_atr_regime",
-        "params": {"trend_regime": {
-            "ranging_directional": {
-                "tp_tiers": [{"atr_multiple": 99.0, "close_fraction": 1.0}],
-                "stop_loss_atr": 1.0,
-            },
-        }},
+        "params": {"trend_regime": _unified_composite_block(bare_sl=1.0)},
     }
     idx = pd.date_range("2024-01-01", periods=6, freq="D")
     df = pd.DataFrame({
@@ -821,9 +839,76 @@ def test_unified_regime_close_bare_block_arms_sl_for_directional_sub_stamp():
     }, index=idx)
     bt = Backtester(
         initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_windows_spec=_COMPOSITE_SPEC_1228,
         close_strategies=[close_ref],
     )
     result = bt.run(df, save=False)
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_price"] == 95.0
     assert result["trades"][0]["exit_date"] == str(idx[3])
+
+
+# ---------------------------------------------------------------------------
+# #1228 review round 3: mirror live validateUnifiedRegimeClose — a unified
+# label with tp_tiers but no positive stop_loss_atr must be REJECTED at load
+# (live refuses to start on it), never simulated stopless.
+# ---------------------------------------------------------------------------
+
+def _unified_adx_block(sl_overrides=None, drop_sl_for=()):
+    far = [{"atr_multiple": 98.0, "close_fraction": 0.5},
+           {"atr_multiple": 99.0, "close_fraction": 1.0}]
+    block = {}
+    for lab in ("ranging", "trending_up", "trending_down"):
+        entry = {"tp_tiers": [dict(t) for t in far]}
+        if lab not in drop_sl_for:
+            entry["stop_loss_atr"] = (sl_overrides or {}).get(lab, 1.0)
+        block[lab] = entry
+    return {"name": "tiered_tp_atr_regime", "params": {"trend_regime": block}}
+
+
+def test_unified_close_missing_stop_loss_atr_rejected_at_load():
+    with pytest.raises(ValueError, match="stop_loss_atr"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_unified_adx_block(drop_sl_for=("trending_up",))],
+        )
+
+
+def test_unified_close_nonpositive_stop_loss_atr_rejected_at_load():
+    with pytest.raises(ValueError, match="must be > 0"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_unified_adx_block(sl_overrides={"ranging": 0})],
+        )
+    with pytest.raises(ValueError, match="must be > 0"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[_unified_adx_block(sl_overrides={"ranging": -1.5})],
+        )
+
+
+def test_unified_close_bare_block_without_sl_rejected_at_load():
+    # Compound of round 1 + round 3: the bare entry serving _up/_down through
+    # the #1124 fallback must itself carry the SL, or the config is rejected.
+    close_ref = {
+        "name": "tiered_tp_atr_regime",
+        "params": {"trend_regime": _unified_composite_block(
+            include_bare_sl=False)},
+    }
+    with pytest.raises(ValueError, match="stop_loss_atr"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            regime_windows_spec=_COMPOSITE_SPEC_1228,
+            close_strategies=[close_ref],
+        )
+
+
+def test_unified_close_single_tier_rejected_at_load():
+    ref = _unified_adx_block()
+    ref["params"]["trend_regime"]["ranging"]["tp_tiers"] = [
+        {"atr_multiple": 2.0, "close_fraction": 1.0}]
+    with pytest.raises(ValueError, match="at least 2 tiers"):
+        Backtester(
+            initial_capital=1000, commission_pct=0, slippage_pct=0,
+            close_strategies=[ref],
+        )

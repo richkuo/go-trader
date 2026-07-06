@@ -982,6 +982,7 @@ class Backtester:
                 parse_regime_atr_block,
                 resolve_regime_atr,
                 unified_regime_scalar_params,
+                validate_unified_regime_close,
             )
 
             # #841 unified per-regime close block: the close ref owns the
@@ -1001,6 +1002,19 @@ class Backtester:
                     self._unified_close_params = dict(_params)
                 break
             if self._unified_close_params is not None:
+                # #1228 review round 3: mirror live's validateUnifiedRegimeClose
+                # — every stampable label must carry a positive stop_loss_atr
+                # (and >=2 valid tp_tiers). Live rejects such a config at load;
+                # simulating it would run a regime with no stop at all.
+                _unified_errs = validate_unified_regime_close(
+                    self._unified_close_params,
+                    labels=self._regime_primary_labels,
+                )
+                if _unified_errs:
+                    raise ValueError(
+                        "Invalid unified per-regime close block: "
+                        + "; ".join(_unified_errs)
+                    )
                 _sole_owner_conflicts = [
                     ("stop_loss_atr_mult", self.stop_loss_atr_mult),
                     ("stop_loss_pct", self.stop_loss_pct),

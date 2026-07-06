@@ -347,3 +347,59 @@ def test_unified_scalar_params_no_bare_no_sub_misses(regime_atr):
         {"trend_regime": {"ranging_directional": {
             "tp_tiers": [], "stop_loss_atr": 1.0}}}, "trending_down")
     assert scalar is None and sl == 0.0
+
+
+def _unified_params_1228(**overrides):
+    far = [{"atr_multiple": 2.0, "close_fraction": 0.5},
+           {"atr_multiple": 3.0, "close_fraction": 1.0}]
+    block = {}
+    for lab in ("ranging", "trending_up", "trending_down"):
+        block[lab] = {"tp_tiers": [dict(t) for t in far], "stop_loss_atr": 1.0}
+    for lab, entry in overrides.items():
+        block[lab] = entry
+    return {"trend_regime": block}
+
+
+def test_validate_unified_regime_close_accepts_valid_block(regime_atr):
+    assert regime_atr.validate_unified_regime_close(_unified_params_1228()) == []
+
+
+def test_validate_unified_regime_close_requires_positive_sl(regime_atr):
+    # #1228 round 3 — mirrors scheduler/regime_unified.go: stop_loss_atr is
+    # required per label and must be > 0 (the unified close owns the SL).
+    p = _unified_params_1228()
+    del p["trend_regime"]["trending_up"]["stop_loss_atr"]
+    errs = regime_atr.validate_unified_regime_close(p)
+    assert any("missing required 'stop_loss_atr'" in e for e in errs)
+    p = _unified_params_1228()
+    p["trend_regime"]["ranging"]["stop_loss_atr"] = 0
+    errs = regime_atr.validate_unified_regime_close(p)
+    assert any("must be > 0" in e for e in errs)
+
+
+def test_validate_unified_regime_close_exhaustive_and_tiers(regime_atr):
+    p = _unified_params_1228()
+    del p["trend_regime"]["ranging"]
+    errs = regime_atr.validate_unified_regime_close(p)
+    assert any("missing required regime label 'ranging'" in e for e in errs)
+    p = _unified_params_1228()
+    p["trend_regime"]["ranging"]["tp_tiers"] = [
+        {"atr_multiple": 2.0, "close_fraction": 1.0}]
+    errs = regime_atr.validate_unified_regime_close(p)
+    assert any("at least 2 tiers" in e for e in errs)
+
+
+def test_validate_unified_regime_close_bare_covers_subs(regime_atr):
+    labels = ("ranging_directional", "ranging_directional_up",
+              "ranging_directional_down", "ranging_quiet")
+    far = [{"atr_multiple": 2.0, "close_fraction": 0.5},
+           {"atr_multiple": 3.0, "close_fraction": 1.0}]
+    p = {"trend_regime": {
+        "ranging_directional": {"tp_tiers": far, "stop_loss_atr": 1.0},
+        "ranging_quiet": {"tp_tiers": far, "stop_loss_atr": 1.0},
+    }}
+    assert regime_atr.validate_unified_regime_close(p, labels=labels) == []
+    # Without the bare entry the subs are genuinely missing.
+    del p["trend_regime"]["ranging_directional"]
+    errs = regime_atr.validate_unified_regime_close(p, labels=labels)
+    assert any("ranging_directional_up" in e for e in errs)
