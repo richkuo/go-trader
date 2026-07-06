@@ -487,3 +487,71 @@ func TestParseRegimeATRBlock_AtrMultipleCanonical(t *testing.T) {
 		t.Fatal("expected error when both atr_multiple and atr are set")
 	}
 }
+
+// TestValidateRegimeATRConfig_RegimeOwnerMutexAllPairs pins the #1234 audit
+// invariant that each regime stop block is mutually exclusive with EVERY other
+// stop-loss owner — all nine regime-involving pairs, not just the two that had
+// bespoke regression tests. Losing any pair silently allows two owners to arm
+// competing stops on the same position.
+func TestValidateRegimeATRConfig_RegimeOwnerMutexAllPairs(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	regimeBlock := func() *RegimeATRBlock { return &RegimeATRBlock{raw: adx3StateATR(2.0)} }
+	cases := []struct {
+		name    string
+		mutate  func(sc *StrategyConfig)
+		wantErr string
+	}{
+		{"stop_loss_atr_regime x stop_loss_pct",
+			func(sc *StrategyConfig) { sc.StopLossATRRegime = regimeBlock(); sc.StopLossPct = pf(1.5) },
+			"stop_loss_atr_regime is mutually exclusive with stop_loss_pct"},
+		{"stop_loss_atr_regime x stop_loss_margin_pct",
+			func(sc *StrategyConfig) { sc.StopLossATRRegime = regimeBlock(); sc.StopLossMarginPct = pf(20) },
+			"stop_loss_atr_regime is mutually exclusive with stop_loss_margin_pct"},
+		{"stop_loss_atr_regime x trailing_stop_pct",
+			func(sc *StrategyConfig) { sc.StopLossATRRegime = regimeBlock(); sc.TrailingStopPct = pf(2) },
+			"stop_loss_atr_regime is mutually exclusive with trailing_stop_pct"},
+		{"stop_loss_atr_regime x trailing_stop_atr_mult",
+			func(sc *StrategyConfig) { sc.StopLossATRRegime = regimeBlock(); sc.TrailingStopATRMult = pf(2) },
+			"stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_mult"},
+		{"stop_loss_atr_regime x stop_loss_atr_mult",
+			func(sc *StrategyConfig) { sc.StopLossATRRegime = regimeBlock(); sc.StopLossATRMult = pf(2) },
+			"stop_loss_atr_regime is mutually exclusive with stop_loss_atr_mult"},
+		{"trailing_stop_atr_regime x stop_loss_pct",
+			func(sc *StrategyConfig) { sc.TrailingStopATRRegime = regimeBlock(); sc.StopLossPct = pf(1.5) },
+			"trailing_stop_atr_regime is mutually exclusive with stop_loss_pct"},
+		{"trailing_stop_atr_regime x stop_loss_margin_pct",
+			func(sc *StrategyConfig) { sc.TrailingStopATRRegime = regimeBlock(); sc.StopLossMarginPct = pf(20) },
+			"trailing_stop_atr_regime is mutually exclusive with stop_loss_margin_pct"},
+		{"trailing_stop_atr_regime x trailing_stop_pct",
+			func(sc *StrategyConfig) { sc.TrailingStopATRRegime = regimeBlock(); sc.TrailingStopPct = pf(2) },
+			"trailing_stop_atr_regime is mutually exclusive with trailing_stop_pct"},
+		{"trailing_stop_atr_regime x trailing_stop_atr_mult",
+			func(sc *StrategyConfig) { sc.TrailingStopATRRegime = regimeBlock(); sc.TrailingStopATRMult = pf(2) },
+			"trailing_stop_atr_regime is mutually exclusive with trailing_stop_atr_mult"},
+		{"trailing_stop_atr_regime x stop_loss_atr_mult",
+			func(sc *StrategyConfig) { sc.TrailingStopATRRegime = regimeBlock(); sc.StopLossATRMult = pf(2) },
+			"trailing_stop_atr_regime is mutually exclusive with stop_loss_atr_mult"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID:              "hl-test",
+				Type:            "perps",
+				Platform:        "hyperliquid",
+				RegimeATRWindow: "daily",
+			}
+			tc.mutate(&sc)
+			errs := validateRegimeATRConfig(adxRegimeCfg(sc))
+			found := false
+			for _, e := range errs {
+				if strings.Contains(e, tc.wantErr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("want error containing %q, got: %v", tc.wantErr, errs)
+			}
+		})
+	}
+}

@@ -2099,3 +2099,64 @@ func TestFormatKillSwitchResetPrompt_OmitsAddressWhenHLNotConfigured(t *testing.
 		t.Errorf("expected instance label present regardless of HL address, got: %s", got)
 	}
 }
+
+// TestHyperliquidKillSwitchFillShare_FailsClosedWhenNotAPeer pins the #1234
+// audit invariant that hyperliquidKillSwitchFillShare fails closed: an sc that
+// is not among the coin's live peers, or whose virtual quantity is zero, must
+// receive (0, 0) rather than claiming any share of the portfolio-level fill.
+func TestHyperliquidKillSwitchFillShare_FailsClosedWhenNotAPeer(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args: []string{"ema", "ETH", "1h", "--mode=live"}},
+	}
+	virtualQty := hlVirtualQuantitySnapshot{
+		"ETH": {"hl-a": 1.5, "hl-b": 0.5},
+	}
+
+	t.Run("non-peer strategy gets zero share", func(t *testing.T) {
+		outsider := StrategyConfig{ID: "hl-c", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"rsi", "ETH", "1h", "--mode=live"}}
+		sz, fee := hyperliquidKillSwitchFillShare(outsider, "ETH", 2.0, 4.0, hlLive, virtualQty)
+		if sz != 0 || fee != 0 {
+			t.Errorf("fill share for non-peer = (%v, %v); want (0, 0) fail-closed", sz, fee)
+		}
+	})
+
+	t.Run("peer with zero virtual quantity gets zero share", func(t *testing.T) {
+		zeroQty := hlVirtualQuantitySnapshot{
+			"ETH": {"hl-a": 0, "hl-b": 0.5},
+		}
+		sz, fee := hyperliquidKillSwitchFillShare(hlLive[0], "ETH", 2.0, 4.0, hlLive, zeroQty)
+		if sz != 0 || fee != 0 {
+			t.Errorf("fill share for zero-qty peer = (%v, %v); want (0, 0) fail-closed", sz, fee)
+		}
+	})
+
+	t.Run("all peers zero quantity gets zero share", func(t *testing.T) {
+		allZero := hlVirtualQuantitySnapshot{
+			"ETH": {"hl-a": 0, "hl-b": 0},
+		}
+		sz, fee := hyperliquidKillSwitchFillShare(hlLive[0], "ETH", 2.0, 4.0, hlLive, allZero)
+		if sz != 0 || fee != 0 {
+			t.Errorf("fill share with all-zero peers = (%v, %v); want (0, 0) fail-closed", sz, fee)
+		}
+	})
+
+	t.Run("sole peer receives full fill", func(t *testing.T) {
+		solo := hlLive[:1]
+		sz, fee := hyperliquidKillSwitchFillShare(hlLive[0], "ETH", 2.0, 4.0, solo, virtualQty)
+		if sz != 2.0 || fee != 4.0 {
+			t.Errorf("sole-peer fill share = (%v, %v); want full (2.0, 4.0)", sz, fee)
+		}
+	})
+
+	t.Run("peer shares sum to the reported fill", func(t *testing.T) {
+		szA, feeA := hyperliquidKillSwitchFillShare(hlLive[0], "ETH", 2.0, 4.0, hlLive, virtualQty)
+		szB, feeB := hyperliquidKillSwitchFillShare(hlLive[1], "ETH", 2.0, 4.0, hlLive, virtualQty)
+		if math.Abs(szA+szB-2.0) > 1e-9 || math.Abs(feeA+feeB-4.0) > 1e-9 {
+			t.Errorf("peer shares sum to (%v, %v); want (2.0, 4.0)", szA+szB, feeA+feeB)
+		}
+	})
+}
