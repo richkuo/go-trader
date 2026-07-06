@@ -231,7 +231,12 @@ func TestAPICashflowEmptyAndPopulated(t *testing.T) {
 		t.Error("alarm_enabled should default to true")
 	}
 
-	// Populate: an HL live-basis wallet and a shadow-only OKX wallet.
+	// Populate: an HL live-basis wallet and a shadow-only OKX wallet. The
+	// basis registry is a package-level singleton other tests may have
+	// written to — clear this wallet's slot so "unknown" is deterministic.
+	cashflowJournalBases.mu.Lock()
+	delete(cashflowJournalBases.bases, "hyperliquid/0xabc")
+	cashflowJournalBases.mu.Unlock()
 	sdb := ss.stateDB
 	if err := sdb.UpsertCashflowJournalState("hyperliquid", "0xabc", CashflowJournalState{BaselineSet: true, BaselineAccountValue: 1000}); err != nil {
 		t.Fatalf("upsert hl: %v", err)
@@ -258,14 +263,70 @@ func TestAPICashflowEmptyAndPopulated(t *testing.T) {
 	if hl.Platform != "hyperliquid" || okx.Platform != "okx" {
 		t.Fatalf("wallet order = [%s, %s], want [hyperliquid, okx]", hl.Platform, okx.Platform)
 	}
-	if hl.ShadowOnly || !hl.LiveBasis {
-		t.Errorf("HL wallet shadow_only=%v live_basis=%v, want false/true", hl.ShadowOnly, hl.LiveBasis)
+	if hl.ShadowOnly || !hl.LiveBasisEligible {
+		t.Errorf("HL wallet shadow_only=%v live_basis_eligible=%v, want false/true", hl.ShadowOnly, hl.LiveBasisEligible)
+	}
+	if hl.Basis != cashflowBasisUnknown {
+		t.Errorf("HL wallet basis = %q, want %q before any reconcile cycle (eligibility must not overclaim)", hl.Basis, cashflowBasisUnknown)
 	}
 	if hl.SettledSum != 10 || hl.EntryCount != 2 || hl.LastEventMs != 1700000001000 {
 		t.Errorf("HL aggregates = sum %v count %d last %d, want 10/2/1700000001000", hl.SettledSum, hl.EntryCount, hl.LastEventMs)
 	}
-	if !okx.ShadowOnly || okx.LiveBasis {
-		t.Errorf("OKX wallet shadow_only=%v live_basis=%v, want true/false (#1100 shadow phases)", okx.ShadowOnly, okx.LiveBasis)
+	if !okx.ShadowOnly || okx.LiveBasisEligible {
+		t.Errorf("OKX wallet shadow_only=%v live_basis_eligible=%v, want true/false (#1100 shadow phases)", okx.ShadowOnly, okx.LiveBasisEligible)
+	}
+	if okx.Basis != "" {
+		t.Errorf("OKX wallet basis = %q, want empty (shadow-only wallets carry no runtime basis)", okx.Basis)
+	}
+}
+
+// The runtime basis recorded by applyCashflowJournalDriftBasis must overlay
+// structural eligibility: a transient fetch miss (Usable=false, within the
+// suppression streak) reads "pending", never "journal", even though the
+// persisted state stays live-basis-eligible.
+func TestAPICashflowRuntimeBasisOverridesEligibility(t *testing.T) {
+	ss := newOpsTestServer(t, nil, NewAppState(), true)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xbasis"}
+	label := sharedWalletKeyLabel(key)
+	if err := ss.stateDB.UpsertCashflowJournalState(key.Platform, key.Account, CashflowJournalState{BaselineSet: true}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	defer cashflowJournalPendingStreaks.reset(label)
+	defer func() {
+		cashflowJournalBases.mu.Lock()
+		delete(cashflowJournalBases.bases, label)
+		cashflowJournalBases.mu.Unlock()
+	}()
+
+	// Transient miss: journal governs but produced no usable reading this cycle.
+	applyCashflowJournalDriftBasis(nil, key, &cashflowJournalReconcile{Key: key, Usable: false, Incomplete: false}, true)
+
+	w := opsGet(ss, ss.handleAPICashflow, "/api/cashflow")
+	var resp struct {
+		Wallets []CashflowJournalWalletStatus `json:"wallets"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Wallets) != 1 {
+		t.Fatalf("wallets = %d, want 1", len(resp.Wallets))
+	}
+	got := resp.Wallets[0]
+	if !got.LiveBasisEligible {
+		t.Errorf("live_basis_eligible = false, want true (structurally eligible)")
+	}
+	if got.Basis != cashflowBasisPending {
+		t.Errorf("basis = %q, want %q (transient miss must not read as the live basis)", got.Basis, cashflowBasisPending)
+	}
+
+	// Recovery: a usable reconcile flips the recorded basis to journal.
+	applyCashflowJournalDriftBasis(nil, key, &cashflowJournalReconcile{Key: key, Usable: true}, true)
+	w = opsGet(ss, ss.handleAPICashflow, "/api/cashflow")
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Wallets[0].Basis != cashflowBasisJournal {
+		t.Errorf("basis after usable cycle = %q, want %q", resp.Wallets[0].Basis, cashflowBasisJournal)
 	}
 }
 

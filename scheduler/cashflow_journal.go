@@ -176,11 +176,16 @@ func (sdb *StateDB) SumCashflowJournal(platform, account string) (float64, error
 }
 
 // CashflowJournalWalletStatus is one wallet's persisted journal state plus
-// journal-level aggregates, for the #1231 /api/cashflow endpoint. LiveBasis
-// mirrors the applyCashflowJournalDriftBasis scope rule: only Hyperliquid
-// wallets with a usable (complete) journal drive the live total-drift alarm;
-// OKX/TopStep journals are shadow-only (#1100 phases 3a/4) and must never be
-// presented as authoritative.
+// journal-level aggregates, for the #1231 /api/cashflow endpoint.
+// LiveBasisEligible mirrors the applyCashflowJournalDriftBasis SCOPE rule
+// only (Hyperliquid + baselined + not incomplete) — structural eligibility
+// from persisted state. Basis is the recorded RUNTIME outcome of this
+// cycle's basis switch (journal/pending/trade_ledger/disabled, or unknown
+// before the first reconcile after restart), which additionally reflects the
+// in-memory rec.Usable result and the operator alarm toggle — the badge the
+// UI shows must key off Basis, since eligibility alone can overclaim during
+// a transient fetch miss. OKX/TopStep journals are shadow-only (#1100 phases
+// 3a/4) and must never be presented as authoritative.
 type CashflowJournalWalletStatus struct {
 	Platform             string  `json:"platform"`
 	Account              string  `json:"account"`
@@ -191,7 +196,8 @@ type CashflowJournalWalletStatus struct {
 	EntryCount           int     `json:"entry_count"`
 	LastEventMs          int64   `json:"last_event_ms"`
 	ShadowOnly           bool    `json:"shadow_only"`
-	LiveBasis            bool    `json:"live_basis"`
+	LiveBasisEligible    bool    `json:"live_basis_eligible"`
+	Basis                string  `json:"basis,omitempty"` // runtime basis; empty for shadow-only wallets
 }
 
 // ListCashflowJournalWallets loads every ingested wallet's journal state and
@@ -225,7 +231,10 @@ func (sdb *StateDB) ListCashflowJournalWallets() ([]CashflowJournalWalletStatus,
 		w.BaselineSet = baselineSet != 0
 		w.Incomplete = incomplete != 0
 		w.ShadowOnly = w.Platform != "hyperliquid"
-		w.LiveBasis = !w.ShadowOnly && w.BaselineSet && !w.Incomplete
+		w.LiveBasisEligible = !w.ShadowOnly && w.BaselineSet && !w.Incomplete
+		if !w.ShadowOnly {
+			w.Basis = cashflowJournalBases.get(sharedWalletKeyLabel(SharedWalletKey{Platform: w.Platform, Account: w.Account}))
+		}
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -608,6 +617,49 @@ func (t *cashflowJournalPendingTracker) reset(label string) {
 // cashflowJournalPendingStreaks is the package-level singleton; resets on restart.
 var cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
 
+// Cashflow-journal basis values recorded per cycle by
+// applyCashflowJournalDriftBasis and surfaced on /api/cashflow (#1231). The
+// persisted journal state can only say a wallet is structurally ELIGIBLE to
+// be the live basis; what actually drives the alarm this cycle also depends
+// on the in-memory rec.Usable outcome and the operator toggle, so the badge
+// must read the recorded runtime outcome, never just the persisted state.
+const (
+	cashflowBasisJournal     = "journal"      // journal is the drift-alarm basis this cycle
+	cashflowBasisPending     = "pending"      // transient fetch miss within the suppression streak
+	cashflowBasisTradeLedger = "trade_ledger" // failed closed to the trade-ledger basis
+	cashflowBasisDisabled    = "disabled"     // operator-disabled via GO_TRADER_CASHFLOW_JOURNAL_ALARM
+	cashflowBasisUnknown     = "unknown"      // no reconcile cycle recorded since restart
+)
+
+// cashflowJournalBasisRegistry keeps the last per-wallet runtime basis
+// outcome, keyed by sharedWalletKeyLabel. In-memory only — resets on restart
+// (basis reads "unknown" until the first reconcile cycle records one).
+type cashflowJournalBasisRegistry struct {
+	mu    sync.Mutex
+	bases map[string]string
+}
+
+func (r *cashflowJournalBasisRegistry) record(label, basis string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bases == nil {
+		r.bases = make(map[string]string)
+	}
+	r.bases[label] = basis
+}
+
+func (r *cashflowJournalBasisRegistry) get(label string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if b, ok := r.bases[label]; ok {
+		return b
+	}
+	return cashflowBasisUnknown
+}
+
+// cashflowJournalBases is the package-level singleton; resets on restart.
+var cashflowJournalBases = &cashflowJournalBasisRegistry{}
+
 // applyCashflowJournalDriftBasis switches one HL wallet's drift-alarm basis to
 // the exchange-sourced journal when the journal is usable and the operator has
 // not disabled it; otherwise the trade-ledger drift stands (fail closed). It
@@ -653,19 +705,25 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 		// raw diff = balance − Σ member values; Drift is the post-baseline drift.
 		ledgerNote = fmt.Sprintf("raw $%+.2f / post-baseline $%+.2f", ledger.Balance-ledger.MemberSum, ledger.Drift)
 	}
-	var switchNote string
+	var switchNote, basis string
 	switch {
 	case !enabled:
 		switchNote = "OFF (operator-disabled via GO_TRADER_CASHFLOW_JOURNAL_ALARM)"
+		basis = cashflowBasisDisabled
 	case rec.Incomplete:
 		switchNote = "OFF (journal incomplete — failing closed to trade-ledger)"
+		basis = cashflowBasisTradeLedger
 	case !rec.Usable && suppressPending:
 		switchNote = fmt.Sprintf("PENDING (journal not usable — transient miss %d/%d, journal streak preserved)", pendingStreak, sharedWalletDriftAlertThreshold)
+		basis = cashflowBasisPending
 	case !rec.Usable:
 		switchNote = fmt.Sprintf("OFF (journal not usable for %d cycles — failing closed to trade-ledger)", pendingStreak)
+		basis = cashflowBasisTradeLedger
 	default:
 		switchNote = "ON (journal is the drift-alarm basis)"
+		basis = cashflowBasisJournal
 	}
+	cashflowJournalBases.record(label, basis)
 	fmt.Printf("[cashflow-journal] %s: expected_equity $%.2f vs accountValue $%.2f → journal_drift $%+.4f (settled Σ $%+.2f, ΔuPnL $%+.2f); trade-ledger %s; alarm %s\n",
 		sharedWalletKeyLabel(key), rec.ExpectedEquity, rec.AccountValue, rec.Drift, rec.SettledSum, rec.DeltaUPnL, ledgerNote, switchNote)
 

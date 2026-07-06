@@ -1161,11 +1161,25 @@
       }
       (resp.wallets || []).forEach(function (wallet) {
         const label = wallet.platform + "/" + wallet.account;
-        const badge = wallet.shadow_only
-          ? '<span class="ops-badge ops-badge--shadow" title="Shadow-only journal — never the live drift basis (#1100)">shadow-only</span>'
-          : (wallet.live_basis
-            ? '<span class="ops-badge ops-badge--live">LIVE basis</span>'
-            : '<span class="ops-badge ops-badge--shadow">fallback (trade ledger)</span>');
+        // Badge keys off the RUNTIME basis (what actually drove this cycle's
+        // drift alarm), not structural eligibility — eligibility alone can
+        // overclaim during a transient fetch miss.
+        let badge;
+        if (wallet.shadow_only) {
+          badge = '<span class="ops-badge ops-badge--shadow" title="Shadow-only journal — never the live drift basis (#1100)">shadow-only</span>';
+        } else if (wallet.basis === "journal") {
+          badge = '<span class="ops-badge ops-badge--live">LIVE basis</span>';
+        } else if (wallet.basis === "pending") {
+          badge = '<span class="ops-badge ops-badge--shadow" title="Transient journal fetch miss — trade ledger governs this cycle">pending (transient miss)</span>';
+        } else if (wallet.basis === "disabled") {
+          badge = '<span class="ops-badge ops-badge--shadow" title="GO_TRADER_CASHFLOW_JOURNAL_ALARM operator kill switch">alarm disabled</span>';
+        } else if (wallet.basis === "trade_ledger") {
+          badge = '<span class="ops-badge ops-badge--shadow">fallback (trade ledger)</span>';
+        } else if (wallet.live_basis_eligible) {
+          badge = '<span class="ops-badge ops-badge--shadow" title="Journal is eligible as the live basis; no reconcile cycle recorded since restart">eligible (awaiting cycle)</span>';
+        } else {
+          badge = '<span class="ops-badge ops-badge--shadow">fallback (trade ledger)</span>';
+        }
         const detail = "settled " + fmtMoney(wallet.settled_sum) + " · " + wallet.entry_count + " events" +
           (wallet.incomplete ? " · INCOMPLETE" : "") +
           (wallet.baseline_set ? "" : " · no baseline");
