@@ -26,7 +26,7 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 | File | Purpose | Status | Origin |
 |------|---------|--------|--------|
 | `backtester.py` | Trade-simulating engine; replays a strategy on historical bars and computes metrics. | active | core |
-| `run_backtest.py` | Main CLI entry — run strategies across assets/timeframes/modes; threads `--config`, regime gate, HTF. | active | core |
+| `run_backtest.py` | Main CLI entry — run strategies across assets/timeframes/modes; threads `--config` with live-matching `user_defaults`, regime gate, HTF. | active | core |
 | `optimizer.py` | Walk-forward rolling in-sample/out-of-sample parameter optimization (anti-overfit). | active | core |
 | `reporter.py` | Text performance reports — single, comparison, multi-asset. | active | core |
 | `backtest_options.py` | Options-strategy backtester (e.g. `vol_mean_reversion`) against historical spot. | active | core |

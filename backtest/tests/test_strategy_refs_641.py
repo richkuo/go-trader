@@ -125,6 +125,47 @@ def test_parse_close_strategy_arg_non_object_json_rejected():
         run_backtest._parse_close_strategy_arg('["tp_at_pct"]')
 
 
+def test_defaults_auto_uses_user_defaults_for_config_runs():
+    args = run_backtest._build_parser().parse_args([
+        "--config", "scheduler/config.json",
+        "--strategy", "hl-r",
+        "--mode", "single",
+    ])
+
+    assert run_backtest._resolve_defaults_mode(args) == "user"
+
+
+def test_defaults_auto_uses_system_defaults_without_config():
+    args = run_backtest._build_parser().parse_args([
+        "--strategy", "tema_cross_bd",
+        "--mode", "single",
+    ])
+
+    assert run_backtest._resolve_defaults_mode(args) == "system"
+
+
+def test_defaults_system_overrides_config_auto_default():
+    args = run_backtest._build_parser().parse_args([
+        "--config", "scheduler/config.json",
+        "--strategy", "hl-r",
+        "--mode", "single",
+        "--defaults", "system",
+    ])
+
+    assert run_backtest._resolve_defaults_mode(args) == "system"
+
+
+def test_defaults_user_without_config_warns_and_falls_back(capsys):
+    args = run_backtest._build_parser().parse_args([
+        "--strategy", "tema_cross_bd",
+        "--mode", "single",
+        "--defaults", "user",
+    ])
+
+    assert run_backtest._resolve_defaults_mode(args) == "system"
+    assert "requires --config" in capsys.readouterr().out
+
+
 # ─── load_strategy_config: live config → Backtester kwargs ───────────────────
 
 
