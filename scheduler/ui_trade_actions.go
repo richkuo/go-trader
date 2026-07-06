@@ -255,6 +255,14 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 	// position on the same coin does not block (the view is scoped to this
 	// strategy's own positions), and once the drain applies + deletes the row
 	// a legitimate retry passes again.
+	// The guard must key on the SAME symbol the core writes into the queued
+	// row: perps configs leave the symbol config field empty (the coin lives
+	// in args[1]) and forceCloseCore queues under the args-derived sym, so
+	// sc.Symbol would never match a queued force-close row.
+	guardSym := sc.Symbol
+	if action == "force-close" {
+		guardSym = sym
+	}
 	var guardKinds []string
 	switch action {
 	case "open", "add":
@@ -263,7 +271,7 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 		guardKinds = []string{"close"}
 	}
 	if len(guardKinds) > 0 {
-		if pending, perr := pendingManualActionExists(ss.stateDB, id, sc.Symbol, guardKinds...); perr != nil {
+		if pending, perr := pendingManualActionExists(ss.stateDB, id, guardSym, guardKinds...); perr != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("could not check pending actions: %v", perr))
 			return
 		} else if pending {

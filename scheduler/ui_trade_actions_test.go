@@ -35,9 +35,11 @@ func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 				Args: []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2,
 			},
 			{
+				// Production-shaped perps config: NO symbol field — the coin
+				// lives in args[1] only (pins the #1260 review-3 guard fix).
 				ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
-				Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py",
-				Args: []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2,
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2,
 			},
 		},
 	}
