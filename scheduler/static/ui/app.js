@@ -74,6 +74,23 @@
     controlsMessage: document.getElementById("controls-message"),
     tunerConfirmDialog: document.getElementById("tuner-confirm-dialog"),
     tunerConfirmText: document.getElementById("tuner-confirm-text"),
+    tradePanel: document.getElementById("trade-panel"),
+    tradeOpenForm: document.getElementById("trade-open-form"),
+    tradeOpenSide: document.getElementById("trade-open-side"),
+    tradeSizingMode: document.getElementById("trade-sizing-mode"),
+    tradeSizingAmount: document.getElementById("trade-sizing-amount"),
+    tradeOpenButton: document.getElementById("trade-open-button"),
+    tradeAddButton: document.getElementById("trade-add-button"),
+    tradePositionForm: document.getElementById("trade-position-form"),
+    tradeCloseQty: document.getElementById("trade-close-qty"),
+    tradeSLTrigger: document.getElementById("trade-sl-trigger"),
+    tradeMessage: document.getElementById("trade-message"),
+    tradeConfirmDialog: document.getElementById("trade-confirm-dialog"),
+    tradeConfirmDesc: document.getElementById("trade-confirm-desc"),
+    tradeConfirmPhrase: document.getElementById("trade-confirm-phrase"),
+    tradeConfirmTTL: document.getElementById("trade-confirm-ttl"),
+    tradeConfirmInput: document.getElementById("trade-confirm-input"),
+    tradeConfirmGo: document.getElementById("trade-confirm-go"),
     leaderboardBody: document.getElementById("leaderboard-body"),
     leaderboardEmpty: document.getElementById("leaderboard-empty"),
     diagnosticsBody: document.getElementById("diagnostics-body"),
@@ -614,6 +631,164 @@
     }
   }
 
+  // #1257 trade actions: server-issued confirm nonce + typed confirmation.
+  function setTradeMessage(text) {
+    if (!els.tradeMessage) return;
+    els.tradeMessage.textContent = text || "";
+    els.tradeMessage.hidden = !text;
+  }
+
+  function activeStrategyMeta() {
+    return state.strategies.find(function (s) { return s.id === state.activeID; }) || null;
+  }
+
+  function strategySupportsManualActions(strat) {
+    return !!strat && strat.type === "manual";
+  }
+
+  function strategySupportsForceClose(strat) {
+    return !!strat && strat.type === "perps" && strat.platform === "hyperliquid";
+  }
+
+  // updateTradePanel shows the action surface matching the active strategy:
+  // manual-open form for flat manual strategies, add/close/SL forms while a
+  // position is open, force-close for HL perps.
+  function updateTradePanel(status) {
+    if (!els.tradePanel) return;
+    const strat = activeStrategyMeta();
+    const manual = strategySupportsManualActions(strat);
+    const forceClose = strategySupportsForceClose(strat);
+    const hasPosition = !!(status && status.positions && Object.keys(status.positions).length);
+    els.tradePanel.hidden = !(manual || forceClose);
+    if (els.tradeOpenForm) {
+      els.tradeOpenForm.hidden = !manual;
+    }
+    if (els.tradeOpenButton) {
+      els.tradeOpenButton.hidden = !manual || hasPosition;
+    }
+    if (els.tradeAddButton) {
+      els.tradeAddButton.hidden = !manual || !hasPosition;
+    }
+    if (els.tradePositionForm) {
+      els.tradePositionForm.hidden = !hasPosition;
+    }
+    const slField = document.getElementById("trade-sl-field");
+    if (slField) {
+      slField.hidden = !manual;
+    }
+  }
+
+  // confirmTradeAction runs the full #1257 flow: POST /api/confirm for a
+  // nonce bound to (action, strategy, params), require the operator to type
+  // the server-issued phrase, then POST the action with the nonce. The
+  // response message is the queued outcome reported by the manual core.
+  async function confirmTradeAction(action, params) {
+    if (!state.activeID) return;
+    setTradeMessage("");
+    let confirm;
+    try {
+      confirm = await postJSON("/api/confirm", {
+        action: action,
+        strategy_id: state.activeID,
+        params: params,
+      });
+    } catch (err) {
+      setTradeMessage("Confirm failed: " + err.message);
+      return;
+    }
+    const proceed = await showTradeConfirmDialog(confirm);
+    if (!proceed) {
+      setTradeMessage("Cancelled.");
+      return;
+    }
+    try {
+      const resp = await postJSON(
+        "/api/strategies/" + encodeURIComponent(state.activeID) + "/" + action,
+        { nonce: confirm.nonce, params: params }
+      );
+      setTradeMessage(resp.message || "Submitted.");
+      await refreshAll();
+    } catch (err) {
+      setTradeMessage(action + " failed: " + err.message);
+    }
+  }
+
+  // showTradeConfirmDialog resolves true only when the operator typed the
+  // exact confirm phrase and pressed Confirm.
+  function showTradeConfirmDialog(confirm) {
+    return new Promise(function (resolve) {
+      if (!els.tradeConfirmDialog || typeof els.tradeConfirmDialog.showModal !== "function") {
+        const typed = window.prompt((confirm.description || "Confirm action") +
+          '\nType "' + confirm.confirm_phrase + '" to confirm:');
+        resolve(typed === confirm.confirm_phrase);
+        return;
+      }
+      els.tradeConfirmDesc.textContent = confirm.description || "";
+      els.tradeConfirmPhrase.textContent = confirm.confirm_phrase || "";
+      if (els.tradeConfirmTTL) {
+        els.tradeConfirmTTL.textContent = String(confirm.expires_in_seconds || 60);
+      }
+      els.tradeConfirmInput.value = "";
+      els.tradeConfirmGo.disabled = true;
+      const onInput = function () {
+        els.tradeConfirmGo.disabled = els.tradeConfirmInput.value !== confirm.confirm_phrase;
+      };
+      const onClose = function () {
+        els.tradeConfirmInput.removeEventListener("input", onInput);
+        els.tradeConfirmDialog.removeEventListener("close", onClose);
+        resolve(els.tradeConfirmDialog.returnValue === "confirm" &&
+          els.tradeConfirmInput.value === confirm.confirm_phrase);
+      };
+      els.tradeConfirmInput.addEventListener("input", onInput);
+      els.tradeConfirmDialog.addEventListener("close", onClose);
+      els.tradeConfirmDialog.showModal();
+      els.tradeConfirmInput.focus();
+    });
+  }
+
+  function tradeSizingParams() {
+    const params = {};
+    const amount = Number(els.tradeSizingAmount && els.tradeSizingAmount.value);
+    if (amount > 0 && els.tradeSizingMode) {
+      params[els.tradeSizingMode.value] = amount;
+    }
+    return params;
+  }
+
+  function tradeOpen() {
+    const params = tradeSizingParams();
+    if (els.tradeOpenSide && els.tradeOpenSide.value) {
+      params.side = els.tradeOpenSide.value;
+    }
+    return confirmTradeAction("open", params);
+  }
+
+  function tradeAdd() {
+    return confirmTradeAction("add", tradeSizingParams());
+  }
+
+  function tradeClose(action) {
+    const params = {};
+    const qty = Number(els.tradeCloseQty && els.tradeCloseQty.value);
+    if (qty > 0) {
+      params.qty = qty;
+    }
+    return confirmTradeAction(action, params);
+  }
+
+  function tradeUpdateSL() {
+    const trigger = Number(els.tradeSLTrigger && els.tradeSLTrigger.value);
+    if (!(trigger > 0)) {
+      setTradeMessage("Enter a stop-loss trigger price first.");
+      return Promise.resolve();
+    }
+    return confirmTradeAction("update-sl", { trigger: trigger });
+  }
+
+  function tradeCancelSL() {
+    return confirmTradeAction("cancel-sl", {});
+  }
+
   function buildSimulateOverrides() {
     const overrides = {};
     Object.keys(state.tuner.overrides).forEach(function (key) {
@@ -965,6 +1140,7 @@
       return "<dt>" + escapeHTML(field[0]) + "</dt>" + dd + escapeHTML(field[1]) + "</dd>";
     }).join("");
     renderPositions(status.positions || {}, status.option_positions || {});
+    updateTradePanel(status);
   }
 
   function winLoss(status) {
@@ -991,7 +1167,22 @@
     const klass = side === "short" || side === "sell" ? "pos-short" : "pos-long";
     const detail = "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
     return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
-      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span></span></div>';
+      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
+  }
+
+  // positionActionButtons renders the #1257 per-row actions for eligible
+  // strategies; every button funnels through the confirm-nonce dialog.
+  function positionActionButtons() {
+    const strat = activeStrategyMeta();
+    const buttons = [];
+    if (strategySupportsManualActions(strat)) {
+      buttons.push('<button type="button" class="trade-row-button" data-trade-action="close">Close</button>');
+      buttons.push('<button type="button" class="trade-row-button" data-trade-action="update-sl">Edit SL</button>');
+      buttons.push('<button type="button" class="trade-row-button" data-trade-action="cancel-sl">Cancel SL</button>');
+    } else if (strategySupportsForceClose(strat)) {
+      buttons.push('<button type="button" class="trade-row-button danger" data-trade-action="force-close">Force close</button>');
+    }
+    return buttons.join("");
   }
 
 
@@ -1477,6 +1668,34 @@
   if (els.pauseToggle) {
     els.pauseToggle.addEventListener("click", function () {
       togglePause().catch(handleRefreshError);
+    });
+  }
+  if (els.tradeOpenButton) {
+    els.tradeOpenButton.addEventListener("click", function () {
+      tradeOpen().catch(handleRefreshError);
+    });
+  }
+  if (els.tradeAddButton) {
+    els.tradeAddButton.addEventListener("click", function () {
+      tradeAdd().catch(handleRefreshError);
+    });
+  }
+  if (els.positions) {
+    els.positions.addEventListener("click", function (event) {
+      const button = event.target.closest("[data-trade-action]");
+      if (!button) return;
+      const action = button.dataset.tradeAction;
+      let run;
+      if (action === "close" || action === "force-close") {
+        run = tradeClose(action);
+      } else if (action === "update-sl") {
+        run = tradeUpdateSL();
+      } else if (action === "cancel-sl") {
+        run = tradeCancelSL();
+      }
+      if (run) {
+        run.catch(handleRefreshError);
+      }
     });
   }
   if (els.ratchetNotifySelect) {

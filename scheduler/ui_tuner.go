@@ -80,6 +80,7 @@ func (ss *StatusServer) SetConfigContext(configPath string, cfg *Config) {
 	ss.configPath = configPath
 	ss.regime = cfg.Regime
 	ss.strategiesMu.Lock()
+	ss.uiCfg = cfg // #1257: live config snapshot for the trade-action cores
 	ss.intervalSeconds = cfg.IntervalSeconds
 	ss.userCloseDefaults = cfg.userDefaultsClose()
 	ss.globalNotifyRatchet = cfg.NotifyRatchetTriggers

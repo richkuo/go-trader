@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 )
 
 // manualActionRecordsTrade reports whether a drained PendingManualAction appends
@@ -78,113 +77,6 @@ func slTriggerWouldFillImmediately(side string, triggerPx, mark float64) bool {
 	return false
 }
 
-// manualSLTarget holds the resolved, guard-checked context shared by the
-// manual-update-sl and manual-cancel-sl handlers. The caller owns stateDB and
-// must Close it.
-type manualSLTarget struct {
-	cfg     *Config
-	sc      StrategyConfig
-	stateDB *StateDB
-	pos     *Position
-	symbol  string
-}
-
-// resolveManualSLTarget loads config + state, locates the owned open position,
-// and runs the shared safety guards (kill switch, pending CB close, ownership,
-// auto-managed-SL). On any failure it prints a clear error, closes the DB it
-// opened, and returns a non-zero exit code in rc. On success rc is 0 and the
-// caller must Close target.stateDB.
-func resolveManualSLTarget(cmdName, configPath, strategyID, symbolFlag string) (target manualSLTarget, rc int) {
-	cfg, err := LoadConfig(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		return manualSLTarget{}, 1
-	}
-	sc, ok := findManualStrategy(cfg, strategyID)
-	if !ok {
-		return manualSLTarget{}, 1
-	}
-
-	symbol := strings.ToUpper(strings.TrimSpace(symbolFlag))
-	if symbol == "" {
-		symbol = strings.ToUpper(strings.TrimSpace(sc.Symbol))
-	}
-	if symbol == "" {
-		fmt.Fprintf(os.Stderr, "error: no --symbol provided and strategy %q has no configured symbol\n", strategyID)
-		return manualSLTarget{}, 2
-	}
-
-	stateDB, err := OpenStateDB(cfg.DBFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
-		return manualSLTarget{}, 1
-	}
-
-	state, err := LoadStateWithDB(cfg, stateDB)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	}
-
-	// Removing/moving protection during a portfolio flatten or a pending
-	// circuit-breaker close is unsafe and pointless — the position is being
-	// closed anyway. Mirror manual-open's kill-switch/CB guards.
-	if state.PortfolioRisk.KillSwitchActive {
-		fmt.Fprintf(os.Stderr, "error: portfolio kill switch is active — %s blocked\n", cmdName)
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	}
-	ss := state.Strategies[strategyID]
-	if ss != nil && ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
-		fmt.Fprintf(os.Stderr, "error: strategy has a pending circuit-breaker close — %s blocked\n", cmdName)
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	}
-
-	var pos *Position
-	if ss != nil {
-		pos = ss.Positions[symbol]
-	}
-	if pos == nil {
-		fmt.Fprintf(os.Stderr, "error: no open position for %s/%s\n", strategyID, symbol)
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	}
-	if !manualPositionOwnedByStrategy(pos, strategyID) {
-		fmt.Fprintf(os.Stderr, "error: position %s/%s is owned by %q, not %q\n", strategyID, symbol, pos.OwnerStrategyID, strategyID)
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	}
-
-	// Block when the strategy's automated protection would revert the edit on
-	// the next cycle — otherwise the operator's change silently bounces back.
-	if managed, reason := manualSLAutoManaged(sc, pos); managed {
-		fmt.Fprintf(os.Stderr, "error: %s for %s/%s — a manual stop-loss edit would be reverted on the next scheduler cycle.\n", reason, strategyID, symbol)
-		fmt.Fprintln(os.Stderr, "       To manage the stop-loss manually, opt the strategy out of auto-protection (set stop_loss_atr_mult: 0 and remove any trailing close).")
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	}
-
-	// Refuse a second SL edit while a prior one is still un-drained. The new OID
-	// from the first edit lives only in the queued PendingManualAction, not yet
-	// in pos.StopLossOID, so a second edit would cancel the STALE (already-
-	// cancelled) OID and place a duplicate resting stop-loss — orphaning the
-	// first edit's order on-chain (the daemon adopts only the latest OID). Fail
-	// closed: a check error blocks the edit rather than risk the orphan.
-	if pending, err := pendingSLActionExists(stateDB, strategyID, symbol); err != nil {
-		fmt.Fprintf(os.Stderr, "error: could not check for queued stop-loss edits (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable\n", err)
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	} else if pending {
-		fmt.Fprintf(os.Stderr, "error: a stop-loss edit for %s/%s is already queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before editing again (a second edit now would orphan the first stop-loss on-chain)\n", strategyID, symbol)
-		stateDB.Close()
-		return manualSLTarget{}, 1
-	}
-
-	return manualSLTarget{cfg: cfg, sc: sc, stateDB: stateDB, pos: pos, symbol: symbol}, 0
-}
-
 // slPlacementFailureLeftNaked reports whether a no-OID stop-loss placement
 // failure left the position unprotected on-chain (#1052 review): true when the
 // old order was cancelled (cancelSucceeded) or there was none to begin with
@@ -235,99 +127,30 @@ func runManualUpdateSL(args []string) int {
 		return 2
 	}
 	strategyID := fs.Arg(0)
-	if *trigger <= 0 {
-		fmt.Fprintln(os.Stderr, "error: --trigger must be > 0")
-		return 2
-	}
 
-	target, rc := resolveManualSLTarget("manual-update-sl", *configPath, strategyID, *symbol)
-	if rc != 0 {
-		return rc
-	}
-	defer target.stateDB.Close()
-	pos := target.pos
-
-	// Best-effort immediate-fill guard: a trigger on the wrong side of the mark
-	// fires the moment it is placed. A failed mark fetch does not block.
-	mark := 0.0
-	if mids, err := fetchHyperliquidMids([]string{target.symbol}); err == nil {
-		mark = mids[target.symbol]
-	} else {
-		fmt.Fprintf(os.Stderr, "warning: could not fetch mark for immediate-fill check: %v\n", err)
-	}
-	if slTriggerWouldFillImmediately(pos.Side, *trigger, mark) {
-		fmt.Fprintf(os.Stderr, "error: trigger $%.4f would fill immediately against mark $%.4f for a %s position\n", *trigger, mark, pos.Side)
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
-
-	if *dryRun {
-		fmt.Printf("[dry-run] manual-update-sl %s: %s stop-loss $%.4f -> $%.4f (qty %.6f, cancel OID=%d)\n",
-			strategyID, target.symbol, pos.StopLossTriggerPx, *trigger, pos.Quantity, pos.StopLossOID)
-		return 0
-	}
-
-	slResult, slStderr, slErr := RunHyperliquidUpdateStopLoss(target.sc.Script, target.symbol, pos.Side, pos.Quantity, *trigger, pos.StopLossOID)
-	if slStderr != "" {
-		fmt.Fprintf(os.Stderr, "SL update stderr: %s\n", slStderr)
-	}
-	if slErr != nil {
-		// Subprocess failure (timeout / transport). If the cancel ran before the
-		// failure the position may now be naked — we cannot tell from here, so
-		// direct the operator to verify on-chain rather than implying safety.
-		fmt.Fprintf(os.Stderr, "error updating stop-loss: %v — the old stop-loss may have been cancelled without a replacement; verify protection on the HL UI before retrying.\n", slErr)
+	sc, ok := findManualStrategy(cfg, strategyID)
+	if !ok {
 		return 1
 	}
-	if slResult.Error != "" {
-		fmt.Fprintf(os.Stderr, "error from HL: %s\n", slResult.Error)
+	stateDB, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
 	}
-	if slResult.StopLossFilledImmediately {
-		// The new trigger fired on placement; the position closed on-chain. Do
-		// NOT queue an update-sl (there is no resting order to adopt) — the next
-		// reconcile cycle books the close.
-		fmt.Fprintf(os.Stderr, "error: stop-loss filled immediately on placement — position closed on-chain; reconcile will adopt the close. Do not retry.\n")
-		return 1
-	}
-	if slResult.StopLossOID == 0 {
-		// Placement returned no OID without raising (script exit 0, stop_loss_error
-		// set). Distinguish naked from safe: if the old order was cancelled (or
-		// there was none to begin with) the position is now unprotected; if the
-		// cancel did not succeed the previous stop-loss is still resting.
-		if slPlacementFailureLeftNaked(slResult.CancelStopLossSucceeded, pos.StopLossOID) {
-			fmt.Fprintf(os.Stderr, "CRITICAL: stop-loss placement failed after the old order was removed (%s) — the position is now UNPROTECTED on-chain. Re-arm immediately (manual-update-sl) or close the position.\n", slResult.StopLossError)
-		} else {
-			fmt.Fprintf(os.Stderr, "error: stop-loss replacement failed (%s); the previous stop-loss (OID=%d) is still resting on-chain — verify on the HL UI.\n", slResult.StopLossError, pos.StopLossOID)
-		}
-		return 1
-	}
+	defer stateDB.Close()
 
-	newTrigger := slResult.StopLossTriggerPx
-	if newTrigger == 0 {
-		newTrigger = *trigger
-	}
-	fmt.Printf("Stop-loss updated: %s %s -> $%.4f (OID=%d)\n", strategyID, target.symbol, newTrigger, slResult.StopLossOID)
-
-	action := PendingManualAction{
-		StrategyID:        strategyID,
-		Action:            "update-sl",
-		Symbol:            target.symbol,
-		Side:              pos.Side,
-		Quantity:          pos.Quantity,
-		StopLossOID:       slResult.StopLossOID,
-		StopLossTriggerPx: newTrigger,
-		CreatedAt:         time.Now().UTC(),
-	}
-	if err := target.stateDB.InsertPendingManualAction(action); err != nil {
-		// On-chain SL already moved, but the scheduler will keep tracking the
-		// old (now-cancelled) OID until it reconciles. The position is still
-		// protected on-chain at the new trigger; flag for operator awareness.
-		fmt.Fprintf(os.Stderr, "CRITICAL: stop-loss moved on-chain to $%.4f (OID=%d) but queue insert failed (%v); the scheduler still tracks the old OID until reconcile. Restart to resync.\n",
-			newTrigger, slResult.StopLossOID, err)
-		return 1
-	}
-
-	fmt.Printf("Queued: %s stop-loss update will sync to the dashboard after the next scheduler cycle.\n", strategyID)
-	return 0
+	res, coreErr := manualUpdateSLCore(newCLIManualCoreDeps(cfg, stateDB, nil), sc, manualSLInputs{
+		StrategyID: strategyID,
+		Symbol:     *symbol,
+		Trigger:    *trigger,
+		DryRun:     *dryRun,
+	})
+	return printManualCoreOutcome(res, coreErr)
 }
 
 // runManualCancelSL implements `go-trader manual-cancel-sl <strategy-id>
@@ -349,57 +172,26 @@ func runManualCancelSL(args []string) int {
 	}
 	strategyID := fs.Arg(0)
 
-	target, rc := resolveManualSLTarget("manual-cancel-sl", *configPath, strategyID, *symbol)
-	if rc != 0 {
-		return rc
-	}
-	defer target.stateDB.Close()
-	pos := target.pos
-
-	if pos.StopLossOID == 0 {
-		fmt.Fprintf(os.Stderr, "error: no resting stop-loss to cancel for %s/%s\n", strategyID, target.symbol)
+	cfg, err := LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		return 1
 	}
-
-	if *dryRun {
-		fmt.Printf("[dry-run] manual-cancel-sl %s: cancel %s stop-loss $%.4f (OID=%d)\n",
-			strategyID, target.symbol, pos.StopLossTriggerPx, pos.StopLossOID)
-		return 0
-	}
-
-	cancelResult, cancelStderr, cancelErr := RunHyperliquidCancelOrder(target.sc.Script, target.symbol, pos.StopLossOID)
-	if cancelStderr != "" {
-		fmt.Fprintf(os.Stderr, "SL cancel stderr: %s\n", cancelStderr)
-	}
-	if cancelErr != nil {
-		fmt.Fprintf(os.Stderr, "error cancelling stop-loss: %v\n", cancelErr)
+	sc, ok := findManualStrategy(cfg, strategyID)
+	if !ok {
 		return 1
 	}
-	if cancelResult.Error != "" {
-		fmt.Fprintf(os.Stderr, "error from HL: %s\n", cancelResult.Error)
+	stateDB, err := OpenStateDB(cfg.DBFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
 		return 1
 	}
-	if !cancelResult.Cancelled {
-		fmt.Fprintf(os.Stderr, "error: HL did not confirm cancel of OID %d: %s\n", pos.StopLossOID, cancelResult.CancelError)
-		return 1
-	}
+	defer stateDB.Close()
 
-	fmt.Printf("Stop-loss cancelled: %s %s (was OID=%d @ $%.4f)\n", strategyID, target.symbol, pos.StopLossOID, pos.StopLossTriggerPx)
-
-	action := PendingManualAction{
+	res, coreErr := manualCancelSLCore(newCLIManualCoreDeps(cfg, stateDB, nil), sc, manualSLInputs{
 		StrategyID: strategyID,
-		Action:     "cancel-sl",
-		Symbol:     target.symbol,
-		Side:       pos.Side,
-		CreatedAt:  time.Now().UTC(),
-	}
-	if err := target.stateDB.InsertPendingManualAction(action); err != nil {
-		// The on-chain SL is gone but the scheduler still believes the position
-		// is protected until it reconciles — the position is NAKED on-chain.
-		fmt.Fprintf(os.Stderr, "CRITICAL: stop-loss cancelled on-chain but queue insert failed (%v); the position is now UNPROTECTED and the scheduler still tracks the old OID. Re-arm protection or restart immediately.\n", err)
-		return 1
-	}
-
-	fmt.Printf("Queued: %s stop-loss removal will sync to the dashboard after the next scheduler cycle.\n", strategyID)
-	return 0
+		Symbol:     *symbol,
+		DryRun:     *dryRun,
+	})
+	return printManualCoreOutcome(res, coreErr)
 }

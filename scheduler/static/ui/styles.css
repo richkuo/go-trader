@@ -1165,3 +1165,45 @@ h3 {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+
+/* #1257 trade actions */
+.trade-panel {
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.trade-panel h3 {
+  margin: 0 0 8px;
+}
+.trade-row-button {
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  margin-left: 4px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.4));
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.trade-row-button:hover {
+  background: rgba(128, 128, 128, 0.15);
+}
+.trade-row-button.danger {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+.trade-confirm-hint {
+  font-size: 0.85rem;
+}
+#trade-confirm-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 6px 8px;
+  margin: 4px 0 10px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.4));
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}

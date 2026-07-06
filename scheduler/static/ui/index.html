@@ -215,6 +215,46 @@
                 </label>
                 <p id="controls-message" class="controls-message" hidden></p>
               </div>
+              <div class="trade-panel" id="trade-panel" hidden>
+                <h3>Trade actions</h3>
+                <div id="trade-open-form" hidden>
+                  <label class="controls-field">
+                    <span>Side</span>
+                    <select id="trade-open-side">
+                      <option value="">Default</option>
+                      <option value="long">Long</option>
+                      <option value="short">Short</option>
+                    </select>
+                  </label>
+                  <label class="controls-field">
+                    <span>Sizing</span>
+                    <select id="trade-sizing-mode">
+                      <option value="margin">Margin (USD)</option>
+                      <option value="notional">Notional (USD)</option>
+                      <option value="size">Size (coin)</option>
+                    </select>
+                  </label>
+                  <label class="controls-field">
+                    <span>Amount</span>
+                    <input id="trade-sizing-amount" type="number" min="0" step="any" placeholder="Default margin">
+                  </label>
+                  <div class="controls-row">
+                    <button id="trade-open-button" type="button" class="tuner-button primary">Open position</button>
+                    <button id="trade-add-button" type="button" class="tuner-button secondary" hidden>Add to position</button>
+                  </div>
+                </div>
+                <div id="trade-position-form" hidden>
+                  <label class="controls-field">
+                    <span>Close qty (blank = full)</span>
+                    <input id="trade-close-qty" type="number" min="0" step="any" placeholder="Full position">
+                  </label>
+                  <label class="controls-field" id="trade-sl-field">
+                    <span>New SL trigger</span>
+                    <input id="trade-sl-trigger" type="number" min="0" step="any" placeholder="Trigger price">
+                  </label>
+                </div>
+                <p id="trade-message" class="controls-message" hidden></p>
+              </div>
               <section id="tuner-panel" class="tuner-panel" hidden>
                 <div class="tuner-header">
                   <h3>Strategy tuner</h3>
@@ -240,6 +280,18 @@
         <div class="tuner-dialog-actions">
           <button value="cancel" type="submit" class="tuner-button secondary">Cancel</button>
           <button id="tuner-confirm-apply" value="apply" type="submit" class="tuner-button primary">Apply</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="trade-confirm-dialog" class="tuner-dialog">
+      <form method="dialog" class="tuner-dialog-body">
+        <h3>Confirm trade action</h3>
+        <p id="trade-confirm-desc"></p>
+        <p class="trade-confirm-hint">Type <strong id="trade-confirm-phrase"></strong> to confirm (expires in <span id="trade-confirm-ttl">60</span>s):</p>
+        <input id="trade-confirm-input" type="text" autocomplete="off" spellcheck="false" placeholder="Confirmation phrase">
+        <div class="tuner-dialog-actions">
+          <button value="cancel" type="submit" class="tuner-button secondary">Cancel</button>
+          <button id="trade-confirm-go" value="confirm" type="submit" class="tuner-button primary" disabled>Confirm</button>
         </div>
       </form>
     </dialog>

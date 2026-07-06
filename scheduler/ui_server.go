@@ -252,6 +252,9 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 		ss.handleAPIStrategyPause(w, r, id)
 	case "notifications":
 		ss.handleAPIStrategyNotifications(w, r, id)
+	// #1257 confirm-nonce-gated trade actions (ui_trade_actions.go).
+	case "open", "add", "close", "force-close", "update-sl", "cancel-sl":
+		ss.handleAPIStrategyTradeAction(w, r, id, resource)
 	default:
 		http.NotFound(w, r)
 	}

@@ -320,6 +320,9 @@ func main() {
 	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
 	defer cleanupNotifier()
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
+	// #1257: the dashboard trade-action cores share the daemon notifier so
+	// their protection warnings reach the operator like the manual CLI's do.
+	server.SetNotifier(notifier)
 
 	// #1137 LLM entry analysis: dedicated async lane (own queue + concurrency
 	// cap, own per-job deadline — never the shared pythonSemaphore path). Rides

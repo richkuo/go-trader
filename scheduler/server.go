@@ -50,6 +50,18 @@ type StatusServer struct {
 	globalNotifyRatchet *bool
 	reloadConfig        func() error
 
+	// #1257 trade-action surface (ui_confirm.go / ui_trade_actions.go).
+	// uiCfg is the live *Config snapshot (guarded by strategiesMu, refreshed
+	// via SetConfigContext); uiNotifier is the daemon notifier (SetNotifier).
+	// confirmNonces holds the short-lived single-use confirm nonces.
+	uiCfg         *Config
+	uiNotifier    *MultiNotifier
+	confirmMu     sync.Mutex
+	confirmNonces map[string]confirmNonceEntry
+	// tradeDepsHook lets tests stub the on-chain exec seams of the manual
+	// cores (nil in production).
+	tradeDepsHook func(*manualCoreDeps)
+
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
 	// so we don't want to spam logs on every hit — but silently discarding
@@ -226,6 +238,9 @@ func (ss *StatusServer) Start(port int) {
 	// toggle; per-strategy pause + notification toggles route through the
 	// "/api/strategies/" prefix handler below.
 	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
+	// #1257 trade-action confirm nonce; the trade-action endpoints route
+	// through the "/api/strategies/" prefix handler below.
+	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
