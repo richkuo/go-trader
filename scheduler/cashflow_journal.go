@@ -558,6 +558,12 @@ var cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
 // always logs the journal-vs-ledger comparison so operators see both bases every
 // cycle, and mutates results IN PLACE (the matching HL wallet's alarm fields).
 func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key SharedWalletKey, rec *cashflowJournalReconcile, enabled bool) {
+	// #1233 shadow-only enforcement: only the Hyperliquid journal is LIVE as a
+	// drift-alarm basis (OKX/TopStep journals are shadow-only). Refuse any
+	// non-HL key without mutating results or the pending-streak tracker.
+	if key.Platform != "hyperliquid" {
+		return
+	}
 	if rec == nil {
 		return
 	}
