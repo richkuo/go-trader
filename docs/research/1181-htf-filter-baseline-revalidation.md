@@ -71,6 +71,14 @@ strategy/symbol/timeframe combinations; any future comparison uses these, not
 the PR's "before" column. The ETH 4h/1d collapse (+180.51% → +7.94%) confirms
 the leak's severity scales with the LTF→HTF ratio's candle span.
 
+> **Sortino re-baseline (#1242):** the Sortino column above was computed under
+> the pre-#1242 nonstandard definition (sample std of negative returns about
+> their own mean, neutral 0.0 for <2 down bars). #1242 switched to the canonical
+> downside deviation (root-mean-square of `min(r, 0)` about MAR=0, `None` when
+> there is zero downside), so every Sortino figure in this document shifts.
+> Sharpe, return, drawdown, trades, and win-rate are unaffected. Regenerating
+> these Sortino baselines is tracked in #1243.
+
 ## Dispositions (acceptance criterion 3)
 
 | Decision surface | Disposition | Why |

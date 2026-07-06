@@ -2859,12 +2859,23 @@ class Backtester:
         else:
             sharpe = 0.0
 
-        # Sortino Ratio (only downside deviation)
-        downside = daily_returns[daily_returns < 0]
-        if len(downside) > 1 and downside.std() > 0:
-            sortino = (daily_returns.mean() / downside.std()) * ann_factor
+        # Sortino Ratio — canonical downside deviation: the root-mean-square of
+        # min(r, 0) about a MAR of 0 (NOT the sample std of negatives about their
+        # own mean), annualized by the same factor as Sharpe. The RMS is taken
+        # over ALL return observations, so a single losing bar still yields a
+        # finite, well-defined denominator. Zero downside (no losing bars, or a
+        # downside deviation that rounds to 0) means Sortino is mathematically
+        # undefined — report None, never a neutral 0.0 that would rank a
+        # flawless leg below a mediocre one.
+        if len(daily_returns) > 0:
+            neg = daily_returns.clip(upper=0.0)
+            downside_dev = float(np.sqrt((neg**2).mean()))
         else:
-            sortino = 0.0
+            downside_dev = 0.0
+        if downside_dev > 0:
+            sortino = (daily_returns.mean() / downside_dev) * ann_factor
+        else:
+            sortino = None
 
         # Max Drawdown — floor the running peak at initial_capital so the
         # baseline is always the true starting balance, not a seeded
@@ -2883,7 +2894,11 @@ class Backtester:
 
             gross_profit = sum(t.pnl for t in winning) if winning else 0
             gross_loss = abs(sum(t.pnl for t in losing)) if losing else 0
-            profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+            # All-win legs (no losing trades → gross_loss == 0) have an
+            # undefined profit factor. Report None, never float("inf"): a NaN/inf
+            # would serialize as the nonstandard JSON `Infinity` token that strict
+            # parsers (incl. Go json.Unmarshal) reject.
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
             avg_win = np.mean([t.pnl_pct for t in winning]) if winning else 0
             avg_loss = np.mean([t.pnl_pct for t in losing]) if losing else 0
@@ -2910,6 +2925,9 @@ class Backtester:
         # (not -ann_factor) so two equally-dead legs tie regardless of bust
         # timeframe, and not path-dependent so an earlier bust never out-ranks
         # a later one.
+        # Liquidation forces the sentinel floor regardless of the values above
+        # — a busted account is NOT "zero downside"; the None-Sortino convention
+        # never applies here (#1005 override wins).
         if liquidated:
             sharpe = sortino = -LIQUIDATED_METRIC_FLOOR
             volatility = LIQUIDATED_METRIC_FLOOR
@@ -2918,17 +2936,25 @@ class Backtester:
             "total_return_pct": round(total_return * 100, 2),
             "annual_return_pct": round(annual_return * 100, 2),
             "sharpe_ratio": round(sharpe, 3),
-            "sortino_ratio": round(sortino, 3),
+            "sortino_ratio": round(sortino, 3) if sortino is not None else None,
             "max_drawdown_pct": round(max_drawdown * 100, 2),
             "calmar_ratio": round(calmar, 3),
             "volatility_pct": round(volatility * 100, 2),
             "win_rate": round(win_rate * 100, 2),
-            "profit_factor": round(profit_factor, 3),
+            "profit_factor": round(profit_factor, 3) if profit_factor is not None else None,
             "total_trades": total_trades,
             "avg_win_pct": round(avg_win * 100, 2),
             "avg_loss_pct": round(avg_loss * 100, 2),
             "liquidated": liquidated,
         }
+
+
+def _fmt_opt(value, spec: str = ".3f", none_text: str = "n/a") -> str:
+    """Format an optional numeric metric, rendering None (undefined) as text
+    instead of raising on a format spec that only accepts numbers."""
+    if value is None:
+        return none_text
+    return format(value, spec)
 
 
 def format_results(results: dict) -> str:
@@ -2956,14 +2982,14 @@ def format_results(results: dict) -> str:
         f"{'─'*60}",
         f"  RISK METRICS",
         f"    Sharpe Ratio:    {results['sharpe_ratio']:.3f}",
-        f"    Sortino Ratio:   {results['sortino_ratio']:.3f}",
+        f"    Sortino Ratio:   {_fmt_opt(results['sortino_ratio'])}",
         f"    Max Drawdown:    {results['max_drawdown_pct']:.2f}%",
         f"    Calmar Ratio:    {results.get('calmar_ratio', 0):.3f}",
         f"{'─'*60}",
         f"  TRADE STATS",
         f"    Total Trades:    {results['total_trades']}",
         f"    Win Rate:        {results['win_rate']:.1f}%",
-        f"    Profit Factor:   {results['profit_factor']:.3f}",
+        f"    Profit Factor:   {_fmt_opt(results['profit_factor'])}",
         f"    Avg Win:         {results.get('avg_win_pct', 0):+.2f}%",
         f"    Avg Loss:        {results.get('avg_loss_pct', 0):+.2f}%",
         f"{'='*60}",

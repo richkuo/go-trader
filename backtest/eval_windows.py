@@ -334,6 +334,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     present (the Backtester rejects a policy without regime compute).
     """
     from atr import ensure_atr_indicator
+    import pandas as pd
     from data_fetcher import load_cached_data
     from backtester import Backtester
     from run_backtest import (FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed,
@@ -343,6 +344,18 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     df = load_cached_data(symbol, timeframe, start_date=start, end_date=end)
     if df.empty:
         return None
+    # load_ohlcv's end bound is INCLUSIVE (timestamp <= end_ts), but M1 windows
+    # share boundaries ("is" ends where "oos" begins, "2023" where "2024"
+    # begins, ...) and gross_edge_noise documents a half-open [start, end)
+    # convention. Slice the end EXCLUSIVELY here — dropping any bar whose OPEN
+    # time equals `end` — so adjacent windows never double-count the boundary
+    # bar. We fix it at this caller rather than in load_ohlcv, whose inclusive
+    # contract other callers rely on. end=None means "latest cached bar" (no
+    # upper bound), so it is left untouched.
+    if end is not None:
+        df = df[df.index < pd.Timestamp(end)]
+        if df.empty:
+            return None
     if name in FUNDING_COLUMN_STRATEGIES:
         df = _attach_funding_if_needed(df, name, symbol, start)
 
