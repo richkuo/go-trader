@@ -372,6 +372,12 @@ CREATE TABLE IF NOT EXISTS trade_diagnostics (
 
 CREATE INDEX IF NOT EXISTS idx_trade_diag_strategy ON trade_diagnostics(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_trade_diag_position ON trade_diagnostics(strategy_id, position_id);
+-- #1231 /api/diagnostics pages newest-first on the dashboard polling path;
+-- these keep the ORDER BY closed_at DESC a bounded index walk instead of a
+-- full-table temp b-tree sort as lifetime history grows (one row per closed
+-- trade, #1147). Composite covers the ?strategy= filtered page.
+CREATE INDEX IF NOT EXISTS idx_trade_diag_closed_at ON trade_diagnostics(closed_at DESC, rowid DESC);
+CREATE INDEX IF NOT EXISTS idx_trade_diag_strategy_closed_at ON trade_diagnostics(strategy_id, closed_at DESC, rowid DESC);
 
 -- #1224 per-window regime label history: at most one row per closed bar per
 -- (bundle key, window) — the processor skips re-recording a bar already stored,

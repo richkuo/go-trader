@@ -93,6 +93,48 @@
               </thead>
               <tbody id="overview-body"></tbody>
             </table>
+            <div class="ops-panels">
+              <div class="ops-panel ops-panel--wide">
+                <h3>Leaderboard</h3>
+                <div class="ops-table-scroll">
+                  <table class="ops-table">
+                    <thead>
+                      <tr><th>#</th><th>ID</th><th>PnL %</th><th>PnL $</th><th>#T</th><th>W/L</th><th>Value</th></tr>
+                    </thead>
+                    <tbody id="leaderboard-body"></tbody>
+                  </table>
+                </div>
+                <p id="leaderboard-empty" class="panel-muted" hidden>No strategies to rank</p>
+              </div>
+              <div class="ops-panel ops-panel--wide">
+                <h3>Trade diagnostics</h3>
+                <div class="ops-table-scroll">
+                  <table class="ops-table">
+                    <thead>
+                      <tr><th>Closed</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Net PnL</th><th>MFE %</th><th>MAE %</th><th>Capture</th><th>Status</th></tr>
+                    </thead>
+                    <tbody id="diagnostics-body"></tbody>
+                  </table>
+                </div>
+                <p id="diagnostics-empty" class="panel-muted" hidden>No diagnostics rows yet</p>
+              </div>
+              <div class="ops-panel">
+                <h3>Cashflow journal</h3>
+                <div id="cashflow-content" class="panel-list"></div>
+              </div>
+              <div class="ops-panel">
+                <h3>Correlation</h3>
+                <div id="correlation-content" class="panel-list"></div>
+              </div>
+              <div class="ops-panel">
+                <h3>Dead strategies</h3>
+                <div id="dead-strategies-content" class="panel-list"></div>
+              </div>
+              <div class="ops-panel">
+                <h3>Close evaluators</h3>
+                <div id="closing-strategies-content" class="panel-list"></div>
+              </div>
+            </div>
           </div>
           <div id="detail-panel" class="detail-panel">
             <div class="chart-panel">

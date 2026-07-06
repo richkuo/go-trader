@@ -877,6 +877,83 @@ h3 {
   background: #e8efe8;
 }
 
+/* #1231: ops panels (leaderboard / diagnostics / cashflow / correlation /
+   dead strategies / close evaluators) below the overview table */
+.ops-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ops-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--panel);
+}
+
+.ops-panel--wide {
+  grid-column: 1 / -1;
+}
+
+.ops-panel h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.ops-table-scroll {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.ops-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.ops-table th,
+.ops-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--position-line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ops-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+.ops-badge {
+  display: inline-block;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.ops-badge--live {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.ops-badge--shadow {
+  color: var(--muted);
+}
+
 .overview-table td {
   font-variant-numeric: tabular-nums;
 }

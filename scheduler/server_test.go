@@ -207,7 +207,7 @@ func TestHandleStatusUncertifiedPolicyGatedDirection(t *testing.T) {
 	}
 	var mu sync.RWMutex
 	ss := NewStatusServer(state, &mu, "", strategies, nil)
-	ss.SetConfigContext("", &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20})
+	ss.SetConfigContext("", &Config{Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}})
 
 	req := httptest.NewRequest("GET", "/status", nil)
 	w := httptest.NewRecorder()

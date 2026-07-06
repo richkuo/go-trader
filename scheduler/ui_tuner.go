@@ -67,12 +67,20 @@ type UIApplyConfigResponse struct {
 	Message         string `json:"message"`
 }
 
-func (ss *StatusServer) SetConfigContext(configPath string, regime *RegimeConfig) {
-	if ss == nil {
+// SetConfigContext refreshes config-derived server context on startup and
+// after a SIGHUP hot reload. The #1231 ops fields (intervalSeconds,
+// userCloseDefaults) are guarded by strategiesMu — same lock discipline as
+// UpdateStrategies, since the reload path already holds the global state mu.
+func (ss *StatusServer) SetConfigContext(configPath string, cfg *Config) {
+	if ss == nil || cfg == nil {
 		return
 	}
 	ss.configPath = configPath
-	ss.regime = regime
+	ss.regime = cfg.Regime
+	ss.strategiesMu.Lock()
+	ss.intervalSeconds = cfg.IntervalSeconds
+	ss.userCloseDefaults = cfg.userDefaultsClose()
+	ss.strategiesMu.Unlock()
 }
 
 func (ss *StatusServer) handleAPIStrategyConfig(w http.ResponseWriter, r *http.Request, id string) {

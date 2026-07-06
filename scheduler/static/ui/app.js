@@ -70,6 +70,14 @@
     tunerApply: document.getElementById("tuner-apply"),
     tunerConfirmDialog: document.getElementById("tuner-confirm-dialog"),
     tunerConfirmText: document.getElementById("tuner-confirm-text"),
+    leaderboardBody: document.getElementById("leaderboard-body"),
+    leaderboardEmpty: document.getElementById("leaderboard-empty"),
+    diagnosticsBody: document.getElementById("diagnostics-body"),
+    diagnosticsEmpty: document.getElementById("diagnostics-empty"),
+    cashflowContent: document.getElementById("cashflow-content"),
+    correlationContent: document.getElementById("correlation-content"),
+    deadStrategiesContent: document.getElementById("dead-strategies-content"),
+    closingStrategiesContent: document.getElementById("closing-strategies-content"),
   };
 
   function isMobileSidebar() {
@@ -1073,6 +1081,216 @@
     }
   }
 
+  // ── Ops panels (#1231): leaderboard / diagnostics / cashflow / correlation /
+  // dead strategies / close evaluators. Rendered in table view; every panel is
+  // best-effort — a failing endpoint renders "-" and never breaks the page.
+
+  function opsPnlClass(v) {
+    return v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : "";
+  }
+
+  async function refreshLeaderboardPanel() {
+    if (!els.leaderboardBody) return;
+    try {
+      const resp = await getJSON("/api/leaderboard");
+      const entries = resp.entries || [];
+      // Restore the friendly empty copy — a prior error cycle may have
+      // mutated this node to "-", and it must reflect the latest fetch.
+      els.leaderboardEmpty.textContent = "No strategies to rank";
+      els.leaderboardEmpty.hidden = entries.length > 0;
+      els.leaderboardBody.innerHTML = entries.map(function (e, i) {
+        return "<tr>" +
+          "<td>" + (i + 1) + "</td>" +
+          "<td>" + escapeHTML(e.id) + "</td>" +
+          '<td class="' + opsPnlClass(e.pnl_pct) + '">' + escapeHTML(fmtPct(e.pnl_pct)) + "</td>" +
+          '<td class="' + opsPnlClass(e.pnl) + '">' + escapeHTML(fmtMoney(e.pnl)) + "</td>" +
+          "<td>" + escapeHTML(String(e.positions_opened || 0)) + "</td>" +
+          "<td>" + escapeHTML((e.wins || 0) + "/" + (e.losses || 0)) + "</td>" +
+          "<td>" + escapeHTML(fmtMoney(e.value)) + "</td>" +
+          "</tr>";
+      }).join("");
+    } catch (_err) {
+      els.leaderboardEmpty.hidden = false;
+      els.leaderboardEmpty.textContent = "-";
+      els.leaderboardBody.innerHTML = "";
+    }
+  }
+
+  function diagPct(v) {
+    // NULL metrics (status != ok) render as pending per #1147 semantics.
+    return v === null || v === undefined ? "…" : fmtPct(v);
+  }
+
+  async function refreshDiagnosticsPanel() {
+    if (!els.diagnosticsBody) return;
+    try {
+      const resp = await getJSON("/api/diagnostics?limit=25");
+      const rows = resp.rows || [];
+      els.diagnosticsEmpty.textContent = "No diagnostics rows yet";
+      els.diagnosticsEmpty.hidden = rows.length > 0;
+      els.diagnosticsBody.innerHTML = rows.map(function (row) {
+        const when = row.closed_at ? new Date(row.closed_at).toLocaleString(undefined, {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+        }) : "-";
+        const pending = row.metrics_status !== "ok";
+        const capture = pending || row.capture_ratio === null || row.capture_ratio === undefined
+          ? (pending ? "pending" : "-")
+          : fmtNumber(row.capture_ratio);
+        return "<tr>" +
+          "<td>" + escapeHTML(when) + "</td>" +
+          "<td>" + escapeHTML(row.strategy_id) + "</td>" +
+          "<td>" + escapeHTML(row.symbol || "-") + "</td>" +
+          "<td>" + escapeHTML(row.side || "-") + "</td>" +
+          '<td class="' + opsPnlClass(row.net_pnl) + '">' + escapeHTML(fmtMoney(row.net_pnl)) + "</td>" +
+          "<td>" + escapeHTML(pending ? "pending" : diagPct(row.favorable_pct)) + "</td>" +
+          "<td>" + escapeHTML(pending ? "pending" : diagPct(row.adverse_pct)) + "</td>" +
+          "<td>" + escapeHTML(capture) + "</td>" +
+          "<td>" + escapeHTML(row.metrics_status || "-") + "</td>" +
+          "</tr>";
+      }).join("");
+    } catch (_err) {
+      els.diagnosticsEmpty.hidden = false;
+      els.diagnosticsEmpty.textContent = "-";
+      els.diagnosticsBody.innerHTML = "";
+    }
+  }
+
+  async function refreshCashflowPanel() {
+    if (!els.cashflowContent) return;
+    try {
+      const resp = await getJSON("/api/cashflow");
+      const rows = [];
+      if (!resp.alarm_enabled) {
+        rows.push('<div class="panel-row risk-alert">Journal drift alarm operator-disabled</div>');
+      }
+      (resp.wallets || []).forEach(function (wallet) {
+        const label = wallet.platform + "/" + wallet.account;
+        // Badge keys off the RUNTIME basis (what actually drove this cycle's
+        // drift alarm), not structural eligibility — eligibility alone can
+        // overclaim during a transient fetch miss.
+        let badge;
+        if (wallet.shadow_only) {
+          badge = '<span class="ops-badge ops-badge--shadow" title="Shadow-only journal — never the live drift basis (#1100)">shadow-only</span>';
+        } else if (wallet.basis === "journal") {
+          badge = '<span class="ops-badge ops-badge--live">LIVE basis</span>';
+        } else if (wallet.basis === "pending") {
+          badge = '<span class="ops-badge ops-badge--shadow" title="Transient journal fetch miss — trade ledger governs this cycle">pending (transient miss)</span>';
+        } else if (wallet.basis === "disabled") {
+          badge = '<span class="ops-badge ops-badge--shadow" title="GO_TRADER_CASHFLOW_JOURNAL_ALARM operator kill switch">alarm disabled</span>';
+        } else if (wallet.basis === "trade_ledger") {
+          badge = '<span class="ops-badge ops-badge--shadow">fallback (trade ledger)</span>';
+        } else if (wallet.live_basis_eligible) {
+          badge = '<span class="ops-badge ops-badge--shadow" title="Journal is eligible as the live basis; no reconcile cycle recorded since restart">eligible (awaiting cycle)</span>';
+        } else {
+          badge = '<span class="ops-badge ops-badge--shadow">fallback (trade ledger)</span>';
+        }
+        const detail = "settled " + fmtMoney(wallet.settled_sum) + " · " + wallet.entry_count + " events" +
+          (wallet.incomplete ? " · INCOMPLETE" : "") +
+          (wallet.baseline_set ? "" : " · no baseline");
+        rows.push('<div class="panel-row panel-title">' + escapeHTML(label) + " " + badge + "</div>" +
+          '<div class="panel-row panel-indent panel-muted">' + escapeHTML(detail) + "</div>");
+      });
+      (resp.drift || []).forEach(function (d) {
+        rows.push('<div class="panel-row risk-alert">Drift: ' + escapeHTML(d.wallet) +
+          " (" + d.cycles + " cycles" +
+          (d.orphan_coins && d.orphan_coins.length ? ", orphans: " + escapeHTML(d.orphan_coins.join(", ")) : "") +
+          (d.alerted ? ", alerted" : "") + ")</div>");
+      });
+      if (!rows.length) {
+        rows.push('<div class="panel-row panel-muted">No journal wallets ingested yet</div>');
+      } else if (!(resp.drift || []).length) {
+        rows.push('<div class="panel-row panel-muted">No wallet drift — all shared wallets reconcile</div>');
+      }
+      els.cashflowContent.innerHTML = rows.join("");
+    } catch (_err) {
+      panelFallback(els.cashflowContent, "-");
+    }
+  }
+
+  async function refreshCorrelationPanel() {
+    if (!els.correlationContent) return;
+    try {
+      const resp = await getJSON("/api/correlation");
+      const snap = resp.correlation;
+      if (!snap) {
+        panelFallback(els.correlationContent, "No correlation snapshot yet");
+        return;
+      }
+      const rows = [];
+      rows.push('<div class="panel-row">Gross exposure: ' + escapeHTML(fmtMoney(snap.portfolio_gross_usd)) + "</div>");
+      (snap.warnings || []).forEach(function (warning) {
+        rows.push('<div class="panel-row risk-alert">⚠️ ' + escapeHTML(warning) + "</div>");
+      });
+      const assets = Object.keys(snap.assets || {}).sort(function (a, b) {
+        return (snap.assets[b].concentration_pct || 0) - (snap.assets[a].concentration_pct || 0);
+      });
+      assets.forEach(function (asset) {
+        const e = snap.assets[asset] || {};
+        rows.push('<div class="panel-row panel-indent">' + escapeHTML(asset) + ": net " +
+          escapeHTML(fmtMoney(e.net_delta_usd)) + ' <span class="panel-muted">(' +
+          escapeHTML(fmtPct(e.concentration_pct)) + " concentration)</span></div>");
+      });
+      els.correlationContent.innerHTML = rows.join("");
+    } catch (_err) {
+      panelFallback(els.correlationContent, "-");
+    }
+  }
+
+  async function refreshDeadStrategiesPanel() {
+    if (!els.deadStrategiesContent) return;
+    try {
+      const resp = await getJSON("/api/strategies/dead");
+      const dead = resp.dead || [];
+      if (!dead.length) {
+        panelFallback(els.deadStrategiesContent, "All strategies have opened at least one position");
+        return;
+      }
+      els.deadStrategiesContent.innerHTML =
+        '<div class="panel-row panel-muted">' + dead.length + " of " + (resp.total || 0) +
+        " strategies never opened a position</div>" +
+        dead.map(function (id) {
+          return '<div class="panel-row panel-indent">' + escapeHTML(id) + "</div>";
+        }).join("");
+    } catch (_err) {
+      panelFallback(els.deadStrategiesContent, "-");
+    }
+  }
+
+  async function refreshClosingStrategiesPanel() {
+    if (!els.closingStrategiesContent) return;
+    try {
+      const resp = await getJSON("/api/closing-strategies");
+      const evaluators = resp.evaluators || [];
+      if (!evaluators.length) {
+        panelFallback(els.closingStrategiesContent, "No close evaluators registered");
+        return;
+      }
+      els.closingStrategiesContent.innerHTML = evaluators.map(function (ev) {
+        const overrides = ev.user_overrides ? Object.keys(ev.user_overrides).sort() : [];
+        return '<div class="panel-row panel-title">' + escapeHTML(ev.name) +
+          (overrides.length
+            ? ' <span class="ops-badge ops-badge--shadow" title="user_defaults.close overrides: ' +
+              escapeHTML(overrides.join(", ")) + '">overridden</span>'
+            : "") + "</div>" +
+          '<div class="panel-row panel-indent panel-muted">' + escapeHTML(ev.description || "-") +
+          " · " + escapeHTML((ev.platforms || []).join(", ") || "all platforms") + "</div>";
+      }).join("");
+    } catch (_err) {
+      panelFallback(els.closingStrategiesContent, "-");
+    }
+  }
+
+  function refreshOpsPanels() {
+    return Promise.all([
+      refreshLeaderboardPanel(),
+      refreshDiagnosticsPanel(),
+      refreshCashflowPanel(),
+      refreshCorrelationPanel(),
+      refreshDeadStrategiesPanel(),
+      refreshClosingStrategiesPanel(),
+    ]);
+  }
+
   function handleRefreshError(err) {
     if (err.status === 401) {
       showAuthPrompt();
@@ -1086,7 +1304,7 @@
   async function refreshAll() {
     try {
       if (state.viewMode === "table") {
-        await refreshOverview();
+        await Promise.all([refreshOverview(), refreshOpsPanels()]);
         return;
       }
       await Promise.all([

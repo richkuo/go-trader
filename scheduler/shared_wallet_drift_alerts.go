@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -264,6 +265,44 @@ func (t *SharedWalletDriftTracker) Clear(walletKey string) (bool, int) {
 	priorCount := e.cycles
 	delete(t.entries, walletKey)
 	return recovered, priorCount
+}
+
+// SharedWalletDriftView is a read-only projection of one wallet's active
+// drift-tracker entry for the #1231 /api/cashflow endpoint. All fields are
+// copies; the tracker's internals stay private.
+type SharedWalletDriftView struct {
+	Wallet         string    `json:"wallet"`
+	Cycles         int       `json:"cycles"`
+	Alerted        bool      `json:"alerted"`
+	LastNotifiedAt time.Time `json:"last_notified_at,omitzero"`
+	OrphanCoins    []string  `json:"orphan_coins,omitempty"`
+}
+
+// Snapshot returns a copy of every active (over-tolerance) wallet entry,
+// sorted by wallet key. Within-tolerance wallets have no entry (Clear deletes
+// them), so an empty slice means every shared wallet reconciles to the cent.
+// In-memory only — resets on restart, like the tracker itself.
+func (t *SharedWalletDriftTracker) Snapshot() []SharedWalletDriftView {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]SharedWalletDriftView, 0, len(t.entries))
+	for key, e := range t.entries {
+		view := SharedWalletDriftView{
+			Wallet:         key,
+			Cycles:         e.cycles,
+			Alerted:        e.alerted,
+			LastNotifiedAt: e.lastNotifiedAt,
+		}
+		for coin := range e.coinStreaks {
+			if coin != "" {
+				view.OrphanCoins = append(view.OrphanCoins, coin)
+			}
+		}
+		sort.Strings(view.OrphanCoins)
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Wallet < out[j].Wallet })
+	return out
 }
 
 // sharedWalletDriftTracker is the package-level singleton; resets on restart.
