@@ -58,6 +58,9 @@ type StatusServer struct {
 	uiNotifier    *MultiNotifier
 	confirmMu     sync.Mutex
 	confirmNonces map[string]confirmNonceEntry
+	// tradeActionMu serializes dashboard trade-action submits so the
+	// double-fire guard's check-then-submit is atomic (#1260 review).
+	tradeActionMu sync.Mutex
 	// tradeDepsHook lets tests stub the on-chain exec seams of the manual
 	// cores (nil in production).
 	tradeDepsHook func(*manualCoreDeps)

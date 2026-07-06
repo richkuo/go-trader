@@ -28,11 +28,11 @@ import (
 	"time"
 )
 
-// pendingPositionIncreasingActionExists reports whether an "open" or "add"
-// action for strategyID+symbol is still queued in pending_manual_actions
-// (submitted on-chain but not yet drained/adopted by the scheduler). Mirrors
-// pendingSLActionExists (#1050) for the position-increasing action class.
-func pendingPositionIncreasingActionExists(stateDB *StateDB, strategyID, symbol string) (bool, error) {
+// pendingManualActionExists reports whether any action of the given kinds
+// for strategyID+symbol is still queued in pending_manual_actions (submitted
+// on-chain but not yet drained/adopted by the scheduler). Mirrors
+// pendingSLActionExists (#1050) for the trade-action classes.
+func pendingManualActionExists(stateDB *StateDB, strategyID, symbol string, kinds ...string) (bool, error) {
 	actions, err := stateDB.LoadPendingManualActions()
 	if err != nil {
 		return false, err
@@ -41,8 +41,10 @@ func pendingPositionIncreasingActionExists(stateDB *StateDB, strategyID, symbol 
 		if a.StrategyID != strategyID || !strings.EqualFold(a.Symbol, symbol) {
 			continue
 		}
-		if a.Action == "open" || a.Action == "add" {
-			return true, nil
+		for _, k := range kinds {
+			if a.Action == k {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -233,21 +235,39 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 		return
 	}
 
+	// Serialize trade-action submits: the double-fire guard below is a
+	// check-then-submit, so without this two concurrent requests could both
+	// observe no-pending/Flat and both fire on-chain. Held across the guard
+	// AND the core (which inserts the pending row), making check+insert
+	// atomic; /api/confirm and read paths never take it.
+	ss.tradeActionMu.Lock()
+	defer ss.tradeActionMu.Unlock()
+
 	// UI-only double-fire guard (not in the shared core — CLI --record-only /
-	// re-register flows must stay untouched): between an open/add submitting
-	// on-chain and the scheduler draining its queued action, the dashboard
-	// still shows Flat, inviting a retry that would double the position.
-	// Refuse a UI open while this strategy already holds the symbol or a
-	// position-increasing action is still queued; refuse a UI add while one
-	// is queued. A peer strategy's position on the same coin does not block
-	// (the view is scoped to this strategy's own positions), and once the
-	// drain applies + deletes the row a legitimate re-open passes again.
-	if action == "open" || action == "add" {
-		if pending, perr := pendingPositionIncreasingActionExists(ss.stateDB, id, sc.Symbol); perr != nil {
+	// re-register flows must stay untouched): between an action submitting
+	// on-chain and the scheduler draining its queued row, the dashboard still
+	// shows the pre-action state, inviting a retry that would double the
+	// position (open/add) or — since a sized manual close is a regular
+	// non-reduce-only order — close the remainder AND flip into an opposite
+	// position (close). Refuse an open while this strategy already holds the
+	// symbol or an open/add is queued; refuse an add while one is queued;
+	// refuse a close/force-close while a close is queued. A peer strategy's
+	// position on the same coin does not block (the view is scoped to this
+	// strategy's own positions), and once the drain applies + deletes the row
+	// a legitimate retry passes again.
+	var guardKinds []string
+	switch action {
+	case "open", "add":
+		guardKinds = []string{"open", "add"}
+	case "close", "force-close":
+		guardKinds = []string{"close"}
+	}
+	if len(guardKinds) > 0 {
+		if pending, perr := pendingManualActionExists(ss.stateDB, id, sc.Symbol, guardKinds...); perr != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("could not check pending actions: %v", perr))
 			return
 		} else if pending {
-			writeJSONError(w, http.StatusConflict, "an open/add for this strategy is already submitted and awaiting the scheduler's next cycle — refresh after it applies before retrying")
+			writeJSONError(w, http.StatusConflict, fmt.Sprintf("a %s for this strategy is already submitted and awaiting the scheduler's next cycle — refresh after it applies before retrying", strings.Join(guardKinds, "/")))
 			return
 		}
 		if action == "open" {

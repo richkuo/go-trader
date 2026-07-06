@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -608,5 +610,120 @@ func TestUICancelSLQueuesAndErrors(t *testing.T) {
 	}
 	if rows, _ := db.LoadPendingManualActions(); len(rows) != 0 {
 		t.Fatalf("no-SL cancel queued %d rows", len(rows))
+	}
+}
+
+// TestUICloseGuardsDoubleFire pins the #1260-review close double-fire guard:
+// close and force-close are refused while a close for the same
+// strategy+symbol is still queued (a sized manual close is NOT reduce-only —
+// a re-click could flip into an opposite position), and pass again once the
+// drain has applied + deleted the row.
+func TestUICloseGuardsDoubleFire(t *testing.T) {
+	ss, db, _ := newTradeActionTestServer(t)
+	stubs := stubTradeDeps(t, ss)
+
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth", Action: "close", Symbol: "ETH", Side: "sell",
+		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending close: %v", err)
+	}
+
+	// close retry -> 409, execute never called (default stub errors if hit).
+	nonce := confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
+	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/close",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already submitted") {
+		t.Fatalf("guarded close status = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// force-close for a peer with its own queued close -> 409, closer not called.
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-perps-eth", Action: "close", Symbol: "ETH", Side: "sell",
+		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending close: %v", err)
+	}
+	nonce = confirmNonceFor(t, ss, "force-close", "hl-perps-eth", `{}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-perps-eth/force-close",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already submitted") {
+		t.Fatalf("guarded force-close status = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// A queued update-sl for the strategy does NOT trip the close guard (the
+	// core's own pendingSLActionExists handles that class) — and after the
+	// drain deletes the close rows, a legitimate close passes.
+	rows, _ := db.LoadPendingManualActions()
+	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		return &HyperliquidExecuteResult{
+			Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: 0.4, OID: 4243, Fee: 1.5}},
+		}, "", nil
+	}
+	nonce = confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/close",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("post-drain close status = %d, body %s", w.Code, w.Body.String())
+	}
+	if rows, _ := db.LoadPendingManualActions(); len(rows) != 1 || rows[0].Action != "close" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// TestUITradeActionsConcurrentOpensSerialized pins the #1260-review atomicity
+// fix: two truly concurrent opens must produce exactly one on-chain submit +
+// one queued row; tradeActionMu makes the guard's check-then-insert atomic.
+func TestUITradeActionsConcurrentOpensSerialized(t *testing.T) {
+	ss, db, _ := newTradeActionTestServer(t)
+	stubs := stubTradeDeps(t, ss)
+	delete(ss.state.Strategies["hl-manual-eth"].Positions, "ETH")
+
+	var execCalls int32
+	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		atomic.AddInt32(&execCalls, 1)
+		time.Sleep(20 * time.Millisecond) // widen the race window
+		return &HyperliquidExecuteResult{
+			Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 0.05, OID: 557, Fee: 0.5}},
+		}, "", nil
+	}
+	stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 998, StopLossTriggerPx: 1900}, "", nil
+	}
+
+	nonces := []string{
+		confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`),
+		confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`),
+	}
+	codes := make(chan int, 2)
+	var wg sync.WaitGroup
+	for _, n := range nonces {
+		wg.Add(1)
+		go func(nonce string) {
+			defer wg.Done()
+			w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/open",
+				fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
+			codes <- w.Code
+		}(n)
+	}
+	wg.Wait()
+	close(codes)
+
+	got := []int{}
+	for c := range codes {
+		got = append(got, c)
+	}
+	sort.Ints(got)
+	if len(got) != 2 || got[0] != http.StatusOK || got[1] != http.StatusConflict {
+		t.Fatalf("codes = %v, want exactly one 200 and one 409", got)
+	}
+	if n := atomic.LoadInt32(&execCalls); n != 1 {
+		t.Fatalf("execute called %d times, want 1", n)
+	}
+	if rows, _ := db.LoadPendingManualActions(); len(rows) != 1 || rows[0].Action != "open" {
+		t.Fatalf("rows = %+v, want exactly one open", rows)
 	}
 }
