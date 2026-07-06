@@ -1133,6 +1133,173 @@ func TestRunForceCloseQueuesPerpsClose(t *testing.T) {
 	}
 }
 
+// TestManualCoresGuardPositionDoubleFire pins the #1260 review-6 hardening: the
+// position-changing cores (manual-open/add/close, force-close) — not just the
+// UI handler — refuse a submit while a position-changing action for the same
+// strategy+symbol is still un-drained, so a rapid CLI re-run (or any future
+// core caller) cannot double-fire an on-chain order. A shared-coin manual close
+// is a sized, non-reduce-only order that a re-click could flip; the queued row
+// would also double-decrement on drain (#1009). Covers: same-action double
+// close, cross-class add-while-close-queued, force-close-while-close-queued,
+// strategy-scoped keying (a peer's queued action never blocks), --record-only
+// bypass, and a legitimate action passing once the row has drained.
+func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &Config{
+		DBFile: dbPath,
+		Strategies: []StrategyConfig{
+			{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
+			// Shared-coin manual peer: makes a manual close a sized,
+			// non-reduce-only order and lets us prove a peer's queued action
+			// never blocks this strategy (strategy-scoped keying).
+			{ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
+			// Production-shaped live perps (no symbol field; coin in args[1]) for
+			// the force-close core guard.
+			{ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
+		},
+	}
+
+	mkPos := func(owner string) *Position {
+		return &Position{
+			Symbol: "ETH", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000,
+			EntryATR: 50, Side: "long", Multiplier: 1, Leverage: 2,
+			OwnerStrategyID: owner, StopLossOID: 111, StopLossTriggerPx: 1900,
+			OpenedAt: time.Now().UTC().Add(-time.Hour),
+		}
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-manual-eth": {ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid",
+			Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": mkPos("hl-manual-eth")}},
+		"hl-perps-eth": {ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
+			Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": mkPos("hl-perps-eth")}},
+	}}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	manualSC, err := lookupManualStrategy(cfg, "hl-manual-eth")
+	if err != nil {
+		t.Fatalf("lookup manual: %v", err)
+	}
+	perpsSC, perpsSym, err := lookupForceCloseStrategy(cfg, "hl-perps-eth")
+	if err != nil {
+		t.Fatalf("lookup perps: %v", err)
+	}
+
+	// firingDeps executes and records the fill; failLoudDeps fails the test if
+	// any venue seam is touched (proving a guarded action never reached it).
+	firingDeps := func(fired *int) manualCoreDeps {
+		d := newCLIManualCoreDeps(cfg, db, nil)
+		d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
+		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			if closeFullPosition {
+				t.Errorf("partial/shared-coin close must be sized (non-reduce-only), got closeFullPosition=true")
+			}
+			*fired++
+			return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 4242, Fee: 1.0}}}, "", nil
+		}
+		return d
+	}
+	failLoudDeps := func() manualCoreDeps {
+		d := newCLIManualCoreDeps(cfg, db, nil)
+		d.fetchMids = func(coins []string) (map[string]float64, error) { return map[string]float64{"ETH": 2000}, nil }
+		d.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+			t.Error("execute must not be called for a guarded action")
+			return nil, "", fmt.Errorf("stub")
+		}
+		d.closer = func(symbol string, partialSz *float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
+			t.Error("closer must not be called for a guarded force-close")
+			return nil, fmt.Errorf("stub")
+		}
+		return d
+	}
+	guardRefusal := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "already submitted")
+	}
+
+	// (1) First (partial, sized) manual close fires the venue and queues a
+	// "close" row.
+	fired := 0
+	if _, err := manualCloseCore(firingDeps(&fired), manualSC, manualCloseInputs{StrategyID: "hl-manual-eth", Qty: 0.2}); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	if fired != 1 {
+		t.Fatalf("first close venue calls = %d, want 1", fired)
+	}
+	rows, _ := db.LoadPendingManualActions()
+	if len(rows) != 1 || rows[0].Action != "close" {
+		t.Fatalf("after first close rows = %+v", rows)
+	}
+
+	// (2) Second close before the drain -> refused, venue NOT re-fired.
+	if _, err := manualCloseCore(failLoudDeps(), manualSC, manualCloseInputs{StrategyID: "hl-manual-eth", Qty: 0.2}); !guardRefusal(err) {
+		t.Fatalf("second close err = %v, want double-fire refusal", err)
+	}
+
+	// (3) Cross-class: manual-add while the close is queued -> refused, no
+	// orphaned buy.
+	if _, err := manualAddCore(failLoudDeps(), manualSC, manualAddInputs{StrategyID: "hl-manual-eth", Margin: 50}); !guardRefusal(err) {
+		t.Fatalf("add-while-close-queued err = %v, want refusal", err)
+	}
+
+	// (4) --record-only bypasses the guard (no new on-chain order; re-register
+	// must stay usable) even with the close still queued — the venue is never
+	// touched and the action is not refused.
+	if _, err := manualAddCore(failLoudDeps(), manualSC, manualAddInputs{StrategyID: "hl-manual-eth", Size: 0.1, FillPrice: 2000, RecordOnly: true}); err != nil {
+		t.Fatalf("record-only add must bypass the guard, got %v", err)
+	}
+
+	// (5) force-close while a close is queued for the SAME perps strategy ->
+	// refused, closer never called. Queue the row under the args-derived symbol
+	// the core writes.
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-perps-eth", Action: "close", Symbol: perpsSym, Side: "sell",
+		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert perps close: %v", err)
+	}
+	if _, err := forceCloseCore(failLoudDeps(), perpsSC, perpsSym, forceCloseInputs{StrategyID: "hl-perps-eth"}); !guardRefusal(err) {
+		t.Fatalf("force-close-while-close-queued err = %v, want refusal", err)
+	}
+
+	// (6) A peer strategy's queued action never blocks this strategy. Clear the
+	// queue (simulating the drain of every prior row, incl. the record-only add),
+	// then queue ONLY the peer's close for the same coin — hl-manual-eth's close
+	// must still proceed (strategy-scoped keying).
+	if all, _ := db.LoadPendingManualActions(); len(all) > 0 {
+		if err := db.DeletePendingManualActionsThrough(all[len(all)-1].ID); err != nil {
+			t.Fatalf("clear queue: %v", err)
+		}
+	}
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth-peer", Action: "close", Symbol: "ETH", Side: "sell",
+		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert peer close: %v", err)
+	}
+	firedPeer := 0
+	if _, err := manualCloseCore(firingDeps(&firedPeer), manualSC, manualCloseInputs{StrategyID: "hl-manual-eth", Qty: 0.2}); err != nil {
+		t.Fatalf("close with only a peer's action queued must pass, got %v", err)
+	}
+	if firedPeer != 1 {
+		t.Fatalf("peer-scoped close venue calls = %d, want 1 (peer must not block)", firedPeer)
+	}
+}
+
 func TestRunForceCloseQueuesCanceledProtectionOnSoleOwnerUnderfill(t *testing.T) {
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
 	dir := t.TempDir()

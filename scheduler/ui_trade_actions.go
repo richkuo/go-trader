@@ -243,18 +243,23 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 	ss.tradeActionMu.Lock()
 	defer ss.tradeActionMu.Unlock()
 
-	// UI-only double-fire guard (not in the shared core — CLI --record-only /
-	// re-register flows must stay untouched): between an action submitting
-	// on-chain and the scheduler draining its queued row, the dashboard still
-	// shows the pre-action state, inviting a retry that would double the
-	// position (open/add) or — since a sized manual close is a regular
-	// non-reduce-only order — close the remainder AND flip into an opposite
-	// position (close). Refuse an open while this strategy already holds the
-	// symbol or an open/add is queued; refuse an add while one is queued;
-	// refuse a close/force-close while a close is queued. A peer strategy's
-	// position on the same coin does not block (the view is scoped to this
-	// strategy's own positions), and once the drain applies + deletes the row
-	// a legitimate retry passes again.
+	// Double-fire guard. The shared cores repeat this refusal
+	// (refuseIfPositionActionQueued in manual_core.go) so the CLI and any future
+	// core caller are covered too; running it HERE additionally makes the
+	// check+submit atomic under tradeActionMu for concurrent HTTP requests (the
+	// cores alone are not atomic without this lock) and lets the open branch add
+	// the UI-only "already holds the symbol" refusal below (the CLI open
+	// deliberately allows --record-only re-register onto an existing position).
+	// Between an action submitting on-chain and the scheduler draining its
+	// queued row, the dashboard still shows the pre-action state, inviting a
+	// retry that would double the position (open/add) or — since a sized manual
+	// close is a regular non-reduce-only order — close the remainder AND flip
+	// into an opposite position (close). Refuse an open while this strategy
+	// already holds the symbol or an open/add is queued; refuse an add while one
+	// is queued; refuse a close/force-close while a close is queued. A peer
+	// strategy's position on the same coin does not block (the view is scoped to
+	// this strategy's own positions), and once the drain applies + deletes the
+	// row a legitimate retry passes again.
 	// The guard must key on the SAME symbol the core writes into the queued
 	// row: perps configs leave the symbol config field empty (the coin lives
 	// in args[1]) and forceCloseCore queues under the args-derived sym, so

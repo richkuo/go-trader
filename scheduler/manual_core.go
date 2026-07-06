@@ -195,6 +195,33 @@ func lookupForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, e
 	return StrategyConfig{}, "", manualFailf("error: strategy %q not found in config", id)
 }
 
+// refuseIfPositionActionQueued fails closed when any position-changing action
+// (open/add/close — force-close queues its fill as a "close" row) for
+// strategyID+symbol is still un-drained in pending_manual_actions. It is the
+// core-level twin of the UI handler's double-fire guard (ui_trade_actions.go):
+// between an action submitting on-chain and the scheduler draining its queued
+// row, a second submit from ANY caller (a rapid CLI re-run, a future core
+// caller) fires a real order the in-memory accounting cannot see yet —
+// doubling/flipping the position (a sized manual close is a regular
+// non-reduce-only order) and orphaning it on drain (#1009 corrupt close).
+// Symmetric with resolveManualSLTargetCore's refusal (#1260 review 5) so no
+// queued row references a position another queued row will delete or reshape
+// first. Callers skip it on --record-only / --dry-run (those place no new
+// on-chain order; --record-only/re-register must stay usable) and key it on the
+// SAME symbol the core writes into the queued row (forceCloseCore uses the
+// args-derived sym, not the empty perps sc.Symbol). Fail closed on a check
+// error.
+func refuseIfPositionActionQueued(d manualCoreDeps, cmdName, strategyID, symbol string) error {
+	pending, err := pendingManualActionExists(d.stateDB, strategyID, symbol, "open", "add", "close")
+	if err != nil {
+		return manualFailf("error: could not check for queued position actions (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	}
+	if pending {
+		return manualFailf("error: a position-changing action (open/add/close) for %s/%s is already submitted and awaiting the scheduler's next cycle — wait for it to apply before running %s again", strategyID, symbol, cmdName)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // manual-open
 
@@ -300,6 +327,17 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			if view.PendingCBClose {
 				return res, manualFailf("error: strategy has a pending circuit-breaker close — manual-open blocked")
 			}
+		}
+	}
+
+	// #1260 review: refuse a second open while a position-changing action is
+	// already queued for this strategy+symbol (a re-fired open doubles the
+	// position). The UI handler guards this too under tradeActionMu; this covers
+	// the CLI + any future core caller. Skip --record-only / --dry-run (no new
+	// on-chain order). Runs before the sizing mid-fetch so a refusal is cheap.
+	if !in.RecordOnly && !in.DryRun {
+		if err := refuseIfPositionActionQueued(d, "manual-open", strategyID, sc.Symbol); err != nil {
+			return res, err
 		}
 	}
 
@@ -591,6 +629,18 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	if pos == nil {
 		return res, manualFailf("error: no open position for %s/%s; open one first with manual-open", strategyID, sc.Symbol)
 	}
+
+	// #1260 review: refuse a scale-in while a position-changing action is queued
+	// for this strategy+symbol — an add fired while a close is queued fires a
+	// real buy that the drain orphans (the close applies first, deletes the
+	// position, then the add row fails every cycle). Skip --record-only /
+	// --dry-run. Runs before the sizing mid-fetch so a refusal is cheap.
+	if !in.RecordOnly && !in.DryRun {
+		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
+			return res, err
+		}
+	}
+
 	side := pos.Side
 	addSide := "buy"
 	if side == "short" {
@@ -729,6 +779,16 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		res.outf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f)",
 			strategyID, closeSide, closeQty, sc.Symbol, pos.Quantity, pos.AvgCost)
 		return res, nil
+	}
+
+	// #1260 review: refuse a second close while a position-changing action is
+	// queued for this strategy+symbol. A re-fired sized manual close is a regular
+	// non-reduce-only order (it can flip into an opposite position), and the
+	// queued close row would double-decrement the position on drain (#1009
+	// corrupt close). Applies to full AND partial close. The UI handler guards
+	// this too; this covers the CLI + any future core caller.
+	if err := refuseIfPositionActionQueued(d, "manual-close", strategyID, sc.Symbol); err != nil {
+		return res, err
 	}
 
 	// #1052 review: refuse a full close while an SL edit for this position is
@@ -908,6 +968,16 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		res.outf("[dry-run] force-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f, %s)",
 			strategyID, closeSide, closeQty, sym, pos.Quantity, pos.AvgCost, mode)
 		return res, nil
+	}
+
+	// #1260 review: refuse a second force-close while a position-changing action
+	// (open/add/close) is queued for this strategy+symbol. force-close is
+	// reduce-only + fill-based-qty so a double-fire is bounded, but keep the
+	// guard symmetric with the other cores and block an add/close queued behind
+	// it. Key on the args-derived sym the queued row uses (perps sc.Symbol is
+	// empty).
+	if err := refuseIfPositionActionQueued(d, "force-close", strategyID, sym); err != nil {
+		return res, err
 	}
 
 	result, execErr := d.closer(sym, partialSz, cancelOIDs)
