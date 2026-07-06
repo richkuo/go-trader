@@ -44,9 +44,11 @@ def _metrics(equities, trades=None, timeframe="1d", initial_capital=1000.0):
     return bt._calculate_metrics(equity_df, trades or [], df, timeframe=timeframe)
 
 
-def _trade(pnl, pnl_pct=0.0):
-    """Minimal stand-in — _calculate_metrics only reads .pnl / .pnl_pct."""
-    return types.SimpleNamespace(pnl=pnl, pnl_pct=pnl_pct)
+def _trade(pnl, pnl_pct=0.0, shares=1.0, entry_price=100.0):
+    """Minimal stand-in — _calculate_metrics reads .pnl / .pnl_pct plus
+    .shares / .entry_price for the #1241 net avg_win/avg_loss notional."""
+    return types.SimpleNamespace(pnl=pnl, pnl_pct=pnl_pct,
+                                 shares=shares, entry_price=entry_price)
 
 
 def _ann_factor(timeframe="1d"):
