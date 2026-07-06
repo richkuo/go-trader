@@ -254,6 +254,43 @@ def test_format_window_report_silent_when_no_liquidation():
 
 
 # ---------------------------------------------------------------------------
+# fee_audit — screen_leg propagation (#1005/#1235): the leg row must flag
+# liquidation when EITHER the net or the gross (zero-friction) run blew the
+# account; dropping either side of the OR silently hides a blown leg.
+# ---------------------------------------------------------------------------
+
+def _screen_leg_with(monkeypatch, net_liquidated, gross_liquidated):
+    def fake_run_leg(reg, name, params, sym, tf, window, capital=0.0,
+                     direction=None, commission_pct=None, slippage_pct=None,
+                     **kw):
+        # commission_pct=0.0 identifies the gross (zero-friction) re-run.
+        is_gross = commission_pct == 0.0
+        blown = gross_liquidated if is_gross else net_liquidated
+        return {"trades": 3, "span_days": 30.0,
+                "return_pct": -100.0 if blown else 1.0,
+                "sharpe": -100.0 if blown else 0.5,
+                "liquidated": blown}
+
+    monkeypatch.setattr(fa, "run_leg", fake_run_leg, raising=True)
+    leg = fa.screen_leg(object(), "x", "BTC/USDT", "1h",
+                        ("2026-01-01", None), capital=1000.0)
+    assert leg is not None and leg["error"] is None
+    return leg
+
+
+def test_screen_leg_liquidated_when_net_run_busts(monkeypatch):
+    assert _screen_leg_with(monkeypatch, True, False)["liquidated"] is True
+
+
+def test_screen_leg_liquidated_when_only_gross_run_busts(monkeypatch):
+    assert _screen_leg_with(monkeypatch, False, True)["liquidated"] is True
+
+
+def test_screen_leg_not_liquidated_when_neither_run_busts(monkeypatch):
+    assert _screen_leg_with(monkeypatch, False, False)["liquidated"] is False
+
+
+# ---------------------------------------------------------------------------
 # fee_audit — aggregation count + markdown section
 # ---------------------------------------------------------------------------
 
