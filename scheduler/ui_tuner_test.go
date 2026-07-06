@@ -240,17 +240,21 @@ func TestPatchStrategyJSONSkipsUntouched(t *testing.T) {
 }
 
 func TestRequireMutatingAPIAuth(t *testing.T) {
+	// #1256 (#1229 security model): unset status_token no longer blocks
+	// mutations — the dashboard is loopback-only and unauthenticated by design.
 	ss := NewStatusServer(NewAppState(), nil, "", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/strategies/x/config", nil)
 	w := httptest.NewRecorder()
-	if ss.requireMutatingAPIAuth(w, req) {
-		t.Fatal("expected auth failure when status_token unset")
-	}
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	if !ss.requireMutatingAPIAuth(w, req) {
+		t.Fatal("expected auth success when status_token unset")
 	}
 
+	// A configured token is still enforced.
 	ss = NewStatusServer(NewAppState(), nil, "secret", nil, nil)
+	w = httptest.NewRecorder()
+	if ss.requireMutatingAPIAuth(w, req) {
+		t.Fatal("expected auth failure without bearer token when configured")
+	}
 	req.Header.Set("Authorization", "Bearer secret")
 	w = httptest.NewRecorder()
 	if !ss.requireMutatingAPIAuth(w, req) {

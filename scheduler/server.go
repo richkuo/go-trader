@@ -42,6 +42,14 @@ type StatusServer struct {
 	intervalSeconds   int              // global check interval for leaderboard entries
 	userCloseDefaults CloseDefaultsMap // user_defaults.close for /api/closing-strategies override marking
 
+	// #1256 mutation surface. globalNotifyRatchet mirrors the top-level
+	// notify_ratchet_triggers (#1110) for GET /api/config/notifications
+	// (guarded by strategiesMu, refreshed via SetConfigContext).
+	// reloadConfig signals the process to hot-reload after a UI config write
+	// (requestSIGHUPReload in production; injectable for tests).
+	globalNotifyRatchet *bool
+	reloadConfig        func() error
+
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
 	// so we don't want to spam logs on every hit — but silently discarding
@@ -84,6 +92,7 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 		stateDB:        stateDB,
 		candleFetcher:  FetchUICandles,
 		candleCache:    NewUICandleCache(30 * time.Second),
+		reloadConfig:   requestSIGHUPReload,
 	}
 }
 
@@ -213,6 +222,10 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies/dead", ss.handleAPIDeadStrategies)
 	mux.HandleFunc("/api/closing-strategies", ss.handleAPIClosingStrategies)
 	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
+	// #1256 low-risk mutation surface (ui_mutations.go): global notification
+	// toggle; per-strategy pause + notification toggles route through the
+	// "/api/strategies/" prefix handler below.
+	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)

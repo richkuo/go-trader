@@ -68,6 +68,10 @@
     tunerStatus: document.getElementById("tuner-status"),
     tunerReset: document.getElementById("tuner-reset"),
     tunerApply: document.getElementById("tuner-apply"),
+    pauseToggle: document.getElementById("pause-toggle"),
+    ratchetNotifySelect: document.getElementById("ratchet-notify-select"),
+    globalRatchetSelect: document.getElementById("global-ratchet-select"),
+    controlsMessage: document.getElementById("controls-message"),
     tunerConfirmDialog: document.getElementById("tuner-confirm-dialog"),
     tunerConfirmText: document.getElementById("tuner-confirm-text"),
     leaderboardBody: document.getElementById("leaderboard-body"),
@@ -529,6 +533,85 @@
     const config = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/config");
     state.tuner.config = config;
     renderTunerForm(config);
+    updateControlsPanel(config);
+    refreshGlobalNotifications().catch(function () {});
+  }
+
+  // #1256 low-risk mutation controls: pause/unpause + ratchet-alert toggles.
+  function setControlsMessage(text) {
+    if (!els.controlsMessage) return;
+    els.controlsMessage.textContent = text || "";
+    els.controlsMessage.hidden = !text;
+  }
+
+  function updateControlsPanel(config) {
+    if (els.pauseToggle) {
+      els.pauseToggle.hidden = !config;
+      if (config) {
+        els.pauseToggle.textContent = config.paused ? "Resume strategy" : "Pause strategy";
+        els.pauseToggle.dataset.paused = config.paused ? "1" : "";
+      }
+    }
+    if (els.ratchetNotifySelect && config) {
+      const v = config.notify_ratchet_triggers;
+      els.ratchetNotifySelect.value = v === null || v === undefined ? "inherit" : (v ? "on" : "off");
+    }
+  }
+
+  async function refreshGlobalNotifications() {
+    if (!els.globalRatchetSelect) return;
+    const resp = await getJSON("/api/config/notifications");
+    const v = resp.notify_ratchet_triggers;
+    els.globalRatchetSelect.value = v === null || v === undefined ? "default" : (v ? "on" : "off");
+  }
+
+  function triStateToValue(v, inheritKey) {
+    if (v === inheritKey) return null;
+    return v === "on";
+  }
+
+  async function togglePause() {
+    if (!state.activeID || !els.pauseToggle) return;
+    const next = !els.pauseToggle.dataset.paused;
+    els.pauseToggle.disabled = true;
+    try {
+      const resp = await postJSON(
+        "/api/strategies/" + encodeURIComponent(state.activeID) + "/pause",
+        { paused: next }
+      );
+      setControlsMessage(resp.message || "");
+      await loadTunerConfig();
+      await refreshAll();
+    } catch (err) {
+      setControlsMessage("Pause failed: " + err.message);
+    } finally {
+      els.pauseToggle.disabled = false;
+    }
+  }
+
+  async function changeStrategyRatchetNotify() {
+    if (!state.activeID || !els.ratchetNotifySelect) return;
+    try {
+      const resp = await postJSON(
+        "/api/strategies/" + encodeURIComponent(state.activeID) + "/notifications",
+        { notify_ratchet_triggers: triStateToValue(els.ratchetNotifySelect.value, "inherit") }
+      );
+      setControlsMessage(resp.message || "");
+    } catch (err) {
+      setControlsMessage("Notification toggle failed: " + err.message);
+    }
+  }
+
+  async function changeGlobalRatchetNotify() {
+    if (!els.globalRatchetSelect) return;
+    try {
+      const resp = await postJSON("/api/config/notifications", {
+        notify_ratchet_triggers: triStateToValue(els.globalRatchetSelect.value, "default"),
+      });
+      setControlsMessage(resp.message || "");
+    } catch (err) {
+      setControlsMessage("Global notification toggle failed: " + err.message);
+    }
   }
 
   function buildSimulateOverrides() {
@@ -1390,6 +1473,21 @@
   }
   if (els.tunerReset) {
     els.tunerReset.addEventListener("click", resetTunerToLive);
+  }
+  if (els.pauseToggle) {
+    els.pauseToggle.addEventListener("click", function () {
+      togglePause().catch(handleRefreshError);
+    });
+  }
+  if (els.ratchetNotifySelect) {
+    els.ratchetNotifySelect.addEventListener("change", function () {
+      changeStrategyRatchetNotify().catch(handleRefreshError);
+    });
+  }
+  if (els.globalRatchetSelect) {
+    els.globalRatchetSelect.addEventListener("change", function () {
+      changeGlobalRatchetNotify().catch(handleRefreshError);
+    });
   }
   if (els.tunerApply) {
     els.tunerApply.addEventListener("click", function () {

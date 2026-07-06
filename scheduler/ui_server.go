@@ -247,6 +247,11 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 			return
 		}
 		ss.handleAPIStrategySimulate(w, r, id)
+	// #1256 low-risk mutations (ui_mutations.go); POST-only enforced inside.
+	case "pause":
+		ss.handleAPIStrategyPause(w, r, id)
+	case "notifications":
+		ss.handleAPIStrategyNotifications(w, r, id)
 	default:
 		http.NotFound(w, r)
 	}

@@ -192,6 +192,29 @@
                 <h3>Regime transitions</h3>
                 <div id="transitions-content" class="panel-list"></div>
               </div>
+              <div class="controls-panel">
+                <h3>Controls</h3>
+                <div class="controls-row">
+                  <button id="pause-toggle" type="button" class="tuner-button secondary" hidden>Pause</button>
+                </div>
+                <label class="controls-field">
+                  <span>Ratchet alerts</span>
+                  <select id="ratchet-notify-select">
+                    <option value="inherit">Inherit global</option>
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+                <label class="controls-field">
+                  <span>Global ratchet alerts</span>
+                  <select id="global-ratchet-select">
+                    <option value="default">Default (on)</option>
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+                <p id="controls-message" class="controls-message" hidden></p>
+              </div>
               <section id="tuner-panel" class="tuner-panel" hidden>
                 <div class="tuner-header">
                   <h3>Strategy tuner</h3>

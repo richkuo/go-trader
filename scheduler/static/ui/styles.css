@@ -557,7 +557,8 @@ h3 {
 /* #1230: risk / regime-store / transitions panels in the status rail */
 .risk-panel,
 .regime-store-panel,
-.transitions-panel {
+.transitions-panel,
+.controls-panel {
   border-top: 1px solid var(--line);
   padding-top: 14px;
 }
@@ -984,7 +985,8 @@ h3 {
 .positions h3,
 .risk-panel h3,
 .regime-store-panel h3,
-.transitions-panel h3 {
+.transitions-panel h3,
+.controls-panel h3 {
   margin: 0;
   font-size: 14px;
 }
@@ -1132,4 +1134,34 @@ h3 {
 
 .overview-panel[hidden] {
   display: none;
+}
+
+/* #1256: low-risk mutation controls (pause + ratchet-alert toggles) */
+.controls-row {
+  margin: 10px 0 6px;
+}
+
+.controls-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 5px 0;
+}
+
+.controls-field select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.controls-message {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
