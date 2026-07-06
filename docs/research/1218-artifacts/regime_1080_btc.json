@@ -1,0 +1,2755 @@
+{
+  "symbol": "BTC/USDT",
+  "timeframe": "1h",
+  "in_sample": "is",
+  "held_out": "oos",
+  "target": "volatility",
+  "candidate_count": 18,
+  "significance_alpha": 0.05,
+  "bonferroni_alpha": 0.005555555555555556,
+  "bonferroni_denominator": 9,
+  "bonferroni_denominator_policy": "structurally ineligible candidates (k < incumbent-derived min_active_labels) are scored for evidence but excluded from the family-wise denominator",
+  "structurally_ineligible": [
+    {
+      "family": "hmm",
+      "k": 2,
+      "reason": "k=2 can emit at most 2 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "hmm",
+      "k": 3,
+      "reason": "k=3 can emit at most 3 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "hmm",
+      "k": 4,
+      "reason": "k=4 can emit at most 4 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "gmm",
+      "k": 2,
+      "reason": "k=2 can emit at most 2 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "gmm",
+      "k": 3,
+      "reason": "k=3 can emit at most 3 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "gmm",
+      "k": 4,
+      "reason": "k=4 can emit at most 4 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "kmeans",
+      "k": 2,
+      "reason": "k=2 can emit at most 2 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "kmeans",
+      "k": 3,
+      "reason": "k=3 can emit at most 3 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    },
+    {
+      "family": "kmeans",
+      "k": 4,
+      "reason": "k=4 can emit at most 4 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable"
+    }
+  ],
+  "n_perm": 1000,
+  "min_achievable_p_value": 0.000999000999000999,
+  "non_degeneracy_thresholds": {
+    "min_active_labels": 5,
+    "max_occupancy": 0.39199381938880623,
+    "min_transition_rate": 0.0686763372620127
+  },
+  "handrule_held_out": {
+    "kruskal_h": 85.69059649660267,
+    "p_value": 0.005994005994005994,
+    "transition_rate": 0.1373526745240254,
+    "abstained": false,
+    "permutation_steps_to_alpha": 44,
+    "knife_edge": false
+  },
+  "candidates": [
+    {
+      "family": "hmm",
+      "k": 2,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 46.592415770166554,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.013986013986013986,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.03513145965548504
+        }
+      },
+      "model_kruskal_h": 46.592415770166554,
+      "model_p_value": 0.013986013986013986,
+      "stability_gain": 0.10222121486854036,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 2150,
+          "pct": 0.4871969181962384
+        },
+        "ranging_volatile": {
+          "count": 2263,
+          "pct": 0.5128030818037617
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 2,
+          "max_occupancy": 0.5682331212805254,
+          "transition_rate": 0.035303776683087026,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.568 > 0.392",
+            "min_transition_rate: 0.0353 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 2,
+          "max_occupancy": 0.5128030818037617,
+          "transition_rate": 0.03513145965548504,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.513 > 0.392",
+            "min_transition_rate: 0.0351 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 2,
+          "max_occupancy": 0.5485871812543074,
+          "transition_rate": 0.03526708788052843,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.549 > 0.392",
+            "min_transition_rate: 0.0353 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 2,
+          "max_occupancy": 0.5087558658578459,
+          "transition_rate": 0.0383470695970696,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.509 > 0.392",
+            "min_transition_rate: 0.0383 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 2,
+          "max_occupancy": 0.5310681871072842,
+          "transition_rate": 0.03235567970204842,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.531 > 0.392",
+            "min_transition_rate: 0.0324 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=2 can emit at most 2 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_directional_down",
+        "ranging_volatile"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.00755126055449094,
+            0.18354201174585266,
+            0.23146087182239317,
+            36.85508276421143
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.005683939134586702,
+            0.12318410209359588,
+            0.07791568270198539,
+            21.87381095910724
+          ],
+          "volatility_rank": 0
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "hmm",
+      "k": 3,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 74.69963537831609,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.02097902097902098,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.044424297370806894
+        }
+      },
+      "model_kruskal_h": 74.69963537831609,
+      "model_p_value": 0.02097902097902098,
+      "stability_gain": 0.0929283771532185,
+      "coverage": {
+        "ranging_volatile": {
+          "count": 2125,
+          "pct": 0.48153183775209607
+        },
+        "trending_down_choppy": {
+          "count": 1289,
+          "pct": 0.29209154769997736
+        },
+        "trending_up_choppy": {
+          "count": 999,
+          "pct": 0.22637661454792657
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 3,
+          "max_occupancy": 0.5448389082700595,
+          "transition_rate": 0.04187192118226601,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.545 > 0.392",
+            "min_transition_rate: 0.0419 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 3,
+          "max_occupancy": 0.48153183775209607,
+          "transition_rate": 0.044424297370806894,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.482 > 0.392",
+            "min_transition_rate: 0.0444 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 3,
+          "max_occupancy": 0.5323914541695383,
+          "transition_rate": 0.04032165422171166,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.532 > 0.392",
+            "min_transition_rate: 0.0403 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 3,
+          "max_occupancy": 0.4841478768455992,
+          "transition_rate": 0.04681776556776557,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.484 > 0.392",
+            "min_transition_rate: 0.0468 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 3,
+          "max_occupancy": 0.512217826390505,
+          "transition_rate": 0.04189944134078212,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.512 > 0.392",
+            "min_transition_rate: 0.0419 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=3 can emit at most 3 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_volatile",
+        "trending_down_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.00524331067616402,
+            0.12216174978953546,
+            0.07160931828841736,
+            21.96761195888488
+          ],
+          "volatility_rank": 0
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.10475628408767888,
+            0.17786530614441362,
+            0.212300950251665,
+            37.13169664606488
+          ],
+          "volatility_rank": 1
+        },
+        "2": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.12493967054949551,
+            0.18493165309502024,
+            0.25164207675883726,
+            33.985550586827706
+          ],
+          "volatility_rank": 2
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "hmm",
+      "k": 4,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 79.70415786133162,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.02197802197802198,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.08363553943789664
+        }
+      },
+      "model_kruskal_h": 79.70415786133162,
+      "model_p_value": 0.02197802197802198,
+      "stability_gain": 0.05371713508612874,
+      "coverage": {
+        "ranging_directional_up": {
+          "count": 1732,
+          "pct": 0.39247677317017904
+        },
+        "ranging_volatile": {
+          "count": 1089,
+          "pct": 0.2467709041468389
+        },
+        "trending_down_choppy": {
+          "count": 957,
+          "pct": 0.2168592794017675
+        },
+        "trending_up_choppy": {
+          "count": 635,
+          "pct": 0.1438930432812146
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.37779601887954034,
+          "transition_rate": 0.0812807881773399,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.39247677317017904,
+          "transition_rate": 0.08363553943789664,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.392 > 0.392"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.3766368022053756,
+          "transition_rate": 0.08902929350947732,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.39487238182442486,
+          "transition_rate": 0.0850503663003663,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.395 > 0.392"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.3912031649988364,
+          "transition_rate": 0.0947392923649907,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=4 can emit at most 4 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_directional_up",
+        "trending_down_choppy",
+        "trending_up_choppy",
+        "ranging_volatile"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_up",
+          "centroid_raw": [
+            0.005304241028108408,
+            0.14228848502567515,
+            0.12727315163306863,
+            26.43549789652893
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.122736288062705,
+            0.18749135701273506,
+            0.24754881783372096,
+            40.02275531027101
+          ],
+          "volatility_rank": 2
+        },
+        "2": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.14701434638993968,
+            0.2014930801859868,
+            0.29385455922992165,
+            36.55496800842193
+          ],
+          "volatility_rank": 3
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0019271255101770148,
+            0.11394121664098841,
+            0.04336154333875711,
+            20.51861500846088
+          ],
+          "volatility_rank": 0
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "hmm",
+      "k": 5,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 59.30301533318925,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.025974025974025976,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.06754306436990028
+        }
+      },
+      "model_kruskal_h": 59.30301533318925,
+      "model_p_value": 0.025974025974025976,
+      "stability_gain": 0.06980961015412511,
+      "coverage": {
+        "ranging_volatile": {
+          "count": 1233,
+          "pct": 0.2794017675050986
+        },
+        "trending_down_choppy": {
+          "count": 1660,
+          "pct": 0.3761613414910492
+        },
+        "trending_up_choppy": {
+          "count": 1520,
+          "pct": 0.3444368910038523
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 3,
+          "max_occupancy": 0.3539913810794172,
+          "transition_rate": 0.07655993431855501,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 3,
+          "max_occupancy": 0.3761613414910492,
+          "transition_rate": 0.06754306436990028,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "min_transition_rate: 0.0675 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 3,
+          "max_occupancy": 0.3658396508155295,
+          "transition_rate": 0.08661688684663986,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 3,
+          "max_occupancy": 0.39716149708137805,
+          "transition_rate": 0.07268772893772894,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.397 > 0.392"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 3,
+          "max_occupancy": 0.3618803816616244,
+          "transition_rate": 0.08426443202979515,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "trending_up_choppy",
+        "trending_down_choppy",
+        "trending_down_choppy",
+        "ranging_volatile",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.06858203092811292,
+            0.13660100493347754,
+            0.1434990528874797,
+            24.10252406232175
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.13004439074913146,
+            0.19071522685542275,
+            0.26217293250219587,
+            41.18210134496014
+          ],
+          "volatility_rank": 3
+        },
+        "2": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.06231675737044698,
+            0.1479476962528805,
+            0.12895368181959263,
+            28.84225779849284
+          ],
+          "volatility_rank": 2
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0009132888711901893,
+            0.11753247708653275,
+            0.03996660878847583,
+            21.292055426420568
+          ],
+          "volatility_rank": 0
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.14996145956495005,
+            0.2032693542696212,
+            0.29922876998934556,
+            36.86192557168001
+          ],
+          "volatility_rank": 4
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "hmm",
+      "k": 6,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": true,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": true,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 81.49093805047596,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.015984015984015984,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.078649138712602
+        }
+      },
+      "model_kruskal_h": 81.49093805047596,
+      "model_p_value": 0.015984015984015984,
+      "stability_gain": 0.05870353581142339,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 503,
+          "pct": 0.11398141853614321
+        },
+        "ranging_volatile": {
+          "count": 977,
+          "pct": 0.22139134375708136
+        },
+        "trending_down_choppy": {
+          "count": 1470,
+          "pct": 0.33310673011556763
+        },
+        "trending_up_choppy": {
+          "count": 1463,
+          "pct": 0.33152050759120777
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.30679253026882825,
+          "transition_rate": 0.08087027914614121,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.33310673011556763,
+          "transition_rate": 0.078649138712602,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.34918447048012863,
+          "transition_rate": 0.08477886272257323,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.3848002746938308,
+          "transition_rate": 0.08195970695970696,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.34652082848498955,
+          "transition_rate": 0.08472998137802606,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "ranging_directional_down",
+        "trending_down_choppy",
+        "trending_down_choppy",
+        "ranging_volatile",
+        "trending_up_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.015576564159259062,
+            0.1409264693931202,
+            0.04904287048517281,
+            30.606690861198643
+          ],
+          "volatility_rank": 2
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.07171639208781058,
+            0.14925489298240077,
+            0.1489040332341788,
+            28.359693348998004
+          ],
+          "volatility_rank": 3
+        },
+        "2": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.13247631426400705,
+            0.19218777047541963,
+            0.26669870231960446,
+            41.43178959229569
+          ],
+          "volatility_rank": 4
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0032806352589625698,
+            0.11226572629636841,
+            0.044761126300617696,
+            18.905984474990973
+          ],
+          "volatility_rank": 0
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.07035774771731626,
+            0.1381702946168062,
+            0.1470921661867227,
+            24.452193257436953
+          ],
+          "volatility_rank": 1
+        },
+        "5": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.15079288674498723,
+            0.20385184522988262,
+            0.3007071101257731,
+            36.9852980486165
+          ],
+          "volatility_rank": 5
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "hmm",
+      "k": 7,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 72.09895597191462,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.02197802197802198,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.08340888485947416
+        }
+      },
+      "model_kruskal_h": 72.09895597191462,
+      "model_p_value": 0.02197802197802198,
+      "stability_gain": 0.053943789664551225,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 500,
+          "pct": 0.11330160888284614
+        },
+        "ranging_volatile": {
+          "count": 907,
+          "pct": 0.20552911851348288
+        },
+        "trending_down_choppy": {
+          "count": 1484,
+          "pct": 0.33627917516428735
+        },
+        "trending_up_choppy": {
+          "count": 1522,
+          "pct": 0.34489009743938365
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.32444079622409194,
+          "transition_rate": 0.09072249589490969,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.34489009743938365,
+          "transition_rate": 0.08340888485947416,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.3607856650585803,
+          "transition_rate": 0.09144170017231476,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.3947579260615772,
+          "transition_rate": 0.08871336996336997,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.395 > 0.392"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.36397486618571095,
+          "transition_rate": 0.09054934823091247,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "ranging_volatile",
+        "trending_up_choppy",
+        "ranging_directional_down",
+        "trending_down_choppy",
+        "trending_up_choppy",
+        "trending_down_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0005027356107206483,
+            0.11224814725364951,
+            0.04079247667809589,
+            18.988498426771645
+          ],
+          "volatility_rank": 0
+        },
+        "1": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.06111146207075637,
+            0.1277461692846439,
+            0.1285781254011893,
+            21.72377877665248
+          ],
+          "volatility_rank": 1
+        },
+        "2": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.015831001301463775,
+            0.14171160686435166,
+            0.05017179280590109,
+            30.846818863994507
+          ],
+          "volatility_rank": 2
+        },
+        "3": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.1323396028727731,
+            0.1921095054462609,
+            0.2664447892145779,
+            41.419318214636014
+          ],
+          "volatility_rank": 5
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.105654469546394,
+            0.16991364996595193,
+            0.21809980480108276,
+            32.00984351908438
+          ],
+          "volatility_rank": 4
+        },
+        "5": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.07160917965624518,
+            0.14887466219276577,
+            0.14873261833412502,
+            28.223670437952606
+          ],
+          "volatility_rank": 3
+        },
+        "6": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.1858194821022053,
+            0.23319830462351757,
+            0.3611696456239619,
+            40.98326439356847
+          ],
+          "volatility_rank": 6
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "gmm",
+      "k": 2,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 41.91367063147118,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.03896103896103896,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.04374433363553944
+        }
+      },
+      "model_kruskal_h": 41.91367063147118,
+      "model_p_value": 0.03896103896103896,
+      "stability_gain": 0.09360834088848595,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 2121,
+          "pct": 0.4806254248810333
+        },
+        "ranging_volatile": {
+          "count": 2292,
+          "pct": 0.5193745751189667
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 2,
+          "max_occupancy": 0.5731582187564129,
+          "transition_rate": 0.038998357963875206,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.573 > 0.392",
+            "min_transition_rate: 0.0390 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 2,
+          "max_occupancy": 0.5193745751189667,
+          "transition_rate": 0.04374433363553944,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.519 > 0.392",
+            "min_transition_rate: 0.0437 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 2,
+          "max_occupancy": 0.5569722030783367,
+          "transition_rate": 0.04055140723721999,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.557 > 0.392",
+            "min_transition_rate: 0.0406 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 2,
+          "max_occupancy": 0.5143641982373812,
+          "transition_rate": 0.04429945054945055,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.514 > 0.392",
+            "min_transition_rate: 0.0443 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 2,
+          "max_occupancy": 0.5396788457063068,
+          "transition_rate": 0.036080074487895714,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.540 > 0.392",
+            "min_transition_rate: 0.0361 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=2 can emit at most 2 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_directional_down",
+        "ranging_volatile"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.005502734254364465,
+            0.18342747882528565,
+            0.23564357528921204,
+            36.44092213232946
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.004075595150556658,
+            0.12384805866393585,
+            0.07637036554941636,
+            22.317461369474312
+          ],
+          "volatility_rank": 0
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "gmm",
+      "k": 3,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 75.42070759586932,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.028971028971028972,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.046010879419764276
+        }
+      },
+      "model_kruskal_h": 75.42070759586932,
+      "model_p_value": 0.028971028971028972,
+      "stability_gain": 0.0913417951042611,
+      "coverage": {
+        "ranging_volatile": {
+          "count": 2336,
+          "pct": 0.5293451167006572
+        },
+        "trending_down_choppy": {
+          "count": 1193,
+          "pct": 0.27033763879447087
+        },
+        "trending_up_choppy": {
+          "count": 884,
+          "pct": 0.20031724450487198
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 3,
+          "max_occupancy": 0.5869074492099323,
+          "transition_rate": 0.04351395730706076,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.587 > 0.392",
+            "min_transition_rate: 0.0435 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 3,
+          "max_occupancy": 0.5293451167006572,
+          "transition_rate": 0.046010879419764276,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.529 > 0.392",
+            "min_transition_rate: 0.0460 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 3,
+          "max_occupancy": 0.5816678152997933,
+          "transition_rate": 0.0450315910396324,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.582 > 0.392",
+            "min_transition_rate: 0.0450 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 3,
+          "max_occupancy": 0.5315325626645302,
+          "transition_rate": 0.0486492673992674,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.532 > 0.392",
+            "min_transition_rate: 0.0486 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 3,
+          "max_occupancy": 0.5636490574819641,
+          "transition_rate": 0.04306331471135941,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.564 > 0.392",
+            "min_transition_rate: 0.0431 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=3 can emit at most 3 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_volatile",
+        "trending_down_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.005075012008396578,
+            0.12542688421784254,
+            0.07731733918469537,
+            22.80853912855038
+          ],
+          "volatility_rank": 0
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.11169832379968075,
+            0.18075344293670947,
+            0.22614432446324395,
+            37.95211672005942
+          ],
+          "volatility_rank": 1
+        },
+        "2": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.1340999106165127,
+            0.19045167141845493,
+            0.26951698909831107,
+            34.75884620438009
+          ],
+          "volatility_rank": 2
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "gmm",
+      "k": 4,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 79.41439963154335,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.014985014985014986,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.11536718041704443
+        }
+      },
+      "model_kruskal_h": 79.41439963154335,
+      "model_p_value": 0.014985014985014986,
+      "stability_gain": 0.02198549410698096,
+      "coverage": {
+        "ranging_directional_up": {
+          "count": 1808,
+          "pct": 0.40969861772037164
+        },
+        "ranging_volatile": {
+          "count": 1099,
+          "pct": 0.2490369363244958
+        },
+        "trending_down_choppy": {
+          "count": 920,
+          "pct": 0.20847496034443688
+        },
+        "trending_up_choppy": {
+          "count": 586,
+          "pct": 0.13278948561069567
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.41719679868664067,
+          "transition_rate": 0.12315270935960591,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.417 > 0.392"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.40969861772037164,
+          "transition_rate": 0.11536718041704443,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.410 > 0.392"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.40167700436480586,
+          "transition_rate": 0.1283170591614015,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.402 > 0.392"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.41066727709740186,
+          "transition_rate": 0.11813186813186813,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.411 > 0.392"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.42168955084942983,
+          "transition_rate": 0.1287243947858473,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.422 > 0.392"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=4 can emit at most 4 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_directional_up",
+        "trending_down_choppy",
+        "trending_up_choppy",
+        "ranging_volatile"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_up",
+          "centroid_raw": [
+            0.00457184308135086,
+            0.14117198914657933,
+            0.13016782117280135,
+            26.279365223934754
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.12806118155554375,
+            0.18917897023958513,
+            0.258518321860861,
+            40.69123511613657
+          ],
+          "volatility_rank": 2
+        },
+        "2": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.1531857875320342,
+            0.20370535438544335,
+            0.3062979664033859,
+            36.66833846625733
+          ],
+          "volatility_rank": 3
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0005503865234446904,
+            0.11672577515526995,
+            0.03512918327968835,
+            21.139713393407842
+          ],
+          "volatility_rank": 0
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "gmm",
+      "k": 5,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 64.66643447978277,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.02097902097902098,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.08091568449682683
+        }
+      },
+      "model_kruskal_h": 64.66643447978277,
+      "model_p_value": 0.02097902097902098,
+      "stability_gain": 0.056436990027198555,
+      "coverage": {
+        "ranging_volatile": {
+          "count": 1339,
+          "pct": 0.30342170858826195
+        },
+        "trending_down_choppy": {
+          "count": 1606,
+          "pct": 0.3639247677317018
+        },
+        "trending_up_choppy": {
+          "count": 1468,
+          "pct": 0.33265352368003626
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 3,
+          "max_occupancy": 0.3511184075518161,
+          "transition_rate": 0.08805418719211823,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 3,
+          "max_occupancy": 0.3639247677317018,
+          "transition_rate": 0.08091568449682683,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        },
+        "2023": {
+          "active_labels": 3,
+          "max_occupancy": 0.36928555019526765,
+          "transition_rate": 0.09259046524985641,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 3,
+          "max_occupancy": 0.3848002746938308,
+          "transition_rate": 0.08573717948717949,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 3,
+          "max_occupancy": 0.35233884105189667,
+          "transition_rate": 0.0947392923649907,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "trending_up_choppy",
+        "trending_down_choppy",
+        "trending_down_choppy",
+        "ranging_volatile",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.0706191130188882,
+            0.1381936326109156,
+            0.14737582484656542,
+            24.579787311899803
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.1337649695157418,
+            0.19126000819091887,
+            0.2694825949680144,
+            41.155051147028196
+          ],
+          "volatility_rank": 3
+        },
+        "2": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.06702725712046893,
+            0.14969901388622933,
+            0.1386605674979722,
+            29.35247888903386
+          ],
+          "volatility_rank": 2
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0004500652671430372,
+            0.11993989131217989,
+            0.04165722618700232,
+            21.900865684325883
+          ],
+          "volatility_rank": 0
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.15276097054683546,
+            0.20293583619438454,
+            0.30517825382212493,
+            36.533061068509596
+          ],
+          "volatility_rank": 4
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "gmm",
+      "k": 6,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": false,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 67.97953532132124,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.012987012987012988,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.12692656391659113
+        }
+      },
+      "model_kruskal_h": 67.97953532132124,
+      "model_p_value": 0.012987012987012988,
+      "stability_gain": 0.010426110607434258,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 460,
+          "pct": 0.10423748017221844
+        },
+        "ranging_volatile": {
+          "count": 1098,
+          "pct": 0.24881033310673012
+        },
+        "trending_down_choppy": {
+          "count": 1300,
+          "pct": 0.29458418309539997
+        },
+        "trending_up_choppy": {
+          "count": 1555,
+          "pct": 0.35236800362565146
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.3303919556741227,
+          "transition_rate": 0.14942528735632185,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.35236800362565146,
+          "transition_rate": 0.12692656391659113,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.37606248564208594,
+          "transition_rate": 0.14198736358414704,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.4071191484491244,
+          "transition_rate": 0.1353021978021978,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.407 > 0.392"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.3714219222713521,
+          "transition_rate": 0.1478119180633147,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "ranging_directional_down",
+        "trending_down_choppy",
+        "trending_down_choppy",
+        "ranging_volatile",
+        "trending_up_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.04366630374896207,
+            0.1376664538800906,
+            0.08970357405499844,
+            27.381210974078254
+          ],
+          "volatility_rank": 2
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.08183455114005711,
+            0.15529976336577972,
+            0.16997439493176705,
+            30.400763213013317
+          ],
+          "volatility_rank": 3
+        },
+        "2": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.13835159772007966,
+            0.19365601953711425,
+            0.2779414009307426,
+            41.71191129682961
+          ],
+          "volatility_rank": 4
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0028228376070924925,
+            0.11896908510777429,
+            0.03376595501632661,
+            21.585861943722634
+          ],
+          "volatility_rank": 0
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.06629388657860845,
+            0.13569875405916726,
+            0.1385579721518705,
+            24.01400144089481
+          ],
+          "volatility_rank": 1
+        },
+        "5": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.1497865291712852,
+            0.20083358057455686,
+            0.2995779001351577,
+            36.23587973180108
+          ],
+          "volatility_rank": 5
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "gmm",
+      "k": 7,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": false,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 65.59212172530533,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.012987012987012988,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.12941976427923843
+        }
+      },
+      "model_kruskal_h": 65.59212172530533,
+      "model_p_value": 0.012987012987012988,
+      "stability_gain": 0.007932910244786956,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 473,
+          "pct": 0.10718332200317245
+        },
+        "ranging_volatile": {
+          "count": 1056,
+          "pct": 0.23929299796057105
+        },
+        "trending_down_choppy": {
+          "count": 1303,
+          "pct": 0.295263992748697
+        },
+        "trending_up_choppy": {
+          "count": 1581,
+          "pct": 0.35825968728755947
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.3400369382310692,
+          "transition_rate": 0.15722495894909688,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.35825968728755947,
+          "transition_rate": 0.12941976427923843,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.38295428440156215,
+          "transition_rate": 0.1488799540493969,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.41410094998283165,
+          "transition_rate": 0.13896520146520147,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.414 > 0.392"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.38259250639981385,
+          "transition_rate": 0.14827746741154563,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "ranging_volatile",
+        "trending_up_choppy",
+        "ranging_directional_down",
+        "trending_down_choppy",
+        "trending_up_choppy",
+        "trending_down_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.0022947929224514823,
+            0.11891198434975563,
+            0.03209652576498716,
+            21.592638263884417
+          ],
+          "volatility_rank": 0
+        },
+        "1": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.05956804630290927,
+            0.13165520002611947,
+            0.1252215417900794,
+            23.202130277349845
+          ],
+          "volatility_rank": 1
+        },
+        "2": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.043048333860697556,
+            0.13710792497169225,
+            0.08845741126450657,
+            27.243439041137435
+          ],
+          "volatility_rank": 2
+        },
+        "3": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.13835739445423156,
+            0.19366973147017236,
+            0.27794533852303344,
+            41.71623498569485
+          ],
+          "volatility_rank": 5
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.11248705075507764,
+            0.1686760357895703,
+            0.23191841817007863,
+            31.162267944254612
+          ],
+          "volatility_rank": 4
+        },
+        "5": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.08165555504625843,
+            0.15522522322836885,
+            0.16958343466574566,
+            30.383448024235634
+          ],
+          "volatility_rank": 3
+        },
+        "6": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.18647829244425287,
+            0.23222873446749664,
+            0.3629435706729254,
+            40.44885185634014
+          ],
+          "volatility_rank": 6
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "kmeans",
+      "k": 2,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 43.9607670861169,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.03496503496503497,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.03150498640072529
+        }
+      },
+      "model_kruskal_h": 43.9607670861169,
+      "model_p_value": 0.03496503496503497,
+      "stability_gain": 0.10584768812330009,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 1857,
+          "pct": 0.42080217539089054
+        },
+        "ranging_volatile": {
+          "count": 2556,
+          "pct": 0.5791978246091094
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 2,
+          "max_occupancy": 0.621998768725631,
+          "transition_rate": 0.031609195402298854,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.622 > 0.392",
+            "min_transition_rate: 0.0316 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 2,
+          "max_occupancy": 0.5791978246091094,
+          "transition_rate": 0.03150498640072529,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.579 > 0.392",
+            "min_transition_rate: 0.0315 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 2,
+          "max_occupancy": 0.616815988973122,
+          "transition_rate": 0.03067202757036186,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.617 > 0.392",
+            "min_transition_rate: 0.0307 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 2,
+          "max_occupancy": 0.57456792949525,
+          "transition_rate": 0.03514194139194139,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.575 > 0.392",
+            "min_transition_rate: 0.0351 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 2,
+          "max_occupancy": 0.5985571328834071,
+          "transition_rate": 0.031890130353817506,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 2 < 5",
+            "max_occupancy: 0.599 > 0.392",
+            "min_transition_rate: 0.0319 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=2 can emit at most 2 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_directional_down",
+        "ranging_volatile"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.007813399107477342,
+            0.1904865163031385,
+            0.25024893920736746,
+            38.756658965445794
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.004223863177510036,
+            0.12679850085029357,
+            0.08651636360075063,
+            22.676732378006317
+          ],
+          "volatility_rank": 0
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "kmeans",
+      "k": 3,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": true,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": true,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 82.73756493551264,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.01998001998001998,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.04329102447869447
+        }
+      },
+      "model_kruskal_h": 82.73756493551264,
+      "model_p_value": 0.01998001998001998,
+      "stability_gain": 0.09406165004533092,
+      "coverage": {
+        "ranging_volatile": {
+          "count": 2384,
+          "pct": 0.5402220711534104
+        },
+        "trending_down_choppy": {
+          "count": 1178,
+          "pct": 0.2669385905279855
+        },
+        "trending_up_choppy": {
+          "count": 851,
+          "pct": 0.19283933831860411
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 3,
+          "max_occupancy": 0.5910116971065053,
+          "transition_rate": 0.038998357963875206,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.591 > 0.392",
+            "min_transition_rate: 0.0390 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 3,
+          "max_occupancy": 0.5402220711534104,
+          "transition_rate": 0.04329102447869447,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.540 > 0.392",
+            "min_transition_rate: 0.0433 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 3,
+          "max_occupancy": 0.5869515276820584,
+          "transition_rate": 0.041240666283744974,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.587 > 0.392",
+            "min_transition_rate: 0.0412 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 3,
+          "max_occupancy": 0.5414902140322765,
+          "transition_rate": 0.04475732600732601,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.541 > 0.392",
+            "min_transition_rate: 0.0448 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 3,
+          "max_occupancy": 0.5696997905515476,
+          "transition_rate": 0.042132216014897576,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.570 > 0.392",
+            "min_transition_rate: 0.0421 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=3 can emit at most 3 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_volatile",
+        "trending_down_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.005703862336521655,
+            0.12519971663132562,
+            0.08049942929815943,
+            22.421079141202416
+          ],
+          "volatility_rank": 0
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.11063853257456722,
+            0.18172433353657422,
+            0.22361199524957437,
+            38.883719283978984
+          ],
+          "volatility_rank": 1
+        },
+        "2": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.13601736185684565,
+            0.19417634466913342,
+            0.2730405538751525,
+            35.77197895814321
+          ],
+          "volatility_rank": 2
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "kmeans",
+      "k": 4,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": true,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": true,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 83.58132637643939,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.025974025974025976,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.06300997280145058
+        }
+      },
+      "model_kruskal_h": 83.58132637643939,
+      "model_p_value": 0.025974025974025976,
+      "stability_gain": 0.0743427017225748,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 1254,
+          "pct": 0.2841604350781781
+        },
+        "ranging_volatile": {
+          "count": 1587,
+          "pct": 0.35961930659415364
+        },
+        "trending_down_choppy": {
+          "count": 845,
+          "pct": 0.19147971901200997
+        },
+        "trending_up_choppy": {
+          "count": 727,
+          "pct": 0.16474053931565827
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.435665914221219,
+          "transition_rate": 0.059113300492610835,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.436 > 0.392",
+            "min_transition_rate: 0.0591 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.35961930659415364,
+          "transition_rate": 0.06300997280145058,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "min_transition_rate: 0.0630 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.4182173213875488,
+          "transition_rate": 0.058472142446869615,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.418 > 0.392",
+            "min_transition_rate: 0.0585 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.3639693258555568,
+          "transition_rate": 0.06421703296703296,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "min_transition_rate: 0.0642 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.40842448219688154,
+          "transition_rate": 0.06424581005586592,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "max_occupancy: 0.408 > 0.392",
+            "min_transition_rate: 0.0642 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": true,
+      "structural_ineligibility_reason": "k=4 can emit at most 4 distinct labels < min_active_labels=5: non-degeneracy is unsatisfiable",
+      "states": [
+        "ranging_directional_down",
+        "trending_down_choppy",
+        "trending_up_choppy",
+        "ranging_volatile"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.03111499811850684,
+            0.15307317373811,
+            0.12188998091521863,
+            30.741836550340736
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.1302364740917169,
+            0.19141786651140588,
+            0.2623080043424838,
+            42.21137888848135
+          ],
+          "volatility_rank": 2
+        },
+        "2": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.14437983449509717,
+            0.19822121449445432,
+            0.28923010913455455,
+            35.87490695768459
+          ],
+          "volatility_rank": 3
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.015353963382247897,
+            0.11778292502558124,
+            0.07319223297479473,
+            20.025199288757197
+          ],
+          "volatility_rank": 0
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "kmeans",
+      "k": 5,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 66.83756122339764,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.022977022977022976,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.05371713508612874
+        }
+      },
+      "model_kruskal_h": 66.83756122339764,
+      "model_p_value": 0.022977022977022976,
+      "stability_gain": 0.08363553943789664,
+      "coverage": {
+        "ranging_volatile": {
+          "count": 1570,
+          "pct": 0.35576705189213687
+        },
+        "trending_down_choppy": {
+          "count": 1627,
+          "pct": 0.3686834353047813
+        },
+        "trending_up_choppy": {
+          "count": 1216,
+          "pct": 0.2755495128030818
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 3,
+          "max_occupancy": 0.4186332854504412,
+          "transition_rate": 0.051313628899835796,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.419 > 0.392",
+            "min_transition_rate: 0.0513 < 0.0687"
+          ]
+        },
+        "oos": {
+          "active_labels": 3,
+          "max_occupancy": 0.3686834353047813,
+          "transition_rate": 0.05371713508612874,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "min_transition_rate: 0.0537 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 3,
+          "max_occupancy": 0.42625775327360443,
+          "transition_rate": 0.054106835152211374,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.426 > 0.392",
+            "min_transition_rate: 0.0541 < 0.0687"
+          ]
+        },
+        "2024": {
+          "active_labels": 3,
+          "max_occupancy": 0.3542405860135058,
+          "transition_rate": 0.05918040293040293,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "min_transition_rate: 0.0592 < 0.0687"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 3,
+          "max_occupancy": 0.39515941354433326,
+          "transition_rate": 0.05307262569832402,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 3 < 5",
+            "max_occupancy: 0.395 > 0.392",
+            "min_transition_rate: 0.0531 < 0.0687"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "trending_up_choppy",
+        "trending_down_choppy",
+        "trending_down_choppy",
+        "ranging_volatile",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.09590165406039532,
+            0.16003864948167654,
+            0.1983251334724151,
+            29.19733925358716
+          ],
+          "volatility_rank": 2
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.13489948796109844,
+            0.19536643125451025,
+            0.2714127427332896,
+            44.12095875263345
+          ],
+          "volatility_rank": 3
+        },
+        "2": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.06648851329398535,
+            0.15670579591083997,
+            0.13819415744984556,
+            30.315549124053927
+          ],
+          "volatility_rank": 1
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.008768076157520661,
+            0.1171308289725782,
+            0.061307811092743025,
+            20.64450073774572
+          ],
+          "volatility_rank": 0
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.1817757794927396,
+            0.23048051853754312,
+            0.3558671572017239,
+            42.41024516582192
+          ],
+          "volatility_rank": 4
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "kmeans",
+      "k": 6,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 69.37753922107913,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.03796203796203796,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.06799637352674524
+        }
+      },
+      "model_kruskal_h": 69.37753922107913,
+      "model_p_value": 0.03796203796203796,
+      "stability_gain": 0.06935630099728014,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 549,
+          "pct": 0.12440516655336506
+        },
+        "ranging_volatile": {
+          "count": 1390,
+          "pct": 0.3149784726943123
+        },
+        "trending_down_choppy": {
+          "count": 1332,
+          "pct": 0.3018354860639021
+        },
+        "trending_up_choppy": {
+          "count": 1142,
+          "pct": 0.2587808746884206
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.3650728504001642,
+          "transition_rate": 0.07060755336617405,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.3149784726943123,
+          "transition_rate": 0.06799637352674524,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5",
+            "min_transition_rate: 0.0680 < 0.0687"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.3657247875028716,
+          "transition_rate": 0.06961516369902356,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.3102895730800046,
+          "transition_rate": 0.07589285714285714,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.3569932511054224,
+          "transition_rate": 0.0691340782122905,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "ranging_directional_down",
+        "trending_down_choppy",
+        "trending_down_choppy",
+        "ranging_volatile",
+        "trending_up_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.015388972835934208,
+            0.1420117187808927,
+            0.07587104500373561,
+            33.50969741647665
+          ],
+          "volatility_rank": 1
+        },
+        "1": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.08586259529252369,
+            0.1626032746940651,
+            0.17600760226413842,
+            26.91447608583654
+          ],
+          "volatility_rank": 3
+        },
+        "2": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.13452066957240058,
+            0.19500531338801652,
+            0.27035087691035375,
+            44.899385162738255
+          ],
+          "volatility_rank": 4
+        },
+        "3": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            0.009598950154765945,
+            0.11527523972597871,
+            0.06339269093574985,
+            19.224142413585
+          ],
+          "volatility_rank": 0
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.0998408712518566,
+            0.16162666000473427,
+            0.2054539086860961,
+            28.62967818110436
+          ],
+          "volatility_rank": 2
+        },
+        "5": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.18206375718516551,
+            0.23071318148135136,
+            0.3562994339378191,
+            42.48038475325567
+          ],
+          "volatility_rank": 5
+        }
+      },
+      "passes_bonferroni": false
+    },
+    {
+      "family": "kmeans",
+      "k": 7,
+      "verdict": {
+        "target": "volatility",
+        "gate_semantics": "candidate-self-v2 (#1211)",
+        "separation_ok": false,
+        "stability_ok": true,
+        "model_separation_real": true,
+        "incumbent_trustworthy": true,
+        "ship": false,
+        "detail": {
+          "handrule_kruskal_h": 85.69059649660267,
+          "model_kruskal_h": 70.48007095643698,
+          "handrule_p_value": 0.005994005994005994,
+          "model_p_value": 0.026973026973026972,
+          "handrule_transition_rate": 0.1373526745240254,
+          "model_transition_rate": 0.08046237533998186
+        }
+      },
+      "model_kruskal_h": 70.48007095643698,
+      "model_p_value": 0.026973026973026972,
+      "stability_gain": 0.05689029918404352,
+      "coverage": {
+        "ranging_directional_down": {
+          "count": 477,
+          "pct": 0.10808973487423522
+        },
+        "ranging_volatile": {
+          "count": 1137,
+          "pct": 0.2576478585995921
+        },
+        "trending_down_choppy": {
+          "count": 1352,
+          "pct": 0.30636755041921593
+        },
+        "trending_up_choppy": {
+          "count": 1447,
+          "pct": 0.32789485610695673
+        }
+      },
+      "non_degeneracy": {
+        "is": {
+          "active_labels": 4,
+          "max_occupancy": 0.3043299815308845,
+          "transition_rate": 0.08784893267651889,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "oos": {
+          "active_labels": 4,
+          "max_occupancy": 0.32789485610695673,
+          "transition_rate": 0.08046237533998186,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2023": {
+          "active_labels": 4,
+          "max_occupancy": 0.3350562830232024,
+          "transition_rate": 0.08868466398621482,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2024": {
+          "active_labels": 4,
+          "max_occupancy": 0.37827629621151426,
+          "transition_rate": 0.08058608058608059,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        },
+        "2025H1": {
+          "active_labels": 4,
+          "max_occupancy": 0.3469862694903421,
+          "transition_rate": 0.0893854748603352,
+          "ok": false,
+          "reasons": [
+            "min_active_labels: 4 < 5"
+          ]
+        }
+      },
+      "non_degenerate_all": false,
+      "structurally_ineligible": false,
+      "structural_ineligibility_reason": null,
+      "states": [
+        "ranging_volatile",
+        "trending_up_choppy",
+        "ranging_directional_down",
+        "trending_down_choppy",
+        "trending_up_choppy",
+        "trending_down_choppy",
+        "trending_up_choppy"
+      ],
+      "mapping": {
+        "0": {
+          "name": "ranging_volatile",
+          "centroid_raw": [
+            -0.0034321147789508084,
+            0.11322747175818654,
+            0.04664463482156207,
+            19.566989035448586
+          ],
+          "volatility_rank": 0
+        },
+        "1": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.0667489383848353,
+            0.1313339445069582,
+            0.139463683982449,
+            21.42469826004001
+          ],
+          "volatility_rank": 1
+        },
+        "2": {
+          "name": "ranging_directional_down",
+          "centroid_raw": [
+            -0.021288697551426282,
+            0.14361104327825316,
+            0.07901135443885518,
+            34.72073854237792
+          ],
+          "volatility_rank": 2
+        },
+        "3": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.13445303668836828,
+            0.19492873657594934,
+            0.2701311805789483,
+            44.647351654445075
+          ],
+          "volatility_rank": 5
+        },
+        "4": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.11599479199967179,
+            0.17885066036634992,
+            0.23715477790820735,
+            32.459086285064295
+          ],
+          "volatility_rank": 4
+        },
+        "5": {
+          "name": "trending_down_choppy",
+          "centroid_raw": [
+            -0.08468817595663619,
+            0.16178340871338243,
+            0.17405884060848012,
+            26.36216187536592
+          ],
+          "volatility_rank": 3
+        },
+        "6": {
+          "name": "trending_up_choppy",
+          "centroid_raw": [
+            0.19365654195946694,
+            0.24094684356078727,
+            0.3750316921392831,
+            44.14655673534547
+          ],
+          "volatility_rank": 6
+        }
+      },
+      "passes_bonferroni": false
+    }
+  ],
+  "winner": null
+}
