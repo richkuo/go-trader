@@ -333,30 +333,11 @@ func formatLeaderboardResponse(cfg *Config, state *AppState, prices map[string]f
 	if topN <= 0 {
 		topN = 5
 	}
-	var entries []LeaderboardEntry
-	for _, sc := range cfg.Strategies {
-		ss := state.Strategies[sc.ID]
-		if ss == nil {
-			continue
-		}
-		pv := displayStrategyValue(ss, prices)
-		initCap := EffectiveInitialCapital(sc, ss)
-		pnl := pv - initCap
-		pnlPct := 0.0
-		if initCap > 0 {
-			pnlPct = pnl / initCap * 100
-		}
-		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, nil, lifetime, cfg.IntervalSeconds))
-	}
+	entries := buildLeaderboardEntries(cfg.Strategies, state, prices, nil, lifetime, cfg.IntervalSeconds)
 	if len(entries) == 0 {
 		return "No strategies to rank."
 	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].PnLPct != entries[j].PnLPct {
-			return entries[i].PnLPct > entries[j].PnLPct
-		}
-		return entries[i].ID < entries[j].ID
-	})
+	sortLeaderboardEntriesByPnLPct(entries)
 	if topN > len(entries) {
 		topN = len(entries)
 	}

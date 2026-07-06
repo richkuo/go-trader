@@ -175,6 +175,62 @@ func (sdb *StateDB) SumCashflowJournal(platform, account string) (float64, error
 	return sum.Float64, nil
 }
 
+// CashflowJournalWalletStatus is one wallet's persisted journal state plus
+// journal-level aggregates, for the #1231 /api/cashflow endpoint. LiveBasis
+// mirrors the applyCashflowJournalDriftBasis scope rule: only Hyperliquid
+// wallets with a usable (complete) journal drive the live total-drift alarm;
+// OKX/TopStep journals are shadow-only (#1100 phases 3a/4) and must never be
+// presented as authoritative.
+type CashflowJournalWalletStatus struct {
+	Platform             string  `json:"platform"`
+	Account              string  `json:"account"`
+	BaselineSet          bool    `json:"baseline_set"`
+	Incomplete           bool    `json:"incomplete"`
+	BaselineAccountValue float64 `json:"baseline_account_value"`
+	SettledSum           float64 `json:"settled_sum"`
+	EntryCount           int     `json:"entry_count"`
+	LastEventMs          int64   `json:"last_event_ms"`
+	ShadowOnly           bool    `json:"shadow_only"`
+	LiveBasis            bool    `json:"live_basis"`
+}
+
+// ListCashflowJournalWallets loads every ingested wallet's journal state and
+// journal aggregates — a pure DB read (no exchange fetch, no state lock), so
+// it is safe on the dashboard polling path. Sorted by (platform, account).
+func (sdb *StateDB) ListCashflowJournalWallets() ([]CashflowJournalWalletStatus, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	rows, err := sdb.db.Query(
+		`SELECT s.platform, s.account, s.baseline_set, s.incomplete, s.baseline_account_value,
+		        COALESCE(j.settled_sum, 0), COALESCE(j.entry_count, 0), COALESCE(j.last_event_ms, 0)
+		 FROM cashflow_journal_state s
+		 LEFT JOIN (SELECT platform, account, SUM(amount_usd) AS settled_sum,
+		                   COUNT(*) AS entry_count, MAX(time_ms) AS last_event_ms
+		            FROM cashflow_journal GROUP BY platform, account) j
+		   ON j.platform = s.platform AND j.account = s.account
+		 ORDER BY s.platform, s.account`)
+	if err != nil {
+		return nil, fmt.Errorf("list cashflow journal wallets: %w", err)
+	}
+	defer rows.Close()
+	var out []CashflowJournalWalletStatus
+	for rows.Next() {
+		var w CashflowJournalWalletStatus
+		var baselineSet, incomplete int
+		if err := rows.Scan(&w.Platform, &w.Account, &baselineSet, &incomplete,
+			&w.BaselineAccountValue, &w.SettledSum, &w.EntryCount, &w.LastEventMs); err != nil {
+			return nil, fmt.Errorf("scan cashflow journal wallet: %w", err)
+		}
+		w.BaselineSet = baselineSet != 0
+		w.Incomplete = incomplete != 0
+		w.ShadowOnly = w.Platform != "hyperliquid"
+		w.LiveBasis = !w.ShadowOnly && w.BaselineSet && !w.Incomplete
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 // cashflowFillSettledDelta is one fill's SIGNED effect on settled cash: realized
 // PnL (GROSS) minus the fee actually charged. closedPnl is gross of fees (#698),
 // so the fee — which may be a negative maker rebate — is subtracted exactly once

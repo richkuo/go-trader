@@ -47,11 +47,32 @@ func leaderboardTopN(cfg *Config) int {
 // TOTAL rows (#915); pass nil maps to skip adjustment (falls back to the naive
 // per-strategy sum for the TOTAL row).
 func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, walletBalances map[SharedWalletKey]float64, accountShared map[SharedWalletKey][]string) map[string]string {
-	var allEntries []LeaderboardEntry
 	configByID := make(map[string]StrategyConfig, len(cfg.Strategies))
-
 	for _, sc := range cfg.Strategies {
 		configByID[sc.ID] = sc
+	}
+	allEntries := buildLeaderboardEntries(cfg.Strategies, state, prices, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds)
+
+	if len(allEntries) == 0 {
+		return nil
+	}
+
+	topN := leaderboardTopN(cfg)
+	return map[string]string{
+		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN, prices, cfg.Regime, state, cfg, configByID, walletBalances, accountShared),
+		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN, prices, cfg.Regime, state, cfg, configByID, walletBalances, accountShared),
+	}
+}
+
+// buildLeaderboardEntries computes one LeaderboardEntry per configured
+// strategy that has state — the structured data layer beneath both the Discord
+// leaderboard surfaces and the #1231 /api/leaderboard endpoint. Entries are
+// returned unsorted (config order); rank-order is a presentation concern.
+// Caller must hold the state read lock; prices/lifetimeStats/sharpeByStrategy
+// may be nil (missing keys render zero, matching the Discord command).
+func buildLeaderboardEntries(strategies []StrategyConfig, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, globalIntervalSeconds int) []LeaderboardEntry {
+	var entries []LeaderboardEntry
+	for _, sc := range strategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
@@ -63,19 +84,21 @@ func BuildLeaderboardMessages(cfg *Config, state *AppState, prices map[string]fl
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-
-		allEntries = append(allEntries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, cfg.IntervalSeconds))
+		entries = append(entries, newLeaderboardEntry(sc, ss, pv, initCap, pnl, pnlPct, sharpeByStrategy, lifetimeStats, globalIntervalSeconds))
 	}
+	return entries
+}
 
-	if len(allEntries) == 0 {
-		return nil
-	}
-
-	topN := leaderboardTopN(cfg)
-	return map[string]string{
-		"top":    formatAllTimeMessage("🏆", "Top All-Time Performers", allEntries, true, topN, prices, cfg.Regime, state, cfg, configByID, walletBalances, accountShared),
-		"bottom": formatAllTimeMessage("💀", "Bottom All-Time Performers", allEntries, false, topN, prices, cfg.Regime, state, cfg, configByID, walletBalances, accountShared),
-	}
+// sortLeaderboardEntriesByPnLPct orders entries by PnL% descending, ID
+// ascending on ties — the canonical leaderboard rank order shared by the
+// Discord command and /api/leaderboard.
+func sortLeaderboardEntriesByPnLPct(entries []LeaderboardEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].PnLPct != entries[j].PnLPct {
+			return entries[i].PnLPct > entries[j].PnLPct
+		}
+		return entries[i].ID < entries[j].ID
+	})
 }
 
 // newLeaderboardEntry assembles a LeaderboardEntry, pulling timeframe/interval

@@ -36,6 +36,12 @@ type StatusServer struct {
 	regime        *RegimeConfig    // global regime settings for simulate preview
 	configWriteMu sync.Mutex       // serializes dashboard config Apply writes
 
+	// #1231 config-derived context for the read-only ops endpoints, refreshed
+	// via SetConfigContext on startup and SIGHUP. Guarded by strategiesMu
+	// (SetConfigContext runs from the reload path which already holds mu).
+	intervalSeconds   int              // global check interval for leaderboard entries
+	userCloseDefaults CloseDefaultsMap // user_defaults.close for /api/closing-strategies override marking
+
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
 	// so we don't want to spam logs on every hit — but silently discarding
@@ -199,6 +205,14 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
 	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
 	mux.HandleFunc("/api/regime/transitions", ss.handleAPIRegimeTransitions)
+	// #1231 read-only ops endpoints (ui_ops.go). "/api/strategies/dead" is an
+	// exact pattern, so it wins over the "/api/strategies/" prefix handler.
+	mux.HandleFunc("/api/leaderboard", ss.handleAPILeaderboard)
+	mux.HandleFunc("/api/diagnostics", ss.handleAPIDiagnostics)
+	mux.HandleFunc("/api/cashflow", ss.handleAPICashflow)
+	mux.HandleFunc("/api/strategies/dead", ss.handleAPIDeadStrategies)
+	mux.HandleFunc("/api/closing-strategies", ss.handleAPIClosingStrategies)
+	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)

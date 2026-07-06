@@ -279,7 +279,7 @@ func main() {
 	// Start HTTP status server. Priority: CLI flag > config > default.
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
-	server.SetConfigContext(*configPath, cfg.Regime)
+	server.SetConfigContext(*configPath, cfg)
 	server.Start(statusPort)
 
 	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
