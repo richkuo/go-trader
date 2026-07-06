@@ -729,3 +729,56 @@ func TestUITradeActionsConcurrentOpensSerialized(t *testing.T) {
 		t.Fatalf("rows = %+v, want exactly one open", rows)
 	}
 }
+
+// TestUICrossClassPendingGuard pins the #1260 review-4 fix: open/add/close/
+// force-close share ONE in-flight class — an add is refused while a close is
+// queued (and vice versa), never firing the venue seam, so the drain can
+// never orphan an on-chain order behind a just-applied close.
+func TestUICrossClassPendingGuard(t *testing.T) {
+	ss, db, _ := newTradeActionTestServer(t)
+	stubTradeDeps(t, ss) // every venue seam fails loudly if invoked
+
+	// Full close queued -> add on the still-rendered position must 409.
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth", Action: "close", Symbol: "ETH", Side: "sell",
+		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending close: %v", err)
+	}
+	nonce := confirmNonceFor(t, ss, "add", "hl-manual-eth", `{"margin":50}`)
+	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/add",
+		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already submitted") {
+		t.Fatalf("add-while-close-queued status = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// Inverse: add queued -> close and force-close must 409.
+	rows, _ := db.LoadPendingManualActions()
+	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth", Action: "add", Symbol: "ETH", Side: "buy",
+		Quantity: 0.05, FillPrice: 2050, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending add: %v", err)
+	}
+	nonce = confirmNonceFor(t, ss, "close", "hl-manual-eth", `{}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/close",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("close-while-add-queued status = %d, body %s", w.Code, w.Body.String())
+	}
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-perps-eth", Action: "add", Symbol: "ETH", Side: "buy",
+		Quantity: 0.05, FillPrice: 2050, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending peer add: %v", err)
+	}
+	nonce = confirmNonceFor(t, ss, "force-close", "hl-perps-eth", `{}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-perps-eth/force-close",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("force-close-while-add-queued status = %d, body %s", w.Code, w.Body.String())
+	}
+}

@@ -263,19 +263,17 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 	if action == "force-close" {
 		guardSym = sym
 	}
-	var guardKinds []string
-	switch action {
-	case "open", "add":
-		guardKinds = []string{"open", "add"}
-	case "close", "force-close":
-		guardKinds = []string{"close"}
-	}
-	if len(guardKinds) > 0 {
-		if pending, perr := pendingManualActionExists(ss.stateDB, id, guardSym, guardKinds...); perr != nil {
+	// All four position-changing actions share ONE in-flight class: an add
+	// fired while a close is queued (or vice versa) would pass a class-scoped
+	// guard, fire a real order, and orphan it on drain (the close applies
+	// first, deletes the position, then the add row fails every cycle). At
+	// most one un-drained open/add/close per strategy+symbol.
+	if action == "open" || action == "add" || action == "close" || action == "force-close" {
+		if pending, perr := pendingManualActionExists(ss.stateDB, id, guardSym, "open", "add", "close"); perr != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("could not check pending actions: %v", perr))
 			return
 		} else if pending {
-			writeJSONError(w, http.StatusConflict, fmt.Sprintf("a %s for this strategy is already submitted and awaiting the scheduler's next cycle — refresh after it applies before retrying", strings.Join(guardKinds, "/")))
+			writeJSONError(w, http.StatusConflict, "a position-changing action (open/add/close) for this strategy is already submitted and awaiting the scheduler's next cycle — refresh after it applies before retrying")
 			return
 		}
 		if action == "open" {
