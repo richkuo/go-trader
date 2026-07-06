@@ -1058,6 +1058,17 @@ func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, str
 		return nil, "", manualFailf("error: a stop-loss edit for %s/%s is already queued and not yet applied — run the scheduler (`--once`) or wait for the next cycle before editing again (a second edit now would orphan the first stop-loss on-chain)", strategyID, symbol)
 	}
 
+	// Symmetric with the close cores' pendingSLActionExists refusal (#1260
+	// review 5): a queued close/open/add means the position this edit targets
+	// may be deleted (or reshaped) before the edit's row drains — the edit
+	// would fire a redundant on-chain order against a flat position and leave
+	// a permanently-stuck pending row. Fail closed on a check error.
+	if pending, err := pendingManualActionExists(d.stateDB, strategyID, symbol, "open", "add", "close"); err != nil {
+		return nil, "", manualFailf("error: could not check for queued position actions (%v) — refusing to avoid orphaning an on-chain order; retry once the scheduler is reachable", err)
+	} else if pending {
+		return nil, "", manualFailf("error: a position-changing action for %s/%s is already queued and not yet applied — wait for the next scheduler cycle before editing the stop-loss", strategyID, symbol)
+	}
+
 	return pos, symbol, nil
 }
 

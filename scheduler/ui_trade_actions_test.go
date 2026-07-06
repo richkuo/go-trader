@@ -782,3 +782,55 @@ func TestUICrossClassPendingGuard(t *testing.T) {
 		t.Fatalf("force-close-while-add-queued status = %d, body %s", w.Code, w.Body.String())
 	}
 }
+
+// TestUISLEditGuardedWhileCloseQueued pins the #1260 review-5 symmetric
+// guard: update-sl/cancel-sl are refused while a position-changing action is
+// queued for the same strategy+symbol (the queued close will delete the
+// position before the edit row drains), SL seams never invoked; a legitimate
+// edit passes again once the close has drained.
+func TestUISLEditGuardedWhileCloseQueued(t *testing.T) {
+	ss, db, _ := newTradeActionTestServer(t)
+	stubs := stubTradeDeps(t, ss)
+
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth", Action: "close", Symbol: "ETH", Side: "sell",
+		Quantity: 0.4, FillPrice: 2100, IsFullClose: true, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending close: %v", err)
+	}
+
+	// update-sl while a close is queued -> refused, updateSL never called.
+	nonce := confirmNonceFor(t, ss, "update-sl", "hl-manual-eth", `{"trigger":1950}`)
+	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/update-sl",
+		fmt.Sprintf(`{"nonce":%q,"params":{"trigger":1950}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "position-changing action") {
+		t.Fatalf("update-sl-while-close-queued status = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// cancel-sl too (inverse direction of the close-blocked-by-SL-edit rule).
+	nonce = confirmNonceFor(t, ss, "cancel-sl", "hl-manual-eth", `{}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/cancel-sl",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "position-changing action") {
+		t.Fatalf("cancel-sl-while-close-queued status = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// After the close drains (row deleted; here the position also survives a
+	// partial close), a legitimate SL edit passes again.
+	rows, _ := db.LoadPendingManualActions()
+	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 1001, StopLossTriggerPx: 1950}, "", nil
+	}
+	nonce = confirmNonceFor(t, ss, "update-sl", "hl-manual-eth", `{"trigger":1950}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/update-sl",
+		fmt.Sprintf(`{"nonce":%q,"params":{"trigger":1950}}`, nonce), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("post-drain update-sl status = %d, body %s", w.Code, w.Body.String())
+	}
+	if rows, _ := db.LoadPendingManualActions(); len(rows) != 1 || rows[0].Action != "update-sl" {
+		t.Fatalf("rows = %+v, want one update-sl", rows)
+	}
+}
