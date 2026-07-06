@@ -50,3 +50,8 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+      # shared_scripts/test_*.py sit outside pytest testpaths (pyproject.toml)
+      # so `uv run pytest` never collects them — invoke explicitly (#1237).
+      - name: Run shared_scripts tests (outside testpaths)
+        run: uv run pytest shared_scripts/
