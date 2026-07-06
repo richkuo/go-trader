@@ -1349,11 +1349,12 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Path to a live go-trader config.json. Loads a single strategy by "
                              "--strategy ID and uses its open_strategy/close_strategies refs verbatim "
                              "for the backtest. Lets you backtest a live config without reshaping (#641).")
-    parser.add_argument("--defaults", choices=["system", "user"], default="system",
+    parser.add_argument("--defaults", choices=["system", "user"], default=None,
                         help="Which close-default layer to apply when a close ref omits tp_tiers (#866): "
-                             "'system' (default) uses the built-in defaults; 'user' applies the "
-                             "user_defaults.close block from --config. Per-strategy tp_tiers always wins. "
-                             "Requires --config when set to 'user'.")
+                             "'user' applies the user_defaults block from --config (the default for "
+                             "--config, matching live); 'system' uses the built-in defaults (the "
+                             "default without --config, or an explicit baseline override). "
+                             "Per-strategy tp_tiers always wins.")
     parser.add_argument("--regime-enabled", action="store_true", default=False,
                         help="Enable market regime detection. Injects vectorized regime "
                              "column from shared_tools/regime.py before the per-bar loop, "
@@ -1437,8 +1438,25 @@ def _parse_close_strategy_arg(raw: str) -> dict:
     return {"name": name, "params": dict(ref.get("params") or {})}
 
 
+def _resolve_defaults_mode(args) -> str:
+    """Resolve --defaults after --config is known.
+
+    A live-config backtest should match the daemon by default: LoadConfig applies
+    user_defaults unconditionally, while by-name runs have no config block to read
+    from and therefore stay on system defaults unless the user says otherwise.
+    """
+    if args.defaults:
+        if args.defaults == "user" and not args.config:
+            print("--defaults user requires --config (user_defaults lives in the config); "
+                  "falling back to system defaults")
+            return "system"
+        return args.defaults
+    return "user" if args.config else "system"
+
+
 def main():
     args = _build_parser().parse_args()
+    args.defaults = _resolve_defaults_mode(args)
 
     close_refs = None
     if args.close_strategies:
@@ -1471,11 +1489,6 @@ def main():
     if not args.config:
         _validate_allowed_regimes_vocabulary(
             args.allowed_regimes, args.regime_windows_spec)
-
-    # #866/#1135: --defaults user only has an effect via the config's user_defaults.
-    if args.defaults == "user" and not args.config:
-        print("--defaults user requires --config (user_defaults lives in the config); "
-              "falling back to system defaults")
 
     # #641: --config loads a single strategy by ID and uses its refs directly.
     open_params: Optional[dict] = None
