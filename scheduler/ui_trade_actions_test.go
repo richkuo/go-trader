@@ -101,9 +101,10 @@ func confirmNonceFor(t *testing.T, ss *StatusServer, action, id, params string) 
 // tradeStubs lets a test override individual on-chain seams; anything left
 // nil fails loudly if hit.
 type tradeStubs struct {
-	updateSL func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)
-	execute  func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
-	closer   HyperliquidLiveCloser
+	updateSL    func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error)
+	execute     func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error)
+	closer      HyperliquidLiveCloser
+	cancelOrder func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 }
 
 // stubTradeDeps replaces every on-chain seam with fail-loud stubs; tests set
@@ -115,9 +116,13 @@ func stubTradeDeps(t *testing.T, ss *StatusServer) *tradeStubs {
 		d.fetchMids = func(coins []string) (map[string]float64, error) {
 			return map[string]float64{"ETH": 2000}, nil
 		}
-		d.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
-			t.Error("cancelOrder must not be called")
-			return nil, "", fmt.Errorf("stub")
+		if stubs.cancelOrder != nil {
+			d.cancelOrder = stubs.cancelOrder
+		} else {
+			d.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+				t.Error("cancelOrder must not be called")
+				return nil, "", fmt.Errorf("stub")
+			}
 		}
 		if stubs.updateSL != nil {
 			d.updateSL = stubs.updateSL
@@ -381,7 +386,9 @@ func TestUITradeActionsKillSwitchAndCBGates(t *testing.T) {
 	ss, db, _ := newTradeActionTestServer(t)
 	stubTradeDeps(t, ss)
 
-	// Kill switch blocks open (and add).
+	// Kill switch blocks open (and add). Flat first, so the open reaches the
+	// core's kill-switch gate instead of the handler's double-open guard.
+	delete(ss.state.Strategies["hl-manual-eth"].Positions, "ETH")
 	ss.state.PortfolioRisk.KillSwitchActive = true
 	nonce := confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
 	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/open",
@@ -445,5 +452,161 @@ func TestUICloseQueuesFromStubbedFill(t *testing.T) {
 	// Position untouched until the scheduler drains.
 	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"].Quantity != 0.4 {
 		t.Fatal("position mutated before drain")
+	}
+}
+
+// TestUIOpenGuardsDoubleFire pins the #1260-review double-open guard: a UI
+// open is refused while the strategy already holds the symbol or a
+// position-increasing action is still queued, and passes again once the
+// scheduler drain has applied + deleted the row (simulated by deleting it).
+func TestUIOpenGuardsDoubleFire(t *testing.T) {
+	ss, db, _ := newTradeActionTestServer(t)
+	stubs := stubTradeDeps(t, ss)
+
+	// (1) Position already open -> 409, no venue call.
+	nonce := confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
+	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/open",
+		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already holds") {
+		t.Fatalf("open-with-position status = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// (2) Flat, but a queued open (submitted, not yet drained) -> 409.
+	delete(ss.state.Strategies["hl-manual-eth"].Positions, "ETH")
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth", Action: "open", Symbol: "ETH", Side: "long",
+		Quantity: 0.05, FillPrice: 2000, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending open: %v", err)
+	}
+	nonce = confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/open",
+		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already submitted") {
+		t.Fatalf("open-with-pending status = %d, body %s", w.Code, w.Body.String())
+	}
+
+	// (3) Drain applied (row deleted) -> a legitimate re-open passes.
+	rows, _ := db.LoadPendingManualActions()
+	if err := db.DeletePendingManualActionsThrough(rows[len(rows)-1].ID); err != nil {
+		t.Fatalf("delete pending: %v", err)
+	}
+	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		if side != "buy" {
+			t.Errorf("open exec side = %s, want buy", side)
+		}
+		return &HyperliquidExecuteResult{
+			Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 0.05, OID: 555, Fee: 0.5}},
+		}, "", nil
+	}
+	stubs.updateSL = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 1900}, "", nil
+	}
+	nonce = confirmNonceFor(t, ss, "open", "hl-manual-eth", `{"margin":50}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/open",
+		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("re-open status = %d, body %s", w.Code, w.Body.String())
+	}
+	rows, err := db.LoadPendingManualActions()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %d (err=%v), want 1", len(rows), err)
+	}
+	if rows[0].Action != "open" || rows[0].Quantity != 0.05 || rows[0].FillPrice != 2000 {
+		t.Fatalf("queued open row = %+v", rows[0])
+	}
+	// No in-memory position until the scheduler drains.
+	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"] != nil {
+		t.Fatal("position created before drain")
+	}
+	// A peer strategy holding the same coin never blocked any of this: the
+	// hl-perps-eth fixture position was present throughout.
+	if ss.state.Strategies["hl-perps-eth"].Positions["ETH"] == nil {
+		t.Fatal("fixture peer position missing")
+	}
+}
+
+// TestUIAddQueuesAndGuardsPending: happy add queues an "add" row without
+// mutating the in-memory position; a still-queued add blocks a retry.
+func TestUIAddQueuesAndGuardsPending(t *testing.T) {
+	ss, db, _ := newTradeActionTestServer(t)
+	stubs := stubTradeDeps(t, ss)
+	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		return &HyperliquidExecuteResult{
+			Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2050, TotalSz: 0.05, OID: 556, Fee: 0.4}},
+		}, "", nil
+	}
+
+	nonce := confirmNonceFor(t, ss, "add", "hl-manual-eth", `{"margin":50}`)
+	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/add",
+		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("add status = %d, body %s", w.Code, w.Body.String())
+	}
+	rows, err := db.LoadPendingManualActions()
+	if err != nil || len(rows) != 1 || rows[0].Action != "add" || rows[0].Quantity != 0.05 {
+		t.Fatalf("rows = %+v (err=%v)", rows, err)
+	}
+	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"].Quantity != 0.4 {
+		t.Fatal("position mutated before drain")
+	}
+
+	// Retry while the add is still queued -> 409, no second venue call.
+	stubs.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		t.Error("execute must not be called for a guarded add retry")
+		return nil, "", fmt.Errorf("stub")
+	}
+	nonce = confirmNonceFor(t, ss, "add", "hl-manual-eth", `{"margin":50}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/add",
+		fmt.Sprintf(`{"nonce":%q,"params":{"margin":50}}`, nonce), nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already submitted") {
+		t.Fatalf("guarded add status = %d, body %s", w.Code, w.Body.String())
+	}
+}
+
+// TestUICancelSLQueuesAndErrors: cancel-sl with a resting SL queues the
+// removal without touching the in-memory position; with no resting SL it
+// errors and queues nothing.
+func TestUICancelSLQueuesAndErrors(t *testing.T) {
+	ss, db, _ := newTradeActionTestServer(t)
+	stubs := stubTradeDeps(t, ss)
+	stubs.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		if oid != 111 {
+			t.Errorf("cancel oid = %d, want 111", oid)
+		}
+		return &HyperliquidCancelOrderResult{Cancelled: true}, "", nil
+	}
+
+	nonce := confirmNonceFor(t, ss, "cancel-sl", "hl-manual-eth", `{}`)
+	w := tradeActionPost(ss, "/api/strategies/hl-manual-eth/cancel-sl",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel-sl status = %d, body %s", w.Code, w.Body.String())
+	}
+	rows, err := db.LoadPendingManualActions()
+	if err != nil || len(rows) != 1 || rows[0].Action != "cancel-sl" || rows[0].Symbol != "ETH" {
+		t.Fatalf("rows = %+v (err=%v)", rows, err)
+	}
+	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"].StopLossOID != 111 {
+		t.Fatal("in-memory SL OID mutated before drain")
+	}
+
+	// No resting SL -> error, nothing queued beyond the first row.
+	if err := db.DeletePendingManualActionsThrough(rows[0].ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	ss.state.Strategies["hl-manual-eth"].Positions["ETH"].StopLossOID = 0
+	stubs.cancelOrder = func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error) {
+		t.Error("cancelOrder must not be called with no resting SL")
+		return nil, "", fmt.Errorf("stub")
+	}
+	nonce = confirmNonceFor(t, ss, "cancel-sl", "hl-manual-eth", `{}`)
+	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/cancel-sl",
+		fmt.Sprintf(`{"nonce":%q,"params":{}}`, nonce), nil)
+	if w.Code == http.StatusOK {
+		t.Fatalf("cancel-sl with no SL must fail, body %s", w.Body.String())
+	}
+	if rows, _ := db.LoadPendingManualActions(); len(rows) != 0 {
+		t.Fatalf("no-SL cancel queued %d rows", len(rows))
 	}
 }

@@ -24,8 +24,29 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// pendingPositionIncreasingActionExists reports whether an "open" or "add"
+// action for strategyID+symbol is still queued in pending_manual_actions
+// (submitted on-chain but not yet drained/adopted by the scheduler). Mirrors
+// pendingSLActionExists (#1050) for the position-increasing action class.
+func pendingPositionIncreasingActionExists(stateDB *StateDB, strategyID, symbol string) (bool, error) {
+	actions, err := stateDB.LoadPendingManualActions()
+	if err != nil {
+		return false, err
+	}
+	for _, a := range actions {
+		if a.StrategyID != strategyID || !strings.EqualFold(a.Symbol, symbol) {
+			continue
+		}
+		if a.Action == "open" || a.Action == "add" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // uiTradeActionGuards is the shared preamble for /api/confirm and every trade
 // action endpoint: not draining, POST-only, mutating auth, JSON content type,
@@ -210,6 +231,31 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 	if lookupErr != nil {
 		writeJSONError(w, http.StatusBadRequest, lookupErr.Error())
 		return
+	}
+
+	// UI-only double-fire guard (not in the shared core — CLI --record-only /
+	// re-register flows must stay untouched): between an open/add submitting
+	// on-chain and the scheduler draining its queued action, the dashboard
+	// still shows Flat, inviting a retry that would double the position.
+	// Refuse a UI open while this strategy already holds the symbol or a
+	// position-increasing action is still queued; refuse a UI add while one
+	// is queued. A peer strategy's position on the same coin does not block
+	// (the view is scoped to this strategy's own positions), and once the
+	// drain applies + deletes the row a legitimate re-open passes again.
+	if action == "open" || action == "add" {
+		if pending, perr := pendingPositionIncreasingActionExists(ss.stateDB, id, sc.Symbol); perr != nil {
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("could not check pending actions: %v", perr))
+			return
+		} else if pending {
+			writeJSONError(w, http.StatusConflict, "an open/add for this strategy is already submitted and awaiting the scheduler's next cycle — refresh after it applies before retrying")
+			return
+		}
+		if action == "open" {
+			if view, verr := deps.loadState(id, sc.Symbol); verr == nil && view.Pos != nil {
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("strategy already holds an open %s position — use add or close instead", sc.Symbol))
+				return
+			}
+		}
 	}
 
 	p := &uiTradeParams{obj: params}
