@@ -131,6 +131,26 @@ type manualCoreDeps struct {
 	cancelOrder func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)
 	fetchMids   manualMarkFetcher
 	closer      HyperliquidLiveCloser // force-close only
+
+	// lockManualActions takes the cross-process manual-action lock, returning a
+	// release closure to defer. It makes a core's guard-check → on-chain submit
+	// → pending-row insert atomic against every OTHER process/caller sharing the
+	// state DB (a CLI racing the dashboard, or two concurrent CLIs) — see
+	// acquireManualActionFileLock. Production constructors always set it; it is
+	// nil only in bare-struct test deps (single-goroutine, no cross-process
+	// race), where acquireManualActionLock degrades to a no-op.
+	lockManualActions func() (release func(), err error)
+}
+
+// acquireManualActionLock takes the cross-process manual-action lock via the
+// injected dep, or a no-op when unset (bare test deps). The returned closure
+// releases the lock and must be deferred by the caller for the whole span
+// through the pending-row insert.
+func (d manualCoreDeps) acquireManualActionLock() (func(), error) {
+	if d.lockManualActions == nil {
+		return func() {}, nil
+	}
+	return d.lockManualActions()
 }
 
 // newCLIManualCoreDeps builds deps for the standalone CLI process: state is
@@ -157,6 +177,9 @@ func newManualCoreDeps(cfg *Config, stateDB *StateDB, notifier *MultiNotifier) m
 		cancelOrder: RunHyperliquidCancelOrder,
 		fetchMids:   fetchHyperliquidMids,
 		closer:      defaultHyperliquidForceCloseCloser,
+		lockManualActions: func() (func(), error) {
+			return acquireManualActionFileLock(cfg.DBFile)
+		},
 	}
 }
 
@@ -336,6 +359,14 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	// the CLI + any future core caller. Skip --record-only / --dry-run (no new
 	// on-chain order). Runs before the sizing mid-fetch so a refusal is cheap.
 	if !in.RecordOnly && !in.DryRun {
+		// Hold the cross-process lock from before the guard READ through the
+		// pending-row INSERT (function-scoped defer), so a CLI racing the
+		// dashboard (or two CLIs) can't both observe no-pending and both fire.
+		unlock, lockErr := d.acquireManualActionLock()
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
 		if err := refuseIfPositionActionQueued(d, "manual-open", strategyID, sc.Symbol); err != nil {
 			return res, err
 		}
@@ -636,6 +667,13 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	// position, then the add row fails every cycle). Skip --record-only /
 	// --dry-run. Runs before the sizing mid-fetch so a refusal is cheap.
 	if !in.RecordOnly && !in.DryRun {
+		// Cross-process lock held from before the guard READ through the
+		// pending-row INSERT (see manualOpenCore).
+		unlock, lockErr := d.acquireManualActionLock()
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
 		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
 			return res, err
 		}
@@ -780,6 +818,15 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 			strategyID, closeSide, closeQty, sc.Symbol, pos.Quantity, pos.AvgCost)
 		return res, nil
 	}
+
+	// Cross-process lock: held (function-scoped defer, past the dry-run return
+	// above) from before the guard READS below through the pending-row INSERT,
+	// so a CLI racing the dashboard (or two CLIs) can't both pass and both fire.
+	unlock, lockErr := d.acquireManualActionLock()
+	if lockErr != nil {
+		return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+	}
+	defer unlock()
 
 	// #1260 review: refuse a second close while a position-changing action is
 	// queued for this strategy+symbol. A re-fired sized manual close is a regular
@@ -934,6 +981,20 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 	closeSide := "sell"
 	if pos.Side == "short" {
 		closeSide = "buy"
+	}
+
+	// Cross-process lock held (function-scoped defer) from before the guard
+	// READS — the full-close SL check just below AND refuseIfPositionActionQueued
+	// further down — through the pending-row INSERT, so a CLI racing the
+	// dashboard, or a concurrent SL edit, can't interleave the check and submit.
+	// Placed before the SL read (which precedes the dry-run return); a dry-run
+	// neither submits nor inserts, so it needs no lock.
+	if !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock()
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
 	}
 
 	closeFullPosition := false
@@ -1151,6 +1212,19 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 		return res, manualUsagef("error: --trigger must be > 0")
 	}
 
+	// Cross-process lock held (function-scoped defer) from before the guard
+	// READS inside resolveManualSLTargetCore (pending SL + pending position
+	// checks) through the pending-row INSERT, so an SL edit racing a
+	// close/open/add across processes can't interleave. Dry-run neither submits
+	// nor inserts, so it needs no lock.
+	if !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock()
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+	}
+
 	pos, symbol, err := resolveManualSLTargetCore(d, sc, "manual-update-sl", strategyID, in.Symbol)
 	if err != nil {
 		return res, err
@@ -1230,6 +1304,17 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 func manualCancelSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
+
+	// Cross-process lock held (function-scoped defer) from before the guard
+	// READS inside resolveManualSLTargetCore through the pending-row INSERT (see
+	// manualUpdateSLCore). Dry-run neither submits nor inserts.
+	if !in.DryRun {
+		unlock, lockErr := d.acquireManualActionLock()
+		if lockErr != nil {
+			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
+		}
+		defer unlock()
+	}
 
 	pos, symbol, err := resolveManualSLTargetCore(d, sc, "manual-cancel-sl", strategyID, in.Symbol)
 	if err != nil {

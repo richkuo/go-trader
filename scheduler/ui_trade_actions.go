@@ -245,11 +245,14 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 
 	// Double-fire guard. The shared cores repeat this refusal
 	// (refuseIfPositionActionQueued in manual_core.go) so the CLI and any future
-	// core caller are covered too; running it HERE additionally makes the
-	// check+submit atomic under tradeActionMu for concurrent HTTP requests (the
-	// cores alone are not atomic without this lock) and lets the open branch add
-	// the UI-only "already holds the symbol" refusal below (the CLI open
-	// deliberately allows --record-only re-register onto an existing position).
+	// core caller are covered too, and the cores additionally take a
+	// cross-process file lock (acquireManualActionFileLock) that makes
+	// check+submit atomic even against a separate CLI process. Running it HERE
+	// gives concurrent HTTP requests to THIS daemon a fast in-process guard
+	// (tradeActionMu) without every request contending on the file lock, and
+	// lets the open branch add the UI-only "already holds the symbol" refusal
+	// below (the CLI open deliberately allows --record-only re-register onto an
+	// existing position).
 	// Between an action submitting on-chain and the scheduler draining its
 	// queued row, the dashboard still shows the pre-action state, inviting a
 	// retry that would double the position (open/add) or — since a sized manual

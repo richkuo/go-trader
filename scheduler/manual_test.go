@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1297,6 +1298,186 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 	}
 	if firedPeer != 1 {
 		t.Fatalf("peer-scoped close venue calls = %d, want 1 (peer must not block)", firedPeer)
+	}
+}
+
+// TestManualActionLockPreventsCrossProcessDoubleFire proves the cross-process
+// manual-action file lock (acquireManualActionFileLock) closes the residual gap
+// the in-process tradeActionMu cannot: a second caller sharing the state DB (a
+// CLI racing the dashboard, or two concurrent CLIs) is blocked from running its
+// double-fire guard while the first caller sits in the vulnerable window BETWEEN
+// its guard check and its pending-row insert — the exact span in which the
+// pending row does not yet exist. Two goroutines opening independent fds on the
+// same lock file contend under flock() just as two OS processes would. Without
+// the lock the second close would observe no-pending during the first's on-chain
+// submit and fire a second, position-flipping order; with it the second blocks,
+// then the guard refuses it once the first's row lands.
+func TestManualActionLockPreventsCrossProcessDoubleFire(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &Config{
+		DBFile: dbPath,
+		Strategies: []StrategyConfig{
+			{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
+				Script: "shared_scripts/check_hyperliquid.py",
+				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
+		},
+	}
+	pos := &Position{
+		Symbol: "ETH", Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000,
+		EntryATR: 50, Side: "long", Multiplier: 1, Leverage: 2,
+		OwnerStrategyID: "hl-manual-eth", StopLossOID: 111, StopLossTriggerPx: 1900,
+		OpenedAt: time.Now().UTC().Add(-time.Hour),
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-manual-eth": {ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid",
+			Cash: 1000, InitialCapital: 1000, Positions: map[string]*Position{"ETH": pos}},
+	}}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	manualSC, err := lookupManualStrategy(cfg, "hl-manual-eth")
+	if err != nil {
+		t.Fatalf("lookup manual: %v", err)
+	}
+
+	var aFired, bFired int32
+	enteredSubmit := make(chan struct{})
+	releaseSubmit := make(chan struct{})
+
+	// A holds the lock across a blocked on-chain submit — its pending row is not
+	// inserted until the test releases it.
+	depsA := newCLIManualCoreDeps(cfg, db, nil)
+	depsA.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		atomic.AddInt32(&aFired, 1)
+		close(enteredSubmit)
+		<-releaseSubmit
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 4242, Fee: 1.0}}}, "", nil
+	}
+
+	// B: reaching its venue seam at all is the double-fire the lock must prevent.
+	depsB := newCLIManualCoreDeps(cfg, db, nil)
+	depsB.execute = func(script, symbol, side string, size, stopLossPct float64, cancelOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+		atomic.AddInt32(&bFired, 1)
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2100, TotalSz: size, OID: 5252, Fee: 1.0}}}, "", nil
+	}
+
+	closeIn := manualCloseInputs{StrategyID: "hl-manual-eth", Qty: 0.2}
+
+	aDone := make(chan error, 1)
+	go func() {
+		_, e := manualCloseCore(depsA, manualSC, closeIn)
+		aDone <- e
+	}()
+
+	// Wait until A holds the lock and is parked mid-submit (row NOT yet written).
+	select {
+	case <-enteredSubmit:
+	case e := <-aDone:
+		t.Fatalf("first close returned before reaching the venue submit: %v", e)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first close did not reach the venue submit")
+	}
+
+	bDone := make(chan error, 1)
+	go func() {
+		_, e := manualCloseCore(depsB, manualSC, closeIn)
+		bDone <- e
+	}()
+
+	// While A holds the lock, B must not complete — it is blocked acquiring the
+	// file lock, well before its venue seam. Completing (or firing) here means the
+	// cross-process guard failed.
+	select {
+	case e := <-bDone:
+		t.Fatalf("second close completed while the first held the manual-action lock (err=%v, bFired=%d) — cross-process double-fire", e, atomic.LoadInt32(&bFired))
+	case <-time.After(400 * time.Millisecond):
+	}
+	if n := atomic.LoadInt32(&bFired); n != 0 {
+		t.Fatalf("second close fired on-chain %d time(s) while the first held the lock — double-fire", n)
+	}
+
+	// Release A: it inserts its pending "close" row and drops the lock. B then
+	// acquires, re-runs the guard, sees the row, and refuses without firing.
+	close(releaseSubmit)
+
+	if e := <-aDone; e != nil {
+		t.Fatalf("first close errored: %v", e)
+	}
+	select {
+	case e := <-bDone:
+		if e == nil {
+			t.Fatalf("second close should have been refused by the pending-row guard once the lock was released, got nil error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second close did not return after the lock was released")
+	}
+
+	if got := atomic.LoadInt32(&aFired); got != 1 {
+		t.Fatalf("first close venue calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&bFired); got != 0 {
+		t.Fatalf("second close venue calls = %d, want 0 (guard must refuse it)", got)
+	}
+}
+
+// TestAcquireManualActionFileLock covers the lock primitive directly: in-memory
+// DBs are per-process and take a no-op lock, while a real path serializes a
+// second acquire behind the first until it releases.
+func TestAcquireManualActionFileLock(t *testing.T) {
+	for _, p := range []string{":memory:", "", "file::memory:?cache=shared"} {
+		rel, err := acquireManualActionFileLock(p)
+		if err != nil {
+			t.Fatalf("acquireManualActionFileLock(%q) errored: %v", p, err)
+		}
+		if rel == nil {
+			t.Fatalf("acquireManualActionFileLock(%q) returned nil release", p)
+		}
+		rel() // no-op release must not panic
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	rel1, err := acquireManualActionFileLock(dbPath)
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+
+	type acq struct {
+		rel func()
+		err error
+	}
+	got := make(chan acq, 1)
+	go func() {
+		r, e := acquireManualActionFileLock(dbPath)
+		got <- acq{r, e}
+	}()
+
+	// The second acquire must not succeed while the first holds the lock.
+	select {
+	case a := <-got:
+		if a.rel != nil {
+			a.rel()
+		}
+		t.Fatalf("second acquire returned while the first held the lock (err=%v)", a.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	rel1() // release; the blocked acquire should now proceed
+	select {
+	case a := <-got:
+		if a.err != nil {
+			t.Fatalf("second acquire failed after release: %v", a.err)
+		}
+		a.rel()
+	case <-time.After(3 * time.Second):
+		t.Fatal("second acquire did not proceed after the first released")
 	}
 }
 
