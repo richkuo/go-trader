@@ -43,6 +43,24 @@ Run (needs the OHLCV cache reachable from shared_tools/):
 
 Read-only research layer. No live path, no Go path, no config, no gate threshold is touched by
 running this. The gate stays fail-closed (abstaining) until a follow-up PR lands one outcome.
+
+Addendum 2026-07-05 -- re-run under the corrected simulation geometry (#1243):
+Re-ran this harness on current main (the #1238 audit fixes plus #1250
+fee-net-per-trade and #1251 canonical Sortino / None profit-factor / half-open
+windows). The pre-registered decision reproduces UNCHANGED: replicates=False
+(primary_met=True, breadth_met=False, symbols_met=True), 11/24 held-out cells
+significant, Phase-2 branch 2b (drop the incumbent veto). All 24 per-cell
+significance flags match the committed regime_1211_baseline_remeasure.json
+exactly. The corrections provably do not reach this study: it measures
+forward-realized-volatility regime separation via block-permutation Kruskal-
+Wallis, using none of the corrected backtester / fee-accounting / Sortino code
+paths (no trades, no PnL, no ATR-stop geometry). The one per-cell p that moved
+-- BTC/USDT 1h OOS 0.005 -> 0.105 (both sig=False) -- is a data artifact, not a
+code artifact: the committed run's OOS window resolved to 2026-07-02 (4344
+bars) whereas this re-run used the #1228 audit cache snapshot (OOS ends
+2026-06-04, 3649 bars), so the shorter OOS window shifts that borderline
+permutation p without changing its non-significant verdict or the fixed-date
+held-out cells that carry breadth_met. Verdict holds; no follow-up needed.
 """
 from __future__ import annotations
 import os, sys

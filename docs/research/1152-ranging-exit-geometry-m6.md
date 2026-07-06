@@ -155,5 +155,47 @@ uv run --no-sync python backtest/research/regime_1152_exit_retune.py --only mr.b
 
 Deterministic given the cache snapshot (harness seed 1066, fixed windows).
 
+## Addendum 2026-07-05 — re-run under the corrected simulation geometry (#1243)
+
+Re-ran the full M6 matrix (`regime_1152_exit_retune.py --jobs 6`, 18 A/B runs)
+on current `main` (the #1238 audit fixes plus #1250 fee-net-per-trade and #1251
+canonical Sortino / `None` profit-factor / half-open windows), identical cache
+snapshot. **Verdict holds: every incumbent stands; no ratchet or B2 geometry
+ships.** This study exercises exactly the surface the corrections touch —
+per-entry ΔPnL on ratchet / tiered-TP ladders with ATR geometry — so several
+per-run labels moved, but none crosses the promotion line and the decisive
+cross-entry-style gate is unchanged.
+
+**The gate outcome is intact.** The pre-registered gate needs a candidate to
+clear BOTH entry styles. The only run that passes under either style,
+`mr.b2_rv_wider`, reproduces essentially to the digit (IS +0.005 sig+2 → +0.005
+sig+2; OOS +0.050 sig+2 → +0.048 sig+2; still `candidate_beats_incumbent`), and
+its squeeze counterpart `sq.b2_rv_wider` still fails out-of-sample (OOS -0.050 →
+-0.054, `incumbent_stands`) — if anything the corrected geometry weakened the
+squeeze side (its lone IS sig-positive dataset dropped, sig+1 → sig+0). The
+cross-style contradiction that blocks the `ranging_volatile` B2 split therefore
+persists. **No promotion guidance changes.**
+
+**Three per-run labels shifted, all within the non-promoting band**
+(`incumbent_stands` ↔ `positive_but_not_significant`, never reaching
+`candidate_beats_incumbent`):
+
+| run | documented | re-run | Δnet/entry shift (is / oos) |
+|---|---|---|---|
+| `mr.rv_wider` | positive_but_not_significant | incumbent_stands | +0.012 → **-0.004** / +0.023 → +0.016 |
+| `mr.rv_quiet_geometry` | incumbent_stands | positive_but_not_significant | -0.012 → +0.007 / +0.011 → +0.005 |
+| `mr.b2_rv_patient3` | incumbent_stands | positive_but_not_significant | +0.065 (sig+1) → +0.026 (sig 0) / -0.002 → +0.007 |
+
+All three stay non-significant (0 individually-significant datasets after the
+shift), so none is a gate pass; two moved more conservative, one slightly less,
+consistent with the audit's "generally more conservative" closed-bar geometry
+plus small paired-N changes (n 333 → 334 from the #1251 half-open boundary bar).
+Every other run's verdict label is unchanged. The `ranging_quiet` evidence gap
+(zero gated entries) is structural and likewise unchanged. **Bottom line: the
+#1152 "every incumbent stands" verdict, and the standing recommendation to
+re-run `b2_rv_wider` cross-style once the OOS window accumulates more squeeze
+entries, both stand under the corrected engine.**
+
 ---
 Created with LLM: Fable 5 | high | Harness: Claude Code
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code

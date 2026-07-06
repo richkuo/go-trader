@@ -105,5 +105,49 @@ uv run --no-sync python backtest/run_backtest.py --strategy sma_crossover \
 (`git show e002a3f:backtest/run_backtest.py`). Results depend on the OHLCV
 cache state; the tables above were produced on the 2026-07-01 20:58 snapshot.
 
+## Addendum 2026-07-05 — re-run under the corrected simulation geometry (#1243)
+
+Re-ran both `sma_crossover --htf-filter` baselines on current `main` (which
+carries the #1238 audit fixes plus #1250 fee-net-per-trade and #1251 canonical
+Sortino / `None` profit-factor / half-open windows) against the **identical
+cache snapshot** these baselines were built on (`shared_tools/trading_bot.db`,
+audit-dataset last bars 2026-06-04 → 2026-06-12, byte-for-byte the range the
+tables above pin). Result: **unchanged except Sortino, exactly as the #1242
+re-baseline note above anticipated.** Every return / Sharpe / max-DD / trade /
+win-rate figure reproduces to the digit; only the Sortino column moves, and it
+moves because #1251 redefined the metric, not because any trade changed.
+
+`sma_crossover BTC/USDT 1h --htf-filter`:
+
+| metric | documented (pre-#1251) | re-run (current main) | status |
+|---|---:|---:|---|
+| Total return | +147.80% | +147.80% | unchanged |
+| Sharpe | 0.998 | 0.998 | unchanged |
+| Sortino | 0.932 | **1.415** | shifted (metric redefinition #1251) |
+| Max DD | -36.85% | -36.85% | unchanged |
+| Trades | 75 | 75 | unchanged |
+| Win rate | 32.0% | 32.0% | unchanged |
+
+`sma_crossover ETH/USDT 4h --htf-filter`:
+
+| metric | documented (pre-#1251) | re-run (current main) | status |
+|---|---:|---:|---:|
+| Total return | +7.94% | +7.94% | unchanged |
+| Sharpe | 0.248 | 0.248 | unchanged |
+| Sortino | 0.222 | **0.354** | shifted (metric redefinition #1251) |
+| Max DD | -51.79% | -51.79% | unchanged |
+| Trades | 13 | 13 | unchanged |
+| Win rate | 38.5% | 38.5% | unchanged |
+
+**Canonical Sortino baselines are now 1.415 (BTC 1h) and 0.354 (ETH 4h);** they
+supersede the pre-#1251 0.932 / 0.222 wherever a future comparison needs the
+Sortino column. **No verdict flips.** The EntryATR / unified-SL corrections do
+not reach these runs — `sma_crossover --htf-filter` exits open-signal-as-close
+with no ATR-stop/tiered-TP geometry, so the trade set is identical; and #1250's
+fee-net change left win-rate and every equity figure untouched here (no trade
+crossed zero PnL as a result). The #1181 "no decision rested on a leak-inflated
+number" disposition stands.
+
 ---
 Created with LLM: Fable 5 | high | Harness: Claude Code
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code

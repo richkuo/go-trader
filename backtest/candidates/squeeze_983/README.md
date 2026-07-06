@@ -192,3 +192,36 @@ flip sign on the stitched frame.
    sweep.
 
 A negative result is a valid M1 finding — documented, not deleted (#995 step 4).
+
+## Addendum 2026-07-05 — re-run under the corrected simulation geometry (#1243)
+
+Re-ran the headline drivers (`audit_headline.py` continuous-window;
+`validate_shortlist.py` M1 protocol, default shortlist + time-stop shortlist)
+on current `main` (the #1238 audit fixes plus #1250 fee-net-per-trade and #1251
+canonical Sortino / `None` profit-factor / half-open windows), identical cache
+snapshot. **Verdict holds: no close stack ships; keep the baseline stack.** The
+baseline (open-signal-as-close, no ATR geometry) is byte-identical; the
+ATR-geometry candidate (`tp_default` tiered-TP ladder) shifted slightly, all in
+the conservative direction, and stays a collapse.
+
+Step-5 continuous audit window (2025-06-10 → latest):
+
+| run | metric | documented | re-run | status |
+|---|---|---:|---:|---|
+| baseline | mean Sharpe / ret / vsB&H / worstDD / #T | +0.07 / +1.1% / +45.9 / -58.5% / 130 | +0.07 / +1.07% / +45.90 / -58.46% / 130 | identical |
+| `tp_default` | mean Sharpe / ret / vsB&H / worstDD / #T | -0.51 / -23.8% / +21.1 / -72.4% / 168 | **-0.532 / -24.07% / +20.76 / -72.38% / 158** | shifted, still collapses |
+
+`tp_default` runs 158 trades vs the documented 168 — the #1238 closed-bar
+EntryATR moved a handful of tiered-TP fills — and its stitched worst DD stays
+-72% with a negative return, so the step-5 conclusion ("do not deploy the
+ladder on this entry") is unchanged.
+
+M1 protocol PASS/FAIL table — **every verdict identical to the documented run**
+(baseline OOS PASS, held-out 1/3; `tp_default` OOS PASS, held-out 2/3;
+`sl_atr_1.5` / `trail_atr_3.0` / `tp_runner_trail3` FAIL 0/3;
+`time_stop_200/225/250` OOS FAIL, held-out 1/3). No PASS↔FAIL flipped despite
+the #1251 DDadj-floor and half-open-window changes. The keep-baseline verdict
+and the "-58.5% DD is regime exposure, not exit quality → M4" disposition stand.
+
+---
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code

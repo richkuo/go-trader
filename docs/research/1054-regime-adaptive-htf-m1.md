@@ -168,5 +168,32 @@ exactly); statistics deterministic at seed 1066, 10000 resamples.
 
 Generated: 2026-07-01
 
+## Addendum 2026-07-05 — re-run under the corrected simulation geometry (#1243)
+
+Re-ran the full #1054 evidence set on current `main` (the #1238 audit fixes
+plus #1250 fee-net-per-trade and #1251 canonical Sortino / `None`
+profit-factor / half-open windows) against the identical cache snapshot
+(audit-dataset last bars 2026-06-04 → 2026-06-12). **Every figure reproduces
+bit-for-bit; the deprecate recommendation stands unchanged.**
+
+| harness | documented | re-run | status |
+|---|---|---|---|
+| M5 fee-audit row | 37 trades, gross +0.27, net -0.66, drag 0.94pp, `graduate_m1` | 37, +0.27, -0.66, 0.94, `graduate_m1` | identical |
+| M1 baseline | IS/OOS PASS (relative bar), held-out 0/3; means IS +0.23/+0.75, OOS -0.32/-0.20 | IS/OOS PASS, held-out 0/3; IS +0.23/+0.75, OOS -0.32/-0.20 | identical |
+| noise (M5 slices) | n=37, mean +0.082%/trade, permutation p=0.3913, `INDISTINGUISHABLE_FROM_ZERO` | n=37, +0.082%, p=0.3913, `INDISTINGUISHABLE_FROM_ZERO` | identical |
+| noise (all windows) | n=173, mean -0.022%/trade, permutation p=0.5516, sign 110/173 p=0.0004, `NO_POSITIVE_EDGE` | n=173, -0.022%, p=0.5516, 110/173 p=0.0004, `NO_POSITIVE_EDGE` | identical |
+
+Why nothing moved: the corrections do not reach this study. The noise gate
+scores **zero-friction gross legs**, and every per-trade gross return
+reproduces to the digit (e.g. IS BTC/USDT 1h +3.05%), so the trade set is
+unchanged — `regime_adaptive_htf` enters on regime labels and exits
+open-signal-as-close with no ATR-stop/tiered-TP geometry, the only surface the
+#1238 EntryATR / unified-SL fixes touch. #1250's per-trade fee-net change also
+leaves the M5 net -0.66%/leg untouched (`fee_audit` already computed net legs
+from the fee-inclusive cash path, not the per-trade `pnl` field #1250 revised).
+The pre-registered `NO_POSITIVE_EDGE` verdict and the deprecate recommendation
+(scoped to the fade-only default, pending the M4 adjudication) are unchanged.
+
 ---
 Created with LLM: Fable 5 | high | Harness: Claude Code + live M1 runs
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code
