@@ -706,6 +706,12 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
 
     ``qty_frac`` pro-rates the entry commission for a partial-close leg (each
     leg gets its share of the single entry fee; the legs' fractions sum to 1).
+
+    This is the single fee-netting chokepoint for every close site (#1241):
+    ``Trade.close()`` sets a gross ``pnl``; here we net BOTH the pro-rated
+    entry fee and the exit fee out of it so every leg reports PnL net of fees,
+    matching live's net-PnL convention (``tradeNetPnL``). Callers must NOT
+    deduct the exit fee from ``pnl`` themselves — doing so double-counts it.
     """
     mfe, mae, b_mfe, b_mae = hold.metrics()
     trade.bars_held = hold.bars
@@ -717,6 +723,8 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     trade.entry_fee = hold.entry_fee * qty_frac
     trade.exit_fee = exit_fee
     trade.exit_reason = reason
+    # Net both fees out of the gross pnl set by Trade.close() (#1241).
+    trade.pnl -= trade.entry_fee + trade.exit_fee
 
 
 class Backtester:
@@ -1959,7 +1967,8 @@ class Backtester:
                         closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
                         closed.shares = qty_to_close
                         closed.close(idx, effective_price)
-                        closed.pnl -= commission
+                        # Exit fee (and pro-rated entry fee) is netted inside
+                        # _stamp_hold below — do NOT deduct it here too (#1241).
                         # #997: stamp hold telemetry. This leg exits at THIS
                         # bar's open, so hold reflects bars through the prior
                         # bar (step() for this bar runs after the open-fill
@@ -2504,8 +2513,19 @@ class Backtester:
 
             if current_trade:
                 current_trade.close(df.index[-1], final_price)
+                # This leg carries whatever shares remain after any earlier
+                # engine partial-close legs (each of which already netted its
+                # pro-rated share of the single entry commission). hold.entry_fee
+                # is still the FULL entry fee, so pro-rate by the remaining
+                # fraction here too — else the entry fee is netted more than
+                # once across the position's legs (#1241).
+                eod_qty_frac = (
+                    current_trade.shares / initial_quantity
+                    if initial_quantity > 0 else 1.0
+                )
                 _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
-                            exit_fee=commission, reason="end_of_data")
+                            exit_fee=commission, reason="end_of_data",
+                            qty_frac=eod_qty_frac)
                 trades.append(current_trade)
 
         final_equity = cash
@@ -2900,8 +2920,15 @@ class Backtester:
             # parsers (incl. Go json.Unmarshal) reject.
             profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
-            avg_win = np.mean([t.pnl_pct for t in winning]) if winning else 0
-            avg_loss = np.mean([t.pnl_pct for t in losing]) if losing else 0
+            # Net return fraction per leg (net t.pnl over entry notional), so
+            # avg_win/avg_loss share the net convention with the win/loss
+            # buckets above — t.pnl_pct is GROSS and would misreport a
+            # gross-winner/net-loser bucketed as a loss (#1241).
+            def _net_pnl_pct(t):
+                notional = t.shares * t.entry_price
+                return (t.pnl / notional) if notional > 0 else 0.0
+            avg_win = np.mean([_net_pnl_pct(t) for t in winning]) if winning else 0
+            avg_loss = np.mean([_net_pnl_pct(t) for t in losing]) if losing else 0
         else:
             win_rate = 0
             profit_factor = 0

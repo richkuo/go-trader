@@ -75,8 +75,8 @@ def trade_metrics(t: dict) -> dict:
     ``pnl_pct`` / ``mfe_pct`` / ``mae_pct`` are already percent (Trade.to_dict).
     Fees are absolute; convert to percent of this leg's notional using shares
     and prices so the result is independent of which run path booked the leg
-    (the plain path keeps Trade.pnl gross, the open/close path nets the exit
-    commission — but pnl_pct is gross on both, so we key off it).
+    (Trade.pnl is net of both fees at every close site since #1241, but pnl_pct
+    stays gross on all paths, so we key off pnl_pct and re-derive fees here).
     """
     gross_pct = float(t.get("pnl_pct", 0.0) or 0.0)
     shares = float(t.get("shares", 0.0) or 0.0)
