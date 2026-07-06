@@ -858,3 +858,60 @@ func TestStrategyTPTiersForRegime_UnifiedBlock(t *testing.T) {
 		t.Fatalf("empty regime tiers = %+v, want nil", got)
 	}
 }
+
+// TestRatchetExcludedFromOnChainTPGates pins the #1234 audit invariant that
+// the trailing-TP ratchet evaluators place NO on-chain take-profits: they must
+// stay out of all three on-chain-TP gates. Adding either name to
+// isTieredTPATRCloseName, strategyUsesTieredTPATRClose, or the
+// closeStrategiesSuppressedByOnChainProtection set would suppress the
+// in-process ratchet evaluator (or place unintended on-chain TPs) and defeat
+// the let-it-ride trailing stop.
+func TestRatchetExcludedFromOnChainTPGates(t *testing.T) {
+	for _, name := range []string{"trailing_tp_ratchet", "trailing_tp_ratchet_regime"} {
+		if isTieredTPATRCloseName(name) {
+			t.Errorf("isTieredTPATRCloseName(%q) = true; ratchet must never be treated as a tiered-TP-ATR close", name)
+		}
+		sc := StrategyConfig{CloseStrategy: &StrategyRef{Name: name}}
+		if strategyUsesTieredTPATRClose(sc) {
+			t.Errorf("strategyUsesTieredTPATRClose = true for %q; ratchet must not arm on-chain TP tiers", name)
+		}
+		if _, ok := closeStrategiesSuppressedByOnChainProtection[name]; ok {
+			t.Errorf("closeStrategiesSuppressedByOnChainProtection contains %q; suppressing the ratchet evaluator would disable its exit logic entirely", name)
+		}
+		if !isTrailingTPRatchetCloseName(name) {
+			t.Errorf("isTrailingTPRatchetCloseName(%q) = false; want true", name)
+		}
+	}
+}
+
+// TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice pins the #873
+// invariant at the protection-plan layer: after a scale-in, SL/TP trigger
+// geometry anchors to the FROZEN RiskAnchorPrice, never the blended AvgCost.
+func TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice(t *testing.T) {
+	mult := 1.0
+	sc := StrategyConfig{
+		ID:              "hl-eth",
+		Type:            "perps",
+		Platform:        "hyperliquid",
+		StopLossATRMult: &mult,
+		CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr_live"},
+	}
+	pos := &Position{
+		Symbol:          "ETH",
+		Quantity:        3,
+		AvgCost:         3050, // blended by a scale-in add
+		RiskAnchorPrice: 2900, // frozen at the original open
+		EntryATR:        50,
+		Side:            "long",
+	}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	if !ok {
+		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
+	}
+	if plan.AvgCost != 2900 {
+		t.Errorf("plan.AvgCost = %g; want frozen RiskAnchorPrice 2900, not blended AvgCost 3050", plan.AvgCost)
+	}
+	if plan.Size != 3 {
+		t.Errorf("plan.Size = %g; want re-sized total quantity 3", plan.Size)
+	}
+}

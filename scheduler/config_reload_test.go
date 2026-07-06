@@ -2022,3 +2022,83 @@ func TestStrategyRestartShape_NotifyRatchetTriggersOnlyChange(t *testing.T) {
 		t.Fatal("notify_ratchet_triggers set-vs-nil should not affect restart shape")
 	}
 }
+
+// TestValidateHotReloadStateCompatible_StopOwnerModeToggles pins the #1234
+// audit invariant class: toggling ANY Hyperliquid stop-loss owner on or off
+// (nil<->positive scalars, nil<->configured regime blocks, scalar<->regime
+// swaps) is blocked while the strategy holds an open position — the resting
+// on-chain trigger was sized for one distance regime — and allowed while flat.
+func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	mkCfg := func(mutate func(sc *StrategyConfig)) *Config {
+		sc := StrategyConfig{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+			Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+			Leverage: 5, MarginMode: "isolated",
+		}
+		if mutate != nil {
+			mutate(&sc)
+		}
+		return minimalReloadConfig([]StrategyConfig{sc})
+	}
+	openState := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+	flatState := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{}},
+	}}
+	regimeBlock := func(sc *StrategyConfig, trailing bool) {
+		b := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}
+		if trailing {
+			sc.TrailingStopATRRegime = b
+		} else {
+			sc.StopLossATRRegime = b
+		}
+	}
+
+	cases := []struct {
+		name     string
+		old, new func(sc *StrategyConfig)
+		wantErr  string
+	}{
+		{"trailing_stop_pct removed (positive->nil)",
+			func(sc *StrategyConfig) { sc.TrailingStopPct = pf(3) }, nil,
+			"trailing_stop_pct mode changed"},
+		{"trailing_stop_atr_mult added (nil->positive)",
+			nil, func(sc *StrategyConfig) { sc.TrailingStopATRMult = pf(2) },
+			"trailing_stop_atr_mult mode changed"},
+		{"trailing_stop_atr_mult removed (positive->nil)",
+			func(sc *StrategyConfig) { sc.TrailingStopATRMult = pf(2) }, nil,
+			"trailing_stop_atr_mult mode changed"},
+		{"stop_loss_atr_mult added (nil->positive)",
+			nil, func(sc *StrategyConfig) { sc.StopLossATRMult = pf(2) },
+			"stop_loss_atr_mult mode changed"},
+		{"stop_loss_atr_mult removed (positive->nil)",
+			func(sc *StrategyConfig) { sc.StopLossATRMult = pf(2) }, nil,
+			"stop_loss_atr_mult mode changed"},
+		{"scalar->regime swap (stop_loss_atr_mult -> stop_loss_atr_regime)",
+			func(sc *StrategyConfig) { sc.StopLossATRMult = pf(2) },
+			func(sc *StrategyConfig) { regimeBlock(sc, false) },
+			"stop_loss_atr_regime mode changed"},
+		{"trailing_stop_atr_regime added (nil->configured)",
+			nil, func(sc *StrategyConfig) { regimeBlock(sc, true) },
+			"trailing_stop_atr_regime mode changed"},
+		{"trailing_stop_atr_regime removed (configured->nil)",
+			func(sc *StrategyConfig) { regimeBlock(sc, true) }, nil,
+			"trailing_stop_atr_regime mode changed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateHotReloadStateCompatible(mkCfg(tc.old), mkCfg(tc.new), openState)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("open position: want error containing %q, got: %v", tc.wantErr, err)
+			}
+			// Inverse: the same owner toggle while FLAT must be accepted.
+			if err := validateHotReloadStateCompatible(mkCfg(tc.old), mkCfg(tc.new), flatState); err != nil {
+				t.Fatalf("flat: same toggle must be accepted, got: %v", err)
+			}
+		})
+	}
+}

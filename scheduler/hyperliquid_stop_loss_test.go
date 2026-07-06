@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -205,6 +206,14 @@ func TestComputeTrailingStopUpdate(t *testing.T) {
 		{"short ratchets down", "short", 90, 100, 3, 0.5, 103, 90, 92.7, true},
 		{"short never raises trigger", "short", 101, 100, 3, 0.5, 103, 100, 0, false},
 		{"missing current trigger places one", "long", 100, 100, 3, 0.5, 0, 100, 97, true},
+		// #1234 audit: movePct >= minMovePct — a move exactly AT the threshold
+		// must replace (regression guard for >= flipped to >). trailingPct=50
+		// makes the trigger factor an exact binary 0.5 (long) / 1.5 (short),
+		// so movePct computes to an exact 1.0 in float64 (0.5/50*100).
+		{"long replaces at exact min-move boundary", "long", 101, 100, 50, 1.0, 50, 101, 50.5, true},
+		{"short replaces at exact min-move boundary", "short", 33, 100, 50, 1.0, 50, 33, 49.5, true},
+		{"long holds just under min-move boundary", "long", 100.8, 100, 50, 1.0, 50, 100.8, 0, false},
+		{"short holds just under min-move boundary", "short", 33.2, 100, 50, 1.0, 50, 33.2, 0, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -870,6 +879,13 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		{"drawdown fallback at cap boundary", hlPerps(StrategyConfig{MaxDrawdownPct: 50, Leverage: 5}), 50},
 		{"drawdown fallback ignored when explicit set", hlPerps(StrategyConfig{StopLossPct: pf(2), MaxDrawdownPct: 10}), 2},
 		{"margin fallthrough beats drawdown", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), MaxDrawdownPct: 5, Leverage: 20}), 1.0},
+		// #1234 audit: a resolved regime-owned stop DEFERS (returns 0) and
+		// must never fall through to the max-drawdown fallback — the trigger
+		// is armed post-open once EntryATR and Regime are stamped (#733).
+		{"stop_loss_atr_regime defers, no drawdown fallback",
+			hlPerps(StrategyConfig{StopLossATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
+		{"trailing_stop_atr_regime defers, no drawdown fallback",
+			hlPerps(StrategyConfig{TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -2647,5 +2663,66 @@ func TestATRMultMissingEntryATR_FixedATRMult(t *testing.T) {
 	posOK := &Position{AvgCost: 2000, EntryATR: 40}
 	if atrMultMissingEntryATR(sc, posOK) {
 		t.Error("expected atrMultMissingEntryATR=false when EntryATR is stamped")
+	}
+}
+
+// TestHyperliquidProtectionPositionSnapshot_CarriesFullSurface pins the #1015
+// invariant field-by-field: the lock-free protection walker's snapshot must
+// carry the FULL protection surface (regime label/windows/transition state,
+// the frozen #873 risk anchor, and post-TP/ratchet state). A field added to
+// the protection surface but not propagated here silently unarms paper regime
+// trailing SLs — the original #1015 bug class.
+func TestHyperliquidProtectionPositionSnapshot_CarriesFullSurface(t *testing.T) {
+	postTP := 1.25
+	src := &Position{
+		AvgCost:                         3100,
+		EntryATR:                        42,
+		RiskAnchorPrice:                 3000,
+		Regime:                          "trending",
+		RegimeWindows:                   map[string]string{"daily": "trending", "weekly": "ranging"},
+		RegimeAppliedLabel:              "trending",
+		RegimePendingLabel:              "ranging",
+		RegimePendingCount:              2,
+		SLAdjustedTiersProcessed:        3,
+		RatchetFallbackNormalizePending: true,
+		PostTPTrailingATRMult:           &postTP,
+	}
+	snap := hyperliquidProtectionPositionSnapshot(src)
+	if snap == nil {
+		t.Fatal("snapshot is nil for non-nil position")
+	}
+	if snap.AvgCost != 3100 || snap.EntryATR != 42 || snap.RiskAnchorPrice != 3000 {
+		t.Errorf("price surface = (AvgCost %v, EntryATR %v, RiskAnchorPrice %v); want (3100, 42, 3000)",
+			snap.AvgCost, snap.EntryATR, snap.RiskAnchorPrice)
+	}
+	if snap.Regime != "trending" || snap.RegimeAppliedLabel != "trending" ||
+		snap.RegimePendingLabel != "ranging" || snap.RegimePendingCount != 2 {
+		t.Errorf("regime surface = (%q, %q, %q, %d); want (trending, trending, ranging, 2)",
+			snap.Regime, snap.RegimeAppliedLabel, snap.RegimePendingLabel, snap.RegimePendingCount)
+	}
+	if !reflect.DeepEqual(snap.RegimeWindows, src.RegimeWindows) {
+		t.Errorf("RegimeWindows = %v; want %v", snap.RegimeWindows, src.RegimeWindows)
+	}
+	if snap.SLAdjustedTiersProcessed != 3 || !snap.RatchetFallbackNormalizePending {
+		t.Errorf("ratchet surface = (%d, %v); want (3, true)",
+			snap.SLAdjustedTiersProcessed, snap.RatchetFallbackNormalizePending)
+	}
+	if snap.PostTPTrailingATRMult == nil || *snap.PostTPTrailingATRMult != 1.25 {
+		t.Errorf("PostTPTrailingATRMult = %v; want 1.25", snap.PostTPTrailingATRMult)
+	}
+
+	// Deep-copy guarantees: the walker is lock-free, so mutating the source
+	// after snapshotting must not leak into the snapshot.
+	src.RegimeWindows["daily"] = "ranging"
+	if snap.RegimeWindows["daily"] != "trending" {
+		t.Error("RegimeWindows was shallow-copied; walker snapshot mutated by main loop")
+	}
+	*src.PostTPTrailingATRMult = 9.9
+	if *snap.PostTPTrailingATRMult != 1.25 {
+		t.Error("PostTPTrailingATRMult pointer was shared; walker snapshot mutated by main loop")
+	}
+
+	if hyperliquidProtectionPositionSnapshot(nil) != nil {
+		t.Error("snapshot of nil position must be nil")
 	}
 }
