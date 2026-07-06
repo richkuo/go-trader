@@ -134,3 +134,70 @@ def test_partial_close_prorated_entry_fees_sum_and_net():
     gross_total = (leg0["shares"] * (leg0["exit_price"] - leg0["entry_price"])
                    + leg1["shares"] * (leg1["exit_price"] - leg1["entry_price"]))
     assert net_total < gross_total
+
+
+def test_partial_then_end_of_data_entry_fees_sum_to_whole():
+    # Review #1250 finding: a tiered partial close (engine path) followed by an
+    # end-of-data close must NOT double-count the entry fee. One tier closes
+    # 50% at 1×ATR; the remainder rides to the end of the data and is force-
+    # closed there. The two legs' pro-rated entry fees must sum to the single
+    # entry commission (fractions 0.5 + 0.5 = 1), and the remainder leg's pnl
+    # must net exactly one pro-rated entry fee, not the full one.
+    df = _df_open_then_hold(
+        opens=[100, 100, 100, 110, 110],
+        closes=[100, 100, 110, 110, 110],
+        atrs=[10, 10, 10, 10, 10],
+    )
+    bt = Backtester(
+        initial_capital=INITIAL_CAPITAL,
+        commission_pct=COMMISSION,
+        slippage_pct=0.0,
+        close_strategies=[
+            {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+                {"atr_multiple": 1.0, "close_fraction": 0.5},
+                # Second tier at 5×ATR never triggers → remainder hits EOD.
+                {"atr_multiple": 5.0, "close_fraction": 1.0},
+            ]}},
+        ],
+    )
+    result = bt.run(df, save=False)
+
+    assert result["total_trades"] == 2
+    leg0, leg1 = result["trades"][0], result["trades"][1]
+    assert leg1["exit_reason"] == "end_of_data"
+
+    total_entry_fee = INITIAL_CAPITAL * COMMISSION
+    # The whole entry fee is split across the two legs exactly once.
+    assert leg0["entry_fee"] + leg1["entry_fee"] == pytest.approx(total_entry_fee)
+    # Each ~half the position → ~half the entry fee each; the EOD remainder leg
+    # must NOT carry the full entry fee.
+    assert leg1["entry_fee"] == pytest.approx(total_entry_fee * 0.5)
+
+    for leg in (leg0, leg1):
+        entry_px, exit_px, shares = leg["entry_price"], leg["exit_price"], leg["shares"]
+        gross = shares * (exit_px - entry_px)
+        expected_net = gross - leg["entry_fee"] - leg["exit_fee"]
+        assert leg["pnl"] == pytest.approx(expected_net, abs=0.01)
+
+
+def test_avg_loss_uses_net_convention_not_gross_pnl_pct():
+    # Review #1250 optional finding: a gross-winner/net-loser (test 1's trade
+    # class) is bucketed as a loss on net pnl, so avg_loss must reflect a
+    # NEGATIVE net return, not the trade's POSITIVE gross pnl_pct.
+    df = _df_signals(
+        opens=[100.0, 100.0, 100.0, 100.0, 100.15, 100.15],
+        signals=[0, 1, 0, -1, 0, 0],
+    )
+    bt = Backtester(
+        initial_capital=INITIAL_CAPITAL,
+        commission_pct=COMMISSION,
+        slippage_pct=0.0,
+    )
+    result = bt.run(df, save=False)
+
+    # The sole trade is a net loss; its gross pnl_pct is positive.
+    assert result["trades"][0]["pnl"] < 0.0
+    assert result["trades"][0]["pnl_pct"] > 0.0
+    # avg_loss must be net-negative, not pulled positive by the gross figure.
+    assert result["avg_loss_pct"] < 0.0
+    assert result["avg_win_pct"] == 0.0

@@ -2513,8 +2513,19 @@ class Backtester:
 
             if current_trade:
                 current_trade.close(df.index[-1], final_price)
+                # This leg carries whatever shares remain after any earlier
+                # engine partial-close legs (each of which already netted its
+                # pro-rated share of the single entry commission). hold.entry_fee
+                # is still the FULL entry fee, so pro-rate by the remaining
+                # fraction here too — else the entry fee is netted more than
+                # once across the position's legs (#1241).
+                eod_qty_frac = (
+                    current_trade.shares / initial_quantity
+                    if initial_quantity > 0 else 1.0
+                )
                 _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
-                            exit_fee=commission, reason="end_of_data")
+                            exit_fee=commission, reason="end_of_data",
+                            qty_frac=eod_qty_frac)
                 trades.append(current_trade)
 
         final_equity = cash
@@ -2894,8 +2905,15 @@ class Backtester:
             gross_loss = abs(sum(t.pnl for t in losing)) if losing else 0
             profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
-            avg_win = np.mean([t.pnl_pct for t in winning]) if winning else 0
-            avg_loss = np.mean([t.pnl_pct for t in losing]) if losing else 0
+            # Net return fraction per leg (net t.pnl over entry notional), so
+            # avg_win/avg_loss share the net convention with the win/loss
+            # buckets above — t.pnl_pct is GROSS and would misreport a
+            # gross-winner/net-loser bucketed as a loss (#1241).
+            def _net_pnl_pct(t):
+                notional = t.shares * t.entry_price
+                return (t.pnl / notional) if notional > 0 else 0.0
+            avg_win = np.mean([_net_pnl_pct(t) for t in winning]) if winning else 0
+            avg_loss = np.mean([_net_pnl_pct(t) for t in losing]) if losing else 0
         else:
             win_rate = 0
             profit_factor = 0
