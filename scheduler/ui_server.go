@@ -25,6 +25,7 @@ type UIStrategy struct {
 	Symbol    string `json:"symbol"`
 	Timeframe string `json:"timeframe"`
 	Direction string `json:"direction,omitempty"`
+	Paused    bool   `json:"paused,omitempty"` // #1150: position-increasing signals held
 }
 
 type UIStrategyOverview struct {
@@ -40,6 +41,7 @@ type UIStrategyOverview struct {
 	PortfolioValue   float64                `json:"portfolio_value"`
 	InitialCapital   float64                `json:"initial_capital"`
 	RegimeDivergence *RegimeDivergenceState `json:"regime_divergence,omitempty"` // #907: active window-divergence state; nil when none
+	Paused           bool                   `json:"paused,omitempty"`            // #1150
 }
 
 type UIStrategyStatus struct {
@@ -66,6 +68,16 @@ type UIStrategyStatus struct {
 	Leverage         float64                    `json:"leverage,omitempty"`
 	SizingLeverage   float64                    `json:"sizing_leverage,omitempty"`
 	MarginMode       string                     `json:"margin_mode,omitempty"`
+	Paused           bool                       `json:"paused,omitempty"` // #1150
+
+	// #779/#1157: directional-policy display fields, mirroring /status.
+	EffectiveDirection             string              `json:"effective_direction,omitempty"`
+	EffectiveInvertSignal          bool                `json:"effective_invert_signal,omitempty"`
+	RegimeDirectionalPolicy        bool                `json:"regime_directional_policy,omitempty"`
+	EffectivePolicyRegime          string              `json:"effective_policy_regime,omitempty"`
+	DirectionalCertificationStatus string              `json:"directional_certification_status,omitempty"`
+	DirectionalCertificationCell   string              `json:"directional_certification_cell,omitempty"`
+	RegimeProfile                  *RegimeProfileState `json:"regime_profile,omitempty"` // #998: active regime-profile allocation switch state
 }
 
 type UIEquityPoint struct {
@@ -283,6 +295,7 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 		Symbol:    strategyDisplaySymbol(sc),
 		Timeframe: strategyDisplayTimeframe(sc),
 		Direction: strategyDisplayDirection(sc),
+		Paused:    sc.Paused,
 	}
 }
 
@@ -465,6 +478,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		PortfolioValue:   pv,
 		InitialCapital:   initCap,
 		RegimeDivergence: snapshot.RegimeDivergence,
+		Paused:           sc.Paused,
 	}, lifetime, true
 }
 
@@ -520,7 +534,16 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		Leverage:         EffectiveExchangeLeverage(sc),
 		SizingLeverage:   EffectiveSizingLeverage(sc),
 		MarginMode:       sc.MarginMode,
+		Paused:           sc.Paused,
+		RegimeProfile:    snapshot.RegimeProfile,
 	}
+	dirView := directionalStatusForStrategy(sc, &snapshot, ss.regime, time.Now().UTC())
+	resp.EffectiveDirection = dirView.EffectiveDirection
+	resp.EffectiveInvertSignal = dirView.EffectiveInvertSignal
+	resp.RegimeDirectionalPolicy = dirView.PolicyConfigured
+	resp.EffectivePolicyRegime = dirView.EffectivePolicyRegime
+	resp.DirectionalCertificationStatus = dirView.CertStatus
+	resp.DirectionalCertificationCell = dirView.CertCell
 	writeJSON(w, resp)
 }
 

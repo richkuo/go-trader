@@ -323,6 +323,14 @@ h3 {
   border-color: rgba(102, 112, 98, 0.28);
 }
 
+/* #1150: paused badge — muted, informational */
+.regime-badge--paused {
+  color: var(--muted);
+  background: rgba(102, 112, 98, 0.12);
+  border-color: rgba(102, 112, 98, 0.32);
+  cursor: help;
+}
+
 /* #907: divergence badge — amber warning colour */
 .regime-badge--divergence {
   color: var(--amber);
@@ -544,6 +552,52 @@ h3 {
 
 .pos-short {
   color: var(--red);
+}
+
+/* #1230: risk / regime-store / transitions panels in the status rail */
+.risk-panel,
+.regime-store-panel,
+.transitions-panel {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.panel-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.panel-row {
+  border-bottom: 1px solid var(--position-line);
+  padding: 7px 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.panel-row:last-child {
+  border-bottom: 0;
+}
+
+.panel-title {
+  font-weight: 600;
+}
+
+.panel-indent {
+  padding-left: 12px;
+}
+
+.panel-muted {
+  color: var(--muted);
+}
+
+.risk-alert {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.panel-list .regime-badge {
+  font-size: 11px;
+  padding: 1px 7px;
 }
 
 .trade-history {
@@ -850,7 +904,10 @@ h3 {
 }
 
 .tuner-header h3,
-.positions h3 {
+.positions h3,
+.risk-panel h3,
+.regime-store-panel h3,
+.transitions-panel h3 {
   margin: 0;
   font-size: 14px;
 }

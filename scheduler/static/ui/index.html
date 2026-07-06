@@ -53,6 +53,7 @@
               <div class="topbar-title-row">
                 <h2 id="active-title">Dashboard</h2>
                 <span id="regime-badge" class="regime-badge" hidden></span>
+                <span id="paused-badge" class="regime-badge regime-badge--paused" hidden title="Strategy paused — position-increasing signals held; closes and SL/TP management still run">⏸ paused</span>
                 <span id="divergence-badge" class="regime-badge regime-badge--divergence" hidden title="Regime window divergence active"></span>
               </div>
               <p id="active-subtitle">Select a strategy</p>
@@ -136,6 +137,18 @@
               <div class="positions">
                 <h3>Positions</h3>
                 <div id="positions-list"></div>
+              </div>
+              <div class="risk-panel">
+                <h3>Risk</h3>
+                <div id="risk-content" class="panel-list"></div>
+              </div>
+              <div class="regime-store-panel">
+                <h3>Regime windows</h3>
+                <div id="regime-store-content" class="panel-list"></div>
+              </div>
+              <div class="transitions-panel">
+                <h3>Regime transitions</h3>
+                <div id="transitions-content" class="panel-list"></div>
               </div>
               <section id="tuner-panel" class="tuner-panel" hidden>
                 <div class="tuner-header">

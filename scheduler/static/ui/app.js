@@ -33,6 +33,10 @@
     search: document.getElementById("strategy-search"),
     title: document.getElementById("active-title"),
     regimeBadge: document.getElementById("regime-badge"),
+    pausedBadge: document.getElementById("paused-badge"),
+    riskContent: document.getElementById("risk-content"),
+    regimeStoreContent: document.getElementById("regime-store-content"),
+    transitionsContent: document.getElementById("transitions-content"),
     divergenceBadge: document.getElementById("divergence-badge"),
     subtitle: document.getElementById("active-subtitle"),
     chart: document.getElementById("chart"),
@@ -308,7 +312,10 @@
           '<canvas class="strategy-sparkline" width="48" height="28" aria-hidden="true"></canvas>' +
           '<span class="strategy-symbol"></span>' +
           '<span class="strategy-meta"></span>';
-        button.querySelector(".strategy-id").textContent = strategy.id;
+        button.querySelector(".strategy-id").textContent = (strategy.paused ? "⏸ " : "") + strategy.id;
+        if (strategy.paused) {
+          button.title = "Paused — position-increasing signals held";
+        }
         button.querySelector(".strategy-symbol").textContent = strategy.symbol || "-";
         button.querySelector(".strategy-meta").textContent =
           [strategy.type, strategy.timeframe, strategy.direction].filter(Boolean).join(" / ");
@@ -396,6 +403,7 @@
     resetTunerState();
     updateRegimeBadge("");
     updateDivergenceBadge(null);
+    updatePausedBadge(false);
     const strategy = activeStrategy();
     if (strategy) {
       els.title.textContent = strategy.id;
@@ -808,11 +816,30 @@
     els.divergenceBadge.hidden = false;
   }
 
+  function updatePausedBadge(paused) {
+    if (!els.pausedBadge) return;
+    els.pausedBadge.hidden = !paused;
+  }
+
+  function directionCell(status) {
+    if (!status.regime_directional_policy) {
+      return null;
+    }
+    const dir = status.effective_direction || "-";
+    const cert = status.directional_certification_status || "";
+    // #1085/#1157: uncertified/expired cells run DEFAULT-OFF (BASE direction).
+    if (cert && cert !== "certified") {
+      return dir + " (" + cert.toUpperCase() + " → default-off)";
+    }
+    return dir + (cert ? " (certified)" : "");
+  }
+
   async function refreshStatus() {
     if (!state.activeID) return;
     const status = await getJSON("/api/strategies/" + encodeURIComponent(state.activeID) + "/status");
     updateRegimeBadge(status.regime);
     updateDivergenceBadge(status.regime_divergence);
+    updatePausedBadge(!!status.paused);
     els.statusDot.className = "status-dot ok";
     els.statusLabel.textContent = "Live";
     const drawdownPct = status.risk_state && status.risk_state.current_drawdown_pct;
@@ -830,6 +857,17 @@
       ["Win Rate", status.win_rate ? fmtPct(status.win_rate) : "-"],
       ["Sharpe", status.sharpe ? fmtNumber(status.sharpe) : "-"],
     ];
+    const dirCell = directionCell(status);
+    if (dirCell) {
+      fields.push(["Direction", dirCell]);
+    }
+    if (status.regime_profile && status.regime_profile.active_profile) {
+      let profile = status.regime_profile.active_profile;
+      if (status.regime_profile.pending_profile) {
+        profile += " → " + status.regime_profile.pending_profile + " pending";
+      }
+      fields.push(["Profile", profile]);
+    }
     els.statusGrid.innerHTML = fields.map(function (field) {
       const klass = field.length > 2 ? pnlClass(field[2], field[3]) : "";
       const dd = klass ? '<dd class="' + klass + '">' : "<dd>";
@@ -902,7 +940,7 @@
     els.overviewBody.innerHTML = rows.map(function (row) {
       const pnlClassName = row.pnl_pct > 0 ? "pnl-pos" : row.pnl_pct < 0 ? "pnl-neg" : "";
       return '<tr class="overview-row' + (row.id === state.activeID ? " active" : "") + '" data-id="' + escapeHTML(row.id) + '">' +
-        "<td>" + escapeHTML(row.id) + "</td>" +
+        "<td>" + (row.paused ? '<span title="Paused">⏸</span> ' : "") + escapeHTML(row.id) + "</td>" +
         "<td>" + escapeHTML(row.platform || "-") + "</td>" +
         "<td>" + escapeHTML(row.symbol || "-") + "</td>" +
         '<td class="' + pnlClassName + '">' + escapeHTML(fmtPct(row.pnl_pct)) + "</td>" +
@@ -925,6 +963,116 @@
     els.positions.innerHTML = '<div class="position-row"><span>Table view</span><span>Select a row for detail</span></div>';
   }
 
+  // ── Risk / regime-store / transitions panels (#1230) ─────────────────────
+  // All three are best-effort: a failing source renders a "-" placeholder and
+  // never breaks the rest of the page (#879 fail-open convention).
+
+  function panelFallback(el, text) {
+    if (el) {
+      el.innerHTML = '<div class="panel-row panel-muted">' + escapeHTML(text) + "</div>";
+    }
+  }
+
+  function cbUntilLabel(untilISO, now) {
+    if (!untilISO) return "no expiry set";
+    const until = new Date(untilISO).getTime();
+    if (Number.isNaN(until) || until <= 0 || untilISO.indexOf("0001-") === 0) return "no expiry set";
+    if (until <= now) return "expired (clears next cycle)";
+    const mins = Math.round((until - now) / 60000);
+    return "clears in ~" + (mins >= 60 ? Math.floor(mins / 60) + "h " + (mins % 60) + "m" : mins + "m");
+  }
+
+  async function refreshRiskPanel() {
+    if (!els.riskContent) return;
+    try {
+      const status = await getJSON("/status");
+      const rows = [];
+      const pr = status.portfolio_risk || {};
+      if (pr.kill_switch_active) {
+        rows.push('<div class="panel-row risk-alert">🛑 Kill switch ACTIVE (drawdown ' +
+          escapeHTML(fmtPct(pr.current_drawdown_pct)) + ")</div>");
+      } else {
+        rows.push('<div class="panel-row">Kill switch: off (drawdown ' +
+          escapeHTML(fmtPct(pr.current_drawdown_pct)) + ")</div>");
+      }
+      const now = Date.now();
+      Object.keys(status.strategies || {}).sort().forEach(function (id) {
+        const rs = (status.strategies[id] || {}).risk_state || {};
+        if (rs.circuit_breaker) {
+          rows.push('<div class="panel-row risk-alert">' + escapeHTML(id) + ": CB OPEN (" +
+            escapeHTML(cbUntilLabel(rs.circuit_breaker_until, now)) + ")</div>");
+        }
+        const pending = rs.pending_circuit_closes ? Object.keys(rs.pending_circuit_closes).length : 0;
+        if (pending > 0) {
+          rows.push('<div class="panel-row risk-alert">' + escapeHTML(id) +
+            ": pending circuit close (" + pending + " venue(s))</div>");
+        }
+      });
+      if (rows.length === 1) {
+        rows.push('<div class="panel-row panel-muted">No active circuit breakers</div>');
+      }
+      els.riskContent.innerHTML = rows.join("");
+    } catch (_err) {
+      panelFallback(els.riskContent, "-");
+    }
+  }
+
+  async function refreshRegimeStorePanel() {
+    if (!els.regimeStoreContent) return;
+    try {
+      const resp = await getJSON("/api/regime");
+      const entries = resp.regimes || [];
+      if (!entries.length) {
+        panelFallback(els.regimeStoreContent, "No regime store entries yet");
+        return;
+      }
+      els.regimeStoreContent.innerHTML = entries.map(function (entry) {
+        const title = [entry.symbol, entry.timeframe].filter(Boolean).join(" ") +
+          (entry.platform ? " (" + entry.platform + ")" : "");
+        const windows = entry.windows || {};
+        const windowRows = Object.keys(windows).sort().map(function (name) {
+          const win = windows[name] || {};
+          const label = win.regime || "-";
+          const views = [];
+          if (win.adx3 && win.adx3 !== label) views.push("adx3: " + win.adx3);
+          if (win.composite7 && win.composite7 !== label) views.push("c7: " + win.composite7);
+          return '<div class="panel-row panel-indent">' + escapeHTML(name) + ": " +
+            '<span class="regime-badge ' + regimeBadgeClass(label) + '">' +
+            escapeHTML(humanizeRegimeLabel(label)) + "</span>" +
+            (views.length ? ' <span class="panel-muted">' + escapeHTML(views.join(" · ")) + "</span>" : "") +
+            "</div>";
+        }).join("");
+        return '<div class="panel-row panel-title">' + escapeHTML(title) + "</div>" + windowRows;
+      }).join("");
+    } catch (_err) {
+      panelFallback(els.regimeStoreContent, "-");
+    }
+  }
+
+  async function refreshTransitionsPanel() {
+    if (!els.transitionsContent) return;
+    try {
+      const resp = await getJSON("/api/regime/transitions?limit=30");
+      const rows = resp.transitions || [];
+      if (!rows.length) {
+        panelFallback(els.transitionsContent, "No transitions recorded yet");
+        return;
+      }
+      els.transitionsContent.innerHTML = rows.map(function (row) {
+        const when = row.ts ? new Date(row.ts).toLocaleString(undefined, {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+        }) : "-";
+        const scope = [row.symbol, row.timeframe, row.window].filter(Boolean).join(" ");
+        return '<div class="panel-row"><span class="panel-muted">' + escapeHTML(when) + "</span> " +
+          escapeHTML(scope) + ": " + escapeHTML(humanizeRegimeLabel(row.old_label || "-")) +
+          " → <strong>" + escapeHTML(humanizeRegimeLabel(row.new_label || "-")) + "</strong>" +
+          (row.alerted_at ? " 🔔" : "") + "</div>";
+      }).join("");
+    } catch (_err) {
+      panelFallback(els.transitionsContent, "-");
+    }
+  }
+
   function handleRefreshError(err) {
     if (err.status === 401) {
       showAuthPrompt();
@@ -944,6 +1092,9 @@
       await Promise.all([
         refreshChart(),
         refreshStatus(),
+        refreshRiskPanel(),
+        refreshRegimeStorePanel(),
+        refreshTransitionsPanel(),
         loadTunerConfig(),
         loadSparklines(filteredStrategies().map(function (s) {
           return s.id;

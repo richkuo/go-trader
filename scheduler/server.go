@@ -362,35 +362,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		// verify why the bot is in long vs. short mode. Effective values are
 		// what the next signal will be evaluated under — pulled by replaying
 		// the resolver against the strategy's first open position (or flat).
-		baseDir := EffectiveDirection(sc)
-		baseInvert := sc.InvertSignal
-		effDir := baseDir
-		effInvert := baseInvert
-		var effRegimeKey string
-		var certStatusStr, certCell string
-		policyConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
-		if policyConfigured {
-			posQty := 0.0
-			posRegime := ""
-			var certStates map[string]string
-			for _, p := range s.Positions {
-				if p != nil && p.Quantity > 0 {
-					posQty = p.Quantity
-					posRegime = positionDirectionalRegimeLabel(p, sc)
-					certStates = p.DirectionCertifiedStatesAtOpen
-					break
-				}
-			}
-			currentDirRegime := strategyCurrentDirectionalRegime(s, sc)
-			effRegimeKey = effectiveRegimeForPolicy(currentDirRegime, posRegime, posQty)
-			if posQty <= 0 {
-				certStates, _ = strategyDirectionalCertified(sc, ss.regime, time.Now().UTC())
-			}
-			effDir = EffectiveDirectionForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
-			effInvert = EffectiveInvertSignalForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
-			certStatusStr = strategyDirectionalCertStatus(sc, ss.regime, time.Now().UTC()).String()
-			_, certCell = directionalCertInspectStatus(sc, &Config{Regime: ss.regime})
-		}
+		dirView := directionalStatusForStrategy(sc, s, ss.regime, time.Now().UTC())
 
 		resp.Strategies[id] = StratStatus{
 			ID:                             s.ID,
@@ -405,14 +377,14 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PnLPct:                         pnlPct,
 			RiskState:                      s.RiskState,
 			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
-			BaseDirection:                  baseDir,
-			BaseInvertSignal:               baseInvert,
-			EffectiveDirection:             effDir,
-			EffectiveInvertSignal:          effInvert,
-			RegimeDirectionalPolicy:        policyConfigured,
-			EffectivePolicyRegime:          effRegimeKey,
-			DirectionalCertificationStatus: certStatusStr,
-			DirectionalCertificationCell:   certCell,
+			BaseDirection:                  dirView.BaseDirection,
+			BaseInvertSignal:               dirView.BaseInvertSignal,
+			EffectiveDirection:             dirView.EffectiveDirection,
+			EffectiveInvertSignal:          dirView.EffectiveInvertSignal,
+			RegimeDirectionalPolicy:        dirView.PolicyConfigured,
+			EffectivePolicyRegime:          dirView.EffectivePolicyRegime,
+			DirectionalCertificationStatus: dirView.CertStatus,
+			DirectionalCertificationCell:   dirView.CertCell,
 			RegimeDivergence:               s.RegimeDivergence,
 			RegimeProfile:                  s.RegimeProfile,
 			Paused:                         sc.Paused,
@@ -476,6 +448,57 @@ func (ss *StatusServer) fetchLiveMarkPrices() map[string]float64 {
 		}
 	}
 	return prices
+}
+
+// directionalStatusView bundles the #779/#1157 directional-policy display
+// fields shared by /status and the dashboard per-strategy status endpoint.
+type directionalStatusView struct {
+	BaseDirection         string
+	BaseInvertSignal      bool
+	EffectiveDirection    string
+	EffectiveInvertSignal bool
+	PolicyConfigured      bool
+	EffectivePolicyRegime string
+	CertStatus            string
+	CertCell              string
+}
+
+// directionalStatusForStrategy replays the directional-policy resolver
+// (cert-gated per #1085/#1157) against the strategy's first open position, or
+// the live regime when flat. Read-only; caller supplies a consistent snapshot
+// of the strategy state (call under ss.mu.RLock, or on a cloned snapshot).
+func directionalStatusForStrategy(sc StrategyConfig, s *StrategyState, rc *RegimeConfig, now time.Time) directionalStatusView {
+	view := directionalStatusView{
+		BaseDirection:    EffectiveDirection(sc),
+		BaseInvertSignal: sc.InvertSignal,
+	}
+	view.EffectiveDirection = view.BaseDirection
+	view.EffectiveInvertSignal = view.BaseInvertSignal
+	view.PolicyConfigured = sc.RegimeDirectionalPolicy.IsConfigured()
+	if !view.PolicyConfigured {
+		return view
+	}
+	posQty := 0.0
+	posRegime := ""
+	var certStates map[string]string
+	for _, p := range s.Positions {
+		if p != nil && p.Quantity > 0 {
+			posQty = p.Quantity
+			posRegime = positionDirectionalRegimeLabel(p, sc)
+			certStates = p.DirectionCertifiedStatesAtOpen
+			break
+		}
+	}
+	currentDirRegime := strategyCurrentDirectionalRegime(s, sc)
+	view.EffectivePolicyRegime = effectiveRegimeForPolicy(currentDirRegime, posRegime, posQty)
+	if posQty <= 0 {
+		certStates, _ = strategyDirectionalCertified(sc, rc, now)
+	}
+	view.EffectiveDirection = EffectiveDirectionForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+	view.EffectiveInvertSignal = EffectiveInvertSignalForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+	view.CertStatus = strategyDirectionalCertStatus(sc, rc, now).String()
+	_, view.CertCell = directionalCertInspectStatus(sc, &Config{Regime: rc})
+	return view
 }
 
 func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {
