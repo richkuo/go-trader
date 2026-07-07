@@ -46,6 +46,10 @@ func sortedUITradeActions() []string {
 
 type confirmNonceEntry struct {
 	binding string
+	// payload is an opaque server-side value pinned at confirm time and
+	// returned on consume (#1258: apply-regime-gate stores the blast-radius
+	// set the operator was shown, so execute can refuse on growth).
+	payload string
 	expires time.Time
 }
 
@@ -70,7 +74,7 @@ func canonicalConfirmBinding(action, strategyID string, params json.RawMessage) 
 // issueConfirmNonce mints a crypto/rand nonce bound to binding, storing it
 // in-memory with a TTL. Expired entries are swept opportunistically so the
 // map cannot grow unbounded.
-func (ss *StatusServer) issueConfirmNonce(binding string, now time.Time) (string, error) {
+func (ss *StatusServer) issueConfirmNonce(binding, payload string, now time.Time) (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
@@ -86,28 +90,28 @@ func (ss *StatusServer) issueConfirmNonce(binding string, now time.Time) (string
 			delete(ss.confirmNonces, k)
 		}
 	}
-	ss.confirmNonces[nonce] = confirmNonceEntry{binding: binding, expires: now.Add(confirmNonceTTL)}
+	ss.confirmNonces[nonce] = confirmNonceEntry{binding: binding, payload: payload, expires: now.Add(confirmNonceTTL)}
 	return nonce, nil
 }
 
 // consumeConfirmNonce validates and burns a nonce. Single-use is
 // unconditional: the entry is deleted on lookup even when validation then
 // fails, so a rejected attempt can never retry with the same nonce.
-func (ss *StatusServer) consumeConfirmNonce(nonce, binding string, now time.Time) error {
+func (ss *StatusServer) consumeConfirmNonce(nonce, binding string, now time.Time) (string, error) {
 	ss.confirmMu.Lock()
 	entry, ok := ss.confirmNonces[nonce]
 	delete(ss.confirmNonces, nonce)
 	ss.confirmMu.Unlock()
 	if !ok {
-		return fmt.Errorf("unknown or already-used confirmation — request a new confirmation")
+		return "", fmt.Errorf("unknown or already-used confirmation — request a new confirmation")
 	}
 	if now.After(entry.expires) {
-		return fmt.Errorf("confirmation expired — request a new confirmation")
+		return "", fmt.Errorf("confirmation expired — request a new confirmation")
 	}
 	if subtle.ConstantTimeCompare([]byte(entry.binding), []byte(binding)) != 1 {
-		return fmt.Errorf("confirmation does not match this action — request a new confirmation")
+		return "", fmt.Errorf("confirmation does not match this action — request a new confirmation")
 	}
-	return nil
+	return entry.payload, nil
 }
 
 type uiConfirmRequest struct {
@@ -166,36 +170,58 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 	}
 	req.Params = obj["params"]
 
-	if !uiTradeActions[req.Action] {
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown action %q (want one of %s)", req.Action, strings.Join(sortedUITradeActions(), ", ")))
+	structural := uiStructuralActions[req.Action]
+	if !uiTradeActions[req.Action] && !structural {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown action %q (want one of %s)", req.Action,
+			strings.Join(append(sortedUITradeActions(), sortedUIStructuralActions()...), ", ")))
 		return
 	}
-	if strings.TrimSpace(req.StrategyID) == "" {
+	// add-strategy targets a strategy that doesn't exist yet — its identity
+	// lives in params (name/platform/asset) and the generated ID becomes the
+	// confirm phrase. Every other action requires an existing target.
+	if strings.TrimSpace(req.StrategyID) == "" && req.Action != "add-strategy" {
 		writeJSONError(w, http.StatusBadRequest, "strategy_id is required")
 		return
 	}
-	cfg := ss.uiTradeConfig()
-	if cfg == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "config not available")
-		return
-	}
-	// Early eligibility check so the dialog fails fast with the real reason.
-	var lookupErr error
-	if req.Action == "force-close" {
-		_, _, lookupErr = lookupForceCloseStrategy(cfg, req.StrategyID)
+
+	phrase := req.StrategyID
+	description := uiConfirmDescription(req.Action, req.StrategyID, req.Params)
+	payload := ""
+	if structural {
+		if strings.TrimSpace(ss.configPath) == "" {
+			writeJSONError(w, http.StatusServiceUnavailable, "config path not configured")
+			return
+		}
+		var serr error
+		phrase, description, payload, serr = ss.confirmStructuralAction(req.Action, req.StrategyID, req.Params)
+		if serr != nil {
+			writeJSONError(w, http.StatusBadRequest, serr.Error())
+			return
+		}
 	} else {
-		_, lookupErr = lookupManualStrategy(cfg, req.StrategyID)
-	}
-	if lookupErr != nil {
-		writeJSONError(w, http.StatusBadRequest, lookupErr.Error())
-		return
+		cfg := ss.uiTradeConfig()
+		if cfg == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "config not available")
+			return
+		}
+		// Early eligibility check so the dialog fails fast with the real reason.
+		var lookupErr error
+		if req.Action == "force-close" {
+			_, _, lookupErr = lookupForceCloseStrategy(cfg, req.StrategyID)
+		} else {
+			_, lookupErr = lookupManualStrategy(cfg, req.StrategyID)
+		}
+		if lookupErr != nil {
+			writeJSONError(w, http.StatusBadRequest, lookupErr.Error())
+			return
+		}
 	}
 	binding, err := canonicalConfirmBinding(req.Action, req.StrategyID, req.Params)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	nonce, err := ss.issueConfirmNonce(binding, time.Now())
+	nonce, err := ss.issueConfirmNonce(binding, payload, time.Now())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "could not issue confirmation")
 		return
@@ -203,7 +229,7 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, uiConfirmResponse{
 		Nonce:            nonce,
 		ExpiresInSeconds: int(confirmNonceTTL / time.Second),
-		ConfirmPhrase:    req.StrategyID,
-		Description:      uiConfirmDescription(req.Action, req.StrategyID, req.Params),
+		ConfirmPhrase:    phrase,
+		Description:      description,
 	})
 }

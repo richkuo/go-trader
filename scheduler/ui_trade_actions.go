@@ -195,7 +195,7 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := ss.consumeConfirmNonce(req.Nonce, binding, time.Now()); err != nil {
+	if _, err := ss.consumeConfirmNonce(req.Nonce, binding, time.Now()); err != nil {
 		writeJSONError(w, http.StatusForbidden, err.Error())
 		return
 	}

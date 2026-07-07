@@ -170,49 +170,49 @@ func TestConfirmNonceLifecycle(t *testing.T) {
 		t.Fatalf("binding not canonical: %q vs %q", binding, binding2)
 	}
 
-	nonce, err := ss.issueConfirmNonce(binding, now)
+	nonce, err := ss.issueConfirmNonce(binding, "", now)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if err := ss.consumeConfirmNonce(nonce, binding, now); err != nil {
+	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err != nil {
 		t.Fatalf("consume: %v", err)
 	}
 	// Reuse rejected (single-use).
-	if err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
+	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
 		t.Fatal("reused nonce must be rejected")
 	}
 
 	// Expired rejected.
-	nonce, _ = ss.issueConfirmNonce(binding, now)
-	if err := ss.consumeConfirmNonce(nonce, binding, now.Add(confirmNonceTTL+time.Second)); err == nil {
+	nonce, _ = ss.issueConfirmNonce(binding, "", now)
+	if _, err := ss.consumeConfirmNonce(nonce, binding, now.Add(confirmNonceTTL+time.Second)); err == nil {
 		t.Fatal("expired nonce must be rejected")
 	}
 	// ... and burned even though it failed.
-	if err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
+	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
 		t.Fatal("expired nonce must stay burned")
 	}
 
 	// Wrong action binding rejected (and burned).
-	nonce, _ = ss.issueConfirmNonce(binding, now)
+	nonce, _ = ss.issueConfirmNonce(binding, "", now)
 	other, _ := canonicalConfirmBinding("force-close", "hl-manual-eth", json.RawMessage(`{"qty":0.1}`))
-	if err := ss.consumeConfirmNonce(nonce, other, now); err == nil {
+	if _, err := ss.consumeConfirmNonce(nonce, other, now); err == nil {
 		t.Fatal("wrong-action nonce must be rejected")
 	}
-	if err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
+	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
 		t.Fatal("mismatched nonce must be burned on failure")
 	}
 
 	// Wrong strategy binding rejected.
-	nonce, _ = ss.issueConfirmNonce(binding, now)
+	nonce, _ = ss.issueConfirmNonce(binding, "", now)
 	otherStrat, _ := canonicalConfirmBinding("close", "hl-perps-eth", json.RawMessage(`{"qty":0.1}`))
-	if err := ss.consumeConfirmNonce(nonce, otherStrat, now); err == nil {
+	if _, err := ss.consumeConfirmNonce(nonce, otherStrat, now); err == nil {
 		t.Fatal("wrong-strategy nonce must be rejected")
 	}
 
 	// Wrong params binding rejected.
-	nonce, _ = ss.issueConfirmNonce(binding, now)
+	nonce, _ = ss.issueConfirmNonce(binding, "", now)
 	otherQty, _ := canonicalConfirmBinding("close", "hl-manual-eth", json.RawMessage(`{"qty":0.2}`))
-	if err := ss.consumeConfirmNonce(nonce, otherQty, now); err == nil {
+	if _, err := ss.consumeConfirmNonce(nonce, otherQty, now); err == nil {
 		t.Fatal("wrong-params nonce must be rejected")
 	}
 }

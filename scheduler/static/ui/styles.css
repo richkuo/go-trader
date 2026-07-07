@@ -1193,6 +1193,24 @@ h3 {
   border-color: #c0392b;
   color: #c0392b;
 }
+/* #1258 structural mutations */
+.structural-panel {
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.structural-panel h3 {
+  margin: 0 0 8px;
+}
+.controls-field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.tuner-button.danger {
+  border-color: #c0392b;
+  color: #c0392b;
+}
 .trade-confirm-hint {
   font-size: 0.85rem;
 }

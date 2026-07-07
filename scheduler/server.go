@@ -64,6 +64,10 @@ type StatusServer struct {
 	// tradeDepsHook lets tests stub the on-chain exec seams of the manual
 	// cores (nil in production).
 	tradeDepsHook func(*manualCoreDeps)
+	// #1258 structural mutations (ui_structural.go): restartFn is the restart
+	// trigger fired when a confirmed structural write asked for
+	// apply-via-restart (nil → restartSelf; injectable for tests).
+	restartFn func() error
 
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
@@ -244,6 +248,7 @@ func (ss *StatusServer) Start(port int) {
 	// #1257 trade-action confirm nonce; the trade-action endpoints route
 	// through the "/api/strategies/" prefix handler below.
 	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
+	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)

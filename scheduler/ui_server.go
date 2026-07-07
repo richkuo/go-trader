@@ -255,6 +255,9 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 	// #1257 confirm-nonce-gated trade actions (ui_trade_actions.go).
 	case "open", "add", "close", "force-close", "update-sl", "cancel-sl":
 		ss.handleAPIStrategyTradeAction(w, r, id, resource)
+	// #1258 confirm-nonce-gated structural mutations (ui_structural.go).
+	case "remove-strategy", "paper-to-live", "apply-regime-gate":
+		ss.handleAPIStrategyStructural(w, r, id, resource)
 	default:
 		http.NotFound(w, r)
 	}

@@ -91,6 +91,18 @@
     tradeConfirmTTL: document.getElementById("trade-confirm-ttl"),
     tradeConfirmInput: document.getElementById("trade-confirm-input"),
     tradeConfirmGo: document.getElementById("trade-confirm-go"),
+    structuralPanel: document.getElementById("structural-panel"),
+    structuralRestart: document.getElementById("structural-restart"),
+    structuralMessage: document.getElementById("structural-message"),
+    paperToLiveButton: document.getElementById("paper-to-live-button"),
+    applyRegimeGateButton: document.getElementById("apply-regime-gate-button"),
+    removeStrategyButton: document.getElementById("remove-strategy-button"),
+    addStratName: document.getElementById("add-strat-name"),
+    addStratPlatform: document.getElementById("add-strat-platform"),
+    addStratAsset: document.getElementById("add-strat-asset"),
+    addStratRestart: document.getElementById("add-strat-restart"),
+    addStratButton: document.getElementById("add-strat-button"),
+    addStratMessage: document.getElementById("add-strat-message"),
     leaderboardBody: document.getElementById("leaderboard-body"),
     leaderboardEmpty: document.getElementById("leaderboard-empty"),
     diagnosticsBody: document.getElementById("diagnostics-body"),
@@ -789,6 +801,93 @@
     return confirmTradeAction("cancel-sl", {});
   }
 
+  // #1258 structural mutations: same confirm-nonce + typed-confirmation flow
+  // as trade actions, but the endpoints and target routing differ (add-strategy
+  // has no existing target). All four are restart-required config writes; the
+  // server restarts only when params.restart is confirmed true.
+  function setStructuralMessage(text, el) {
+    const target = el || els.structuralMessage;
+    if (!target) return;
+    target.textContent = text || "";
+    target.hidden = !text;
+  }
+
+  // updateStructuralPanel shows the structural surface for the active
+  // strategy: remove for all, paper→live + regime gate for perps/futures
+  // (server re-validates eligibility either way).
+  function updateStructuralPanel() {
+    if (!els.structuralPanel) return;
+    const strat = activeStrategyMeta();
+    els.structuralPanel.hidden = !strat;
+    if (!strat) return;
+    const gateable = strat.type === "perps" || strat.type === "futures";
+    if (els.paperToLiveButton) els.paperToLiveButton.hidden = !gateable;
+    if (els.applyRegimeGateButton) els.applyRegimeGateButton.hidden = !gateable;
+  }
+
+  // confirmStructuralAction mirrors confirmTradeAction with an explicit
+  // endpoint URL and strategy id ("" for add-strategy).
+  async function confirmStructuralAction(action, strategyID, params, url, messageEl) {
+    setStructuralMessage("", messageEl);
+    let confirm;
+    try {
+      confirm = await postJSON("/api/confirm", {
+        action: action,
+        strategy_id: strategyID,
+        params: params,
+      });
+    } catch (err) {
+      setStructuralMessage("Confirm failed: " + err.message, messageEl);
+      return;
+    }
+    const proceed = await showTradeConfirmDialog(confirm);
+    if (!proceed) {
+      setStructuralMessage("Cancelled.", messageEl);
+      return;
+    }
+    try {
+      const resp = await postJSON(url, { nonce: confirm.nonce, params: params });
+      setStructuralMessage(resp.message || "Done.", messageEl);
+      await refreshAll();
+    } catch (err) {
+      setStructuralMessage(action + " failed: " + err.message, messageEl);
+    }
+  }
+
+  function structuralParamsBase() {
+    const params = {};
+    if (els.structuralRestart && els.structuralRestart.checked) {
+      params.restart = true;
+    }
+    return params;
+  }
+
+  function structuralAddStrategy() {
+    const name = (els.addStratName && els.addStratName.value || "").trim();
+    const platform = els.addStratPlatform ? els.addStratPlatform.value : "";
+    const asset = (els.addStratAsset && els.addStratAsset.value || "").trim();
+    if (!name || !asset) {
+      setStructuralMessage("Strategy name and asset are required.", els.addStratMessage);
+      return Promise.resolve();
+    }
+    const params = { name: name, platform: platform, asset: asset };
+    if (els.addStratRestart && els.addStratRestart.checked) {
+      params.restart = true;
+    }
+    return confirmStructuralAction("add-strategy", "", params, "/api/config/add-strategy", els.addStratMessage);
+  }
+
+  function structuralPerStrategy(action) {
+    if (!state.activeID) return Promise.resolve();
+    return confirmStructuralAction(
+      action,
+      state.activeID,
+      structuralParamsBase(),
+      "/api/strategies/" + encodeURIComponent(state.activeID) + "/" + action,
+      els.structuralMessage
+    );
+  }
+
   function buildSimulateOverrides() {
     const overrides = {};
     Object.keys(state.tuner.overrides).forEach(function (key) {
@@ -1141,6 +1240,7 @@
     }).join("");
     renderPositions(status.positions || {}, status.option_positions || {});
     updateTradePanel(status);
+    updateStructuralPanel();
   }
 
   function winLoss(status) {
@@ -1696,6 +1796,26 @@
       if (run) {
         run.catch(handleRefreshError);
       }
+    });
+  }
+  if (els.addStratButton) {
+    els.addStratButton.addEventListener("click", function () {
+      structuralAddStrategy().catch(handleRefreshError);
+    });
+  }
+  if (els.removeStrategyButton) {
+    els.removeStrategyButton.addEventListener("click", function () {
+      structuralPerStrategy("remove-strategy").catch(handleRefreshError);
+    });
+  }
+  if (els.paperToLiveButton) {
+    els.paperToLiveButton.addEventListener("click", function () {
+      structuralPerStrategy("paper-to-live").catch(handleRefreshError);
+    });
+  }
+  if (els.applyRegimeGateButton) {
+    els.applyRegimeGateButton.addEventListener("click", function () {
+      structuralPerStrategy("apply-regime-gate").catch(handleRefreshError);
     });
   }
   if (els.ratchetNotifySelect) {

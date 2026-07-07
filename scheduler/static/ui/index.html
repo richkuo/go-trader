@@ -134,6 +134,33 @@
                 <h3>Close evaluators</h3>
                 <div id="closing-strategies-content" class="panel-list"></div>
               </div>
+              <div class="ops-panel">
+                <h3>Add strategy</h3>
+                <p class="panel-muted">Created in paper mode; promote later with Paper → Live. Restart-required change.</p>
+                <label class="controls-field">
+                  <span>Strategy</span>
+                  <input id="add-strat-name" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. momentum">
+                </label>
+                <label class="controls-field">
+                  <span>Platform</span>
+                  <select id="add-strat-platform">
+                    <option value="hyperliquid">Hyperliquid (perps)</option>
+                    <option value="binanceus">BinanceUS (spot)</option>
+                  </select>
+                </label>
+                <label class="controls-field">
+                  <span>Asset</span>
+                  <input id="add-strat-asset" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. BTC">
+                </label>
+                <label class="controls-field controls-field--inline">
+                  <input id="add-strat-restart" type="checkbox">
+                  <span>Restart daemon after write</span>
+                </label>
+                <div class="controls-row">
+                  <button id="add-strat-button" type="button" class="tuner-button primary">Add strategy…</button>
+                </div>
+                <p id="add-strat-message" class="controls-message" hidden></p>
+              </div>
             </div>
           </div>
           <div id="detail-panel" class="detail-panel">
@@ -254,6 +281,22 @@
                   </label>
                 </div>
                 <p id="trade-message" class="controls-message" hidden></p>
+              </div>
+              <div class="structural-panel" id="structural-panel" hidden>
+                <h3>Structural</h3>
+                <p class="panel-muted">Restart-required changes — each requires a typed confirmation.</p>
+                <label class="controls-field controls-field--inline">
+                  <input id="structural-restart" type="checkbox">
+                  <span>Restart daemon after write</span>
+                </label>
+                <div class="controls-row">
+                  <button id="paper-to-live-button" type="button" class="tuner-button secondary" hidden>Paper → Live…</button>
+                  <button id="apply-regime-gate-button" type="button" class="tuner-button secondary" hidden>Apply regime gate…</button>
+                </div>
+                <div class="controls-row">
+                  <button id="remove-strategy-button" type="button" class="tuner-button danger">Remove strategy…</button>
+                </div>
+                <p id="structural-message" class="controls-message" hidden></p>
               </div>
               <section id="tuner-panel" class="tuner-panel" hidden>
                 <div class="tuner-header">
