@@ -258,13 +258,102 @@ func refuseIfRestingLimitOrderQueued(stateDB *StateDB, cmdName, strategyID, symb
 // on-chain order; --record-only/re-register must stay usable) and key it on the
 // SAME symbol the core writes into the queued row (forceCloseCore uses the
 // args-derived sym, not the empty perps sc.Symbol). Fail closed on a check
-// error.
+// error. manual-add/manual-close call
+// clearRestingLimitRemainderForPositionAction first, so a partial limit fill can
+// still be averaged/flattened after the unfilled remainder is proven off-book.
 func refuseIfPositionActionQueued(d manualCoreDeps, cmdName, strategyID, symbol string) error {
 	if err := refuseIfPendingManualPositionAction(d.stateDB, cmdName, strategyID, symbol); err != nil {
 		return err
 	}
 	if err := refuseIfRestingLimitOrderQueued(d.stateDB, cmdName, strategyID, symbol); err != nil {
 		return err
+	}
+	return nil
+}
+
+func pendingLimitOrdersForStrategySymbol(stateDB *StateDB, strategyID, symbol string) ([]PendingLimitOrder, error) {
+	orders, err := stateDB.LoadPendingLimitOrders()
+	if err != nil {
+		return nil, err
+	}
+	matching := make([]PendingLimitOrder, 0, len(orders))
+	for _, o := range orders {
+		if o.StrategyID == strategyID && o.Symbol == symbol {
+			matching = append(matching, o)
+		}
+	}
+	return matching, nil
+}
+
+func limitStatusForOID(res *HyperliquidLimitStatusResult, oid int64) (HyperliquidLimitOrderStatus, bool) {
+	if res == nil {
+		return HyperliquidLimitOrderStatus{}, false
+	}
+	for _, st := range res.Orders {
+		if st.OID == oid {
+			return st, true
+		}
+	}
+	return HyperliquidLimitOrderStatus{}, false
+}
+
+func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string) error {
+	orders, err := pendingLimitOrdersForStrategySymbol(d.stateDB, strategyID, symbol)
+	if err != nil {
+		return manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	}
+	if len(orders) == 0 {
+		return nil
+	}
+
+	if _, err := d.stateDB.MarkPendingLimitOrderCancelRequested(strategyID, symbol); err != nil {
+		return manualFailf("error: could not mark resting limit order cancel_requested (%v) — refusing %s to avoid racing the scheduler's fill adoption", err, cmdName)
+	}
+
+	for _, o := range orders {
+		cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(sc.Script, o.Symbol, o.OrderOID)
+		if cstderr != "" {
+			res.errf("[limit-cancel] %s stderr: %s", strategyID, cstderr)
+		}
+		if cerr != nil || cancelRes == nil || cancelRes.Error != "" {
+			msg := ""
+			if cancelRes != nil {
+				msg = cancelRes.Error
+			}
+			return manualFailf("error: could not cancel resting limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cerr, msg, cmdName)
+		}
+
+		statusRes, sstderr, serr := runHyperliquidLimitStatusFn(sc.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
+		if sstderr != "" {
+			res.errf("[limit-status] %s stderr: %s", strategyID, sstderr)
+		}
+		if serr != nil || statusRes == nil || statusRes.Error != "" {
+			msg := ""
+			if statusRes != nil {
+				msg = statusRes.Error
+			}
+			return manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, serr, msg, cmdName)
+		}
+		if statusRes.OpenOrdersError != "" {
+			return manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): open-orders state unknown (%s) — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, statusRes.OpenOrdersError, cmdName)
+		}
+		st, ok := limitStatusForOID(statusRes, o.OrderOID)
+		if !ok {
+			return manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): status response did not include the order — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+		}
+		if st.FillsError != "" {
+			return manualFailf("error: could not verify cancelled limit order fills for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, st.FillsError, cmdName)
+		}
+		if st.Resting == nil || *st.Resting {
+			return manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+		}
+		if st.FilledSize > o.FilledSize+limitFillEpsilon {
+			return manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, st.FilledSize, cmdName)
+		}
+		if err := d.stateDB.DeletePendingLimitOrder(o.ID); err != nil {
+			return manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
+		}
+		res.outf("Cancelled resting limit remainder: %s %s oid=%d before %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 	}
 	return nil
 }
@@ -698,6 +787,9 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
 		defer unlock()
+		if err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
+			return res, err
+		}
 		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
 			return res, err
 		}
@@ -858,6 +950,9 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	// queued close row would double-decrement the position on drain (#1009
 	// corrupt close). Applies to full AND partial close. The UI handler guards
 	// this too; this covers the CLI + any future core caller.
+	if err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol); err != nil {
+		return res, err
+	}
 	if err := refuseIfPositionActionQueued(d, "manual-close", strategyID, sc.Symbol); err != nil {
 		return res, err
 	}
