@@ -183,6 +183,16 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 			}
 			return "", "", "", fmt.Errorf("strategy %q has no --mode=paper arg to flip (only perps/futures-style strategies support paper→live)", strategyID)
 		}
+		// Flat-only, like apply-regime-gate. This is a real-funds flip: a
+		// simulated paper position has no on-chain backing, so carried into a
+		// live strategy it becomes a phantom the account reconcile flags as a
+		// gap and the live strategy would mismanage (place reduce-only orders
+		// against a position that does not exist on-chain). Refuse rather than
+		// merely warn — there is no coherent live semantics for a carried-over
+		// paper position; flatten first.
+		if ss.strategyHasOpenPosition(strategyID) {
+			return "", "", "", fmt.Errorf("strategy %q holds an OPEN position — paper→live can only run while flat: a simulated paper position has no on-chain backing, so carried into a real-funds live strategy it becomes a phantom the account reconcile flags as a gap and the strategy would mismanage; flatten it first", strategyID)
+		}
 		desc := fmt.Sprintf("paper-to-live: ⚠️ switch %s from PAPER to LIVE — after restart it places REAL ORDERS WITH REAL FUNDS. %s", sc.ID, structuralApplyMessage(p.Restart))
 		return sc.ID, desc, "", nil
 	case "apply-regime-gate":
@@ -332,13 +342,7 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 		})
 		msg = fmt.Sprintf("Removed strategy %s. Its positions and trade history in the state DB are not touched.", id)
 	case "paper-to-live":
-		var after []string
-		err = ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
-			_, a, e := flipStrategyToLive(root, id)
-			after = a
-			return e
-		})
-		msg = fmt.Sprintf("Strategy %s switched to LIVE (args: %s).", id, strings.Join(after, " "))
+		msg, err = ss.executePaperToLive(id)
 	case "apply-regime-gate":
 		msg, err = ss.executeApplyRegimeGate(id, p, payload)
 	default:
@@ -351,6 +355,30 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 	}
 	writeJSON(w, uiMutationResponse{OK: true, Message: msg + " " + structuralApplyMessage(p.Restart)})
 	ss.maybeRestart(p.Restart)
+}
+
+// executePaperToLive re-checks the flat precondition at execute time (a
+// position can open between confirm and execute) before flipping the
+// strategy's --mode=paper arg to --mode=live. Refused while open for the same
+// reason the confirm refuses: a simulated paper position has no on-chain
+// backing, so carried into a real-funds live strategy it becomes a phantom the
+// account reconcile flags as a gap and the strategy would mismanage — mirrors
+// apply-regime-gate's flat-only rule. Returns the base message; the caller
+// appends the restart tail.
+func (ss *StatusServer) executePaperToLive(id string) (string, error) {
+	if ss.strategyHasOpenPosition(id) {
+		return "", fmt.Errorf("strategy %q opened a position after the confirmation was issued — paper→live can only run while flat; nothing changed", id)
+	}
+	var after []string
+	err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+		_, a, e := flipStrategyToLive(root, id)
+		after = a
+		return e
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Strategy %s switched to LIVE (args: %s).", id, strings.Join(after, " ")), nil
 }
 
 // executeApplyRegimeGate re-runs the full apply-regime-gate safety model at

@@ -300,6 +300,43 @@ func TestUIPaperToLiveEndToEnd(t *testing.T) {
 	}
 }
 
+// paper-to-live is a real-funds flip: it must refuse while the target holds an
+// open position. A simulated paper position has no on-chain backing, so carried
+// into live it becomes a phantom the account reconcile flags as a gap. Refused
+// at confirm, and re-checked at execute even when the confirm succeeded (a
+// position can open between confirm and execute). The check is type-agnostic
+// (strategyHasOpenPosition ignores type), so it also covers a futures paper
+// strategy — perps is the representative case here.
+func TestUIPaperToLiveFlatChecks(t *testing.T) {
+	ss, path, _ := newStructuralTestServer(t)
+	openPos := &StrategyState{Positions: map[string]*Position{"ETH": {Quantity: 1, AvgCost: 2000}}}
+
+	// Open at confirm time → confirm refused.
+	ss.state.Strategies["hl-momentum-eth"] = openPos
+	body := `{"action":"paper-to-live","strategy_id":"hl-momentum-eth","params":{}}`
+	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "OPEN position") {
+		t.Fatalf("confirm-while-open status = %d body %s, want 400 open-position", w.Code, w.Body.String())
+	}
+
+	// Flat at confirm, opens before execute → execute refused, args untouched.
+	delete(ss.state.Strategies, "hl-momentum-eth")
+	confirm := structuralConfirm(t, ss, "paper-to-live", "hl-momentum-eth", `{}`)
+	ss.state.Strategies["hl-momentum-eth"] = openPos
+	h := func(w http.ResponseWriter, r *http.Request) {
+		ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "paper-to-live")
+	}
+	execBody := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
+	w = mutationPost(ss, h, "/api/strategies/hl-momentum-eth/paper-to-live", execBody, nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "opened a position") {
+		t.Fatalf("execute-while-open status = %d body %s, want 409 opened-a-position", w.Code, w.Body.String())
+	}
+	// The refused execute must not have flipped the args.
+	if raw := string(mustReadFile(t, path)); !strings.Contains(raw, "--mode=paper") || strings.Contains(raw, "--mode=live") {
+		t.Fatalf("refused execute must not flip args:\n%s", raw)
+	}
+}
+
 // Confirming a spot strategy for paper-to-live fails early: no --mode arg.
 func TestUIPaperToLiveRejectsModelessStrategy(t *testing.T) {
 	ss, _, _ := newStructuralTestServer(t)
