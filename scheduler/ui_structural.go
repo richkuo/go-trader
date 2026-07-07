@@ -220,8 +220,8 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 		// against a position that does not exist on-chain). Refuse rather than
 		// merely warn — there is no coherent live semantics for a carried-over
 		// paper position; flatten first.
-		if ss.strategyHasOpenPosition(strategyID) {
-			return "", "", "", fmt.Errorf("strategy %q holds an OPEN position — paper→live can only run while flat: a simulated paper position has no on-chain backing, so carried into a real-funds live strategy it becomes a phantom the account reconcile flags as a gap and the strategy would mismanage; flatten it first", strategyID)
+		if reason := ss.paperToLiveBlockedReason(strategyID, false); reason != "" {
+			return "", "", "", fmt.Errorf("%s", reason)
 		}
 		desc := fmt.Sprintf("paper-to-live: ⚠️ switch %s from PAPER to LIVE — after restart it places REAL ORDERS WITH REAL FUNDS. %s", sc.ID, structuralApplyMessage(p.Restart))
 		return sc.ID, desc, "", nil
@@ -387,6 +387,18 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 	ss.maybeRestart(p.Restart)
 }
 
+// paperToLiveBlockedReason returns refusal text when id holds an open position.
+// afterConfirm selects execute-time wording (a position opened during confirm).
+func (ss *StatusServer) paperToLiveBlockedReason(id string, afterConfirm bool) string {
+	if !ss.strategyHasOpenPosition(id) {
+		return ""
+	}
+	if afterConfirm {
+		return fmt.Sprintf("strategy %q opened a position after the confirmation was issued — paper→live can only run while flat; nothing changed", id)
+	}
+	return fmt.Sprintf("strategy %q holds an OPEN position — paper→live can only run while flat: a simulated paper position has no on-chain backing, so carried into a real-funds live strategy it becomes a phantom the account reconcile flags as a gap and the strategy would mismanage; flatten it first", id)
+}
+
 // executePaperToLive re-checks the flat precondition at execute time (a
 // position can open between confirm and execute) before flipping the
 // strategy's --mode=paper arg to --mode=live. Refused while open for the same
@@ -407,8 +419,8 @@ func (ss *StatusServer) executePaperToLive(id string) (string, error) {
 	// configWriteMu), so holding configWriteMu can't block a fill, and the
 	// dominant carried-position window is the restart-required
 	// write→restart→reload gap, not this micro check→write one.
-	if ss.strategyHasOpenPosition(id) {
-		return "", fmt.Errorf("strategy %q opened a position after the confirmation was issued — paper→live can only run while flat; nothing changed", id)
+	if reason := ss.paperToLiveBlockedReason(id, true); reason != "" {
+		return "", fmt.Errorf("%s", reason)
 	}
 	var after []string
 	err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
