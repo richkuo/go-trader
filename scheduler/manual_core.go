@@ -942,17 +942,16 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, pos.OwnerStrategyID, strategyID)
 	}
 
-	closeSide := "sell"
-	if pos.Side == "short" {
-		closeSide = "buy"
-	}
-
 	// Dry-run is advisory: it reports against the current snapshot and neither
 	// takes the manual-action lock nor cancels/reconciles any resting limit
 	// remainder (cancelling would be a real on-chain side effect). The --qty
-	// bounds are checked against the snapshot here; the live path below re-checks
-	// them against the reconciled size.
+	// bounds are checked against the snapshot here; the live path below resolves
+	// the true size under the lock and re-checks against it.
 	if in.DryRun {
+		dryCloseSide := "sell"
+		if pos.Side == "short" {
+			dryCloseSide = "buy"
+		}
 		dryCloseQty := pos.Quantity
 		if in.Qty > 0 {
 			if in.Qty > pos.Quantity {
@@ -961,7 +960,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 			dryCloseQty = in.Qty
 		}
 		res.outf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f)",
-			strategyID, closeSide, dryCloseQty, sc.Symbol, pos.Quantity, pos.AvgCost)
+			strategyID, dryCloseSide, dryCloseQty, sc.Symbol, pos.Quantity, pos.AvgCost)
 		return res, nil
 	}
 
@@ -984,36 +983,76 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	if err != nil {
 		return res, err
 	}
-	// Reconcile a stale position snapshot against the fill we just proved
-	// adopted. reconcilePendingLimitOrders persists a newly-adopted fill's
-	// watermark before the grown in-memory position is flushed to the DB (and
-	// does not hold the manual-action lock), so pos here can understate the true
-	// position. clearResting proved the remainder off-book with its full
-	// cumulative fill (clearedQty) adopted, so that IS the true position size:
-	// grow the local snapshot up to it (and to its cumulative VWAP) so a full
-	// close flattens the real on-chain position — critical on a shared coin,
-	// where closeFullPosition is false and a sized close of the stale (smaller)
-	// qty would leave an untracked residual after the daemon books flat — and so
-	// the queued close quantity + realized PnL match the true size and cost.
-	if clearedQty > pos.Quantity+limitFillEpsilon {
-		staleQty := pos.Quantity
-		pos.Quantity = clearedQty
-		if clearedAvgPx > 0 {
-			pos.AvgCost = clearedAvgPx
+	// Resolve the true, currently-adopted position size UNDER THE LOCK. `pos`
+	// above was read by loadState BEFORE the lock, and the daemon's
+	// reconcilePendingLimitOrders adopts limit fills and flushes+deletes their
+	// rows WITHOUT holding the manual-action lock — so between our loadState and
+	// here it can supersede that snapshot. The global lock can be held for seconds
+	// by a concurrent manual/dashboard op, widening this window enough for a
+	// same-strategy+symbol resting limit to fully fill and drain.
+	if clearedQty > 0 {
+		// A resting remainder was present: clearResting cancelled it and read the
+		// authoritative cumulative fill straight from the exchange (the placement
+		// guard proves the position is solely this order's fills), so clearedQty IS
+		// the true size. state.db is NOT authoritative here — the daemon has not
+		// yet processed the cancel we just issued — so grow the snapshot up to
+		// clearedQty (and its cumulative VWAP) rather than re-reading. Critical on
+		// a shared coin, where closeFullPosition is false and a sized close of the
+		// stale (smaller) qty would leave an untracked residual after the daemon
+		// books flat, and so the queued close quantity + realized PnL match the
+		// true size and cost.
+		if clearedQty > pos.Quantity+limitFillEpsilon {
+			staleQty := pos.Quantity
+			pos.Quantity = clearedQty
+			if clearedAvgPx > 0 {
+				pos.AvgCost = clearedAvgPx
+			}
+			res.errf("[manual-close] %s %s: reconciled stale position snapshot %.6f → %.6f (scheduler adopted a limit fill before flushing state); closing the true size",
+				strategyID, sc.Symbol, staleQty, pos.Quantity)
 		}
-		res.errf("[manual-close] %s %s: reconciled stale position snapshot %.6f → %.6f (scheduler adopted a limit fill before flushing state); closing the true size",
-			strategyID, sc.Symbol, staleQty, pos.Quantity)
+	} else {
+		// No resting remainder for this strategy+symbol under the lock. The
+		// pre-lock snapshot may still be stale: the daemon can adopt a terminal
+		// limit fill and flush+delete its row (without the manual-action lock)
+		// between our loadState and this point, so clearResting finds nothing yet
+		// the on-chain position already grew. But flush-before-delete
+		// (reconcilePendingLimitOrders) guarantees "terminal row absent ⇒ state.db
+		// reflects the adopted fill," and no NEW resting row can appear while we
+		// hold the lock (manual limit-open takes it too). So a fresh re-read under
+		// the lock IS the true, currently-adopted size — re-read before sizing so a
+		// shared-coin close never flattens a stale (smaller) snapshot and leaks an
+		// untracked residual, and so the --qty bound below validates against the
+		// true size (#1263 review-4).
+		refreshed, rerr := d.loadState(strategyID, sc.Symbol)
+		if rerr != nil {
+			return res, manualFailf("Failed to re-load state: %v", rerr)
+		}
+		if refreshed.Pos == nil {
+			return res, manualFailf("error: no open position found for %s/%s", strategyID, sc.Symbol)
+		}
+		if !manualPositionOwnedByStrategy(refreshed.Pos, strategyID) {
+			return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, refreshed.Pos.OwnerStrategyID, strategyID)
+		}
+		pos = refreshed.Pos
 	}
 
-	// Operator intent, evaluated against the RECONCILED position size (not the
-	// pre-reconcile snapshot): --qty omitted (or equal to the full position) is a
-	// full close; any smaller value is a partial close. Checking after the
-	// reconcile above means an explicit --qty matching the true, already-adopted
-	// size is accepted instead of being wrongly refused against a stale smaller
-	// snapshot (#1263 review-3), and the bounds error reports the true size. An
-	// explicit --qty is never scaled up to the reconciled size — only an omitted
-	// (or within-lot-of-full) --qty flattens the reconciled position — so a
-	// partial close never removes more than the operator asked for.
+	// Close side, keyed off the RESOLVED position (a limit fill cannot flip side
+	// and a flip needs the lock we hold, so this is stable — but recompute it here
+	// so no field survives from the possibly-replaced pre-lock snapshot).
+	closeSide := "sell"
+	if pos.Side == "short" {
+		closeSide = "buy"
+	}
+
+	// Operator intent, evaluated against the RESOLVED position size (not the
+	// pre-lock snapshot): --qty omitted (or equal to the full position) is a full
+	// close; any smaller value is a partial close. Checking after the resolution
+	// above means an explicit --qty matching the true, already-adopted size is
+	// accepted instead of being wrongly refused against a stale smaller snapshot
+	// (#1263 review-3/4), and the bounds error reports the true size. An explicit
+	// --qty is never scaled up to the resolved size — only an omitted (or
+	// within-lot-of-full) --qty flattens the resolved position — so a partial
+	// close never removes more than the operator asked for.
 	closeQty := pos.Quantity
 	intentFullClose := true
 	if in.Qty > 0 {

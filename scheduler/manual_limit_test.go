@@ -735,6 +735,116 @@ func TestManualCloseRejectsQtyExceedingReconciledSize(t *testing.T) {
 	}
 }
 
+// staleReadRowGoneCloseHarness reproduces the #1263 review-4 window: the CLI's
+// initial loadState captures a stale 0.4 snapshot, then — while the CLI is
+// (conceptually) blocked acquiring the global manual-action lock — the daemon
+// adopts the terminal limit fill, flushes the grown 0.7 to state.db, and deletes
+// the pending_limit_orders row (flush-before-delete). By the time clearResting
+// runs it finds NO row (clearedQty==0), so the fix must re-read the fresh 0.7
+// from state.db rather than size against the stale 0.4. The coin is shared with
+// a live peer so closeFullPosition=false (a sized close, the only path that
+// leaks a residual). The injected loadState returns the stale snapshot on its
+// first call and delegates to the real DB (0.7) thereafter.
+func staleReadRowGoneCloseHarness(t *testing.T) (StrategyConfig, manualCoreDeps, *StateDB) {
+	t.Helper()
+	cfg, sc, db := newPartialLimitPositionHarness(t)
+	// Post-race truth in state.db: row deleted, position grown to 0.7.
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 {
+		t.Fatalf("want one resting row, got %d", len(orders))
+	}
+	if err := db.DeletePendingLimitOrder(orders[0].ID); err != nil {
+		t.Fatalf("delete row: %v", err)
+	}
+	st, err := LoadStateWithDB(cfg, db)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	p := st.Strategies[sc.ID].Positions[sc.Symbol]
+	p.Quantity, p.InitialQuantity, p.AvgCost = 0.7, 0.7, 2005
+	if err := db.SaveState(st); err != nil {
+		t.Fatalf("save grown position: %v", err)
+	}
+	// Share ETH with a live peer so closeFullPosition is false (sized close).
+	cfg.Strategies = append(cfg.Strategies, StrategyConfig{
+		ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid",
+		Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Leverage: 10,
+		Args: []string{"hold", "ETH", "30m", "--mode=live"},
+	})
+
+	deps := newCLIManualCoreDeps(cfg, db, nil)
+	realLoad := deps.loadState
+	callN := 0
+	deps.loadState = func(id, sym string) (manualStateView, error) {
+		callN++
+		if callN == 1 {
+			return manualStateView{HasStrategy: true, Pos: &Position{
+				Symbol: sc.Symbol, Quantity: 0.4, InitialQuantity: 0.4, AvgCost: 2000,
+				EntryATR: 50, Side: "long", Multiplier: 1, Leverage: sc.Leverage,
+				OwnerStrategyID: sc.ID, OpenedAt: time.Now().UTC().Add(-time.Hour),
+				TradePositionID: "pos-limit-partial",
+			}}, nil
+		}
+		return realLoad(id, sym)
+	}
+	return sc, deps, db
+}
+
+// TestManualCloseRereadsFreshPositionWhenRowDeletedBeforeClearResting is the
+// #1263 review-4 regression: a full close whose pre-lock snapshot is stale (0.4)
+// and whose resting row was flushed+deleted before clearResting must flatten the
+// true, re-read 0.7 on a shared coin — never the stale snapshot, which would
+// leak an untracked residual after the daemon books the IsFullClose row flat.
+func TestManualCloseRereadsFreshPositionWhenRowDeletedBeforeClearResting(t *testing.T) {
+	sc, deps, db := staleReadRowGoneCloseHarness(t)
+	var gotCloseQty float64
+	var gotFullClose bool
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+		gotCloseQty = size
+		gotFullClose = closeFull
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
+	}
+
+	if _, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID}); err != nil {
+		t.Fatalf("manual close: %v", err)
+	}
+	if gotFullClose {
+		t.Fatalf("shared coin must take the sized-close path (closeFullPosition=false), got market_close")
+	}
+	if gotCloseQty != 0.7 {
+		t.Fatalf("on-chain close size = %g, want 0.7 (fresh re-read, not stale 0.4 snapshot)", gotCloseQty)
+	}
+	actions, _ := db.LoadPendingManualActions()
+	if len(actions) != 1 || !actions[0].IsFullClose || actions[0].Quantity != 0.7 {
+		t.Fatalf("queued action = %+v, want one full close of 0.7", actions)
+	}
+}
+
+// TestManualCloseExplicitQtyValidatedAgainstRereadWhenRowGone covers review-4
+// must-survive case 3: an explicit --qty equal to the true adopted size (0.7)
+// exceeds the stale pre-lock snapshot (0.4) with no resting row left to
+// reconcile. Pre-fix the bound at :1020 validated against 0.4 and wrongly
+// refused it; the fresh re-read makes 0.7 a valid full close.
+func TestManualCloseExplicitQtyValidatedAgainstRereadWhenRowGone(t *testing.T) {
+	sc, deps, db := staleReadRowGoneCloseHarness(t)
+	var gotCloseQty float64
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+		gotCloseQty = size
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
+	}
+
+	if _, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID, Qty: 0.7}); err != nil {
+		t.Fatalf("manual close --qty 0.7 refused against stale snapshot instead of fresh re-read: %v", err)
+	}
+	if gotCloseQty != 0.7 {
+		t.Fatalf("on-chain close size = %g, want 0.7 (validated against re-read)", gotCloseQty)
+	}
+	actions, _ := db.LoadPendingManualActions()
+	if len(actions) != 1 || !actions[0].IsFullClose || actions[0].Quantity != 0.7 {
+		t.Fatalf("queued action = %+v, want one full close of 0.7", actions)
+	}
+}
+
 func TestManualAddCancelsPartialLimitRemainderBeforeAveraging(t *testing.T) {
 	cfg, sc, db := newPartialLimitPositionHarness(t)
 	withStubbedLimitDeps(t,
