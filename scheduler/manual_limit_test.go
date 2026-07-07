@@ -631,6 +631,110 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 	}
 }
 
+// staleReconcileCloseHarness sets up the #1263 stale-snapshot scenario for
+// manual-close --qty tests: the DB position reads the stale 0.4 while the
+// resting limit row's watermark is advanced to the true adopted 0.7 (the daemon
+// adopted the fill but has not flushed the grown position). The status/cancel
+// stubs report the order off-book at 0.7, so clearResting reconciles the
+// snapshot up to 0.7 before the --qty bounds are evaluated.
+func staleReconcileCloseHarness(t *testing.T) (*Config, StrategyConfig, *StateDB) {
+	t.Helper()
+	cfg, sc, db := newPartialLimitPositionHarness(t)
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 {
+		t.Fatalf("want one resting row, got %d", len(orders))
+	}
+	if err := db.UpdatePendingLimitOrderFill(orders[0].ID, 0.7, 2005, 0.35); err != nil {
+		t.Fatalf("advance watermark: %v", err)
+	}
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.7, AvgPx: 2005, Fee: 0.35},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
+		},
+	)
+	return cfg, sc, db
+}
+
+// TestManualCloseAcceptsExplicitQtyMatchingReconciledSize is the #1263 review-3
+// (finding 2) regression: an explicit --qty equal to the true, already-adopted
+// size must be accepted — not refused against the stale, smaller pre-reconcile
+// snapshot. Pre-fix the bounds check ran before clearResting, so --qty 0.7 was
+// rejected as "exceeds open position 0.4".
+func TestManualCloseAcceptsExplicitQtyMatchingReconciledSize(t *testing.T) {
+	cfg, sc, db := staleReconcileCloseHarness(t)
+	deps := newCLIManualCoreDeps(cfg, db, nil)
+	var gotCloseQty float64
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+		gotCloseQty = size
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
+	}
+
+	if _, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID, Qty: 0.7}); err != nil {
+		t.Fatalf("manual close --qty 0.7 (true adopted size) refused: %v", err)
+	}
+	if gotCloseQty != 0.7 {
+		t.Fatalf("on-chain close size = %g, want 0.7 (reconciled true size)", gotCloseQty)
+	}
+	actions, _ := db.LoadPendingManualActions()
+	if len(actions) != 1 || !actions[0].IsFullClose || actions[0].Quantity != 0.7 {
+		t.Fatalf("queued action = %+v, want one full close of 0.7", actions)
+	}
+}
+
+// TestManualClosePartialQtyBetweenStaleAndReconciledSize covers the finding-2
+// must-survive "between" case: --qty 0.5 sits between the stale 0.4 snapshot and
+// the true 0.7. Pre-fix it was rejected (0.5 > 0.4). Post-fix it is a valid
+// partial close of EXACTLY 0.5 against the reconciled 0.7 — an explicit --qty is
+// never scaled up to the reconciled full size, so the close never removes more
+// than the operator asked for.
+func TestManualClosePartialQtyBetweenStaleAndReconciledSize(t *testing.T) {
+	cfg, sc, db := staleReconcileCloseHarness(t)
+	deps := newCLIManualCoreDeps(cfg, db, nil)
+	var gotCloseQty float64
+	var gotFullClose bool
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+		gotCloseQty = size
+		gotFullClose = closeFull
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
+	}
+
+	if _, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID, Qty: 0.5}); err != nil {
+		t.Fatalf("manual close --qty 0.5 (valid partial vs true 0.7) refused: %v", err)
+	}
+	if gotCloseQty != 0.5 {
+		t.Fatalf("on-chain close size = %g, want 0.5 (explicit partial, not scaled to 0.7)", gotCloseQty)
+	}
+	if gotFullClose {
+		t.Fatalf("explicit partial --qty must take the sized-close path, got closeFullPosition=true")
+	}
+	actions, _ := db.LoadPendingManualActions()
+	if len(actions) != 1 || actions[0].IsFullClose || actions[0].Quantity != 0.5 {
+		t.Fatalf("queued action = %+v, want one partial (not full) close of 0.5", actions)
+	}
+}
+
+// TestManualCloseRejectsQtyExceedingReconciledSize confirms the bounds rejection
+// now reports the RECONCILED size (0.7), not the stale snapshot (0.4): --qty 0.9
+// exceeds even the true adopted size and is refused with the true figure.
+func TestManualCloseRejectsQtyExceedingReconciledSize(t *testing.T) {
+	cfg, sc, db := staleReconcileCloseHarness(t)
+	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+		t.Error("execute must not run when --qty exceeds the reconciled position")
+		return nil, "", errors.New("execute called")
+	}
+
+	_, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID, Qty: 0.9})
+	if err == nil || !strings.Contains(err.Error(), "exceeds open position 0.700000") {
+		t.Fatalf("manual close --qty 0.9 err = %v, want rejection citing the reconciled 0.7", err)
+	}
+}
+
 func TestManualAddCancelsPartialLimitRemainderBeforeAveraging(t *testing.T) {
 	cfg, sc, db := newPartialLimitPositionHarness(t)
 	withStubbedLimitDeps(t,
@@ -844,6 +948,73 @@ func TestReconcilePendingLimitOrdersFullFill(t *testing.T) {
 	// Terminal: row deleted.
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Errorf("expected row deleted, got %d (id=%d)", len(orders), id)
+	}
+}
+
+// TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete is the
+// #1263 review-3 regression: when a resting limit order fully fills and the
+// reconcile deletes its pending_limit_orders row in the SAME cycle, the grown
+// position must be durably flushed to state.db BEFORE the row disappears.
+// Otherwise a cross-process CLI (manual-close reading state.db) sees the row
+// gone while the DB position still understates the fill, and a sized shared-coin
+// close leaks an untracked residual. The reconcile grows the position only
+// in-memory; the end-of-cycle SaveState is what normally flushes it. This drives
+// reconcile in isolation (no end-of-cycle save) and asserts a fresh
+// cross-process read already sees the true size — proving the flush now happens
+// inside the reconcile, ahead of the delete.
+func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// Seed the DB with the strategy (no position yet), mirroring a running daemon
+	// that persisted the strategy in a prior cycle.
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+	cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
+	var mu sync.RWMutex
+
+	db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
+	})
+
+	// Fully filled, no longer resting → terminal, row deleted this cycle.
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.5, AvgPx: 2000, Fee: 0.7, Count: 1},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			t.Error("cancel should not be called on a clean fill")
+			return &HyperliquidCancelOrderResult{}, "", nil
+		},
+	)
+
+	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
+
+	// Terminal row deleted.
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Fatalf("terminal row not deleted: %+v", orders)
+	}
+	// The grown position is already durable in state.db (flush ran before the
+	// delete): a fresh cross-process read sees the true 0.5, not an absent/stale
+	// snapshot. Without the flush this reload would carry no ETH position.
+	fresh, err := LoadStateWithDB(cfg, db)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	ss := fresh.Strategies[sc.ID]
+	if ss == nil || ss.Positions["ETH"] == nil {
+		t.Fatalf("position not flushed to state.db before the terminal row was deleted: %+v", fresh.Strategies[sc.ID])
+	}
+	if got := ss.Positions["ETH"].Quantity; got != 0.5 {
+		t.Fatalf("flushed position quantity = %g, want 0.5 (true adopted fill)", got)
 	}
 }
 

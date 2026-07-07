@@ -703,6 +703,31 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 					"[limit] %s %s: limit order cancelled with no fill (oid=%d)",
 					o.StrategyID, o.Symbol, o.OrderOID))
 			}
+			// Durably flush the position carrying this order's adopted fills
+			// BEFORE the terminal row disappears, so a cross-process reader (a CLI
+			// manual-close / manual-add reading state.db) never observes the row
+			// gone while the DB position still understates the adopted fill
+			// (#1263 review-3 race). This loop grows the position in-memory
+			// (applyLimitFillProgress) but only persists it at the end-of-cycle
+			// SaveState; deleting the row first opens a window where state.db is
+			// stale and the CLI has no pending row left to reconcile against, so a
+			// sized shared-coin close would leak an untracked residual. Persisting
+			// here establishes the invariant "terminal row absent ⇒ state.db
+			// reflects the adopted fill." Only a fill changes a position, so a
+			// no-fill cancel skips the flush. On a save failure keep the row and
+			// retry the flush+delete next cycle rather than deleting against a
+			// stale DB.
+			if o.FilledSize > 0 {
+				mu.Lock()
+				saveErr := SaveStateWithDB(state, cfg, stateDB)
+				mu.Unlock()
+				if saveErr != nil {
+					warnNotifier(notifier, fmt.Sprintf(
+						"[limit] %s %s: could not flush adopted fill before finalizing oid=%d (%v) — retrying next cycle",
+						o.StrategyID, o.Symbol, o.OrderOID, saveErr))
+					continue
+				}
+			}
 			if err := stateDB.DeletePendingLimitOrder(o.ID); err != nil {
 				fmt.Printf("[limit] failed to delete terminal row %d: %v\n", o.ID, err)
 			}

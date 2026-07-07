@@ -942,29 +942,26 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sc.Symbol, pos.OwnerStrategyID, strategyID)
 	}
 
-	// Operator intent: --qty omitted (or equal to the full position) is a full
-	// close; any smaller value is a partial close.
-	closeQty := pos.Quantity
-	intentFullClose := true
-	if in.Qty > 0 {
-		if in.Qty > pos.Quantity {
-			return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
-		}
-		closeQty = in.Qty
-		// Within 0.0001 (typical HL lot size) is treated as full close.
-		if pos.Quantity-in.Qty > 0.0001 {
-			intentFullClose = false
-		}
-	}
-
 	closeSide := "sell"
 	if pos.Side == "short" {
 		closeSide = "buy"
 	}
 
+	// Dry-run is advisory: it reports against the current snapshot and neither
+	// takes the manual-action lock nor cancels/reconciles any resting limit
+	// remainder (cancelling would be a real on-chain side effect). The --qty
+	// bounds are checked against the snapshot here; the live path below re-checks
+	// them against the reconciled size.
 	if in.DryRun {
+		dryCloseQty := pos.Quantity
+		if in.Qty > 0 {
+			if in.Qty > pos.Quantity {
+				return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
+			}
+			dryCloseQty = in.Qty
+		}
 		res.outf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f)",
-			strategyID, closeSide, closeQty, sc.Symbol, pos.Quantity, pos.AvgCost)
+			strategyID, closeSide, dryCloseQty, sc.Symbol, pos.Quantity, pos.AvgCost)
 		return res, nil
 	}
 
@@ -1004,11 +1001,30 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 		if clearedAvgPx > 0 {
 			pos.AvgCost = clearedAvgPx
 		}
-		if intentFullClose {
-			closeQty = pos.Quantity
-		}
 		res.errf("[manual-close] %s %s: reconciled stale position snapshot %.6f → %.6f (scheduler adopted a limit fill before flushing state); closing the true size",
 			strategyID, sc.Symbol, staleQty, pos.Quantity)
+	}
+
+	// Operator intent, evaluated against the RECONCILED position size (not the
+	// pre-reconcile snapshot): --qty omitted (or equal to the full position) is a
+	// full close; any smaller value is a partial close. Checking after the
+	// reconcile above means an explicit --qty matching the true, already-adopted
+	// size is accepted instead of being wrongly refused against a stale smaller
+	// snapshot (#1263 review-3), and the bounds error reports the true size. An
+	// explicit --qty is never scaled up to the reconciled size — only an omitted
+	// (or within-lot-of-full) --qty flattens the reconciled position — so a
+	// partial close never removes more than the operator asked for.
+	closeQty := pos.Quantity
+	intentFullClose := true
+	if in.Qty > 0 {
+		if in.Qty > pos.Quantity {
+			return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
+		}
+		closeQty = in.Qty
+		// Within 0.0001 (typical HL lot size) is treated as full close.
+		if pos.Quantity-in.Qty > 0.0001 {
+			intentFullClose = false
+		}
 	}
 	if err := refuseIfPositionActionQueued(d, "manual-close", strategyID, sc.Symbol); err != nil {
 		return res, err
