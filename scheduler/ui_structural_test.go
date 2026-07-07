@@ -236,19 +236,45 @@ func TestUIRemoveStrategyEndToEnd(t *testing.T) {
 		t.Fatalf("config after remove fails validation: %v", err)
 	}
 
-	// Removing the last remaining strategy is refused at execute.
+	// Removing the last remaining strategy is now refused at CONFIRM (the
+	// only-strategy refusal is front-loaded) — no nonce is minted, so the
+	// operator never types the confirm phrase for a removal that would 409.
 	ss.UpdateStrategies([]StrategyConfig{{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}}})
-	confirm = structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
-	h = func(w http.ResponseWriter, r *http.Request) {
-		ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "remove-strategy")
-	}
-	body = fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
-	w = mutationPost(ss, h, "/api/strategies/hl-momentum-eth/remove-strategy", body, nil)
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "only strategy") {
-		t.Fatalf("only-strategy removal status = %d body %s, want 409 refusal", w.Code, w.Body.String())
+	cbody := `{"action":"remove-strategy","strategy_id":"hl-momentum-eth","params":{}}`
+	w = mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", cbody, nil)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "only strategy") {
+		t.Fatalf("only-strategy confirm status = %d body %s, want 400 refusal", w.Code, w.Body.String())
 	}
 	if ids := configStrategyIDs(t, path); len(ids) != 1 {
-		t.Fatalf("refused removal must not mutate config; strategies = %v", ids)
+		t.Fatalf("refused confirm must not mutate config; strategies = %v", ids)
+	}
+}
+
+// Even with the only-strategy refusal front-loaded at confirm, the execute
+// check stays authoritative: a config that shrinks to one strategy between
+// confirm and execute (the sibling removed concurrently) must still be refused
+// at execute (Must-survive case for the confirm-time pre-check).
+func TestUIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune(t *testing.T) {
+	ss, path, _ := newStructuralTestServer(t)
+	// Confirm removal of hl-momentum-eth while sma-btc still exists (2 on disk
+	// → confirm passes, nonce minted).
+	confirm := structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
+	// Concurrent edit removes the sibling → only hl-momentum-eth left on disk.
+	if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
+		return removeStrategyFromRoot(root, "sma-btc")
+	}); err != nil {
+		t.Fatalf("concurrent prune: %v", err)
+	}
+	h := func(w http.ResponseWriter, r *http.Request) {
+		ss.handleAPIStrategyStructural(w, r, "hl-momentum-eth", "remove-strategy")
+	}
+	body := fmt.Sprintf(`{"nonce":%q,"params":{}}`, confirm.Nonce)
+	w := mutationPost(ss, h, "/api/strategies/hl-momentum-eth/remove-strategy", body, nil)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "only strategy") {
+		t.Fatalf("execute-after-prune status = %d body %s, want 409 only-strategy", w.Code, w.Body.String())
+	}
+	if ids := configStrategyIDs(t, path); len(ids) != 1 {
+		t.Fatalf("refused execute must not mutate config; strategies = %v", ids)
 	}
 }
 

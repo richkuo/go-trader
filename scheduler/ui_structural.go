@@ -125,6 +125,30 @@ func (ss *StatusServer) maybeRestart(restart bool) {
 	go func() { _ = fn() }()
 }
 
+// isOnlyStrategyOnDisk reports whether id is the sole strategy in the on-disk
+// config — a best-effort confirm-time pre-check that mirrors
+// removeStrategyFromRoot's authoritative execute-time refusal, so the operator
+// is not asked to type the confirm phrase for a removal that would 409. Returns
+// false (defer to the execute check) on any read/parse error or when id is not
+// the sole entry; the execute path (removeStrategyFromRoot on configWriteMu)
+// stays authoritative and still catches a config that shrinks to one strategy
+// between confirm and execute.
+func isOnlyStrategyOnDisk(path, id string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var root map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil {
+		return false
+	}
+	list, err := configStrategies(root)
+	if err != nil || len(list) != 1 {
+		return false
+	}
+	return strategyRawID(list[0]) == id
+}
+
 // ---------------------------------------------------------------------------
 // Confirm-time eligibility + description (called from handleAPIConfirm)
 // ---------------------------------------------------------------------------
@@ -156,6 +180,12 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 		sc, ok := ss.strategyConfig(strategyID)
 		if !ok {
 			return "", "", "", fmt.Errorf("strategy %q not found", strategyID)
+		}
+		// Front-load the only-strategy refusal (removeStrategyFromRoot enforces
+		// it at execute) so the operator isn't asked to type the confirm phrase
+		// for a removal that would 409. Execute stays authoritative.
+		if isOnlyStrategyOnDisk(ss.configPath, sc.ID) {
+			return "", "", "", fmt.Errorf("refusing to remove the only strategy %q — a config must keep at least one strategy", sc.ID)
 		}
 		desc := fmt.Sprintf("remove-strategy: delete %s from the config. It stops trading after restart; its positions and trade history in the state DB are NOT touched.", sc.ID)
 		if ss.strategyHasOpenPosition(strategyID) {
