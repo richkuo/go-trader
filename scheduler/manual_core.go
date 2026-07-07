@@ -297,19 +297,34 @@ func limitStatusForOID(res *HyperliquidLimitStatusResult, oid int64) (Hyperliqui
 	return HyperliquidLimitOrderStatus{}, false
 }
 
-func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string) error {
+// clearRestingLimitRemainderForPositionAction cancels a resting manual limit
+// remainder so an owned partial-fill position can be flattened/averaged in one
+// step. It returns the confirmed cumulative filled size and volume-weighted
+// average price of every order it cleared — the authoritative, currently-adopted
+// position size a caller must size its flatten against. That number matters
+// because the caller's own state snapshot can lag: reconcilePendingLimitOrders
+// persists a newly-adopted fill's watermark (UpdatePendingLimitOrderFill) BEFORE
+// the grown in-memory position is flushed to the DB (end-of-cycle SaveState) and
+// does NOT hold the manual-action lock, so a snapshot taken mid-fill undercounts
+// the position. Because the unadopted-fill guard below proves the exchange fill
+// equals the tracked watermark (fully adopted) and the placement guard proves
+// the position is composed solely of this order's fills, the cleared cumulative
+// fill IS the true position size in this window. Returns (0, 0, nil) when no
+// remainder rests.
+func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCoreResult, sc StrategyConfig, cmdName, strategyID, symbol string) (float64, float64, error) {
 	orders, err := pendingLimitOrdersForStrategySymbol(d.stateDB, strategyID, symbol)
 	if err != nil {
-		return manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+		return 0, 0, manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
 	}
 	if len(orders) == 0 {
-		return nil
+		return 0, 0, nil
 	}
 
 	if _, err := d.stateDB.MarkPendingLimitOrderCancelRequested(strategyID, symbol); err != nil {
-		return manualFailf("error: could not mark resting limit order cancel_requested (%v) — refusing %s to avoid racing the scheduler's fill adoption", err, cmdName)
+		return 0, 0, manualFailf("error: could not mark resting limit order cancel_requested (%v) — refusing %s to avoid racing the scheduler's fill adoption", err, cmdName)
 	}
 
+	var clearedQty, clearedNotional float64
 	for _, o := range orders {
 		cancelRes, cstderr, cerr := runHyperliquidCancelOrderFn(sc.Script, o.Symbol, o.OrderOID)
 		if cstderr != "" {
@@ -320,7 +335,7 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 			if cancelRes != nil {
 				msg = cancelRes.Error
 			}
-			return manualFailf("error: could not cancel resting limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cerr, msg, cmdName)
+			return 0, 0, manualFailf("error: could not cancel resting limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cerr, msg, cmdName)
 		}
 
 		statusRes, sstderr, serr := runHyperliquidLimitStatusFn(sc.Script, o.Symbol, []int64{o.OrderOID}, limitStatusSinceMs(o.CreatedAt))
@@ -332,30 +347,44 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 			if statusRes != nil {
 				msg = statusRes.Error
 			}
-			return manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, serr, msg, cmdName)
+			return 0, 0, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): %v %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, serr, msg, cmdName)
 		}
 		if statusRes.OpenOrdersError != "" {
-			return manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): open-orders state unknown (%s) — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, statusRes.OpenOrdersError, cmdName)
+			return 0, 0, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): open-orders state unknown (%s) — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, statusRes.OpenOrdersError, cmdName)
 		}
 		st, ok := limitStatusForOID(statusRes, o.OrderOID)
 		if !ok {
-			return manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): status response did not include the order — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+			return 0, 0, manualFailf("error: could not verify cancelled limit order for %s/%s (oid=%d): status response did not include the order — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 		}
 		if st.FillsError != "" {
-			return manualFailf("error: could not verify cancelled limit order fills for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, st.FillsError, cmdName)
+			return 0, 0, manualFailf("error: could not verify cancelled limit order fills for %s/%s (oid=%d): %s — cancellation is queued for the scheduler; wait for it to adopt any final fill before running %s", strategyID, o.Symbol, o.OrderOID, st.FillsError, cmdName)
 		}
 		if st.Resting == nil || *st.Resting {
-			return manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
+			return 0, 0, manualFailf("error: resting limit order for %s/%s (oid=%d) is not yet confirmed off-book — cancellation is queued for the scheduler; wait for the next cycle before running %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 		}
 		if st.FilledSize > o.FilledSize+limitFillEpsilon {
-			return manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, st.FilledSize, cmdName)
+			return 0, 0, manualFailf("error: resting limit order for %s/%s (oid=%d) has an unadopted fill (tracked %.6f, exchange %.6f) — cancellation is queued; run/wait for the scheduler to adopt the fill before running %s", strategyID, o.Symbol, o.OrderOID, o.FilledSize, st.FilledSize, cmdName)
 		}
 		if err := d.stateDB.DeletePendingLimitOrder(o.ID); err != nil {
-			return manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
+			return 0, 0, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
 		}
+		// Off-book with its full cumulative fill adopted (the guard above proved
+		// st.FilledSize <= watermark). Accumulate it as this order's authoritative
+		// contribution to the tracked position; mirror reconcile's avg-price
+		// fallback to the limit price when the fills poll returns no VWAP.
+		fillPx := st.AvgPx
+		if fillPx <= 0 {
+			fillPx = o.LimitPrice
+		}
+		clearedQty += st.FilledSize
+		clearedNotional += st.FilledSize * fillPx
 		res.outf("Cancelled resting limit remainder: %s %s oid=%d before %s", strategyID, o.Symbol, o.OrderOID, cmdName)
 	}
-	return nil
+	clearedAvgPx := 0.0
+	if clearedQty > 0 {
+		clearedAvgPx = clearedNotional / clearedQty
+	}
+	return clearedQty, clearedAvgPx, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -787,7 +816,11 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
 		defer unlock()
-		if err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
+		// The add's on-chain order size comes from the sizing flags, not the
+		// position snapshot, and the daemon blends it into the live in-memory
+		// position — so an add is never mis-sized by a stale snapshot and the
+		// confirmed cleared fill is not needed here (unlike manual-close below).
+		if _, _, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
 			return res, err
 		}
 		if err := refuseIfPositionActionQueued(d, "manual-add", strategyID, sc.Symbol); err != nil {
@@ -950,8 +983,32 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	// queued close row would double-decrement the position on drain (#1009
 	// corrupt close). Applies to full AND partial close. The UI handler guards
 	// this too; this covers the CLI + any future core caller.
-	if err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol); err != nil {
+	clearedQty, clearedAvgPx, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-close", strategyID, sc.Symbol)
+	if err != nil {
 		return res, err
+	}
+	// Reconcile a stale position snapshot against the fill we just proved
+	// adopted. reconcilePendingLimitOrders persists a newly-adopted fill's
+	// watermark before the grown in-memory position is flushed to the DB (and
+	// does not hold the manual-action lock), so pos here can understate the true
+	// position. clearResting proved the remainder off-book with its full
+	// cumulative fill (clearedQty) adopted, so that IS the true position size:
+	// grow the local snapshot up to it (and to its cumulative VWAP) so a full
+	// close flattens the real on-chain position — critical on a shared coin,
+	// where closeFullPosition is false and a sized close of the stale (smaller)
+	// qty would leave an untracked residual after the daemon books flat — and so
+	// the queued close quantity + realized PnL match the true size and cost.
+	if clearedQty > pos.Quantity+limitFillEpsilon {
+		staleQty := pos.Quantity
+		pos.Quantity = clearedQty
+		if clearedAvgPx > 0 {
+			pos.AvgCost = clearedAvgPx
+		}
+		if intentFullClose {
+			closeQty = pos.Quantity
+		}
+		res.errf("[manual-close] %s %s: reconciled stale position snapshot %.6f → %.6f (scheduler adopted a limit fill before flushing state); closing the true size",
+			strategyID, sc.Symbol, staleQty, pos.Quantity)
 	}
 	if err := refuseIfPositionActionQueued(d, "manual-close", strategyID, sc.Symbol); err != nil {
 		return res, err

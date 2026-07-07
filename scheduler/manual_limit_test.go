@@ -556,6 +556,81 @@ func TestManualCloseCancelsPartialLimitRemainderBeforeFlatten(t *testing.T) {
 	}
 }
 
+// TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill is the review-2
+// regression (#1263): when the scheduler adopts a limit fill (persisting the
+// watermark) after the CLI's position snapshot but before flushing the grown
+// position to the DB, a full close on a SHARED coin must flatten the true,
+// larger on-chain size — not the stale snapshot — so it never leaves an
+// untracked residual after the daemon books flat on IsFullClose.
+func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T) {
+	cfg, sc, db := newPartialLimitPositionHarness(t)
+	// Share ETH with a live peer so closeFullPosition is false (sized close, not
+	// market_close) — the only path where the stale snapshot leaks a residual.
+	peer := StrategyConfig{
+		ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid",
+		Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Leverage: 10,
+		Args: []string{"hold", "ETH", "30m", "--mode=live"},
+	}
+	cfg.Strategies = append(cfg.Strategies, peer)
+
+	// The watermark on the resting row is already advanced to 0.7 (the daemon
+	// adopted the new fill in-memory) while the DB position snapshot still reads
+	// the stale 0.4 (SaveState has not flushed the grown position yet).
+	orders, _ := db.LoadPendingLimitOrders()
+	if len(orders) != 1 {
+		t.Fatalf("want one resting row, got %d", len(orders))
+	}
+	if err := db.UpdatePendingLimitOrderFill(orders[0].ID, 0.7, 2005, 0.35); err != nil {
+		t.Fatalf("advance watermark: %v", err)
+	}
+
+	// Status: off-book, cumulative fill 0.7 @ VWAP 2005 == watermark → fully
+	// adopted, no unadopted fill; the cleared fill is the true position size.
+	withStubbedLimitDeps(t,
+		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
+			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
+				{OID: 9001, Resting: limitTestBoolPtr(false), FilledSize: 0.7, AvgPx: 2005, Fee: 0.35},
+			}}, "", nil
+		},
+		func(string, string, int64) (*HyperliquidCancelOrderResult, string, error) {
+			return &HyperliquidCancelOrderResult{OID: 9001, Cancelled: true}, "", nil
+		},
+	)
+	deps := newCLIManualCoreDeps(cfg, db, nil)
+	var gotCloseQty float64
+	var gotFullClose bool
+	deps.execute = func(_ string, _ string, _ string, size float64, _ float64, _ int64, _ float64, _ string, _ float64, closeFull bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+		gotCloseQty = size
+		gotFullClose = closeFull
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2010, TotalSz: size, OID: 4242, Fee: 0.4}}}, "", nil
+	}
+
+	if _, err := manualCloseCore(deps, sc, manualCloseInputs{StrategyID: sc.ID}); err != nil {
+		t.Fatalf("manual close: %v", err)
+	}
+	if gotFullClose {
+		t.Fatalf("shared coin must take the sized-close path (closeFullPosition=false), got market_close")
+	}
+	if gotCloseQty != 0.7 {
+		t.Fatalf("on-chain close size = %g, want 0.7 (true adopted fill, not stale 0.4 snapshot)", gotCloseQty)
+	}
+	actions, _ := db.LoadPendingManualActions()
+	if len(actions) != 1 || actions[0].Action != "close" || !actions[0].IsFullClose {
+		t.Fatalf("pending manual actions = %+v, want one full close", actions)
+	}
+	if actions[0].Quantity != 0.7 {
+		t.Fatalf("queued close quantity = %g, want 0.7 (true size)", actions[0].Quantity)
+	}
+	// Realized PnL must use the true qty (0.7) and cumulative VWAP (2005), net of
+	// the close fee: 0.7*(2010-2005) - 0.4 = 3.1.
+	if got := actions[0].RealizedPnL; got < 3.09 || got > 3.11 {
+		t.Fatalf("queued RealizedPnL = %g, want ~3.10 (0.7*(2010-2005)-0.4)", got)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Fatalf("pending limit rows = %+v, want deleted after proven cancelled", orders)
+	}
+}
+
 func TestManualAddCancelsPartialLimitRemainderBeforeAveraging(t *testing.T) {
 	cfg, sc, db := newPartialLimitPositionHarness(t)
 	withStubbedLimitDeps(t,
