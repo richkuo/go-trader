@@ -396,6 +396,17 @@ func (ss *StatusServer) handleAPIStrategyStructural(w http.ResponseWriter, r *ht
 // apply-regime-gate's flat-only rule. Returns the base message; the caller
 // appends the restart tail.
 func (ss *StatusServer) executePaperToLive(id string) (string, error) {
+	// The flat check runs here, BEFORE mutateConfigRoot — deliberately not
+	// inside its closure. Codebase convention is to release mu before taking
+	// configWriteMu: every config-write path computes strategyHasOpenPosition
+	// first, then locks (ui_mutations.go, ui_tuner.go, discord config-set).
+	// Nesting this mu.RLock inside the configWriteMu section would make it the
+	// sole configWriteMu→mu site and plant an AB-BA deadlock for any future
+	// mu→configWriteMu path. It also would not close the race: position-opens
+	// are mu-governed (the trading loop's execute phase never holds
+	// configWriteMu), so holding configWriteMu can't block a fill, and the
+	// dominant carried-position window is the restart-required
+	// write→restart→reload gap, not this micro check→write one.
 	if ss.strategyHasOpenPosition(id) {
 		return "", fmt.Errorf("strategy %q opened a position after the confirmation was issued — paper→live can only run while flat; nothing changed", id)
 	}
@@ -412,12 +423,14 @@ func (ss *StatusServer) executePaperToLive(id string) (string, error) {
 }
 
 // executeApplyRegimeGate re-runs the full apply-regime-gate safety model at
-// execute time, inside the configWriteMu critical section: preset + type
-// eligibility, flat re-check (a position can open between confirm and
-// execute), and the blast-radius growth check against the set pinned in the
-// nonce payload at confirm time — a concurrent config edit during the dialog
-// must not silently widen what the operator agreed to (shrinkage is fine:
-// strictly safer than confirmed).
+// execute time: preset + type eligibility and a flat re-check (a position can
+// open between confirm and execute) run BEFORE the write; then — inside the
+// configWriteMu critical section — the blast-radius growth check against the
+// set pinned in the nonce payload at confirm time (a concurrent config edit
+// during the dialog must not silently widen what the operator agreed to;
+// shrinkage is fine: strictly safer than confirmed). The flat check stays
+// outside the configWriteMu section for the lock-ordering reason documented on
+// executePaperToLive.
 func (ss *StatusServer) executeApplyRegimeGate(id string, p structuralParams, payload string) (string, error) {
 	gateName := strings.TrimSpace(p.Gate)
 	if gateName == "" {
