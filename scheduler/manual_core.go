@@ -218,29 +218,53 @@ func lookupForceCloseStrategy(cfg *Config, id string) (StrategyConfig, string, e
 	return StrategyConfig{}, "", manualFailf("error: strategy %q not found in config", id)
 }
 
+func refuseIfPendingManualPositionAction(stateDB *StateDB, cmdName, strategyID, symbol string) error {
+	pending, err := pendingManualActionExists(stateDB, strategyID, symbol, "open", "add", "close")
+	if err != nil {
+		return manualFailf("error: could not check for queued position actions (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	}
+	if pending {
+		return manualFailf("error: a position-changing action (open/add/close) for %s/%s is already submitted and awaiting the scheduler's next cycle — wait for it to apply before running %s again", strategyID, symbol, cmdName)
+	}
+	return nil
+}
+
+func refuseIfRestingLimitOrderQueued(stateDB *StateDB, cmdName, strategyID, symbol string) error {
+	existing, err := stateDB.CountPendingLimitOrders(strategyID, symbol)
+	if err != nil {
+		return manualFailf("error: could not check for resting limit orders (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	}
+	if existing > 0 {
+		return manualFailf("error: %s already has a resting limit order for %s — cancel it first (go-trader manual-cancel %s) before running %s", strategyID, symbol, strategyID, cmdName)
+	}
+	return nil
+}
+
 // refuseIfPositionActionQueued fails closed when any position-changing action
 // (open/add/close — force-close queues its fill as a "close" row) for
-// strategyID+symbol is still un-drained in pending_manual_actions. It is the
-// core-level twin of the UI handler's double-fire guard (ui_trade_actions.go):
-// between an action submitting on-chain and the scheduler draining its queued
-// row, a second submit from ANY caller (a rapid CLI re-run, a future core
-// caller) fires a real order the in-memory accounting cannot see yet —
-// doubling/flipping the position (a sized manual close is a regular
-// non-reduce-only order) and orphaning it on drain (#1009 corrupt close).
-// Symmetric with resolveManualSLTargetCore's refusal (#1260 review 5) so no
-// queued row references a position another queued row will delete or reshape
+// strategyID+symbol is still un-drained in pending_manual_actions, OR when a
+// resting manual limit-open for the same strategy+symbol exists in
+// pending_limit_orders (#1261). It is the core-level twin of the UI handler's
+// double-fire guard (ui_trade_actions.go): between an action submitting
+// on-chain and the scheduler draining/adopting its row, a second submit from ANY
+// caller (a rapid CLI re-run, a future core caller) fires a real order the
+// in-memory accounting cannot see yet — doubling/flipping the position (a sized
+// manual close is a regular non-reduce-only order) and orphaning it on drain
+// (#1009 corrupt close).
+// Symmetric with resolveManualSLTargetCore's refusal (#1260 review 5) and
+// runManualLimitOpen's resting-order placement guard (#1261) so no queued row
+// references a position another queued row will delete, reshape, or create
 // first. Callers skip it on --record-only / --dry-run (those place no new
 // on-chain order; --record-only/re-register must stay usable) and key it on the
 // SAME symbol the core writes into the queued row (forceCloseCore uses the
 // args-derived sym, not the empty perps sc.Symbol). Fail closed on a check
 // error.
 func refuseIfPositionActionQueued(d manualCoreDeps, cmdName, strategyID, symbol string) error {
-	pending, err := pendingManualActionExists(d.stateDB, strategyID, symbol, "open", "add", "close")
-	if err != nil {
-		return manualFailf("error: could not check for queued position actions (%v) — refusing %s to avoid double-firing an on-chain order; retry once the scheduler is reachable", err, cmdName)
+	if err := refuseIfPendingManualPositionAction(d.stateDB, cmdName, strategyID, symbol); err != nil {
+		return err
 	}
-	if pending {
-		return manualFailf("error: a position-changing action (open/add/close) for %s/%s is already submitted and awaiting the scheduler's next cycle — wait for it to apply before running %s again", strategyID, symbol, cmdName)
+	if err := refuseIfRestingLimitOrderQueued(d.stateDB, cmdName, strategyID, symbol); err != nil {
+		return err
 	}
 	return nil
 }

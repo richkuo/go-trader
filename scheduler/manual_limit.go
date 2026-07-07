@@ -188,6 +188,7 @@ func RunHyperliquidCancelOrder(script, symbol string, oid int64) (*HyperliquidCa
 
 // Package vars so reconcile tests can stub the subprocess calls without a .venv.
 var (
+	runHyperliquidLimitOpenFn   = RunHyperliquidLimitOpen
 	runHyperliquidLimitStatusFn = RunHyperliquidLimitStatus
 	runHyperliquidCancelOrderFn = RunHyperliquidCancelOrder
 )
@@ -242,10 +243,21 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 		fmt.Fprintln(os.Stderr, "warning: --stop-loss-atr-mult / --stop-loss-pct are ignored for --limit-price orders; the scheduler arms SL/TP from strategy config after the fill")
 	}
 
-	// Placement guard: one resting order / open position per strategy+symbol. On
-	// fill the scheduler creates a fresh position; a pre-existing position or
-	// resting order would collide (the fill path fails closed rather than adopt a
-	// foreign position).
+	// Hold the same cross-process lock as the synchronous manual-action cores from
+	// before the guard reads through the pending_limit_orders insert. Without it,
+	// two CLIs (or a CLI racing the dashboard market-open core) can both observe no
+	// pending row and both fire on-chain before either row is visible (#1261).
+	unlock, lockErr := acquireManualActionFileLock(cfg.DBFile)
+	if lockErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v — refusing to avoid double-firing an on-chain order\n", lockErr)
+		return 1
+	}
+	defer unlock()
+
+	// Placement guard: one un-drained position-changing action, resting order, or
+	// open position per strategy+symbol. On fill the scheduler creates a fresh
+	// position; a pre-existing position or resting/queued open would collide (the
+	// fill path fails closed rather than adopt a foreign position).
 	state, loadErr := LoadStateWithDB(cfg, stateDB)
 	if loadErr != nil {
 		fmt.Fprintf(os.Stderr, "error: could not load state for placement guard: %v\n", loadErr)
@@ -265,12 +277,16 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 			return 1
 		}
 	}
-	if existing, _ := stateDB.CountPendingLimitOrders(in.strategyID, sc.Symbol); existing > 0 {
-		fmt.Fprintf(os.Stderr, "error: %s already has a resting limit order for %s — cancel it first (go-trader manual-cancel %s)\n", in.strategyID, sc.Symbol, in.strategyID)
+	if err := refuseIfPendingManualPositionAction(stateDB, "manual-open --limit-price", in.strategyID, sc.Symbol); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	if err := refuseIfRestingLimitOrderQueued(stateDB, "manual-open --limit-price", in.strategyID, sc.Symbol); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
 
-	res, stderr, err := RunHyperliquidLimitOpen(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
+	res, stderr, err := runHyperliquidLimitOpenFn(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "HL limit-open stderr: %s\n", stderr)
 	}

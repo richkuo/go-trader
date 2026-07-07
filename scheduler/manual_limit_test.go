@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -320,6 +321,164 @@ func newLimitTestStateDB(t *testing.T) *StateDB {
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+func newLimitOpenGuardHarness(t *testing.T) (*Config, StrategyConfig, *StateDB) {
+	t.Helper()
+	sc, state := newLimitTestStrategy()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
+	return cfg, sc, db
+}
+
+func withStubbedLimitOpen(t *testing.T, open func(script, symbol, side string, size, limitPx float64, tif, marginMode string, leverage float64, snapshot hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error)) {
+	t.Helper()
+	origOpen := runHyperliquidLimitOpenFn
+	runHyperliquidLimitOpenFn = open
+	t.Cleanup(func() { runHyperliquidLimitOpenFn = origOpen })
+}
+
+func TestManualLimitOpenRefusesQueuedMarketAction(t *testing.T) {
+	cfg, sc, db := newLimitOpenGuardHarness(t)
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: sc.ID, Action: "open", Symbol: sc.Symbol, Side: "long",
+		Quantity: 0.5, FillPrice: 2000, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending manual action: %v", err)
+	}
+
+	var venueCalls int32
+	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+		atomic.AddInt32(&venueCalls, 1)
+		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 9001}, "", nil
+	})
+
+	rc := runManualLimitOpen(cfg, sc, db, manualLimitOpenInputs{
+		strategyID: sc.ID, side: "long", openSide: "buy", margin: 50, limitPrice: 2000, tif: "Alo",
+	})
+	if rc == 0 {
+		t.Fatal("manual-limit-open with a queued market open returned success")
+	}
+	if got := atomic.LoadInt32(&venueCalls); got != 0 {
+		t.Fatalf("limit venue calls = %d, want 0 when a market open is queued", got)
+	}
+	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
+		t.Fatalf("pending limit rows = %+v, want none", orders)
+	}
+}
+
+func TestManualOpenCoreRefusesQueuedLimitOrder(t *testing.T) {
+	t.Setenv("HYPERLIQUID_SECRET_KEY", "test-secret")
+	cfg, sc, db := newLimitOpenGuardHarness(t)
+	if _, err := db.InsertPendingLimitOrder(PendingLimitOrder{
+		StrategyID: sc.ID, Symbol: sc.Symbol, Side: "long", OrderOID: 9001,
+		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert pending limit: %v", err)
+	}
+
+	deps := newCLIManualCoreDeps(cfg, db, nil)
+	deps.fetchMids = func([]string) (map[string]float64, error) {
+		return map[string]float64{sc.Symbol: 2000}, nil
+	}
+	deps.execute = func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+		t.Error("market execute must not be called while a resting limit exists")
+		return nil, "", errors.New("execute called")
+	}
+
+	_, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: sc.ID, Margin: 50})
+	if err == nil || !strings.Contains(err.Error(), "resting limit order") {
+		t.Fatalf("manual-open err = %v, want resting-limit refusal", err)
+	}
+}
+
+func TestManualLimitOpenLockPreventsCrossProcessDoubleFire(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	dbA, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db A: %v", err)
+	}
+	defer dbA.Close()
+	if err := dbA.SaveState(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	dbB, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db B: %v", err)
+	}
+	defer dbB.Close()
+	cfg := &Config{DBFile: dbPath, Strategies: []StrategyConfig{sc}}
+
+	var calls int32
+	enteredSubmit := make(chan struct{})
+	releaseSubmit := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseSubmit) }) }
+	defer release()
+
+	withStubbedLimitOpen(t, func(string, string, string, float64, float64, string, string, float64, hlExecuteSnapshot) (*HyperliquidLimitOpenResult, string, error) {
+		call := atomic.AddInt32(&calls, 1)
+		if call == 1 {
+			close(enteredSubmit)
+			<-releaseSubmit
+		}
+		return &HyperliquidLimitOpenResult{Status: "resting", OrderOID: 9000 + int64(call)}, "", nil
+	})
+
+	input := manualLimitOpenInputs{
+		strategyID: sc.ID, side: "long", openSide: "buy", margin: 50, limitPrice: 2000, tif: "Alo",
+	}
+	aDone := make(chan int, 1)
+	go func() { aDone <- runManualLimitOpen(cfg, sc, dbA, input) }()
+
+	select {
+	case <-enteredSubmit:
+	case rc := <-aDone:
+		t.Fatalf("first limit-open returned before reaching venue: rc=%d", rc)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first limit-open did not reach venue")
+	}
+
+	bDone := make(chan int, 1)
+	go func() { bDone <- runManualLimitOpen(cfg, sc, dbB, input) }()
+
+	select {
+	case rc := <-bDone:
+		t.Fatalf("second limit-open completed while first held the lock (rc=%d, calls=%d)", rc, atomic.LoadInt32(&calls))
+	case <-time.After(400 * time.Millisecond):
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("limit venue calls while first submit blocked = %d, want 1", got)
+	}
+
+	release()
+	if rc := <-aDone; rc != 0 {
+		t.Fatalf("first limit-open rc=%d, want 0", rc)
+	}
+	select {
+	case rc := <-bDone:
+		if rc == 0 {
+			t.Fatalf("second limit-open should be refused after the first row lands")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second limit-open did not return after first released the lock")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("limit venue calls = %d, want exactly one", got)
+	}
+	if orders, _ := dbA.LoadPendingLimitOrders(); len(orders) != 1 || orders[0].OrderOID != 9001 {
+		t.Fatalf("pending limit orders = %+v, want one row for first order", orders)
+	}
 }
 
 func TestPendingLimitOrderCRUD(t *testing.T) {
