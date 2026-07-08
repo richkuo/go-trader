@@ -110,6 +110,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	if err := applyAlertThrottleFromConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to apply alert throttle interval: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
 	// #1085: load the directional-certification artifact (SSoT for the

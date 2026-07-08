@@ -59,6 +59,7 @@ func TestScriptFailureTracker_ThrottlesAfterThreshold(t *testing.T) {
 }
 
 func TestScriptFailureTracker_HourlyReAlert(t *testing.T) {
+	withAlertThrottleInterval(t, time.Hour)
 	tr := &ScriptFailureTracker{}
 	now := time.Unix(1700000000, 0).UTC()
 	for i := 0; i < scriptFailureAlertThreshold; i++ {

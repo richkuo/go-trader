@@ -185,6 +185,7 @@ type Config struct {
 	DefaultStopLossATRMult *float64                   `json:"default_stop_loss_atr_mult,omitempty"` // #605 — top-level default applied to HL perps/manual strategies that omit all stop_loss_* / trailing_stop_* fields. Nil/missing falls back to 1.0; explicit values let operators tune the ATR stop without recompiling.
 	NotifyTPSLFills        *bool                      `json:"notify_tp_sl_fills,omitempty"`         // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
 	NotifyRatchetTriggers  *bool                      `json:"notify_ratchet_triggers,omitempty"`    // #1110 — owner DM when a trailing_tp_ratchet* tier clears and tightens the trail. Nil/missing → enabled; explicit false disables.
+	AlertThrottleInterval  string                     `json:"alert_throttle_interval,omitempty"`    // #1266 — fleet-wide re-alert back-off for throttled operator alerts. Go duration ("6h", "30m"); empty → 6h.
 	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
 	UserDefaults           *UserDefaultsConfig        `json:"user_defaults,omitempty"`              // #1135 — canonical operator override layer for defaults. close → close-evaluator tier ladders; regime_atr → standalone use_defaults-only *_atr_regime owners; manual → manual-open/type=manual defaults. Legacy user_close_defaults/manual_defaults are migrated to this tree at load.
 }
@@ -2203,6 +2204,10 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		if _, err := ParseSummaryFrequency(v); err != nil {
 			errs = append(errs, fmt.Sprintf("summary_frequency[%q]: %v", k, err))
 		}
+	}
+
+	if _, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval); err != nil {
+		errs = append(errs, err.Error())
 	}
 
 	for k, v := range cfg.TradingViewExport.SymbolOverrides {

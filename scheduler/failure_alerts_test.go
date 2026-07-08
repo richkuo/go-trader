@@ -33,6 +33,7 @@ func TestShouldNotifyDrainFailure_EveryTenthNotifies(t *testing.T) {
 }
 
 func TestShouldNotifyDrainFailure_HourlyEvenIfNotMod10(t *testing.T) {
+	withAlertThrottleInterval(t, time.Hour)
 	notifiedAt := time.Now()
 	// count=5, not mod 10, but >1 hour since last notify
 	if !shouldNotifyDrainFailure(5, notifiedAt, notifiedAt.Add(61*time.Minute)) {
@@ -131,6 +132,7 @@ func TestLiveExecFailureThrottle_ClearResetsCount(t *testing.T) {
 }
 
 func TestLiveExecFailureThrottle_HourlyAlert(t *testing.T) {
+	withAlertThrottleInterval(t, time.Hour)
 	th := &LiveExecFailureThrottle{}
 	now := time.Now()
 	th.Record("k1", "err", now)                                  // notified

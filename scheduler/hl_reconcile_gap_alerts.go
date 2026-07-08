@@ -47,16 +47,13 @@ const hlReconcileGapAlertThreshold = 3
 // same ratio (anchored to the last LOGGED residual) gates the stdout log.
 const hlReconcileGapRealertRatio = 0.10
 
-// hlReconcileGapLogInterval is the heartbeat ceiling for the stdout [WARN] gap
-// line per coin (#1088 sibling fix): once a gap is persisting, a STABLE,
-// unchanging residual re-logs at most once per this interval. The stdout line
-// previously fired every reconcile cycle a gap persisted (unconditionally,
-// outside the alert gate) — the identical per-cycle log spam #1088 fixed in the
-// drift reporter. Aligned to the hourly notification back-off so a persistent
-// stable gap's stdout cadence matches its alert cadence; a materially-changed
-// residual (hlReconcileGapRealertRatio) or any cycle that fires an alert logs
-// immediately regardless, preserving onset, worsening, and alert visibility.
-const hlReconcileGapLogInterval = time.Hour
+// hlReconcileGapLogInterval returns the heartbeat ceiling for the stdout
+// [WARN] gap line per coin (#1088 sibling fix). Aligned to the configured
+// notification back-off so a persistent stable gap's stdout cadence matches
+// its alert cadence.
+func hlReconcileGapLogInterval() time.Duration {
+	return effectiveAlertThrottleInterval()
+}
 
 // hlReconcileGapEntry is one slot in the per-coin gap tracker.
 type hlReconcileGapEntry struct {
@@ -129,7 +126,7 @@ func (t *HLReconcileGapTracker) Record(coin string, delta float64, now time.Time
 		logMove > hlReconcileGapRealertRatio*math.Abs(e.lastLoggedDelta)
 	shouldLog = e.lastLoggedAt.IsZero() ||
 		logSigChanged ||
-		now.Sub(e.lastLoggedAt) >= hlReconcileGapLogInterval
+		now.Sub(e.lastLoggedAt) >= hlReconcileGapLogInterval()
 
 	// Confirmation window: a transient one- or two-cycle gap (indexer lag that
 	// resolves once the fill is indexed) never reaches the threshold — it
@@ -155,7 +152,7 @@ func (t *HLReconcileGapTracker) Record(coin string, delta float64, now time.Time
 		shouldNotify = true // first crossing of the confirmation window
 	case sigChanged:
 		shouldNotify = true
-	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
+	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= effectiveAlertThrottleInterval():
 		shouldNotify = true
 	}
 	if shouldNotify {
