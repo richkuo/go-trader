@@ -1316,11 +1316,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if err := validateConfig(&cfg, skipLiveCredentialChecks); err != nil {
 		return nil, err
 	}
-	throttle, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval)
-	if err != nil {
-		return nil, err
-	}
-	applyAlertThrottleInterval(throttle)
 	return &cfg, nil
 }
 

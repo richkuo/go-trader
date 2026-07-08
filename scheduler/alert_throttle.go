@@ -22,6 +22,21 @@ func applyAlertThrottleInterval(d time.Duration) {
 	alertThrottleInterval = d
 }
 
+// applyAlertThrottleFromConfig adopts cfg's alert_throttle_interval into the
+// live runtime. Call only when a config is actually adopted (daemon startup or
+// an accepted SIGHUP reload) — never from loadConfig/LoadConfigForProbe.
+func applyAlertThrottleFromConfig(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	d, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval)
+	if err != nil {
+		return err
+	}
+	applyAlertThrottleInterval(d)
+	return nil
+}
+
 // ParseAlertThrottleInterval converts alert_throttle_interval config text to a
 // duration. Empty/missing → DefaultAlertThrottleInterval (6h).
 func ParseAlertThrottleInterval(s string) (time.Duration, error) {

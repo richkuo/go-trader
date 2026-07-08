@@ -77,6 +77,9 @@ func TestLoadConfig_AppliesAlertThrottleInterval(t *testing.T) {
 	if cfg.AlertThrottleInterval != "45m" {
 		t.Fatalf("AlertThrottleInterval = %q, want 45m", cfg.AlertThrottleInterval)
 	}
+	if err := applyAlertThrottleFromConfig(cfg); err != nil {
+		t.Fatalf("applyAlertThrottleFromConfig: %v", err)
+	}
 	if effectiveAlertThrottleInterval() != 45*time.Minute {
 		t.Fatalf("runtime interval = %s, want 45m", effectiveAlertThrottleInterval())
 	}
@@ -106,6 +109,9 @@ func TestLoadConfig_AlertThrottleIntervalDefaultsToSixHours(t *testing.T) {
 	if _, err := LoadConfigForProbe(path); err != nil {
 		t.Fatalf("LoadConfigForProbe: %v", err)
 	}
+	if err := applyAlertThrottleFromConfig(&Config{}); err != nil {
+		t.Fatalf("applyAlertThrottleFromConfig: %v", err)
+	}
 	if effectiveAlertThrottleInterval() != DefaultAlertThrottleInterval {
 		t.Fatalf("runtime interval = %s, want %s", effectiveAlertThrottleInterval(), DefaultAlertThrottleInterval)
 	}
@@ -129,5 +135,78 @@ func TestApplyHotReloadConfig_UpdatesAlertThrottleInterval(t *testing.T) {
 	}
 	if effectiveAlertThrottleInterval() != 2*time.Hour {
 		t.Fatalf("runtime interval = %s, want 2h", effectiveAlertThrottleInterval())
+	}
+}
+
+func TestLoadConfigForProbe_DoesNotMutateAdoptedAlertThrottleInterval(t *testing.T) {
+	prev := alertThrottleInterval
+	t.Cleanup(func() { alertThrottleInterval = prev })
+	applyAlertThrottleInterval(90 * time.Minute)
+
+	dir := t.TempDir()
+	path := dir + "/config.json"
+	cfgJSON := `{
+		"alert_throttle_interval": "15m",
+		"strategies": [{
+			"id": "hl-sole",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 10,
+			"leverage": 5
+		}]
+	}`
+	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := LoadConfigForProbe(path); err != nil {
+		t.Fatalf("LoadConfigForProbe: %v", err)
+	}
+	if effectiveAlertThrottleInterval() != 90*time.Minute {
+		t.Fatalf("probe load mutated runtime interval to %s, want 90m", effectiveAlertThrottleInterval())
+	}
+}
+
+func TestAlertThrottleInterval_ConcurrentProbeDoesNotRace(t *testing.T) {
+	prev := alertThrottleInterval
+	t.Cleanup(func() { alertThrottleInterval = prev })
+	applyAlertThrottleInterval(time.Hour)
+
+	dir := t.TempDir()
+	path := dir + "/config.json"
+	cfgJSON := `{
+		"alert_throttle_interval": "30m",
+		"strategies": [{
+			"id": "hl-sole",
+			"type": "perps",
+			"platform": "hyperliquid",
+			"script": "shared_scripts/check_hyperliquid.py",
+			"args": ["sma_crossover", "ETH", "1h", "--mode=paper"],
+			"capital": 1000,
+			"max_drawdown_pct": 10,
+			"leverage": 5
+		}]
+	}`
+	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			_ = effectiveAlertThrottleInterval()
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		if _, err := LoadConfigForProbe(path); err != nil {
+			t.Fatalf("LoadConfigForProbe: %v", err)
+		}
+	}
+	<-done
+	if effectiveAlertThrottleInterval() != time.Hour {
+		t.Fatalf("runtime interval = %s, want 1h", effectiveAlertThrottleInterval())
 	}
 }

@@ -46,8 +46,8 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	if cfg.AlertThrottleInterval != next.AlertThrottleInterval {
 		addChange("alert_throttle_interval: %q -> %q", cfg.AlertThrottleInterval, next.AlertThrottleInterval)
 		cfg.AlertThrottleInterval = next.AlertThrottleInterval
-		if d, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval); err == nil {
-			applyAlertThrottleInterval(d)
+		if err := applyAlertThrottleFromConfig(cfg); err != nil {
+			return nil, fmt.Errorf("alert_throttle_interval: %w", err)
 		}
 	}
 	// #1135: user_defaults flows through hot-reload so SIGHUP edits to the
