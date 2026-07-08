@@ -548,6 +548,7 @@ func TestSharedWalletDriftTracker_RecoveryCountSurvivesChurn(t *testing.T) {
 // 620-lines-in-6h spam the issue reported; a 1-minute interval only halved it,
 // so the heartbeat is aligned to the hourly notification cadence.
 func TestSharedWalletDriftTracker_LogThrottledPerInterval(t *testing.T) {
+	withAlertThrottleInterval(t, time.Hour)
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
 	// Cycle 1: onset. In the confirmation window (no alert) but MUST log once.
@@ -608,6 +609,7 @@ func TestSharedWalletDriftTracker_WorseningDriftLogsWithinInterval(t *testing.T)
 // short reconcile cadence the old %10 rule fired a Discord/DM alert roughly
 // every few minutes; the hourly case was preempted and never reached.
 func TestSharedWalletDriftTracker_StableDriftRealertsHourlyNotEveryTenth(t *testing.T) {
+	withAlertThrottleInterval(t, time.Hour)
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
 	tr.Record("hyperliquid/0xabc", 5.00, []string{"BTC"}, now) // onset

@@ -30,7 +30,7 @@ func shouldNotifyDrainFailure(failureCount int, lastNotifiedAt, now time.Time) b
 	if failureCount%10 == 0 {
 		return true
 	}
-	if !lastNotifiedAt.IsZero() && now.Sub(lastNotifiedAt) >= time.Hour {
+	if !lastNotifiedAt.IsZero() && now.Sub(lastNotifiedAt) >= effectiveAlertThrottleInterval() {
 		return true
 	}
 	return false

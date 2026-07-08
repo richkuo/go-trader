@@ -43,6 +43,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
 	}
+	if cfg.AlertThrottleInterval != next.AlertThrottleInterval {
+		addChange("alert_throttle_interval: %q -> %q", cfg.AlertThrottleInterval, next.AlertThrottleInterval)
+		cfg.AlertThrottleInterval = next.AlertThrottleInterval
+		if d, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval); err == nil {
+			applyAlertThrottleInterval(d)
+		}
+	}
 	// #1135: user_defaults flows through hot-reload so SIGHUP edits to the
 	// operator-default layer shape subsequent manual-open invocations, new
 	// type=manual defaults, and close-default injection. The CLI loads fresh

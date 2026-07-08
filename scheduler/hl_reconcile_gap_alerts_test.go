@@ -97,6 +97,7 @@ func TestHLReconcileGapTracker_ThrottleAndRealert(t *testing.T) {
 // re-DM'd the operator roughly every 6 minutes and the hourly case was never
 // reached.
 func TestHLReconcileGapTracker_StableGapRealertsHourlyNotEveryTenth(t *testing.T) {
+	withAlertThrottleInterval(t, time.Hour)
 	tr := &HLReconcileGapTracker{}
 	now := time.Now().UTC()
 	// Cross the confirmation window → first alert.
