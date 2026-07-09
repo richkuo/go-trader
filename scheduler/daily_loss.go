@@ -156,11 +156,41 @@ func dailyLossStatusNote(pr *PortfolioRiskConfig, states map[string]*StrategySta
 		return ""
 	}
 	st := evaluateDailyLossLimit(pr, states, now)
-	if st.Tripped {
-		return fmt.Sprintf("\n🛑 daily loss limit TRIPPED: loss $%.2f >= $%.2f — entries held until UTC rollover", st.LossUSD, st.ThresholdUSD)
+	var note string
+	switch {
+	case st.Tripped:
+		note = fmt.Sprintf("\n🛑 daily loss limit TRIPPED: loss $%.2f >= $%.2f — entries held until UTC rollover", st.LossUSD, st.ThresholdUSD)
+	case st.ThresholdUSD > 0:
+		note = fmt.Sprintf("\n🟢 daily loss limit armed: today $%.2f / threshold $%.2f", st.DailyPnL, st.ThresholdUSD)
 	}
-	if st.PctBasisMiss && st.ThresholdUSD == 0 {
-		return "\n⚠️ daily loss limit configured (pct) but no strategy has initial_capital > 0 — pct arm cannot evaluate"
+	// An inert pct arm is surfaced UNCONDITIONALLY — even while the USD arm
+	// enforces ("armed" above) the operator must see that the configured pct
+	// protection is not evaluating (review on #1291).
+	if st.PctBasisMiss {
+		note += "\n" + dailyLossPctBasisMissWarning
 	}
-	return fmt.Sprintf("\n🟢 daily loss limit armed: today $%.2f / threshold $%.2f", st.DailyPnL, st.ThresholdUSD)
+	return note
+}
+
+// dailyLossPctBasisMissWarning is the shared operator text for a configured
+// pct arm that cannot evaluate. Used verbatim by /status, the per-cycle
+// [WARN], and the once-per-day DM so log greps and operator reports match.
+const dailyLossPctBasisMissWarning = "⚠️ daily loss limit: daily_max_loss_pct is configured but no strategy has initial_capital > 0 — the pct arm CANNOT evaluate and enforces nothing (set initial_capital or use daily_max_loss_usd)"
+
+// dailyLossPctBasisMissAlertDate throttles the inert-pct-arm owner DM to once
+// per UTC day, mirroring dailyLossLastAlertDate. Written only from the main
+// trading loop (single goroutine).
+var dailyLossPctBasisMissAlertDate string
+
+// formatDailyLossPctBasisMissDM builds the once-per-day owner DM sent while a
+// configured pct arm cannot evaluate. A silent auto-protective gap must reach
+// an active operator channel, not only the pull-based /status view.
+func formatDailyLossPctBasisMissDM(st DailyLossLimitStatus, now time.Time) string {
+	usdNote := "No other arm is configured — the daily loss limit is fully inert."
+	if st.ThresholdUSD > 0 {
+		usdNote = fmt.Sprintf("The USD arm still enforces at $%.2f.", st.ThresholdUSD)
+	}
+	return fmt.Sprintf(
+		"%s\n%s\nToday's aggregate realized PnL: $%.2f. This DM repeats once per UTC day while the gap persists. (%s UTC)",
+		dailyLossPctBasisMissWarning, usdNote, st.DailyPnL, now.UTC().Format("2006-01-02 15:04"))
 }

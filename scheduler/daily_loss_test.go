@@ -210,8 +210,39 @@ func TestDailyLossStatusNote(t *testing.T) {
 	miss := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossPct: 5}, map[string]*StrategyState{
 		"a": dlState("a", 0, -600, dlToday()),
 	}, now)
-	if !strings.Contains(miss, "initial_capital") {
+	if !strings.Contains(miss, "initial_capital") || !strings.Contains(miss, "CANNOT evaluate") {
 		t.Fatalf("basis-miss note = %q", miss)
+	}
+	// #1291 review: with BOTH arms set and no basis, the note must show the
+	// armed USD arm AND the inert pct arm — "armed" alone hides the gap.
+	both := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 5000, DailyMaxLossPct: 5}, map[string]*StrategyState{
+		"a": dlState("a", 0, -600, dlToday()),
+	}, now)
+	if !strings.Contains(both, "armed") || !strings.Contains(both, "CANNOT evaluate") {
+		t.Fatalf("both-arms basis-miss note = %q, want armed + pct warning", both)
+	}
+	// Tripped USD arm with inert pct arm: both lines too.
+	trippedMiss := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 500, DailyMaxLossPct: 5}, map[string]*StrategyState{
+		"a": dlState("a", 0, -600, dlToday()),
+	}, now)
+	if !strings.Contains(trippedMiss, "TRIPPED") || !strings.Contains(trippedMiss, "CANNOT evaluate") {
+		t.Fatalf("tripped basis-miss note = %q, want TRIPPED + pct warning", trippedMiss)
+	}
+}
+
+func TestFormatDailyLossPctBasisMissDM(t *testing.T) {
+	now := time.Now().UTC()
+	// pct-only: the limit is fully inert.
+	st := DailyLossLimitStatus{Configured: true, PctBasisMiss: true, DailyPnL: -600}
+	dm := formatDailyLossPctBasisMissDM(st, now)
+	if !strings.Contains(dm, "CANNOT evaluate") || !strings.Contains(dm, "fully inert") {
+		t.Fatalf("pct-only DM = %q", dm)
+	}
+	// both arms: the DM must say the USD arm still enforces.
+	st.ThresholdUSD = 500
+	dm = formatDailyLossPctBasisMissDM(st, now)
+	if !strings.Contains(dm, "USD arm still enforces at $500.00") {
+		t.Fatalf("both-arms DM = %q", dm)
 	}
 }
 

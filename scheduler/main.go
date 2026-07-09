@@ -1213,6 +1213,12 @@ func main() {
 			if dailyLossEntriesHeld {
 				fmt.Printf("[WARN] %s — entries held until UTC rollover\n", dailyLossHoldDetail(dailyLossStatus))
 			}
+			// #1291 review: a configured pct arm that cannot evaluate is an
+			// auto-protective gap — surface it every cycle, not only in the
+			// pull-based /status (even while the USD arm still enforces).
+			if dailyLossStatus.PctBasisMiss {
+				fmt.Printf("[WARN] %s\n", dailyLossPctBasisMissWarning)
+			}
 			// #954: book this cycle's funding payments + non-trade flows into
 			// the ledger BEFORE the display reconcile reads the ledger sums —
 			// the wallet balance being reconciled already includes them.
@@ -1233,6 +1239,16 @@ func main() {
 				if dailyLossAlertDue(true, dailyLossLastAlertDate, today) {
 					dailyLossLastAlertDate = today
 					notifier.SendOwnerDM(formatDailyLossTripDM(dailyLossStatus, time.Now().UTC()))
+				}
+			}
+			// #1291 review: once-per-UTC-day owner DM while a configured pct
+			// arm cannot evaluate (initial_capital basis is 0) — a silently
+			// inert protection must reach an active operator channel.
+			if dailyLossStatus.PctBasisMiss {
+				today := time.Now().UTC().Format("2006-01-02")
+				if dailyLossAlertDue(true, dailyLossPctBasisMissAlertDate, today) {
+					dailyLossPctBasisMissAlertDate = today
+					notifier.SendOwnerDM(formatDailyLossPctBasisMissDM(dailyLossStatus, time.Now().UTC()))
 				}
 			}
 
