@@ -38,7 +38,7 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 
 | File | Purpose | Status | Origin |
 |------|---------|--------|--------|
-| `eval_windows.py` | **M1** multi-window incumbent-relative validator — one command per application issue. | active | #977 |
+| `eval_windows.py` | **M1** multi-window incumbent-relative validator — one command per application issue. Threads `--intrabar-resolution` (#1271; default `ohlc_walk`) so `bar_close` legacy baselines are reproducible. | active | #977 |
 | `gross_edge_noise.py` | **M1 step-2** sample-noise adjudicator for `graduate_m1` fee-audit verdicts; run before any selectivity work. | active | #1054 |
 | `exit_diagnostics.py` | **M3** holding-time / excursion diagnostics — where a strategy's PnL dies. | active | #997 |
 | `fee_audit.py` | **M5** registry-wide trade-count × fee-drag selectivity triage. | active | #999 |
