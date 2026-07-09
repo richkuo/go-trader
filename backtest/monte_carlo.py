@@ -485,7 +485,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.n_paths < 1:
         raise SystemExit(f"--n-paths must be >= 1, got {args.n_paths}")
 
-    percentiles = [float(q) for q in args.percentiles.split(",") if q.strip()]
+    try:
+        percentiles = [float(q) for q in args.percentiles.split(",") if q.strip()]
+    except ValueError:
+        raise SystemExit(f"--percentiles values must be numeric, got "
+                         f"{args.percentiles!r}")
     if not percentiles:
         raise SystemExit("--percentiles must name at least one value in "
                          "[0, 100]")
@@ -497,7 +501,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.config:
         with open(args.config) as fh:
             cfg = json.load(fh)
-        kill_switch = resolve_kill_switch_pct(cfg, args.strategy_id)
+        try:
+            kill_switch = resolve_kill_switch_pct(cfg, args.strategy_id)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
         threshold_source = (f"--config {args.config} strategy "
                             f"{args.strategy_id}")
     elif args.kill_switch_pct is not None:
@@ -510,8 +517,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.trades_json:
         with open(args.trades_json) as fh:
             payload = json.load(fh)
-        values = trade_returns(trades_from_json_payload(payload),
-                               returns=args.returns)
+        try:
+            trades = trades_from_json_payload(payload)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        values = trade_returns(trades, returns=args.returns)
         source = args.trades_json
     else:
         params = json.loads(args.params) if args.params else None

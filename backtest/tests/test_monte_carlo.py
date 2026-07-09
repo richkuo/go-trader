@@ -395,3 +395,40 @@ def test_cli_rejects_empty_percentiles(tmp_path):
     src = _valid_trades_json(tmp_path)
     with pytest.raises(SystemExit):
         mc.main(["--trades-json", str(src), "--percentiles", ","])
+
+
+def test_cli_rejects_non_numeric_percentile(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--percentiles", "5,abc,95"])
+
+
+def test_cli_rejects_unknown_strategy_id_in_config(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"strategies": [
+        {"id": "hl-x", "type": "perps", "max_drawdown_pct": 15.0}]}))
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--config", str(cfg),
+                  "--strategy-id", "typo-d-id"])
+
+
+def test_cli_rejects_trades_json_dict_without_trades_key(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps({"foo": []}))
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src)])
+
+
+def test_cli_rejects_trades_json_bare_string(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps("nope"))
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src)])
+
+
+def test_cli_rejects_trades_json_bare_number(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps(42))
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src)])
