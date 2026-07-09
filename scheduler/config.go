@@ -62,6 +62,8 @@ type PortfolioRiskConfig struct {
 	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25)
 	MaxNotionalUSD   float64 `json:"max_notional_usd"`             // 0 = disabled
 	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 60)
+	DailyMaxLossUSD  float64 `json:"daily_max_loss_usd,omitempty"` // #1269 — hard daily loss limit in USD (0 = disabled). When the day's aggregate PRE-FEE realized loss across all strategies reaches this, position-increasing actions (fresh opens, adds, flips, manual-open/add) are held until the UTC rollover; closes and SL/TP management keep running and nothing is force-closed. Hot-reloadable, including while tripped. Portfolio-level only — ignored inside platforms.<name>.risk overrides.
+	DailyMaxLossPct  float64 `json:"daily_max_loss_pct,omitempty"` // #1269 — same limit as a percent of the sum of per-strategy initial_capital (0 = disabled). Both arms may be set: the lower resolved USD threshold wins. The pct arm cannot evaluate when no strategy has initial_capital > 0 (surfaced in /status). Portfolio-level only.
 }
 
 // PlatformConfig holds per-platform optional risk overrides.
@@ -2088,6 +2090,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		}
 		if cfg.PortfolioRisk.WarnThresholdPct <= 0 || cfg.PortfolioRisk.WarnThresholdPct > 100 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.warn_threshold_pct must be in (0, 100], got %g", cfg.PortfolioRisk.WarnThresholdPct))
+		}
+		// #1269: daily loss limit thresholds. 0 = disabled; negatives are typos.
+		if cfg.PortfolioRisk.DailyMaxLossUSD < 0 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_usd must be >= 0 (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossUSD))
+		}
+		if cfg.PortfolioRisk.DailyMaxLossPct < 0 || cfg.PortfolioRisk.DailyMaxLossPct > 100 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossPct))
 		}
 	}
 

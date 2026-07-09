@@ -136,6 +136,11 @@ func main() {
 	for _, sc := range cfg.Strategies {
 		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID]))
 	}
+	// #1269: surface a configured daily loss limit at startup so the operator
+	// can audit the portfolio-wide entry gate without grepping the JSON.
+	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
+		fmt.Println(line)
+	}
 
 	// #339: Detect a missing state DB on a live deployment *before* OpenStateDB
 	// creates it — a wiped directory (vs. an in-place `git pull`) would otherwise
@@ -923,6 +928,7 @@ func main() {
 			// perps strategies on the same account don't get double-counted.
 			killSwitchFired := false
 			notionalBlocked := false
+			dailyLossEntriesHeld := false
 			usedPVFallback := false
 
 			// Partition HL live strategies up-front: shared-wallet detection
@@ -1143,6 +1149,10 @@ func main() {
 			// leveraged margin blow-up that would otherwise hide inside
 			// equity-only drawdown for all-perps accounts.
 			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, cfg.Strategies, prices)
+			// #1269: evaluate the portfolio-wide daily loss limit once per
+			// cycle (pure read — stale per-strategy days count as 0, matching
+			// what rolloverDailyPnL would reset them to).
+			dailyLossStatus := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC())
 			mu.RUnlock()
 
 			mu.Lock()
@@ -1192,6 +1202,17 @@ func main() {
 			if notionalBlocked {
 				fmt.Printf("[WARN] %s\n", portfolioReason)
 			}
+			// #1269: hold position-increasing signals for the rest of the UTC
+			// day once the aggregate daily realized loss reaches the limit.
+			// Entry-suppression only — the manage-only paths below keep
+			// running, nothing is force-closed, and the gate clears itself at
+			// the UTC rollover (DailyPnL date keys roll per strategy). The
+			// once-per-day owner DM fires after mu is released below (#880
+			// convention: no notifier I/O under the state lock).
+			dailyLossEntriesHeld = dailyLossStatus.Tripped
+			if dailyLossEntriesHeld {
+				fmt.Printf("[WARN] %s — entries held until UTC rollover\n", dailyLossHoldDetail(dailyLossStatus))
+			}
 			// #954: book this cycle's funding payments + non-trade flows into
 			// the ledger BEFORE the display reconcile reads the ledger sums —
 			// the wallet balance being reconciled already includes them.
@@ -1204,6 +1225,16 @@ func main() {
 			// StrategyState.SharedWalletValue*).
 			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, stateDB, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
 			mu.Unlock()
+
+			// #1269: once-per-UTC-day owner DM on a tripped daily loss limit.
+			// Outside mu (notifier I/O never runs under the state lock, #880).
+			if dailyLossEntriesHeld {
+				today := time.Now().UTC().Format("2006-01-02")
+				if dailyLossAlertDue(true, dailyLossLastAlertDate, today) {
+					dailyLossLastAlertDate = today
+					notifier.SendOwnerDM(formatDailyLossTripDM(dailyLossStatus, time.Now().UTC()))
+				}
+			}
 
 			// #1100: switch the HL shared-wallet drift alarm onto the
 			// exchange-sourced cash-flow journal — the wallet TOTAL is
@@ -1820,6 +1851,12 @@ func main() {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 									result.Signal = 0
 								}
+								// #1269: daily loss limit tripped — identical hold semantics to pause:
+								// position-increasing signals held, position-reducing actions pass.
+								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
+									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -1857,6 +1894,12 @@ func main() {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 									result.Signal = 0
 								}
+								// #1269: daily loss limit tripped — identical hold semantics to pause:
+								// position-increasing signals held, position-reducing actions pass.
+								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
+									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -1892,6 +1935,12 @@ func main() {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
+							// #1269: daily loss limit tripped — identical hold semantics to pause:
+							// position-increasing signals held, position-reducing actions pass.
+							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
+								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, logger)
@@ -1906,6 +1955,16 @@ func main() {
 								kept, dropped := pausedOptionsActions(result.Actions)
 								if dropped > 0 {
 									logger.Info("Paused: %d option open action(s) dropped — close actions still execute (#1150)", dropped)
+								}
+								result.Actions = kept
+							}
+							// #1269: daily loss limit tripped — drop option open actions
+							// ("buy"/"sell" both OPEN legs); close actions and the
+							// theta-harvest walker still manage existing positions.
+							if dailyLossEntriesHeld {
+								kept, dropped := pausedOptionsActions(result.Actions)
+								if dropped > 0 {
+									logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
 								}
 								result.Actions = kept
 							}
@@ -1963,6 +2022,12 @@ func main() {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 									result.Signal = 0
 								}
+								// #1269: daily loss limit tripped — identical hold semantics to pause:
+								// position-increasing signals held, position-reducing actions pass.
+								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -2006,6 +2071,12 @@ func main() {
 							// natural exit. The Signal==0 manage path below keeps running.
 							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+								result.Signal = 0
+							}
+							// #1269: daily loss limit tripped — identical hold semantics to pause:
+							// position-increasing signals held, position-reducing actions pass.
+							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
 							mu.Lock()
@@ -2305,6 +2376,12 @@ func main() {
 							// (closeFraction>0) reduce without reopening.
 							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+								result.Signal = 0
+							}
+							// #1269: daily loss limit tripped — identical hold semantics to pause:
+							// position-increasing signals held, position-reducing actions pass.
+							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
+								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
 							mu.Lock()

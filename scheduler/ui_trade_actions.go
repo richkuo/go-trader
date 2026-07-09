@@ -106,7 +106,7 @@ func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 	d.loadState = func(strategyID, symbol string) (manualStateView, error) {
 		ss.mu.RLock()
 		defer ss.mu.RUnlock()
-		return manualStateViewFromState(ss.state, strategyID, symbol), nil
+		return manualStateViewFromState(cfg, ss.state, strategyID, symbol), nil
 	}
 	return d
 }
