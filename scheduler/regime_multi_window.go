@@ -298,24 +298,6 @@ func regimeRequiredOhlcvLimit(rc *RegimeConfig) int {
 	return limit
 }
 
-func regimeLabelAtOpen(pos *Position, windowKey string, rc *RegimeConfig) string {
-	if pos == nil {
-		return ""
-	}
-	key := normalizeRegimeWindowKey(windowKey)
-	if key == "" || key == regimeWindowDefaultKey {
-		if regimeMultiWindowEnabled(rc) {
-			key = primaryRegimeWindowKey(rc)
-		}
-	}
-	if key != "" && key != regimeWindowDefaultKey && len(pos.RegimeWindows) > 0 {
-		if label, ok := pos.RegimeWindows[key]; ok && strings.TrimSpace(label) != "" {
-			return strings.TrimSpace(label)
-		}
-	}
-	return strings.TrimSpace(pos.Regime)
-}
-
 func regimeLabelFromWindows(windows map[string]string, windowKey string, rc *RegimeConfig) string {
 	if len(windows) == 0 {
 		return ""
