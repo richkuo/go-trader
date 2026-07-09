@@ -44,11 +44,18 @@ make_volatile = _conftest_mod.make_volatile
 class TestRegistry:
     def test_strategies_registered(self):
         names = list_strategies()
-        assert len(names) >= 20
-        # Spot-check a few
-        for expected in ["sma_crossover", "ema_crossover", "rsi", "macd", "momentum",
-                         "bollinger_bands", "mean_reversion", "supertrend", "parabolic_sar"]:
+        assert len(names) >= 10
+        # Spot-check a few discovery-visible strategies
+        for expected in ["tema_cross", "regime_adaptive", "anchored_vwap",
+                         "chart_pattern", "momentum_pro", "atr_band_revert"]:
             assert expected in names, f"{expected} not registered"
+        # #1275: M5-deprecated names leave discovery but stay registered so
+        # explicit configs and backtests keep resolving them.
+        for quarantined in ["sma_crossover", "ema_crossover", "rsi", "macd",
+                            "momentum", "bollinger_bands", "mean_reversion",
+                            "supertrend", "parabolic_sar"]:
+            assert quarantined not in names, f"{quarantined} should be hidden"
+            assert quarantined in STRATEGY_REGISTRY, f"{quarantined} must stay loadable"
 
     def test_get_unknown_strategy_raises(self):
         with pytest.raises(ValueError, match="Unknown strategy"):

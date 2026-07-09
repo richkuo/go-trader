@@ -136,6 +136,14 @@ func main() {
 	for _, sc := range cfg.Strategies {
 		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID]))
 	}
+	// #1275: warn loudly when a configured open strategy carries the M5
+	// fee-audit deprecate verdict (documented gross edge <= 0). Advisory only
+	// — the config keeps loading and trading; the same lines are replayed to
+	// the owner DM once the notifier is wired.
+	deprecatedEdgeWarnings := deprecatedEdgeStartupWarnings(cfg.Strategies)
+	for _, msg := range deprecatedEdgeWarnings {
+		fmt.Fprintln(os.Stderr, "[config] "+msg)
+	}
 	// #1269: surface a configured daily loss limit at startup so the operator
 	// can audit the portfolio-wide entry gate without grepping the JSON.
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
@@ -473,6 +481,16 @@ func main() {
 
 	// #1157: surface uncertified/expired directional policy to owner DM at startup.
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
+
+	// #1275: replay M5-deprecated-strategy warnings to the owner DM so an
+	// operator live-trading a documented negative-gross-edge strategy sees it
+	// even when not tailing stderr. One-time per startup; suppressed
+	// per-strategy by allow_deprecated.
+	if len(deprecatedEdgeWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range deprecatedEdgeWarnings {
+			notifier.SendOwnerDM("[config] " + msg)
+		}
+	}
 
 	// #339: Forward the missing-state-DB warning to the owner. Captured before
 	// OpenStateDB ran (which would have created an empty DB), surfaced here

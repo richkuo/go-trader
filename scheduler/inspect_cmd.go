@@ -575,6 +575,12 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 	if sc.Paused {
 		parts = append(parts, "paused")
 	}
+	// #1275: surface an M5-deprecated open strategy (documented gross edge
+	// <= 0) so the negative-edge evidence is visible in the audit line even
+	// when the operator acknowledged it via allow_deprecated.
+	if tag := edgeStatusSummaryTag(sc); tag != "" {
+		parts = append(parts, tag)
+	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
 }
 

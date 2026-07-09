@@ -152,10 +152,12 @@ def main():
             parse_close_strategies,
             reject_backtest_only_strategies,
             validate_close_strategy_names,
+            warn_deprecated_edge_strategies,
         )
 
         configured_names = [open_strategy or strategy_name]
         reject_backtest_only_strategies(configured_names, get_strategy)
+        warn_deprecated_edge_strategies(configured_names, get_strategy)
         validate_close_strategy_names(
             parse_close_strategies(close_strategies_raw),
             get_strategy,

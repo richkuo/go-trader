@@ -41,7 +41,7 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 | `eval_windows.py` | **M1** multi-window incumbent-relative validator — one command per application issue. | active | #977 |
 | `gross_edge_noise.py` | **M1 step-2** sample-noise adjudicator for `graduate_m1` fee-audit verdicts; run before any selectivity work. | active | #1054 |
 | `exit_diagnostics.py` | **M3** holding-time / excursion diagnostics — where a strategy's PnL dies. | active | #997 |
-| `fee_audit.py` | **M5** registry-wide trade-count × fee-drag selectivity triage. | active | #999 |
+| `fee_audit.py` | **M5** registry-wide trade-count × fee-drag selectivity triage. Sweeps the FULL registry incl. discovery-hidden/quarantined names (#1275) — re-screening is the recovery path out of quarantine. | active | #999 #1275 |
 | `exit_policy_ab.py` | **M6** regime-conditioned incumbent-relative exit-policy A/B. | active | #1066 |
 | `auto_suggest.py` | Reusable cross-harness driver that sweeps candidates and ranks gate-survivors under one BH correction. **Suggest-only — never writes a live default/config/PR.** | active | #1210 |
 
