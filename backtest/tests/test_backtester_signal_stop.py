@@ -64,7 +64,9 @@ def test_fixed_atr_stop_exits_on_drawdown():
 
 def test_stop_fills_next_bar_open_not_same_bar():
     """A breach detected at bar K's close must fill at bar K+1's open, not at
-    bar K's close — the engine's N→N+1 convention."""
+    bar K's close — the pre-#1271 legacy (bar_close) convention. Pinned to
+    that mode explicitly: the default ohlc_walk exits on the breach bar
+    itself (test_backtester_intrabar.py owns those semantics)."""
     # ATR=2, mult=1, entry=100 → trigger 98. Bar 2 close=97 breaches; the exit
     # fills at bar 3 open. Make bar 3 open distinct (=95) so we can assert the
     # fill price came from bar 3, not bar 2's close (97).
@@ -84,7 +86,7 @@ def test_stop_fills_next_bar_open_not_same_bar():
         },
         index=idx,
     )
-    res = _run(df, stop_loss_atr_mult=1.0)
+    res = _run(df, stop_loss_atr_mult=1.0, intrabar_resolution="bar_close")
     assert res["total_trades"] == 1
     # The single trade exits ~95 (bar-3 open), so it must NOT have ridden the
     # bar-3 close jump to 200 — final capital is a loss, not a 2x gain.

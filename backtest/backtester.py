@@ -42,11 +42,25 @@ signal ``shift(1)`` is the only look-ahead guard on the signal path and is
 defeated by upstream peeking. ``backtest/tests/test_backtester_lookahead.py``
 regression-tests the shift's effectiveness.
 
-SL/TP intra-bar races
----------------------
-Bar-level granularity — when an SL hit and a TP fill could both occur within
-the same bar, the engine resolves them at bar close, not by intra-bar OHLC
-walking. Documented under ``Backtest`` in CLAUDE.md.
+SL/TP intra-bar races (#1271)
+-----------------------------
+The engine-tracked stop-loss trigger is resolved intra-bar by default
+(``intrabar_resolution="ohlc_walk"``): the fill bar is walked O -> H/L -> C,
+so a bar whose range touches the armed trigger stops the position out ON that
+bar — priced at the trigger, or at the bar's open when the bar gaps through
+the trigger. The walk is conservative by construction (adverse-move-first):
+an intra-bar SL pierce wins over any same-bar close-evaluator exit, because
+the engine cannot order a bar's high against its low and a real on-chain stop
+executes on touch. Close evaluators stay bar-close-marked black boxes (they
+expose no trigger level to walk): a TP is credited only when the bar's close
+confirms it and its fill keeps the N-close -> N+1-open contract — a bar that
+gaps beyond the TP level therefore fills at its open. Trailing/ratchet
+triggers seeded at open are close-anchored (see below) and become
+pierce-eligible from the bar after open; fixed (entry-geometry) triggers are
+pierce-eligible on the fill bar itself. ``intrabar_resolution="bar_close"``
+restores the pre-#1271 bar-level convention — SL hits detected on the close
+only and filled at the next bar's open — for reproducing documented
+baselines. Documented under ``Backtest`` in CLAUDE.md.
 
 Live parity limitations (#906 audit)
 ------------------------------------
@@ -761,7 +775,8 @@ class Backtester:
                  regime_directional_certified: bool = False,
                  regime_directional_certified_states: Optional[dict] = None,
                  regime_timeframe: Optional[str] = None,
-                 profile_allocation: Optional[dict] = None):
+                 profile_allocation: Optional[dict] = None,
+                 intrabar_resolution: str = "ohlc_walk"):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -790,9 +805,26 @@ class Backtester:
             regime_timeframe: Accepted for ``load_strategy_config`` spread
                 compatibility. The runner applies this before constructing the
                 engine by aligning regime columns onto the trading DataFrame.
+            intrabar_resolution: How the engine-tracked SL trigger resolves
+                against the fill bar (#1271). ``"ohlc_walk"`` (default) walks
+                O -> H/L -> C: a range touch stops out ON that bar at the
+                trigger price (or at the open on a gap-through), winning
+                adverse-move-first over any same-bar close-evaluator exit.
+                ``"bar_close"`` restores the legacy pre-#1271 convention
+                (hit detected on the close only, filled at the next bar's
+                open) for reproducing documented baselines. See the module
+                docstring, "SL/TP intra-bar races".
         """
         self.initial_capital = initial_capital
         self.platform = platform
+        # #1271: intra-bar SL race resolution mode. Validated eagerly so a
+        # typo'd mode fails at construction, not as a silent legacy fallback.
+        self.intrabar_resolution = str(intrabar_resolution or "").strip().lower()
+        if self.intrabar_resolution not in ("ohlc_walk", "bar_close"):
+            raise ValueError(
+                f"intrabar_resolution must be 'ohlc_walk' or 'bar_close', "
+                f"got {intrabar_resolution!r}"
+            )
         self.commission_pct = (
             commission_pct if commission_pct is not None
             else fee_pct_for_platform(platform)
@@ -1613,6 +1645,21 @@ class Backtester:
         # hit is detected at bar close and fills at the next bar's open, matching
         # the engine's N→N+1 fill convention.
         pending_signal_sl_close = False
+        # #1271: intra-bar OHLC-walk SL resolution (default mode). The pierce
+        # check reads the fill bar's full range, so it must only ever run
+        # against a trigger that was actually ARMED during the bar:
+        #   - a trigger carried from a prior bar (or bumped at this bar's
+        #     open by sl_after — suppressed that bar via #715, live next bar),
+        #   - a fixed (entry-geometry) trigger seeded at this bar's open.
+        # A trailing seed is anchored at the bar's CLOSE (the engine's
+        # bar-after-open arming convention — see the module docstring), so it
+        # is NOT an armed level during its entry bar; pierce-checking it there
+        # would stop out at a level derived from data the bar hadn't produced
+        # yet. ``sl_pierce_armed`` tracks that: set per-seed at the open
+        # blocks, promoted to True at the end of every bar a position
+        # survives (by then any trigger is a real carried level).
+        walk_mode = self.intrabar_resolution == "ohlc_walk"
+        sl_pierce_armed = False
         self._active_sl_after_rules = self._sl_after_rules_static
         self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
         self._run_stop_loss_atr_mult: Optional[float] = None
@@ -1819,6 +1866,10 @@ class Backtester:
                 sl_high_water_px = hwm_anchor
             sl_tiers_processed = 0
             post_tp_trail_mult = None
+            # #1271: every seeded-position trigger above is entry/warmup-
+            # derived (avg_cost geometry or the carried high-water anchor) —
+            # a real level as of bar 0's open, so it's pierce-eligible.
+            sl_pierce_armed = True
 
         profile_switcher = (
             _ProfileSwitcher(self._profile_alloc) if has_profile_alloc else None
@@ -2106,6 +2157,9 @@ class Backtester:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
                         )
+                        # #1271: entry-geometry (fixed) trigger — armed at the
+                        # open, pierce-eligible on the fill bar itself.
+                        sl_pierce_armed = sl_trigger_px > 0
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
@@ -2114,6 +2168,9 @@ class Backtester:
                             "long", mark_price, entry_atr_value,
                             self._run_trailing_stop_atr_mult,
                         )
+                        # #1271: close-anchored trailing seed — not an armed
+                        # level during this bar; pierce-eligible next bar.
+                        sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -2121,11 +2178,13 @@ class Backtester:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
                         )
+                        sl_pierce_armed = sl_trigger_px > 0
                         if sl_trigger_px <= 0 and self._run_trailing_stop_atr_mult:
                             sl_trigger_px = _initial_trail_trigger(
                                 "long", mark_price, entry_atr_value,
                                 self._run_trailing_stop_atr_mult,
                             )
+                            sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -2153,6 +2212,9 @@ class Backtester:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
                         )
+                        # #1271: fixed trigger — pierce-eligible on the fill
+                        # bar; trailing seeds arm next bar (long-side comment).
+                        sl_pierce_armed = sl_trigger_px > 0
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
@@ -2161,6 +2223,7 @@ class Backtester:
                             "short", mark_price, entry_atr_value,
                             self._run_trailing_stop_atr_mult,
                         )
+                        sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -2170,11 +2233,13 @@ class Backtester:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
                         )
+                        sl_pierce_armed = sl_trigger_px > 0
                         if sl_trigger_px <= 0 and self._run_trailing_stop_atr_mult:
                             sl_trigger_px = _initial_trail_trigger(
                                 "short", mark_price, entry_atr_value,
                                 self._run_trailing_stop_atr_mult,
                             )
+                            sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -2190,6 +2255,83 @@ class Backtester:
                         float(row.get("high", mark_price) or mark_price),
                         float(row.get("low", mark_price) or mark_price),
                     )
+
+                # #1271 intra-bar OHLC-walk SL resolution (default mode): a
+                # bar whose range touches the armed trigger stops the
+                # position out ON this bar — at the trigger price, or at the
+                # bar's open when the bar gapped through the trigger.
+                # Adverse-move-first by construction: the close evaluators
+                # below never see the stopped-out position, so a same-bar TP
+                # the bar-close mark would have credited loses the race.
+                # Suppressed on sl_after bump bars (#715 — live's fresh SL
+                # OID lands mid-cycle, active from the next bar) and while a
+                # close-anchored trailing seed is unarmed on its entry bar
+                # (see the open blocks above / module docstring).
+                if (
+                    walk_mode
+                    and position != 0
+                    and sl_pierce_armed
+                    and sl_trigger_px > 0
+                    and not sl_after_just_applied
+                    and avg_cost > 0
+                ):
+                    side_now = "long" if position > 0 else "short"
+                    raw_fill = self._intrabar_sl_fill(
+                        side_now,
+                        float(row["open"]) if has_open else mark_price,
+                        float(row.get("high", mark_price) or mark_price),
+                        float(row.get("low", mark_price) or mark_price),
+                        sl_trigger_px,
+                    )
+                    if raw_fill is not None:
+                        qty_to_close = abs(position)
+                        if position > 0:
+                            effective_price = raw_fill * (1 - self.slippage_pct)
+                            proceeds = qty_to_close * effective_price
+                            commission = proceeds * self.commission_pct
+                            cash += proceeds - commission
+                        else:
+                            effective_price = raw_fill * (1 + self.slippage_pct)
+                            cost = qty_to_close * effective_price
+                            commission = cost * self.commission_pct
+                            cash -= cost + commission
+                        position = 0.0
+                        if current_trade:
+                            closed = Trade(
+                                current_trade.entry_date,
+                                current_trade.entry_price,
+                                current_trade.side,
+                            )
+                            closed.shares = qty_to_close
+                            closed.close(idx, effective_price)
+                            # Entry fee pro-rated by this leg's share of the
+                            # original position (earlier partial-close legs
+                            # already netted theirs) — #1241 convention.
+                            qty_frac = (
+                                qty_to_close / initial_quantity
+                                if initial_quantity > 0 else 1.0
+                            )
+                            _stamp_hold(closed, hold,
+                                        entry_atr=entry_atr_value,
+                                        exit_fee=commission, reason="sl",
+                                        qty_frac=qty_frac)
+                            trades.append(closed)
+                            current_trade = None
+                        avg_cost = 0.0
+                        initial_quantity = 0.0
+                        entry_atr_value = 0.0
+                        sl_trigger_px = 0.0
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = 0.0
+                        sl_pierce_armed = False
+                        self._active_sl_after_rules = self._sl_after_rules_static
+                        self._run_tp_tier_thresholds = list(
+                            self._tp_tier_thresholds_static,
+                        )
+                        self._run_stop_loss_atr_mult = None
+                        self._run_trailing_stop_atr_mult = None
+                        self._run_position_regime = ""
 
                 # End-of-bar: evaluate close strategies against the now-current
                 # position using this bar's close as the mark. The result is
@@ -2265,11 +2407,22 @@ class Backtester:
                             sl_trigger_px=sl_trigger_px,
                             sl_high_water_px=sl_high_water_px,
                         )
-                    if sl_trigger_px > 0 and self._sl_hit(
+                    # #1271: the close-detected hit (filled at the next bar's
+                    # open) is the LEGACY resolution — under the default
+                    # OHLC walk it is strictly subsumed by the intra-bar
+                    # pierce check above (close <= trigger implies the low
+                    # touched it), which already booked the exit at the
+                    # trigger price on this bar.
+                    if not walk_mode and sl_trigger_px > 0 and self._sl_hit(
                         side_now, mark_price, sl_trigger_px,
                     ):
                         pending_close_fraction = 1.0
                         pending_close_reason = "sl"
+                # #1271: any trigger surviving to a bar's end (seeded,
+                # walked, or sl_after-bumped) is a real carried level for
+                # the next bar — pierce-eligible from here on.
+                if position != 0:
+                    sl_pierce_armed = True
                 continue
 
             # Standalone hard stop fires first: close at this bar's open before
@@ -2358,12 +2511,17 @@ class Backtester:
                 stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
+                # #1271: fixed (avg_cost-geometry) seeds are pierce-eligible
+                # on the fill bar; the close-anchored trailing seed arms on
+                # the next bar (see the open/close-path open blocks).
+                sl_pierce_armed = False
                 if (
                     self.stop_loss_atr_mult is not None
                     and self.stop_loss_atr_mult > 0
                     and entry_atr_value > 0
                 ):
                     sl_trigger_px = avg_cost + self.stop_loss_atr_mult * entry_atr_value
+                    sl_pierce_armed = True
                 elif (
                     self.trailing_stop_atr_mult is not None
                     and self.trailing_stop_atr_mult > 0
@@ -2372,6 +2530,7 @@ class Backtester:
                     sl_trigger_px = mark_price + self.trailing_stop_atr_mult * entry_atr_value
                 elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
                     sl_trigger_px = avg_cost * (1 + self.stop_loss_pct)
+                    sl_pierce_armed = True
 
             elif plain_short_for_bar and signal == 1 and position < 0:
                 # BUY — close short (buy back)
@@ -2417,12 +2576,15 @@ class Backtester:
                 stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
+                # #1271: same arming rule as the short block above.
+                sl_pierce_armed = False
                 if (
                     self.stop_loss_atr_mult is not None
                     and self.stop_loss_atr_mult > 0
                     and entry_atr_value > 0
                 ):
                     sl_trigger_px = avg_cost - self.stop_loss_atr_mult * entry_atr_value
+                    sl_pierce_armed = True
                 elif (
                     self.trailing_stop_atr_mult is not None
                     and self.trailing_stop_atr_mult > 0
@@ -2431,6 +2593,7 @@ class Backtester:
                     sl_trigger_px = mark_price - self.trailing_stop_atr_mult * entry_atr_value
                 elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
                     sl_trigger_px = avg_cost * (1 - self.stop_loss_pct)
+                    sl_pierce_armed = True
 
             elif signal == -1 and position > 0:
                 # SELL — close long position
@@ -2463,6 +2626,51 @@ class Backtester:
                     float(row.get("low", mark_price) or mark_price),
                 )
 
+            # #1271 intra-bar OHLC-walk SL resolution — plain-path mirror of
+            # the open/close-path block above: a range touch on the armed
+            # trigger books the exit ON this bar at the trigger price (or at
+            # the open on a gap-through), replacing the legacy close-detect /
+            # next-open-fill pending mechanism.
+            if (
+                walk_mode
+                and position != 0
+                and sl_pierce_armed
+                and sl_trigger_px > 0
+            ):
+                side_now = "long" if position > 0 else "short"
+                raw_fill = self._intrabar_sl_fill(
+                    side_now,
+                    float(row["open"]) if has_open else mark_price,
+                    float(row.get("high", mark_price) or mark_price),
+                    float(row.get("low", mark_price) or mark_price),
+                    sl_trigger_px,
+                )
+                if raw_fill is not None:
+                    if position > 0:
+                        effective_price = raw_fill * (1 - self.slippage_pct)
+                        proceeds = position * effective_price
+                        commission = proceeds * self.commission_pct
+                        cash += proceeds - commission
+                    else:
+                        effective_price = raw_fill * (1 + self.slippage_pct)
+                        cost = abs(position) * effective_price
+                        commission = cost * self.commission_pct
+                        cash -= cost + commission
+                    position = 0.0
+                    if current_trade:
+                        current_trade.close(idx, effective_price)
+                        _stamp_hold(current_trade, hold,
+                                    entry_atr=entry_atr_value,
+                                    exit_fee=commission, reason="signal_sl")
+                        trades.append(current_trade)
+                        current_trade = None
+                    sl_trigger_px = 0.0
+                    avg_cost = 0.0
+                    entry_atr_value = 0.0
+                    sl_high_water_px = 0.0
+                    sl_pierce_armed = False
+                    self._run_position_regime = ""
+
             # End-of-bar: for a trailing ATR stop, ratchet the trigger up on new
             # highs; then check whether this bar's close breached the trigger.
             # A hit fills at the next bar's open via pending_signal_sl_close.
@@ -2477,7 +2685,10 @@ class Backtester:
                     candidate = sl_high_water_px - self.trailing_stop_atr_mult * entry_atr_value
                     if candidate > sl_trigger_px:
                         sl_trigger_px = candidate
-                if self._sl_hit("long", mark_price, sl_trigger_px):
+                # #1271: close-detect/next-open-fill is legacy-only — the
+                # walk's pierce check above subsumes it (see the open/close
+                # path's end-of-bar comment).
+                if not walk_mode and self._sl_hit("long", mark_price, sl_trigger_px):
                     pending_signal_sl_close = True
             elif position < 0 and sl_trigger_px > 0:
                 # Short mirror (#989): the trail anchors on a LOW-water mark
@@ -2494,8 +2705,14 @@ class Backtester:
                     candidate = sl_high_water_px + self.trailing_stop_atr_mult * entry_atr_value
                     if candidate < sl_trigger_px:
                         sl_trigger_px = candidate
-                if self._sl_hit("short", mark_price, sl_trigger_px):
+                if not walk_mode and self._sl_hit("short", mark_price, sl_trigger_px):
                     pending_signal_sl_close = True
+
+            # #1271: promote any surviving trigger to a carried, pierce-
+            # eligible level for the next bar (plain-path mirror of the
+            # open/close path's pre-continue arming).
+            if position != 0:
+                sl_pierce_armed = True
 
         # Close any open position at the end
         if position != 0:
@@ -2725,11 +2942,44 @@ class Backtester:
         return 0.0
 
     @staticmethod
+    def _intrabar_sl_fill(side: str, open_px: float, high_px: float,
+                          low_px: float, trigger_px: float) -> Optional[float]:
+        """Intra-bar OHLC-walk SL resolution (#1271): return the raw fill
+        price for a bar whose range touched the armed trigger, or ``None``
+        when the trigger survived the bar.
+
+        Walks O first: a bar that OPENS beyond the trigger (gap-through)
+        fills at the open — the trigger price no longer exists in the market.
+        Otherwise a range touch (long: ``low <= trigger``; short: ``high >=
+        trigger``) fills at the trigger price, mirroring an on-chain stop
+        executing on touch. The caller applies slippage/commission on top,
+        same as every other exit path. Frames without open/high/low columns
+        pass the close for all three, degrading to the legacy close-touch
+        detection rule — the open==close touch then routes through the
+        gap-through branch and fills at the close (the only price the frame
+        carries), one bar earlier than the legacy next-bar fill.
+        """
+        if trigger_px <= 0:
+            return None
+        if side == "long":
+            if open_px > 0 and open_px <= trigger_px:
+                return open_px
+            if low_px > 0 and low_px <= trigger_px:
+                return trigger_px
+        elif side == "short":
+            if open_px >= trigger_px:
+                return open_px
+            if high_px >= trigger_px:
+                return trigger_px
+        return None
+
+    @staticmethod
     def _sl_hit(side: str, mark_price: float, trigger_px: float) -> bool:
-        """Bar-level SL hit detection. For a long, fires when ``mark_price <=
-        trigger_px``; for a short, fires when ``mark_price >= trigger_px``.
-        Intra-bar trigger races (high/low piercing without close confirming)
-        are not simulated — same caveat as elsewhere in the bar-level engine.
+        """Bar-close SL hit detection — the LEGACY (``bar_close``) resolution.
+        For a long, fires when ``mark_price <= trigger_px``; for a short, when
+        ``mark_price >= trigger_px``. Under the default ``ohlc_walk`` mode the
+        run loop uses ``_intrabar_sl_fill`` instead (which strictly subsumes
+        this check); this remains for the legacy flag and direct unit tests.
         """
         if trigger_px <= 0 or mark_price <= 0:
             return False
