@@ -284,6 +284,10 @@ func main() {
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
 	server.SetConfigContext(*configPath, cfg)
+	// #1272: end single-threaded startup before the first state-reading
+	// goroutine (http.Serve). ClearLatchedKillSwitchSharedWallet above must
+	// stay before this call.
+	markSchedulerStarted()
 	server.Start(statusPort)
 
 	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
