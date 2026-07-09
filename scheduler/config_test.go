@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeTestConfig(t *testing.T, dir, content string) string {
@@ -2766,6 +2767,121 @@ func TestCircuitBreakerEnabled_DefaultsToTrue(t *testing.T) {
 	sc.CircuitBreaker = &tr
 	if !sc.CircuitBreakerEnabled() {
 		t.Fatal("explicit true should report enabled")
+	}
+}
+
+// #1273: the CB timing/threshold accessors fall back to the historical
+// hardcoded values (24h / 5 losses / 1h) on a nil receiver or nil fields, and
+// honor explicit overrides. Call sites read only through these accessors.
+func TestCircuitBreakerOverrideAccessors(t *testing.T) {
+	for name, sc := range map[string]*StrategyConfig{"nil receiver": nil, "nil fields": {}} {
+		if got := sc.CircuitBreakerDrawdownCooldown(); got != 24*time.Hour {
+			t.Errorf("%s: drawdown cooldown = %v, want 24h", name, got)
+		}
+		if got := sc.CircuitBreakerLossStreakThreshold(); got != 5 {
+			t.Errorf("%s: loss-streak threshold = %d, want 5", name, got)
+		}
+		if got := sc.CircuitBreakerLossStreakCooldown(); got != time.Hour {
+			t.Errorf("%s: loss-streak cooldown = %v, want 1h", name, got)
+		}
+	}
+	dd, th, lc := 720, 3, 30
+	sc := &StrategyConfig{CBDrawdownCooldownMinutes: &dd, CBLossStreakThreshold: &th, CBLossStreakCooldownMinutes: &lc}
+	if got := sc.CircuitBreakerDrawdownCooldown(); got != 12*time.Hour {
+		t.Errorf("override drawdown cooldown = %v, want 12h", got)
+	}
+	if got := sc.CircuitBreakerLossStreakThreshold(); got != 3 {
+		t.Errorf("override loss-streak threshold = %d, want 3", got)
+	}
+	if got := sc.CircuitBreakerLossStreakCooldown(); got != 30*time.Minute {
+		t.Errorf("override loss-streak cooldown = %v, want 30m", got)
+	}
+}
+
+// #1273: validateConfig accepts in-bounds cb_* overrides and rejects
+// non-positive values, out-of-bounds values, and any of the fields on
+// type=manual (exempt from CheckRisk, where they would silently do nothing).
+func TestConfigValidationCBOverrides(t *testing.T) {
+	intp := func(v int) *int { return &v }
+	mk := func(mut func(*StrategyConfig)) Config {
+		sc := StrategyConfig{
+			ID: "test-spot", Type: "spot", Platform: "binanceus",
+			Script:  "shared_scripts/check_strategy.py",
+			Args:    []string{"sma_crossover", "BTC/USDT", "1h"},
+			Capital: 1000, MaxDrawdownPct: 60,
+		}
+		mut(&sc)
+		return Config{
+			Strategies:    []StrategyConfig{sc},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+	}
+
+	valid := mk(func(sc *StrategyConfig) {
+		sc.CBDrawdownCooldownMinutes = intp(720)
+		sc.CBLossStreakThreshold = intp(3)
+		sc.CBLossStreakCooldownMinutes = intp(30)
+	})
+	if err := validateConfig(&valid, false); err != nil {
+		t.Fatalf("in-bounds cb_* overrides should validate: %v", err)
+	}
+	// Boundary values are inclusive.
+	boundary := mk(func(sc *StrategyConfig) {
+		sc.CBDrawdownCooldownMinutes = intp(30 * 24 * 60)
+		sc.CBLossStreakThreshold = intp(100)
+		sc.CBLossStreakCooldownMinutes = intp(1)
+	})
+	if err := validateConfig(&boundary, false); err != nil {
+		t.Fatalf("boundary cb_* overrides should validate: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		mut     func(*StrategyConfig)
+		wantErr string
+	}{
+		{"zero drawdown cooldown", func(sc *StrategyConfig) { sc.CBDrawdownCooldownMinutes = intp(0) }, "cb_drawdown_cooldown_minutes must be positive"},
+		{"negative loss threshold", func(sc *StrategyConfig) { sc.CBLossStreakThreshold = intp(-1) }, "cb_loss_streak_threshold must be positive"},
+		{"zero loss cooldown", func(sc *StrategyConfig) { sc.CBLossStreakCooldownMinutes = intp(0) }, "cb_loss_streak_cooldown_minutes must be positive"},
+		{"loss threshold above cap", func(sc *StrategyConfig) { sc.CBLossStreakThreshold = intp(101) }, "cb_loss_streak_threshold must be <= 100"},
+		{"drawdown cooldown above 30 days", func(sc *StrategyConfig) { sc.CBDrawdownCooldownMinutes = intp(30*24*60 + 1) }, "cb_drawdown_cooldown_minutes must be <= 43200"},
+		{"loss cooldown above 30 days", func(sc *StrategyConfig) { sc.CBLossStreakCooldownMinutes = intp(30*24*60 + 1) }, "cb_loss_streak_cooldown_minutes must be <= 43200"},
+		{"manual rejects drawdown cooldown", func(sc *StrategyConfig) {
+			sc.Type = "manual"
+			sc.Platform = "hyperliquid"
+			sc.Symbol = "ETH"
+			sc.Timeframe = "1h"
+			sc.Leverage = 2
+			sc.CBDrawdownCooldownMinutes = intp(720)
+		}, "cb_drawdown_cooldown_minutes is not supported for manual strategies"},
+		{"manual rejects loss threshold", func(sc *StrategyConfig) {
+			sc.Type = "manual"
+			sc.Platform = "hyperliquid"
+			sc.Symbol = "ETH"
+			sc.Timeframe = "1h"
+			sc.Leverage = 2
+			sc.CBLossStreakThreshold = intp(3)
+		}, "cb_loss_streak_threshold is not supported for manual strategies"},
+		{"manual rejects loss cooldown", func(sc *StrategyConfig) {
+			sc.Type = "manual"
+			sc.Platform = "hyperliquid"
+			sc.Symbol = "ETH"
+			sc.Timeframe = "1h"
+			sc.Leverage = 2
+			sc.CBLossStreakCooldownMinutes = intp(30)
+		}, "cb_loss_streak_cooldown_minutes is not supported for manual strategies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mk(tc.mut)
+			err := validateConfig(&cfg, false)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q should contain %q", err.Error(), tc.wantErr)
+			}
+		})
 	}
 }
 
