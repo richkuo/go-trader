@@ -106,6 +106,7 @@ Other dirs (guardrails; inventories in ARCHITECTURE.md):
 - **Comment patching** shared in `.github/scripts/patch_claude_comment.sh`+`compose_claude_comment.py` (don't duplicate inline); fetches **all** pages (`--paginate --slurp`).
 - **Concurrency:** `group: claude-<issue/PR number>`, `cancel-in-progress: false`.
 - **`claude_args` allowlist is defense-in-depth, not a hard boundary** (`python3`/`go`/`uv run` can shell to `gh`/`git`) — the bound token above is the real boundary. Commit/push rules implement-mode-only, **exact-match** (never trailing-wildcard); `gh api` dropped entirely.
+- **No test suites or backtests in Claude jobs** — `ci.yml` owns them. Enforced three ways: `go` allowlist narrowed to `build`/`vet` (no `go test`), `uv sync` omits `--extra test` (no pytest in the venv), and both prompt files repeat the prohibition (compile checks only: `go build`, `gofmt`, `py_compile`). Implement/fix modes still *write* tests; CI executes them.
 - **Prompt-file injection guard:** `pr-review-format.md` must not contain `"`, `` ` ``, or `$`.
 - **CLAUDE.md revision step** must explicitly instruct `git commit`+`git push origin HEAD` (uncommitted edits discarded at runner end). Has stray-reverted working-tree `CLAUDE.md` to `origin/main` before, silently discarding prior branch commits — right after invoking it, diff `HEAD -- CLAUDE.md` and `origin/main -- CLAUDE.md`; matching diffs mean it reverted, not edited — restore pre-existing content first.
 - `timeout-minutes: 90`. `issues: types: [opened]` only.

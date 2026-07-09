@@ -58,7 +58,9 @@ jobs:
         uses: astral-sh/setup-uv@v6
 
       - name: Install Python dependencies
-        run: uv sync --frozen --extra test
+        # No --extra test: Claude jobs never run test suites or backtests
+        # (ci.yml owns them), so pytest is deliberately absent from the venv.
+        run: uv sync --frozen
 
       - name: Clean up lockfile changes before Claude checkout
         run: git checkout -- uv.lock
@@ -116,7 +118,11 @@ jobs:
           # match, and gh api is dropped entirely (its --method flag reaches
           # every mutating endpoint). No CI readers (gh pr checks / gh run *):
           # reviews intentionally do not gate on CI, which outlasts the review.
-          ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr comment*),Bash(gh issue view*)'
+          # go is narrowed to build/vet (no go test) and pytest is not
+          # installed: test suites and backtests never run in Claude jobs —
+          # ci.yml runs them on the PR. Interpreters (python3, uv run) could
+          # still reach them, so the prompt files repeat the prohibition.
+          ALLOWED='Bash(go build*),Bash(go vet*),Bash(cd scheduler && go build*),Bash(cd scheduler && go vet*),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr comment*),Bash(gh issue view*)'
           # Only the write-capable modes may mutate history; review runs never
           # commit or push, so those rules stay off its allowlist.
           if [ "$MODE" = "implement" ]; then
