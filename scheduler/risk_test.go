@@ -1142,10 +1142,13 @@ func TestCheckPortfolioRisk_EventLoggedOnTrigger(t *testing.T) {
 // --- ClearLatchedKillSwitchSharedWallet (#244) ---
 
 // resetSchedulerStarted clears the #1272 startup-phase guard between tests.
-// The package-level flag persists across the test binary.
+// The package-level flag persists across the test binary. t.Cleanup restores
+// false after the test so a markSchedulerStarted() call (e.g. the panic-path
+// test) cannot leak into a later Clear-calling test that forgets to reset.
 func resetSchedulerStarted(t *testing.T) {
 	t.Helper()
 	schedulerStarted.Store(false)
+	t.Cleanup(func() { schedulerStarted.Store(false) })
 }
 
 // latchedSharedWalletState builds an AppState with a latched kill switch and
