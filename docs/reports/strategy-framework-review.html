@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>go-trader — Strategy Framework Review</title>
+<style>
+  :root {
+    --paper: #f6f7f9;
+    --card: #ffffff;
+    --ink: #1d2229;
+    --muted: #5b6470;
+    --line: #dde1e7;
+    --accent: #0d6e63;
+    --good: #1a7f37;
+    --good-bg: #e4f2e8;
+    --warn: #9a5b00;
+    --warn-bg: #f7ecd8;
+    --bad: #b3261e;
+    --bad-bg: #f9e5e3;
+    --code-bg: #eceef2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #14171c;
+      --card: #1c2027;
+      --ink: #e6e9ee;
+      --muted: #98a1ad;
+      --line: #2d333c;
+      --accent: #4cc4b4;
+      --good: #57c977;
+      --good-bg: #17301e;
+      --warn: #e0a94f;
+      --warn-bg: #33270f;
+      --bad: #f28b82;
+      --bad-bg: #3a1a17;
+      --code-bg: #262b33;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14171c; --card: #1c2027; --ink: #e6e9ee; --muted: #98a1ad;
+    --line: #2d333c; --accent: #4cc4b4; --good: #57c977; --good-bg: #17301e;
+    --warn: #e0a94f; --warn-bg: #33270f; --bad: #f28b82; --bad-bg: #3a1a17;
+    --code-bg: #262b33;
+  }
+  :root[data-theme="light"] {
+    --paper: #f6f7f9; --card: #ffffff; --ink: #1d2229; --muted: #5b6470;
+    --line: #dde1e7; --accent: #0d6e63; --good: #1a7f37; --good-bg: #e4f2e8;
+    --warn: #9a5b00; --warn-bg: #f7ecd8; --bad: #b3261e; --bad-bg: #f9e5e3;
+    --code-bg: #eceef2;
+  }
+  html { background: var(--paper); }
+  body {
+    color: var(--ink);
+    font-family: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+    font-size: 17px; line-height: 1.6;
+    margin: 0; padding: 3rem 1.25rem 5rem;
+  }
+  .wrap { max-width: 46rem; margin: 0 auto; }
+  h1, h2, h3, .label, .badge, th, nav, .kicker {
+    font-family: "Avenir Next", Avenir, Seravek, "Segoe UI", system-ui, sans-serif;
+  }
+  .kicker {
+    text-transform: uppercase; letter-spacing: .14em; font-size: .72rem;
+    font-weight: 600; color: var(--accent); margin: 0 0 .5rem;
+  }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .4rem; text-wrap: balance; font-weight: 700; }
+  .subtitle { color: var(--muted); margin: 0 0 2.25rem; font-size: 1rem; }
+  h2 {
+    font-size: 1.25rem; margin: 3rem 0 .9rem; padding-top: 1.5rem;
+    border-top: 1px solid var(--line); text-wrap: balance;
+  }
+  h3 { font-size: 1rem; margin: 1.6rem 0 .4rem; }
+  p { margin: 0 0 1rem; }
+  ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+  li { margin-bottom: .45rem; }
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .82em; background: var(--code-bg);
+    padding: .1em .35em; border-radius: 4px;
+  }
+  .badge {
+    display: inline-block; font-size: .68rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .07em;
+    padding: .18em .55em; border-radius: 3px; white-space: nowrap;
+  }
+  .b-good { color: var(--good); background: var(--good-bg); }
+  .b-warn { color: var(--warn); background: var(--warn-bg); }
+  .b-bad  { color: var(--bad);  background: var(--bad-bg); }
+  .tablewrap { overflow-x: auto; margin: 0 0 1rem; }
+  table {
+    border-collapse: collapse; width: 100%; font-size: .92rem;
+    background: var(--card); border: 1px solid var(--line);
+  }
+  th {
+    text-align: left; font-size: .72rem; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); font-weight: 600;
+    padding: .55rem .75rem; border-bottom: 1px solid var(--line);
+  }
+  td { padding: .55rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .verdict-callout {
+    background: var(--card); border: 1px solid var(--line);
+    border-left: 4px solid var(--accent);
+    padding: 1.1rem 1.25rem; margin: 0 0 2rem; border-radius: 0 6px 6px 0;
+  }
+  .verdict-callout p { margin: 0; }
+  .verdict-callout .headline { font-weight: 700; font-family: "Avenir Next", Avenir, Seravek, "Segoe UI", system-ui, sans-serif; margin-bottom: .35rem; }
+  .muted { color: var(--muted); }
+  .src { font-size: .8rem; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="kicker">Internal review · 2026-07-08</p>
+  <h1>go-trader strategy framework review</h1>
+  <p class="subtitle">Entry signals · exit &amp; risk framework · backtesting rigor · live execution. Four independent code-level audits, synthesized. Every claim below was verified against source with file:line citations available on request.</p>
+
+  <div class="verdict-callout">
+    <p class="headline">Overall verdict: a genuinely strong framework — above typical retail standard — with a handful of specific, fixable gaps.</p>
+    <p>The infrastructure (look-ahead protection, fee modeling, statistical validation, fail-closed safety rails) is better than most retail and many small-prop setups. The honest weakness isn't the framework — it's that the framework's own research shows most entry strategies have little proven edge. The improvement path is therefore less "fix the plumbing" and more "use the validation machinery you already built, more systematically."</p>
+  </div>
+
+  <h2>Scorecard</h2>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Area</th><th>Verdict</th><th>One-line assessment</th></tr>
+    <tr><td>Backtesting &amp; validation</td><td><span class="badge b-good">Strong</span></td><td>Look-ahead protections are code-verified and regression-pinned; walk-forward, held-out windows, multiple-testing correction, and permutation noise gates all exist.</td></tr>
+    <tr><td>Exit &amp; risk framework</td><td><span class="badge b-good">Strong</span></td><td>Enforced single-stop-ownership, no-naked-position default, frozen risk anchor on pyramiding, fail-closed kill switch.</td></tr>
+    <tr><td>Live execution</td><td><span class="badge b-good">Sound</span></td><td>On-chain protective orders survive daemon downtime; gross-vs-net PnL handled centrally; parity tooling exists.</td></tr>
+    <tr><td>Entry signal library</td><td><span class="badge b-warn">Mixed</span></td><td>Indicator math mostly textbook-correct and non-repainting, but ATR is non-standard system-wide and several strategies look curve-fit.</td></tr>
+    <tr><td>Proven strategy edge</td><td><span class="badge b-warn">Weak</span></td><td>The M1–M6 research pipeline mostly <em>killed</em> candidates: several strategies shown indistinguishable from noise; few positive results shipped.</td></tr>
+    <tr><td>Position sizing &amp; portfolio risk</td><td><span class="badge b-bad">Gap</span></td><td>Sizing is leverage-times-cash, not risk-normalized; no correlation limits, portfolio VaR, or hard daily-loss stop.</td></tr>
+  </table>
+  </div>
+
+  <h2>1 · Entry strategies — what's correct, what isn't</h2>
+  <p>The library holds <strong>49 registered open strategies</strong> across trend-following, momentum, mean-reversion, breakout, pattern/SMC, funding-carry, and regime-meta families, in a single-source registry with per-platform variants. Six are hidden from discovery as deprecated; one is backtest-only.</p>
+  <h3>Correct</h3>
+  <ul>
+    <li><strong>RSI and ADX use proper Wilder smoothing</strong> — textbook implementations, with warmup guards.</li>
+    <li><strong>VWAP is session-anchored and non-repainting</strong>; the anchored-VWAP pivot logic waits the full confirmation delay before a pivot counts, explicitly avoiding repainting.</li>
+    <li><strong>No look-ahead found in any strategy function</strong> — signals form on closed bars, fills happen next bar, fresh-cross conditions prevent re-firing, and parabolic SAR's seeding was specifically fixed to avoid peeking.</li>
+  </ul>
+  <h3>Questionable / incorrect</h3>
+  <ul>
+    <li><span class="badge b-warn">Systemic</span> <strong>ATR uses a simple rolling mean of true range, not Wilder's smoothing</strong> — everywhere (8+ sites). It's consistent and tested, but it deviates from the standard definition, so Supertrend and squeeze bands run noisier/faster than reference implementations, and comparisons to published parameter values don't transfer cleanly.</li>
+    <li><span class="badge b-bad">Odd</span> <strong>ATR is rounded to whole numbers once it exceeds 100</strong> — a magic-number quantization with no volatility-modeling justification that coarsens every ATR stop and band on high-priced assets like BTC.</li>
+    <li><span class="badge b-warn">Hygiene</span> <strong>No parameter validation inside strategy functions</strong> (nothing checks fast &lt; slow, positive periods), and some strategies carry 8–9 tunables with oddly specific defaults — hallmarks of curve-fitting. The heikin-ashi "bullish" test requires an exact-equality no-lower-wick condition, which is brittle.</li>
+    <li><span class="badge b-warn">Maintenance</span> Wilder RSI is inlined in 8 files and the true-range/ATR computation at 19 sites (an import-constraint workaround) — counts verified during issue filing, and real drift already exists: three registry copies skip the ≥100 rounding rule the others apply.</li>
+  </ul>
+
+  <h2>2 · Exit &amp; risk framework</h2>
+  <h3>Correct and worth keeping</h3>
+  <ul>
+    <li><strong>Single-close-owner model with seven mutually-exclusive stop fields, enforced at config load</strong> — and a strategy that omits all of them gets a default ATR stop, so <strong>no position is ever naked</strong>. This is a real institutional-grade invariant.</li>
+    <li><strong>Tiered take-profit math is correct and idempotent</strong> — cumulative tier targets are converted to fraction-of-current-quantity, so tiers never double-sell.</li>
+    <li><strong>Frozen risk anchor on scale-in</strong>: pyramiding adds never walk the stop toward the market — stop geometry stays anchored to the original entry while blended average cost drives PnL. Exactly the right separation.</li>
+    <li><strong>Kill switch is fail-closed</strong>: it latches until every venue is confirmed flat on-chain, recovers fills submitted during the close, and unwired venues latch-and-alert rather than silently clearing.</li>
+    <li><strong>Circuit-breaker drawdown is margin-denominated for perps</strong>, avoiding the classic "5% of notional looks tiny at 20× leverage" understatement.</li>
+  </ul>
+  <h3>Gaps vs. industry standard</h3>
+  <ul>
+    <li><span class="badge b-bad">Gap</span> <strong>No risk-based position sizing.</strong> Size is cash × leverage, not normalized to stop distance — two strategies with identical notional but different ATR stops carry very different dollar risk per trade. Fixed-fractional risk (risk X% of equity per trade, sized off the stop) is the industry baseline.</li>
+    <li><span class="badge b-bad">Gap</span> <strong>No portfolio-level correlation awareness.</strong> Gross notional is capped, but a book of highly correlated crypto perps is treated as diversified. No VaR, no concentration limit.</li>
+    <li><span class="badge b-warn">Gap</span> <strong>Daily PnL is tracked but never gates trading</strong> — no hard daily-loss limit; only peak drawdown and loss-streaks halt a strategy.</li>
+    <li><span class="badge b-warn">Fragile</span> Circuit-breaker cooldowns (24h / 1h) and the 5-loss streak threshold are hardcoded; one startup-time kill-switch reset path mutates risk state without a lock, safe only by a fragile ordering invariant.</li>
+  </ul>
+
+  <h2>3 · Backtesting &amp; validation — the strongest part of the system</h2>
+  <p>This layer is meaningfully above typical retail practice, and most of its guarantees are pinned by regression tests rather than just documented:</p>
+  <ul>
+    <li><strong>Look-ahead protections verified in code:</strong> signals shift one bar before fills; the regime gate reads the prior bar's regime; higher-timeframe series are shifted before being forward-filled onto the lower timeframe (a real leak here was found and fixed, deflating one result from +180% to +8%); entry-ATR stamping was also fixed to read the pre-fill bar.</li>
+    <li><strong>Realistic frictions:</strong> per-platform fees mirrored from the live fee table (parity-tested), 5 bps slippage, and per-bar perps funding accrual.</li>
+    <li><strong>Statistical discipline:</strong> walk-forward optimization with out-of-sample validation, three held-out calendar windows never used in design, Benjamini–Hochberg correction across whole candidate families, and a permutation-based noise gate that must pass <em>before</em> any parameter tuning. The suggestion pipeline is deliberately suggest-only — a human makes every promotion call.</li>
+    <li><strong>Honest negative results:</strong> the research corpus mostly rejected its own candidates — one strategy's gross edge was shown to be statistically indistinguishable from noise and deprecated; a breakout strategy was deprecated; two more passed in-sample protocols but failed held-out windows and were correctly not shipped. This willingness to kill ideas is the single healthiest trait of the whole system.</li>
+  </ul>
+  <h3>Remaining weaknesses</h3>
+  <ul>
+    <li><span class="badge b-warn">Structural</span> <strong>Signal purity is caller-trusted</strong>: the engine enforces fill timing, but a strategy that peeks at future data inside its own function would not be caught automatically (one test explicitly documents this).</li>
+    <li><span class="badge b-warn">Optimistic</span> <strong>Stop-loss vs. take-profit races within a bar resolve at bar close</strong> — no intra-bar OHLC walk, so same-bar SL/TP collisions resolve optimistically.</li>
+    <li><span class="badge b-warn">Bias</span> All evidence is BTC/ETH/SOL at 1h/4h — three liquid survivors, so survivorship and single-asset-class bias are real (and acknowledged). Held-out windows are calendar-based, not regime-stratified. No Monte Carlo resampling of equity paths or drawdown distributions.</li>
+    <li><span class="badge b-warn">Debt</span> Recent metric and leak fixes have not yet been re-propagated through all older study verdicts (tracked, not done).</li>
+  </ul>
+
+  <h2>4 · Live execution &amp; backtest–live parity</h2>
+  <ul>
+    <li><strong>Sound for the timeframes traded.</strong> The subprocess-per-check architecture adds seconds of latency, which is immaterial on hourly bars. Protective stops and take-profits rest <strong>on-chain as reduce-only orders</strong>, so they survive daemon downtime — a real robustness win over bot-side-only stops.</li>
+    <li><strong>Accounting handles the classic traps:</strong> exchange gross PnL is explicitly barred from being booked as realized PnL; real fill fees are looked up with a tagged modeled-fee fallback; total equity is reconciled from exchange settled-cash events with a fail-closed drift alarm; funding is attributed per-strategy.</li>
+    <li><span class="badge b-warn">Parity gaps</span> Live pays real slippage inside a 1% marketable band that bar-level backtests don't model; <strong>scale-in and two live-only dynamic-regime features are never backtested at all</strong> — strategies using them run on unsimulated behavior.</li>
+    <li><span class="badge b-warn">Debatable</span> <strong>The regime entry gate fails open</strong> when the regime subprocess fails: a transient outage admits exactly the entries the filter exists to block. Defensible for availability (and a second certification layer is independently fail-closed), but for an entry gate the conservative choice is fail-closed, or at least a config toggle.</li>
+    <li><span class="badge b-warn">Approximate</span> On shared coins, per-strategy funding and stop-fill attribution is split by virtual quantity — an approximation whose error grows with shared-coin concentration.</li>
+  </ul>
+
+  <h2>5 · Industry-standards checklist</h2>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Practice</th><th>Status</th></tr>
+    <tr><td>Next-bar fills, no same-bar signal execution</td><td><span class="badge b-good">Followed</span></td></tr>
+    <tr><td>Out-of-sample / walk-forward validation</td><td><span class="badge b-good">Followed</span></td></tr>
+    <tr><td>Multiple-testing correction on strategy families</td><td><span class="badge b-good">Followed</span> (rare even at prop shops)</td></tr>
+    <tr><td>Fee, slippage, and funding modeling</td><td><span class="badge b-good">Followed</span></td></tr>
+    <tr><td>Exchange-resident protective orders</td><td><span class="badge b-good">Followed</span></td></tr>
+    <tr><td>Standard indicator definitions (ATR)</td><td><span class="badge b-warn">Deviates</span> — simple-mean ATR + integer rounding</td></tr>
+    <tr><td>Risk-normalized position sizing</td><td><span class="badge b-bad">Not followed</span></td></tr>
+    <tr><td>Portfolio correlation / concentration limits</td><td><span class="badge b-bad">Not followed</span></td></tr>
+    <tr><td>Hard daily-loss limit</td><td><span class="badge b-bad">Not followed</span></td></tr>
+    <tr><td>Intra-bar stop/target sequencing in backtests</td><td><span class="badge b-warn">Not followed</span> (bar-close resolution)</td></tr>
+    <tr><td>Monte Carlo / path-resampled drawdown analysis</td><td><span class="badge b-warn">Not followed</span></td></tr>
+    <tr><td>Multi-asset, survivorship-aware evidence base</td><td><span class="badge b-warn">Partial</span> — three liquid majors only</td></tr>
+  </table>
+  </div>
+
+  <h2>6 · Strategy quality — the evidence, strategy by strategy</h2>
+  <p>Cross-referencing the registry against every study in <code>docs/research/</code> (the M5 registry-wide fee audit, per-strategy M1 studies, and the noise-gate results) gives a per-strategy evidence status. The headline: <strong>of 49 strategies, exactly 1 has a validated positive verdict, and 29 carry a documented no-edge verdict.</strong> Nothing is currently live-certified (<code>regime_directional_certifications.json</code> is empty).</p>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Status</th><th>Count</th><th>Meaning</th></tr>
+    <tr><td><span class="badge b-good">Validated positive</span></td><td>1</td><td><code>vwap_rejection_st</code> — out-of-sample pass 6/6 plus a healthy short-leg fee audit (#990).</td></tr>
+    <tr><td><span class="badge b-warn">Mixed</span></td><td>12</td><td>Positive gross edge but net-negative after fees, pending the noise gate, or a short leg that was never measured. Includes <code>momentum_pro</code>, <code>mean_reversion_pro</code>, <code>chart_pattern</code>, <code>breakout</code>, <code>regime_adaptive</code>. Later verification narrowed the actionable list to 11 open verdicts (<code>momentum_pro</code>'s unconditional short leg was already measured — the open item is its regime-gated variant); tracked in issue 1282.</td></tr>
+    <tr><td><span class="badge b-bad">Shown noise</span></td><td>1</td><td><code>regime_adaptive_htf</code> — gross edge statistically indistinguishable from zero (#1054).</td></tr>
+    <tr><td><span class="badge b-bad">Documented no edge</span></td><td>29</td><td>23 via the #999 M5 fee-audit screen (no positive gross edge — includes <code>rsi</code>, <code>macd</code>, <code>supertrend</code>, <code>sma_crossover</code>, <code>bollinger_bands</code>, <code>ichimoku_cloud</code>…) plus 6 individually studied and deprecated (<code>donchian_breakout</code>, <code>range_scalper</code>, <code>amd_ifvg</code>, <code>session_breakout</code>, <code>vol_momentum</code>, <code>analog_retrieval</code>). Only the 6 are actually hidden from discovery — the other 23 remain configurable.</td></tr>
+    <tr><td><span class="badge b-warn">Untested</span></td><td>6</td><td>No edge study at all: <code>delta_neutral_funding</code>, <code>bear_pullback_st</code>, <code>atr_band_revert</code>, <code>anchored_vwap_channel</code>, <code>anchored_vwap_reversion</code>, plus the <code>hold</code> benchmark.</td></tr>
+  </table>
+  </div>
+  <p><strong>What this means:</strong> the library's size is misleading. Roughly 60% of it is documented dead weight that a new operator could still configure and trade. The real book is one validated strategy, a dozen "maybe" candidates with specific unresolved questions (mostly unmeasured short legs and pending noise gates), and two freshly designed anchored-VWAP strategies with no backtest verdict yet.</p>
+
+  <h2>7 · Methodology — how to improve existing strategies and vet future ones</h2>
+  <p>The validation machinery already exists and has proven it works; what's missing is applying it as a mandatory, ordered pipeline. The recommended standing process:</p>
+  <h3>The promotion pipeline (existing and new strategies alike)</h3>
+  <ul>
+    <li><strong>Step 1 — Gross-edge screen (M5-style):</strong> zero-friction gross returns per leg. No positive gross edge → stop; no amount of exit tuning or fee optimization rescues a strategy with nothing to keep.</li>
+    <li><strong>Step 2 — Noise gate (M1 step-2, before any tuning):</strong> permutation test + bootstrap on the gross legs. This ordering is the system's own hard rule — tuning parameters before proving the edge isn't noise is how curve-fitting happens.</li>
+    <li><strong>Step 3 — Selectivity/exit work (M2/M6):</strong> only now sweep entries jointly with exits; single strategies get one pre-registered hypothesis per study, not open-ended sweeps.</li>
+    <li><strong>Step 4 — Walk-forward + held-out windows:</strong> optimize in-sample, validate on rolling out-of-sample folds, then one look at the three never-touched held-out windows. A held-out failure is final for that configuration (as correctly applied to <code>momentum_pro</code>).</li>
+    <li><strong>Step 5 — Family-wide multiple-testing correction:</strong> every candidate tried in a study counts; Benjamini–Hochberg over the whole family, with noise-sibling dedup. Already built into <code>auto_suggest.py</code>.</li>
+    <li><strong>Step 6 — Paper trading with parity checks:</strong> run the survivor on paper; use <code>parity_diff.py</code> to confirm live decision surfaces match the backtest before real size.</li>
+    <li><strong>Step 7 — Human promotion decision, sized small, with a pre-registered kill criterion</strong> (e.g. "deprecate if 90-day live Sharpe &lt; 0"). The suggest-only rule stays: no pipeline output ever auto-deploys.</li>
+  </ul>
+  <h3>Applying it to the current registry</h3>
+  <ul>
+    <li><strong>Resolve the MIXED strategies first (11 open verdicts)</strong> — they are the only realistic source of new validated edge, and each has one named blocker: run the pending noise gates (<code>tema_cross</code>, <code>regime_adaptive</code>), measure the unmeasured short legs (<code>mean_reversion_pro</code>, <code>triple_ema_bidir</code>, <code>funding_skew</code>, others), and re-test <code>breakout</code> under the post-leak-fix baselines.</li>
+    <li><strong>Backtest the 5 genuinely untested strategies</strong> — especially the two new anchored-VWAP designs, which currently exist only as design docs.</li>
+    <li><strong>Quarantine the 23 M5-deprecated-but-still-configurable strategies</strong>: either move them into <code>DISCOVERY_HIDDEN_STRATEGIES</code> or require an explicit override flag, so documented no-edge strategies can't be deployed by default.</li>
+    <li><strong>Improve survivors via exits and regimes, not new entry parameters:</strong> the system's own M2/M3/M6 results repeatedly show exit and regime-gating changes move net results more than entry re-tuning — and with fewer degrees of freedom to overfit.</li>
+    <li><strong>Re-run everything above on post-fix baselines</strong> once the recent entry-ATR/HTF-leak corrections are propagated, so verdicts rest on clean numbers.</li>
+  </ul>
+  <h3>Rules for future strategies</h3>
+  <ul>
+    <li>Pre-register the hypothesis and parameter ranges before the first backtest; log every configuration tried so the multiple-testing correction is honest.</li>
+    <li>No strategy enters the registry without passing steps 1–2; no strategy goes live without steps 4–7.</li>
+    <li>Every new strategy ships with the standard test battery: truncation-invariance (forward-peek), warmup, and parity tests — the patterns already exist in <code>test_backtester_lookahead.py</code>.</li>
+    <li>Prefer fewer tunables: 8–9-parameter strategies (like <code>bear_pullback_st</code>) need exponentially more evidence to clear the same statistical bar.</li>
+  </ul>
+
+  <h2>8 · Tracking issues filed</h2>
+  <p>Every improvement below is now a GitHub issue (filed 2026-07-08, each claim re-verified against code before filing):</p>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Group</th><th>Issues</th></tr>
+    <tr><td>Risk controls</td><td>1268 risk-per-trade sizing · 1269 daily-loss limit · 1270 same-direction exposure cap · 1272 kill-switch reset race · 1273 configurable circuit-breaker parameters</td></tr>
+    <tr><td>Validation rigor</td><td>1271 intra-bar SL/TP resolution · 1274 Monte Carlo drawdown distributions · 1276 backtest scale-in · 1279 registry-wide forward-peek detector</td></tr>
+    <tr><td>Strategy quality</td><td>1275 quarantine no-edge strategies · 1277 Wilder-ATR migration · 1278 regime-gate fail-closed toggle · 1280 verdicts for 5 untested strategies · 1281 indicator consolidation + parameter validation · 1282 resolve 11 open verdicts</td></tr>
+  </table>
+  </div>
+
+  <h2>9 · Systematic improvement roadmap</h2>
+  <p>Ordered by expected impact on real risk-adjusted returns, not by effort.</p>
+  <h3>Tier 1 — risk correctness (changes what you can lose)</h3>
+  <ul>
+    <li><strong>Risk-based position sizing:</strong> size each trade so the distance to its stop equals a fixed fraction of equity. This single change normalizes risk across all 49 strategies and is the largest gap vs. standard practice.</li>
+    <li><strong>Hard daily-loss limit</strong> that halts new entries portfolio-wide, and a simple correlation/concentration cap on same-direction crypto exposure.</li>
+    <li><strong>Make the regime entry gate's fail-open behavior configurable</strong>, defaulting new deployments to fail-closed for entries.</li>
+  </ul>
+  <h3>Tier 2 — validation credibility (changes what you can trust)</h3>
+  <ul>
+    <li><strong>Intra-bar OHLC walk for stop/target resolution</strong> in the backtester, so same-bar SL/TP races stop resolving optimistically.</li>
+    <li><strong>Automated forward-peek detection</strong> across the registry (perturb future bars, assert signals at bar N are unchanged) — closes the caller-trusted signal-purity hole for all current and future strategies.</li>
+    <li><strong>Backtest coverage for scale-in and the live-only regime features</strong>, or explicitly quarantine them to small size until simulated.</li>
+    <li>Re-propagate the recent leak/metric fixes through the older study verdicts; add Monte Carlo trade-resampling for drawdown distributions.</li>
+  </ul>
+  <h3>Tier 3 — edge and hygiene (changes what you earn)</h3>
+  <ul>
+    <li><strong>Run the existing M1 noise gate over the whole 49-strategy registry</strong> and retire everything that fails — the machinery exists and has already proven it works; it just hasn't been applied universally. Expect the survivor list to be short; that's the point.</li>
+    <li><strong>Standardize ATR on Wilder smoothing and remove the ≥100 integer rounding</strong> (behind a config migration, with baselines re-run — this shifts every stop and band).</li>
+    <li>Consolidate the duplicated RSI/ATR implementations and add basic parameter validation to strategy functions.</li>
+    <li>Broaden the evidence base beyond BTC/ETH/SOL and add regime-stratified held-out windows.</li>
+  </ul>
+
+  <p class="src">Prepared from four parallel code audits of the go-trader repository (entry registry, close/risk stack, backtest harnesses + docs/research corpus, scheduler execution layer). File:line citations for every finding are available in the session transcript.</p>
+  <p class="src">---<br>Updated with LLM: Fable 5 | medium | Harness: Claude Code</p>
+</div>
+</body>
+</html>
