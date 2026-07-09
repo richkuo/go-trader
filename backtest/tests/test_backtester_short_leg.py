@@ -160,11 +160,13 @@ def test_fixed_atr_stop_buys_back_on_adverse_rally():
 def test_fixed_atr_stop_fills_next_bar_open():
     # Breach at bar 2's close (103 > 102) fills at bar 3's distinct open
     # (104), not at bar 2's close — and not at bar 3's close spike (200).
+    # This IS the pre-#1271 legacy convention; the default ohlc_walk mode
+    # fills at the trigger on the breach bar (test_backtester_intrabar.py).
     closes = [100, 100, 103, 200, 200]
     opens = [100, 100, 103, 104, 200]
     signals = [-1, 0, 0, 0, 0]
     df = _df(closes, signals, opens=opens, atr=2.0)
-    res = _run(df, stop_loss_atr_mult=1.0)
+    res = _run(df, stop_loss_atr_mult=1.0, intrabar_resolution="bar_close")
     assert res["total_trades"] == 1
     assert res["trades"][0]["exit_price"] == pytest.approx(104.0)
 
