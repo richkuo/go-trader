@@ -108,7 +108,7 @@ Other dirs (guardrails; inventories in ARCHITECTURE.md):
 - **`claude_args` allowlist is defense-in-depth, not a hard boundary** (`python3`/`go`/`uv run` can shell to `gh`/`git`) — the bound token above is the real boundary. Commit/push rules implement-mode-only, **exact-match** (never trailing-wildcard); `gh api` dropped entirely.
 - **Prompt-file injection guard:** `pr-review-format.md` must not contain `"`, `` ` ``, or `$`.
 - **CLAUDE.md revision step** must explicitly instruct `git commit`+`git push origin HEAD` (uncommitted edits discarded at runner end). Has stray-reverted working-tree `CLAUDE.md` to `origin/main` before, silently discarding prior branch commits — right after invoking it, diff `HEAD -- CLAUDE.md` and `origin/main -- CLAUDE.md`; matching diffs mean it reverted, not edited — restore pre-existing content first.
-- `timeout-minutes: 45`. `issues: types: [opened]` only.
+- `timeout-minutes: 90`. `issues: types: [opened]` only.
 
 ### Addressing review findings
 Before implementing `@claude review` findings: restate each item as an invariant, enumerate states that would break the proposed fix (especially the inverse of the reported scenario and compound/concurrent cases), and add tests for that class — not only the reported example — before pushing.

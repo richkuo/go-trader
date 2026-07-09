@@ -36,8 +36,8 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
-    # Bound hung runs (GitHub default is 360 minutes); recorded runs peak at 15.
-    timeout-minutes: 45
+    # Bound hung runs (GitHub default is 360 minutes); large implement runs can exceed 45.
+    timeout-minutes: 90
     env:
       CLAUDE_HARNESS: anthropics/claude-code-action@v1
       # With github_token bound (review mode) the agent's comments post as
