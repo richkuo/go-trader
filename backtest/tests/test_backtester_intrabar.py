@@ -335,3 +335,91 @@ def test_sl_after_bump_bar_suppresses_pierce_until_next_bar():
 def test_invalid_intrabar_resolution_rejected():
     with pytest.raises(ValueError, match="intrabar_resolution"):
         Backtester(initial_capital=1000.0, intrabar_resolution="hlc_walk")
+
+
+# ---------------------------------------------------------------------------
+# #1241 entry-fee proration under intra-bar stops (review on PR #1292).
+# Invariant: the entry commission of a position closed across any number of
+# legs (partial TPs + an intrabar stop remainder) sums to exactly one full
+# position's entry fee — with initial_quantity, never the live position, as
+# the proration denominator.
+# ---------------------------------------------------------------------------
+
+FEE = 0.001            # 10 bps entry commission on a 10_000 full-cash entry
+FULL_ENTRY_FEE = 10.0  # 10_000 * FEE (invest = all flat-state cash)
+
+
+def test_intrabar_stop_full_position_charges_full_entry_fee():
+    """A single full-position intrabar stop (no prior partial) charges exactly
+    one entry fee — qty_frac must resolve to 1.0, not a prorated fraction."""
+    df = _df(
+        opens=[100, 100, 100, 100],
+        highs=[101, 101, 101, 101],
+        lows=[99, 99, 96, 96],
+        closes=[100, 100, 96, 96],
+        signals=[1, 0, 0, 0],
+    )
+    res = _run(df, close_strategies=TP_5PCT_FULL, stop_loss_pct=0.03,
+               commission_pct=FEE)
+    assert res["total_trades"] == 1
+    trade = res["trades"][0]
+    assert trade["exit_reason"] == "sl"
+    assert trade["entry_fee"] == pytest.approx(FULL_ENTRY_FEE, rel=1e-9)
+
+
+def test_partial_tp_then_intrabar_stop_entry_fees_sum_to_one_fee():
+    """The 50% TP leg and the same-bar intrabar-stop remainder each carry half
+    the entry fee; together they sum to exactly one full entry fee."""
+    close_refs = [{
+        "name": "tiered_tp_pct",
+        "params": {"tp_tiers": [{"profit_pct": 0.05, "close_fraction": 0.5}]},
+    }]
+    df = _df(
+        opens=[100, 100, 100, 106, 106],
+        highs=[101, 101, 107, 107, 107],
+        lows=[99, 99, 99, 96, 96],
+        closes=[100, 100, 106, 106, 106],
+        signals=[1, 0, 0, 0, 0],
+    )
+    res = _run(df, close_strategies=close_refs, stop_loss_pct=0.03,
+               commission_pct=FEE)
+    assert res["total_trades"] == 2
+    tp_leg, sl_leg = res["trades"]
+    assert sl_leg["exit_reason"] == "sl"
+    assert tp_leg["entry_fee"] == pytest.approx(FULL_ENTRY_FEE / 2, rel=1e-9)
+    assert sl_leg["entry_fee"] == pytest.approx(FULL_ENTRY_FEE / 2, rel=1e-9)
+
+
+def test_three_way_split_entry_fees_prorate_by_initial_quantity():
+    """Two partial TP tiers then an intrabar stop on the remainder: each leg's
+    entry fee equals full_fee * leg_shares / initial_shares (denominator is
+    the ORIGINAL position size, not the shrinking live position), and the
+    three legs sum to exactly one full entry fee."""
+    close_refs = [{
+        "name": "tiered_tp_pct",
+        "params": {"tp_tiers": [
+            {"profit_pct": 0.05, "close_fraction": 0.25},
+            {"profit_pct": 0.10, "close_fraction": 0.25},
+        ]},
+    }]
+    df = _df(
+        opens=[100, 100, 100, 105, 110, 110],
+        highs=[101, 101, 106, 111, 111, 111],
+        lows=[99, 99, 99, 104, 96, 96],
+        closes=[100, 100, 105, 110, 110, 110],
+        signals=[1, 0, 0, 0, 0, 0],
+    )
+    res = _run(df, close_strategies=close_refs, stop_loss_pct=0.03,
+               commission_pct=FEE)
+    assert res["total_trades"] == 3
+    trades = res["trades"]
+    assert trades[-1]["exit_reason"] == "sl"
+    initial_shares = sum(t["shares"] for t in trades)
+    # Full position closed across the three legs.
+    assert initial_shares == pytest.approx((10000.0 - FULL_ENTRY_FEE) / 100.0,
+                                           rel=1e-9)
+    for t in trades:
+        assert t["entry_fee"] == pytest.approx(
+            FULL_ENTRY_FEE * t["shares"] / initial_shares, rel=1e-6)
+    assert sum(t["entry_fee"] for t in trades) == pytest.approx(
+        FULL_ENTRY_FEE, rel=1e-9)
