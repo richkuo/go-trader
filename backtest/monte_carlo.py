@@ -475,10 +475,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "exclusive threshold sources")
 
     schemes = [s.strip() for s in args.schemes.split(",") if s.strip()]
+    if not schemes:
+        raise SystemExit(f"--schemes must name at least one scheme; "
+                         f"known: {list(SCHEMES)}")
     unknown = [s for s in schemes if s not in SCHEMES]
     if unknown:
         raise SystemExit(f"unknown schemes {unknown}; known: {list(SCHEMES)}")
+
+    if args.n_paths < 1:
+        raise SystemExit(f"--n-paths must be >= 1, got {args.n_paths}")
+
     percentiles = [float(q) for q in args.percentiles.split(",") if q.strip()]
+    if not percentiles:
+        raise SystemExit("--percentiles must name at least one value in "
+                         "[0, 100]")
+    out_of_range = [q for q in percentiles if q < 0.0 or q > 100.0]
+    if out_of_range:
+        raise SystemExit(f"--percentiles values must be in [0, 100], got "
+                         f"{out_of_range}")
 
     if args.config:
         with open(args.config) as fh:

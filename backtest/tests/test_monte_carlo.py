@@ -348,3 +348,50 @@ def test_cli_empty_trades_no_crash(tmp_path, capsys):
     rc = mc.main(["--trades-json", str(src), "--n-paths", "50"])
     assert rc == 0
     assert "nothing to resample" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# CLI numeric/enum arg guards — malformed input exits cleanly (SystemExit),
+# never a raw IndexError/TypeError (review on #1293).
+# ---------------------------------------------------------------------------
+
+def _valid_trades_json(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps([1.0, -2.0, 3.0]))
+    return src
+
+
+def test_cli_rejects_negative_n_paths(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--n-paths", "-5"])
+
+
+def test_cli_rejects_zero_n_paths(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--n-paths", "0"])
+
+
+def test_cli_rejects_percentile_above_100(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--percentiles", "5,50,150"])
+
+
+def test_cli_rejects_negative_percentile(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--percentiles", "-1"])
+
+
+def test_cli_rejects_empty_schemes(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--schemes", ","])
+
+
+def test_cli_rejects_empty_percentiles(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--percentiles", ","])
