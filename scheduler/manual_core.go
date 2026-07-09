@@ -95,11 +95,23 @@ type manualStateView struct {
 	KillSwitch     bool
 	HasStrategy    bool
 	PendingCBClose bool
+	DailyLossHold  bool      // #1269: portfolio daily loss limit tripped — position-increasing manual actions refuse
+	DailyLossNote  string    // #1269: one-line detail for the refusal message (set iff DailyLossHold)
 	Pos            *Position // copy; nil when no open position for the symbol
 }
 
-func manualStateViewFromState(state *AppState, strategyID, symbol string) manualStateView {
+func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol string) manualStateView {
 	v := manualStateView{KillSwitch: state.PortfolioRisk.KillSwitchActive}
+	// #1269: manual opens/adds are CLI/dashboard-driven, not dispatch-loop
+	// signals, so the daily loss limit is enforced here — next to the
+	// kill-switch and pending-CB guards — instead of at the six
+	// pausedBlocksSignal sites (which never see type=manual entries).
+	if cfg != nil {
+		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC()); st.Tripped {
+			v.DailyLossHold = true
+			v.DailyLossNote = dailyLossHoldDetail(st)
+		}
+	}
 	ss := state.Strategies[strategyID]
 	if ss == nil {
 		return v
@@ -162,7 +174,7 @@ func newCLIManualCoreDeps(cfg *Config, stateDB *StateDB, notifier *MultiNotifier
 		if err != nil {
 			return manualStateView{}, err
 		}
-		return manualStateViewFromState(state, strategyID, symbol), nil
+		return manualStateViewFromState(cfg, state, strategyID, symbol), nil
 	}
 	return d
 }
@@ -492,6 +504,9 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			if view.PendingCBClose {
 				return res, manualFailf("error: strategy has a pending circuit-breaker close — manual-open blocked")
 			}
+			if view.DailyLossHold {
+				return res, manualFailf("error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
+			}
 		}
 	}
 
@@ -797,6 +812,9 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	}
 	if view.PendingCBClose {
 		return res, manualFailf("error: strategy has a pending circuit-breaker close — manual-add blocked")
+	}
+	if view.DailyLossHold {
+		return res, manualFailf("error: %s — manual-add blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
 	}
 	pos := view.Pos
 	if pos == nil {

@@ -297,6 +297,16 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("portfolio_risk.warn_threshold_pct: %.2f%% -> %.2f%%",
 			portfolioRiskWarnThreshold(cfg.PortfolioRisk), portfolioRiskWarnThreshold(next.PortfolioRisk))
 	}
+	// #1269: daily loss limit thresholds hot-reload with the same clone below —
+	// including while tripped (the gate re-evaluates each cycle from config).
+	if portfolioRiskDailyMaxLossUSD(cfg.PortfolioRisk) != portfolioRiskDailyMaxLossUSD(next.PortfolioRisk) {
+		addChange("portfolio_risk.daily_max_loss_usd: $%.2f -> $%.2f",
+			portfolioRiskDailyMaxLossUSD(cfg.PortfolioRisk), portfolioRiskDailyMaxLossUSD(next.PortfolioRisk))
+	}
+	if portfolioRiskDailyMaxLossPct(cfg.PortfolioRisk) != portfolioRiskDailyMaxLossPct(next.PortfolioRisk) {
+		addChange("portfolio_risk.daily_max_loss_pct: %.2f%% -> %.2f%%",
+			portfolioRiskDailyMaxLossPct(cfg.PortfolioRisk), portfolioRiskDailyMaxLossPct(next.PortfolioRisk))
+	}
 	cfg.PortfolioRisk = clonePortfolioRiskConfig(next.PortfolioRisk)
 
 	if !reflect.DeepEqual(cfg.Discord.Channels, next.Discord.Channels) {
@@ -865,6 +875,20 @@ func portfolioRiskMaxNotional(pr *PortfolioRiskConfig) float64 {
 		return 0
 	}
 	return pr.MaxNotionalUSD
+}
+
+func portfolioRiskDailyMaxLossUSD(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.DailyMaxLossUSD
+}
+
+func portfolioRiskDailyMaxLossPct(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.DailyMaxLossPct
 }
 
 func clonePortfolioRiskConfig(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
