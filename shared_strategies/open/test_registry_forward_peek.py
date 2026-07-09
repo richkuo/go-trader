@@ -353,9 +353,6 @@ def _sweep_cases():
     return cases
 
 
-_ZERO_SIGNAL_OBSERVED = {}
-
-
 @pytest.mark.parametrize("name,params", _sweep_cases())
 def test_registry_strategy_is_truncation_invariant(name, params):
     if name in SKIP_STRATEGIES:
@@ -372,7 +369,6 @@ def test_registry_strategy_is_truncation_invariant(name, params):
     # above prove nothing for this strategy, so it must be on the closed
     # allowlist (with a justification comment) — not silently green.
     nonzero = np.nan_to_num(full) != 0
-    _ZERO_SIGNAL_OBSERVED[name] = _ZERO_SIGNAL_OBSERVED.get(name, False) or bool(nonzero.any())
     if not nonzero.any():
         assert name in EXPECTED_ALL_ZERO_SIGNAL, (
             f"{name} produced all-zero signals on the sweep fixture — the "
@@ -385,25 +381,24 @@ def test_registry_strategy_is_truncation_invariant(name, params):
 def test_zero_signal_allowlist_is_exact():
     """Stale-entry guard: every EXPECTED_ALL_ZERO_SIGNAL entry must (a) name a
     registered strategy and (b) still be all-zero on the fixture for every
-    swept param set. Runs after the sweep in file order; pytest -p no:randomly
-    is not assumed, so it recomputes when the sweep didn't populate the cache.
+    swept param set. Always recomputed here (one strategy eval per allowlisted
+    name — cheap) so the verdict never depends on which sweep cases happened
+    to run in this session (test selection, ordering plugins, xdist workers).
     """
     unknown = set(EXPECTED_ALL_ZERO_SIGNAL) - set(_REGISTRY.STRATEGIES)
     assert not unknown, f"EXPECTED_ALL_ZERO_SIGNAL names unregistered strategies: {sorted(unknown)}"
     for name in sorted(EXPECTED_ALL_ZERO_SIGNAL):
         if name in SKIP_STRATEGIES:
             continue
-        emitted = _ZERO_SIGNAL_OBSERVED.get(name)
-        if emitted is None:
-            entry = _REGISTRY.STRATEGIES[name]
-            emitted = False
-            for platform in entry["platforms"]:
-                merged = {
-                    **entry["default_params"],
-                    **entry["variants"].get(platform, {}).get("default_params", {}),
-                }
-                sig = _signal(entry["fn"], merged, _df_for(name)[1])
-                emitted = emitted or bool((np.nan_to_num(sig) != 0).any())
+        entry = _REGISTRY.STRATEGIES[name]
+        emitted = False
+        for platform in entry["platforms"]:
+            merged = {
+                **entry["default_params"],
+                **entry["variants"].get(platform, {}).get("default_params", {}),
+            }
+            sig = _signal(entry["fn"], merged, _df_for(name)[1])
+            emitted = emitted or bool((np.nan_to_num(sig) != 0).any())
         assert not emitted, (
             f"{name} now emits signals on the sweep fixture — remove it from "
             f"EXPECTED_ALL_ZERO_SIGNAL (stale vacuity entry)."
