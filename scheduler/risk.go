@@ -6,8 +6,21 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// schedulerStarted is set once in main immediately before server.Start — the
+// first spawn that can read PortfolioRisk under mu. ClearLatchedKillSwitchSharedWallet
+// may only run while this is false (#1272).
+var schedulerStarted atomic.Bool
+
+// markSchedulerStarted ends the single-threaded startup phase. Call exactly
+// once immediately before server.Start (or any other goroutine that reads
+// AppState under mu).
+func markSchedulerStarted() {
+	schedulerStarted.Store(true)
+}
 
 // collectPriceSymbols returns the list of BinanceUS-format symbols to fetch
 // for spot strategy valuation/notional. Only "spot" strategy types are
@@ -282,11 +295,15 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 // peak — the original root cause from #244.
 //
 // CONCURRENCY: This function mutates state.PortfolioRisk without holding any
-// lock. It is only safe to call during startup, before the state mutex is
-// created and before any goroutines are spawned. See main.go:109.
+// lock. It is only safe during the single-threaded startup phase — before
+// markSchedulerStarted(). Calling it after that panics (#1272); do not hold
+// mu across the balance fetcher I/O inside this helper.
 //
 // Returns true iff the kill switch was cleared.
 func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyConfig, fetcher SharedWalletBalanceFetcher) bool {
+	if schedulerStarted.Load() {
+		panic("ClearLatchedKillSwitchSharedWallet called after scheduler started")
+	}
 	if state == nil || !state.PortfolioRisk.KillSwitchActive {
 		return false
 	}
@@ -346,6 +363,10 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 // operator-required gaps such as OKX spot or Robinhood options. Those venues do
 // not block OnChainConfirmedFlat because there is no safe automated close path,
 // but resuming trading without a human reset would hide remaining live exposure.
+//
+// CONCURRENCY: lock-free body — the caller must hold mu while invoking this
+// (hot-loop site in main does). Unlike ClearLatchedKillSwitchSharedWallet,
+// this helper is intended for post-startup use under the state lock.
 func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue float64, details string) bool {
 	if prs == nil || !prs.KillSwitchActive {
 		return false
