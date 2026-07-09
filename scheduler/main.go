@@ -1857,7 +1857,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1900,7 +1900,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, rhPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1941,7 +1941,7 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2028,7 +2028,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2079,7 +2079,7 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2378,7 +2378,7 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, tsContracts); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2673,6 +2673,12 @@ func main() {
 					posCount := len(stratState.Positions) + len(stratState.OptionPositions)
 					cash := stratState.Cash
 					regimeLabel := strategyDisplayRegimeLabel(stratState, sc, cfg.Regime)
+					// #1278: name an actively fail-closed entry gate in the status
+					// line so an operator scanning logs during a regime-store
+					// outage sees WHY the strategy is not opening.
+					if regimeGateFailClosedActive(sc, stratState, cfg.Regime) {
+						regimeLabel = decorateRegimeLabelGateClosed(regimeLabel)
+					}
 					mu.RUnlock()
 
 					logger.Info("%s", formatStatusLine(cash, posCount, pv, trades, regimeLabel))

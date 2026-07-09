@@ -486,3 +486,35 @@ def test_regime_label_allows_entry_empty_and_exact_match():
     assert _regime_mod.regime_label_allows_entry(["trending_up"], "")
     assert _regime_mod.regime_label_allows_entry(["trending_up_clean"], "trending_up_clean")
     assert not _regime_mod.regime_label_allows_entry(["trending_up_clean"], "ranging_quiet")
+
+
+def test_regime_label_allows_entry_on_failure_policy():
+    """#1278: an empty current label resolves per on_failure — 'open'
+    (default) admits, 'closed' blocks when a gate is configured. Mirrors the
+    Go regimeBlocksOpen empty-label arm for live/backtest parity."""
+    gate = ["trending_up"]
+    # Default and explicit open: legacy fail-open behavior.
+    assert _regime_mod.regime_label_allows_entry(gate, "")
+    assert _regime_mod.regime_label_allows_entry(gate, "", "open")
+    # Closed: an unknown label blocks a gated entry.
+    assert not _regime_mod.regime_label_allows_entry(gate, "", "closed")
+    # No gate configured: closed never fires.
+    assert _regime_mod.regime_label_allows_entry([], "", "closed")
+    # Known labels ignore the policy (membership decides).
+    assert _regime_mod.regime_label_allows_entry(gate, "trending_up", "closed")
+    assert not _regime_mod.regime_label_allows_entry(gate, "ranging", "closed")
+    # #1124 family rule composes with the policy unchanged.
+    assert _regime_mod.regime_label_allows_entry(
+        ["ranging_directional"], "ranging_directional_down", "closed")
+
+
+def test_normalize_regime_gate_on_failure():
+    """#1278: empty/None default open; case/whitespace normalized; unknown
+    values raise (a typo must never silently fail open)."""
+    assert _regime_mod.normalize_regime_gate_on_failure(None) == "open"
+    assert _regime_mod.normalize_regime_gate_on_failure("") == "open"
+    assert _regime_mod.normalize_regime_gate_on_failure(" Closed ") == "closed"
+    assert _regime_mod.normalize_regime_gate_on_failure("OPEN") == "open"
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="regime_gate_on_failure"):
+        _regime_mod.normalize_regime_gate_on_failure("fail-closed")

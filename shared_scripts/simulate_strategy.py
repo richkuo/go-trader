@@ -195,6 +195,13 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     regime_cfg = dict(cfg.get("regime") or {})
     regime_enabled = bool(regime_cfg.get("enabled"))
     allowed = list(cfg.get("allowed_regimes") or [])
+    # #1278: entry-gate failure policy — per-strategy field over the global
+    # regime.gate_on_failure default, mirroring the live resolution order.
+    gate_on_failure = (
+        str(cfg.get("regime_gate_on_failure") or "").strip().lower()
+        or str(regime_cfg.get("gate_on_failure") or "").strip().lower()
+        or "open"
+    )
 
     bt = Backtester(
         initial_capital=float(cfg.get("initial_capital") or 1000),
@@ -205,6 +212,7 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         regime_period=int(regime_cfg.get("period") or 14),
         regime_adx_threshold=float(regime_cfg.get("adx_threshold") or 20),
         allowed_regimes=allowed,
+        regime_gate_on_failure=gate_on_failure,
         stop_loss_atr_mult=cfg.get("stop_loss_atr_mult"),
         stop_loss_pct=cfg.get("stop_loss_pct"),
         stop_loss_margin_pct=cfg.get("stop_loss_margin_pct"),

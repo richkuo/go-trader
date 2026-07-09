@@ -883,6 +883,22 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # rejected: with regime.enabled=false the gate is a no-op in both live
         # and backtest, so there is nothing to diverge.
         allowed_regimes = sc.get("allowed_regimes") or None
+        # #1278: entry-gate failure policy — per-strategy field wins, else the
+        # global regime.gate_on_failure default, else "open" (the legacy #879
+        # fail-open behavior, keeping existing baselines byte-identical).
+        # Unknown values raise here, mirroring the Go load-time rejection.
+        _gate_on_failure_raw = (
+            str(sc.get("regime_gate_on_failure") or "").strip().lower()
+            or str(regime_cfg.get("gate_on_failure") or "").strip().lower()
+            or "open"
+        )
+        if _gate_on_failure_raw not in ("open", "closed"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} "
+                f"regime_gate_on_failure must be 'open' or 'closed', got "
+                f"{(sc.get('regime_gate_on_failure') or regime_cfg.get('gate_on_failure'))!r}"
+            )
+        regime_gate_on_failure = _gate_on_failure_raw
         gate_window = str(sc.get("regime_gate_window") or "").strip().lower()
         if (
             allowed_regimes
@@ -945,6 +961,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
             # windows are configured → legacy single-lookback ADX path unchanged.
             "regime_windows_spec": _resolve_regime_windows_spec(regime_cfg),
             "allowed_regimes": allowed_regimes,
+            "regime_gate_on_failure": regime_gate_on_failure,
             "profile_allocation": profile_allocation,
         }
     raise ValueError(
@@ -970,6 +987,7 @@ def run_single_backtest(
     regime_timeframe: Optional[str] = None,
     regime_windows_spec: Optional[dict] = None,
     allowed_regimes: Optional[List[str]] = None,
+    regime_gate_on_failure: str = "open",
     stop_loss_atr_mult: Optional[float] = None,
     stop_loss_pct: Optional[float] = None,
     stop_loss_margin_pct: Optional[float] = None,
@@ -1115,6 +1133,7 @@ def run_single_backtest(
         regime_adx_threshold=regime_adx_threshold,
         regime_windows_spec=regime_windows_spec,
         allowed_regimes=allowed_regimes,
+        regime_gate_on_failure=regime_gate_on_failure,
         stop_loss_atr_mult=stop_loss_atr_mult,
         stop_loss_pct=stop_loss_pct,
         stop_loss_margin_pct=stop_loss_margin_pct,
@@ -1560,6 +1579,11 @@ def main():
             # fallback for callers that don't supply the map.
             "regime_directional_certified",
             "regime_directional_certified_states",
+            # #1278: entry-gate failure policy for empty/unavailable regime
+            # labels (per-strategy over the global regime.gate_on_failure
+            # default; resolved in load_strategy_config). Default "open"
+            # keeps existing baselines byte-identical.
+            "regime_gate_on_failure",
             # #998: regime-profile allocation switch block (None when unused).
             "profile_allocation",
             "regime_timeframe",
