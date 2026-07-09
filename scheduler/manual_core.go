@@ -95,9 +95,15 @@ type manualStateView struct {
 	KillSwitch     bool
 	HasStrategy    bool
 	PendingCBClose bool
-	DailyLossHold  bool      // #1269: portfolio daily loss limit tripped — position-increasing manual actions refuse
-	DailyLossNote  string    // #1269: one-line detail for the refusal message (set iff DailyLossHold)
-	Pos            *Position // copy; nil when no open position for the symbol
+	DailyLossHold  bool   // #1269: portfolio daily loss limit tripped — position-increasing manual actions refuse
+	DailyLossNote  string // #1269: one-line detail for the refusal message (set iff DailyLossHold)
+	// #1270: same-direction exposure cap, bucket arm only — manual entries in a
+	// capped direction refuse (the concentration arm needs a live portfolio
+	// value and is enforced at the dispatch sites instead).
+	ExposureCapLongBlocked  bool
+	ExposureCapShortBlocked bool
+	ExposureCapNote         string    // one-line detail (set iff either direction is blocked)
+	Pos                     *Position // copy; nil when no open position for the symbol
 }
 
 func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol string) manualStateView {
@@ -110,6 +116,15 @@ func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol s
 		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC()); st.Tripped {
 			v.DailyLossHold = true
 			v.DailyLossNote = dailyLossHoldDetail(st)
+		}
+		// #1270: bucket arm of the same-direction exposure cap. nil prices →
+		// positions value at AvgCost (this path has no live price feed);
+		// portfolioValue 0 → the concentration arm cannot evaluate here and
+		// is enforced at the dispatch sites only.
+		if capSt := evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, nil, 0); capSt.LongBlocked || capSt.ShortBlocked {
+			v.ExposureCapLongBlocked = capSt.LongBlocked
+			v.ExposureCapShortBlocked = capSt.ShortBlocked
+			v.ExposureCapNote = exposureCapHoldDetail(capSt)
 		}
 	}
 	ss := state.Strategies[strategyID]
@@ -507,6 +522,12 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			if view.DailyLossHold {
 				return res, manualFailf("error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
 			}
+			// #1270: a manual open increases exposure in `side`'s direction —
+			// refuse while that direction's bucket is capped (the other
+			// direction, closes, and SL edits are unaffected).
+			if (side == "long" && view.ExposureCapLongBlocked) || (side == "short" && view.ExposureCapShortBlocked) {
+				return res, manualFailf("error: %s — manual-open (%s) blocked (closes and SL edits are unaffected)", view.ExposureCapNote, side)
+			}
 		}
 	}
 
@@ -819,6 +840,11 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	pos := view.Pos
 	if pos == nil {
 		return res, manualFailf("error: no open position for %s/%s; open one first with manual-open", strategyID, sc.Symbol)
+	}
+	// #1270: an add grows exposure in the position's direction — refuse while
+	// that direction's bucket is capped (closes and SL edits are unaffected).
+	if (pos.Side != "short" && view.ExposureCapLongBlocked) || (pos.Side == "short" && view.ExposureCapShortBlocked) {
+		return res, manualFailf("error: %s — manual-add (%s) blocked (closes and SL edits are unaffected)", view.ExposureCapNote, pos.Side)
 	}
 
 	// #1260 review: refuse a scale-in while a position-changing action is queued

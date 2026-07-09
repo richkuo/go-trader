@@ -64,6 +64,21 @@ type PortfolioRiskConfig struct {
 	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 60)
 	DailyMaxLossUSD  float64 `json:"daily_max_loss_usd,omitempty"` // #1269 — hard daily loss limit in USD (0 = disabled). When the day's aggregate PRE-FEE realized loss across all strategies reaches this, position-increasing actions (fresh opens, adds, flips, manual-open/add) are held until the UTC rollover; closes and SL/TP management keep running and nothing is force-closed. Hot-reloadable, including while tripped. Portfolio-level only — ignored inside platforms.<name>.risk overrides.
 	DailyMaxLossPct  float64 `json:"daily_max_loss_pct,omitempty"` // #1269 — same limit as a percent of the sum of per-strategy initial_capital (0 = disabled). Both arms may be set: the lower resolved USD threshold wins. The pct arm cannot evaluate when no strategy has initial_capital > 0 (surfaced in /status). Portfolio-level only.
+	// MaxSameDirectionNotionalUSD (#1270, 0 = disabled) caps aggregate SAME-DIRECTION
+	// signed exposure in the crypto bucket (all spot/perps/manual positions plus
+	// delta-weighted options; per-asset net deltas bucketed by sign). When the long
+	// (short) bucket exceeds the cap, position-increasing signals in that direction
+	// are held — the other direction and every position-reducing action pass, and
+	// nothing is ever force-closed. Hot-reloadable via SIGHUP (unlike max_notional_usd,
+	// which stays restart-required). Portfolio-level only.
+	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
+	// MaxAssetConcentrationPct (#1270, 0 = disabled) blocks new opens in an asset's
+	// net direction when that asset's |net delta| exceeds this percent of portfolio
+	// value (NOT of gross — gross-relative concentration self-normalizes and cannot
+	// catch a one-asset book). Per-asset scope: only strategies trading the
+	// over-concentrated asset are held, and only in its net direction. Blocking-only;
+	// hot-reloadable via SIGHUP. Portfolio-level only.
+	MaxAssetConcentrationPct float64 `json:"max_asset_concentration_pct,omitempty"`
 }
 
 // PlatformConfig holds per-platform optional risk overrides.
@@ -2097,6 +2112,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		}
 		if cfg.PortfolioRisk.DailyMaxLossPct < 0 || cfg.PortfolioRisk.DailyMaxLossPct > 100 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossPct))
+		}
+		// #1270: same-direction exposure cap thresholds. 0 = disabled; negatives are typos.
+		if cfg.PortfolioRisk.MaxSameDirectionNotionalUSD < 0 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.max_same_direction_notional_usd must be >= 0 (0 = disabled), got %g", cfg.PortfolioRisk.MaxSameDirectionNotionalUSD))
+		}
+		if cfg.PortfolioRisk.MaxAssetConcentrationPct < 0 || cfg.PortfolioRisk.MaxAssetConcentrationPct > 100 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.max_asset_concentration_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.MaxAssetConcentrationPct))
 		}
 	}
 

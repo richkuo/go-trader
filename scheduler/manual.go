@@ -129,6 +129,14 @@ func runManualOpen(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}
+				// #1270: a resting limit open increases exposure in resolvedSide's
+				// direction once it fills — refuse while that direction's bucket
+				// is capped. nil prices → AvgCost valuation, same as the
+				// market-order core path (manualStateViewFromState).
+				if capSt := evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, nil, 0); (resolvedSide == "long" && capSt.LongBlocked) || (resolvedSide == "short" && capSt.ShortBlocked) {
+					fmt.Fprintf(os.Stderr, "error: %s — manual limit-open (%s) blocked (closes and SL edits are unaffected)\n", exposureCapHoldDetail(capSt), resolvedSide)
+					return 1
+				}
 			}
 		}
 
