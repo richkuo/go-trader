@@ -238,7 +238,7 @@ func runAgentInfo(args []string) int {
 }
 
 // loadConfigSnapshot loads the config WITHOUT mutating the on-disk file.
-// LoadConfig runs MigrateConfig, which rewrites pre-v13/pre-v15 configs back to
+// LoadConfig runs MigrateConfig, which rewrites version-less/pre-v16 configs back to
 // disk — unacceptable for a read-only introspection command. Loading a throwaway
 // copy keeps any migration write on the temp file so the operator's config is
 // never touched, while still reflecting the effective (migrated, defaulted) shape.
