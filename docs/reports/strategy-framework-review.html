@@ -265,7 +265,16 @@
   </table>
   </div>
 
-  <h2>9 · Systematic improvement roadmap</h2>
+  <h2>9 · System hygiene — dead, legacy, and unused code</h2>
+  <p>A follow-up audit (Go <code>deadcode</code> analyzer plus reference tracing across Python, scripts, and docs) looked for code the system no longer needs. Deprecated strategies were excluded — they stay registered by design. Three tiers:</p>
+  <ul>
+    <li><span class="badge b-bad">Dead</span> <strong>Removable now:</strong> the git-tracked <code>archive/</code> directory (14 pre-refactor files, zero inbound references), a self-marked-superseded theta-harvest results doc, ~10 zero-caller Go functions, and test-only wrappers (<code>ValidateConfig</code>, the legacy <code>Execute*Signal</code> executor cluster) whose tests migrate to the surviving variants. Startup config validation was confirmed intact — the exported wrapper is redundant, not a gap.</li>
+    <li><span class="badge b-warn">Verify first</span> <strong>Legacy config migrators</strong> reach back to config version 2 while the current version is 16; they can be pruned to a fail-loud floor once every live deployment's <code>config_version</code> is confirmed recent. <strong>Platform/notifier backends</strong> (Deribit, Luno, Robinhood, Telegram…) are all wired and reachable — whether they're needed depends on which venues are actually traded, an operator decision.</li>
+    <li><span class="badge b-good">Deliberately kept</span> Backfill commands (load-bearing for live reconcile apportionment), the <code>close_strategies</code> compat surface, strategy-registry shims, the migrate-config script (idempotent, still referenced), and all research one-shots/candidate studies (retained as evidence per the backtesting-registry policy).</li>
+  </ul>
+  <p>Tracking issues: 1284 (delete archive/ + superseded doc) · 1285 (fleet-verified migrator pruning with fail-loud floor) · 1286 (Go dead-code removal with test migration).</p>
+
+  <h2>10 · Systematic improvement roadmap</h2>
   <p>Ordered by expected impact on real risk-adjusted returns, not by effort.</p>
   <h3>Tier 1 — risk correctness (changes what you can lose)</h3>
   <ul>
