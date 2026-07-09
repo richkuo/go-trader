@@ -232,16 +232,6 @@ func formatParamsSummary(params map[string]interface{}) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
-func explicitCloseStrategies(sc StrategyConfig) []string {
-	if sc.CloseStrategy == nil {
-		return nil
-	}
-	if trimmed := strings.TrimSpace(sc.CloseStrategy.Name); trimmed != "" {
-		return []string{trimmed}
-	}
-	return nil
-}
-
 func maxCloseFraction(fractions []float64) float64 {
 	max := 0.0
 	for _, f := range fractions {

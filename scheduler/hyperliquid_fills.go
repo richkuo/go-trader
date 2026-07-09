@@ -363,20 +363,6 @@ var noFillFeeResolver hlReconcileFillResolver = func(string, int64, float64) (HL
 	return HLFillLookup{}, false
 }
 
-// directHyperliquidReconcileFillResolver wraps lookupHyperliquidReconcileFillFee
-// for paths that can safely block on HTTP I/O — primarily tests that stub the
-// underlying function. Production reconcile paths must use
-// buildCachedHyperliquidReconcileFillResolver to keep network calls outside
-// mu.Lock().
-func directHyperliquidReconcileFillResolver(accountAddress string) hlReconcileFillResolver {
-	if accountAddress == "" {
-		return noFillFeeResolver
-	}
-	return func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool) {
-		return lookupHyperliquidReconcileFillFee(accountAddress, coin, oid, expectedQty)
-	}
-}
-
 // hyperliquidReconcileFeeCacheKey identifies one userFills lookup. Quantity is
 // rounded to 1e-8 so float identity comparisons across the snapshot/apply
 // boundary survive — HL sz_decimals tops out at 8 so the round is lossless

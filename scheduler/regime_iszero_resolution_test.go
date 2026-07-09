@@ -53,7 +53,7 @@ func adxRegimeCfg(scs ...StrategyConfig) *Config {
 // the strategy supplies trailing_stop_atr_regime, even though at the min-move
 // check the block is still raw. Covers both the explicit trend_regime shape and
 // the use_defaults shape (both leave a non-empty raw, empty TrendRegime).
-func TestValidateConfig_MinMoveAcceptsUnresolvedRegimeTrail(t *testing.T) {
+func TestConfigValidation_MinMoveAcceptsUnresolvedRegimeTrail(t *testing.T) {
 	minMove := 0.1
 	for _, tc := range []struct {
 		name string
@@ -76,7 +76,7 @@ func TestValidateConfig_MinMoveAcceptsUnresolvedRegimeTrail(t *testing.T) {
 				TrailingStopATRRegime:  &RegimeATRBlock{raw: tc.raw},
 				TrailingStopMinMovePct: &minMove,
 			}
-			err := ValidateConfig(adxRegimeCfg(sc))
+			err := validateConfig(adxRegimeCfg(sc), false)
 			if err != nil && strings.Contains(err.Error(), minMoveRequiresErr) {
 				t.Fatalf("trailing_stop_min_move_pct wrongly rejected alongside trailing_stop_atr_regime: %v", err)
 			}
@@ -87,7 +87,7 @@ func TestValidateConfig_MinMoveAcceptsUnresolvedRegimeTrail(t *testing.T) {
 // Instance 1 inverse — the fix must not turn the validator into a no-op. A
 // strategy with trailing_stop_min_move_pct but no trailing mode at all must
 // still be rejected.
-func TestValidateConfig_MinMoveStillRequiresATrailingMode(t *testing.T) {
+func TestConfigValidation_MinMoveStillRequiresATrailingMode(t *testing.T) {
 	minMove := 0.1
 	sc := StrategyConfig{
 		ID:                     "hl-rmc-eth-live",
@@ -100,7 +100,7 @@ func TestValidateConfig_MinMoveStillRequiresATrailingMode(t *testing.T) {
 		MarginMode:             "isolated",
 		TrailingStopMinMovePct: &minMove,
 	}
-	err := ValidateConfig(adxRegimeCfg(sc))
+	err := validateConfig(adxRegimeCfg(sc), false)
 	if err == nil || !strings.Contains(err.Error(), minMoveRequiresErr) {
 		t.Fatalf("trailing_stop_min_move_pct without any trailing mode must be rejected, got: %v", err)
 	}

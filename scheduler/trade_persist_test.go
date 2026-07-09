@@ -181,13 +181,13 @@ func TestRecordTrade_SurvivesCrashBeforeSave(t *testing.T) {
 	}
 }
 
-// TestExecutePerpsSignal_PersistsExchangeMetadata is the #289 regression guard
-// for the fix that threads fillOID/fillFee into ExecutePerpsSignal so every
+// TestExecutePerpsWithLeverage_PersistsExchangeMetadata is the #289 regression guard
+// for the fix that threads fillOID/fillFee into ExecutePerpsSignalWithLeverage so every
 // Trade is constructed complete before RecordTrade persists it. Prior to the
 // fix the OID/fee were stamped onto s.TradeHistory AFTER RecordTrade had
 // already written an empty-metadata row; SaveState's timestamp-dedup then
 // skipped re-insertion and the DB stayed stale. Reload + assert fills.
-func TestExecutePerpsSignal_PersistsExchangeMetadata(t *testing.T) {
+func TestExecutePerpsWithLeverage_PersistsExchangeMetadata(t *testing.T) {
 	db := openTestDB(t)
 	prev := tradeRecorder
 	tradeRecorder = db.InsertTrade
@@ -217,9 +217,9 @@ func TestExecutePerpsSignal_PersistsExchangeMetadata(t *testing.T) {
 	s := state.Strategies["hl-live"]
 
 	// Live open-long @ $2000, qty=0.5, OID=12345, fee=$0.42.
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "12345", 0.42, false, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0.5, "12345", 0.42, DirectionLong, 0, logger)
 	if err != nil {
-		t.Fatalf("ExecutePerpsSignal: %v", err)
+		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
@@ -496,7 +496,7 @@ func TestRecordTrade_PersistFailureTriggersWarnHook(t *testing.T) {
 	}
 }
 
-// TestExecutePerpsSignal_FlipDoesNotDoubleCountFee pins the policy that when
+// TestExecutePerpsWithLeverage_FlipDoesNotDoubleCountFee pins the policy that when
 // a buy signal encounters an existing short — producing a close-short +
 // open-long pair in memory — the single real exchange fee is apportioned
 // across both synthetic legs by quantity share (#954). One live fill, one
@@ -505,7 +505,7 @@ func TestRecordTrade_PersistFailureTriggersWarnHook(t *testing.T) {
 // deducted an unstamped modeled fee — overcharging the cash book and
 // drifting the trade ledger from the wallet). Both legs stamp the shared
 // flip OID so `backfill trade-ledger` can re-apportion from userFills.
-func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
+func TestExecutePerpsWithLeverage_FlipDoesNotDoubleCountFee(t *testing.T) {
 	db := openTestDB(t)
 	prev := tradeRecorder
 	tradeRecorder = db.InsertTrade
@@ -540,9 +540,9 @@ func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 
 	// Live flip buy @ $2000 qty=0.8 → closes the full 0.5 short + opens new
 	// 0.3 long = 2 in-memory trades, 1 real exchange fill worth $0.42.
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.8, "99999", 0.42, true, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0.8, "99999", 0.42, DirectionBoth, 0, logger)
 	if err != nil {
-		t.Fatalf("ExecutePerpsSignal: %v", err)
+		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
 	if trades != 2 {
 		t.Fatalf("trades = %d, want 2 (close-short + open-long)", trades)
@@ -590,10 +590,10 @@ func TestExecutePerpsSignal_FlipDoesNotDoubleCountFee(t *testing.T) {
 	}
 }
 
-// TestExecuteSpotSignal_PersistsImmediately verifies that the production
-// execution path (ExecuteSpotSignal) writes trades through the tradeRecorder
+// TestExecuteSpotWithFillFee_PersistsImmediately verifies that the production
+// execution path (ExecuteSpotSignalWithFillFee) writes trades through the tradeRecorder
 // hook, not just the end-of-cycle SaveState batch.
-func TestExecuteSpotSignal_PersistsImmediately(t *testing.T) {
+func TestExecuteSpotWithFillFee_PersistsImmediately(t *testing.T) {
 	db := openTestDB(t)
 	prev := tradeRecorder
 	tradeRecorder = db.InsertTrade
@@ -607,8 +607,8 @@ func TestExecuteSpotSignal_PersistsImmediately(t *testing.T) {
 	}
 	logger := newTestLogger(t)
 
-	if _, err := ExecuteSpotSignal(s, 1, "BTC", 50000, 0, logger); err != nil {
-		t.Fatalf("ExecuteSpotSignal: %v", err)
+	if _, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", 50000, 0, 0, "", 0, logger); err != nil {
+		t.Fatalf("ExecuteSpotSignalWithFillFee: %v", err)
 	}
 
 	var count int
@@ -616,6 +616,6 @@ func TestExecuteSpotSignal_PersistsImmediately(t *testing.T) {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 1 {
-		t.Errorf("trade rows after ExecuteSpotSignal = %d, want 1 (hook never fired)", count)
+		t.Errorf("trade rows after ExecuteSpotSignalWithFillFee = %d, want 1 (hook never fired)", count)
 	}
 }

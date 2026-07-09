@@ -434,11 +434,6 @@ func regimeWindowExists(rc *RegimeConfig, key string) bool {
 	return ok
 }
 
-// regimeWindowsJSON forwards to regimeWindowsSpecJSON (#795).
-func regimeWindowsJSON(rc *RegimeConfig) string {
-	return regimeWindowsSpecJSON(rc)
-}
-
 func syncStrategyRegimeState(stratState *StrategyState, payload RegimePayload, rc *RegimeConfig) {
 	if stratState == nil {
 		return
@@ -447,10 +442,6 @@ func syncStrategyRegimeState(stratState *StrategyState, payload RegimePayload, r
 	if labels := payload.WindowLabels(); len(labels) > 0 {
 		stratState.RegimeWindows = cloneStringMap(labels)
 	}
-}
-
-func positionRegimeForFeature(pos *Position, sc StrategyConfig, rc *RegimeConfig, feature string) string {
-	return regimeLabelAtOpen(pos, resolveStrategyRegimeWindow(sc, feature, rc), rc)
 }
 
 func strategyRegimeWindowField(sc StrategyConfig, field string) string {

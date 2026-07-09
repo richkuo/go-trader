@@ -190,7 +190,7 @@ func TestEffectiveTrailingStopPct_ManualNonRatchetReturnsZero(t *testing.T) {
 	}
 }
 
-func TestValidateConfigManualRatchetAllowsTrailingATRMult(t *testing.T) {
+func TestConfigValidationManualRatchetAllowsTrailingATRMult(t *testing.T) {
 	trail := 3.0
 	cfg := &Config{
 		Strategies: []StrategyConfig{
@@ -211,7 +211,7 @@ func TestValidateConfigManualRatchetAllowsTrailingATRMult(t *testing.T) {
 			},
 		},
 	}
-	if err := ValidateConfig(cfg); err != nil {
+	if err := validateConfig(cfg, false); err != nil {
 		t.Fatalf("manual trailing_tp_ratchet config should validate, got: %v", err)
 	}
 }

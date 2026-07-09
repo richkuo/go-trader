@@ -1246,7 +1246,7 @@ func TestClosedPositions_Flush(t *testing.T) {
 }
 
 // TestRecordClosedPosition_ExecuteSignal verifies that closing a position via
-// ExecuteSpotSignal appends to the ClosedPositions buffer with the correct
+// ExecuteSpotSignalWithFillFee appends to the ClosedPositions buffer with the correct
 // PnL, reason, and duration (#288).
 func TestRecordClosedPosition_ExecuteSignal(t *testing.T) {
 	openedAt := time.Now().UTC().Add(-2 * time.Hour)
@@ -1259,8 +1259,8 @@ func TestRecordClosedPosition_ExecuteSignal(t *testing.T) {
 	}
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
-	if _, err := ExecuteSpotSignal(s, -1, "BTC", 110, 0, logger); err != nil {
-		t.Fatalf("ExecuteSpotSignal: %v", err)
+	if _, err := ExecuteSpotSignalWithFillFee(s, -1, "BTC", 110, 0, 0, "", 0, logger); err != nil {
+		t.Fatalf("ExecuteSpotSignalWithFillFee: %v", err)
 	}
 	if _, exists := s.Positions["BTC"]; exists {
 		t.Fatal("position should have been closed")

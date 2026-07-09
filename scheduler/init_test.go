@@ -751,7 +751,7 @@ func TestDeriveShortName(t *testing.T) {
 }
 
 // #328/#656 — triple_ema_bidir must generate Direction="both" in perps
-// configs so ExecutePerpsSignal opens shorts from flat. Long-only strategies
+// configs so ExecutePerpsSignalWithLeverage opens shorts from flat. Long-only strategies
 // must keep Direction="long" so they can't silently flip into short positions.
 func TestGenerateConfig_PerpsDirectionWiring(t *testing.T) {
 	opts := baseOpts()
@@ -980,7 +980,7 @@ func TestGenerateConfig_NoCapitalPct(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_CapitalPctValid(t *testing.T) {
+func TestConfigValidation_CapitalPctValid(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xTEST")
 	cfg := &Config{
 		IntervalSeconds: 600,
@@ -997,12 +997,12 @@ func TestValidateConfig_CapitalPctValid(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err != nil {
+	if err := validateConfig(cfg, false); err != nil {
 		t.Errorf("expected valid config with capital_pct, got error: %v", err)
 	}
 }
 
-func TestValidateConfig_CapitalPctInvalid(t *testing.T) {
+func TestConfigValidation_CapitalPctInvalid(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
@@ -1018,12 +1018,12 @@ func TestValidateConfig_CapitalPctInvalid(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err == nil {
+	if err := validateConfig(cfg, false); err == nil {
 		t.Error("expected validation error for capital_pct > 1")
 	}
 }
 
-func TestValidateConfig_CapitalPctNegative(t *testing.T) {
+func TestConfigValidation_CapitalPctNegative(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
@@ -1039,12 +1039,12 @@ func TestValidateConfig_CapitalPctNegative(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err == nil {
+	if err := validateConfig(cfg, false); err == nil {
 		t.Error("expected validation error for negative capital_pct")
 	}
 }
 
-func TestValidateConfig_NoCapitalNoCapitalPct(t *testing.T) {
+func TestConfigValidation_NoCapitalNoCapitalPct(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
@@ -1060,7 +1060,7 @@ func TestValidateConfig_NoCapitalNoCapitalPct(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err == nil {
+	if err := validateConfig(cfg, false); err == nil {
 		t.Error("expected validation error when neither capital nor capital_pct is set")
 	}
 }

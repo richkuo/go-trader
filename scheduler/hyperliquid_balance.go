@@ -323,21 +323,6 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 	return balance, positions, nil
 }
 
-// reconcileHyperliquidPositions applies on-chain position data to a single StrategyState.
-// It updates or removes the position for the given symbol based on ownership.
-// Does NOT sync cash (each strategy manages its own virtual cash).
-// Returns true if any state was changed. Must be called under Lock.
-//
-// accountAddress is used to resolve the on-chain fill fee via userFills when
-// the reconciler detects an external close (#588). Empty disables the
-// lookup — the close still books with the modeled fee. This entry point
-// performs the lookup synchronously; production reconcile paths build a
-// cached resolver outside the lock and call
-// reconcileHyperliquidPositionsWithResolver.
-func reconcileHyperliquidPositions(stratState *StrategyState, sym string, positions []HLPosition, accountAddress string, logger *StrategyLogger) bool {
-	return reconcileHyperliquidPositionsWithResolver(stratState, sym, positions, directHyperliquidReconcileFillResolver(accountAddress), logger, nil, nil, StrategyConfig{})
-}
-
 // reconcileHyperliquidPositionsForStrategy is the production entry point with
 // strategy-config awareness. It first attempts to attribute partial / full
 // closes to a cleared TP tier (sole-owner mirror of shared-coin Detector 3 —
@@ -940,7 +925,7 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 				pos.Multiplier = 1
 				changed = true
 			}
-			// #418: same write-path guard as reconcileHyperliquidPositions —
+			// #418: same write-path guard as reconcileHyperliquidPositionsWithResolver —
 			// only seed leverage from on-chain when virtual is zero-value.
 			if onChainPos != nil && onChainPos.Leverage > 0 && pos.Leverage == 0 {
 				logger, err := logMgr.GetStrategyLogger(id)
@@ -2446,7 +2431,7 @@ func runPendingHyperliquidCircuitCloses(
 			}
 
 			// Apply whatever did fill against virtual state (#418 Fix 2). For
-			// shared-wallet coins reconcileHyperliquidPositions deliberately
+			// shared-wallet coins reconcileHyperliquidPositionsWithResolver deliberately
 			// does NOT overwrite quantities (#258), so without this decrement
 			// the firing strategy's virtual position would stay at 100% while
 			// on-chain dropped to its weighted share — the inflated virtual

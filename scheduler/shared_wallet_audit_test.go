@@ -113,7 +113,7 @@ func TestPlanTradeLedgerForStrategy_MigrationOnlyPreservesNetSum(t *testing.T) {
 			ExchangeOrderID: "200"}, // legacy: PnLGross=false, ExchangeFee=0
 	}
 
-	plan := planTradeLedgerForStrategy("hl-x", trades, map[string]HLFillSummary{}, 1000, 0)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, map[string]HLFillSummary{}, 1000, 0, nil)
 
 	if plan.MigratedCount != 1 || plan.MatchedCount != 0 {
 		t.Fatalf("migrated=%d matched=%d, want 1/0 (no fills to true-up)", plan.MigratedCount, plan.MatchedCount)

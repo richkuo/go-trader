@@ -36,7 +36,7 @@ func TestScaleInLiveProtectionResizable(t *testing.T) {
 
 // A static scalar SL on a LIVE perps strategy with scale-in is rejected at load
 // because the resize path can't grow it after an add (#873/#875).
-func TestValidateConfigRejectsScalarSLScaleInOnLivePerps(t *testing.T) {
+func TestConfigValidationRejectsScalarSLScaleInOnLivePerps(t *testing.T) {
 	slPct := 4.0
 	cfg := &Config{
 		Strategies: []StrategyConfig{{
@@ -55,7 +55,7 @@ func TestValidateConfigRejectsScalarSLScaleInOnLivePerps(t *testing.T) {
 
 // The same scalar SL is fine on PAPER perps (no on-chain orders to under-cover)
 // and an ATR SL is fine on live perps — the guard does not fire in either case.
-func TestValidateConfigScaleInGuardScopedToLiveScalar(t *testing.T) {
+func TestConfigValidationScaleInGuardScopedToLiveScalar(t *testing.T) {
 	slPct := 4.0
 	atr := 1.5
 	guardMsg := "requires an ATR/regime or trailing stop-loss"

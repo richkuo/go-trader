@@ -88,7 +88,7 @@ var knownShortNames = map[string]string{
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
 // short-entry (not just a long-exit). Configs generated for these strategies
-// set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
+// set AllowShorts=true so ExecutePerpsSignalWithLeverage opens shorts from flat instead
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
 	"triple_ema_bidir":        true,
@@ -588,7 +588,7 @@ func generateConfig(opts InitOptions) *Config {
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
 			// Strategies that emit bidirectional signals must opt in to
-			// short-opening execution, otherwise ExecutePerpsSignal drops
+			// short-opening execution, otherwise ExecutePerpsSignalWithLeverage drops
 			// their signal=-1 from flat and the strategy becomes effectively
 			// long-only at the executor layer (#328 review feedback).
 			// #656: direction enum replaces allow_shorts. Bidirectional

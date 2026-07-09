@@ -2293,7 +2293,7 @@ func main() {
 							// #1150: paused — hold position-increasing signals (fresh open, add,
 							// flip); position-reducing actions pass so open positions ride their
 							// natural exit. The Signal==0 manage path below keeps running.
-							// allowsLong=allowsShort=true: ExecuteFuturesSignal is
+							// allowsLong=allowsShort=true: ExecuteFuturesSignalWithFillFee is
 							// unconditionally bidirectional — a sell on a long (closeFraction
 							// 0) closes AND opens a fresh short ("Open short … after closing
 							// long"), and a buy on a short mirrors it — so an opposite-side
@@ -3412,7 +3412,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 //
 // posSide is the current position side captured under RLock in Phase 1
 // ("long", "short", or "" for flat). We consult PerpsOrderSkipReason BEFORE
-// calling the Python executor: if ExecutePerpsSignal would treat the result
+// calling the Python executor: if ExecutePerpsSignalWithLeverage would treat the result
 // as a no-op, placing the live order would fill on-chain but never produce a
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
@@ -3626,7 +3626,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	sizingLeverage := EffectiveSizingLeverage(sc)
 	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
 
-	// Thread exchange metadata into ExecutePerpsSignal so each Trade is built
+	// Thread exchange metadata into ExecutePerpsSignalWithLeverage so each Trade is built
 	// with the OID and fee before RecordTrade persists it (#289). Stamping the
 	// fields onto s.TradeHistory after the fact would never reach SQLite — the
 	// eager INSERT has already happened and SaveState's timestamp dedup skips
@@ -3821,7 +3821,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 // ("long", "short", or "" for flat). We consult FuturesOrderSkipReason BEFORE
 // calling the Python executor: without this guard a live sell fires while
 // posSide=="short" (Quantity is always positive so posQty<=0 cannot
-// distinguish short from flat) but ExecuteFuturesSignal is a no-op in that
+// distinguish short from flat) but ExecuteFuturesSignalWithFillFee is a no-op in that
 // state — producing a silent state drift identical in shape to #298/#300.
 func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
 	if reason := FuturesOrderSkipReason(result.Signal, posSide); reason != "" {
@@ -4018,7 +4018,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 //
 // posSide is the current position side captured under RLock in Phase 1
 // ("long", "short", or "" for flat). We consult SpotOrderSkipReason BEFORE
-// calling the Python executor: otherwise a no-op ExecuteSpotSignal (e.g.
+// calling the Python executor: otherwise a no-op ExecuteSpotSignalWithFillFee (e.g.
 // already-long with signal=1) would not record the live fill — the same bug
 // class as #298. See #300.
 func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
@@ -4201,8 +4201,8 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 // posSide is the current position side captured under RLock in Phase 1
 // ("long", "short", or "" for flat). We consult Perps/SpotOrderSkipReason
 // BEFORE calling the Python executor — OKX covers both spot and perps, and
-// each has its own side-based no-op branches in ExecuteSpotSignal /
-// ExecutePerpsSignal that must be mirrored to avoid the #298 bug class
+// each has its own side-based no-op branches in ExecuteSpotSignalWithFillFee /
+// ExecutePerpsSignalWithLeverage that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
 func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {

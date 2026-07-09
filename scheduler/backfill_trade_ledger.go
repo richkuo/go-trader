@@ -39,7 +39,7 @@ import (
 // re-anchors instead of reading the correction as drift; untouched wallets
 // keep their baseline and any standing drift there keeps alarming.
 
-// TradeLedgerChange is one trade-row rewrite produced by planTradeLedgerForStrategy.
+// TradeLedgerChange is one trade-row rewrite produced by planTradeLedgerForStrategyWithOIDTotals.
 type TradeLedgerChange struct {
 	RowID        int64
 	Timestamp    time.Time
@@ -133,16 +133,6 @@ func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[str
 		}
 	}
 	return out
-}
-
-// planTradeLedgerForStrategy is the pure planner (no I/O).
-func planTradeLedgerForStrategy(
-	strategyID string,
-	trades []TradeBackfillRow,
-	fillMap map[string]HLFillSummary,
-	initialCapital, oldCash float64,
-) TradeLedgerPlan {
-	return planTradeLedgerForStrategyWithOIDTotals(strategyID, trades, fillMap, initialCapital, oldCash, nil)
 }
 
 func planTradeLedgerForStrategyWithOIDTotals(

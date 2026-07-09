@@ -1611,13 +1611,13 @@ func TestPerpsMarginDrawdownInputs_NoPositions(t *testing.T) {
 // #418: config leverage (sc.Leverage) is the source of truth for the
 // margin-drawdown denominator, NOT pos.Leverage. This regression test fails
 // before the fix: pos.Leverage = 20 (on-chain margin tier overwrite from
-// reconcileHyperliquidPositions) would inflate the drawdown ratio 10x against
+// reconcileHyperliquidPositionsWithResolver) would inflate the drawdown ratio 10x against
 // a config Leverage of 2.
 func TestPerpsMarginDrawdownInputs_UsesConfigLeverageNotPosLeverage(t *testing.T) {
 	s := &StrategyState{
 		Positions: map[string]*Position{
 			// pos.Leverage = 20 simulates the corrupted state that
-			// reconcileHyperliquidPositions writes when on-chain margin tier
+			// reconcileHyperliquidPositionsWithResolver writes when on-chain margin tier
 			// (HL exchange max leverage) differs from trader's intent.
 			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
 		},

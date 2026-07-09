@@ -743,15 +743,6 @@ func PerpsAllowsShort(sc StrategyConfig) bool {
 	return d == DirectionShort || d == DirectionBoth
 }
 
-// directionFromAllowShorts is the legacy bool→direction mapping used by
-// migration and by call sites that still pass the bool. (#656)
-func directionFromAllowShorts(allowShorts bool) string {
-	if allowShorts {
-		return DirectionBoth
-	}
-	return DirectionLong
-}
-
 // PerpsOpenNotional is the primitive sizing helper: returns the USD notional
 // to open a perps position given primitive inputs. When marginPerTradeUSD is
 // positive, the formula is margin-based: min(marginPerTradeUSD, cash) ×
@@ -1473,11 +1464,6 @@ func ordinal(n int) string {
 	default:
 		return fmt.Sprintf("%dth", n)
 	}
-}
-
-// ValidateConfig checks script paths and strategy fields (#34, #36).
-func ValidateConfig(cfg *Config) error {
-	return validateConfig(cfg, false)
 }
 
 // regimeDirectionalPolicyWarnings returns one operator warning per strategy that selects

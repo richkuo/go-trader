@@ -18,7 +18,7 @@ func auditFloatPtr(v float64) *float64 { return &v }
 // Compound case: ALL five scalar stop owners set at once on one HL perps
 // strategy. Every pairwise mutex must still fire — a fix that only checks
 // pairs in isolation could short-circuit after the first conflict.
-func TestValidateConfigCompoundAllScalarStopOwnersRejected(t *testing.T) {
+func TestConfigValidationCompoundAllScalarStopOwnersRejected(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
@@ -31,7 +31,7 @@ func TestValidateConfigCompoundAllScalarStopOwnersRejected(t *testing.T) {
 			StopLossATRMult:     auditFloatPtr(1.5),
 		}},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil {
 		t.Fatal("expected compound stop-owner config to be rejected")
 	}
@@ -50,7 +50,7 @@ func TestValidateConfigCompoundAllScalarStopOwnersRejected(t *testing.T) {
 
 // Compound case: scalar ATR stop plus BOTH per-regime stop blocks. Each
 // regime owner must be independently rejected against the scalar owner.
-func TestValidateConfigCompoundScalarPlusRegimeStopOwnersRejected(t *testing.T) {
+func TestConfigValidationCompoundScalarPlusRegimeStopOwnersRejected(t *testing.T) {
 	raw := []byte(`{
 		"id": "hl-eth", "type": "perps", "platform": "hyperliquid",
 		"script": "check.py", "args": ["a", "ETH", "1h"],
@@ -67,7 +67,7 @@ func TestValidateConfigCompoundScalarPlusRegimeStopOwnersRejected(t *testing.T) 
 		Regime:     &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 25},
 		Strategies: []StrategyConfig{sc},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil {
 		t.Fatal("expected scalar+regime compound stop-owner config to be rejected")
 	}
@@ -103,7 +103,7 @@ func TestUnmarshalStrategyConfigCanonicalCloseWinsOverLegacyArray(t *testing.T) 
 		t.Fatalf("legacy array should be dropped when canonical key present, got %v", sc.closeStrategiesLegacy)
 	}
 	cfg := Config{Strategies: []StrategyConfig{sc}}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("canonical+legacy mix should validate, got: %v", err)
 	}
 }
@@ -120,7 +120,7 @@ func TestUnmarshalStrategyConfigLegacyArrayLenTwoStillRejected(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	cfg := Config{Strategies: []StrategyConfig{sc}}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil || !strings.Contains(err.Error(), "close_strategies has 2 entries") {
 		t.Fatalf("expected len>1 legacy close_strategies rejection, got: %v", err)
 	}

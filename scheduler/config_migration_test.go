@@ -1071,8 +1071,8 @@ func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 
 	if got := cfg.ConfigVersion; got != CurrentConfigVersion {

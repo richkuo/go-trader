@@ -225,7 +225,9 @@ func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
 	logMgr, _ := NewLogManager(t.TempDir())
 	logger, _ := logMgr.GetStrategyLogger("hl-test")
 
-	changed := reconcileHyperliquidPositions(s, "BTC", nil, "0xtest", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", nil, func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool) {
+		return lookupHyperliquidReconcileFillFee("0xtest", coin, oid, expectedQty)
+	}, logger, nil, nil, StrategyConfig{})
 	if !changed {
 		t.Fatal("expected changed=true")
 	}

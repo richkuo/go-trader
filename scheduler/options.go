@@ -487,26 +487,3 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 
 	return trades, details
 }
-
-// UpdateOptionPositions refreshes DTE and current values for tracked options.
-func UpdateOptionPositions(s *StrategyState) {
-	now := time.Now().UTC()
-	for id, pos := range s.OptionPositions {
-		expiry, err := time.Parse("2006-01-02", pos.Expiry)
-		if err != nil {
-			continue
-		}
-		dte := expiry.Sub(now).Hours() / 24
-		pos.DTE = dte
-		if dte <= 0 {
-			// Expired — assume worthless for bought, full profit for sold
-			if pos.Action == "buy" {
-				pos.CurrentValueUSD = 0
-			} else {
-				pos.CurrentValueUSD = 0 // liability gone
-			}
-			// Could auto-close here but let the strategy handle it
-			_ = id
-		}
-	}
-}

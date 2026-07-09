@@ -93,8 +93,8 @@ func TestManualDefault_RegimeADX_SelectsRatchetRegime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig (regime ADX): %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 	sc, _ := manualStrategyByID(cfg, "hl-manual-eth-live")
 	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != trailingTPRatchetRegimeCloseName {
@@ -145,8 +145,8 @@ func TestManualDefault_RegimeComposite_SelectsRatchetRegime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig (regime composite): %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 	sc, _ := manualStrategyByID(cfg, "hl-manual-btc-live")
 	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != trailingTPRatchetRegimeCloseName {
@@ -228,8 +228,8 @@ func TestManualDefault_ExplicitStopFieldKeepsTiered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 	sc, _ := manualStrategyByID(cfg, "hl-manual-eth-live")
 	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != "tiered_tp_atr_live" {
@@ -277,8 +277,8 @@ func TestManualDefault_ManualDefaultsTrailBlockOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 	sc, _ := manualStrategyByID(cfg, "hl-manual-eth-live")
 	if sc.CloseStrategy == nil || sc.CloseStrategy.Name != trailingTPRatchetRegimeCloseName {
@@ -318,8 +318,8 @@ func TestManualDefault_ManualDefaultsTrailBlockNotAliased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 	eth, _ := manualStrategyByID(cfg, "hl-manual-eth")
 	btc, _ := manualStrategyByID(cfg, "hl-manual-btc")

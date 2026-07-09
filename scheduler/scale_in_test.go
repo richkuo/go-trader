@@ -244,7 +244,7 @@ func TestApplyManualActionAddBlendsAndRecords(t *testing.T) {
 }
 
 // allow_scale_in is rejected outside HL perps/manual (#873).
-func TestValidateConfigRejectsScaleInOffPlatform(t *testing.T) {
+func TestConfigValidationRejectsScaleInOffPlatform(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{
 			{ID: "spot-x", Type: "spot", Platform: "binanceus", Script: "s.py", AllowScaleIn: true},

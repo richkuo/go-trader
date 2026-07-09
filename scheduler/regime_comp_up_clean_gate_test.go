@@ -45,9 +45,9 @@ func compUpCleanP21FuturesConfig() Config {
 // The full wiring from the issue — composite medium window at period 21,
 // regime_gate_window pointing at it, allowed_regimes carrying the composite
 // label — must validate as one piece.
-func TestValidateConfig_CompUpCleanP21Wiring_Accepts(t *testing.T) {
+func TestConfigValidation_CompUpCleanP21Wiring_Accepts(t *testing.T) {
 	cfg := compUpCleanP21FuturesConfig()
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("comp_up_clean_p21 wiring should validate, got: %v", err)
 	}
 }
@@ -55,14 +55,14 @@ func TestValidateConfig_CompUpCleanP21Wiring_Accepts(t *testing.T) {
 // The realistic deployment shape: a live config that already carries an ADX
 // "medium" window for other strategies adds the p21 composite window under its
 // own key. With regime_gate_window pointing at it the pairing validates…
-func TestValidateConfig_CompUpCleanP21Wiring_AcceptsAlongsideExistingADXWindow(t *testing.T) {
+func TestConfigValidation_CompUpCleanP21Wiring_AcceptsAlongsideExistingADXWindow(t *testing.T) {
 	cfg := compUpCleanP21FuturesConfig()
 	cfg.Regime.Windows = RegimeWindowsMap{
 		"medium":   {Classifier: "adx", Period: 14, ADXThreshold: 20},
 		"comp_p21": {Classifier: "composite", Period: 21},
 	}
 	cfg.Strategies[0].RegimeGateWindow = "comp_p21"
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("comp_p21 gate window alongside an ADX medium window should validate, got: %v", err)
 	}
 }
@@ -73,14 +73,14 @@ func TestValidateConfig_CompUpCleanP21Wiring_AcceptsAlongsideExistingADXWindow(t
 // loudly, never half-apply. (With the composite window itself named "medium"
 // and no ADX sibling, primary resolution happens to land on it — the explicit
 // regime_gate_window is what makes the wiring deployment-order independent.)
-func TestValidateConfig_CompUpCleanP21Wiring_RejectsWithoutGateWindow(t *testing.T) {
+func TestConfigValidation_CompUpCleanP21Wiring_RejectsWithoutGateWindow(t *testing.T) {
 	cfg := compUpCleanP21FuturesConfig()
 	cfg.Regime.Windows = RegimeWindowsMap{
 		"medium":   {Classifier: "adx", Period: 14, ADXThreshold: 20},
 		"comp_p21": {Classifier: "composite", Period: 21},
 	}
 	cfg.Strategies[0].RegimeGateWindow = ""
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil {
 		t.Fatal("trending_up_clean against the primary ADX window should fail validation")
 	}
@@ -92,12 +92,12 @@ func TestValidateConfig_CompUpCleanP21Wiring_RejectsWithoutGateWindow(t *testing
 // A composite label on an ADX window spec must also reject when the gate
 // window is named but carries the wrong classifier — the pairing is
 // (label, window classifier), not just window existence.
-func TestValidateConfig_CompUpCleanP21Wiring_RejectsADXClassifierWindow(t *testing.T) {
+func TestConfigValidation_CompUpCleanP21Wiring_RejectsADXClassifierWindow(t *testing.T) {
 	cfg := compUpCleanP21FuturesConfig()
 	cfg.Regime.Windows = RegimeWindowsMap{
 		"medium": {Classifier: "adx", Period: 21},
 	}
-	if err := ValidateConfig(&cfg); err == nil {
+	if err := validateConfig(&cfg, false); err == nil {
 		t.Fatal("trending_up_clean against an adx-classifier gate window should fail validation")
 	}
 }
