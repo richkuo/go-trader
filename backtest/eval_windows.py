@@ -100,12 +100,23 @@ def trade_samples_from_results(results: dict) -> List[dict]:
 
     ``pnl_pct`` is computed purely from entry/exit fill prices, so on a
     zero-friction (gross) run it is the raw per-trade price edge the M1
-    step-2 noise check adjudicates. ``entry_date`` rides along so callers
-    pooling overlapping windows can deduplicate the same physical entry.
+    step-2 noise check adjudicates. ``pnl_pct_net`` (#1274, additive) is the
+    fee-deducted return on entry notional (Trade.pnl has both commissions
+    subtracted; falls back to the gross figure when notional is unavailable)
+    for consumers that need the real equity path, e.g. the Monte Carlo
+    trade-order resampler. ``entry_date`` rides along so callers pooling
+    overlapping windows can deduplicate the same physical entry.
     Missing/empty trade lists yield [].
     """
-    return [{"entry_date": str(t["entry_date"]), "pnl_pct": float(t["pnl_pct"])}
-            for t in results.get("trades") or []]
+    out = []
+    for t in results.get("trades") or []:
+        gross = float(t["pnl_pct"])
+        notional = float(t.get("shares") or 0.0) * float(t.get("entry_price") or 0.0)
+        net = (float(t["pnl"]) / notional * 100.0
+               if notional > 0 and t.get("pnl") is not None else gross)
+        out.append({"entry_date": str(t["entry_date"]), "pnl_pct": gross,
+                    "pnl_pct_net": round(net, 6)})
+    return out
 
 
 def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
