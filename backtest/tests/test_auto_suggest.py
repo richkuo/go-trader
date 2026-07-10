@@ -758,14 +758,17 @@ def test_load_spec_resolves_mc_config_against_the_spec_dir():
     assert spec["mc"]["config"] == os.path.join(_STUDY_DIR, "cfg.json")
 
 
-def test_mc_is_a_default_open_harness_but_never_an_m6_one():
-    assert "mc" in asug.DEFAULT_HARNESSES and "mc" in asug.OPEN_HARNESSES
+def test_mc_is_opt_in_not_a_default_harness():
+    assert "mc" not in asug.DEFAULT_HARNESSES and "mc" in asug.OPEN_HARNESSES
+    # a spec that doesn't name its own harnesses list gets the defaults, and
+    # those must not include mc
     spec = asug.load_spec(_base_spec(harnesses=None), _STUDY_DIR)
     entry = asug.expand_candidates(spec)[0]
-    assert "mc" in entry["harnesses"]
-    # explicit harness list without mc skips it cleanly
-    spec = asug.load_spec(_base_spec(harnesses=["m1"]), _STUDY_DIR)
-    assert "mc" not in asug.expand_candidates(spec)[0]["harnesses"]
+    assert "mc" not in entry["harnesses"]
+    # a spec that explicitly opts in still gets mc, since it's a valid
+    # selectable open-kind harness
+    spec = asug.load_spec(_base_spec(harnesses=["m1", "mc"]), _STUDY_DIR)
+    assert "mc" in asug.expand_candidates(spec)[0]["harnesses"]
 
 
 # ---- extract_mc -----------------------------------------------------------
@@ -845,13 +848,26 @@ def test_format_shortlist_omits_the_mc_segment_when_the_run_failed():
 # ---- dry run --------------------------------------------------------------
 
 def test_dry_run_prints_a_command_for_every_enabled_harness():
-    spec = asug.load_spec(_base_spec(harnesses=None), _STUDY_DIR)
+    spec = asug.load_spec(_base_spec(harnesses=["m1_noise", "m1", "m3", "m5", "mc"]),
+                           _STUDY_DIR)
     spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
     entries = asug.expand_candidates(spec)
     cmds = asug._dry_run_commands(entries, spec, "/tmp/out")
     for harness in ("m1_noise", "m1", "m3", "m5", "mc"):
         assert any(asug.HARNESS_REL[harness] in c for c in cmds), \
             f"dry-run omits {harness} — it would spawn it anyway"
+
+
+def test_dry_run_with_default_harnesses_omits_mc():
+    spec = asug.load_spec(_base_spec(harnesses=None), _STUDY_DIR)
+    spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
+    entries = asug.expand_candidates(spec)
+    cmds = asug._dry_run_commands(entries, spec, "/tmp/out")
+    for harness in ("m1_noise", "m1", "m3", "m5"):
+        assert any(asug.HARNESS_REL[harness] in c for c in cmds), \
+            f"dry-run omits {harness} — it would spawn it anyway"
+    assert not any("monte_carlo.py" in c for c in cmds), \
+        "mc must not run when a spec doesn't opt into it (#1316)"
 
 
 def test_dry_run_omits_the_mc_command_when_mc_is_not_enabled():

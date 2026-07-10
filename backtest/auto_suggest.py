@@ -81,7 +81,7 @@ HARNESS_ABS = {k: os.path.join(_REPO, v) for k, v in HARNESS_REL.items()}
 
 KNOWN_HARNESSES = set(HARNESS_REL)
 OPEN_HARNESSES = ("m1_noise", "m1", "m3", "m5", "mc")  # applied to open candidates
-DEFAULT_HARNESSES = ["m1_noise", "m1", "m3", "m5", "mc"]
+DEFAULT_HARNESSES = ["m1_noise", "m1", "m3", "m5"]  # "mc" is opt-in only, see ADVISORY_HARNESSES below
 KNOWN_REGISTRIES = ("spot", "futures")
 
 # ADVISORY harnesses (#1295) emit no p-value AND must never influence the
