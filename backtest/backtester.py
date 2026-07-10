@@ -452,12 +452,19 @@ LIQUIDATED_METRIC_FLOOR = 100.0
 # and related constants. test_platform_fees.py scrapes fees.go to enforce parity.
 PLATFORM_FEE_PCT = {
     "binanceus":   0.001,    # BinanceSpotFeePct
-    "hyperliquid": 0.00035,  # HyperliquidTakerFeePct
+    "hyperliquid": 0.00045,  # HyperliquidTakerFeePct (base tier, #1315)
     "robinhood":   0.0,      # RobinhoodCryptoFeePct (no commission)
     "luno":        0.01,     # LunoTakerFeePct
     "okx":         0.001,    # OKXSpotTakerFeePct
     "okx-perps":   0.0005,   # OKXPerpsTakerFeePct
 }
+
+# Hyperliquid base-tier maker rate — parity pair with
+# scheduler/fees.go:HyperliquidMakerFeePct (#1315). The bar-level simulator
+# has no maker-priced fills (all fills are market/trigger at next open;
+# resting manual limit orders are an unmodeled #906 parity limitation), so
+# this constant exists for parity and for future consumers, not the fill loop.
+HYPERLIQUID_MAKER_FEE_PCT = 0.00015
 
 
 def fee_pct_for_platform(platform: str) -> float:

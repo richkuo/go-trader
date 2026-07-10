@@ -419,8 +419,10 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	// TP fills are typically maker-priced; use the taker rate as a conservative
-	// fallback when userFills misses so virtual cash is not overstated.
+	// TP fills are typically maker-priced (HyperliquidMakerFeePct exists for
+	// that), but this fallback fires only when userFills misses and the true
+	// fill type is unknown — deliberately keep the taker rate (#1315 decision)
+	// so virtual cash is never overstated by an optimistic maker assumption.
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {

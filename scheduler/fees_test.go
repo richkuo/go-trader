@@ -25,6 +25,25 @@ func TestCalculateFuturesFee(t *testing.T) {
 	}
 }
 
+func TestHyperliquidFeeConstants(t *testing.T) {
+	// Base-tier rates per the official schedule (#1315). The Python side
+	// (backtest/tests/test_platform_fees.py) scrapes this file to enforce
+	// Go↔Python parity; this pin catches a Go-side edit that forgets the pair.
+	if HyperliquidTakerFeePct != 0.00045 {
+		t.Errorf("HyperliquidTakerFeePct = %v, want 0.00045", HyperliquidTakerFeePct)
+	}
+	if HyperliquidMakerFeePct != 0.00015 {
+		t.Errorf("HyperliquidMakerFeePct = %v, want 0.00015", HyperliquidMakerFeePct)
+	}
+	if HyperliquidMakerFeePct >= HyperliquidTakerFeePct {
+		t.Errorf("maker rate %v must be below taker rate %v", HyperliquidMakerFeePct, HyperliquidTakerFeePct)
+	}
+	// The modeled-fee helper charges taker — the conservative fallback.
+	if got := CalculateHyperliquidFee(1000.0); got != 1000.0*HyperliquidTakerFeePct {
+		t.Errorf("CalculateHyperliquidFee(1000) = %v, want %v", got, 1000.0*HyperliquidTakerFeePct)
+	}
+}
+
 func TestCalculatePlatformSpotFeeOKX(t *testing.T) {
 	// OKX spot: 0.1%
 	fee := CalculatePlatformSpotFee("okx", 1000.0)

@@ -9,7 +9,7 @@ per-dataset Sharpe / return / max-DD / DD-adjusted-return / trades, pass/fail
 verdicts, and optional plateau sweeps.
 
 Harness is audit-identical (#956/#963/#976): registry default or supplied
-params, single mode, binanceus fee model, long-leg signal path unless the
+params, single mode, hyperliquid fee model (#1315), long-leg signal path unless the
 candidate config supplies close refs / direction. Sharpe uses the Backtester's
 timeframe-annualized scale, the same scale on both sides of the bar.
 
@@ -87,7 +87,31 @@ PROTOCOL_WINDOWS = ("is", "oos")
 HELD_OUT_WINDOWS = ("2023", "2024", "2025H1")
 
 DEFAULT_CAPITAL = 1000.0
-PLATFORM = "binanceus"  # audit fee model; fixed, not a knob
+# Two independent platform axes (#1315 review): the fee model a harness prices
+# and the exchange whose cached OHLCV it loads must never be coupled — changing
+# one must not silently repoint the other.
+#
+# PLATFORM — the DATA-SOURCE exchange_id for cached OHLCV. Imported by the
+# regime research/promotion pipeline (regime_bounded_window_validate,
+# regime_diagnostics, regime_calibrate, regime_vol_model, the regime_10xx /
+# regime_1211 research one-shots) and passed to load_cached_data(exchange_id=…).
+# Stays "binanceus": every committed regime baseline (incl. the #1211 incumbent
+# baseline) was computed on this series. NOT the fee model.
+PLATFORM = "binanceus"
+
+# FEE_PLATFORM — the audit fee model; fixed, not a knob. Used only at the
+# Backtester platform= sites of the active M harnesses (eval_windows,
+# exit_policy_ab, exit_diagnostics; fee_audit/gross_edge_noise/auto_suggest
+# inherit). #1315: hyperliquid base-tier taker (0.045%/side + the Backtester's
+# 5 bps slippage) — live deployment is Hyperliquid perps, so audits price the
+# fees we actually pay. This encodes an explicit perps-deployment assumption
+# even for spot-audited strategies. Verdicts recorded before #1315 were graded
+# under "binanceus" (0.1%/side, ~0.3% round-trip) — see the dated annotations
+# in docs/research/. The frozen research one-shots (regime_1081/regime_1083)
+# deliberately keep their Backtester fee model on the data-source constant so
+# their committed negative-result artifacts stay reproducible under the fee
+# model they were graded with.
+FEE_PLATFORM = "hyperliquid"
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +433,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                   or bool(regime_windows_spec)
                   or bool(regime_directional_policy))
     bt_kwargs = dict(
-        initial_capital=capital, platform=PLATFORM,
+        initial_capital=capital, platform=FEE_PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
         close_strategies=close_strategies,
         direction=direction, invert_signal=invert_signal,

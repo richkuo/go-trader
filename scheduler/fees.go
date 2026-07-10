@@ -13,8 +13,15 @@ const (
 	// IBKR options fees (per contract, CME Micro)
 	IBKROptionFeeFixed = 0.25 // $0.25 per contract (CME Micro fee)
 
-	// Hyperliquid perps taker fee
-	HyperliquidTakerFeePct = 0.00035 // 0.035% taker fee
+	// Hyperliquid perps fees, base tier (no volume-tier or staking discount —
+	// the conservative bound), per the official schedule:
+	// https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees (#1315).
+	// Taker is the modeled-fee fallback wherever the real userFills fee is
+	// unavailable. Maker exists for surfaces that knowingly model a
+	// maker-priced fill; the TP-fill fallback in bookPerpsCloseWithFillFee
+	// deliberately stays on taker (see the comment there).
+	HyperliquidTakerFeePct = 0.00045 // 0.045% taker fee
+	HyperliquidMakerFeePct = 0.00015 // 0.015% maker fee
 
 	// Luno spot taker fee (base rate; volume-tiered down to 0.03%)
 	LunoTakerFeePct = 0.01 // 1.00% taker fee

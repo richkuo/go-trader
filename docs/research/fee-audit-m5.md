@@ -1,5 +1,13 @@
 # Fee-aware selectivity audit (#999 M5)
 
+> **Fee-model note (2026-07-10, #1315):** every net number and verdict in this
+> report was graded under the **binanceus** audit fee model (0.1% taker/side +
+> 5 bps slippage, ~0.3% round-trip). #1315 switched the audit fee model to
+> **hyperliquid** base tier (0.045% taker/side + 5 bps slippage, ~0.19%
+> round-trip) — the fees live deployment actually pays. This report is kept
+> as-is for provenance; the corrected-model re-screen of the quarantine roster
+> is `docs/research/1315-fee-rescreen-m5.md`.
+
 Registry-wide trade-count x fee-drag screen. Each strategy leg is run twice on the eval_windows.py harness — once with the audit fee model, once with commission and slippage zeroed — to isolate fee drag and apply the salvage test (does a positive *gross* edge exist under the churn?).
 
 ## Reproduce
