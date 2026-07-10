@@ -878,10 +878,14 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 // zeroes out the post-close budget the flip degrades to close-only sizing
 // (reported as insufficient cash rather than silently undersizing).
 //
-// marginPerTradeUSD opts the sizing into margin-space (#518): when positive,
+// sizing bundles the notional/risk sizing inputs (#497/#518/#1268). With
+// sizing.MarginPerTradeUSD positive the open budget is margin-space:
 // notional = min(marginPerTradeUSD, effectiveCash) × exchangeLeverage,
-// independent of sizingLeverage. The hardcoded 0.95 safety buffer was
-// removed in #518.
+// independent of sizingLeverage (the hardcoded 0.95 safety buffer was removed
+// in #518). With sizing.RiskPerTradePct positive the budget is risk-based
+// (PerpsRiskBasedNotional); an unresolvable stop distance FAILS CLOSED on a
+// fresh open (ok=false with the resolver's reason — never a silent notional
+// fallback) and degrades a flip to close-only, same as insufficient cash.
 //
 // Returns (size, ok); when ok is false `reason` is a log-ready string.
 //
@@ -893,7 +897,7 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 // unreachable when closeFraction > 0 because compose_signal does not emit a
 // flip alongside a close (open_action is dropped while a position is open),
 // so closeFraction is intentionally ignored on the open/flip path.
-func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64) (size float64, ok bool, reason string) {
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing PerpsSizing, posSide, direction string, closeFraction float64) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	allowsLong := direction == DirectionLong || direction == DirectionBoth || direction == ""
 	allowsShort := direction == DirectionShort || direction == DirectionBoth
@@ -922,6 +926,13 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 	}
 
 	if openingFresh || flipping {
+		// #1268 fail-closed: risk-per-trade sizing with an unresolvable stop
+		// distance refuses a FRESH open outright (the generic insufficient-cash
+		// message below would misattribute the cause). A flip falls through to
+		// the budget<1 close-only degrade — the close leg must still fire.
+		if openingFresh && sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
+			return 0, false, fmt.Sprintf("risk_per_trade_pct sizing: %s — refusing open (fail-closed)", sizing.riskUnresolvedLabel())
+		}
 		effectiveCash := cash
 		if flipping {
 			// Close leg realizes PnL before the new side opens on-chain;
@@ -935,7 +946,7 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 			}
 			effectiveCash = cash + closePnL
 		}
-		budget := PerpsOpenNotional(effectiveCash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+		budget := PerpsOpenNotionalSized(effectiveCash, price, sizing)
 		if budget < 1 || price <= 0 {
 			// Flip + catastrophic drawdown (realized loss wipes out post-close
 			// margin): the new side can't be sized, but the close leg still
@@ -1077,15 +1088,15 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 //   - "both": fully bidirectional (legacy AllowShorts=true).
 //
 // Empty direction is treated as "long" for safety.
-func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
+	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
 }
 
-func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
@@ -1093,7 +1104,7 @@ func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, sy
 	return result, err
 }
 
-func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
+func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if direction == "" {
 		direction = DirectionLong
 	}
@@ -1103,14 +1114,15 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 	if signal == 0 {
 		return 0, nil
 	}
-	if sizingLeverage <= 0 {
-		sizingLeverage = 1
+	if sizing.SizingLeverage <= 0 {
+		sizing.SizingLeverage = 1
 	}
-	if exchangeLeverage <= 0 {
-		exchangeLeverage = sizingLeverage
+	if sizing.ExchangeLeverage <= 0 {
+		sizing.ExchangeLeverage = sizing.SizingLeverage
 	}
+	exchangeLeverage := sizing.ExchangeLeverage
 	tradesExecuted := 0
-	leverageLabel := perpsLeverageLabel(exchangeLeverage, sizingLeverage)
+	leverageLabel := perpsSizingLabel(sizing)
 	// #519: partial close suppresses the bidirectional open-leg path —
 	// compose_signal never composes a close+open in the same cycle, so any
 	// fractional close emitted by the open/close registry is close-only.
@@ -1279,8 +1291,16 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			// Notional sizing (#518): margin-based when MarginPerTradeUSD set,
 			// else legacy cash × sizing_leverage. The 0.95 safety buffer was
 			// removed in #518 — operators wanting headroom set a smaller
-			// sizing_leverage or margin_per_trade_usd explicitly.
-			budget := PerpsOpenNotional(s.Cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+			// sizing_leverage or margin_per_trade_usd explicitly. Risk mode
+			// (#1268) sizes qty from stop distance and FAILS CLOSED when the
+			// distance is unresolvable — never a notional fallback. On a paper
+			// flip the close-short leg above already realized its PnL into
+			// s.Cash, so the risk base is post-close cash, matching live.
+			if sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
+				logger.Info("Risk-per-trade sizing: %s — refusing open long %s (fail-closed)", sizing.riskUnresolvedLabel(), symbol)
+				return tradesExecuted, nil
+			}
+			budget := PerpsOpenNotionalSized(s.Cash, execPrice, sizing)
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice
@@ -1476,7 +1496,13 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-			budget := PerpsOpenNotional(s.Cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+			// #1268: same risk-mode dispatch + fail-closed guard as the
+			// open-long branch above.
+			if sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
+				logger.Info("Risk-per-trade sizing: %s — refusing open short %s (fail-closed)", sizing.riskUnresolvedLabel(), symbol)
+				return tradesExecuted, nil
+			}
+			budget := PerpsOpenNotionalSized(s.Cash, execPrice, sizing)
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice
@@ -1541,6 +1567,15 @@ func perpsLeverageLabel(exchangeLeverage, sizingLeverage float64) string {
 		return fmt.Sprintf("%.1fx", exchangeLeverage)
 	}
 	return fmt.Sprintf("%.1fx exchange, %.1fx sizing", exchangeLeverage, sizingLeverage)
+}
+
+// perpsSizingLabel renders the sizing mode for trade Details/log lines: the
+// legacy leverage label, or the risk-per-trade form when the mode is on (#1268).
+func perpsSizingLabel(sizing PerpsSizing) string {
+	if sizing.RiskPerTradePct > 0 {
+		return fmt.Sprintf("%.1fx exchange, risk %g%%/trade", sizing.ExchangeLeverage, sizing.RiskPerTradePct)
+	}
+	return perpsLeverageLabel(sizing.ExchangeLeverage, sizing.SizingLeverage)
 }
 
 // ExecuteSpotSignalWithFillFee processes a spot signal with optional live

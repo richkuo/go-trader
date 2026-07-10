@@ -785,7 +785,8 @@ class Backtester:
                  regime_directional_certified_states: Optional[dict] = None,
                  regime_timeframe: Optional[str] = None,
                  profile_allocation: Optional[dict] = None,
-                 intrabar_resolution: str = "ohlc_walk"):
+                 intrabar_resolution: str = "ohlc_walk",
+                 risk_per_trade_pct: Optional[float] = None):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -823,6 +824,23 @@ class Backtester:
                 (hit detected on the close only, filled at the next bar's
                 open) for reproducing documented baselines. See the module
                 docstring, "SL/TP intra-bar races".
+            risk_per_trade_pct: Opt-in risk-per-trade sizing (#1268),
+                mirroring the live ``risk_per_trade_pct`` config field: each
+                open commits ``shares = (cash × pct/100) / stop_distance``
+                (invest = ``cash × (pct/100) × price/stop_distance``, capped
+                at 1.0 × cash — the backtester models no leverage, so the
+                live ``cash × exchange_leverage`` cap tightens to 1× here; a
+                one-time warning prints when the cap binds). Stop distance
+                comes from the configured stop owner: ``*_atr_mult × entry
+                ATR`` (the signal bar's closed ATR, same value the SL
+                geometry uses), or ``price × *_pct`` (this engine's pct
+                fields are FRACTIONS, matching the SL trigger math). An
+                unresolvable distance (no usable ATR at the signal bar)
+                SKIPS the entry — fail-closed, matching live. Requires one
+                of the four scalar stop owners; regime-resolved owners, a
+                margin-pct-only stop, and a strategy-emitted
+                ``entry_fraction`` column are rejected loudly. None keeps
+                the legacy full-notional sizing byte-identical.
         """
         self.initial_capital = initial_capital
         self.platform = platform
@@ -1348,6 +1366,63 @@ class Backtester:
                         "the post-TP bump would diverge from live. Use "
                         "stop_loss_atr_mult or stop_loss_pct."
                     )
+
+        # #1268: risk-per-trade sizing — mirror the live validateRiskPerTradePct
+        # gate: bounds (0, 10] and a stop owner whose distance is resolvable at
+        # sizing time. Regime-resolved owners and the unified close resolve
+        # their SL after the open, and a margin-pct-only stop needs leverage
+        # context this engine doesn't carry — all rejected loudly, exactly the
+        # configs the live daemon refuses to load with this field.
+        self.risk_per_trade_pct: Optional[float] = None
+        if risk_per_trade_pct is not None:
+            pct = float(risk_per_trade_pct)
+            if not (0 < pct <= 10):
+                raise ValueError(
+                    f"risk_per_trade_pct must be in (0, 10], got {pct}"
+                )
+            if self._unified_close_params is not None:
+                raise ValueError(
+                    "risk_per_trade_pct cannot size from the unified "
+                    "per-regime close block — its SL resolves per-regime "
+                    "after open, so the stop distance is unknowable at "
+                    "sizing time (#1268; live rejects this at config load)"
+                )
+            if self.stop_loss_atr_regime or self.trailing_stop_atr_regime:
+                raise ValueError(
+                    "risk_per_trade_pct cannot size from a regime-resolved "
+                    "stop owner (stop_loss_atr_regime / "
+                    "trailing_stop_atr_regime) — the SL resolves from the "
+                    "regime stamped after open (#1268; live rejects this at "
+                    "config load)"
+                )
+            has_atr_owner = (
+                (self.trailing_stop_atr_mult or 0) > 0
+                or (self.stop_loss_atr_mult or 0) > 0
+            )
+            has_pct_owner = (
+                (self.trailing_stop_pct or 0) > 0
+                or (self.stop_loss_pct or 0) > 0
+            )
+            if not (has_atr_owner or has_pct_owner):
+                if (self.stop_loss_margin_pct or 0) > 0:
+                    raise ValueError(
+                        "risk_per_trade_pct cannot size from a "
+                        "stop_loss_margin_pct-only stop in backtests — the "
+                        "backtester does not model leverage, so the price "
+                        "distance cannot be derived. Use stop_loss_atr_mult, "
+                        "trailing_stop_atr_mult, stop_loss_pct, or "
+                        "trailing_stop_pct."
+                    )
+                raise ValueError(
+                    "risk_per_trade_pct requires an explicit stop owner "
+                    "(stop_loss_atr_mult, trailing_stop_atr_mult, "
+                    "stop_loss_pct, or trailing_stop_pct) to derive the "
+                    "stop distance from (#1268)"
+                )
+            self.risk_per_trade_pct = pct
+        # One-time-warning latches for the risk-sizing run diagnostics.
+        self._risk_cap_warned = False
+        self._risk_skip_warned = False
 
     def _apply_direction_invert(self, sig_int: pd.Series,
                                 uses_open_close: bool) -> pd.Series:
@@ -1911,6 +1986,20 @@ class Backtester:
 
         has_entry_fraction = "_entry_fraction" in df.columns
 
+        # #1268: risk-per-trade sizing. Mutually exclusive with a
+        # strategy-emitted entry_fraction column — live sizing has no
+        # entry_fraction input, so composing the two would diverge from the
+        # live formula the mode exists to reproduce.
+        risk_mode = (self.risk_per_trade_pct or 0) > 0
+        if risk_mode and has_entry_fraction:
+            raise ValueError(
+                "risk_per_trade_pct is mutually exclusive with a "
+                "strategy-emitted entry_fraction column (#1268) — the live "
+                "sizer has no entry_fraction input, so composing them would "
+                "diverge from the live sizing formula"
+            )
+        risk_skipped_entries = 0
+
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
@@ -1921,6 +2010,35 @@ class Backtester:
             entry_fraction = (
                 float(row["_entry_fraction"]) if has_entry_fraction else 1.0
             )
+            # #1268: in risk mode the committed fraction is derived per open
+            # from the stop distance; an unresolvable distance (no usable ATR
+            # at the signal bar) blocks the entry — fail-closed like live,
+            # never a full-notional fallback. Closes are never blocked.
+            risk_entry_blocked = False
+            if risk_mode:
+                risk_fraction = self._risk_entry_fraction(
+                    atr_series, idx, fill_price,
+                )
+                if risk_fraction is None:
+                    risk_entry_blocked = True
+                    entry_wanted = (
+                        str(row.get("_open_action", "none")) in ("long", "short")
+                        if uses_open_close
+                        else int(signal) != 0
+                    )
+                    if position == 0 and entry_wanted:
+                        risk_skipped_entries += 1
+                        if not self._risk_skip_warned:
+                            self._risk_skip_warned = True
+                            print(
+                                f"[#1268] risk_per_trade_pct: entry skipped at "
+                                f"{idx} — stop distance unresolvable (no usable "
+                                f"ATR at the signal bar); fail-closed, matching "
+                                f"live. Further skips counted silently.",
+                                file=sys.stderr,
+                            )
+                else:
+                    entry_fraction = risk_fraction
             # #998: regime-profile allocation — advance the flat-only, confirm_bars
             # hysteresis switch and read the active profile's signal for this bar.
             # ``flat`` is the position carried into the bar (= the position state at
@@ -2153,7 +2271,7 @@ class Backtester:
                 # booked trade side and inverting all subsequent PnL. The
                 # account is economically bust — skip the entry. cash == 0 is
                 # included: it would book a zero-share phantom trade.
-                if open_action == "long" and position == 0 and cash > 0 and not regime_blocked:
+                if open_action == "long" and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                     effective_price = fill_price * (1 + self.slippage_pct)
                     # #980: commit entry_fraction of flat-state cash; the
                     # remainder stays as a reserve (fraction 1.0 = full
@@ -2216,7 +2334,7 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
-                elif open_action == "short" and position == 0 and cash > 0 and not regime_blocked:
+                elif open_action == "short" and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     # #980: entry_fraction of flat-state cash is the committed
                     # margin; pay commission from it, receive the short-sale
@@ -2514,7 +2632,7 @@ class Backtester:
             # review). Bust account: entries skip until end of data. The
             # long/flat path can't reach negative cash today, but carries the
             # same guard so the invariant holds by construction.
-            if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked:
+            if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                 # SELL — open short. Mirrors the engine path's short-open
                 # mechanics: pay commission from the committed margin, receive
                 # the short-sale proceeds (#980: entry_fraction scales the
@@ -2580,7 +2698,7 @@ class Backtester:
                 sl_high_water_px = 0.0
                 self._run_position_regime = ""
 
-            elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked:
+            elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                 # BUY — go long (#980: entry_fraction of flat-state cash;
                 # 1.0 = all available cash, today's math exactly)
                 effective_price = fill_price * (1 + self.slippage_pct)
@@ -2800,11 +2918,69 @@ class Backtester:
             "close_strategies": [dict(r) for r in self._close_refs],
             "trades": [t.to_dict() for t in trades],
         })
+        if risk_mode:
+            # #1268: surface the fail-closed skips so a run that took fewer
+            # entries than the signal produced is auditable.
+            metrics["risk_per_trade_pct"] = self.risk_per_trade_pct
+            metrics["risk_sizing_skipped_entries"] = risk_skipped_entries
 
         if save:
             store_backtest_result(metrics)
 
         return metrics
+
+    def _risk_entry_fraction(self, atr_series: Optional[pd.Series], idx,
+                             price: float) -> Optional[float]:
+        """Per-open committed-cash fraction under risk-per-trade sizing (#1268).
+
+        Mirrors the live formula in this engine's fraction-of-cash terms:
+        ``shares = (cash × pct/100) / stop_distance`` ⇒ ``invest = cash ×
+        (pct/100) × price/stop_distance`` ⇒ fraction = ``(pct/100) ×
+        price/stop_distance``. Stop distance comes from the configured owner:
+        ``trailing_stop_atr_mult``/``stop_loss_atr_mult`` × the signal bar's
+        closed ATR (``_stamp_entry_atr`` — the same value the SL geometry
+        stamps, so a stop-out realizes exactly the risked dollars), else
+        ``price × trailing_stop_pct``/``stop_loss_pct`` (fractions in this
+        engine, matching the SL trigger math). Returns None when the distance
+        is unresolvable — the caller SKIPS the entry (fail-closed, matching
+        live). The fraction is capped at 1.0: the backtester models no
+        leverage, so the live ``cash × exchange_leverage`` notional cap
+        tightens to 1× cash here (warned once per run when it binds).
+        """
+        pct = float(self.risk_per_trade_pct or 0)
+        if pct <= 0 or price <= 0:
+            return None
+        dist = None
+        atr_mult = 0.0
+        if (self.trailing_stop_atr_mult or 0) > 0:
+            atr_mult = float(self.trailing_stop_atr_mult)
+        elif (self.stop_loss_atr_mult or 0) > 0:
+            atr_mult = float(self.stop_loss_atr_mult)
+        if atr_mult > 0:
+            atr = self._stamp_entry_atr(atr_series, idx, price)
+            if atr <= 0:
+                return None
+            dist = atr_mult * atr
+        elif (self.trailing_stop_pct or 0) > 0:
+            dist = price * float(self.trailing_stop_pct)
+        elif (self.stop_loss_pct or 0) > 0:
+            dist = price * float(self.stop_loss_pct)
+        if dist is None or dist <= 0:
+            return None
+        fraction = (pct / 100.0) * price / dist
+        if fraction > 1.0:
+            if not self._risk_cap_warned:
+                self._risk_cap_warned = True
+                print(
+                    f"[#1268] risk_per_trade_pct: risk-derived notional "
+                    f"exceeds available cash at {idx} (fraction "
+                    f"{fraction:.2f} capped at 1.0) — the backtester models "
+                    f"no leverage, so live would size up to cash × "
+                    f"exchange_leverage here. Further caps applied silently.",
+                    file=sys.stderr,
+                )
+            fraction = 1.0
+        return fraction
 
     def _stamp_entry_atr(self, atr_series: Optional[pd.Series], idx,
                          entry_price: float) -> float:

@@ -2356,6 +2356,9 @@ func main() {
 							// blends (no on-chain order / re-size).
 							scaleInAddQty := 0.0
 							if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {
+								// #1268: risk_per_trade_pct + allow_scale_in is
+								// rejected at config load, so the notional
+								// default here never runs under risk sizing.
 								defOpenNotional := PerpsOpenNotional(hlScaleInCash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
 								snap := scaleInSnapshot{Side: hlPosSide, Quantity: hlPosQty, AvgCost: hlAvgCost, EntryATR: hlEntryATR, ScaleInCount: hlScaleInCount, AddedNotionalUSD: hlAddedNotionalUSD, LastAddPrice: hlLastAddPrice}
 								if q, okAdd, reason := perpsScaleInDecision(sc, snap, result.Signal, price, defOpenNotional); okAdd {
@@ -3236,6 +3239,18 @@ func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[strin
 	pos.EntryATR = atr
 }
 
+// indicatorsATRValue extracts the check payload's "atr" for risk-per-trade
+// sizing (#1268), returning 0 when absent or non-positive. Plausibility
+// against price is enforced downstream in PerpsRiskStopDistance (same 50%-of-
+// price bound as stampEntryATRIfOpened).
+func indicatorsATRValue(indicators map[string]interface{}) float64 {
+	atr, ok := indicatorFloat(indicators, "atr")
+	if !ok || atr <= 0 {
+		return 0
+	}
+	return atr
+}
+
 func indicatorFloat(indicators map[string]interface{}, key string) (float64, bool) {
 	if indicators == nil {
 		return 0, false
@@ -3640,13 +3655,15 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497/#518: perps sizing — sizing_leverage scales cash → notional in
-	// the legacy formula; margin_per_trade_usd (when set) overrides to a
-	// margin-space formula so high exchange leverage doesn't shrink intent.
-	sizingLeverage := EffectiveSizingLeverage(sc)
-	exchangeLeverage := EffectiveExchangeLeverage(sc)
-	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction)
+	// #254/#497/#518/#1268: perps sizing — sizing_leverage scales cash →
+	// notional in the legacy formula; margin_per_trade_usd (when set) overrides
+	// to a margin-space formula so high exchange leverage doesn't shrink
+	// intent; risk_per_trade_pct (when set) sizes qty from the resolved stop
+	// distance (ATR owners read the check payload's indicators.atr — the same
+	// value stampEntryATRIfOpened later freezes, so sizing and SL geometry
+	// agree) and fails closed on fresh opens when the distance is unresolvable.
+	sizing := PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators))
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -3838,9 +3855,10 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	exchangeLeverage := EffectiveExchangeLeverage(sc)
-	sizingLeverage := EffectiveSizingLeverage(sc)
-	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
+	// #1268: sizing bundle resolved at the apply price; only consulted when
+	// this is a paper open (fillQty==0) — live orders were already sized in
+	// runHyperliquidExecuteOrder from the same config surface.
+	sizing := PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators))
 
 	// Thread exchange metadata into ExecutePerpsSignalWithLeverage so each Trade is built
 	// with the OID and fee before RecordTrade persists it (#289). Stamping the
@@ -3857,7 +3875,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		fillFee = fill.Fee
 	}
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil, nil
@@ -4436,15 +4454,15 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	// #254/#497/#518: perps sizing uses PerpsOpenNotional (sizing_leverage or
 	// margin_per_trade_usd). EffectiveSizingLeverage returns 1 for spot, so
 	// the spot branch below remains a simple cash buy. #518 removed the
-	// hardcoded 0.95 safety buffer.
-	sizingLeverage := EffectiveSizingLeverage(sc)
-	exchangeLeverage := EffectiveExchangeLeverage(sc)
-	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
+	// hardcoded 0.95 safety buffer. risk_per_trade_pct (#1268) is HL-only, so
+	// PerpsSizingFor resolves zero risk fields here (validation rejects it on
+	// OKX at load).
+	sizing := PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators))
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, EffectiveDirection(sc), result.CloseFraction)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, EffectiveDirection(sc), result.CloseFraction)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
@@ -4524,7 +4542,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	var exec SignalExecutionResult
 	var err error
 	if sc.Type == "perps" {
-		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	} else {
 		exec, err = ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	}

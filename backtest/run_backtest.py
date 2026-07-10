@@ -928,6 +928,73 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # any windows spec"), so a multi-window directional config keys on the
         # identical (asset,timeframe,classifier) cell. The verdict is a Backtester
         # param, so the whole returned dict still spreads cleanly into Backtester.
+        # #1268: opt-in risk-per-trade sizing. Mirror the live
+        # validateRiskPerTradePct gate for the parts of the surface the
+        # backtester can see; the engine's own __init__ validation covers the
+        # rest (regime-owner / unified-close / margin-pct rejects).
+        risk_per_trade_pct = sc.get("risk_per_trade_pct")
+        if risk_per_trade_pct is not None:
+            if sc.get("sizing_leverage"):
+                raise ValueError(
+                    f"{config_path}: strategy {strategy_id!r} combines "
+                    f"risk_per_trade_pct with sizing_leverage — mutually "
+                    f"exclusive sizing modes (the live daemon rejects this "
+                    f"config at startup; #1268)."
+                )
+            if sc.get("margin_per_trade_usd") is not None:
+                raise ValueError(
+                    f"{config_path}: strategy {strategy_id!r} combines "
+                    f"risk_per_trade_pct with margin_per_trade_usd — mutually "
+                    f"exclusive sizing modes (the live daemon rejects this "
+                    f"config at startup; #1268)."
+                )
+            if sc.get("allow_scale_in"):
+                raise ValueError(
+                    f"{config_path}: strategy {strategy_id!r} combines "
+                    f"risk_per_trade_pct with allow_scale_in — the live "
+                    f"daemon rejects this config at startup (#1268: add legs "
+                    f"re-size off frozen SL geometry, breaking the "
+                    f"constant-dollar-risk invariant)."
+                )
+            # The live pct stop owners are PERCENT-denominated while this
+            # engine's stop_loss_pct / trailing_stop_pct are fractions (they
+            # feed avg_cost × (1 ± pct) directly), so sizing from them here
+            # would skew the risk formula 100×. Reject rather than diverge
+            # silently — ATR-mult owners are unit-unambiguous in both worlds.
+            for _pk in ("stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct"):
+                if (sc.get(_pk) or 0) > 0:
+                    raise ValueError(
+                        f"{config_path}: strategy {strategy_id!r} sizes "
+                        f"risk_per_trade_pct from {_pk}, but the backtester's "
+                        f"pct-stop fields are fraction-denominated (live is "
+                        f"percent), so the risk formula would skew 100×. Use "
+                        f"an ATR-mult stop owner (stop_loss_atr_mult / "
+                        f"trailing_stop_atr_mult) for risk-sizing backtests."
+                    )
+            # Mirror LoadConfig's default_stop_loss_atr_mult pass: a config
+            # with NO stop-owner key runs live with the fleet default
+            # (1.0×ATR unless overridden/opted out), and risk sizing derives
+            # its distance from exactly that owner — materialize it here so
+            # sizing AND the simulated SL match live.
+            # Presence check must be `is not None` (matching
+            # _config_has_stop_owner): an explicit-zero owner (stop_loss_pct: 0
+            # etc.) explicitly disables the stop and live REJECTS the config at
+            # load — materializing a default here would silently size a
+            # stopped run live refuses (#1268).
+            if not any(sc.get(k) is not None for k in _STOP_OWNER_KEYS):
+                _default_mult = cfg.get("default_stop_loss_atr_mult")
+                if _default_mult is None:
+                    _default_mult = 1.0
+                _default_mult = float(_default_mult or 0)
+                if _default_mult <= 0:
+                    raise ValueError(
+                        f"{config_path}: strategy {strategy_id!r} sets "
+                        f"risk_per_trade_pct with no stop owner and "
+                        f"default_stop_loss_atr_mult=0 (auto-default opted "
+                        f"out) — no stop distance to size risk from (the "
+                        f"live daemon rejects this config at startup; #1268)."
+                    )
+                sc["stop_loss_atr_mult"] = _default_mult
         cfg_args = sc.get("args") or []
         cert_symbol = str(cfg_args[1]) if len(cfg_args) > 1 else ""
         cert_timeframe = regime_timeframe or (str(cfg_args[2]) if len(cfg_args) > 2 else "")
@@ -973,6 +1040,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "allowed_regimes": allowed_regimes,
             "regime_gate_on_failure": regime_gate_on_failure,
             "profile_allocation": profile_allocation,
+            # #1268: opt-in risk-per-trade sizing (None = legacy full-notional).
+            "risk_per_trade_pct": risk_per_trade_pct,
         }
     raise ValueError(
         f"{config_path}: no strategy with id={strategy_id!r}. "
@@ -1014,6 +1083,7 @@ def run_single_backtest(
     directional_cert_path: Optional[str] = None,
     profile_allocation: Optional[dict] = None,
     intrabar_resolution: str = "ohlc_walk",
+    risk_per_trade_pct: Optional[float] = None,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -1163,6 +1233,7 @@ def run_single_backtest(
         regime_directional_certified_states=regime_directional_certified_states,
         profile_allocation=profile_allocation,
         intrabar_resolution=intrabar_resolution,
+        risk_per_trade_pct=risk_per_trade_pct,
     )
     results = bt.run(
         df_signals,
@@ -1623,6 +1694,8 @@ def main():
             # consumes live_stop_kwargs; optimize/compare/multi stay ADX, as they
             # already drop the other config-sourced close fields here.
             "regime_windows_spec",
+            # #1268: opt-in risk-per-trade sizing from the live config.
+            "risk_per_trade_pct",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
         args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)
