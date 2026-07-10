@@ -8,29 +8,49 @@ import (
 	"testing"
 )
 
-// TestM5DeprecatedRosterMatchesPythonRegistry enforces the cross-language
-// mirror (#1275): the Go m5DeprecatedEdgeStrategies set must stay identical
-// to M5_DEPRECATED_EDGE_STRATEGIES in shared_strategies/open/registry.py.
-// Go CI must not spawn Python, so this parses the Python source directly.
-func TestM5DeprecatedRosterMatchesPythonRegistry(t *testing.T) {
+// parsePythonFrozensetLiteral extracts the string members of a named
+// `NAME = frozenset({...})` literal from shared_strategies/open/registry.py.
+// Go CI must not spawn Python, so tests parse the Python source directly.
+func parsePythonFrozensetLiteral(t *testing.T, name string) map[string]struct{} {
+	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "shared_strategies", "open", "registry.py"))
 	if err != nil {
 		t.Fatalf("read registry.py: %v", err)
 	}
-	start := strings.Index(string(src), "M5_DEPRECATED_EDGE_STRATEGIES = frozenset({")
+	start := strings.Index(string(src), name+" = frozenset({")
 	if start < 0 {
-		t.Fatal("M5_DEPRECATED_EDGE_STRATEGIES block not found in registry.py")
+		t.Fatalf("%s block not found in registry.py", name)
 	}
 	rest := string(src)[start:]
 	end := strings.Index(rest, "})")
 	if end < 0 {
-		t.Fatal("M5_DEPRECATED_EDGE_STRATEGIES block not terminated")
+		t.Fatalf("%s block not terminated", name)
 	}
 	block := rest[:end]
-	pyNames := map[string]struct{}{}
+	names := map[string]struct{}{}
 	for _, m := range regexp.MustCompile(`"([a-z0-9_]+)"`).FindAllStringSubmatch(block, -1) {
-		pyNames[m[1]] = struct{}{}
+		names[m[1]] = struct{}{}
 	}
+	return names
+}
+
+// pythonDiscoveryHiddenStrategies returns the effective DISCOVERY_HIDDEN_STRATEGIES
+// set: its literal members unioned with M5_DEPRECATED_EDGE_STRATEGIES, mirroring
+// the `frozenset({...}) | M5_DEPRECATED_EDGE_STRATEGIES` expression in registry.py.
+func pythonDiscoveryHiddenStrategies(t *testing.T) map[string]struct{} {
+	t.Helper()
+	hidden := parsePythonFrozensetLiteral(t, "DISCOVERY_HIDDEN_STRATEGIES")
+	for name := range parsePythonFrozensetLiteral(t, "M5_DEPRECATED_EDGE_STRATEGIES") {
+		hidden[name] = struct{}{}
+	}
+	return hidden
+}
+
+// TestM5DeprecatedRosterMatchesPythonRegistry enforces the cross-language
+// mirror (#1275): the Go m5DeprecatedEdgeStrategies set must stay identical
+// to M5_DEPRECATED_EDGE_STRATEGIES in shared_strategies/open/registry.py.
+func TestM5DeprecatedRosterMatchesPythonRegistry(t *testing.T) {
+	pyNames := parsePythonFrozensetLiteral(t, "M5_DEPRECATED_EDGE_STRATEGIES")
 	for name := range pyNames {
 		if _, ok := m5DeprecatedEdgeStrategies[name]; !ok {
 			t.Errorf("registry.py quarantines %q but Go m5DeprecatedEdgeStrategies is missing it", name)
@@ -43,6 +63,35 @@ func TestM5DeprecatedRosterMatchesPythonRegistry(t *testing.T) {
 	}
 	if len(pyNames) != 26 {
 		t.Errorf("expected 26 quarantined names in registry.py, parsed %d", len(pyNames))
+	}
+}
+
+// TestConfigGenerationSurfacesExcludeQuarantinedStrategies guards every
+// config-generation surface against defaulting to or offering a strategy the
+// registry hides (#1275 review): the minimal-starter default, the interactive
+// wizard's pre-selection (both use starterSpotStrategyID), and the
+// discovery-failure fallback lists. Checked against the full effective
+// DISCOVERY_HIDDEN_STRATEGIES set (not just the M5 roster), so a name later
+// hidden for any reason cannot silently re-enter a generation surface.
+func TestConfigGenerationSurfacesExcludeQuarantinedStrategies(t *testing.T) {
+	hidden := pythonDiscoveryHiddenStrategies(t)
+
+	if _, bad := hidden[starterSpotStrategyID]; bad {
+		t.Errorf("starterSpotStrategyID %q is discovery-hidden — init would default to a quarantined strategy", starterSpotStrategyID)
+	}
+	for _, list := range []struct {
+		name   string
+		strats []stratDef
+	}{
+		{"defaultSpotStrategies", defaultSpotStrategies},
+		{"defaultPerpsStrategies", defaultPerpsStrategies},
+		{"defaultFuturesStrategies", defaultFuturesStrategies},
+	} {
+		for _, s := range list.strats {
+			if _, bad := hidden[s.ID]; bad {
+				t.Errorf("%s offers %q, which registry.py hides from discovery", list.name, s.ID)
+			}
+		}
 	}
 }
 

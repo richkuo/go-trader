@@ -70,10 +70,13 @@ STRATEGIES: Dict[str, Dict[str, Any]] = {}
 # selectivity/fee tuning can salvage them. Each carries
 # ``edge_status="deprecated_m5"`` in its registry entry and is quarantined
 # from discovery via DISCOVERY_HIDDEN_STRATEGIES below (#1275). They stay
-# registered so explicit configs keep loading and backtests keep running;
-# the live check scripts warn (never reject) when one is configured.
-# Mirrored in scheduler/edge_status.go (m5DeprecatedEdgeStrategies) for the
-# Go startup warning — keep the two rosters identical.
+# registered so explicit configs keep loading and backtests keep running.
+# The operator warning lives on the Go side only (scheduler/edge_status.go
+# mirrors this roster as m5DeprecatedEdgeStrategies — keep the two rosters
+# identical): a startup [config] line + one-time owner DM, acknowledged via
+# per-strategy `allow_deprecated: true`. Per-cycle Python warnings were
+# deliberately dropped — check scripts run once per trade cycle, so a print
+# here would repeat unbounded and could never see the Go-side ack.
 M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
     "adx_trend",
     "amd_ifvg",

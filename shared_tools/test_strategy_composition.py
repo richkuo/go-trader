@@ -418,50 +418,6 @@ def test_reject_backtest_only_strategies_validates_and_refuses():
         reject_backtest_only_strategies(["normal", "research"], get_strategy)
 
 
-def test_warn_deprecated_edge_strategies_warns_but_never_rejects(capsys):
-    from strategy_composition import warn_deprecated_edge_strategies
-
-    def get_strategy(name):
-        if name == "clean":
-            return {"edge_status": None}
-        if name == "quarantined":
-            return {"edge_status": "deprecated_m5"}
-        raise ValueError(f"Unknown strategy: {name}")
-
-    # Clean entries produce no warnings and no output.
-    assert warn_deprecated_edge_strategies(["clean"], get_strategy) == []
-    # A quarantined entry warns on stderr (stdout stays JSON-clean) — but the
-    # call never raises: the strategy keeps loading and trading (#1275).
-    warnings = warn_deprecated_edge_strategies(["clean", "quarantined"], get_strategy)
-    assert len(warnings) == 1
-    assert "quarantined" in warnings[0]
-    assert "deprecate" in warnings[0]
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "quarantined" in captured.err
-    # Unknown names are skipped (existence is reject_backtest_only's job).
-    assert warn_deprecated_edge_strategies(["missing"], get_strategy) == []
-
-
-def test_warn_deprecated_edge_leaves_backtest_only_rejection_untouched():
-    import pytest
-    from strategy_composition import (
-        reject_backtest_only_strategies,
-        warn_deprecated_edge_strategies,
-    )
-
-    def get_strategy(name):
-        if name == "research":
-            return {"backtest_only": True, "edge_status": None}
-        raise ValueError(f"Unknown strategy: {name}")
-
-    # The #1275 warning path is advisory-only and must not soften the #1138
-    # hard reject: backtest_only still fails closed on the live path.
-    assert warn_deprecated_edge_strategies(["research"], get_strategy) == []
-    with pytest.raises(ValueError, match="backtest_only"):
-        reject_backtest_only_strategies(["research"], get_strategy)
-
-
 def test_validate_close_strategy_names_rejects_backtest_only_open_fallback():
     import pytest
 

@@ -532,11 +532,13 @@ func TestMakePairs_TwoAssets(t *testing.T) {
 }
 
 func TestStratShortName(t *testing.T) {
-	if got := stratShortName(spotStrategies, "momentum"); got != "momentum" {
-		t.Errorf("expected momentum, got %s", got)
+	if got := stratShortName(spotStrategies, "tema_cross"); got != "temac" {
+		t.Errorf("expected temac, got %s", got)
 	}
-	if got := stratShortName(spotStrategies, "sma_crossover"); got != "sma" {
-		t.Errorf("expected sma, got %s", got)
+	// Quarantined names (#1275) are pruned from the fallback lists, so an
+	// explicit legacy config falls back to the raw ID.
+	if got := stratShortName(spotStrategies, "sma_crossover"); got != "sma_crossover" {
+		t.Errorf("expected sma_crossover, got %s", got)
 	}
 	if got := stratShortName(optionsStrategies, "vol_mean_reversion"); got != "vol" {
 		t.Errorf("expected vol, got %s", got)
@@ -586,8 +588,8 @@ func TestRunInitFromJSON_EmptyUsesStarterSpotDefaults(t *testing.T) {
 		t.Fatalf("expected 1 starter strategy, got %d", len(cfg.Strategies))
 	}
 	s := cfg.Strategies[0]
-	if s.ID != "momentum-btc" {
-		t.Errorf("expected starter ID momentum-btc, got %s", s.ID)
+	if s.ID != "temac-btc" {
+		t.Errorf("expected starter ID temac-btc, got %s", s.ID)
 	}
 	if s.Type != "spot" || s.Platform != "binanceus" {
 		t.Errorf("expected starter spot strategy on binanceus, got %s/%s", s.Type, s.Platform)
@@ -612,8 +614,8 @@ func TestRunInitFromJSON_AssetsOnlyDefaultsToStarterSpot(t *testing.T) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "momentum-btc" {
-		t.Fatalf("expected starter momentum-btc config, got %+v", cfg.Strategies)
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "temac-btc" {
+		t.Fatalf("expected starter temac-btc config, got %+v", cfg.Strategies)
 	}
 }
 
@@ -632,8 +634,8 @@ func TestRunInitFromJSON_SpotEnabledNoStrategiesUsesStarterStrategy(t *testing.T
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "momentum-btc" {
-		t.Fatalf("expected starter momentum-btc config, got %+v", cfg.Strategies)
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "temac-btc" {
+		t.Fatalf("expected starter temac-btc config, got %+v", cfg.Strategies)
 	}
 }
 

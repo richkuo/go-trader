@@ -260,40 +260,6 @@ def reject_backtest_only_strategies(
             )
 
 
-def warn_deprecated_edge_strategies(
-    names: Iterable[str],
-    get_strategy: Callable[[str], dict],
-) -> list:
-    """Warn (never reject) when a configured open strategy carries a
-    documented negative-gross-edge verdict (``edge_status="deprecated_m5"``,
-    #999 M5 fee audit / #1275 quarantine).
-
-    Unlike ``reject_backtest_only_strategies`` this is advisory: the strategy
-    keeps loading and trading — the operator may knowingly opt in — but the
-    evidence that it loses money before fees is surfaced on stderr (stdout
-    stays reserved for the JSON contract). Unknown names are skipped here;
-    existence is already validated by ``reject_backtest_only_strategies``.
-    Returns the warning strings so callers/tests can inspect them.
-    """
-    warnings = []
-    for name in names:
-        try:
-            entry = get_strategy(name)
-        except ValueError:
-            continue
-        if isinstance(entry, dict) and entry.get("edge_status") == "deprecated_m5":
-            msg = (
-                f"WARNING: strategy '{name}' carries the M5 fee-audit deprecate "
-                "verdict (gross edge <= 0 on every measured leg; see "
-                "docs/research/fee-audit-m5.md, #999/#1275). It is hidden from "
-                "discovery and documented to lose money before fees — live "
-                "trading it is an explicit operator override."
-            )
-            warnings.append(msg)
-            print(msg, file=sys.stderr)
-    return warnings
-
-
 def validate_close_strategy_names(
     close_names: Iterable[str],
     get_open_strategy: Callable[[str], object],

@@ -21,8 +21,13 @@ var supportedAssets = []asset{
 }
 
 const (
-	starterAssetName      = "BTC"
-	starterSpotStrategyID = "momentum"
+	starterAssetName = "BTC"
+	// tema_cross: simple triple-EMA crossover, discovery-visible, and an M5
+	// fee-audit graduate (positive gross edge). Must never be a name in
+	// m5DeprecatedEdgeStrategies — the init wizard's own default would then
+	// generate a config the binary immediately warns against (#1275); pinned
+	// by TestConfigGenerationSurfacesExcludeQuarantinedStrategies.
+	starterSpotStrategyID = "tema_cross"
 	starterSpotCapital    = 1000.0
 	starterSpotDrawdown   = 5.0
 )
@@ -163,34 +168,21 @@ func deriveShortName(id string) string {
 }
 
 // defaultSpotStrategies is the fallback list when Python discovery fails.
+// It must mirror discovery's visibility rules: names quarantined by the M5
+// fee audit (#1275) or otherwise discovery-hidden in
+// shared_strategies/open/registry.py are excluded, so a discovery outage
+// never re-offers a strategy the registry hides (parity-tested in
+// TestConfigGenerationSurfacesExcludeQuarantinedStrategies).
 var defaultSpotStrategies = []stratDef{
-	{ID: "sma_crossover", ShortName: "sma"},
-	{ID: "ema_crossover", ShortName: "ema"},
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "rsi", ShortName: "rsi"},
-	{ID: "bollinger_bands", ShortName: "bb"},
-	{ID: "macd", ShortName: "macd"},
-	{ID: "mean_reversion", ShortName: "mr"},
-	{ID: "volume_weighted", ShortName: "vw"},
-	{ID: "triple_ema", ShortName: "tema"},
-	{ID: "rsi_macd_combo", ShortName: "rmc"},
-	{ID: "stoch_rsi", ShortName: "stochrsi"},
-	{ID: "ichimoku_cloud", ShortName: "ichi"},
-	{ID: "order_blocks", ShortName: "ob"},
-	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
-	{ID: "parabolic_sar", ShortName: "psar"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "tema_cross", ShortName: "temac"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
@@ -203,7 +195,6 @@ var defaultOptionsStrategies = []stratDef{
 }
 
 var defaultPerpsStrategies = []stratDef{
-	{ID: "momentum", ShortName: "momentum"},
 	{ID: "triple_ema_bidir", ShortName: "temab"},
 	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "chart_pattern", ShortName: "cpat"},
@@ -213,43 +204,28 @@ var defaultPerpsStrategies = []stratDef{
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
 	{ID: "funding_skew", ShortName: "fskew"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 var defaultFuturesStrategies = []stratDef{
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "mean_reversion", ShortName: "mr"},
-	{ID: "rsi", ShortName: "rsi"},
-	{ID: "macd", ShortName: "macd"},
 	{ID: "breakout", ShortName: "bo"},
 	{ID: "triple_ema_bidir", ShortName: "temab"},
-	{ID: "stoch_rsi", ShortName: "stochrsi"},
-	{ID: "ichimoku_cloud", ShortName: "ichi"},
-	{ID: "order_blocks", ShortName: "ob"},
-	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
-	{ID: "parabolic_sar", ShortName: "psar"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
 	{ID: "funding_skew", ShortName: "fskew"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "tema_cross", ShortName: "temac"},
 	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "mtf_confluence", ShortName: "mtfc"},
 	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
@@ -332,7 +308,7 @@ func hasAnyEnabledStrategyType(opts InitOptions) bool {
 }
 
 // applyMinimalStarterDefaults turns the empty/default init path into one safe,
-// easy-to-understand starter strategy: BTC spot momentum on BinanceUS.
+// easy-to-understand starter strategy: BTC spot tema_cross on BinanceUS.
 func applyMinimalStarterDefaults(opts *InitOptions) {
 	if !opts.EnableSpot && hasAnyEnabledStrategyType(*opts) {
 		return
