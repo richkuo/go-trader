@@ -253,6 +253,7 @@ def test_trailing_tp_ratchet_trail_only_tier_exits_on_tightened_trail():
         "open_action": ["long", "none", "none", "none", "none", "none"],
     }, index=idx)
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         trailing_stop_atr_mult=3.0,
         close_strategies=[{"name": "trailing_tp_ratchet", "params": {
@@ -292,6 +293,7 @@ def test_trailing_tp_ratchet_regime_uses_open_time_regime():
         }},
     }
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         # #870: the regime variant's opening trail / SL owner is the per-regime
         # trailing_stop_atr_regime block (scalar trailing_stop_atr_mult rejected).
@@ -342,6 +344,7 @@ def test_scalar_atr_stop_fires_alongside_close_evaluator():
         atrs=[2.0] * 5,
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         close_strategies=_FAR_TP, stop_loss_atr_mult=1.0,
     )
@@ -376,6 +379,7 @@ def test_scalar_trailing_stop_walks_alongside_close_evaluator():
         atrs=[2.0] * 6,
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         close_strategies=_FAR_TP, trailing_stop_atr_mult=1.0,
     )
@@ -397,6 +401,7 @@ def test_scalar_atr_stop_protects_short_side():
         "open_action": ["short"] + ["none"] * (n - 1),
     }, index=idx)
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         close_strategies=_FAR_TP, stop_loss_atr_mult=1.0,
     )
@@ -415,6 +420,7 @@ def test_pct_stop_fires_alongside_close_evaluator():
         atrs=[2.0] * 5,
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         close_strategies=_FAR_TP, stop_loss_pct=0.02,
     )
@@ -432,6 +438,7 @@ def test_tp_tier_partial_then_scalar_stop_closes_remainder():
         atrs=[2.0] * 7,
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         close_strategies=[{"name": "tiered_tp_atr", "params": {
             "tp_tiers": [{"atr_multiple": 1.0, "close_fraction": 0.5}],
@@ -468,6 +475,7 @@ def test_seeded_position_fixed_atr_stop_fires_plain_path():
         "signal": [0] * n,
     }, index=idx)
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         stop_loss_atr_mult=2.0,
     )
@@ -519,6 +527,7 @@ def test_seeded_position_fixed_atr_stop_fires_engine_path():
         "open_action": ["none"] * n,
     }, index=idx)
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         close_strategies=_FAR_TP, stop_loss_atr_mult=2.0,
     )
@@ -753,6 +762,7 @@ def _df_unified():
 
 def test_unified_regime_close_arms_per_regime_stop_loss():
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         close_strategies=[_UNIFIED_CLOSE],
     )
@@ -838,6 +848,7 @@ def test_unified_regime_close_bare_block_arms_sl_for_directional_sub_stamp():
         "open_action": ["long", "none", "none", "none", "none", "none"],
     }, index=idx)
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         regime_windows_spec=_COMPOSITE_SPEC_1228,
         close_strategies=[close_ref],

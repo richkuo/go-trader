@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 // applyHotReloadConfig applies the subset of config fields that are safe to
@@ -109,6 +110,23 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if !boolPtrEqual(sc.CircuitBreaker, ns.CircuitBreaker) {
 			addChange("strategy[%s].circuit_breaker: %s -> %s", sc.ID, formatCircuitBreaker(sc.CircuitBreaker), formatCircuitBreaker(ns.CircuitBreaker))
 			sc.CircuitBreaker = ns.CircuitBreaker
+		}
+		// #1273: circuit-breaker timing/threshold overrides are hot-reloadable
+		// always, including while a position is open — they only parameterize
+		// FUTURE fires read via the accessors on the next CheckRisk cycle. An
+		// already-latched CircuitBreakerUntil in RiskState is never rewritten,
+		// so no state mutation is needed here (same stance as #1048).
+		if !intPtrEqual(sc.CBDrawdownCooldownMinutes, ns.CBDrawdownCooldownMinutes) {
+			addChange("strategy[%s].cb_drawdown_cooldown_minutes: %s -> %s", sc.ID, formatCBMinutes(sc.CBDrawdownCooldownMinutes, DefaultCBDrawdownCooldown), formatCBMinutes(ns.CBDrawdownCooldownMinutes, DefaultCBDrawdownCooldown))
+			sc.CBDrawdownCooldownMinutes = ns.CBDrawdownCooldownMinutes
+		}
+		if !intPtrEqual(sc.CBLossStreakThreshold, ns.CBLossStreakThreshold) {
+			addChange("strategy[%s].cb_loss_streak_threshold: %s -> %s", sc.ID, formatCBThreshold(sc.CBLossStreakThreshold), formatCBThreshold(ns.CBLossStreakThreshold))
+			sc.CBLossStreakThreshold = ns.CBLossStreakThreshold
+		}
+		if !intPtrEqual(sc.CBLossStreakCooldownMinutes, ns.CBLossStreakCooldownMinutes) {
+			addChange("strategy[%s].cb_loss_streak_cooldown_minutes: %s -> %s", sc.ID, formatCBMinutes(sc.CBLossStreakCooldownMinutes, DefaultCBLossStreakCooldown), formatCBMinutes(ns.CBLossStreakCooldownMinutes, DefaultCBLossStreakCooldown))
+			sc.CBLossStreakCooldownMinutes = ns.CBLossStreakCooldownMinutes
 		}
 		// #1118: per-strategy notify_ratchet_triggers override is hot-reloadable
 		// always, including while a position is open — it only changes whether the
@@ -716,10 +734,13 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 
 func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MaxDrawdownPct = 0
-	sc.CircuitBreaker = nil        // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
-	sc.NotifyRatchetTriggers = nil // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
-	sc.Paused = false              // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
-	sc.LLMEntryAnalysis = nil      // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
+	sc.CircuitBreaker = nil              // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
+	sc.CBDrawdownCooldownMinutes = nil   // #1273: hot-reloadable always, including while open — parameterizes only FUTURE fires; a latched CircuitBreakerUntil is never rewritten. Applied in applyHotReloadConfig.
+	sc.CBLossStreakThreshold = nil       // #1273: same stance — the next CheckRisk cycle reads the new threshold via the accessor.
+	sc.CBLossStreakCooldownMinutes = nil // #1273: same stance as the drawdown cooldown.
+	sc.NotifyRatchetTriggers = nil       // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
+	sc.Paused = false                    // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
+	sc.LLMEntryAnalysis = nil            // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
@@ -794,6 +815,32 @@ func boolPtrEqual(a, b *bool) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// formatCBMinutes renders an optional minutes override for reload change logs.
+// nil → "default(<n>m)" derived from the built-in cooldown so an operator sees
+// the implicit value a cleared override falls back to. (#1273)
+func formatCBMinutes(p *int, def time.Duration) string {
+	if p == nil {
+		return fmt.Sprintf("default(%dm)", int(def/time.Minute))
+	}
+	return fmt.Sprintf("%dm", *p)
+}
+
+// formatCBThreshold renders the optional loss-streak-threshold override for
+// reload change logs. nil → "default(<n>)". (#1273)
+func formatCBThreshold(p *int) string {
+	if p == nil {
+		return fmt.Sprintf("default(%d)", DefaultCBLossStreakThreshold)
+	}
+	return fmt.Sprintf("%d", *p)
 }
 
 // formatCircuitBreaker renders the per-strategy circuit-breaker flag for reload

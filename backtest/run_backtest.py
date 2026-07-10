@@ -1013,6 +1013,7 @@ def run_single_backtest(
     regime_directional_certified_states: Optional[dict] = None,
     directional_cert_path: Optional[str] = None,
     profile_allocation: Optional[dict] = None,
+    intrabar_resolution: str = "ohlc_walk",
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -1022,9 +1023,12 @@ def run_single_backtest(
     ``"okx-perps"``), matching ``scheduler/fees.go:CalculatePlatformSpotFee``.
     ``close_strategies`` is an optional list of co-located close-evaluator
     refs (``[{"name": str, "params": dict}, ...]``) from the close registry
-    (#511, #641); each runs per-bar against the simulated position. Backtest
-    granularity is bar-level so live intra-bar trigger races (e.g. HL
-    stop-loss OIDs) are not simulated.
+    (#511, #641); each runs per-bar against the simulated position.
+    ``intrabar_resolution`` selects the SL race resolution (#1271):
+    ``"ohlc_walk"`` (default) stops out on any bar whose range touches the
+    armed trigger, priced at the trigger (or the open on a gap-through);
+    ``"bar_close"`` restores the legacy bar-level convention for reproducing
+    pre-#1271 baselines.
     """
     reg = load_registry(registry)
     strat = reg.STRATEGY_REGISTRY.get(strategy_name)
@@ -1158,6 +1162,7 @@ def run_single_backtest(
         regime_directional_certified=regime_directional_certified,
         regime_directional_certified_states=regime_directional_certified_states,
         profile_allocation=profile_allocation,
+        intrabar_resolution=intrabar_resolution,
     )
     results = bt.run(
         df_signals,
@@ -1186,6 +1191,7 @@ def run_all_strategies(
     regime_adx_threshold: float = 20.0,
     allowed_regimes: Optional[List[str]] = None,
     direction: Optional[str] = None,
+    intrabar_resolution: str = "ohlc_walk",
 ) -> list:
     """Run multiple strategies on one asset and compare."""
     reg = load_registry(registry)
@@ -1205,6 +1211,7 @@ def run_all_strategies(
             regime_adx_threshold=regime_adx_threshold,
             allowed_regimes=allowed_regimes,
             direction=direction,
+            intrabar_resolution=intrabar_resolution,
         )
         if result:
             all_results.append(result)
@@ -1230,6 +1237,7 @@ def run_multi_asset(
     regime_adx_threshold: float = 20.0,
     allowed_regimes: Optional[List[str]] = None,
     direction: Optional[str] = None,
+    intrabar_resolution: str = "ohlc_walk",
 ) -> dict:
     """Run strategies across multiple assets."""
     reg = load_registry(registry)
@@ -1257,6 +1265,7 @@ def run_multi_asset(
                 regime_adx_threshold=regime_adx_threshold,
                 allowed_regimes=allowed_regimes,
                 direction=direction,
+                intrabar_resolution=intrabar_resolution,
             )
             if result:
                 results_by_asset[symbol].append(result)
@@ -1441,6 +1450,18 @@ def _build_parser() -> argparse.ArgumentParser:
                              "evaluator. In optimize mode defaults to long "
                              "when a close-stack grid is swept so every "
                              "stack scores on the same entry universe.")
+    parser.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                        choices=["ohlc_walk", "bar_close"],
+                        default="ohlc_walk",
+                        help="SL race resolution (#1271). ohlc_walk "
+                             "(default): a bar whose range touches the armed "
+                             "stop trigger exits ON that bar at the trigger "
+                             "price (or at the open on a gap-through), "
+                             "winning adverse-move-first over a same-bar TP. "
+                             "bar_close: legacy pre-#1271 semantics (hit "
+                             "detected on the close only, filled at the next "
+                             "bar's open) for reproducing documented "
+                             "baselines. Single mode only.")
     return parser
 
 
@@ -1662,6 +1683,19 @@ def main():
         # --config + --direction was rejected above, so the key can't collide.
         live_stop_kwargs["direction"] = args.direction
 
+    # #1271: engine-mode selector, not a strategy config field — cannot
+    # collide with --config keys, so set unconditionally for single mode.
+    # compare/multi thread it explicitly below; optimize rejects the legacy
+    # value rather than silently scoring a grid on semantics the flag asked
+    # to disable (optimizer.py constructs its own engines on the default).
+    live_stop_kwargs["intrabar_resolution"] = args.intrabar_resolution
+    if args.intrabar_resolution != "ohlc_walk" and args.mode == "optimize":
+        print("--intrabar-resolution bar_close is not supported in optimize "
+              "mode (the optimizer's engines run on the default ohlc_walk "
+              "semantics); use --mode single, or eval_windows.py, for legacy-"
+              "baseline reproduction")
+        sys.exit(1)
+
     reg = load_registry(args.registry)
 
     if args.mode == "single":
@@ -1691,7 +1725,8 @@ def main():
                            regime_period=args.regime_period,
                            regime_adx_threshold=args.regime_adx_threshold,
                            allowed_regimes=args.allowed_regimes,
-                           direction=args.direction)
+                           direction=args.direction,
+                           intrabar_resolution=args.intrabar_resolution)
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
@@ -1705,7 +1740,8 @@ def main():
                         regime_period=args.regime_period,
                         regime_adx_threshold=args.regime_adx_threshold,
                         allowed_regimes=args.allowed_regimes,
-                        direction=args.direction)
+                        direction=args.direction,
+                        intrabar_resolution=args.intrabar_resolution)
 
     elif args.mode == "optimize":
         # #996: close-stack co-optimization. The grid owns the close stack;
