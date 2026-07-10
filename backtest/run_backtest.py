@@ -995,7 +995,76 @@ def load_strategy_config(config_path: str, strategy_id: str,
                         f"live daemon rejects this config at startup; #1268)."
                     )
                 sc["stop_loss_atr_mult"] = _default_mult
+        # #1276: scale-in / pyramiding. Thread the live fields through so an
+        # allow_scale_in config simulates add legs with the live #873
+        # semantics instead of silently backtesting the no-adds system.
+        # Mirror the live validateConfig rejects the loader can see (type/
+        # platform gate, block-without-flag, live-args resize guard); the
+        # engine's own __init__ validation covers bounds + the #1268 combo.
         cfg_args = sc.get("args") or []
+        allow_scale_in = bool(sc.get("allow_scale_in"))
+        scale_in_cfg = sc.get("scale_in")
+        if allow_scale_in:
+            platform_cfg = str(sc.get("platform") or "").strip().lower()
+            if strategy_type not in ("perps", "manual"):
+                raise ValueError(
+                    f"{config_path}: strategy {strategy_id!r} sets "
+                    f"allow_scale_in on type={strategy_type!r}, but scale-in "
+                    f"is perps/manual-only (the live daemon rejects this "
+                    f"config at startup; #873)."
+                )
+            if platform_cfg != "hyperliquid":
+                raise ValueError(
+                    f"{config_path}: strategy {strategy_id!r} sets "
+                    f"allow_scale_in on platform={platform_cfg!r}, but "
+                    f"scale-in is hyperliquid-only (the live daemon rejects "
+                    f"this config at startup; #873)."
+                )
+            # Live-args resize guard (config.go, from #875): on LIVE perps
+            # the on-chain SL must be growable after an add — a trailing
+            # owner or an ATR/regime fixed SL. A static scalar SL
+            # (stop_loss_pct / stop_loss_margin_pct) has no resize path;
+            # live rejects the config, so reject here rather than simulate
+            # a config the daemon refuses to load.
+            _is_live_args = False
+            for _ai, _arg in enumerate(cfg_args):
+                if _arg == "--mode=live" or (
+                    _arg == "--mode"
+                    and _ai + 1 < len(cfg_args)
+                    and cfg_args[_ai + 1] == "live"
+                ):
+                    _is_live_args = True
+                    break
+            if strategy_type == "perps" and _is_live_args:
+                _has_trailing = (
+                    (sc.get("trailing_stop_pct") or 0) > 0
+                    or (sc.get("trailing_stop_atr_mult") or 0) > 0
+                    or bool(sc.get("trailing_stop_atr_regime"))
+                    or (str((sc.get("close_strategy") or {}).get("name") or "")
+                        .strip().lower()
+                        in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime"))
+                )
+                _has_static_scalar_sl = (
+                    (sc.get("stop_loss_pct") or 0) > 0
+                    or (sc.get("stop_loss_margin_pct") or 0) > 0
+                )
+                if not _has_trailing and _has_static_scalar_sl:
+                    raise ValueError(
+                        f"{config_path}: strategy {strategy_id!r} sets "
+                        f"allow_scale_in on live perps with a static scalar "
+                        f"stop (stop_loss_pct/stop_loss_margin_pct), which "
+                        f"the live scale-in resize path cannot grow — the "
+                        f"live daemon rejects this config at startup (#873). "
+                        f"Use stop_loss_atr_mult, stop_loss_atr_regime, or a "
+                        f"trailing stop."
+                    )
+        elif scale_in_cfg:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} has a scale_in "
+                f"block but allow_scale_in is false — enable allow_scale_in "
+                f"or remove the block (the live daemon rejects this config "
+                f"at startup; #873)."
+            )
         cert_symbol = str(cfg_args[1]) if len(cfg_args) > 1 else ""
         cert_timeframe = regime_timeframe or (str(cfg_args[2]) if len(cfg_args) > 2 else "")
         regime_directional_certified = False
@@ -1042,6 +1111,9 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "profile_allocation": profile_allocation,
             # #1268: opt-in risk-per-trade sizing (None = legacy full-notional).
             "risk_per_trade_pct": risk_per_trade_pct,
+            # #1276: opt-in scale-in / pyramiding (False/None = legacy skip).
+            "allow_scale_in": allow_scale_in,
+            "scale_in": dict(scale_in_cfg) if scale_in_cfg else None,
         }
     raise ValueError(
         f"{config_path}: no strategy with id={strategy_id!r}. "
@@ -1084,6 +1156,8 @@ def run_single_backtest(
     profile_allocation: Optional[dict] = None,
     intrabar_resolution: str = "ohlc_walk",
     risk_per_trade_pct: Optional[float] = None,
+    allow_scale_in: bool = False,
+    scale_in: Optional[dict] = None,
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -1234,6 +1308,8 @@ def run_single_backtest(
         profile_allocation=profile_allocation,
         intrabar_resolution=intrabar_resolution,
         risk_per_trade_pct=risk_per_trade_pct,
+        allow_scale_in=allow_scale_in,
+        scale_in=scale_in,
     )
     results = bt.run(
         df_signals,
@@ -1696,6 +1772,9 @@ def main():
             "regime_windows_spec",
             # #1268: opt-in risk-per-trade sizing from the live config.
             "risk_per_trade_pct",
+            # #1276: opt-in scale-in / pyramiding from the live config.
+            "allow_scale_in",
+            "scale_in",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
         args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)

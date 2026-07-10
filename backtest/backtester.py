@@ -62,13 +62,43 @@ restores the pre-#1271 bar-level convention — SL hits detected on the close
 only and filled at the next bar's open — for reproducing documented
 baselines. Documented under ``Backtest`` in CLAUDE.md.
 
+Scale-in / pyramiding (#1276)
+-----------------------------
+Opt-in via ``allow_scale_in=True`` (+ optional ``scale_in`` caps/spacing dict),
+mirroring the live #873 semantics: a same-direction signal on an open position
+ADDS size instead of being skipped. The gate is a 1:1 port of
+``perpsScaleInDecision`` (scheduler/scale_in.go) evaluated against the
+DECISION bar's close (the signal bar, N); the add fills at bar N+1's open —
+the same N-close -> N+1-open contract as entries. The blend mirrors
+``applyScaleIn``: ``avg_cost`` becomes the qty-weighted blend (drives PnL),
+``initial_quantity`` grows (partial-close pro-rating baseline), and on the
+FIRST add the risk anchor freezes to the pre-blend ``avg_cost`` — every SL/TP
+geometry consumer (sl_after bumps, tiered-TP thresholds, ratchet watermarks)
+reads the frozen anchor, never the blend, mirroring live's
+``Position.riskAnchorPrice()`` on-chain protection geometry
+(hyperliquid_protection.go / post_tp_sl.go / trailing_tp_ratchet.go).
+``EntryATR``, the stamped regime, and cleared-tier watermarks stay frozen at
+first entry. Each add pays a taker commission on its notional; adds create no
+``Trade`` rows (parity with live's ``trade_type="scale_in"`` #T exclusion) —
+``results["scale_in_adds"]`` counts them. Sizing notes: the default per-add
+notional is the notional the position's FIRST leg committed (the backtest
+image of live's per-cycle ``PerpsOpenNotional`` — live margin cash is ≈
+stable across an open, frozen here for determinism);
+``scale_in.add_notional_usd`` is literal USD, so parity holds when
+``initial_capital`` ≈ the live account. A long add spends notional from
+``cash``, which may go NEGATIVE — the correct spot-model image of live's
+margin-based virtual notional (only the fee leaves live cash); equity =
+``cash + position×mark`` stays exact throughout. Adds bypass the regime
+entry gate (live ``regimeBlocksOpen`` passes posQty>0). Virtual close
+evaluators here read the frozen anchor as ``avg_cost`` — matching the live
+LIVE (on-chain) path; live PAPER's virtual evaluators see the blend, a known
+live paper-vs-live divergence this engine resolves toward the money path.
+
 Live parity limitations (#906 audit)
 ------------------------------------
 Surfaces intentionally **not** modeled here (use ``backtest/parity_diff.py`` for
 decision-layer parity checks; see ``backtest/AUDIT.md`` for the full matrix):
 
-  • **Scale-in / pyramiding** (#873) — HL perps + manual live-only; same-direction
-    adds are skipped in backtest.
   • **Resting manual limit orders** (#883) — maker fills / partial OID reconcile
     have no bar-level simulation.
   • **``tiered_tp_atr_live_regime_dynamic``** (#843) — rejected at
@@ -623,6 +653,138 @@ def _validated_entry_fraction_series(df: pd.DataFrame) -> pd.Series:
     return vals
 
 
+class _ScaleInState:
+    """Per-position scale-in bookkeeping (#1276), mirroring the live
+    ``Position`` fields the #873 blend maintains (scheduler/scale_in.go).
+
+    ``risk_anchor_price`` is 0.0 until the first add; geometry consumers read
+    ``risk_anchor_price or avg_cost`` — the exact backtest analogue of live's
+    ``Position.riskAnchorPrice()`` (scheduler/portfolio.go). ``base_open_notional``
+    freezes the notional the position's FIRST leg committed, the backtest image
+    of live's per-cycle ``PerpsOpenNotional`` default per-add sizing (live
+    margin cash stays ≈ constant across an open; frozen here for determinism).
+    One ``reset()`` shared by every full-close site so the reset list can't
+    drift.
+    """
+
+    __slots__ = ("risk_anchor_price", "scale_in_count", "last_add_price",
+                 "added_notional_usd", "base_open_notional")
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self) -> None:
+        self.risk_anchor_price = 0.0
+        self.scale_in_count = 0
+        self.last_add_price = 0.0
+        self.added_notional_usd = 0.0
+        self.base_open_notional = 0.0
+
+    def geom_cost(self, avg_cost: float) -> float:
+        """SL/TP trigger geometry price: the frozen first entry once the
+        position has scaled in, else the (un-blended) avg_cost."""
+        if self.risk_anchor_price > 0:
+            return self.risk_anchor_price
+        return avg_cost
+
+
+_SCALE_IN_CFG_KEYS = (
+    "max_adds", "max_added_notional_usd", "add_spacing_atr", "add_notional_usd",
+)
+
+
+def _normalize_scale_in_cfg(scale_in: Optional[dict]) -> dict:
+    """Validate + normalize a live ``scale_in`` config block (#1276), mirroring
+    the live validateConfig bounds (scheduler/config.go). Unknown keys are
+    rejected loudly — a typo'd cap would otherwise silently not gate."""
+    cfg = {"max_adds": 0, "max_added_notional_usd": 0.0,
+           "add_spacing_atr": 0.0, "add_notional_usd": 0.0}
+    if not scale_in:
+        return cfg
+    if not isinstance(scale_in, dict):
+        raise ValueError(
+            f"scale_in must be a dict of {list(_SCALE_IN_CFG_KEYS)}, "
+            f"got {type(scale_in).__name__}"
+        )
+    unknown = sorted(set(scale_in) - set(_SCALE_IN_CFG_KEYS))
+    if unknown:
+        raise ValueError(
+            f"scale_in has unknown key(s) {unknown}; "
+            f"supported: {list(_SCALE_IN_CFG_KEYS)}"
+        )
+    max_adds = scale_in.get("max_adds", 0) or 0
+    if int(max_adds) != max_adds or int(max_adds) < 0:
+        raise ValueError(f"scale_in.max_adds must be an int >= 0, got {max_adds!r}")
+    cfg["max_adds"] = int(max_adds)
+    for key in ("max_added_notional_usd", "add_notional_usd"):
+        val = float(scale_in.get(key, 0) or 0)
+        if val < 0:
+            raise ValueError(f"scale_in.{key} must be >= 0, got {val}")
+        cfg[key] = val
+    cfg["add_spacing_atr"] = float(scale_in.get("add_spacing_atr", 0) or 0)
+    return cfg
+
+
+def _scale_in_decision(scale_cfg: dict, side: str, quantity: float,
+                       avg_cost: float, entry_atr: float, scale_in_count: int,
+                       added_notional_usd: float, last_add_price: float,
+                       signal: int, price: float,
+                       default_open_notional: float) -> Tuple[float, bool, str]:
+    """Pure gate for a same-direction add — a line-for-line port of the live
+    ``perpsScaleInDecision`` (scheduler/scale_in.go #873), including the 1e-9
+    tolerances, the ``last_add_price -> avg_cost`` fallback, and the
+    positive-EntryATR spacing requirement. ``price`` is the DECISION-time
+    price (live: cycle mark ≈ signal bar's close). Returns
+    ``(add_qty, ok, reason)``; the opt-in (``allow_scale_in``) check lives at
+    the call site, matching the caller-gated live dispatch.
+    """
+    if price <= 0:
+        return 0.0, False, "no price for scale-in"
+    # Direction match: a buy adds to a long, a sell adds to a short. Anything
+    # else is a close/cover/flip/fresh-open handled by the existing paths.
+    if not ((signal == 1 and side == "long" and quantity > 0)
+            or (signal == -1 and side == "short" and quantity > 0)):
+        return 0.0, False, "not a same-direction add"
+
+    max_adds = int(scale_cfg.get("max_adds", 0) or 0)
+    if max_adds > 0 and scale_in_count >= max_adds:
+        return 0.0, False, "scale-in max_adds reached"
+
+    add_notional = default_open_notional
+    if (scale_cfg.get("add_notional_usd", 0) or 0) > 0:
+        add_notional = float(scale_cfg["add_notional_usd"])
+    if add_notional <= 0:
+        return 0.0, False, "scale-in add notional resolves to zero"
+    # Cumulative ACTUAL added notional + this add's REQUESTED notional — an
+    # approximate guardrail, not an exact ceiling (live #873 review).
+    max_added = float(scale_cfg.get("max_added_notional_usd", 0) or 0)
+    if max_added > 0 and added_notional_usd + add_notional > max_added + 1e-9:
+        return 0.0, False, "scale-in max_added_notional_usd reached"
+
+    spacing = float(scale_cfg.get("add_spacing_atr", 0) or 0)
+    if spacing != 0:
+        if entry_atr <= 0:
+            return 0.0, False, "scale-in spacing requires a positive EntryATR"
+        last_add = last_add_price
+        if last_add <= 0:
+            last_add = avg_cost
+        direction = -1.0 if side == "short" else 1.0
+        # favorable_move > 0 when price has moved in the position's favor
+        # since the last entry leg (up for a long, down for a short).
+        favorable_move = (price - last_add) * direction
+        needed = spacing * entry_atr
+        if spacing > 0:
+            # add-to-winners: require an in-favor move of at least `needed`.
+            if favorable_move + 1e-9 < needed:
+                return 0.0, False, "scale-in spacing (add-to-winners) not reached"
+        else:
+            # average-down: require an adverse move of at least |needed|.
+            if -favorable_move + 1e-9 < -needed:
+                return 0.0, False, "scale-in spacing (average-down) not reached"
+
+    return add_notional / price, True, ""
+
+
 class Trade:
     """Represents a single round-trip trade."""
     def __init__(self, entry_date, entry_price, side="long"):
@@ -650,6 +812,9 @@ class Trade:
         self.entry_fee = 0.0
         self.exit_fee = 0.0
         self.exit_reason = ""
+        # #1276: add legs blended into the position this leg closes out of
+        # (0 for never-scaled positions; additive telemetry like #997).
+        self.scale_in_adds = 0
 
     def close(self, exit_date, exit_price):
         self.exit_date = exit_date
@@ -680,6 +845,8 @@ class Trade:
             "entry_fee": round(self.entry_fee, 6),
             "exit_fee": round(self.exit_fee, 6),
             "exit_reason": self.exit_reason,
+            # #1276: additive; existing consumers ignore it.
+            "scale_in_adds": self.scale_in_adds,
         }
 
 
@@ -695,7 +862,7 @@ class _HoldTracker:
     """
 
     __slots__ = ("bars", "high", "low", "high_bar", "low_bar",
-                 "entry_fee", "entry_price", "side")
+                 "entry_fee", "entry_fee_netted", "entry_price", "side")
 
     def __init__(self):
         self.open(0.0, "long", 0.0)
@@ -707,6 +874,9 @@ class _HoldTracker:
         self.high_bar = 0
         self.low_bar = 0
         self.entry_fee = entry_fee
+        # #1276: entry fees already netted onto earlier close legs of this
+        # position — drives the final-leg true-up for scaled-in positions.
+        self.entry_fee_netted = 0.0
         self.entry_price = entry_price
         self.side = side
 
@@ -730,7 +900,8 @@ class _HoldTracker:
 
 
 def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
-                exit_fee: float, reason: str, qty_frac: float = 1.0) -> None:
+                exit_fee: float, reason: str, qty_frac: float = 1.0,
+                true_up_entry_fee: bool = False) -> None:
     """Stamp #997 hold telemetry onto a closing trade leg.
 
     ``qty_frac`` pro-rates the entry commission for a partial-close leg (each
@@ -741,6 +912,15 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     entry fee and the exit fee out of it so every leg reports PnL net of fees,
     matching live's net-PnL convention (``tradeNetPnL``). Callers must NOT
     deduct the exit fee from ``pnl`` themselves — doing so double-counts it.
+
+    ``true_up_entry_fee`` (#1276): when a scale-in add follows a partial
+    close, the ``pool × leg/IQ`` identity stops conserving (earlier legs were
+    netted against a smaller pool and a smaller ``initial_quantity``), so the
+    POSITION'S FINAL leg must instead net exactly the un-netted remainder —
+    ``hold.entry_fee - hold.entry_fee_netted`` — restoring
+    Σ(netted entry fees) == open commission + Σ(add commissions). Callers set
+    it only on the final close leg of a position that scaled in; non-scaled
+    positions keep the pre-#1276 formula bit-for-bit.
     """
     mfe, mae, b_mfe, b_mae = hold.metrics()
     trade.bars_held = hold.bars
@@ -749,7 +929,14 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     trade.bars_to_mfe = b_mfe
     trade.bars_to_mae = b_mae
     trade.entry_atr = entry_atr
-    trade.entry_fee = hold.entry_fee * qty_frac
+    if true_up_entry_fee:
+        # Final leg of a scaled-in position: net the exact un-netted
+        # remainder (never negative — intermediate legs net against a pool
+        # no larger than the final pool with fractions summing below 1).
+        trade.entry_fee = max(0.0, hold.entry_fee - hold.entry_fee_netted)
+    else:
+        trade.entry_fee = hold.entry_fee * qty_frac
+    hold.entry_fee_netted += trade.entry_fee
     trade.exit_fee = exit_fee
     trade.exit_reason = reason
     # Net both fees out of the gross pnl set by Trade.close() (#1241).
@@ -793,7 +980,9 @@ class Backtester:
                  regime_timeframe: Optional[str] = None,
                  profile_allocation: Optional[dict] = None,
                  intrabar_resolution: str = "ohlc_walk",
-                 risk_per_trade_pct: Optional[float] = None):
+                 risk_per_trade_pct: Optional[float] = None,
+                 allow_scale_in: bool = False,
+                 scale_in: Optional[dict] = None):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -848,6 +1037,19 @@ class Backtester:
                 margin-pct-only stop, and a strategy-emitted
                 ``entry_fraction`` column are rejected loudly. None keeps
                 the legacy full-notional sizing byte-identical.
+            allow_scale_in: Opt-in scale-in / pyramiding (#1276), mirroring
+                the live ``allow_scale_in`` field (#873): a same-direction
+                signal on an open position ADDS size instead of being
+                skipped. Default False keeps every existing run
+                byte-identical. See the module docstring, "Scale-in /
+                pyramiding".
+            scale_in: Optional caps/spacing dict (live ``scale_in`` block):
+                ``max_adds`` (int, 0 = unlimited), ``max_added_notional_usd``
+                (0 = unlimited), ``add_spacing_atr`` (signed EntryATR
+                multiples; >0 add-to-winners, <0 average-down, 0 = no gate),
+                ``add_notional_usd`` (0 = the position's first-leg notional).
+                Rejected when set without ``allow_scale_in`` (mirrors the
+                live validator).
         """
         self.initial_capital = initial_capital
         self.platform = platform
@@ -1431,6 +1633,26 @@ class Backtester:
         self._risk_cap_warned = False
         self._risk_skip_warned = False
 
+        # #1276: opt-in scale-in / pyramiding, mirroring the live #873
+        # semantics. Validated eagerly — a scale_in block without the flag,
+        # bad bounds, or the #1268 risk-sizing combo fail at construction,
+        # exactly the configs the live daemon refuses to load.
+        self.allow_scale_in = bool(allow_scale_in)
+        if scale_in and not self.allow_scale_in:
+            raise ValueError(
+                "scale_in block is set but allow_scale_in is false — enable "
+                "allow_scale_in or remove the block (the live daemon rejects "
+                "this config at startup)"
+            )
+        self._scale_in_cfg = _normalize_scale_in_cfg(scale_in)
+        if self.allow_scale_in and self.risk_per_trade_pct is not None:
+            raise ValueError(
+                "allow_scale_in is mutually exclusive with risk_per_trade_pct "
+                "(#1268: add legs re-size off the frozen SL geometry, breaking "
+                "the constant-dollar-risk invariant; the live daemon rejects "
+                "this config at startup)"
+            )
+
     def _apply_direction_invert(self, sig_int: pd.Series,
                                 uses_open_close: bool) -> pd.Series:
         """Apply live ``invert_signal`` then ``direction`` gating to the raw
@@ -1736,6 +1958,10 @@ class Backtester:
         pending_close_reason = ""
         # #997 hold telemetry accumulator (intra-hold excursions + bars held).
         hold = _HoldTracker()
+        # #1276 scale-in state (anchor/counters/first-leg notional) + totals.
+        scale = _ScaleInState()
+        scale_in_adds_total = 0
+        scale_in_added_notional_total = 0.0
 
         # Post-TP SL adjustment state (#709). Only meaningful when sl_after is
         # configured; otherwise the per-bar machinery short-circuits and these
@@ -1918,6 +2144,10 @@ class Backtester:
             current_trade.shares = position
             avg_cost = effective_entry
             initial_quantity = position
+            # #1276: a seeded position starts un-scaled; its first-leg
+            # notional is the seeded commitment.
+            scale.reset()
+            scale.base_open_notional = position * effective_entry
             # #997: seed hold telemetry for the walk-forward-seeded position.
             # bars_held starts at 0 (its true warmup hold length is unknown).
             hold.open(effective_entry, "long", entry_commission)
@@ -2006,6 +2236,90 @@ class Backtester:
                 "diverge from the live sizing formula"
             )
         risk_skipped_entries = 0
+
+        # #1276: scale-in state + per-run totals. The entry_fraction column is
+        # a fresh-entry research hook with no live counterpart — composing it
+        # with the live add-sizing rule would make the default per-add
+        # notional (the first leg's committed notional) depend on a
+        # backtest-only input; reject loudly like the #1268 combo above.
+        if self.allow_scale_in and has_entry_fraction:
+            raise ValueError(
+                "allow_scale_in is mutually exclusive with a strategy-emitted "
+                "entry_fraction column (#1276) — the live per-add sizing "
+                "(the fresh-open notional) has no entry_fraction input, so "
+                "composing them would diverge from the live add-sizing rule"
+            )
+        # Decision-time price for the add gate: the signal bar's close (bar
+        # N; live evaluates spacing at cycle time ≈ that close). The signal
+        # is already shift(1)'d, so on the fill row (N+1) the decision price
+        # is the PREVIOUS row's close.
+        prev_close_arr = (
+            df["close"].shift(1).to_numpy(dtype=float)
+            if self.allow_scale_in else None
+        )
+
+        def _try_scale_in_add(i: int, side: str, fill_price: float) -> bool:
+            """Attempt a same-direction add on the fill row (#1276). Gate
+            evaluated against bar N's close; fill at this row's open with
+            slippage + commission. Mutates position/cash/avg_cost/
+            initial_quantity/current_trade/hold + the scale state — the
+            Python image of live's perpsScaleInDecision + applyScaleIn.
+            Returns True when an add was applied."""
+            nonlocal position, cash, avg_cost, initial_quantity
+            nonlocal scale_in_adds_total, scale_in_added_notional_total
+            decision_price = float(prev_close_arr[i])
+            if not (decision_price > 0):  # NaN on row 0
+                return False
+            default_notional = scale.base_open_notional
+            add_qty, ok, _reason = _scale_in_decision(
+                self._scale_in_cfg, side, abs(position), avg_cost,
+                entry_atr_value, scale.scale_in_count,
+                scale.added_notional_usd, scale.last_add_price,
+                1 if side == "long" else -1, decision_price, default_notional,
+            )
+            if not ok or add_qty <= 0:
+                return False
+            if side == "long":
+                eff = fill_price * (1 + self.slippage_pct)
+            else:
+                eff = fill_price * (1 - self.slippage_pct)
+            notional = add_qty * eff
+            commission = notional * self.commission_pct
+            if side == "long":
+                # Notional leaves cash (may go negative — the spot-model
+                # image of live's margin-based virtual notional; equity =
+                # cash + position×mark stays exact). See module docstring.
+                cash -= notional + commission
+                position += add_qty
+            else:
+                # Net-proceeds form of the existing short-open math.
+                cash += notional - commission
+                position -= add_qty
+            # The blend — exactly applyScaleIn (scheduler/scale_in.go):
+            # freeze the anchor to the pre-blend avg_cost on the FIRST add,
+            # blend avg_cost, grow InitialQuantity; EntryATR / the stamped
+            # regime / tier watermarks stay untouched (frozen entry).
+            if scale.risk_anchor_price <= 0:
+                scale.risk_anchor_price = avg_cost
+            old_qty = abs(position) - add_qty
+            new_qty = old_qty + add_qty
+            avg_cost = (old_qty * avg_cost + add_qty * eff) / new_qty
+            initial_quantity += add_qty
+            scale.scale_in_count += 1
+            scale.last_add_price = eff
+            scale.added_notional_usd += notional
+            scale_in_adds_total += 1
+            scale_in_added_notional_total += notional
+            if current_trade is not None:
+                # PnL uses the blend: the leg's entry price IS the blended
+                # avg_cost (Trade.close computes pnl from entry_price).
+                current_trade.entry_price = avg_cost
+                current_trade.shares += add_qty
+                current_trade.scale_in_adds = scale.scale_in_count
+            # The add's commission joins the single entry-fee pool that
+            # _stamp_hold pro-rates across close legs (#1241).
+            hold.entry_fee += commission
+            return True
 
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
@@ -2182,7 +2496,16 @@ class Backtester:
                         _stamp_hold(closed, hold, entry_atr=entry_atr_value,
                                     exit_fee=commission,
                                     reason=close_reason or "close_strategy",
-                                    qty_frac=qty_frac)
+                                    qty_frac=qty_frac,
+                                    # #1276: a scaled position's FINAL leg
+                                    # nets the un-netted fee remainder so
+                                    # the pool conserves across add/partial
+                                    # interleavings.
+                                    true_up_entry_fee=(
+                                        scale.scale_in_count > 0
+                                        and abs(position) <= 1e-12
+                                    ))
+                        closed.scale_in_adds = scale.scale_in_count
                         trades.append(closed)
                         current_trade.shares -= qty_to_close
                         if current_trade.shares <= 1e-12:
@@ -2193,6 +2516,7 @@ class Backtester:
                         avg_cost = 0.0
                         initial_quantity = 0.0
                         entry_atr_value = 0.0
+                        scale.reset()
                         # Reset post-TP SL state on full close so the next
                         # open starts clean.
                         sl_trigger_px = 0.0
@@ -2222,7 +2546,10 @@ class Backtester:
                         sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, \
                             sl_high_water_px = self._maybe_apply_sl_after(
                                 side=side_now,
-                                avg_cost=avg_cost,
+                                # #1276: bump geometry pins to the frozen
+                                # first-entry anchor across scale-in adds
+                                # (mirrors post_tp_sl.go riskAnchorPrice()).
+                                avg_cost=scale.geom_cost(avg_cost),
                                 entry_atr=entry_atr_value,
                                 position_qty=abs(position),
                                 initial_qty=initial_quantity,
@@ -2296,6 +2623,11 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     hold.open(effective_price, "long", commission)
+                    # #1276: fresh open — clean scale-in state; freeze the
+                    # first leg's committed notional as the default per-add
+                    # size (the backtest image of live's PerpsOpenNotional).
+                    scale.reset()
+                    scale.base_open_notional = shares * effective_price
                     stamp_open_from_label(_entry_stamp(row))
                     # Seed the SL trigger at open. sl_after configs seed only
                     # when usable tier thresholds exist (#716 item 3 — without
@@ -2360,6 +2692,9 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     hold.open(effective_price, "short", commission)
+                    # #1276: fresh open — see the long-side comment.
+                    scale.reset()
+                    scale.base_open_notional = shares * effective_price
                     stamp_open_from_label(_entry_stamp(row))
                     if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
@@ -2396,6 +2731,27 @@ class Backtester:
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
+                # #1276: same-direction signal on an OPEN position — a
+                # scale-in add when opted in and the caps/spacing gate
+                # passes; otherwise the (unchanged) skip. Deliberately NOT
+                # gated on cash > 0 (margin semantics — see the module
+                # docstring), regime_blocked (live regimeBlocksOpen passes
+                # posQty>0), or risk_entry_blocked (#1268 mutual exclusion
+                # makes risk mode unreachable here). open_action was already
+                # re-resolved position-aware for #1025 directional policies
+                # above, so the add-intent honors the position-frozen regime.
+                elif (
+                    self.allow_scale_in
+                    and open_action == "long"
+                    and position > 0
+                ):
+                    _try_scale_in_add(i, "long", fill_price)
+                elif (
+                    self.allow_scale_in
+                    and open_action == "short"
+                    and position < 0
+                ):
+                    _try_scale_in_add(i, "short", fill_price)
 
                 # #997: advance hold telemetry for the position held through
                 # this bar. Runs AFTER the open-fill close/open block so a leg
@@ -2467,12 +2823,19 @@ class Backtester:
                             _stamp_hold(closed, hold,
                                         entry_atr=entry_atr_value,
                                         exit_fee=commission, reason="sl",
-                                        qty_frac=qty_frac)
+                                        qty_frac=qty_frac,
+                                        # #1276: intra-bar SL is always the
+                                        # position's final leg.
+                                        true_up_entry_fee=(
+                                            scale.scale_in_count > 0
+                                        ))
+                            closed.scale_in_adds = scale.scale_in_count
                             trades.append(closed)
                             current_trade = None
                         avg_cost = 0.0
                         initial_quantity = 0.0
                         entry_atr_value = 0.0
+                        scale.reset()
                         sl_trigger_px = 0.0
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
@@ -2491,8 +2854,14 @@ class Backtester:
                 # applied at the NEXT bar's open (mirrors live: eval at end of
                 # bar, fill at next open).
                 if self.close_strategies and position != 0 and avg_cost > 0:
+                    # #1276: evaluator geometry (tiered-TP thresholds etc.)
+                    # reads the frozen anchor, never the blend — mirroring
+                    # the live ON-CHAIN protection path
+                    # (hyperliquid_protection.go / hyperliquid_balance.go
+                    # via riskAnchorPrice()); PnL stays on the blend.
                     pending_close_fraction, pending_close_reason = self._evaluate_close_strategies(
-                        position, avg_cost, initial_quantity, entry_atr_value,
+                        position, scale.geom_cost(avg_cost), initial_quantity,
+                        entry_atr_value,
                         mark_price, atr_series, idx,
                         position_regime=self._run_position_regime,
                         market_regime=_bar_close_regime(row),
@@ -2514,7 +2883,9 @@ class Backtester:
                                 self._ratchet_tiers_run,
                                 watermark=sl_tiers_processed,
                                 mark_price=mark_price,
-                                avg_cost=avg_cost,
+                                # #1276: ratchet tier geometry pins to the
+                                # frozen anchor (trailing_tp_ratchet.go).
+                                avg_cost=scale.geom_cost(avg_cost),
                                 entry_atr=entry_atr_value,
                                 side=side_now,
                                 post_tp_trail_mult=post_tp_trail_mult,
@@ -2594,6 +2965,7 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal_sl")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 pending_signal_sl_close = False
@@ -2601,6 +2973,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
                 continue
 
@@ -2616,6 +2989,7 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal_sl")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 pending_signal_sl_close = False
@@ -2623,6 +2997,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
                 continue
 
@@ -2654,6 +3029,10 @@ class Backtester:
 
                 current_trade = Trade(idx, effective_price, "short")
                 current_trade.shares = shares
+                # #1276: fresh open — clean scale-in state; freeze the first
+                # leg's committed notional as the default per-add size.
+                scale.reset()
+                scale.base_open_notional = shares * effective_price
 
                 # Standalone stop seeding — mirror of the long block below
                 # (fixed ATR mult > trailing ATR mult > fixed pct), triggers
@@ -2697,12 +3076,14 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 sl_trigger_px = 0.0
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
 
             elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
@@ -2718,6 +3099,9 @@ class Backtester:
 
                 current_trade = Trade(idx, effective_price, "long")
                 current_trade.shares = shares
+                # #1276: fresh open — see the short-side comment above.
+                scale.reset()
+                scale.base_open_notional = shares * effective_price
 
                 # Seed a standalone stop for the plain signal path (fixed ATR
                 # mult > trailing ATR mult > fixed pct). entry_atr is the
@@ -2762,13 +3146,34 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 sl_trigger_px = 0.0
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
+
+            # #1276: plain-path same-direction signal on an OPEN position —
+            # a scale-in add when opted in and the gate passes; otherwise the
+            # (unchanged) skip. Same guards rationale as the open/close-path
+            # add branch (no cash>0 / regime gate — adds bypass both).
+            elif (
+                self.allow_scale_in
+                and not plain_short_for_bar
+                and signal == 1
+                and position > 0
+            ):
+                _try_scale_in_add(i, "long", fill_price)
+            elif (
+                self.allow_scale_in
+                and plain_short_for_bar
+                and signal == -1
+                and position < 0
+            ):
+                _try_scale_in_add(i, "short", fill_price)
 
             # #997: advance hold telemetry for a position held through this bar
             # (plain long/flat path). Same rationale as the open/close path:
@@ -2815,6 +3220,7 @@ class Backtester:
                         _stamp_hold(current_trade, hold,
                                     entry_atr=entry_atr_value,
                                     exit_fee=commission, reason="signal_sl")
+                        current_trade.scale_in_adds = scale.scale_in_count
                         trades.append(current_trade)
                         current_trade = None
                     sl_trigger_px = 0.0
@@ -2822,6 +3228,7 @@ class Backtester:
                     entry_atr_value = 0.0
                     sl_high_water_px = 0.0
                     sl_pierce_armed = False
+                    scale.reset()
                     self._run_position_regime = ""
 
             # End-of-bar: for a trailing ATR stop, ratchet the trigger up on new
@@ -2895,7 +3302,10 @@ class Backtester:
                 )
                 _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                             exit_fee=commission, reason="end_of_data",
-                            qty_frac=eod_qty_frac)
+                            qty_frac=eod_qty_frac,
+                            # #1276: end-of-data is the final leg.
+                            true_up_entry_fee=scale.scale_in_count > 0)
+                current_trade.scale_in_adds = scale.scale_in_count
                 trades.append(current_trade)
 
         final_equity = cash
@@ -2930,6 +3340,13 @@ class Backtester:
             # entries than the signal produced is auditable.
             metrics["risk_per_trade_pct"] = self.risk_per_trade_pct
             metrics["risk_sizing_skipped_entries"] = risk_skipped_entries
+        if self.allow_scale_in:
+            # #1276: add-leg telemetry — adds create no Trade rows (live #T
+            # parity), so surface them here for auditability.
+            metrics["scale_in_adds"] = scale_in_adds_total
+            metrics["scale_in_added_notional_usd"] = round(
+                scale_in_added_notional_total, 6,
+            )
 
         if save:
             store_backtest_result(metrics)

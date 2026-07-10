@@ -52,7 +52,8 @@ label parity).
 | `allowed_regimes` entry-gate (#482/#1025) | ✅ `--config` threads the strategy's `allowed_regimes` into `self.allowed_regimes` (was dropped — only the `--allowed-regimes` CLI flag fed it; CLI flag now rejected alongside `--config`). Backtester models only the legacy single-lookback ADX regime, so an active gate keyed off a named `regime_gate_window` (#792) is rejected at load. |
 | Regime-aware `sl_after` (#736) | ✅ Loudly rejected at `Backtester` init; scalar forms backtestable. |
 | `user_defaults.close` / `.regime_atr` (#866/#1135) | ✅ `--defaults system\|user` mirrors the live three-layer resolution; deprecated `user_close_defaults` aliases are accepted only when non-conflicting. |
-| Scale-in (#873), manual limit orders (#883) | Live-only **by design** (HL perps/manual execution mechanics, no signal-path component). Config keys are ignored by the backtest loader; acceptable while the features stay execution-side. |
+| Scale-in (#873) | ✅ **#1276** — simulated: the engine ports `perpsScaleInDecision` (caps/spacing gate, decision at bar N's close, fill at N+1's open) and `applyScaleIn` (blend for PnL, frozen `RiskAnchorPrice` for every SL/TP geometry site, `InitialQuantity` growth, per-add taker fee); `--config` threads `allow_scale_in`/`scale_in` and mirrors the live validateConfig rejects. Adds create no Trade rows (live `#T` parity); `results["scale_in_adds"]` counts them. |
+| Manual limit orders (#883) | Live-only **by design** (HL perps/manual execution mechanics, no signal-path component). Config keys are ignored by the backtest loader; acceptable while the feature stays execution-side. |
 | **v13/v14 legacy close keys** | ❌ **#942** — the `--config` gate admits pre-v15 configs whose `tiers`/alias keys silently no-op in the Python evaluators while live canonicalizes them. |
 | **`regime_window_divergence`** | ❌ **#943** — still loudly rejected by `--config`; no backtest resolver yet for the live short/medium window override. |
 
@@ -130,8 +131,11 @@ label parity).
 
 ## Known live-only surfaces (decision record)
 
-`scale_in` (#873), manual resting limit orders (#883), per-cycle regime
-hysteresis (`tiered_tp_atr_live_regime_dynamic`, #843), regime-aware
-`sl_after` (#736), and `regime_window_divergence` (#907) are execution/per-cycle
-mechanics with no bar-level equivalent yet; the first two are silently ignored
-by design (no signal path), while the remaining three are loudly rejected.
+Manual resting limit orders (#883), per-cycle regime hysteresis
+(`tiered_tp_atr_live_regime_dynamic`, #843), regime-aware `sl_after` (#736),
+and `regime_window_divergence` (#907) are execution/per-cycle mechanics with
+no bar-level equivalent yet; the first is silently ignored by design (no
+signal path), while the remaining three are loudly rejected. `scale_in`
+(#873) left this list in #1276: the engine simulates add legs with the live
+gate/blend/frozen-anchor semantics (`allow_scale_in` / `scale_in` params,
+`--config`-threaded).

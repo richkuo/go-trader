@@ -23,6 +23,7 @@ import pathlib
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "shared_tools"))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -619,3 +620,73 @@ def test_entry_atr_stamp_no_prior_bar_returns_zero():
     atr = pd.Series([5.0, 6.0, 7.0], index=idx)
     assert bt._stamp_entry_atr(atr, idx[0], 100.0) == 0.0
     assert bt._stamp_entry_atr(atr, idx[2], 100.0) == 6.0
+
+
+def test_scale_in_add_fills_at_next_bar_open():
+    # #1276: the add signal computed on bar N fills at bar N+1's open — same
+    # contract as entries. Bar 2 emits the same-direction signal; the add
+    # must fill at bar 3's open (108), not bar 2's (100).
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame({
+        "open": [100.0, 100.0, 100.0, 108.0, 108.0, 108.0],
+        "high": [100.5, 100.5, 108.0, 108.5, 108.5, 108.5],
+        "low": [99.5, 99.5, 99.5, 107.5, 107.5, 107.5],
+        "close": [100.0, 100.0, 108.0, 108.0, 108.0, 108.0],
+        "signal": [1, 0, 1, 0, -1, 0],
+    }, index=idx)
+    bt = Backtester(initial_capital=10000, commission_pct=0, slippage_pct=0,
+                    allow_scale_in=True)
+    result = bt.run(df, save=False)
+    assert result["scale_in_adds"] == 1
+    (trade,) = result["trades"]
+    # Open leg: 100 sh @ 100. Add: notional 10000 at DECISION price (bar 2's
+    # close, 108) → qty 10000/108, FILLED at bar 3's open 108. Blend follows.
+    add_qty = 10000.0 / 108.0
+    blend = (100.0 * 100.0 + add_qty * 108.0) / (100.0 + add_qty)
+    assert trade["shares"] == pytest.approx(100.0 + add_qty)
+    assert trade["entry_price"] == pytest.approx(blend)
+
+
+def test_scale_in_decision_ignores_fill_bar_range():
+    # #1276: perturbing the FILL bar's high/low/close (holding its open)
+    # must change neither the add decision nor the add size — the gate reads
+    # only bar N's close.
+    def _res(fill_bar_close, fill_bar_high):
+        idx = pd.date_range("2024-01-01", periods=6, freq="D")
+        df = pd.DataFrame({
+            "open": [100.0, 100.0, 100.0, 108.0, 108.0, 108.0],
+            "high": [100.5, 100.5, 108.0, fill_bar_high, 130.0, 130.0],
+            "low": [99.5, 99.5, 99.5, 107.5, 107.5, 107.5],
+            "close": [100.0, 100.0, 108.0, fill_bar_close, 120.0, 120.0],
+            "signal": [1, 0, 1, 0, -1, 0],
+        }, index=idx)
+        bt = Backtester(initial_capital=10000, commission_pct=0,
+                        slippage_pct=0, allow_scale_in=True,
+                        scale_in={"add_spacing_atr": 0.0})
+        return bt.run(df, save=False)
+
+    base = _res(108.0, 108.5)
+    perturbed = _res(125.0, 126.0)
+    assert base["scale_in_adds"] == perturbed["scale_in_adds"] == 1
+    assert (base["trades"][0]["shares"]
+            == pytest.approx(perturbed["trades"][0]["shares"]))
+
+
+def test_scale_in_spacing_gate_reads_signal_bar_close():
+    # #1276: with +1 ATR(2) spacing from the 100 entry, the gate needs the
+    # DECISION price (bar N's close) >= 102. Bar 2 closes at 101.9 (fails)
+    # even though bar 3 — the would-be fill bar — opens at 104 (would pass).
+    # Reading the fill bar's price would take the add; the gate must skip it.
+    idx = pd.date_range("2024-01-01", periods=6, freq="D")
+    df = pd.DataFrame({
+        "open": [100.0, 100.0, 100.0, 104.0, 104.0, 104.0],
+        "high": [100.5, 100.5, 102.0, 104.5, 104.5, 104.5],
+        "low": [99.5, 99.5, 99.5, 103.5, 103.5, 103.5],
+        "close": [100.0, 100.0, 101.9, 104.0, 104.0, 104.0],
+        "atr": [2.0] * 6,
+        "signal": [1, 0, 1, 0, 0, 0],
+    }, index=idx)
+    bt = Backtester(initial_capital=10000, commission_pct=0, slippage_pct=0,
+                    allow_scale_in=True, scale_in={"add_spacing_atr": 1.0})
+    result = bt.run(df, save=False)
+    assert result["scale_in_adds"] == 0
