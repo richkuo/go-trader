@@ -465,3 +465,63 @@ func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
 		t.Errorf("manual strategy should not mention cb=: %s", line)
 	}
 }
+
+// #1273: non-default cb_* timing/threshold overrides on an enabled breaker
+// surface in the startup summary line, the inspect text, and the inspect JSON;
+// pure defaults show nothing extra.
+func TestStrategySurfacesShowCBOverrides(t *testing.T) {
+	dd, th, lc := 720, 3, 30
+	tuned := StrategyConfig{
+		ID: "spot-btc", Type: "spot", Platform: "binanceus",
+		OpenStrategy:                StrategyRef{Name: "momentum"},
+		MaxDrawdownPct:              20,
+		CBDrawdownCooldownMinutes:   &dd,
+		CBLossStreakThreshold:       &th,
+		CBLossStreakCooldownMinutes: &lc,
+	}
+
+	line := formatStrategySummaryLine(tuned, nil)
+	if !strings.Contains(line, "cb[losses>=3, loss_cooldown=30m, dd_cooldown=12h0m]") {
+		t.Errorf("summary line should carry the tuned CB parameters: %s", line)
+	}
+
+	text := formatStrategyInspection(tuned, nil, nil, nil)
+	if !strings.Contains(text, "circuit_breaker:     on — losses>=3, loss_cooldown=30m, dd_cooldown=12h0m") {
+		t.Errorf("inspect text should carry the tuned CB parameters:\n%s", text)
+	}
+
+	out := buildStrategyInspectionJSON(tuned, map[string]bool{
+		"cb_drawdown_cooldown_minutes": true, "cb_loss_streak_threshold": true, "cb_loss_streak_cooldown_minutes": true,
+	}, nil, nil)
+	if out["cb_drawdown_cooldown_minutes"] != 720 || out["cb_loss_streak_threshold"] != 3 || out["cb_loss_streak_cooldown_minutes"] != 30 {
+		t.Errorf("inspect JSON should carry the effective tuned values, got %v %v %v",
+			out["cb_drawdown_cooldown_minutes"], out["cb_loss_streak_threshold"], out["cb_loss_streak_cooldown_minutes"])
+	}
+	if out["cb_loss_streak_threshold_explicit"] != true {
+		t.Errorf("explicit provenance flag lost: %v", out["cb_loss_streak_threshold_explicit"])
+	}
+
+	// Defaults: no override marker anywhere, JSON reports the built-in values.
+	plain := StrategyConfig{
+		ID: "spot-btc", Type: "spot", Platform: "binanceus",
+		OpenStrategy: StrategyRef{Name: "momentum"}, MaxDrawdownPct: 20,
+	}
+	if line := formatStrategySummaryLine(plain, nil); strings.Contains(line, "cb[") {
+		t.Errorf("default CB parameters should not surface in summary: %s", line)
+	}
+	if text := formatStrategyInspection(plain, nil, nil, nil); strings.Contains(text, "circuit_breaker:") {
+		t.Errorf("default CB parameters should not surface in inspect text:\n%s", text)
+	}
+	out = buildStrategyInspectionJSON(plain, nil, nil, nil)
+	if out["cb_drawdown_cooldown_minutes"] != 1440 || out["cb_loss_streak_threshold"] != 5 || out["cb_loss_streak_cooldown_minutes"] != 60 {
+		t.Errorf("inspect JSON should report the built-in defaults, got %v %v %v",
+			out["cb_drawdown_cooldown_minutes"], out["cb_loss_streak_threshold"], out["cb_loss_streak_cooldown_minutes"])
+	}
+
+	// Manual is exempt from CheckRisk — no CB keys at all.
+	manual := StrategyConfig{ID: "manual-eth", Type: "manual", Platform: "hyperliquid"}
+	out = buildStrategyInspectionJSON(manual, nil, nil, nil)
+	if _, ok := out["cb_loss_streak_threshold"]; ok {
+		t.Error("manual strategy should not emit cb_* keys in inspect JSON")
+	}
+}
