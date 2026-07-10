@@ -87,6 +87,7 @@ from regime import (  # noqa: E402
     compute_regime,
     compute_regime_composite,
     ensure_regime_columns,
+    normalize_regime_gate_on_failure,
     parse_regime_windows_spec_json,
     valid_labels_for_classifier,
     CLASSIFIER_ADX,
@@ -886,30 +887,28 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # #1278: entry-gate failure policy — per-strategy field wins, else the
         # global regime.gate_on_failure default, else "open" (the legacy #879
         # fail-open behavior, keeping existing baselines byte-identical).
-        # Unknown values raise here, mirroring the Go load-time rejection.
-        # Validate the raw global value independently — a valid per-strategy
-        # override must not short-circuit past a garbage global value (Go's
-        # validateConfig rejects unknown values on both surfaces
-        # independently; the `or` chain below alone would let a bad global
-        # silently pass whenever a strategy also sets its own override).
-        _global_gate_on_failure_raw = str(regime_cfg.get("gate_on_failure") or "").strip().lower()
-        if _global_gate_on_failure_raw and _global_gate_on_failure_raw not in ("open", "closed"):
-            raise ValueError(
-                f"{config_path}: regime.gate_on_failure must be 'open' or "
-                f"'closed', got {regime_cfg.get('gate_on_failure')!r}"
+        # normalize_regime_gate_on_failure is the SSoT: validate BOTH surfaces
+        # independently so a valid per-strategy override never short-circuits
+        # past a garbage global value (mirroring Go validateConfig rejecting
+        # unknown values on each surface independently). Re-raise with the
+        # config/strategy context preserved.
+        _per_raw = str(sc.get("regime_gate_on_failure") or "").strip().lower()
+        try:
+            _global_gate = normalize_regime_gate_on_failure(
+                regime_cfg.get("gate_on_failure")
             )
-        _gate_on_failure_raw = (
-            str(sc.get("regime_gate_on_failure") or "").strip().lower()
-            or str(regime_cfg.get("gate_on_failure") or "").strip().lower()
-            or "open"
-        )
-        if _gate_on_failure_raw not in ("open", "closed"):
-            raise ValueError(
-                f"{config_path}: strategy {strategy_id!r} "
-                f"regime_gate_on_failure must be 'open' or 'closed', got "
-                f"{(sc.get('regime_gate_on_failure') or regime_cfg.get('gate_on_failure'))!r}"
+        except ValueError as exc:
+            raise ValueError(f"{config_path}: {exc}") from exc
+        try:
+            regime_gate_on_failure = (
+                normalize_regime_gate_on_failure(_per_raw)
+                if _per_raw
+                else _global_gate
             )
-        regime_gate_on_failure = _gate_on_failure_raw
+        except ValueError as exc:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} {exc}"
+            ) from exc
         gate_window = str(sc.get("regime_gate_window") or "").strip().lower()
         if (
             allowed_regimes
