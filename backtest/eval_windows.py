@@ -608,6 +608,40 @@ def validate_candidate(candidate: dict) -> dict:
     return candidate
 
 
+def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
+                      window: tuple, capital: float = DEFAULT_CAPITAL, *,
+                      keep_trades: bool = False,
+                      intrabar_resolution: str = "ohlc_walk") -> Optional[dict]:
+    """Single source of truth for candidate-dict -> ``run_leg`` kwargs.
+
+    Every field ``validate_candidate`` accepts and the backtester can model is
+    threaded here. Callers that resample or re-score a candidate (M1's
+    ``evaluate_window``, monte_carlo's per-leg trade series) MUST go through
+    this rather than hand-picking a subset: a caller that quietly drops
+    ``close_strategies`` / ``allowed_regimes`` reports numbers for a DIFFERENT
+    strategy than the one under test, while looking correct.
+    """
+    return run_leg(
+        reg, candidate["name"], candidate.get("params"),
+        symbol, timeframe, window, capital=capital,
+        close_strategies=candidate.get("close_strategies"),
+        # The validated default ("long") must also be the EXECUTED
+        # default: with close refs and direction=None the engine path
+        # would open shorts on raw signal=-1, silently scoring a
+        # different entry universe than the long-leg harness (#996).
+        direction=candidate.get("direction") or "long",
+        invert_signal=bool(candidate.get("invert_signal")),
+        stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
+        trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
+        profile_allocation=candidate.get("profile_allocation"),
+        allowed_regimes=candidate.get("allowed_regimes"),
+        regime_windows_spec=candidate.get("regime_windows_spec"),
+        regime_directional_policy=candidate.get("regime_directional_policy"),
+        keep_trades=keep_trades,
+        intrabar_resolution=intrabar_resolution,
+    )
+
+
 def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                     window_name: str, capital: float,
                     bars_memo: dict, *,
@@ -631,25 +665,9 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
     candidate_legs = {}
     for symbol, timeframe in datasets:
         ds = dataset_key(symbol, timeframe)
-        candidate_legs[ds] = run_leg(
-            reg, candidate["name"], candidate.get("params"),
-            symbol, timeframe, window, capital=capital,
-            close_strategies=candidate.get("close_strategies"),
-            # The validated default ("long") must also be the EXECUTED
-            # default: with close refs and direction=None the engine path
-            # would open shorts on raw signal=-1, silently scoring a
-            # different entry universe than the long-leg harness (#996).
-            direction=candidate.get("direction") or "long",
-            invert_signal=bool(candidate.get("invert_signal")),
-            stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
-            trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
-            profile_allocation=candidate.get("profile_allocation"),
-            allowed_regimes=candidate.get("allowed_regimes"),
-            regime_windows_spec=candidate.get("regime_windows_spec"),
-            regime_directional_policy=candidate.get(
-                "regime_directional_policy"),
-            intrabar_resolution=intrabar_resolution,
-        )
+        candidate_legs[ds] = run_candidate_leg(
+            reg, candidate, symbol, timeframe, window, capital=capital,
+            intrabar_resolution=intrabar_resolution)
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
     score["window_range"] = list(window)
