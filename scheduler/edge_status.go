@@ -97,6 +97,35 @@ func deprecatedEdgeStartupWarnings(strategies []StrategyConfig) []string {
 	return lines
 }
 
+// newlyDeprecatedEdgeWarnings returns the deprecated-edge warning lines that
+// apply after a SIGHUP hot reload but did not apply before it (#1275). A
+// strategy warns "newly" when its post-reload shape is deprecated-and-unacked
+// while its pre-reload shape (matched by ID) either warned for a different
+// open name, was acked, was clean, or did not exist. This keeps the reload
+// path loud for the two live transitions that can introduce the risk —
+// open_strategy switched onto an M5 name, or allow_deprecated flipped off —
+// without re-spamming unchanged deprecated strategies on every SIGHUP and
+// without warning when a strategy switches AWAY from a deprecated name.
+func newlyDeprecatedEdgeWarnings(oldStrategies, newStrategies []StrategyConfig) []string {
+	prevWarned := make(map[string]string, len(oldStrategies)) // ID -> warned open name
+	for _, sc := range oldStrategies {
+		if strategyEdgeDeprecated(sc) && !sc.AllowDeprecated {
+			prevWarned[sc.ID] = strategyOpenNameForEdgeStatus(sc)
+		}
+	}
+	var fresh []StrategyConfig
+	for _, sc := range newStrategies {
+		if !strategyEdgeDeprecated(sc) || sc.AllowDeprecated {
+			continue
+		}
+		if prevWarned[sc.ID] == strategyOpenNameForEdgeStatus(sc) {
+			continue // already warned for this exact shape before the reload
+		}
+		fresh = append(fresh, sc)
+	}
+	return deprecatedEdgeStartupWarnings(fresh)
+}
+
 // edgeStatusSummaryTag returns the startup-summary token for a strategy whose
 // open leg is M5-deprecated: "edge=deprecated_m5", with "(ack)" appended when
 // the operator acknowledged it via allow_deprecated. Empty for clean

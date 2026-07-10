@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -151,5 +152,91 @@ func TestEdgeStatusSummaryTagNeverHiddenByAck(t *testing.T) {
 	line := formatStrategySummaryLine(dep, nil)
 	if !strings.Contains(line, "edge=deprecated_m5(ack)") {
 		t.Errorf("summary line missing edge tag: %s", line)
+	}
+}
+
+// #1275 review: allow_deprecated is advisory-only and must be freely
+// hot-reloadable — masked from the restart-shape comparison and applied by
+// applyHotReloadConfig, alone, bundled with another reloadable field, and
+// while a position is open.
+func TestAllowDeprecatedHotReloadable(t *testing.T) {
+	a := StrategyConfig{ID: "s", AllowDeprecated: true}
+	b := StrategyConfig{ID: "s", AllowDeprecated: false}
+	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(b)) {
+		t.Fatal("allow_deprecated-only change should not affect restart shape")
+	}
+
+	base := func(ack bool, capital float64) []StrategyConfig {
+		return []StrategyConfig{{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+			Script:  "shared_scripts/check_hyperliquid.py",
+			Args:    []string{"macd", "ETH", "1h", "--mode=paper"},
+			Capital: capital, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
+			AllowDeprecated: ack,
+		}}
+	}
+	openState := func() *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {
+				ID: "hl-eth", Cash: 900,
+				RiskState: RiskState{MaxDrawdownPct: 10},
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
+				},
+			},
+		}}
+	}
+
+	// (a) toggle alone while a position is open: accepted, value applied.
+	cfg := minimalReloadConfig(base(false, 1000))
+	next := minimalReloadConfig(base(true, 1000))
+	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+	if err != nil {
+		t.Fatalf("allow_deprecated toggle while open should be hot-reloadable: %v", err)
+	}
+	if !cfg.Strategies[0].AllowDeprecated {
+		t.Fatal("expected allow_deprecated applied after reload")
+	}
+	if !strings.Contains(strings.Join(changes, "\n"), "allow_deprecated") {
+		t.Fatalf("expected an allow_deprecated change entry, got %v", changes)
+	}
+
+	// (b) bundled with another hot-reloadable field (capital): both applied.
+	cfg = minimalReloadConfig(base(true, 1000))
+	next = minimalReloadConfig(base(false, 2000))
+	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
+		t.Fatalf("bundled allow_deprecated + capital reload should succeed: %v", err)
+	}
+	if cfg.Strategies[0].AllowDeprecated {
+		t.Fatal("expected allow_deprecated cleared after reload")
+	}
+	if cfg.Strategies[0].Capital != 2000 {
+		t.Fatalf("expected capital applied alongside, got %v", cfg.Strategies[0].Capital)
+	}
+}
+
+// #1275 review: a hot reload that moves an open leg onto an M5-deprecated
+// name (or drops an allow_deprecated ack) must re-fire the warning, while
+// unchanged deprecated strategies and switches AWAY must stay silent.
+func TestNewlyDeprecatedEdgeWarnings(t *testing.T) {
+	dep := func(id, name string, ack bool) StrategyConfig {
+		return StrategyConfig{ID: id, Type: "spot", OpenStrategy: StrategyRef{Name: name}, AllowDeprecated: ack}
+	}
+	cases := []struct {
+		name     string
+		old, new []StrategyConfig
+		want     int
+	}{
+		{"switch onto deprecated", []StrategyConfig{dep("s1", "tema_cross", false)}, []StrategyConfig{dep("s1", "macd", false)}, 1},
+		{"unchanged deprecated no respam", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "macd", false)}, 0},
+		{"switch away no warn", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "tema_cross", false)}, 0},
+		{"ack flipped off re-warns", []StrategyConfig{dep("s1", "macd", true)}, []StrategyConfig{dep("s1", "macd", false)}, 1},
+		{"ack flipped on silences", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "macd", true)}, 0},
+		{"deprecated-to-different-deprecated re-warns", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "rsi", false)}, 1},
+	}
+	for _, tc := range cases {
+		if got := newlyDeprecatedEdgeWarnings(tc.old, tc.new); len(got) != tc.want {
+			t.Errorf("%s: got %d warnings (%v), want %d", tc.name, len(got), got, tc.want)
+		}
 	}
 }

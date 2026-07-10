@@ -641,6 +641,10 @@ func main() {
 			return
 		}
 		mu.Lock()
+		// #1275: snapshot the pre-reload strategy shapes so a hot reload that
+		// moves an open leg onto an M5-deprecated name (or drops an
+		// allow_deprecated ack) re-fires the deprecated-edge warning below.
+		prevStrategies := append([]StrategyConfig(nil), cfg.Strategies...)
 		changes, err := applyHotReloadConfig(cfg, nextCfg, state, notifier, server)
 		if err != nil {
 			mu.Unlock()
@@ -668,6 +672,18 @@ func main() {
 			fmt.Printf("[reload] %s\n", line)
 		}
 		notifyDirectionalCertStartupSummary(notifier, reloadCertLines)
+
+		// #1275: a hot reload can move a strategy's open leg onto an
+		// M5-deprecated name or flip allow_deprecated off — surface the same
+		// loud warning (stderr + owner DM) the startup path emits, but only
+		// for strategies whose deprecated-unacked state is new to this reload
+		// so unchanged strategies don't re-spam on every SIGHUP.
+		for _, msg := range newlyDeprecatedEdgeWarnings(prevStrategies, cfg.Strategies) {
+			fmt.Fprintln(os.Stderr, "[reload] "+msg)
+			if notifier.HasOwner() {
+				notifier.SendOwnerDM("[reload] " + msg)
+			}
+		}
 
 		if len(changes) == 0 {
 			fmt.Println("[reload] Config reload applied: no hot-reloadable changes")
