@@ -265,9 +265,22 @@ def register(
 
     constraint_list = tuple(constraints or ())
     # Parse eagerly so a typo in a constraint fails at import time, not on the
-    # first strategy call.
+    # first strategy call. Also validate that every referenced parameter name
+    # (lhs, and rhs when it's a param name rather than a numeric literal)
+    # actually exists in default_params (base + variant overrides) — otherwise
+    # the runtime wrapper's `if lhs not in effective: continue` / `.get(rhs)`
+    # guards silently skip the constraint forever.
+    known_params = set(default_params)
+    for _variant in variants.values():
+        known_params |= set(_variant.get("default_params", {}))
     for _expr in constraint_list:
-        _parse_constraint(name, _expr)
+        _lhs, _op, _rhs = _parse_constraint(name, _expr)
+        for _pname in (_lhs, _rhs) if not isinstance(_rhs, float) else (_lhs,):
+            if _pname not in known_params:
+                raise ValueError(
+                    f"{name}: constraint {_expr!r} references unknown "
+                    f"parameter {_pname!r} (not in default_params)"
+                )
 
     def decorator(fn):
         wrapped = _validated(name, fn, default_params, constraint_list) if constraint_list else fn

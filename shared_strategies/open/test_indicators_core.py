@@ -330,6 +330,43 @@ def test_unparseable_constraint_fails_at_registration():
         )
 
 
+def test_constraint_unknown_lhs_fails_at_registration():
+    reg = _load_registry()
+    with pytest.raises(ValueError, match="b"):
+        reg.register("_bad_lhs", "x", {"a": 1}, constraints=["b > 0"])(
+            lambda df, a=1: df
+        )
+
+
+def test_constraint_unknown_rhs_param_fails_at_registration():
+    reg = _load_registry()
+    with pytest.raises(ValueError, match="d"):
+        reg.register("_bad_rhs", "x", {"a": 1, "c": 2}, constraints=["a < d"])(
+            lambda df, a=1, c=2: df
+        )
+
+
+def test_constraint_variant_only_param_is_accepted():
+    reg = _load_registry()
+    # "e" only exists in the futures variant's default_params — must not be
+    # treated as unknown at registration.
+    reg.register(
+        "_variant_param",
+        "x",
+        {"a": 1},
+        platforms=("spot", "futures"),
+        variants={"futures": {"default_params": {"e": 3}}},
+        constraints=["e > 0"],
+    )(lambda df, a=1, e=3: df)
+
+
+def test_constraint_numeric_literal_rhs_is_accepted():
+    reg = _load_registry()
+    reg.register("_numeric_rhs", "x", {"a": 1}, constraints=["a > 0"])(
+        lambda df, a=1: df
+    )
+
+
 def test_optimizer_treats_constraint_violation_as_skippable():
     # The walk-forward fold loop catches _EXPECTED_FOLD_ERRORS around
     # apply_strategy and skips the combo; the constraint ValueError must be in
