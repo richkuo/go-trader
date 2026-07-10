@@ -69,13 +69,35 @@ HARNESS_REL = {
     "m3": "backtest/exit_diagnostics.py",
     "m5": "backtest/fee_audit.py",
     "m6": "backtest/exit_policy_ab.py",
+    "mc": "backtest/monte_carlo.py",
 }
 HARNESS_ABS = {k: os.path.join(_REPO, v) for k, v in HARNESS_REL.items()}
 
 KNOWN_HARNESSES = set(HARNESS_REL)
-OPEN_HARNESSES = ("m1_noise", "m1", "m3", "m5")  # applied to open-kind candidates
+# ``mc`` is open-kind but deliberately NOT in DEFAULT_HARNESSES: a Monte Carlo
+# fan is n_paths x schemes x (windows x datasets) resamples per candidate, so
+# every existing study would silently get longer. Specs opt in via 'harnesses'.
+OPEN_HARNESSES = ("m1_noise", "m1", "m3", "m5", "mc")
 DEFAULT_HARNESSES = ["m1_noise", "m1", "m3", "m5"]
 KNOWN_REGISTRIES = ("spot", "futures")
+
+# ADVISORY harnesses (#1295) emit no p-value AND must never influence the
+# promotion gate IN ANY STATE — including a FAILED run. This is strictly
+# stronger than "candidate_verdict does not read the key": candidate_verdict
+# scans results.values() generically for a failed status, so an advisory
+# harness that merely APPEARS in the results dict would demote a genuine
+# survivor to "run_failed". Any NEW generic scan over an entry's results that
+# feeds a verdict/ranking must filter through ADVISORY_HARNESSES too.
+#
+# M3/M5 are deliberately NOT listed: they are uncorrected CONTEXT for the
+# reader, but a failed M3/M5 run has always marked the candidate run_failed,
+# and that pre-#1295 gate behavior is preserved byte-for-byte.
+ADVISORY_HARNESSES = frozenset({"mc"})
+
+# The MC scheme whose figures reach the shortlist column: permutation is pure
+# sequencing risk (identical trade multiset, order randomized). The block
+# bootstrap also varies the multiset and stays in the JSON evidence.
+MC_SCHEME_FOR_COLUMNS = "permute"
 
 # Verdict vocabulary (ranked best-to-worst for the shortlist).
 VERDICT_ORDER = [
@@ -110,6 +132,105 @@ def _resolve_ref(ref, spec_dir: str) -> dict:
     raise ValueError(f"expected an inline object or a filename, got {ref!r}")
 
 
+def _positive_number(value, label: str) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a number, got {value!r}")
+    if out <= 0:
+        raise ValueError(f"{label} must be > 0, got {out!r}")
+    return out
+
+
+def _load_mc_block(raw_mc, spec_dir: str):
+    """Validate/normalize the spec-level ``mc`` block (#1295).
+
+    The kill-switch threshold source mirrors monte_carlo.py's own mutual
+    exclusion — an explicit percentage, OR a live config + strategy id to
+    resolve the per-strategy max_drawdown_pct hierarchy, never both — so a
+    misconfigured spec fails HERE at load time rather than as a broken
+    subprocess deep in the fan. Absent block => monte_carlo's own default
+    (25, the portfolio kill-switch default).
+    """
+    if not raw_mc:
+        return None
+    if not isinstance(raw_mc, dict):
+        raise ValueError("mc block must be a JSON object")
+    mc = dict(raw_mc)
+    known = {"kill_switch_pct", "config", "strategy_id", "n_paths"}
+    unknown = sorted(set(mc) - known)
+    if unknown:
+        raise ValueError(f"unknown mc keys {unknown}; known: {sorted(known)}")
+
+    has_pct = mc.get("kill_switch_pct") is not None
+    has_cfg = bool(mc.get("config"))
+    has_sid = bool(mc.get("strategy_id"))
+    if has_pct and (has_cfg or has_sid):
+        raise ValueError(
+            "mc block sets both 'kill_switch_pct' and a 'config'/'strategy_id' "
+            "threshold source; they are mutually exclusive (monte_carlo.py "
+            "refuses both)")
+    if has_cfg != has_sid:
+        raise ValueError(
+            "mc block needs BOTH 'config' and 'strategy_id' (the strategy "
+            "whose max_drawdown_pct hierarchy sets the threshold), or neither")
+    if has_pct:
+        mc["kill_switch_pct"] = _positive_number(mc["kill_switch_pct"],
+                                                 "mc.kill_switch_pct")
+    if has_cfg:
+        cfg = mc["config"]
+        if not isinstance(cfg, str):
+            raise ValueError("mc.config must be a path string")
+        mc["config"] = cfg if os.path.isabs(cfg) else os.path.join(spec_dir, cfg)
+    if mc.get("n_paths") is not None:
+        n_paths = mc["n_paths"]
+        if not isinstance(n_paths, int) or isinstance(n_paths, bool) or n_paths < 1:
+            raise ValueError(f"mc.n_paths must be a positive integer, got "
+                             f"{n_paths!r}")
+    return mc
+
+
+def _load_candidate_mc_override(raw_mc, key: str):
+    """Per-candidate ``mc`` override — explicit threshold form ONLY.
+
+    A study may mix strategy types with different drawdown limits. Config
+    resolution stays a spec-level concern (one config, one strategy id), so a
+    per-candidate block that tries it is rejected rather than silently ignored.
+    """
+    if not raw_mc:
+        return None
+    if not isinstance(raw_mc, dict):
+        raise ValueError(f"candidate {key!r}: mc override must be an object")
+    unknown = sorted(set(raw_mc) - {"kill_switch_pct", "n_paths"})
+    if unknown:
+        raise ValueError(
+            f"candidate {key!r}: unknown mc override keys {unknown}; a "
+            f"per-candidate override may only set kill_switch_pct / n_paths "
+            f"(use the spec-level mc block for config/strategy_id)")
+    mc = dict(raw_mc)
+    if mc.get("kill_switch_pct") is not None:
+        mc["kill_switch_pct"] = _positive_number(
+            mc["kill_switch_pct"], f"candidate {key!r}: mc.kill_switch_pct")
+    if mc.get("n_paths") is not None:
+        n_paths = mc["n_paths"]
+        if not isinstance(n_paths, int) or isinstance(n_paths, bool) or n_paths < 1:
+            raise ValueError(f"candidate {key!r}: mc.n_paths must be a "
+                             f"positive integer, got {n_paths!r}")
+    return mc
+
+
+def _merge_mc_cfg(spec_mc, candidate_mc):
+    """Candidate override wins per-key. An override that sets kill_switch_pct
+    drops the spec's config/strategy_id source (they are mutually exclusive)."""
+    merged = dict(spec_mc or {})
+    if candidate_mc:
+        if candidate_mc.get("kill_switch_pct") is not None:
+            merged.pop("config", None)
+            merged.pop("strategy_id", None)
+        merged.update(candidate_mc)
+    return merged or None
+
+
 def load_spec(raw: dict, spec_dir: str) -> dict:
     """Validate/normalize a suggest.json spec, resolving file refs against
     ``spec_dir`` and running every open candidate through the M1 validator so a
@@ -141,6 +262,8 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
 
     base = _resolve_ref(raw["base"], spec_dir) if raw.get("base") is not None else None
 
+    mc = _load_mc_block(raw.get("mc"), spec_dir)
+
     candidates = []
     for c in raw.get("candidates") or []:
         if "key" not in c or "candidate" not in c:
@@ -155,6 +278,7 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
             "candidate": cand,
             "harnesses": list(c.get("harnesses") or harnesses),
             "hypothesis": c.get("hypothesis"),
+            "mc": _load_candidate_mc_override(c.get("mc"), c["key"]),
         })
 
     m6 = None
@@ -212,6 +336,7 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         "sweep": raw.get("sweep"),
         "gate_variants": raw.get("gate_variants"),
         "m6": m6,
+        "mc": mc,
         "spec_dir": spec_dir,
     }
 
@@ -221,7 +346,8 @@ def _sanitize_label(label: str) -> str:
     return label.replace("=", "").replace(" ", ".").replace("/", "_")
 
 
-def _open_entry(key: str, candidate: dict, harnesses: list, hypothesis) -> dict:
+def _open_entry(key: str, candidate: dict, harnesses: list, hypothesis,
+                mc_override=None) -> dict:
     limitations = []
     # fee_audit (M5) screens registry defaults only — it has no --params surface,
     # so a swept/params candidate cannot be audited at its own params.
@@ -235,6 +361,7 @@ def _open_entry(key: str, candidate: dict, harnesses: list, hypothesis) -> dict:
         "hypothesis": hypothesis,
         "precondition_errors": [],
         "limitations": limitations,
+        "mc_override": mc_override,
     }
 
 
@@ -277,7 +404,8 @@ def expand_candidates(spec: dict) -> list:
 
     for c in spec["candidates"]:
         entries.append(_open_entry(c["key"], c["candidate"],
-                                   c["harnesses"], c["hypothesis"]))
+                                   c["harnesses"], c["hypothesis"],
+                                   mc_override=c.get("mc")))
 
     sweep, gate_variants, base = spec.get("sweep"), spec.get("gate_variants"), spec.get("base")
     if sweep or gate_variants:
@@ -397,6 +525,27 @@ def m5_argv_tail(strategy, registry, direction, windows, datasets, out_json) -> 
     return tail
 
 
+def mc_argv_tail(candidate_path, registry, windows, datasets, mc_cfg, seed,
+                 out_json) -> list:
+    """Advisory Monte Carlo (#1295). ``--candidate-json`` (not bare
+    ``--strategy``) so the resampled trades come from the candidate's own
+    closes / regime gate / stops — the same file M1 scores."""
+    tail = ["--candidate-json", candidate_path, "--registry", registry,
+            "--windows", _csv(windows), "--seed", str(seed),
+            "--json", out_json]
+    if datasets:
+        tail += ["--datasets", _csv(datasets)]
+    mc_cfg = mc_cfg or {}
+    if mc_cfg.get("config"):
+        tail += ["--config", mc_cfg["config"],
+                 "--strategy-id", mc_cfg["strategy_id"]]
+    elif mc_cfg.get("kill_switch_pct") is not None:
+        tail += ["--kill-switch-pct", str(mc_cfg["kill_switch_pct"])]
+    if mc_cfg.get("n_paths"):
+        tail += ["--n-paths", str(mc_cfg["n_paths"])]
+    return tail
+
+
 def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out_json) -> list:
     tail = ["--strategy", m6_candidate["strategy_id"],
             "--registry", registry,
@@ -513,6 +662,68 @@ def extract_m5(payload: dict, strategy: str) -> dict:
     return {}
 
 
+def extract_mc(payload: dict) -> dict:
+    """monte_carlo legs -> {kill_switch_pct, windows: {window: {scheme: {...}}}}.
+
+    ADVISORY ONLY — emits no p-value and never reaches candidate_verdict or
+    the BH family. The cross-dataset rollup is WORST-CASE (max): a risk column
+    that averaged away the one dataset where the candidate blows through the
+    kill switch would defeat its own purpose. Legs with no cached data or no
+    trades are skipped rather than folded in as fabricated 0-risk rows.
+    """
+    out: dict = {"kill_switch_pct": payload.get("kill_switch_pct"),
+                 "windows": {}}
+    for leg in (payload.get("legs") or []):
+        window, dataset = leg.get("window"), leg.get("dataset")
+        if window is None or leg.get("error") or not leg.get("n_trades"):
+            continue
+        per_window = out["windows"].setdefault(window, {})
+        for block in (leg.get("schemes") or []):
+            scheme = block.get("scheme")
+            dd = block.get("max_dd_pct_percentiles") or {}
+            p95 = dd.get("p95")
+            p_dd = block.get("p_dd_ge_kill_switch")
+            p_below = block.get("p_final_below_start")
+            if scheme is None or p_dd is None or p95 is None:
+                continue
+            agg = per_window.setdefault(scheme, {
+                "p_dd_ge_kill_switch": p_dd, "p95_max_dd": p95,
+                "p_final_below_start": p_below, "n_trades_total": 0,
+                "n_legs": 0, "per_dataset": [],
+            })
+            agg["p_dd_ge_kill_switch"] = max(agg["p_dd_ge_kill_switch"], p_dd)
+            agg["p95_max_dd"] = max(agg["p95_max_dd"], p95)
+            if p_below is not None:
+                agg["p_final_below_start"] = max(
+                    agg["p_final_below_start"] if agg["p_final_below_start"]
+                    is not None else p_below, p_below)
+            agg["n_trades_total"] += leg["n_trades"]
+            agg["n_legs"] += 1
+            agg["per_dataset"].append({
+                "dataset": dataset, "n_trades": leg["n_trades"],
+                "p95_max_dd": p95, "p_dd_ge_kill_switch": p_dd,
+                "p_final_below_start": p_below,
+            })
+    return out
+
+
+def mc_column_stats(mc_data: dict):
+    """The one (window, scheme) row the shortlist column prints: the permute
+    scheme, preferring the out-of-sample window. None when nothing usable."""
+    if not mc_data:
+        return None
+    windows = mc_data.get("windows") or {}
+    for wname in ("oos", "is"):
+        block = (windows.get(wname) or {}).get(MC_SCHEME_FOR_COLUMNS)
+        if block:
+            return wname, block
+    for wname in sorted(windows):
+        block = (windows[wname] or {}).get(MC_SCHEME_FOR_COLUMNS)
+        if block:
+            return wname, block
+    return None
+
+
 # ===========================================================================
 # Pure — family correction, promotion gate, ranking
 # ===========================================================================
@@ -589,7 +800,12 @@ def candidate_verdict(entry: dict, tests: list) -> str:
     if entry.get("precondition_errors"):
         return "excluded_not_replayable"
     r = entry.get("results") or {}
-    if any((v or {}).get("status") == "failed" for v in r.values()):
+    # #1295: advisory harnesses are excluded from the failure sweep. A broken
+    # Monte Carlo subprocess is a missing context column, NOT evidence about
+    # the candidate — folding it in here would demote a genuine survivor to
+    # run_failed and let an advisory harness veto a promotion.
+    if any((v or {}).get("status") == "failed"
+           for h, v in r.items() if h not in ADVISORY_HARNESSES):
         return "run_failed"
 
     my_tests = _tests_for(entry, tests)
@@ -726,11 +942,30 @@ def format_shortlist(report: dict) -> str:
         m5 = (r.get("m5") or {}).get("data")
         if m5:
             extra += f"  M5(ctx)={m5.get('salvage_verdict')}"
+        mc_run = r.get("mc")
+        if mc_run:
+            if mc_run.get("status") == "failed":
+                # Visible, never silently dropped — but it changed no verdict.
+                extra += "  MC(adv)=failed"
+            else:
+                col = mc_column_stats(mc_run.get("data"))
+                if col:
+                    wname, b = col
+                    ks = (mc_run.get("data") or {}).get("kill_switch_pct")
+                    extra += (f"  MC(adv,{wname}) P95dd={b['p95_max_dd']:.1f}"
+                              f" P(dd>={ks:g}%)={b['p_dd_ge_kill_switch']:.3f}"
+                              f" P(f<0)={b['p_final_below_start']:.3f}")
         limn = (" [" + ",".join(e["limitations"]) + "]") if e.get("limitations") else ""
         lines.append(f"{i:>2}  {e['key']:<40} {e['verdict']:<26}{extra}{limn}")
     lines.append("")
-    lines.append("M3/M5 figures are UNCORRECTED CONTEXT (no p-values), never "
+    lines.append("M3/M5/MC figures are UNCORRECTED CONTEXT (no p-values), never "
                  "counted as significance evidence.")
+    lines.append(f"MC columns report the {MC_SCHEME_FOR_COLUMNS} scheme (pure "
+                 "sequencing risk), worst-case across datasets; full "
+                 "per-scheme/per-dataset blocks are in the JSON artifact. "
+                 "MC runs on open-kind candidates only (M6 exit-A/B entries "
+                 "carry no MC leg), and a failed MC run never changes a "
+                 "verdict.")
     lines.append(FOOTER)
     return "\n".join(lines)
 
@@ -827,10 +1062,15 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
     if "m1_noise" in entry["harnesses"]:
         results["m1_noise"] = noise_cache[entry["noise_family_key"]]
 
-    if "m1" in entry["harnesses"]:
+    # M1 and MC both replay from the candidate file (#1295: MC reads the same
+    # file so its numbers describe the candidate M1 scored, not the bare open).
+    cand_path = None
+    if "m1" in entry["harnesses"] or "mc" in entry["harnesses"]:
         cand_path = os.path.join(out_dir, f"{key}.candidate.json")
         with open(cand_path, "w") as fh:
             json.dump(cand, fh, indent=2)
+
+    if "m1" in entry["harnesses"]:
         out = os.path.join(out_dir, f"{key}.m1.json")
         run = _run_harness("m1", m1_argv_tail(cand_path, reg, windows, datasets, out), out)
         if run["status"] == "ok":
@@ -857,6 +1097,20 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         # output path, and a read racing that rewrite would raise JSONDecodeError
         # and abort the whole suggester. By this point the cache is populated.
         results["m5"] = m5_cache[_m5_family_key(cand)]
+
+    if "mc" in entry["harnesses"]:
+        # Advisory: a failure here yields no columns, never a verdict change
+        # (candidate_verdict filters ADVISORY_HARNESSES out of its run_failed
+        # sweep) — but it still counts toward main()'s run-health exit code.
+        out = os.path.join(out_dir, f"{key}.mc.json")
+        tail = mc_argv_tail(cand_path, reg, windows, datasets,
+                            _merge_mc_cfg(spec.get("mc"),
+                                          entry.get("mc_override")),
+                            spec["seed"], out)
+        run = _run_harness("mc", tail, out)
+        if run["status"] == "ok":
+            run["data"] = extract_mc(run.pop("payload"))
+        results["mc"] = run
 
     entry["results"] = results
     return entry
@@ -898,6 +1152,13 @@ def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
                     shlex.quote(str(a)) for a in m1_argv_tail(
                         os.path.join(out_dir, f"{e['key']}.candidate.json"),
                         reg, windows, datasets, os.path.join(out_dir, f"{e['key']}.m1.json"))))
+            if "mc" in e["harnesses"]:
+                cmds.append("uv run --no-sync python " + HARNESS_REL["mc"] + " " + " ".join(
+                    shlex.quote(str(a)) for a in mc_argv_tail(
+                        os.path.join(out_dir, f"{e['key']}.candidate.json"),
+                        reg, windows, datasets,
+                        _merge_mc_cfg(spec.get("mc"), e.get("mc_override")),
+                        spec["seed"], os.path.join(out_dir, f"{e['key']}.mc.json"))))
         else:
             cmds.append("uv run --no-sync python " + HARNESS_REL["m6"] + " " + " ".join(
                 shlex.quote(str(a)) for a in m6_argv_tail(
@@ -1027,6 +1288,11 @@ def main(argv=None) -> int:
             fh.write("```\n" + text + "\n```\n")
         print(f"wrote {args.markdown_out}")
 
+    # #1295: advisory harnesses DO count here, unlike in candidate_verdict.
+    # The exit code is a run-health signal ("artifacts incomplete, read
+    # stderr"), not promotion evidence — silently exiting 0 on a broken MC
+    # wiring would hide it forever. No pre-#1295 spec runs mc, so existing
+    # operator/CI expectations are unchanged.
     failed = any((v or {}).get("status") == "failed"
                  for e in entries for v in (e.get("results") or {}).values())
     return 1 if failed else 0

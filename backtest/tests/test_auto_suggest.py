@@ -244,6 +244,14 @@ def test_template_documents_every_variant_and_candidate_option():
     # per-variant strategy_id override (variant.get("strategy_id"))
     assert any("strategy_id" in v for v in m6["candidate_close_variants"]), \
         "template omits per-variant strategy_id override"
+    # #1295 advisory MC: the harness name, the spec-level block, and the
+    # per-candidate override are all loader options.
+    assert "mc" in raw["harnesses"], "template omits the mc harness"
+    assert "mc" in raw, "template omits the spec-level mc block"
+    assert set(raw["mc"]) <= {"kill_switch_pct", "config", "strategy_id",
+                              "n_paths"}, "template mc block has unknown keys"
+    assert any("mc" in c for c in raw["candidates"]), \
+        "template omits the per-candidate mc override"
 
 
 def test_shipped_full_options_spec_loads_and_expands():
@@ -607,3 +615,381 @@ def test_reproduction_command_uses_relative_harness_paths():
     cmds = asug.reproduction_command(entry)
     assert cmds and cmds[0].startswith("uv run --no-sync python backtest/eval_windows.py")
     assert "--candidate-json" in cmds[0]
+
+
+# --------------------------------------------------------------------------
+# #1295 — advisory Monte Carlo columns. The load-bearing property is NEGATIVE:
+# nothing about `mc` may reach the promotion gate, in any state.
+# --------------------------------------------------------------------------
+
+def _passing_open_entry(**over):
+    e = {"key": "k", "kind": "open", "noise_family_key": "fam",
+         "limitations": [], "precondition_errors": [],
+         "results": {"m1": {"status": "ok",
+                            "data": {"is": {"verdict": "pass"},
+                                     "oos": {"verdict": "pass"}}}}}
+    e.update(over)
+    return e
+
+
+def _mc_payload(kill_switch_pct=25.0, legs=None):
+    return {"kill_switch_pct": kill_switch_pct,
+            "legs": legs if legs is not None else [
+                {"window": "oos", "dataset": "BTC/USDT:1h", "n_trades": 10,
+                 "schemes": [{"scheme": "permute",
+                              "max_dd_pct_percentiles": {"p95": 30.0},
+                              "p_dd_ge_kill_switch": 0.20,
+                              "p_final_below_start": 0.10}]}]}
+
+
+# ---- the gate invariants (the #1274 pre-registered criteria) --------------
+
+def test_mc_not_in_default_harnesses():
+    """Opt-in only: adding mc to DEFAULT_HARNESSES would silently lengthen
+    every pre-existing study."""
+    assert "mc" not in asug.DEFAULT_HARNESSES
+    assert "mc" in asug.OPEN_HARNESSES
+    assert "mc" in asug.KNOWN_HARNESSES        # derived from HARNESS_REL
+
+
+def test_verdict_identical_with_and_without_mc_data():
+    without = _passing_open_entry()
+    with_mc = copy.deepcopy(without)
+    with_mc["results"]["mc"] = {"status": "ok", "data": _mc_payload()}
+    assert asug.candidate_verdict(without, []) == "survivor"
+    assert asug.candidate_verdict(with_mc, []) == \
+        asug.candidate_verdict(without, [])
+
+
+def test_failed_mc_does_not_flip_verdict():
+    """The safety-critical case: candidate_verdict's run_failed sweep scans
+    results.values() generically, so an advisory harness in the dict would
+    veto a genuine survivor."""
+    entry = _passing_open_entry()
+    entry["results"]["mc"] = {"status": "failed"}
+    assert asug.candidate_verdict(entry, []) == "survivor"
+
+
+def test_failed_non_advisory_harness_still_marks_run_failed():
+    """The exclusion is scoped to ADVISORY_HARNESSES — M3/M5 keep their
+    pre-#1295 gate behavior byte-for-byte."""
+    for harness in ("m1", "m3", "m5", "m1_noise"):
+        entry = _passing_open_entry()
+        entry["results"][harness] = {"status": "failed"}
+        assert asug.candidate_verdict(entry, []) == "run_failed", harness
+
+
+def test_bh_family_size_unchanged_by_mc():
+    base = {"key": "k", "kind": "open", "noise_family_key": "fam",
+            "results": {"m1_noise": {"status": "ok",
+                                     "data": {"verdict": "distinguishable_positive",
+                                              "permutation_p": 0.01, "mean": 1.0}}}}
+    with_mc = copy.deepcopy(base)
+    with_mc["results"]["mc"] = {"status": "ok", "data": _mc_payload()}
+    t_without = asug.collect_family_pvalues([base])
+    t_with = asug.collect_family_pvalues([with_mc])
+    assert t_without == t_with
+    assert asug.apply_family_correction(copy.deepcopy(t_with))["m"] == \
+        asug.apply_family_correction(copy.deepcopy(t_without))["m"]
+
+
+def test_mc_does_not_affect_rank_score():
+    without = _passing_open_entry()
+    with_mc = copy.deepcopy(without)
+    with_mc["results"]["mc"] = {"status": "ok", "data": _mc_payload()}
+    assert asug._rank_score(with_mc) == asug._rank_score(without)
+
+
+def test_main_exit_code_still_counts_failed_mc():
+    """Deliberate asymmetry vs candidate_verdict: the exit code is a
+    run-health signal, so a broken MC wiring stays visible."""
+    entries = [_passing_open_entry()]
+    entries[0]["results"]["mc"] = {"status": "failed"}
+    failed = any((v or {}).get("status") == "failed"
+                 for e in entries for v in (e.get("results") or {}).values())
+    assert failed is True
+
+
+# ---- argv tail ------------------------------------------------------------
+
+def test_mc_argv_tail_uses_candidate_json_not_strategy():
+    tail = asug.mc_argv_tail("/tmp/c.json", "spot", ["is", "oos"],
+                             ["BTC/USDT:1h"], None, 1066, "/tmp/o.json")
+    assert tail[:2] == ["--candidate-json", "/tmp/c.json"]
+    assert "--strategy" not in tail          # fidelity: closes/gate replayed
+    assert "--windows" in tail and tail[tail.index("--windows") + 1] == "is,oos"
+    assert tail[tail.index("--datasets") + 1] == "BTC/USDT:1h"
+    assert tail[tail.index("--seed") + 1] == "1066"
+
+
+def test_mc_argv_tail_omits_datasets_when_none():
+    tail = asug.mc_argv_tail("/tmp/c.json", "spot", ["is"], None, None, 1,
+                             "/tmp/o.json")
+    assert "--datasets" not in tail          # monte_carlo defaults to audit six
+
+
+def test_mc_argv_tail_kill_switch_forms():
+    explicit = asug.mc_argv_tail("/c", "spot", ["is"], None,
+                                 {"kill_switch_pct": 30.0}, 1, "/o")
+    assert explicit[explicit.index("--kill-switch-pct") + 1] == "30.0"
+    assert "--config" not in explicit
+
+    cfg = asug.mc_argv_tail("/c", "spot", ["is"], None,
+                            {"config": "/cfg.json", "strategy_id": "hl-x"}, 1, "/o")
+    assert cfg[cfg.index("--config") + 1] == "/cfg.json"
+    assert cfg[cfg.index("--strategy-id") + 1] == "hl-x"
+    assert "--kill-switch-pct" not in cfg
+
+    absent = asug.mc_argv_tail("/c", "spot", ["is"], None, None, 1, "/o")
+    assert "--kill-switch-pct" not in absent and "--config" not in absent
+
+    paths = asug.mc_argv_tail("/c", "spot", ["is"], None, {"n_paths": 500}, 1, "/o")
+    assert paths[paths.index("--n-paths") + 1] == "500"
+
+
+# ---- extract_mc -----------------------------------------------------------
+
+def test_extract_mc_worst_case_rollup_across_datasets():
+    payload = _mc_payload(legs=[
+        {"window": "oos", "dataset": "BTC/USDT:1h", "n_trades": 10,
+         "schemes": [{"scheme": "permute",
+                      "max_dd_pct_percentiles": {"p95": 20.0},
+                      "p_dd_ge_kill_switch": 0.10,
+                      "p_final_below_start": 0.05}]},
+        {"window": "oos", "dataset": "SOL/USDT:4h", "n_trades": 6,
+         "schemes": [{"scheme": "permute",
+                      "max_dd_pct_percentiles": {"p95": 44.0},
+                      "p_dd_ge_kill_switch": 0.62,
+                      "p_final_below_start": 0.31}]}])
+    out = asug.extract_mc(payload)
+    agg = out["windows"]["oos"]["permute"]
+    assert agg["p95_max_dd"] == 44.0            # max, not mean
+    assert agg["p_dd_ge_kill_switch"] == 0.62
+    assert agg["p_final_below_start"] == 0.31
+    assert agg["n_trades_total"] == 16 and agg["n_legs"] == 2
+    assert [d["dataset"] for d in agg["per_dataset"]] == ["BTC/USDT:1h",
+                                                          "SOL/USDT:4h"]
+    assert out["kill_switch_pct"] == 25.0
+
+
+def test_extract_mc_skips_error_and_zero_trade_legs():
+    payload = _mc_payload(legs=[
+        {"window": "is", "dataset": "ETH/USDT:1h", "n_trades": 0,
+         "error": "no_cached_data", "schemes": []},
+        {"window": "is", "dataset": "SOL/USDT:1h", "n_trades": 0,
+         "schemes": [{"scheme": "permute",
+                      "max_dd_pct_percentiles": None,
+                      "p_dd_ge_kill_switch": None,
+                      "p_final_below_start": None}]}])
+    out = asug.extract_mc(payload)
+    assert out["windows"] == {}     # no fabricated 0-risk rows
+
+
+def test_extract_mc_keys_by_scheme():
+    payload = _mc_payload(legs=[
+        {"window": "is", "dataset": "BTC/USDT:1h", "n_trades": 5, "schemes": [
+            {"scheme": "permute", "max_dd_pct_percentiles": {"p95": 10.0},
+             "p_dd_ge_kill_switch": 0.1, "p_final_below_start": 0.2},
+            {"scheme": "block", "max_dd_pct_percentiles": {"p95": 15.0},
+             "p_dd_ge_kill_switch": 0.3, "p_final_below_start": 0.4}]}])
+    out = asug.extract_mc(payload)
+    assert set(out["windows"]["is"]) == {"permute", "block"}
+
+
+def test_mc_column_stats_prefers_oos_permute():
+    data = asug.extract_mc(_mc_payload(legs=[
+        {"window": "is", "dataset": "BTC/USDT:1h", "n_trades": 5,
+         "schemes": [{"scheme": "permute", "max_dd_pct_percentiles": {"p95": 9.0},
+                      "p_dd_ge_kill_switch": 0.01, "p_final_below_start": 0.02}]},
+        {"window": "oos", "dataset": "BTC/USDT:1h", "n_trades": 5,
+         "schemes": [{"scheme": "permute", "max_dd_pct_percentiles": {"p95": 40.0},
+                      "p_dd_ge_kill_switch": 0.5, "p_final_below_start": 0.6}]}]))
+    wname, block = asug.mc_column_stats(data)
+    assert wname == "oos" and block["p95_max_dd"] == 40.0
+    assert asug.mc_column_stats(None) is None
+    assert asug.mc_column_stats({"windows": {}}) is None
+
+
+# ---- spec block validation ------------------------------------------------
+
+def test_load_spec_mc_block_defaults_to_none():
+    assert asug.load_spec(_base_spec(), _STUDY_DIR)["mc"] is None
+
+
+def test_load_spec_mc_block_explicit_pct():
+    spec = asug.load_spec(_base_spec(mc={"kill_switch_pct": 30}), _STUDY_DIR)
+    assert spec["mc"]["kill_switch_pct"] == 30.0
+
+
+def test_load_spec_mc_config_requires_strategy_id():
+    with pytest.raises(ValueError, match="BOTH 'config' and 'strategy_id'"):
+        asug.load_spec(_base_spec(mc={"config": "c.json"}), _STUDY_DIR)
+    with pytest.raises(ValueError, match="BOTH 'config' and 'strategy_id'"):
+        asug.load_spec(_base_spec(mc={"strategy_id": "hl-x"}), _STUDY_DIR)
+
+
+def test_load_spec_mc_pct_and_config_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        asug.load_spec(_base_spec(mc={"kill_switch_pct": 25,
+                                      "config": "c.json",
+                                      "strategy_id": "hl-x"}), _STUDY_DIR)
+
+
+def test_load_spec_mc_config_path_resolved_against_spec_dir():
+    spec = asug.load_spec(_base_spec(mc={"config": "cfg.json",
+                                         "strategy_id": "hl-x"}), _STUDY_DIR)
+    assert spec["mc"]["config"] == os.path.join(_STUDY_DIR, "cfg.json")
+    absolute = asug.load_spec(_base_spec(mc={"config": "/abs/cfg.json",
+                                             "strategy_id": "hl-x"}), _STUDY_DIR)
+    assert absolute["mc"]["config"] == "/abs/cfg.json"
+
+
+def test_load_spec_mc_rejects_unknown_keys_and_bad_values():
+    with pytest.raises(ValueError, match="unknown mc keys"):
+        asug.load_spec(_base_spec(mc={"nope": 1}), _STUDY_DIR)
+    with pytest.raises(ValueError, match="must be > 0"):
+        asug.load_spec(_base_spec(mc={"kill_switch_pct": 0}), _STUDY_DIR)
+    with pytest.raises(ValueError, match="n_paths"):
+        asug.load_spec(_base_spec(mc={"n_paths": 0}), _STUDY_DIR)
+    with pytest.raises(ValueError, match="n_paths"):
+        asug.load_spec(_base_spec(mc={"n_paths": True}), _STUDY_DIR)
+
+
+def test_load_spec_per_candidate_mc_override():
+    spec = asug.load_spec(_base_spec(
+        mc={"kill_switch_pct": 25},
+        candidates=[{"key": "c1", "candidate": {"name": "squeeze_momentum"},
+                     "mc": {"kill_switch_pct": 50}}]), _STUDY_DIR)
+    assert spec["candidates"][0]["mc"] == {"kill_switch_pct": 50.0}
+    entries = asug.expand_candidates(spec)
+    assert entries[0]["mc_override"] == {"kill_switch_pct": 50.0}
+
+
+def test_per_candidate_mc_override_rejects_config_form():
+    with pytest.raises(ValueError, match="per-candidate override"):
+        asug.load_spec(_base_spec(candidates=[
+            {"key": "c1", "candidate": {"name": "squeeze_momentum"},
+             "mc": {"config": "c.json", "strategy_id": "x"}}]), _STUDY_DIR)
+
+
+def test_merge_mc_cfg_override_drops_config_source():
+    merged = asug._merge_mc_cfg({"config": "/c.json", "strategy_id": "x"},
+                                {"kill_switch_pct": 40.0})
+    assert merged == {"kill_switch_pct": 40.0}   # exclusive sources
+    assert asug._merge_mc_cfg(None, None) is None
+    assert asug._merge_mc_cfg({"n_paths": 100}, {"kill_switch_pct": 5.0}) == \
+        {"n_paths": 100, "kill_switch_pct": 5.0}
+
+
+# ---- run / dry-run / report wiring ----------------------------------------
+
+def _mc_spec(**over):
+    raw = _base_spec(harnesses=["mc"], **over)
+    return asug.load_spec(raw, _STUDY_DIR)
+
+
+def test_run_open_entry_writes_candidate_json_for_mc_only_spec(tmp_path, monkeypatch):
+    """MC replays from the candidate file, which pre-#1295 was written only
+    under the m1 branch."""
+    spec = _mc_spec()
+    spec["seed"], spec["resamples"] = 1066, 10
+    entry = asug.expand_candidates(spec)[0]
+    seen = {}
+
+    def fake_run_harness(harness, tail, out_json):
+        seen[harness] = tail
+        return {"harness": harness, "argv_tail": tail, "status": "ok",
+                "payload": _mc_payload()}
+
+    monkeypatch.setattr(asug, "_run_harness", fake_run_harness)
+    asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
+    assert (tmp_path / "c1.candidate.json").exists()
+    assert "mc" in entry["results"]
+    assert entry["results"]["mc"]["data"]["windows"]["oos"]["permute"]
+    assert "--candidate-json" in seen["mc"]
+
+
+def test_dry_run_includes_mc_command(tmp_path):
+    spec = _mc_spec()
+    spec["seed"], spec["resamples"] = 1066, 10
+    entries = asug.expand_candidates(spec)
+    cmds = asug._dry_run_commands(entries, spec, str(tmp_path))
+    assert any("backtest/monte_carlo.py" in c and "--candidate-json" in c
+               for c in cmds)
+
+
+def test_dry_run_omits_mc_when_not_opted_in(tmp_path):
+    spec = asug.load_spec(_base_spec(), _STUDY_DIR)   # default harnesses
+    spec["seed"], spec["resamples"] = 1066, 10
+    entries = asug.expand_candidates(spec)
+    assert all("mc" not in e["harnesses"] for e in entries)
+    cmds = asug._dry_run_commands(entries, spec, str(tmp_path))
+    assert not any("monte_carlo.py" in c for c in cmds)
+
+
+def test_exit_ab_entries_never_get_mc(tmp_path, monkeypatch):
+    spec = asug.load_spec(_base_spec(
+        harnesses=["mc"], candidates=[],
+        m6={"strategy_id": "sq", "incumbent_close": [{"name": "tiered_tp_atr"}],
+            "candidate_close_variants": [
+                {"key": "v1", "candidate_close": [{"name": "tiered_tp_atr"}]}]}),
+        _STUDY_DIR)
+    spec["seed"], spec["resamples"] = 1066, 10
+    ab = [e for e in asug.expand_candidates(spec) if e["kind"] == "exit_ab"][0]
+    monkeypatch.setattr(asug, "_run_harness",
+                        lambda h, t, o: {"status": "ok", "argv_tail": t,
+                                         "payload": {"results": {}}})
+    asug.run_exit_ab_entry(ab, spec, str(tmp_path))
+    assert set(ab["results"]) == {"m6"}
+
+
+def test_reproduction_command_includes_mc_relative_path():
+    entry = {"results": {"mc": {"argv_tail": ["--candidate-json", "/c.json"]}}}
+    cmds = asug.reproduction_command(entry)
+    assert cmds and "backtest/monte_carlo.py" in cmds[0]
+
+
+def _report(entry):
+    return {"study": "s", "correction": {"method": "benjamini_hochberg",
+                                         "alpha": 0.05, "m": 1,
+                                         "effective_threshold": 0.01,
+                                         "bonferroni_threshold": 0.05,
+                                         "n_survivors": 1},
+            "ranked": [entry]}
+
+
+def test_format_shortlist_mc_advisory_column_and_footer():
+    entry = _passing_open_entry(verdict="survivor")
+    entry["results"]["mc"] = {"status": "ok",
+                              "data": asug.extract_mc(_mc_payload())}
+    text = asug.format_shortlist(_report(entry))
+    assert "MC(adv,oos)" in text
+    assert "P95dd=30.0" in text
+    assert "P(dd>=25%)=0.200" in text
+    assert "M3/M5/MC figures are UNCORRECTED CONTEXT" in text
+    assert "permute scheme" in text
+    assert "open-kind candidates only" in text
+
+
+def test_format_shortlist_failed_mc_is_visible_not_dropped():
+    entry = _passing_open_entry(verdict="survivor")
+    entry["results"]["mc"] = {"status": "failed"}
+    text = asug.format_shortlist(_report(entry))
+    assert "MC(adv)=failed" in text
+    assert "survivor" in text          # verdict untouched by the failure
+
+
+def test_format_shortlist_without_mc_has_no_mc_segment():
+    text = asug.format_shortlist(_report(_passing_open_entry(verdict="survivor")))
+    assert "MC(adv" not in text
+
+
+def test_serializable_carries_mc_evidence():
+    entry = _passing_open_entry(verdict="survivor", hypothesis=None)
+    entry["results"]["mc"] = {"status": "ok",
+                              "data": asug.extract_mc(_mc_payload()),
+                              "argv_tail": ["--candidate-json", "/c.json"]}
+    entry["candidate"] = {"name": "squeeze_momentum"}
+    out = asug._serializable(entry)
+    assert out["evidence"]["mc"]["status"] == "ok"
+    assert out["evidence"]["mc"]["data"]["windows"]["oos"]["permute"]

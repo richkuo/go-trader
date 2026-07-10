@@ -616,3 +616,65 @@ def test_evaluate_window_threads_regime_directional_policy(monkeypatch):
     # validate_candidate normalizes (invert_signal defaulted) and re-wraps.
     assert seen.get("regime_directional_policy") == {"trend_regime": {
         "trending_up": {"direction": "long", "invert_signal": False}}}
+
+
+# ---------------------------------------------------------------------------
+# #1295 — run_candidate_leg is the single source of truth for
+# candidate-dict -> run_leg kwargs. Extracted from evaluate_window so
+# monte_carlo replays the SAME candidate M1 scores (closes, gate, stops).
+# ---------------------------------------------------------------------------
+
+def test_run_candidate_leg_threads_every_modelable_field(monkeypatch):
+    seen = {}
+
+    def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
+        seen["name"] = name
+        seen["params"] = params
+        seen.update(kw)
+        return {"ok": True}
+
+    monkeypatch.setattr(ew, "run_leg", fake_run_leg)
+    candidate = {
+        "name": "squeeze_momentum",
+        "params": {"kc_mult": 1.3},
+        "direction": "short",
+        "close_strategies": [{"name": "tiered_tp_atr"}],
+        "allowed_regimes": ["trending_up"],
+        "regime_windows_spec": {"medium": {"classifier": "composite"}},
+        "stop_loss_atr_mult": 2.0,
+        "profile_allocation": {"a": 1},
+        "invert_signal": True,
+        "regime_directional_policy": {"trend_regime": {}},
+    }
+    ew.run_candidate_leg(None, candidate, "BTC/USDT", "1h",
+                         ew.WINDOWS["is"], capital=500.0, keep_trades=True)
+    assert seen["name"] == "squeeze_momentum"
+    assert seen["params"] == {"kc_mult": 1.3}
+    assert seen["direction"] == "short"
+    assert seen["close_strategies"] == [{"name": "tiered_tp_atr"}]
+    assert seen["allowed_regimes"] == ["trending_up"]
+    assert seen["regime_windows_spec"] == {"medium": {"classifier": "composite"}}
+    assert seen["stop_loss_atr_mult"] == 2.0
+    assert seen["profile_allocation"] == {"a": 1}
+    assert seen["invert_signal"] is True
+    assert seen["regime_directional_policy"] == {"trend_regime": {}}
+    assert seen["keep_trades"] is True
+    assert seen["capital"] == 500.0
+
+
+def test_run_candidate_leg_direction_defaults_to_long(monkeypatch):
+    """#996: the validated default ("long") must also be the EXECUTED default
+    — with close refs, direction=None would open shorts on raw signal=-1."""
+    seen = {}
+    monkeypatch.setattr(ew, "run_leg",
+                        lambda *a, **kw: seen.update(kw) or {"ok": True})
+    ew.run_candidate_leg(None, {"name": "sq"}, "BTC/USDT", "1h",
+                         ew.WINDOWS["is"])
+    assert seen["direction"] == "long"
+    assert seen["keep_trades"] is False        # default off for evaluate_window
+
+
+def test_run_candidate_leg_propagates_none_on_missing_bars(monkeypatch):
+    monkeypatch.setattr(ew, "run_leg", lambda *a, **kw: None)
+    assert ew.run_candidate_leg(None, {"name": "sq"}, "BTC/USDT", "1h",
+                                ew.WINDOWS["is"]) is None

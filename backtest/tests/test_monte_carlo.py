@@ -477,8 +477,14 @@ def test_cli_params_invalid_json_exits_cleanly(tmp_path):
 
 def test_run_leg_trades_rejects_bad_dataset(tmp_path):
     with pytest.raises(SystemExit, match="--dataset"):
-        mc.run_leg_trades("squeeze_momentum", "spot", None,
-                          "not-a-valid-dataset", "is", 1000.0, None, "net")
+        mc.run_leg_trades({"name": "squeeze_momentum"}, "spot",
+                          "not-a-valid-dataset", "is", 1000.0, "net")
+
+
+def test_run_leg_trades_rejects_bad_window():
+    with pytest.raises(SystemExit, match="unknown window"):
+        mc.run_leg_trades({"name": "squeeze_momentum"}, "spot",
+                          "BTC/USDT:1h", "no-such-window", 1000.0, "net")
 
 
 def test_trade_returns_missing_pnl_pct_gross_raises_value_error():
@@ -501,3 +507,270 @@ def test_cli_trades_json_missing_pnl_pct_exits_cleanly(tmp_path):
         {"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}))
     with pytest.raises(SystemExit):
         mc.main(["--trades-json", str(src)])
+
+
+# ---------------------------------------------------------------------------
+# #1295 — candidate fidelity (D1): the run source replays through
+# eval_windows.run_candidate_leg, so closes / regime gate / stops survive.
+# ---------------------------------------------------------------------------
+
+def _fake_leg(pnls):
+    return {"trade_samples": [{"pnl_pct_net": p, "pnl_pct": p} for p in pnls]}
+
+
+def test_candidate_json_is_a_third_exclusive_source(tmp_path):
+    cand = tmp_path / "c.json"
+    cand.write_text(json.dumps({"name": "squeeze_momentum"}))
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps([1.0, -2.0]))
+    # two sources
+    with pytest.raises(SystemExit, match="exactly one trade source"):
+        mc.main(["--trades-json", str(src), "--candidate-json", str(cand)])
+    with pytest.raises(SystemExit, match="exactly one trade source"):
+        mc.main(["--strategy", "squeeze_momentum",
+                 "--candidate-json", str(cand)])
+    # zero sources
+    with pytest.raises(SystemExit, match="exactly one trade source"):
+        mc.main([])
+
+
+def test_candidate_json_rejects_params_and_direction(tmp_path):
+    cand = tmp_path / "c.json"
+    cand.write_text(json.dumps({"name": "squeeze_momentum"}))
+    with pytest.raises(SystemExit, match="carries its own"):
+        mc.main(["--candidate-json", str(cand), "--params", "{}"])
+    with pytest.raises(SystemExit, match="carries its own"):
+        mc.main(["--candidate-json", str(cand), "--direction", "short"])
+
+
+def test_candidate_json_threads_closes_gate_and_stops(tmp_path, monkeypatch):
+    """The D1 acceptance criterion: the FULL candidate dict reaches
+    run_candidate_leg with keep_trades=True — not a hand-picked subset."""
+    candidate = {
+        "name": "squeeze_momentum",
+        "params": {"kc_mult": 1.3},
+        "direction": "short",
+        "close_strategies": [{"name": "tiered_tp_atr"}],
+        "allowed_regimes": ["trending_up"],
+        "stop_loss_atr_mult": 2.0,
+    }
+    cand_path = tmp_path / "c.json"
+    cand_path.write_text(json.dumps(candidate))
+
+    seen = {}
+
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        seen["candidate"] = cand
+        seen["symbol"] = symbol
+        seen["timeframe"] = timeframe
+        seen["keep_trades"] = keep_trades
+        return _fake_leg([3.0, -1.0, 2.0])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    out = tmp_path / "mc.json"
+    rc = mc.main(["--candidate-json", str(cand_path), "--n-paths", "50",
+                  "--json", str(out)])
+    assert rc == 0
+    assert seen["candidate"] == candidate       # every field, untouched
+    assert seen["keep_trades"] is True
+    assert (seen["symbol"], seen["timeframe"]) == ("BTC/USDT", "1h")
+
+
+def test_strategy_path_builds_minimal_candidate():
+    assert mc.candidate_from_strategy_args("sq", None, None) == {"name": "sq"}
+    assert mc.candidate_from_strategy_args("sq", {"a": 1}, "short") == {
+        "name": "sq", "params": {"a": 1}, "direction": "short"}
+    # direction omitted (not None-stamped) so run_candidate_leg's validated
+    # default ("long") applies.
+    assert "direction" not in mc.candidate_from_strategy_args("sq", None, None)
+
+
+def test_strategy_path_routes_through_run_candidate_leg(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        seen["candidate"] = cand
+        return _fake_leg([1.0, 2.0])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    rc = mc.main(["--strategy", "squeeze_momentum", "--params",
+                  '{"kc_mult": 1.3}', "--n-paths", "20"])
+    assert rc == 0
+    assert seen["candidate"] == {"name": "squeeze_momentum",
+                                 "params": {"kc_mult": 1.3}}
+
+
+# ---------------------------------------------------------------------------
+# #1295 — multi-leg mode (D2) and seed semantics (D3)
+# ---------------------------------------------------------------------------
+
+_MC_KW = dict(schemes=("permute", "block"), n_paths=100, block_len=0,
+              seed=42, kill_switch_pct=25.0, kill_switch_source="test",
+              percentiles=(5.0, 50.0, 95.0))
+
+
+def test_multi_leg_payload_shape_and_ordering():
+    legs = {("is", "BTC/USDT:1h"): [3.0, -2.0, 1.0],
+            ("is", "ETH/USDT:4h"): [1.0, -1.0],
+            ("oos", "BTC/USDT:1h"): [2.0, 2.0]}
+    payload = mc.build_multi_leg_payload("src", "net", legs, **_MC_KW)
+    assert [(l["window"], l["dataset"]) for l in payload["legs"]] == list(legs)
+    assert payload["kill_switch_pct"] == 25.0
+    assert payload["seed"] == 42
+    first = payload["legs"][0]
+    assert first["n_trades"] == 3
+    assert {b["scheme"] for b in first["schemes"]} == set(mc.SCHEMES)
+    assert "observed" in first
+    assert "candidate" not in payload  # omitted when not supplied
+
+
+def test_multi_leg_payload_echoes_candidate():
+    payload = mc.build_multi_leg_payload(
+        "src", "net", {("is", "BTC/USDT:1h"): [1.0]},
+        candidate={"name": "sq"}, **_MC_KW)
+    assert payload["candidate"] == {"name": "sq"}
+
+
+def test_multi_leg_deterministic_under_seed():
+    legs = {("is", "BTC/USDT:1h"): [3.0, -2.0, 1.0, 0.5]}
+    a = mc.build_multi_leg_payload("s", "net", dict(legs), **_MC_KW)
+    b = mc.build_multi_leg_payload("s", "net", dict(legs), **_MC_KW)
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def test_multi_leg_leg_equals_single_run_at_same_seed():
+    """D3: a leg's stats block is byte-identical to a standalone single-run
+    invocation of that (window, dataset) at the same base seed."""
+    values = [3.0, -2.0, 1.0, 0.5, -4.0]
+    payload = mc.build_multi_leg_payload(
+        "s", "net", {("is", "BTC/USDT:1h"): values,
+                     ("oos", "ETH/USDT:4h"): [1.0, -1.0]}, **_MC_KW)
+    leg = payload["legs"][0]
+    for block in leg["schemes"]:
+        standalone = mc.resample_stats(
+            values, block["scheme"], n_paths=100, block_len=0, seed=42,
+            kill_switch_pct=25.0, percentiles=(5.0, 50.0, 95.0))
+        assert block == standalone
+
+
+def test_multi_leg_empty_leg_reports_error_not_abort():
+    legs = {("is", "BTC/USDT:1h"): [1.0, 2.0],
+            ("is", "SOL/USDT:4h"): None,          # no cached data
+            ("oos", "BTC/USDT:1h"): [3.0]}
+    payload = mc.build_multi_leg_payload("s", "net", legs, **_MC_KW)
+    bad = payload["legs"][1]
+    assert bad["error"] == "no_cached_data"
+    assert bad["n_trades"] == 0 and bad["schemes"] == []
+    # the other legs survive intact
+    assert payload["legs"][0]["n_trades"] == 2
+    assert payload["legs"][2]["n_trades"] == 1
+
+
+def test_multi_leg_zero_trade_leg_is_degenerate_not_error():
+    payload = mc.build_multi_leg_payload(
+        "s", "net", {("is", "BTC/USDT:1h"): []}, **_MC_KW)
+    leg = payload["legs"][0]
+    assert "error" not in leg
+    assert leg["n_trades"] == 0
+    assert all(b["p_dd_ge_kill_switch"] is None for b in leg["schemes"])
+
+
+def test_multi_leg_rejects_explicit_singular_flags(tmp_path):
+    cand = tmp_path / "c.json"
+    cand.write_text(json.dumps({"name": "squeeze_momentum"}))
+    with pytest.raises(SystemExit, match="single-leg flags"):
+        mc.main(["--candidate-json", str(cand), "--windows", "is",
+                 "--window", "oos"])
+    with pytest.raises(SystemExit, match="single-leg flags"):
+        mc.main(["--candidate-json", str(cand), "--datasets", "BTC/USDT:1h",
+                 "--dataset", "ETH/USDT:4h"])
+
+
+def test_multi_leg_rejects_trades_json_source(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps([1.0, -2.0]))
+    with pytest.raises(SystemExit, match="cannot apply to a --trades-json"):
+        mc.main(["--trades-json", str(src), "--windows", "is,oos"])
+
+
+def test_multi_leg_cli_fans_windows_x_datasets(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        calls.append((symbol, timeframe))
+        return _fake_leg([2.0, -1.0, 1.5])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    out = tmp_path / "mc.json"
+    rc = mc.main(["--strategy", "squeeze_momentum", "--windows", "is,oos",
+                  "--datasets", "BTC/USDT:1h,ETH/USDT:4h",
+                  "--n-paths", "20", "--json", str(out)])
+    assert rc == 0
+    assert len(calls) == 4
+    payload = json.loads(out.read_text())
+    assert [(l["window"], l["dataset"]) for l in payload["legs"]] == [
+        ("is", "BTC/USDT:1h"), ("is", "ETH/USDT:4h"),
+        ("oos", "BTC/USDT:1h"), ("oos", "ETH/USDT:4h")]
+    assert payload["candidate"] == {"name": "squeeze_momentum"}
+
+
+def test_multi_leg_datasets_default_to_the_audit_six(tmp_path, monkeypatch):
+    monkeypatch.setattr(ew, "run_candidate_leg",
+                        lambda *a, **k: _fake_leg([1.0, -1.0]))
+    out = tmp_path / "mc.json"
+    rc = mc.main(["--strategy", "squeeze_momentum", "--windows", "is",
+                  "--n-paths", "10", "--json", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert len(payload["legs"]) == len(ew.DATASETS)
+
+
+def test_multi_leg_uncached_leg_skips_without_aborting(tmp_path, monkeypatch):
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        if symbol == "ETH/USDT":
+            return None                      # no cached bars for this leg
+        return _fake_leg([1.0, -1.0, 2.0])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    out = tmp_path / "mc.json"
+    rc = mc.main(["--strategy", "squeeze_momentum", "--windows", "is",
+                  "--datasets", "BTC/USDT:1h,ETH/USDT:4h", "--n-paths", "10",
+                  "--json", str(out)])
+    assert rc == 0
+    legs = json.loads(out.read_text())["legs"]
+    assert legs[0]["n_trades"] == 3
+    assert legs[1]["error"] == "no_cached_data"
+
+
+def test_multi_leg_kill_switch_from_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(ew, "run_candidate_leg",
+                        lambda *a, **k: _fake_leg([1.0, -1.0]))
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"strategies": [
+        {"id": "hl-x", "type": "perps", "max_drawdown_pct": 15.0}]}))
+    out = tmp_path / "mc.json"
+    rc = mc.main(["--strategy", "squeeze_momentum", "--windows", "is",
+                  "--datasets", "BTC/USDT:1h", "--config", str(cfg),
+                  "--strategy-id", "hl-x", "--n-paths", "10",
+                  "--json", str(out)])
+    assert rc == 0
+    payload = json.loads(out.read_text())
+    assert payload["kill_switch_pct"] == 15.0
+    assert payload["legs"][0]["schemes"][0]["kill_switch_pct"] == 15.0
+
+
+def test_multi_leg_report_renders_error_legs():
+    payload = mc.build_multi_leg_payload(
+        "s", "net", {("is", "BTC/USDT:1h"): [1.0, -1.0],
+                     ("is", "SOL/USDT:4h"): None}, **_MC_KW)
+    text = mc.format_multi_leg_report(payload)
+    assert "[is] BTC/USDT:1h" in text
+    assert "no_cached_data" in text

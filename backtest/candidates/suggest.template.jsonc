@@ -46,9 +46,15 @@
   //   "m5"       — M5 fee audit / salvage verdict (context; no p; screens
   //                registry DEFAULT params only — swept candidates get a
   //                "m5_params_unaudited" limitation flag, never audited wrong).
+  //   "mc"       — Advisory Monte Carlo drawdown risk (#1295): P95 max
+  //                drawdown, P(max DD >= kill switch), P(final < start).
+  //                ADVISORY ONLY — no p-value, never in the BH family, and a
+  //                FAILED mc run never changes a verdict. Open-kind candidates
+  //                only. NOT on by default (a fan of n_paths x schemes x
+  //                windows x datasets resamples per candidate); opt in here.
   // (M6 is NOT listed here — it is driven by the "m6" block below, one entry
   // per close variant.) Default: ["m1_noise", "m1", "m3", "m5"].
-  "harnesses": ["m1_noise", "m1", "m3", "m5", "m6"],
+  "harnesses": ["m1_noise", "m1", "m3", "m5", "m6", "mc"],
 
   // Walk-forward windows to score. Any of eval_windows.WINDOWS:
   //   "is", "oos" (the protocol pair the promotion gate keys off),
@@ -84,6 +90,11 @@
       // optional per-candidate harness override; defaults to the spec-wide
       // "harnesses" above. Narrow it for e.g. an M1-only smoke candidate.
       "harnesses": ["m1_noise", "m1"],
+      // optional per-candidate Monte Carlo override (#1295). Explicit
+      // threshold form ONLY — a study mixing strategy types can give each
+      // candidate its own drawdown limit. "config"/"strategy_id" stay a
+      // spec-level concern (see the "mc" block below) and are rejected here.
+      "mc": {"kill_switch_pct": 50},
       "candidate": {
         "name": "squeeze_momentum",   // registered open-strategy name (required)
         "direction": "long",          // long | short | both (both needs close_strategies)
@@ -131,6 +142,24 @@
   // zscore_target, tiered_tp_atr[_regime], tiered_tp_atr_live, trailing_stop_*,
   // stop_loss_atr_mult, trailing_tp_ratchet[_regime]); a non-replayable close is
   // reported "excluded_not_replayable" and never run.
+  // Advisory Monte Carlo block (#1295). Optional — omit it entirely and the
+  // harness default applies (25%, the portfolio kill-switch default). Only
+  // consulted when "mc" is in "harnesses".
+  // The kill-switch threshold has exactly TWO mutually-exclusive forms
+  // (mirroring monte_carlo.py's own refusal of both at once):
+  //   1. explicit:  "kill_switch_pct": 25
+  //   2. live config: "config" + "strategy_id" — resolves that strategy's
+  //      max_drawdown_pct hierarchy (explicit > platform risk override >
+  //      type default). "config" is resolved relative to this spec's dir.
+  // Setting form 1 AND form 2 is a load-time error, as is only one half of
+  // form 2. "n_paths" (optional, default 10000) trades precision for runtime.
+  "mc": {
+    "kill_switch_pct": 25,
+    // "config": "live_config.json",
+    // "strategy_id": "hl-btc-squeeze",
+    "n_paths": 10000
+  },
+
   "m6": {
     "strategy_id": "squeeze_momentum",
     // Optional m6-level entry gate applied to close_stack_specs-generated
