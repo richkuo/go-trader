@@ -533,8 +533,13 @@ func TestMakePairs_TwoAssets(t *testing.T) {
 }
 
 func TestStratShortName(t *testing.T) {
-	if got := stratShortName(spotStrategies, "tema_cross"); got != "temac" {
-		t.Errorf("expected temac, got %s", got)
+	if got := stratShortName(spotStrategies, "chart_pattern"); got != "cpat" {
+		t.Errorf("expected cpat, got %s", got)
+	}
+	// tema_cross joined the quarantine roster in #1282, so it also falls
+	// back to the raw ID now.
+	if got := stratShortName(spotStrategies, "tema_cross"); got != "tema_cross" {
+		t.Errorf("expected tema_cross, got %s", got)
 	}
 	// Quarantined names (#1275) are pruned from the fallback lists, so an
 	// explicit legacy config falls back to the raw ID.
@@ -589,8 +594,8 @@ func TestRunInitFromJSON_EmptyUsesStarterSpotDefaults(t *testing.T) {
 		t.Fatalf("expected 1 starter strategy, got %d", len(cfg.Strategies))
 	}
 	s := cfg.Strategies[0]
-	if s.ID != "temac-btc" {
-		t.Errorf("expected starter ID temac-btc, got %s", s.ID)
+	if s.ID != "cpat-btc" {
+		t.Errorf("expected starter ID cpat-btc, got %s", s.ID)
 	}
 	if s.Type != "spot" || s.Platform != "binanceus" {
 		t.Errorf("expected starter spot strategy on binanceus, got %s/%s", s.Type, s.Platform)
@@ -615,8 +620,8 @@ func TestRunInitFromJSON_AssetsOnlyDefaultsToStarterSpot(t *testing.T) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "temac-btc" {
-		t.Fatalf("expected starter temac-btc config, got %+v", cfg.Strategies)
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "cpat-btc" {
+		t.Fatalf("expected starter cpat-btc config, got %+v", cfg.Strategies)
 	}
 }
 
@@ -635,8 +640,8 @@ func TestRunInitFromJSON_SpotEnabledNoStrategiesUsesStarterStrategy(t *testing.T
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "temac-btc" {
-		t.Fatalf("expected starter temac-btc config, got %+v", cfg.Strategies)
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "cpat-btc" {
+		t.Fatalf("expected starter cpat-btc config, got %+v", cfg.Strategies)
 	}
 }
 

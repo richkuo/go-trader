@@ -46,14 +46,16 @@ class TestRegistry:
         names = list_strategies()
         assert len(names) >= 10
         # Spot-check a few discovery-visible strategies
-        for expected in ["tema_cross", "regime_adaptive", "anchored_vwap",
+        for expected in ["mean_reversion_pro", "liquidity_sweeps", "anchored_vwap",
                          "chart_pattern", "momentum_pro", "atr_band_revert"]:
             assert expected in names, f"{expected} not registered"
         # #1275: M5-deprecated names leave discovery but stay registered so
-        # explicit configs and backtests keep resolving them.
+        # explicit configs and backtests keep resolving them (#1282 added
+        # tema_cross / regime_adaptive to the roster).
         for quarantined in ["sma_crossover", "ema_crossover", "rsi", "macd",
                             "momentum", "bollinger_bands", "mean_reversion",
-                            "supertrend", "parabolic_sar"]:
+                            "supertrend", "parabolic_sar",
+                            "tema_cross", "regime_adaptive"]:
             assert quarantined not in names, f"{quarantined} should be hidden"
             assert quarantined in STRATEGY_REGISTRY, f"{quarantined} must stay loadable"
 

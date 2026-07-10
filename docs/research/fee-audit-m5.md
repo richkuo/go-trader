@@ -129,3 +129,24 @@ Returns are mean per-leg total-return %; trades are summed across all scored leg
 - **mean_reversion_pro** (spot): short-capable (bidirectional / allow_short); the long/flat harness measured only its long leg (gross -2.73%, net -3.13% over 18 long trades). Re-screen via the open/close engine (models both sides) before any deprecate/graduate call.
 - **bear_pullback_st** (futures): short-capable (bidirectional / allow_short); the long/flat harness measured only its long leg (gross 0.00%, net 0.00% over 0 long trades). Re-screen via the open/close engine (models both sides) before any deprecate/graduate call.
 - **vwap_rejection_st** (futures): short-capable (bidirectional / allow_short); the long/flat harness measured only its long leg (gross 0.00%, net 0.00% over 0 long trades). Re-screen via the open/close engine (models both sides) before any deprecate/graduate call.
+
+## Addendum 2026-07-10 — #1282 limbo adjudication (final verdicts)
+
+Every `graduate_m1`-pending and `unscreened_short` row above that was still
+unresolved has been adjudicated in `1282-m5-limbo-verdicts.md` (short-leg
+screens via #989 `--direction short`, wide-pool #1054 noise gates, M1
+protocol, BH family passes). Final verdicts:
+
+- DEPRECATE (added to the #1275 quarantine rosters): `tema_cross`,
+  `regime_adaptive` (both legs), `triple_ema_bidir`, `tema_cross_bd`,
+  `funding_skew`, `consolidation_range`. `mtf_confluence` stays quarantined
+  (futures short is a 2026-crash artifact — wide-pool indistinguishable).
+- VALIDATED (kept, nothing promoted): `breakout` (#956/#984/#1165 evidence,
+  re-affirmed), `mean_reversion_pro` (real low-churn long edge; #981 knobs
+  stay default-off), `momentum_pro` (real long gross edge, held-out 2/3;
+  short stays unshipped per #980/#1166), `chart_pattern` (#982 f4 opt-in
+  re-affirmed under BH; short stays unshipped).
+
+Rows already settled elsewhere (unchanged): `donchian_breakout` #985,
+`session_breakout` #1031, `vol_momentum` #1021, `liquidity_sweeps` #1022,
+`vwap_rejection_st` #990. `bear_pullback_st` is owned by #1280.

@@ -37,6 +37,32 @@ def test_sign_test_drops_zeros_not_splits():
     assert r["p_value"] == pytest.approx(0.5)  # 2 * 0.25
 
 
+def test_binom_p_large_n_no_overflow():
+    # math.comb(n, n//2) overflows float conversion past n ~ 1030; pooled
+    # multi-window samples (#1282) exceed that. Must stay finite and exact.
+    p = m._binom_two_sided_p(700, 2000)
+    assert 0.0 <= p <= 1.0
+    # Heavily imbalanced split is decisively significant.
+    assert p < 1e-6
+    # Balanced split is not.
+    assert m._binom_two_sided_p(1000, 2000) > 0.9
+
+
+def test_binom_p_log_space_matches_small_n_exact():
+    # Small-n values must match the direct math.comb sum the log-space
+    # rewrite replaced.
+    def direct(k, n, pr=0.5):
+        def cdf(u):
+            return sum(math.comb(n, i) * (pr ** i) * ((1.0 - pr) ** (n - i))
+                       for i in range(0, u + 1))
+        lo = cdf(k)
+        hi = 1.0 - cdf(k - 1) if k > 0 else 1.0
+        return min(1.0, 2.0 * min(lo, hi))
+
+    for k, n in [(0, 5), (3, 10), (7, 8), (25, 60)]:
+        assert m._binom_two_sided_p(k, n) == pytest.approx(direct(k, n), rel=1e-9)
+
+
 def test_sign_test_empty():
     r = m.sign_test([])
     assert r["n"] == 0 and r["p_value"] == 1.0

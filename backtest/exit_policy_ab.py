@@ -139,17 +139,25 @@ def _norm_cdf(z: float) -> float:
 def _binom_two_sided_p(k: int, n: int, p: float = 0.5) -> float:
     """Two-sided exact binomial p-value for k successes in n trials.
 
-    p = 2·min(P(X≤k), P(X≥k)) clamped to 1.0. n is a trade count (small), so the
-    exact sum via ``math.comb`` is cheap and avoids a normal approximation on
-    the tiny samples M6 routinely sees.
+    p = 2·min(P(X≤k), P(X≥k)) clamped to 1.0. Still an exact sum, but each
+    term is computed in log space (lgamma) rather than via ``math.comb``:
+    the raw binomial coefficient overflows float conversion past n ≈ 1030,
+    and pooled multi-window samples (#1282) routinely exceed that.
     """
     if n <= 0:
         return 1.0
     k = max(0, min(k, n))
 
+    log_p = math.log(p)
+    log_q = math.log(1.0 - p)
+    lg_n1 = math.lgamma(n + 1)
+
+    def _log_pmf(i: int) -> float:
+        return (lg_n1 - math.lgamma(i + 1) - math.lgamma(n - i + 1)
+                + i * log_p + (n - i) * log_q)
+
     def _cdf(upper: int) -> float:
-        return sum(math.comb(n, i) * (p ** i) * ((1.0 - p) ** (n - i))
-                   for i in range(0, upper + 1))
+        return sum(math.exp(_log_pmf(i)) for i in range(0, upper + 1))
 
     lower_tail = _cdf(k)
     upper_tail = 1.0 - _cdf(k - 1) if k > 0 else 1.0

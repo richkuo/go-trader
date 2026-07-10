@@ -22,12 +22,13 @@ var supportedAssets = []asset{
 
 const (
 	starterAssetName = "BTC"
-	// tema_cross: simple triple-EMA crossover, discovery-visible, and an M5
-	// fee-audit graduate (positive gross edge). Must never be a name in
+	// chart_pattern: discovery-visible with the strongest adjudicated spot
+	// evidence (#1282: real wide-pool gross edge; the #982 default-off f4
+	// gate survived the BH family pass). Must never be a name in
 	// m5DeprecatedEdgeStrategies — the init wizard's own default would then
 	// generate a config the binary immediately warns against (#1275); pinned
 	// by TestConfigGenerationSurfacesExcludeQuarantinedStrategies.
-	starterSpotStrategyID = "tema_cross"
+	starterSpotStrategyID = "chart_pattern"
 	starterSpotCapital    = 1000.0
 	starterSpotDrawdown   = 5.0
 )
@@ -179,11 +180,9 @@ var defaultSpotStrategies = []stratDef{
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
-	{ID: "tema_cross", ShortName: "temac"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
@@ -195,38 +194,29 @@ var defaultOptionsStrategies = []stratDef{
 }
 
 var defaultPerpsStrategies = []stratDef{
-	{ID: "triple_ema_bidir", ShortName: "temab"},
-	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
-	{ID: "funding_skew", ShortName: "fskew"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 var defaultFuturesStrategies = []stratDef{
 	{ID: "breakout", ShortName: "bo"},
-	{ID: "triple_ema_bidir", ShortName: "temab"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
-	{ID: "funding_skew", ShortName: "fskew"},
-	{ID: "tema_cross", ShortName: "temac"},
-	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
