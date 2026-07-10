@@ -103,8 +103,8 @@ Other dirs (guardrails; inventories in ARCHITECTURE.md):
 ### PR review format (`@claude review`)
 **SSoT: `.github/prompts/pr-review-format.md`** (edit prompt file, not workflow string). First line exactly `LGTM` or `Needs Updates` (blocking = `### Needs Fixing` / `### Requires Human Review` only). Safety findings never dropped. Needs Fixing/Optional require **Invariant:** + **Must survive:** (1–3 cases). Prefer in-PR fixes; follow-up issue only when genuinely out-of-scope. **Reviews never gate on or wait for CI** — CI intentionally outlasts the review; branch protection enforces it separately (no `gh pr checks`/`gh run *` reader, no `actions: read`).
 
-### The Claude Code workflow itself (`.github/workflows/claude.yml` + `claude-run.yml`)
-- **#1178 least-privilege split:** `claude.yml` = `classify` job + two caller jobs `uses:`-ing the reusable `claude-run.yml` body; **only the call-site `permissions:` differ.** Review job: `contents: read`+`pull-requests: write`+`issues: write`, **no `id-token: write`** (else injected code could mint the Claude App token via OIDC). Implement job keeps `contents: write`+`id-token: write`.
+### The Claude Code workflow itself (`.github/workflows/claude.yml` + the central run body)
+- **#1178 least-privilege split:** `claude.yml` = `classify` job + two caller jobs `uses:`-ing the central reusable body `richkuo/rk-skills/.github/workflows/claude-run.yml@main` (the local `claude-run.yml` was deleted in the migration; `timeout_minutes`/`go_version`/`extra_allowed_tools` are passed as inputs from the call sites); **only the call-site `permissions:` differ.** Review job: `contents: read`+`pull-requests: write`+`issues: write`, **no `id-token: write`** (else injected code could mint the Claude App token via OIDC). Implement job keeps `contents: write`+`id-token: write`.
 - **Token model:** git/gh ops run on the **Claude GitHub App installation token** — job `permissions:` do NOT cap it. Review job passes `github_token: ${{ github.token }}`; comments post as **`github-actions[bot]`** (`BOT_LOGIN`), implement stays `claude[bot]`. Patch steps pass `RUN_ID` — only comments embedding this run's link qualify.
 - **Mode routing fail-closed:** review events always review; `issue_comment`/`issues` review iff the code-block-stripped body contains "review".
 - **Comment patching** shared in `.github/scripts/patch_claude_comment.sh`+`compose_claude_comment.py` (don't duplicate inline); fetches **all** pages (`--paginate --slurp`).
@@ -124,7 +124,7 @@ Before implementing `@claude review` findings: restate each item as an invariant
 - End the body with the same footer as commits/PRs — `LLM: <model> | <effort> | Harness: <action>` — no `Co-authored-by` trailer.
 
 ## Claude Code Skills (rk-skills plugin)
-- The rk-skills workflow skills (`new-issue`, `validate-issue`, `work-on-issue`, `fix-pr-review`, the `-loop` variants, `github-issue-format`, `pr-review-format`) are **CI-only** in this repo: the `@claude` CI workflows load the plugin from [richkuo/rk-skills](https://github.com/richkuo/rk-skills) at run time (`plugin_marketplaces`/`plugins` in `.github/workflows/claude-run.yml`), fetching the marketplace fresh each run.
+- The rk-skills workflow skills (`new-issue`, `validate-issue`, `work-on-issue`, `fix-pr-review`, the `-loop` variants, `github-issue-format`, `pr-review-format`) are **CI-only** in this repo: the `@claude` CI workflows load the plugin from [richkuo/rk-skills](https://github.com/richkuo/rk-skills) at run time (`plugin_marketplaces`/`plugins` in the central `richkuo/rk-skills/.github/workflows/claude-run.yml`), fetching the marketplace fresh each run.
 - There is **no project-level settings pin** (no tracked `.claude/settings.json`; `.gitignore` ignores all of `.claude/*`). Interactive users who want the skills install them personally: `/plugin marketplace add richkuo/rk-skills` then install `rk-skills@rk-skills` via `/plugin`, or run `npx rk-skills`.
 
 ## Build & Deploy
