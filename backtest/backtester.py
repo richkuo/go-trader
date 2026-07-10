@@ -862,7 +862,7 @@ class _HoldTracker:
     """
 
     __slots__ = ("bars", "high", "low", "high_bar", "low_bar",
-                 "entry_fee", "entry_price", "side")
+                 "entry_fee", "entry_fee_netted", "entry_price", "side")
 
     def __init__(self):
         self.open(0.0, "long", 0.0)
@@ -874,6 +874,9 @@ class _HoldTracker:
         self.high_bar = 0
         self.low_bar = 0
         self.entry_fee = entry_fee
+        # #1276: entry fees already netted onto earlier close legs of this
+        # position — drives the final-leg true-up for scaled-in positions.
+        self.entry_fee_netted = 0.0
         self.entry_price = entry_price
         self.side = side
 
@@ -897,7 +900,8 @@ class _HoldTracker:
 
 
 def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
-                exit_fee: float, reason: str, qty_frac: float = 1.0) -> None:
+                exit_fee: float, reason: str, qty_frac: float = 1.0,
+                true_up_entry_fee: bool = False) -> None:
     """Stamp #997 hold telemetry onto a closing trade leg.
 
     ``qty_frac`` pro-rates the entry commission for a partial-close leg (each
@@ -908,6 +912,15 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     entry fee and the exit fee out of it so every leg reports PnL net of fees,
     matching live's net-PnL convention (``tradeNetPnL``). Callers must NOT
     deduct the exit fee from ``pnl`` themselves — doing so double-counts it.
+
+    ``true_up_entry_fee`` (#1276): when a scale-in add follows a partial
+    close, the ``pool × leg/IQ`` identity stops conserving (earlier legs were
+    netted against a smaller pool and a smaller ``initial_quantity``), so the
+    POSITION'S FINAL leg must instead net exactly the un-netted remainder —
+    ``hold.entry_fee - hold.entry_fee_netted`` — restoring
+    Σ(netted entry fees) == open commission + Σ(add commissions). Callers set
+    it only on the final close leg of a position that scaled in; non-scaled
+    positions keep the pre-#1276 formula bit-for-bit.
     """
     mfe, mae, b_mfe, b_mae = hold.metrics()
     trade.bars_held = hold.bars
@@ -916,7 +929,14 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     trade.bars_to_mfe = b_mfe
     trade.bars_to_mae = b_mae
     trade.entry_atr = entry_atr
-    trade.entry_fee = hold.entry_fee * qty_frac
+    if true_up_entry_fee:
+        # Final leg of a scaled-in position: net the exact un-netted
+        # remainder (never negative — intermediate legs net against a pool
+        # no larger than the final pool with fractions summing below 1).
+        trade.entry_fee = max(0.0, hold.entry_fee - hold.entry_fee_netted)
+    else:
+        trade.entry_fee = hold.entry_fee * qty_frac
+    hold.entry_fee_netted += trade.entry_fee
     trade.exit_fee = exit_fee
     trade.exit_reason = reason
     # Net both fees out of the gross pnl set by Trade.close() (#1241).
@@ -2476,7 +2496,15 @@ class Backtester:
                         _stamp_hold(closed, hold, entry_atr=entry_atr_value,
                                     exit_fee=commission,
                                     reason=close_reason or "close_strategy",
-                                    qty_frac=qty_frac)
+                                    qty_frac=qty_frac,
+                                    # #1276: a scaled position's FINAL leg
+                                    # nets the un-netted fee remainder so
+                                    # the pool conserves across add/partial
+                                    # interleavings.
+                                    true_up_entry_fee=(
+                                        scale.scale_in_count > 0
+                                        and abs(position) <= 1e-12
+                                    ))
                         closed.scale_in_adds = scale.scale_in_count
                         trades.append(closed)
                         current_trade.shares -= qty_to_close
@@ -2795,7 +2823,12 @@ class Backtester:
                             _stamp_hold(closed, hold,
                                         entry_atr=entry_atr_value,
                                         exit_fee=commission, reason="sl",
-                                        qty_frac=qty_frac)
+                                        qty_frac=qty_frac,
+                                        # #1276: intra-bar SL is always the
+                                        # position's final leg.
+                                        true_up_entry_fee=(
+                                            scale.scale_in_count > 0
+                                        ))
                             closed.scale_in_adds = scale.scale_in_count
                             trades.append(closed)
                             current_trade = None
@@ -3269,7 +3302,9 @@ class Backtester:
                 )
                 _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                             exit_fee=commission, reason="end_of_data",
-                            qty_frac=eod_qty_frac)
+                            qty_frac=eod_qty_frac,
+                            # #1276: end-of-data is the final leg.
+                            true_up_entry_fee=scale.scale_in_count > 0)
                 current_trade.scale_in_adds = scale.scale_in_count
                 trades.append(current_trade)
 

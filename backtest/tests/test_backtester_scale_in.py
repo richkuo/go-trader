@@ -396,6 +396,81 @@ def test_add_pays_commission_and_joins_entry_fee_pool():
     assert trade["entry_fee"] == pytest.approx(open_comm + add_comm, rel=1e-6)
 
 
+def test_entry_fee_conserves_partial_close_then_add():
+    # PR #1323 review: pool × leg/IQ stops conserving when an add follows a
+    # partial close at a different price — the final leg must true-up so
+    # Σ(netted entry fees) == open commission + Σ(add commissions).
+    fee = 0.001
+    closes = [100.0, 100.0, 102.5, 102.5, 104.0, 104.0]
+    df = _df(closes, [1, 0, 0, 1, 0, 0], atr=[2.0] * 6)
+    tiers = [
+        {"atr_multiple": 1.0, "close_fraction": 0.5},
+        {"atr_multiple": 10.0, "close_fraction": 1.0},
+    ]
+    res = _run(
+        df, allow_scale_in=True, commission_pct=fee,
+        close_strategies=[{"name": "tiered_tp_atr",
+                           "params": {"tp_tiers": tiers, "atr_source": "entry"}}],
+    )
+    assert res["scale_in_adds"] == 1
+    open_comm = 10000.0 * fee
+    shares0 = (10000.0 - open_comm) / 100.0
+    base_notional = shares0 * 100.0
+    add_qty = base_notional / 102.5          # decision price = bar 3's close
+    add_comm = add_qty * 104.0 * fee         # filled at bar 4's open
+    legs = res["trades"]
+    assert len(legs) >= 2                    # tier-1 partial + final leg
+    assert sum(t["entry_fee"] for t in legs) == pytest.approx(
+        open_comm + add_comm, abs=1e-4)
+
+
+def test_entry_fee_conserves_partial_add_partial_full():
+    # ≥3 close legs with an interleaved add: partial → add → partial → final.
+    fee = 0.001
+    closes = [100.0, 100.0, 102.5, 102.5, 104.5, 104.5, 104.5]
+    df = _df(closes, [1, 0, 0, 1, 0, 0, 0], atr=[2.0] * 7)
+    tiers = [
+        {"atr_multiple": 1.0, "close_fraction": 0.25},
+        {"atr_multiple": 2.0, "close_fraction": 0.25},
+        {"atr_multiple": 10.0, "close_fraction": 1.0},
+    ]
+    res = _run(
+        df, allow_scale_in=True, commission_pct=fee,
+        close_strategies=[{"name": "tiered_tp_atr",
+                           "params": {"tp_tiers": tiers, "atr_source": "entry"}}],
+    )
+    assert res["scale_in_adds"] == 1
+    legs = res["trades"]
+    assert len(legs) >= 3
+    open_comm = 10000.0 * fee
+    shares0 = (10000.0 - open_comm) / 100.0
+    add_qty = shares0 * 100.0 / 102.5
+    add_comm = add_qty * 104.5 * fee
+    assert sum(t["entry_fee"] for t in legs) == pytest.approx(
+        open_comm + add_comm, abs=1e-4)
+
+
+def test_two_adds_straddling_partial_close_pnl_reconciles():
+    # Two adds straddling a partial close: Σ trade pnl (net of all fees)
+    # must equal final_capital − initial_capital with fees on.
+    fee = 0.001
+    closes = [100.0, 100.0, 102.5, 102.5, 102.6, 103.0, 103.0]
+    df = _df(closes, [1, 0, 1, 0, 1, 0, 0], atr=[2.0] * 7)
+    tiers = [
+        {"atr_multiple": 1.0, "close_fraction": 0.5},
+        {"atr_multiple": 10.0, "close_fraction": 1.0},
+    ]
+    res = _run(
+        df, allow_scale_in=True, commission_pct=fee,
+        close_strategies=[{"name": "tiered_tp_atr",
+                           "params": {"tp_tiers": tiers, "atr_source": "entry"}}],
+    )
+    assert res["scale_in_adds"] == 2
+    total_pnl = sum(t["pnl"] for t in res["trades"])
+    assert total_pnl == pytest.approx(
+        res["final_capital"] - 10000.0, abs=0.05)
+
+
 # ─── Counting / results parity ────────────────────────────────────────────────
 
 
