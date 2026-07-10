@@ -1,5 +1,7 @@
 PR review output format (this OVERRIDES any final-comment format the code-review skill specifies; keep its multi-agent review process, replace only the shape of the posted comment).
 
+This is a static review: read the code only. Do NOT execute the project's code — never run test suites, backtests, builds, simulations, or scripts. Judge correctness by reading the diff; CI runs tests separately.
+
 Before writing the comment, sweep the FULL diff once per dimension and collect every finding — do not stop at the first or most salient issue. Dimensions: (1) correctness and logic (including shadowed or dead code and wrong-scope declarations); (2) error paths and failure handling (swallowed errors, fail-open vs fail-closed, error states indistinguishable from empty states); (3) state and lifecycle (stale UI or cache state, residual mutations, ordering); (4) resource cost and scaling (unbounded queries or scans on polled or hot paths, missing indexes, per-call cost growing with history); (5) concurrency and locking; (6) security and input handling (injection, unescaped output, authorization). Report ALL findings that survive the materiality filter in this single comment, not one per review round.
 
 The review comment must contain nothing except the structure that follows — no preamble, summary, intro, header, emoji, or footer outside this structure. Write the entire comment as direct instructions for an agent that will read it and act on it.
