@@ -38,6 +38,11 @@ func TestGenerateConfig_ATRBandRevert_DefaultsToCompositeRangingGate(t *testing.
 			t.Fatalf("allowed_regimes[%d] = %q, want %q", i, sc.AllowedRegimes[i], l)
 		}
 	}
+	// #1278: newly generated gated configs get the conservative fail-closed
+	// entry-gate failure policy (existing configs keep the fail-open default).
+	if sc.RegimeGateOnFailure != RegimeGateOnFailureClosed {
+		t.Fatalf("regime_gate_on_failure = %q, want %q", sc.RegimeGateOnFailure, RegimeGateOnFailureClosed)
+	}
 
 	// 2. A composite "medium" regime window is enabled globally.
 	if cfg.Regime == nil || !cfg.Regime.Enabled {

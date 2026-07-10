@@ -105,6 +105,12 @@ type RegimeConfig struct {
 	// Transitions enables per-window regime transition history + operator
 	// alerting (#1224). Alerting-only; hot-reloadable via SIGHUP.
 	Transitions *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
+	// GateOnFailure is the global default for the per-strategy
+	// regime_gate_on_failure entry-gate failure policy (#1278): "open" (the
+	// legacy #879 fail-open default) or "closed". A per-strategy value
+	// overrides it. Hot-reloadable via SIGHUP (flat-only open gating, never
+	// state-shifting). Read via resolveRegimeGateOnFailure, never directly.
+	GateOnFailure string `json:"gate_on_failure,omitempty"`
 }
 
 var regimeTimeframeAllowSet = map[string]bool{
@@ -611,6 +617,7 @@ type StrategyConfig struct {
 	CloseStrategy               *StrategyRef             `json:"close_strategy,omitempty"`            // single exit strategy ref (name + params). Collapsed from the legacy close_strategies array in #842 — one profit-taking close owns the exit ladder; risk backstops live at strategy level. Nil = open-as-close. UnmarshalJSON still reads the legacy close_strategies array for back-compat (len 1 lifted here, len>1 rejected at validation with the strategy id).
 	closeStrategiesLegacy       []StrategyRef            `json:"-"`                                   // #842: legacy close_strategies array captured by UnmarshalJSON for back-compat; only used to reject len>1 during validation. Never marshaled.
 	AllowedRegimes              []string                 `json:"allowed_regimes,omitempty"`           // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
+	RegimeGateOnFailure         string                   `json:"regime_gate_on_failure,omitempty"`    // #1278 — allowed_regimes gate failure policy when the regime store cannot produce a gate label (subprocess failure, sealed phase budget, missing window): "open" (default; legacy #879 fail-open) or "closed" (hold NEW opens while regime unknown; closes and posQty>0 management always pass). Empty inherits the global regime.gate_on_failure, then "open". Hot-reloadable always incl. while open (flat-only open gating, never state-shifting). Read via resolveRegimeGateOnFailure(sc, rc), never directly.
 	RegimeGateWindow            string                   `json:"regime_gate_window,omitempty"`        // window key for allowed_regimes gate; "" or "default" = legacy single lookback (#792)
 	RegimeATRWindow             string                   `json:"regime_atr_window,omitempty"`         // window key for *_atr_regime resolution (#792)
 	RegimeDirectionalWindow     string                   `json:"regime_directional_window,omitempty"` // window key for regime_directional_policy (#792)
@@ -1649,6 +1656,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("%s: allowed_regimes is not enforced for type=options (gate not wired at options dispatch; see issue #553)", prefix))
 		}
 
+		// #1278: entry-gate failure policy. Reject unknown values at load so a
+		// typo ("close", "fail-closed") can't silently fall back to fail-open —
+		// the exact misconfiguration the field exists to prevent.
+		if _, err := parseRegimeGateOnFailure(sc.RegimeGateOnFailure); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", prefix, err))
+		}
+
 		// #569: manual strategies require symbol + timeframe + leverage.
 		if sc.Type == "manual" {
 			if sc.Platform != "hyperliquid" {
@@ -2259,6 +2273,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("regime.timeframe must be one of %s, got %q", strings.Join(validRegimeTimeframes(), ", "), cfg.Regime.Timeframe))
 		}
 	}
+	// #1278: global entry-gate failure-policy default. Validated whether or not
+	// regime detection is enabled — an invalid value must never load.
+	if cfg.Regime != nil {
+		if _, err := parseRegimeGateOnFailure(cfg.Regime.GateOnFailure); err != nil {
+			errs = append(errs, fmt.Sprintf("regime.gate_on_failure: %v", err))
+		}
+	}
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
 	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
@@ -2266,11 +2287,19 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// Warn when allowed_regimes is configured but regime.enabled=false — the
 	// gate reads result.Regime from the check script output, which requires
 	// regime detection to be running. Without it the gate is a no-op.
+	// #1278: with a fail-closed policy that same misconfiguration is a
+	// PERMANENT entry block (the label is deterministically empty every
+	// cycle), so it upgrades from a warning to a load error.
 	if cfg.Regime == nil || !cfg.Regime.Enabled {
 		for _, sc := range cfg.Strategies {
-			if len(sc.AllowedRegimes) > 0 {
-				fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
+			if len(sc.AllowedRegimes) == 0 {
+				continue
 			}
+			if resolveRegimeGateOnFailure(sc, cfg.Regime) == RegimeGateOnFailureClosed {
+				errs = append(errs, fmt.Sprintf("strategy[%s]: regime_gate_on_failure=closed with allowed_regimes but regime.enabled=false — the gate label is always empty, so the strategy could never open; enable regime detection or use the fail-open policy", sc.ID))
+				continue
+			}
+			fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
 		}
 	}
 

@@ -846,6 +846,10 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		if gate := defaultCompositeRangingGate(sc.Args[0]); gate != nil {
 			sc.AllowedRegimes = gate
+			// #1278: newly generated gated configs get the conservative
+			// entry-gate failure policy — hold fresh opens while the regime
+			// is unknown. Existing configs keep the fail-open default.
+			sc.RegimeGateOnFailure = RegimeGateOnFailureClosed
 			needsCompositeRangingRegime = true
 		}
 	}

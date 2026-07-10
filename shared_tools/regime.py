@@ -75,18 +75,51 @@ RANGING_DIRECTIONAL_BARE = "ranging_directional"
 RANGING_DIRECTIONAL_SUBS = frozenset({"ranging_directional_up", "ranging_directional_down"})
 
 
-def regime_label_allows_entry(allowed, current: str) -> bool:
+# #1278: entry-gate failure policies for an empty/unavailable regime label.
+# Mirrors the Go RegimeGateOnFailureOpen/Closed constants.
+REGIME_GATE_ON_FAILURE_OPEN = "open"
+REGIME_GATE_ON_FAILURE_CLOSED = "closed"
+VALID_REGIME_GATE_ON_FAILURE = frozenset({
+    REGIME_GATE_ON_FAILURE_OPEN,
+    REGIME_GATE_ON_FAILURE_CLOSED,
+})
+
+
+def normalize_regime_gate_on_failure(value) -> str:
+    """Canonicalize a ``regime_gate_on_failure`` value (#1278).
+
+    Empty/None resolves to the ``"open"`` default (the legacy #879 fail-open
+    behavior); unknown values raise so a typo can't silently fail open —
+    mirroring the Go ``parseRegimeGateOnFailure`` load-time rejection.
+    """
+    v = str(value or "").strip().lower()
+    if not v:
+        return REGIME_GATE_ON_FAILURE_OPEN
+    if v not in VALID_REGIME_GATE_ON_FAILURE:
+        raise ValueError(
+            f"regime_gate_on_failure must be 'open' or 'closed', got {value!r}"
+        )
+    return v
+
+
+def regime_label_allows_entry(allowed, current: str, on_failure: str = "open") -> bool:
     """#1124 entry-gate family match.
 
     True when ``current`` is explicitly in ``allowed`` OR when ``current`` is a
     directional sub-label (``_up``/``_down``) and the bare ``ranging_directional``
     parent is in ``allowed``. Expansion is one-directional (bare→subs), so an
     operator listing an explicit ``_up`` still gates out ``_down``. Empty
-    ``allowed`` (no gate) or empty ``current`` (no regime available) allow entry,
-    matching the Go ``regimeAllowsEntry`` contract for parity.
+    ``allowed`` (no gate configured) always allows entry.
+
+    #1278: an empty ``current`` (no regime available) resolves per
+    ``on_failure`` — ``"open"`` (default) allows the entry, matching the legacy
+    Go ``regimeAllowsEntry`` fail-open contract; ``"closed"`` blocks it when a
+    gate is configured, matching Go ``regimeBlocksOpen``'s fail-closed arm.
     """
-    if not allowed or not current:
+    if not allowed:
         return True
+    if not current:
+        return on_failure != REGIME_GATE_ON_FAILURE_CLOSED
     if current in allowed:
         return True
     if current in RANGING_DIRECTIONAL_SUBS and RANGING_DIRECTIONAL_BARE in allowed:

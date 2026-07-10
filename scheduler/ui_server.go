@@ -29,19 +29,20 @@ type UIStrategy struct {
 }
 
 type UIStrategyOverview struct {
-	ID               string                 `json:"id"`
-	Platform         string                 `json:"platform"`
-	Symbol           string                 `json:"symbol"`
-	PnLPct           float64                `json:"pnl_pct"`
-	WinRate          float64                `json:"win_rate,omitempty"`
-	Sharpe           float64                `json:"sharpe,omitempty"`
-	Regime           string                 `json:"regime,omitempty"`
-	Direction        string                 `json:"direction,omitempty"`
-	PnL              float64                `json:"pnl"`
-	PortfolioValue   float64                `json:"portfolio_value"`
-	InitialCapital   float64                `json:"initial_capital"`
-	RegimeDivergence *RegimeDivergenceState `json:"regime_divergence,omitempty"` // #907: active window-divergence state; nil when none
-	Paused           bool                   `json:"paused,omitempty"`            // #1150
+	ID                   string                 `json:"id"`
+	Platform             string                 `json:"platform"`
+	Symbol               string                 `json:"symbol"`
+	PnLPct               float64                `json:"pnl_pct"`
+	WinRate              float64                `json:"win_rate,omitempty"`
+	Sharpe               float64                `json:"sharpe,omitempty"`
+	Regime               string                 `json:"regime,omitempty"`
+	Direction            string                 `json:"direction,omitempty"`
+	PnL                  float64                `json:"pnl"`
+	PortfolioValue       float64                `json:"portfolio_value"`
+	InitialCapital       float64                `json:"initial_capital"`
+	RegimeDivergence     *RegimeDivergenceState `json:"regime_divergence,omitempty"`       // #907: active window-divergence state; nil when none
+	Paused               bool                   `json:"paused,omitempty"`                  // #1150
+	RegimeGateFailClosed bool                   `json:"regime_gate_fail_closed,omitempty"` // #1278: entry gate actively failing closed (opens held while regime unknown)
 }
 
 type UIStrategyStatus struct {
@@ -477,19 +478,20 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 	}
 
 	return UIStrategyOverview{
-		ID:               id,
-		Platform:         sc.Platform,
-		Symbol:           strategyDisplaySymbol(sc),
-		PnLPct:           pnlPct,
-		WinRate:          winRate,
-		Sharpe:           sharpe,
-		Regime:           strategyDisplayRegimeLabel(&snapshot, sc, ss.regime),
-		Direction:        strategyDisplayDirection(sc),
-		PnL:              pnl,
-		PortfolioValue:   pv,
-		InitialCapital:   initCap,
-		RegimeDivergence: snapshot.RegimeDivergence,
-		Paused:           sc.Paused,
+		ID:                   id,
+		Platform:             sc.Platform,
+		Symbol:               strategyDisplaySymbol(sc),
+		PnLPct:               pnlPct,
+		WinRate:              winRate,
+		Sharpe:               sharpe,
+		Regime:               strategyDisplayRegimeLabel(&snapshot, sc, ss.regime),
+		Direction:            strategyDisplayDirection(sc),
+		PnL:                  pnl,
+		PortfolioValue:       pv,
+		InitialCapital:       initCap,
+		RegimeDivergence:     snapshot.RegimeDivergence,
+		Paused:               sc.Paused,
+		RegimeGateFailClosed: regimeGateFailClosedActive(sc, &snapshot, ss.regime),
 	}, lifetime, true
 }
 

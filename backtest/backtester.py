@@ -127,18 +127,26 @@ def _load_regime():
     return _ensure_regime_fn
 
 
-def _regime_allows_entry(allowed, bar_regime: str) -> bool:
+def _regime_allows_entry(allowed, bar_regime: str, on_failure: str = "open") -> bool:
     """#1124 entry-gate with the one-directional directional family rule.
 
     A bare ``ranging_directional`` in ``allowed`` matches its ``_up``/``_down``
     sub-labels, mirroring the Go ``regimeAllowsEntry`` gate for live/backtest
-    parity. Falls back to plain membership if the regime module isn't loaded.
+    parity. #1278: an empty ``bar_regime`` (warmup bar 0 after the #730 shift,
+    mid-series gaps) resolves per ``on_failure`` — ``"open"`` (default) admits
+    the entry, ``"closed"`` blocks it — mirroring the live
+    ``regime_gate_on_failure`` policy. Falls back to plain membership if the
+    regime module isn't loaded.
     """
     if _regime_allows_entry_fn is None:
         _load_regime()
     if _regime_allows_entry_fn is None:
-        return (not allowed) or (not bar_regime) or (bar_regime in allowed)
-    return _regime_allows_entry_fn(allowed, bar_regime)
+        if not allowed:
+            return True
+        if not bar_regime:
+            return on_failure != "closed"
+        return bar_regime in allowed
+    return _regime_allows_entry_fn(allowed, bar_regime, on_failure)
 
 
 def _regime_primary_labels(spec: Optional[dict]) -> Optional[tuple]:
@@ -761,6 +769,7 @@ class Backtester:
                  regime_adx_threshold: float = 20.0,
                  regime_windows_spec: Optional[dict] = None,
                  allowed_regimes: Optional[list[str]] = None,
+                 regime_gate_on_failure: str = "open",
                  stop_loss_atr_mult: Optional[float] = None,
                  stop_loss_pct: Optional[float] = None,
                  stop_loss_margin_pct: Optional[float] = None,
@@ -877,6 +886,19 @@ class Backtester:
         # silently falling back to the default stop. None = legacy ADX (canonical).
         self._regime_primary_labels = _regime_primary_labels(self.regime_windows_spec)
         self.allowed_regimes = list(allowed_regimes or [])
+        # #1278: entry-gate failure policy for empty/unavailable regime labels
+        # (warmup bar 0 after the #730 shift, mid-series NaN gaps), mirroring
+        # the live regime_gate_on_failure field. "open" (default) admits the
+        # entry — byte-identical to the pre-#1278 baselines; "closed" blocks
+        # fresh entries on empty-label bars when a gate is configured. Closes
+        # are never gated either way. Unknown values raise at construction.
+        _norm_gate = str(regime_gate_on_failure or "").strip().lower() or "open"
+        if _norm_gate not in ("open", "closed"):
+            raise ValueError(
+                f"regime_gate_on_failure must be 'open' or 'closed', "
+                f"got {regime_gate_on_failure!r}"
+            )
+        self.regime_gate_on_failure = _norm_gate
         self.stop_loss_atr_mult = stop_loss_atr_mult
         self.stop_loss_pct = stop_loss_pct
         self.stop_loss_margin_pct = stop_loss_margin_pct
@@ -1593,10 +1615,13 @@ class Backtester:
         # is look-ahead bias (#730).
         #
         # Empty/missing regime (e.g. row 0 after shift, or mid-series NaN
-        # rows from upstream gaps) → empty string after fillna, which fails
-        # the ``in allowed_regimes`` check and blocks the entry. That matches
-        # live behavior: no regime data, no entry. Intentional — do not
-        # "fix" the fillna to forward-fill or interpolate.
+        # rows from upstream gaps) → empty string after fillna. The entry
+        # gate resolves that empty label per ``regime_gate_on_failure``
+        # (#1278): the default ``"open"`` admits the entry (matching the
+        # live #879 fail-open gate); ``"closed"`` blocks it. Intentional —
+        # do not "fix" the fillna to forward-fill or interpolate: the empty
+        # label is the honest "no regime data at decision time" signal the
+        # policy keys off.
         if self.regime_enabled and "regime" in df.columns:
             df["regime"] = df["regime"].shift(1).fillna("")
 
@@ -1962,13 +1987,16 @@ class Backtester:
             # isn't in the allowed set. Existing positions are always managed
             # by close paths. ``compute_regime`` initializes every row to
             # ``"ranging"`` (warmup bars included). After the post-injection
-            # shift (#730) row 0 is empty — that empty label fails the
-            # ``in allowed_regimes`` check and blocks the bar-0 entry, which
-            # is correct (no prior-bar data, no decision).
+            # shift (#730) row 0 is empty — an empty label resolves per
+            # ``regime_gate_on_failure`` (#1278): the default ``"open"``
+            # ADMITS the bar-0 entry (matching the live #879 fail-open gate);
+            # ``"closed"`` blocks it (matching live fail-closed).
             regime_blocked = (
                 self.regime_enabled
                 and bool(self.allowed_regimes)
-                and not _regime_allows_entry(self.allowed_regimes, bar_regime)
+                and not _regime_allows_entry(
+                    self.allowed_regimes, bar_regime, self.regime_gate_on_failure
+                )
             )
 
             if uses_open_close:

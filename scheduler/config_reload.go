@@ -79,6 +79,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("regime.transitions: %+v -> %+v", cfg.Regime.Transitions, next.Regime.Transitions)
 		cfg.Regime.Transitions = cloneRegimeTransitionAlertsConfig(next.Regime.Transitions)
 	}
+	// #1278: global entry-gate failure-policy default is hot-reloadable —
+	// same flat-only open-gating rationale as the per-strategy field below.
+	if cfg.Regime != nil && next.Regime != nil &&
+		normalizeRegimeGateOnFailure(cfg.Regime.GateOnFailure) != normalizeRegimeGateOnFailure(next.Regime.GateOnFailure) {
+		addChange("regime.gate_on_failure: %q -> %q", cfg.Regime.GateOnFailure, next.Regime.GateOnFailure)
+		cfg.Regime.GateOnFailure = next.Regime.GateOnFailure
+	}
 
 	nextByID := strategyConfigByID(next.Strategies)
 	for i := range cfg.Strategies {
@@ -197,6 +204,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if !reflect.DeepEqual(sc.AllowedRegimes, ns.AllowedRegimes) {
 			addChange("strategy[%s].allowed_regimes: %v -> %v", sc.ID, sc.AllowedRegimes, ns.AllowedRegimes)
 			sc.AllowedRegimes = append([]string{}, ns.AllowedRegimes...)
+		}
+		// #1278: entry-gate failure policy is hot-reloadable always, including
+		// while a position is open — it only changes flat-strategy open gating
+		// from the next cycle (mirrors the #1150 pause pattern); closes,
+		// trailing SL, ratchet, and protection sync are untouched.
+		if normalizeRegimeGateOnFailure(sc.RegimeGateOnFailure) != normalizeRegimeGateOnFailure(ns.RegimeGateOnFailure) {
+			addChange("strategy[%s].regime_gate_on_failure: %q -> %q", sc.ID, sc.RegimeGateOnFailure, ns.RegimeGateOnFailure)
+			sc.RegimeGateOnFailure = ns.RegimeGateOnFailure
 		}
 		// #486: Margin mode is hot-reloadable when flat. The state-compat
 		// check above blocks the change when positions are open; if we got
@@ -412,6 +427,8 @@ func regimeConfigEqualIgnoringReloadableFields(a, b *RegimeConfig) bool {
 	bc.Timeframe = ""
 	ac.Transitions = nil
 	bc.Transitions = nil
+	ac.GateOnFailure = "" // #1278: hot-reloadable — explicit apply path in applyHotReloadConfig
+	bc.GateOnFailure = ""
 	return reflect.DeepEqual(ac, bc)
 }
 
@@ -745,6 +762,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.CloseStrategy = nil
 	sc.closeStrategiesLegacy = nil
 	sc.AllowedRegimes = nil
+	sc.RegimeGateOnFailure = ""      // #1278: hot-reloadable always, including while open — flat-only open gating, never state-shifting. Applied in applyHotReloadConfig.
 	sc.MarginMode = ""               // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	sc.TrailingStopPct = nil         // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopATRMult = nil     // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
