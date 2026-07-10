@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -683,5 +684,92 @@ func TestManualExposureCapStatus_PVBasisMissSurfaced(t *testing.T) {
 	}
 	if blocked, _ := exposureCapManualEntryBlock(st, "BTC", "long"); blocked {
 		t.Error("PVBasisMiss must never block — loudly inert only")
+	}
+}
+
+// --- end-to-end guard wiring (#1301 review round 2): the refusals must fire
+// through the actual manualOpenCore/manualAddCore call sites (mirrors the
+// #1269 TestManual{Open,Add}CoreRefusesDailyLossHold pair), and the inverse
+// direction must reach execute — the gate must not over-block. ----------------
+
+// exposureCapE2EDeps builds bare-core deps whose loadState injects the given
+// view and whose execute records the call, returning a sentinel error so the
+// core stops right after the guards pass.
+func exposureCapE2EDeps(t *testing.T, view manualStateView, executed *bool) manualCoreDeps {
+	t.Helper()
+	return manualCoreDeps{
+		cfg: &Config{},
+		loadState: func(strategyID, symbol string) (manualStateView, error) {
+			return view, nil
+		},
+		execute: func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+			*executed = true
+			return nil, "", errSentinelStopAfterGuards
+		},
+		fetchMids: func([]string) (map[string]float64, error) {
+			return map[string]float64{"ETH": 2000}, nil
+		},
+	}
+}
+
+var errSentinelStopAfterGuards = errors.New("sentinel: guards passed, stop before state update")
+
+// (1) manualOpenCore refuses a long entry while the long bucket is capped;
+// (3a) the inverse short entry passes the gate and reaches execute.
+func TestManualOpenCoreRefusesExposureCap(t *testing.T) {
+	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3, Direction: "both"}
+	view := manualStateView{HasStrategy: true, ExposureCapAsset: "ETH",
+		ExposureCap: ExposureCapStatus{Configured: true, CapUSD: 15000, LongUSD: 19000, LongBlocked: true}}
+
+	executed := false
+	deps := exposureCapE2EDeps(t, view, &executed)
+	_, err := manualOpenCore(deps, sc, manualOpenInputs{StrategyID: "m", Side: "long", Margin: 50})
+	if err == nil || !strings.Contains(err.Error(), "manual-open (long) blocked") {
+		t.Fatalf("manual-open err = %v, want exposure-cap refusal", err)
+	}
+	if executed {
+		t.Fatal("execute must not be called while the long bucket is capped")
+	}
+
+	// Inverse direction: a short entry must pass the gate and reach execute.
+	executed = false
+	deps = exposureCapE2EDeps(t, view, &executed)
+	_, err = manualOpenCore(deps, sc, manualOpenInputs{StrategyID: "m", Side: "short", Margin: 50})
+	if !executed {
+		t.Fatalf("short entry must reach execute while only the long bucket is capped (err = %v)", err)
+	}
+}
+
+// (2) manualAddCore on an existing long refuses under a concentration-only
+// config (bucket arm off); (3b) a short position's add reaches execute.
+func TestManualAddCoreRefusesConcentrationOnly(t *testing.T) {
+	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3}
+	concStatus := ExposureCapStatus{Configured: true, ConcentrationPct: 40, PortfolioValue: 18200,
+		OverConcentrated: map[string]ExposureCapAssetStat{
+			"ETH": {Direction: "long", Pct: 52.7, NetUSD: 9600},
+		}}
+	longPos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
+	view := manualStateView{HasStrategy: true, Pos: longPos,
+		ExposureCap: concStatus, ExposureCapAsset: "ETH"}
+
+	executed := false
+	deps := exposureCapE2EDeps(t, view, &executed)
+	_, err := manualAddCore(deps, sc, manualAddInputs{StrategyID: "m", Margin: 50})
+	if err == nil || !strings.Contains(err.Error(), "manual-add (long) blocked") {
+		t.Fatalf("manual-add err = %v, want concentration refusal", err)
+	}
+	if executed {
+		t.Fatal("execute must not be called on an over-concentrated add")
+	}
+
+	// Inverse direction: a short position's add is the asset's non-net
+	// direction — it must pass the gate and reach execute.
+	shortPos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "short"}
+	view.Pos = shortPos
+	executed = false
+	deps = exposureCapE2EDeps(t, view, &executed)
+	_, err = manualAddCore(deps, sc, manualAddInputs{StrategyID: "m", Margin: 50})
+	if !executed {
+		t.Fatalf("short add must reach execute when ETH is long-over-concentrated (err = %v)", err)
 	}
 }
