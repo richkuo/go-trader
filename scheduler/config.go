@@ -64,6 +64,21 @@ type PortfolioRiskConfig struct {
 	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 60)
 	DailyMaxLossUSD  float64 `json:"daily_max_loss_usd,omitempty"` // #1269 — hard daily loss limit in USD (0 = disabled). When the day's aggregate PRE-FEE realized loss across all strategies reaches this, position-increasing actions (fresh opens, adds, flips, manual-open/add) are held until the UTC rollover; closes and SL/TP management keep running and nothing is force-closed. Hot-reloadable, including while tripped. Portfolio-level only — ignored inside platforms.<name>.risk overrides.
 	DailyMaxLossPct  float64 `json:"daily_max_loss_pct,omitempty"` // #1269 — same limit as a percent of the sum of per-strategy initial_capital (0 = disabled). Both arms may be set: the lower resolved USD threshold wins. The pct arm cannot evaluate when no strategy has initial_capital > 0 (surfaced in /status). Portfolio-level only.
+	// MaxSameDirectionNotionalUSD (#1270, 0 = disabled) caps aggregate SAME-DIRECTION
+	// signed exposure in the crypto bucket (all spot/perps/manual positions plus
+	// delta-weighted options; per-asset net deltas bucketed by sign). When the long
+	// (short) bucket exceeds the cap, position-increasing signals in that direction
+	// are held — the other direction and every position-reducing action pass, and
+	// nothing is ever force-closed. Hot-reloadable via SIGHUP (unlike max_notional_usd,
+	// which stays restart-required). Portfolio-level only.
+	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
+	// MaxAssetConcentrationPct (#1270, 0 = disabled) blocks new opens in an asset's
+	// net direction when that asset's |net delta| exceeds this percent of portfolio
+	// value (NOT of gross — gross-relative concentration self-normalizes and cannot
+	// catch a one-asset book). Per-asset scope: only strategies trading the
+	// over-concentrated asset are held, and only in its net direction. Blocking-only;
+	// hot-reloadable via SIGHUP. Portfolio-level only.
+	MaxAssetConcentrationPct float64 `json:"max_asset_concentration_pct,omitempty"`
 }
 
 // PlatformConfig holds per-platform optional risk overrides.
@@ -90,6 +105,12 @@ type RegimeConfig struct {
 	// Transitions enables per-window regime transition history + operator
 	// alerting (#1224). Alerting-only; hot-reloadable via SIGHUP.
 	Transitions *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
+	// GateOnFailure is the global default for the per-strategy
+	// regime_gate_on_failure entry-gate failure policy (#1278): "open" (the
+	// legacy #879 fail-open default) or "closed". A per-strategy value
+	// overrides it. Hot-reloadable via SIGHUP (flat-only open gating, never
+	// state-shifting). Read via resolveRegimeGateOnFailure, never directly.
+	GateOnFailure string `json:"gate_on_failure,omitempty"`
 }
 
 var regimeTimeframeAllowSet = map[string]bool{
@@ -451,6 +472,53 @@ func (sc *StrategyConfig) CircuitBreakerEnabled() bool {
 	return *sc.CircuitBreaker
 }
 
+// Circuit-breaker timing/threshold defaults (#1273). These are the historical
+// hardcoded values; the per-strategy cb_* override fields fall back to them
+// when nil so an unmodified config reproduces prior behavior exactly.
+const (
+	DefaultCBDrawdownCooldown    = 24 * time.Hour
+	DefaultCBLossStreakThreshold = 5
+	DefaultCBLossStreakCooldown  = 1 * time.Hour
+
+	// Validation bounds for the cb_* override fields. Cooldowns are capped at
+	// 30 days — beyond that an operator wants a manual pause, not a latch —
+	// and the loss-streak threshold at 100 (a streak that long means the
+	// breaker is effectively disabled; use circuit_breaker:false instead).
+	maxCBCooldownMinutes     = 30 * 24 * 60
+	maxCBLossStreakThreshold = 100
+)
+
+// CircuitBreakerDrawdownCooldown returns how long a drawdown-triggered circuit
+// breaker latches. Nil field (or nil receiver) falls back to the historical
+// 24h default. Read via this accessor, never the field directly. (#1273)
+func (sc *StrategyConfig) CircuitBreakerDrawdownCooldown() time.Duration {
+	if sc == nil || sc.CBDrawdownCooldownMinutes == nil {
+		return DefaultCBDrawdownCooldown
+	}
+	return time.Duration(*sc.CBDrawdownCooldownMinutes) * time.Minute
+}
+
+// CircuitBreakerLossStreakThreshold returns how many consecutive losses fire
+// the loss-streak circuit-breaker arm. Nil field (or nil receiver) falls back
+// to the historical threshold of 5. The same accessor drives both the firing
+// arm and the #1048 suppression warning so they can never diverge. (#1273)
+func (sc *StrategyConfig) CircuitBreakerLossStreakThreshold() int {
+	if sc == nil || sc.CBLossStreakThreshold == nil {
+		return DefaultCBLossStreakThreshold
+	}
+	return *sc.CBLossStreakThreshold
+}
+
+// CircuitBreakerLossStreakCooldown returns how long a loss-streak-triggered
+// circuit breaker latches. Nil field (or nil receiver) falls back to the
+// historical 1h default. (#1273)
+func (sc *StrategyConfig) CircuitBreakerLossStreakCooldown() time.Duration {
+	if sc == nil || sc.CBLossStreakCooldownMinutes == nil {
+		return DefaultCBLossStreakCooldown
+	}
+	return time.Duration(*sc.CBLossStreakCooldownMinutes) * time.Minute
+}
+
 // ParseSummaryFrequency converts a summary_frequency value to a duration.
 // Returns -1 to mean "use legacy default", 0 to mean "every channel run", or a
 // positive duration when caller should post every duration. An unrecognized
@@ -538,52 +606,57 @@ type StrategyRef struct {
 
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
-	ID                      string                   `json:"id"`
-	Type                    string                   `json:"type"`                // "spot", "options", "perps", "futures", or "manual"
-	Platform                string                   `json:"platform"`            // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
-	Symbol                  string                   `json:"symbol,omitempty"`    // manual strategies: trading symbol (e.g. "ETH")
-	Timeframe               string                   `json:"timeframe,omitempty"` // manual strategies: OHLCV timeframe (e.g. "1h")
-	Script                  string                   `json:"script"`
-	Args                    []string                 `json:"args"`
-	OpenStrategy            StrategyRef              `json:"open_strategy"`                       // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
-	CloseStrategy           *StrategyRef             `json:"close_strategy,omitempty"`            // single exit strategy ref (name + params). Collapsed from the legacy close_strategies array in #842 — one profit-taking close owns the exit ladder; risk backstops live at strategy level. Nil = open-as-close. UnmarshalJSON still reads the legacy close_strategies array for back-compat (len 1 lifted here, len>1 rejected at validation with the strategy id).
-	closeStrategiesLegacy   []StrategyRef            `json:"-"`                                   // #842: legacy close_strategies array captured by UnmarshalJSON for back-compat; only used to reject len>1 during validation. Never marshaled.
-	AllowedRegimes          []string                 `json:"allowed_regimes,omitempty"`           // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
-	RegimeGateWindow        string                   `json:"regime_gate_window,omitempty"`        // window key for allowed_regimes gate; "" or "default" = legacy single lookback (#792)
-	RegimeATRWindow         string                   `json:"regime_atr_window,omitempty"`         // window key for *_atr_regime resolution (#792)
-	RegimeDirectionalWindow string                   `json:"regime_directional_window,omitempty"` // window key for regime_directional_policy (#792)
-	Capital                 float64                  `json:"capital"`
-	CapitalPct              float64                  `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
-	InitialCapital          float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
-	MaxDrawdownPct          float64                  `json:"max_drawdown_pct"`
-	CircuitBreaker          *bool                    `json:"circuit_breaker,omitempty"`            // #1048 — per-strategy circuit-breaker opt-out. Nil/missing → enabled (the safe default); explicit false disables BOTH firing arms in CheckRisk (drawdown > max_drawdown_pct AND 5 consecutive losses), uniformly for live and paper (no platform/live gating). Hot-reloadable via SIGHUP including while a position is open: disabling only suppresses NEW fires — an already-latched CB and any pending circuit close still drain. No effect on type=manual (exempt from CheckRisk). Read via CircuitBreakerEnabled(), never directly.
-	NotifyRatchetTriggers   *bool                    `json:"notify_ratchet_triggers,omitempty"`    // #1118 — per-strategy override of the global notify_ratchet_triggers (#1110) ratchet-tighten owner DM. Nil/missing → inherit the global Config.NotifyRatchetTriggersEnabled(); explicit value wins. Notification-only (never affects position/order state), so SIGHUP hot-reloads it unconditionally even while a position is open. Read via NotifyRatchetTriggersEnabled(cfg), never directly.
-	LLMEntryAnalysis        *LLMEntryAnalysisConfig  `json:"llm_entry_analysis,omitempty"`         // #1137 — optional post-open LLM multi-agent entry analysis (advisory-only commentary; never gates/sizes/closes anything). Default off. Runs async on a dedicated lane after a FRESH position-open (not adds/flips/manual), posts a digest to the strategy's trade-alert DM by default (notify_dm on / notify_channel off; both per-strategy overridable), and stamps the verdict for trade_diagnostics.llm_verdict. Notification-only, so SIGHUP hot-reloads it unconditionally even while a position is open. Read via LLMEntryAnalysisEnabled()/resolveLLMEntryAnalysisParams().
-	Paused                  bool                     `json:"paused,omitempty"`                     // #1150 — per-strategy pause. The strategy stays in dueStrategies and runs its full cycle (manage-only, mirroring the #1046 latched-CB shape), but position-INCREASING signals are forced to hold via pausedBlocksSignal: fresh opens, scale-in adds, and bidirectional flips. Position-REDUCING actions pass through — close-registry actions (closeFraction>0) and pure-close directional exits — so an open position rides its natural exit; trailing SL, ratchet, protection sync, and paper SL/TP simulation all keep running on the Signal==0 manage path. Hot-reloadable via SIGHUP unconditionally, including while a position is open (pausing never strands protection). No effect on type=manual (no open signal to suppress; the manual dispatch is pure management).
-	IntervalSeconds         int                      `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
-	HTFFilter               bool                     `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
-	InvertSignal            bool                     `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.
-	AllowShorts             bool                     `json:"allow_shorts,omitempty"`               // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
-	Direction               string                   `json:"direction,omitempty"`                  // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
-	Leverage                float64                  `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
-	SizingLeverage          float64                  `json:"sizing_leverage,omitempty"`            // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
-	MarginPerTradeUSD       *float64                 `json:"margin_per_trade_usd,omitempty"`       // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
-	StopLossPct             *float64                 `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
-	StopLossMarginPct       *float64                 `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
-	TrailingStopPct         *float64                 `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
-	TrailingStopATRMult     *float64                 `json:"trailing_stop_atr_mult,omitempty"`     // HL perps only: trailing SL distance derived from entry ATR at open (effective_pct = mult * entry_atr / avg_cost * 100); fixed for the life of the position; mutually exclusive with trailing_stop_pct, stop_loss_pct, stop_loss_margin_pct (#505)
-	StopLossATRMult         *float64                 `json:"stop_loss_atr_mult,omitempty"`         // HL perps only: fixed (non-trailing) SL distance derived from entry ATR at open (trigger_px = avg_cost ± mult * entry_atr); armed once on the cycle after open and never updated; mutually exclusive with stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult. When all five stop fields are omitted on a sole-owner HL perps strategy, LoadConfig defaults this to 1.0 so every position has volatility-adjusted exchange-side protection (#562)
-	StopLossATRRegime       *RegimeATRBlock          `json:"stop_loss_atr_regime,omitempty"`       // HL perps only: regime-aware sibling of stop_loss_atr_mult — resolves the ATR multiplier from pos.Regime stamped at open. Mutually exclusive with the four scalar siblings AND stop_loss_atr_mult. Requires regime detection enabled at the top-level cfg.Regime. (#733)
-	TrailingStopATRRegime   *RegimeATRBlock          `json:"trailing_stop_atr_regime,omitempty"`   // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
-	TrailingStopMinMovePct  *float64                 `json:"trailing_stop_min_move_pct,omitempty"` // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
-	MarginMode              string                   `json:"margin_mode,omitempty"`                // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
-	ThetaHarvest            *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
-	FuturesConfig           *FuturesConfig           `json:"futures,omitempty"`
-	RegimeDirectionalPolicy *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
-	RegimeWindowDivergence  *RegimeWindowDivergence  `json:"regime_window_divergence,omitempty"`  // HL perps live only: detect divergence between two regime windows (short vs medium) and optionally override effective direction when they hard-diverge. Builds on regime_directional_policy surface (#907).
-	RegimeProfileAllocation *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
-	AllowScaleIn            bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
-	ScaleIn                 *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	ID                          string                   `json:"id"`
+	Type                        string                   `json:"type"`                // "spot", "options", "perps", "futures", or "manual"
+	Platform                    string                   `json:"platform"`            // "deribit", "ibkr", "binanceus", "hyperliquid", "topstep"
+	Symbol                      string                   `json:"symbol,omitempty"`    // manual strategies: trading symbol (e.g. "ETH")
+	Timeframe                   string                   `json:"timeframe,omitempty"` // manual strategies: OHLCV timeframe (e.g. "1h")
+	Script                      string                   `json:"script"`
+	Args                        []string                 `json:"args"`
+	OpenStrategy                StrategyRef              `json:"open_strategy"`                       // entry strategy ref (name + params). Migrated from legacy string-typed open_strategy / args[0] in v13 (#640)
+	CloseStrategy               *StrategyRef             `json:"close_strategy,omitempty"`            // single exit strategy ref (name + params). Collapsed from the legacy close_strategies array in #842 — one profit-taking close owns the exit ladder; risk backstops live at strategy level. Nil = open-as-close. UnmarshalJSON still reads the legacy close_strategies array for back-compat (len 1 lifted here, len>1 rejected at validation with the strategy id).
+	closeStrategiesLegacy       []StrategyRef            `json:"-"`                                   // #842: legacy close_strategies array captured by UnmarshalJSON for back-compat; only used to reject len>1 during validation. Never marshaled.
+	AllowedRegimes              []string                 `json:"allowed_regimes,omitempty"`           // gate entries: skip signal when current regime not in this list; empty = allow all (#482)
+	RegimeGateOnFailure         string                   `json:"regime_gate_on_failure,omitempty"`    // #1278 — allowed_regimes gate failure policy when the regime store cannot produce a gate label (subprocess failure, sealed phase budget, missing window): "open" (default; legacy #879 fail-open) or "closed" (hold NEW opens while regime unknown; closes and posQty>0 management always pass). Empty inherits the global regime.gate_on_failure, then "open". Hot-reloadable always incl. while open (flat-only open gating, never state-shifting). Read via resolveRegimeGateOnFailure(sc, rc), never directly.
+	RegimeGateWindow            string                   `json:"regime_gate_window,omitempty"`        // window key for allowed_regimes gate; "" or "default" = legacy single lookback (#792)
+	RegimeATRWindow             string                   `json:"regime_atr_window,omitempty"`         // window key for *_atr_regime resolution (#792)
+	RegimeDirectionalWindow     string                   `json:"regime_directional_window,omitempty"` // window key for regime_directional_policy (#792)
+	Capital                     float64                  `json:"capital"`
+	CapitalPct                  float64                  `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
+	InitialCapital              float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
+	MaxDrawdownPct              float64                  `json:"max_drawdown_pct"`
+	CircuitBreaker              *bool                    `json:"circuit_breaker,omitempty"`                 // #1048 — per-strategy circuit-breaker opt-out. Nil/missing → enabled (the safe default); explicit false disables BOTH firing arms in CheckRisk (drawdown > max_drawdown_pct AND the consecutive-loss streak), uniformly for live and paper (no platform/live gating). Hot-reloadable via SIGHUP including while a position is open: disabling only suppresses NEW fires — an already-latched CB and any pending circuit close still drain. No effect on type=manual (exempt from CheckRisk). Read via CircuitBreakerEnabled(), never directly.
+	CBDrawdownCooldownMinutes   *int                     `json:"cb_drawdown_cooldown_minutes,omitempty"`    // #1273 — how long a drawdown-triggered circuit breaker latches, in minutes. Nil/missing → 24h (the historical hardcoded value). Must be positive and ≤ 30 days; rejected on type=manual (exempt from CheckRisk). Hot-reloadable via SIGHUP including while open — affects only NEW fires; an already-latched CircuitBreakerUntil is never rewritten. Read via CircuitBreakerDrawdownCooldown(), never directly.
+	CBLossStreakThreshold       *int                     `json:"cb_loss_streak_threshold,omitempty"`        // #1273 — consecutive losses that fire the loss-streak circuit-breaker arm. Nil/missing → 5 (the historical hardcoded value). Must be positive and ≤ 100; rejected on type=manual. Drives both the firing arm and the #1048 suppression warning through the same accessor. Hot-reloadable via SIGHUP including while open (new fires only). Read via CircuitBreakerLossStreakThreshold(), never directly.
+	CBLossStreakCooldownMinutes *int                     `json:"cb_loss_streak_cooldown_minutes,omitempty"` // #1273 — how long a loss-streak-triggered circuit breaker latches, in minutes. Nil/missing → 1h (the historical hardcoded value). Must be positive and ≤ 30 days; rejected on type=manual. Hot-reloadable via SIGHUP including while open (new fires only; a latched CircuitBreakerUntil is untouched). Read via CircuitBreakerLossStreakCooldown(), never directly.
+	NotifyRatchetTriggers       *bool                    `json:"notify_ratchet_triggers,omitempty"`         // #1118 — per-strategy override of the global notify_ratchet_triggers (#1110) ratchet-tighten owner DM. Nil/missing → inherit the global Config.NotifyRatchetTriggersEnabled(); explicit value wins. Notification-only (never affects position/order state), so SIGHUP hot-reloads it unconditionally even while a position is open. Read via NotifyRatchetTriggersEnabled(cfg), never directly.
+	LLMEntryAnalysis            *LLMEntryAnalysisConfig  `json:"llm_entry_analysis,omitempty"`              // #1137 — optional post-open LLM multi-agent entry analysis (advisory-only commentary; never gates/sizes/closes anything). Default off. Runs async on a dedicated lane after a FRESH position-open (not adds/flips/manual), posts a digest to the strategy's trade-alert DM by default (notify_dm on / notify_channel off; both per-strategy overridable), and stamps the verdict for trade_diagnostics.llm_verdict. Notification-only, so SIGHUP hot-reloads it unconditionally even while a position is open. Read via LLMEntryAnalysisEnabled()/resolveLLMEntryAnalysisParams().
+	AllowDeprecated             bool                     `json:"allow_deprecated,omitempty"`                // #1275 — operator acknowledgment that this strategy's open leg carries the M5 fee-audit deprecate verdict (documented gross edge <= 0; docs/research/fee-audit-m5.md). True suppresses the one-time startup owner DM; the [config] summary line still tags edge=deprecated_m5(ack) so the risk state is never hidden. Advisory only — never gates loading, probing, or trading.
+	Paused                      bool                     `json:"paused,omitempty"`                          // #1150 — per-strategy pause. The strategy stays in dueStrategies and runs its full cycle (manage-only, mirroring the #1046 latched-CB shape), but position-INCREASING signals are forced to hold via pausedBlocksSignal: fresh opens, scale-in adds, and bidirectional flips. Position-REDUCING actions pass through — close-registry actions (closeFraction>0) and pure-close directional exits — so an open position rides its natural exit; trailing SL, ratchet, protection sync, and paper SL/TP simulation all keep running on the Signal==0 manage path. Hot-reloadable via SIGHUP unconditionally, including while a position is open (pausing never strands protection). No effect on type=manual (no open signal to suppress; the manual dispatch is pure management).
+	IntervalSeconds             int                      `json:"interval_seconds,omitempty"`                // per-strategy override (0 = use global)
+	HTFFilter                   bool                     `json:"htf_filter,omitempty"`                      // higher-timeframe trend filter
+	InvertSignal                bool                     `json:"invert_signal,omitempty"`                   // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.
+	AllowShorts                 bool                     `json:"allow_shorts,omitempty"`                    // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
+	Direction                   string                   `json:"direction,omitempty"`                       // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
+	Leverage                    float64                  `json:"leverage,omitempty"`                        // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
+	SizingLeverage              float64                  `json:"sizing_leverage,omitempty"`                 // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
+	MarginPerTradeUSD           *float64                 `json:"margin_per_trade_usd,omitempty"`            // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
+	StopLossPct                 *float64                 `json:"stop_loss_pct,omitempty"`                   // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
+	StopLossMarginPct           *float64                 `json:"stop_loss_margin_pct,omitempty"`            // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
+	TrailingStopPct             *float64                 `json:"trailing_stop_pct,omitempty"`               // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
+	TrailingStopATRMult         *float64                 `json:"trailing_stop_atr_mult,omitempty"`          // HL perps only: trailing SL distance derived from entry ATR at open (effective_pct = mult * entry_atr / avg_cost * 100); fixed for the life of the position; mutually exclusive with trailing_stop_pct, stop_loss_pct, stop_loss_margin_pct (#505)
+	StopLossATRMult             *float64                 `json:"stop_loss_atr_mult,omitempty"`              // HL perps only: fixed (non-trailing) SL distance derived from entry ATR at open (trigger_px = avg_cost ± mult * entry_atr); armed once on the cycle after open and never updated; mutually exclusive with stop_loss_pct, stop_loss_margin_pct, trailing_stop_pct, trailing_stop_atr_mult. When all five stop fields are omitted on a sole-owner HL perps strategy, LoadConfig defaults this to 1.0 so every position has volatility-adjusted exchange-side protection (#562)
+	StopLossATRRegime           *RegimeATRBlock          `json:"stop_loss_atr_regime,omitempty"`            // HL perps only: regime-aware sibling of stop_loss_atr_mult — resolves the ATR multiplier from pos.Regime stamped at open. Mutually exclusive with the four scalar siblings AND stop_loss_atr_mult. Requires regime detection enabled at the top-level cfg.Regime. (#733)
+	TrailingStopATRRegime       *RegimeATRBlock          `json:"trailing_stop_atr_regime,omitempty"`        // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
+	TrailingStopMinMovePct      *float64                 `json:"trailing_stop_min_move_pct,omitempty"`      // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
+	MarginMode                  string                   `json:"margin_mode,omitempty"`                     // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
+	ThetaHarvest                *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
+	FuturesConfig               *FuturesConfig           `json:"futures,omitempty"`
+	RegimeDirectionalPolicy     *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
+	RegimeWindowDivergence      *RegimeWindowDivergence  `json:"regime_window_divergence,omitempty"`  // HL perps live only: detect divergence between two regime windows (short vs medium) and optionally override effective direction when they hard-diverge. Builds on regime_directional_policy surface (#907).
+	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
+	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
+	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -1592,6 +1665,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("%s: allowed_regimes is not enforced for type=options (gate not wired at options dispatch; see issue #553)", prefix))
 		}
 
+		// #1278: entry-gate failure policy. Reject unknown values at load so a
+		// typo ("close", "fail-closed") can't silently fall back to fail-open —
+		// the exact misconfiguration the field exists to prevent.
+		if _, err := parseRegimeGateOnFailure(sc.RegimeGateOnFailure); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", prefix, err))
+		}
+
 		// #569: manual strategies require symbol + timeframe + leverage.
 		if sc.Type == "manual" {
 			if sc.Platform != "hyperliquid" {
@@ -1699,6 +1779,34 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		// #36: MaxDrawdownPct must be in (0, 100].
 		if sc.MaxDrawdownPct <= 0 || sc.MaxDrawdownPct > 100 {
 			errs = append(errs, fmt.Sprintf("%s: max_drawdown_pct must be in (0, 100], got %g", prefix, sc.MaxDrawdownPct))
+		}
+
+		// #1273: per-strategy circuit-breaker timing/threshold overrides. All
+		// three are optional (nil → the historical hardcoded defaults); when
+		// set they must be positive and inside sane upper bounds, and are
+		// rejected on type=manual (exempt from CheckRisk, so the fields would
+		// silently do nothing there).
+		type cbOverrideField struct {
+			key string
+			val *int
+			max int
+		}
+		for _, f := range []cbOverrideField{
+			{"cb_drawdown_cooldown_minutes", sc.CBDrawdownCooldownMinutes, maxCBCooldownMinutes},
+			{"cb_loss_streak_threshold", sc.CBLossStreakThreshold, maxCBLossStreakThreshold},
+			{"cb_loss_streak_cooldown_minutes", sc.CBLossStreakCooldownMinutes, maxCBCooldownMinutes},
+		} {
+			if f.val == nil {
+				continue
+			}
+			if sc.Type == "manual" {
+				errs = append(errs, fmt.Sprintf("%s: %s is not supported for manual strategies (exempt from CheckRisk)", prefix, f.key))
+			}
+			if *f.val <= 0 {
+				errs = append(errs, fmt.Sprintf("%s: %s must be positive, got %d", prefix, f.key, *f.val))
+			} else if *f.val > f.max {
+				errs = append(errs, fmt.Sprintf("%s: %s must be <= %d, got %d", prefix, f.key, f.max, *f.val))
+			}
 		}
 
 		// #36: IntervalSeconds must be >= 0 (0 means use global).
@@ -2106,6 +2214,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		if cfg.PortfolioRisk.DailyMaxLossPct < 0 || cfg.PortfolioRisk.DailyMaxLossPct > 100 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossPct))
 		}
+		// #1270: same-direction exposure cap thresholds. 0 = disabled; negatives are typos.
+		if cfg.PortfolioRisk.MaxSameDirectionNotionalUSD < 0 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.max_same_direction_notional_usd must be >= 0 (0 = disabled), got %g", cfg.PortfolioRisk.MaxSameDirectionNotionalUSD))
+		}
+		if cfg.PortfolioRisk.MaxAssetConcentrationPct < 0 || cfg.PortfolioRisk.MaxAssetConcentrationPct > 100 {
+			errs = append(errs, fmt.Sprintf("portfolio_risk.max_asset_concentration_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.MaxAssetConcentrationPct))
+		}
 	}
 
 	// Validate leaderboard_summaries (#308).
@@ -2167,6 +2282,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("regime.timeframe must be one of %s, got %q", strings.Join(validRegimeTimeframes(), ", "), cfg.Regime.Timeframe))
 		}
 	}
+	// #1278: global entry-gate failure-policy default. Validated whether or not
+	// regime detection is enabled — an invalid value must never load.
+	if cfg.Regime != nil {
+		if _, err := parseRegimeGateOnFailure(cfg.Regime.GateOnFailure); err != nil {
+			errs = append(errs, fmt.Sprintf("regime.gate_on_failure: %v", err))
+		}
+	}
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
 	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
@@ -2174,11 +2296,19 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// Warn when allowed_regimes is configured but regime.enabled=false — the
 	// gate reads result.Regime from the check script output, which requires
 	// regime detection to be running. Without it the gate is a no-op.
+	// #1278: with a fail-closed policy that same misconfiguration is a
+	// PERMANENT entry block (the label is deterministically empty every
+	// cycle), so it upgrades from a warning to a load error.
 	if cfg.Regime == nil || !cfg.Regime.Enabled {
 		for _, sc := range cfg.Strategies {
-			if len(sc.AllowedRegimes) > 0 {
-				fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
+			if len(sc.AllowedRegimes) == 0 {
+				continue
 			}
+			if resolveRegimeGateOnFailure(sc, cfg.Regime) == RegimeGateOnFailureClosed {
+				errs = append(errs, fmt.Sprintf("strategy[%s]: regime_gate_on_failure=closed with allowed_regimes but regime.enabled=false — the gate label is always empty, so the strategy could never open; enable regime detection or use the fail-open policy", sc.ID))
+				continue
+			}
+			fmt.Printf("[WARN] %s: allowed_regimes is set but regime.enabled=false — gate is a no-op until regime detection is enabled\n", sc.ID)
 		}
 	}
 

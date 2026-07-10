@@ -25,8 +25,8 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 
 | File | Purpose | Status | Origin |
 |------|---------|--------|--------|
-| `backtester.py` | Trade-simulating engine; replays a strategy on historical bars and computes metrics. | active | core |
-| `run_backtest.py` | Main CLI entry — run strategies across assets/timeframes/modes; threads `--config` with live-matching `user_defaults`, regime gate, HTF. | active | core |
+| `backtester.py` | Trade-simulating engine; replays a strategy on historical bars and computes metrics. Default `intrabar_resolution="ohlc_walk"` (#1271): SL trigger touches resolve intra-bar (trigger-price fill, open on gap-through, adverse-move-first vs same-bar TP); `"bar_close"` reproduces pre-#1271 baselines. | active | core |
+| `run_backtest.py` | Main CLI entry — run strategies across assets/timeframes/modes; threads `--config` with live-matching `user_defaults`, regime gate, HTF, `--intrabar-resolution` (#1271). | active | core |
 | `optimizer.py` | Walk-forward rolling in-sample/out-of-sample parameter optimization (anti-overfit). | active | core |
 | `reporter.py` | Text performance reports — single, comparison, multi-asset. | active | core |
 | `backtest_options.py` | Options-strategy backtester (e.g. `vol_mean_reversion`) against historical spot. | active | core |
@@ -38,12 +38,13 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 
 | File | Purpose | Status | Origin |
 |------|---------|--------|--------|
-| `eval_windows.py` | **M1** multi-window incumbent-relative validator — one command per application issue. | active | #977 |
+| `eval_windows.py` | **M1** multi-window incumbent-relative validator — one command per application issue. Threads `--intrabar-resolution` (#1271; default `ohlc_walk`) so `bar_close` legacy baselines are reproducible. | active | #977 |
 | `gross_edge_noise.py` | **M1 step-2** sample-noise adjudicator for `graduate_m1` fee-audit verdicts; run before any selectivity work. | active | #1054 |
 | `exit_diagnostics.py` | **M3** holding-time / excursion diagnostics — where a strategy's PnL dies. | active | #997 |
-| `fee_audit.py` | **M5** registry-wide trade-count × fee-drag selectivity triage. | active | #999 |
+| `fee_audit.py` | **M5** registry-wide trade-count × fee-drag selectivity triage. Sweeps the FULL registry incl. discovery-hidden/quarantined names (#1275) — re-screening is the recovery path out of quarantine. | active | #999 #1275 |
 | `exit_policy_ab.py` | **M6** regime-conditioned incumbent-relative exit-policy A/B. | active | #1066 |
 | `auto_suggest.py` | Reusable cross-harness driver that sweeps candidates and ranks gate-survivors under one BH correction. **Suggest-only — never writes a live default/config/PR.** | active | #1210 |
+| `monte_carlo.py` | Trade-order Monte Carlo resampler — permutation + circular block bootstrap over a run's closed trades; drawdown / final-return percentile bands, P(final < start), P(max DD ≥ kill-switch threshold). Suggest-only diagnostics. | active | #1274 |
 
 ## Regime-promotion pipeline (#1065–#1097)
 

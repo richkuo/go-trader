@@ -476,16 +476,20 @@ def enumerate_targets(registry_choice: str,
     targets: List[tuple] = []
     seen = set()
     spot_reg = None
+    # #1275: enumerate the FULL registry (STRATEGY_REGISTRY includes
+    # discovery-hidden names), not list_strategies() — the audit is the tool
+    # that produces quarantine verdicts, so it must keep re-screening
+    # quarantined strategies; a discovery-only sweep could never revisit them.
     if registry_choice in ("spot", "both"):
         spot_reg = load_registry("spot")
-        for n in spot_reg.list_strategies():
+        for n in spot_reg.STRATEGY_REGISTRY:
             if n in SKIP_STRATEGIES:
                 continue
             targets.append((n, "spot", spot_reg))
             seen.add(n)
     if registry_choice in ("futures", "both"):
         fut_reg = load_registry("futures")
-        for n in fut_reg.list_strategies():
+        for n in fut_reg.STRATEGY_REGISTRY:
             if n in SKIP_STRATEGIES:
                 continue
             if registry_choice == "both" and n in seen:

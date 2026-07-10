@@ -337,11 +337,11 @@ func TestBuildRegimeGateConfirmMessage(t *testing.T) {
 func TestRegimeGateDoesNotBlockOpenPositionManagement(t *testing.T) {
 	allowed := []string{"trending_up_clean"}
 	// Sanity: a disallowed current regime blocks a fresh entry (flat).
-	if !regimeBlocksOpen(allowed, "ranging", 0) {
+	if !regimeBlocksOpen(allowed, "ranging", 0, false) {
 		t.Fatal("a disallowed regime must block a fresh entry (posQty=0)")
 	}
 	// With an open position it must NOT block — management passes through.
-	if regimeBlocksOpen(allowed, "ranging", 1.5) {
+	if regimeBlocksOpen(allowed, "ranging", 1.5, false) {
 		t.Error("a newly-activated gate must not block management of an open position")
 	}
 }

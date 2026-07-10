@@ -100,12 +100,23 @@ def trade_samples_from_results(results: dict) -> List[dict]:
 
     ``pnl_pct`` is computed purely from entry/exit fill prices, so on a
     zero-friction (gross) run it is the raw per-trade price edge the M1
-    step-2 noise check adjudicates. ``entry_date`` rides along so callers
-    pooling overlapping windows can deduplicate the same physical entry.
+    step-2 noise check adjudicates. ``pnl_pct_net`` (#1274, additive) is the
+    fee-deducted return on entry notional (Trade.pnl has both commissions
+    subtracted; falls back to the gross figure when notional is unavailable)
+    for consumers that need the real equity path, e.g. the Monte Carlo
+    trade-order resampler. ``entry_date`` rides along so callers pooling
+    overlapping windows can deduplicate the same physical entry.
     Missing/empty trade lists yield [].
     """
-    return [{"entry_date": str(t["entry_date"]), "pnl_pct": float(t["pnl_pct"])}
-            for t in results.get("trades") or []]
+    out = []
+    for t in results.get("trades") or []:
+        gross = float(t["pnl_pct"])
+        notional = float(t.get("shares") or 0.0) * float(t.get("entry_price") or 0.0)
+        net = (float(t["pnl"]) / notional * 100.0
+               if notional > 0 and t.get("pnl") is not None else gross)
+        out.append({"entry_date": str(t["entry_date"]), "pnl_pct": gross,
+                    "pnl_pct_net": round(net, 6)})
+    return out
 
 
 def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
@@ -302,7 +313,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             *,
             commission_pct: Optional[float] = None,
             slippage_pct: Optional[float] = None,
-            keep_trades: bool = False) -> Optional[dict]:
+            keep_trades: bool = False,
+            intrabar_resolution: str = "ohlc_walk") -> Optional[dict]:
     """Run one (strategy, dataset, window) leg on the audit-identical harness.
 
     ``commission_pct`` / ``slippage_pct`` are keyword-only friction overrides
@@ -314,6 +326,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     annualize trade counts. ``keep_trades`` (#1054) additionally attaches
     ``trade_samples`` (per-trade ``{entry_date, pnl_pct}``) so the gross-edge
     noise check can resample the trade universe the same harness produced.
+    ``intrabar_resolution`` (#1271) selects how a same-bar SL/TP race is
+    resolved: ``"ohlc_walk"`` (default) walks the bar's O/H/L/C path; pass
+    ``"bar_close"`` to reproduce pre-#1271 documented baselines.
 
     allowed_regimes (when provided) turns on the regime entry gate for this
     leg; regime_enabled is forced true in that case so the Backtester injects
@@ -409,6 +424,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         # commission_pct=None keeps the Backtester's platform-derived fee — the
         # M1 default; an explicit 0.0 (fee audit gross run) overrides it.
         commission_pct=commission_pct,
+        intrabar_resolution=intrabar_resolution,
     )
     # Only override slippage when asked; otherwise the Backtester's 5 bps
     # default stands (passing None would zero it out via the constructor).
@@ -439,7 +455,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
 
 
 def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
-                           capital: float) -> dict:
+                           capital: float, *,
+                           intrabar_resolution: str = "ohlc_walk") -> dict:
     """All incumbent legs for one window: {dataset_key: {name: leg|None}}."""
     out = {}
     for symbol, timeframe in datasets:
@@ -447,7 +464,8 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
         out[ds] = {}
         for name in INCUMBENTS:
             out[ds][name] = run_leg(reg, name, None, symbol, timeframe,
-                                    window, capital=capital)
+                                    window, capital=capital,
+                                    intrabar_resolution=intrabar_resolution)
     return out
 
 
@@ -592,13 +610,22 @@ def validate_candidate(candidate: dict) -> dict:
 
 def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                     window_name: str, capital: float,
-                    bars_memo: dict) -> dict:
-    """Candidate legs + incumbent bars + verdict for one window."""
+                    bars_memo: dict, *,
+                    intrabar_resolution: str = "ohlc_walk") -> dict:
+    """Candidate legs + incumbent bars + verdict for one window.
+
+    ``intrabar_resolution`` (#1271) is threaded into both the incumbent and
+    candidate legs so they always share one SL/TP race-resolution mode.
+    ``bars_memo`` is keyed by window name only (not by resolution mode), so
+    a single process/invocation must run with one mode throughout — true for
+    every CLI entry point here, where the mode is fixed for the whole run.
+    """
     validate_candidate(candidate)
     window = WINDOWS[window_name]
     if window_name not in bars_memo:
         bars_memo[window_name] = incumbent_bars(
-            compute_incumbent_legs(reg, datasets, window, capital))
+            compute_incumbent_legs(reg, datasets, window, capital,
+                                   intrabar_resolution=intrabar_resolution))
     bars = bars_memo[window_name]
 
     candidate_legs = {}
@@ -621,6 +648,7 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
             regime_windows_spec=candidate.get("regime_windows_spec"),
             regime_directional_policy=candidate.get(
                 "regime_directional_policy"),
+            intrabar_resolution=intrabar_resolution,
         )
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
@@ -796,6 +824,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "Scores the switched composite on the same harness.")
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
+    p.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                   choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
+                   help="SL race resolution (#1271): ohlc_walk (default) or "
+                        "bar_close (reproduce pre-#1271 documented baselines).")
     return p
 
 
@@ -861,7 +893,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     window_scores = []
     for wname in window_names:
         score = evaluate_window(reg, candidate, datasets, wname,
-                                args.capital, bars_memo)
+                                args.capital, bars_memo,
+                                intrabar_resolution=args.intrabar_resolution)
         window_scores.append(score)
         print(format_window_report(score))
 
@@ -875,7 +908,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             combo = dict(candidate)
             combo["params"] = params
             score = evaluate_window(reg, combo, datasets, args.sweep_window,
-                                    args.capital, bars_memo)
+                                    args.capital, bars_memo,
+                                    intrabar_resolution=args.intrabar_resolution)
             sweep_rows.append({"label": label, "params": params, "score": score})
         print(format_sweep_report(sweep_rows, args.sweep_window))
 

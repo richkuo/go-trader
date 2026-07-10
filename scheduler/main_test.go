@@ -86,7 +86,7 @@ func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 		},
 		{
 			name:   "consecutive losses",
-			reason: RiskReasonConsecutiveLosses,
+			reason: RiskReasonConsecutiveLosses + " (5 in a row, threshold 5)",
 		},
 	}
 
@@ -123,7 +123,7 @@ func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 					!strings.Contains(msg, "BinanceUS, BTC, 30m, sma_cross, spot") {
 					t.Fatalf("notification missing required context: %q", msg)
 				}
-				if tc.reason == RiskReasonConsecutiveLosses && !strings.Contains(msg, "5 consecutive losses") {
+				if strings.HasPrefix(tc.reason, RiskReasonConsecutiveLosses) && !strings.Contains(msg, "consecutive losses (5 in a row, threshold 5)") {
 					t.Fatalf("expected consecutive-loss trigger in %q", msg)
 				}
 				if strings.HasPrefix(tc.reason, RiskReasonMaxDrawdownExceeded) && !strings.Contains(msg, "30.0% > 25.0%") {

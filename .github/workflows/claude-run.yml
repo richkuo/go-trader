@@ -49,19 +49,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      # The agent never executes the project's code (no test suites,
+      # backtests, builds, simulations, or scripts — CI covers those), so no
+      # Python env is installed. Go stays ONLY for gofmt on edited files.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-
-      - name: Set up Python (uv)
-        uses: astral-sh/setup-uv@v6
-
-      - name: Install Python dependencies
-        run: uv sync --frozen --extra test
-
-      - name: Clean up lockfile changes before Claude checkout
-        run: git checkout -- uv.lock
 
       - name: Record HEAD sha before Claude runs
         if: inputs.mode == 'implement'
@@ -106,17 +100,19 @@ jobs:
             echo "::error::$PROMPT_FILE must not contain double quotes, backticks, or dollar signs (claude_args is shell-evaluated)."
             exit 1
           fi
-          # git/gh are narrowed as defense-in-depth, not a hard boundary: an
-          # allowed interpreter (python3, go, uv run) can still shell out to
-          # gh/git directly. The hard boundary is the job token (#1178): the
-          # review job binds the agent to a contents: read token, so a
-          # prompt-injected diff cannot push or merge even through an
-          # interpreter. Within the allowlist: push rules are exact-match (no
+          # No interpreters or build/test runners: the agent must never
+          # execute the project's code (test suites, backtests, builds,
+          # simulations, scripts) in any mode — CI covers those. gofmt is a
+          # formatter, not execution, and stays for edited Go files. git/gh
+          # are narrowed as defense-in-depth, not a hard boundary; the hard
+          # boundary is the job token (#1178): the review job binds the agent
+          # to a contents: read token, so a prompt-injected diff cannot push
+          # or merge. Within the allowlist: push rules are exact-match (no
           # trailing wildcard), so a refspec (HEAD:main) or --force does not
           # match, and gh api is dropped entirely (its --method flag reaches
           # every mutating endpoint). No CI readers (gh pr checks / gh run *):
           # reviews intentionally do not gate on CI, which outlasts the review.
-          ALLOWED='Bash(go *),Bash(cd scheduler && go *),Bash(uv run *),Bash(python3 *),Bash(.venv/bin/python3 *),Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr comment*),Bash(gh issue view*)'
+          ALLOWED='Bash(gofmt *),Bash(cd scheduler && gofmt *),Bash(git status*),Bash(git log*),Bash(git diff*),Bash(git show*),Bash(git fetch*),Bash(git branch*),Bash(git rev-parse*),Bash(git checkout*),Bash(git switch*),Bash(gh pr view*),Bash(gh pr diff*),Bash(gh pr comment*),Bash(gh issue view*)'
           # Only the write-capable modes may mutate history; review runs never
           # commit or push, so those rules stay off its allowlist.
           if [ "$MODE" = "implement" ]; then

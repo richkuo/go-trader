@@ -136,9 +136,21 @@ func main() {
 	for _, sc := range cfg.Strategies {
 		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID]))
 	}
+	// #1275: warn loudly when a configured open strategy carries the M5
+	// fee-audit deprecate verdict (documented gross edge <= 0). Advisory only
+	// — the config keeps loading and trading; the same lines are replayed to
+	// the owner DM once the notifier is wired.
+	deprecatedEdgeWarnings := deprecatedEdgeStartupWarnings(cfg.Strategies)
+	for _, msg := range deprecatedEdgeWarnings {
+		fmt.Fprintln(os.Stderr, "[config] "+msg)
+	}
 	// #1269: surface a configured daily loss limit at startup so the operator
 	// can audit the portfolio-wide entry gate without grepping the JSON.
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
+		fmt.Println(line)
+	}
+	// #1270: same for a configured same-direction exposure cap.
+	if line := exposureCapStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
 	}
 
@@ -474,6 +486,16 @@ func main() {
 	// #1157: surface uncertified/expired directional policy to owner DM at startup.
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
 
+	// #1275: replay M5-deprecated-strategy warnings to the owner DM so an
+	// operator live-trading a documented negative-gross-edge strategy sees it
+	// even when not tailing stderr. One-time per startup; suppressed
+	// per-strategy by allow_deprecated.
+	if len(deprecatedEdgeWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range deprecatedEdgeWarnings {
+			notifier.SendOwnerDM("[config] " + msg)
+		}
+	}
+
 	// #339: Forward the missing-state-DB warning to the owner. Captured before
 	// OpenStateDB ran (which would have created an empty DB), surfaced here
 	// once the notifier is available.
@@ -623,6 +645,10 @@ func main() {
 			return
 		}
 		mu.Lock()
+		// #1275: snapshot the pre-reload strategy shapes so a hot reload that
+		// moves an open leg onto an M5-deprecated name (or drops an
+		// allow_deprecated ack) re-fires the deprecated-edge warning below.
+		prevStrategies := append([]StrategyConfig(nil), cfg.Strategies...)
 		changes, err := applyHotReloadConfig(cfg, nextCfg, state, notifier, server)
 		if err != nil {
 			mu.Unlock()
@@ -650,6 +676,18 @@ func main() {
 			fmt.Printf("[reload] %s\n", line)
 		}
 		notifyDirectionalCertStartupSummary(notifier, reloadCertLines)
+
+		// #1275: a hot reload can move a strategy's open leg onto an
+		// M5-deprecated name or flip allow_deprecated off — surface the same
+		// loud warning (stderr + owner DM) the startup path emits, but only
+		// for strategies whose deprecated-unacked state is new to this reload
+		// so unchanged strategies don't re-spam on every SIGHUP.
+		for _, msg := range newlyDeprecatedEdgeWarnings(prevStrategies, cfg.Strategies) {
+			fmt.Fprintln(os.Stderr, "[reload] "+msg)
+			if notifier.HasOwner() {
+				notifier.SendOwnerDM("[reload] " + msg)
+			}
+		}
 
 		if len(changes) == 0 {
 			fmt.Println("[reload] Config reload applied: no hot-reloadable changes")
@@ -929,6 +967,7 @@ func main() {
 			killSwitchFired := false
 			notionalBlocked := false
 			dailyLossEntriesHeld := false
+			exposureCapStatus := ExposureCapStatus{}
 			usedPVFallback := false
 
 			// Partition HL live strategies up-front: shared-wallet detection
@@ -1153,6 +1192,12 @@ func main() {
 			// cycle (pure read — stale per-strategy days count as 0, matching
 			// what rolloverDailyPnL would reset them to).
 			dailyLossStatus := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC())
+			// #1270: evaluate the same-direction exposure cap once per cycle
+			// (pure read over positions + this cycle's prices; totalPV is the
+			// concentration basis). Like the notional cap, this measures the
+			// book as of cycle start — a position opened by an earlier strategy
+			// in the same cycle is picked up next cycle.
+			exposureCapStatus = evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, prices, totalPV)
 			mu.RUnlock()
 
 			mu.Lock()
@@ -1250,6 +1295,26 @@ func main() {
 					dailyLossPctBasisMissAlertDate = today
 					notifier.SendOwnerDM(formatDailyLossPctBasisMissDM(dailyLossStatus, time.Now().UTC()))
 				}
+			}
+			// #1270: exposure-cap operator surfaces — per-cycle [WARN] while any
+			// arm is blocking, a fail-safe log for unpriceable positions excluded
+			// from the sums, and an owner DM edge-triggered on the transition
+			// into blocked (per direction / per asset; re-arms when the block
+			// clears). Outside mu — notifier I/O never runs under the state
+			// lock (#880).
+			if warnMsg := exposureCapCycleWarning(exposureCapStatus); warnMsg != "" {
+				fmt.Printf("[WARN] %s\n", warnMsg)
+			}
+			if skipMsg := exposureCapSkippedWarning(exposureCapStatus); skipMsg != "" {
+				fmt.Printf("[WARN] %s\n", skipMsg)
+			}
+			if exposureCapStatus.PVBasisMiss {
+				fmt.Printf("[WARN] %s\n", exposureCapPVBasisMissWarning)
+			}
+			exposureCapDM, exposureCapNextAlerts := exposureCapAlertMessage(exposureCapStatus, exposureCapAlerts, time.Now().UTC())
+			exposureCapAlerts = exposureCapNextAlerts
+			if exposureCapDM != "" {
+				notifier.SendOwnerDM(exposureCapDM)
 			}
 
 			// #1100: switch the HL shared-wallet drift alarm onto the
@@ -1857,7 +1922,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1871,6 +1936,13 @@ func main() {
 								// position-increasing signals held, position-reducing actions pass.
 								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
 								}
 								mu.Lock()
@@ -1900,7 +1972,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, rhPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1914,6 +1986,13 @@ func main() {
 								// position-increasing signals held, position-reducing actions pass.
 								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
 								}
 								mu.Lock()
@@ -1941,7 +2020,7 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1955,6 +2034,13 @@ func main() {
 							// position-increasing signals held, position-reducing actions pass.
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1270: same-direction exposure cap — only the capped direction's
+							// position-increasing signals are held; the other direction and all
+							// position-reducing actions pass.
+							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false); capBlocked {
+								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
 							mu.Lock()
@@ -1982,6 +2068,14 @@ func main() {
 								if dropped > 0 {
 									logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
 								}
+								result.Actions = kept
+							}
+							// #1270: same-direction exposure cap — drop option OPEN actions
+							// whose coarse delta direction is capped ("buy"/"sell" both open
+							// legs; delta sign decides the direction). Close actions and the
+							// theta-harvest walker still manage existing positions.
+							if kept, dropped, capWhy := exposureCapOptionsActions(exposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
+								logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
 								result.Actions = kept
 							}
 							// #879: options regime now comes from the global store's
@@ -2028,7 +2122,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2042,6 +2136,13 @@ func main() {
 								// position-increasing signals held, position-reducing actions pass.
 								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
 								}
 								mu.Lock()
@@ -2079,7 +2180,7 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2093,6 +2194,14 @@ func main() {
 							// position-increasing signals held, position-reducing actions pass.
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1270: same-direction exposure cap — only the capped direction's
+							// position-increasing signals are held; the other direction and all
+							// position-reducing actions pass. result.Signal is already
+							// invert_signal-resolved here, so its sign IS the trade direction.
+							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
+								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
 							mu.Lock()
@@ -2378,7 +2487,7 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, tsContracts); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2400,6 +2509,10 @@ func main() {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
+							// #1270: deliberately NOT gated by the same-direction exposure
+							// cap — CME futures are outside the phase-1 crypto bucket
+							// (computeAssetDeltas excludes type=futures), so the crypto
+							// bucket must not block futures entries.
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
@@ -2673,6 +2786,12 @@ func main() {
 					posCount := len(stratState.Positions) + len(stratState.OptionPositions)
 					cash := stratState.Cash
 					regimeLabel := strategyDisplayRegimeLabel(stratState, sc, cfg.Regime)
+					// #1278: name an actively fail-closed entry gate in the status
+					// line so an operator scanning logs during a regime-store
+					// outage sees WHY the strategy is not opening.
+					if regimeGateFailClosedActive(sc, stratState, cfg.Regime) {
+						regimeLabel = decorateRegimeLabelGateClosed(regimeLabel)
+					}
 					mu.RUnlock()
 
 					logger.Info("%s", formatStatusLine(cash, posCount, pv, trades, regimeLabel))

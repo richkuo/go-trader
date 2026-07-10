@@ -354,6 +354,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PnLPct                         float64                    `json:"pnl_pct"`
 		RiskState                      RiskState                  `json:"risk_state"`
 		Regime                         string                     `json:"regime,omitempty"`
+		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`          // #1278: entry gate is actively failing closed — allowed_regimes configured, policy "closed", strategy flat, and the cycle store has no gate label; fresh opens are held
 		BaseDirection                  string                     `json:"base_direction,omitempty"`                   // #779: base direction from config (pre-policy resolution)
 		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`               // #779: base invert from config (pre-policy resolution)
 		EffectiveDirection             string                     `json:"effective_direction,omitempty"`              // #779: resolved direction for the active regime (policy override or base)
@@ -432,6 +433,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PnLPct:                         pnlPct,
 			RiskState:                      s.RiskState,
 			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
+			RegimeGateFailClosed:           regimeGateFailClosedActive(sc, s, ss.regime),
 			BaseDirection:                  dirView.BaseDirection,
 			BaseInvertSignal:               dirView.BaseInvertSignal,
 			EffectiveDirection:             dirView.EffectiveDirection,

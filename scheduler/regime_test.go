@@ -174,14 +174,14 @@ func TestRegimeAllowsEntry_EmptyCurrentAllowsWhenListNonEmpty(t *testing.T) {
 
 func TestRegimeBlocksOpen_BlocksOpenWhenNoPosition(t *testing.T) {
 	allowed := []string{"trending_up"}
-	if !regimeBlocksOpen(allowed, "ranging", 0) {
+	if !regimeBlocksOpen(allowed, "ranging", 0, false) {
 		t.Error("regime mismatch with posQty=0 should block the open")
 	}
 }
 
 func TestRegimeBlocksOpen_AllowsOpenWhenRegimeMatches(t *testing.T) {
 	allowed := []string{"trending_up"}
-	if regimeBlocksOpen(allowed, "trending_up", 0) {
+	if regimeBlocksOpen(allowed, "trending_up", 0, false) {
 		t.Error("matching regime should not block")
 	}
 }
@@ -193,13 +193,13 @@ func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
 	// signal, contradicting "existing positions are always managed by close
 	// paths regardless".
 	allowed := []string{"trending_up"}
-	if regimeBlocksOpen(allowed, "ranging", 1.0) {
+	if regimeBlocksOpen(allowed, "ranging", 1.0, false) {
 		t.Error("close leg (posQty>0) must never be blocked by regime gate")
 	}
-	if regimeBlocksOpen(allowed, "trending_down", 0.5) {
+	if regimeBlocksOpen(allowed, "trending_down", 0.5, false) {
 		t.Error("close leg (posQty>0) must never be blocked even on opposite regime")
 	}
-	if regimeBlocksOpen(allowed, "", 1.0) {
+	if regimeBlocksOpen(allowed, "", 1.0, false) {
 		// Empty current regime is also "allow"; combined with posQty>0 this is
 		// doubly safe but we still assert it.
 		t.Error("close leg (posQty>0) must never be blocked when regime is empty")
@@ -207,10 +207,10 @@ func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
 }
 
 func TestRegimeBlocksOpen_EmptyAllowedNeverBlocks(t *testing.T) {
-	if regimeBlocksOpen(nil, "ranging", 0) {
+	if regimeBlocksOpen(nil, "ranging", 0, false) {
 		t.Error("nil allowed list (no gate configured) must never block")
 	}
-	if regimeBlocksOpen([]string{}, "ranging", 0) {
+	if regimeBlocksOpen([]string{}, "ranging", 0, false) {
 		t.Error("empty allowed list (no gate configured) must never block")
 	}
 }

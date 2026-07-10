@@ -651,6 +651,7 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
 	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
+	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
 	if note := directionalCertOperatorNotes(d.cfg.Strategies, d.cfg.Regime); note != "" {
 		return base + note
