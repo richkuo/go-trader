@@ -62,8 +62,8 @@ func TestM5DeprecatedRosterMatchesPythonRegistry(t *testing.T) {
 			t.Errorf("Go m5DeprecatedEdgeStrategies has %q but registry.py does not quarantine it", name)
 		}
 	}
-	if len(pyNames) != 26 {
-		t.Errorf("expected 26 quarantined names in registry.py, parsed %d", len(pyNames))
+	if len(pyNames) != 32 {
+		t.Errorf("expected 32 quarantined names in registry.py, parsed %d", len(pyNames))
 	}
 }
 
@@ -104,8 +104,8 @@ func TestStrategyEdgeDeprecatedResolution(t *testing.T) {
 	}{
 		{"open ref hit", StrategyConfig{Type: "spot", OpenStrategy: StrategyRef{Name: "macd"}}, true},
 		{"args0 hit", StrategyConfig{Type: "perps", Args: []string{"rsi", "BTC", "1h"}}, true},
-		{"open ref wins over args0", StrategyConfig{Type: "spot", OpenStrategy: StrategyRef{Name: "tema_cross"}, Args: []string{"macd", "BTC", "1h"}}, false},
-		{"clean strategy", StrategyConfig{Type: "spot", OpenStrategy: StrategyRef{Name: "regime_adaptive"}}, false},
+		{"open ref wins over args0", StrategyConfig{Type: "spot", OpenStrategy: StrategyRef{Name: "momentum_pro"}, Args: []string{"macd", "BTC", "1h"}}, false},
+		{"clean strategy", StrategyConfig{Type: "spot", OpenStrategy: StrategyRef{Name: "chart_pattern"}}, false},
 		{"manual hold", StrategyConfig{Type: "manual", Args: []string{"hold"}}, false},
 		{"options registry excluded", StrategyConfig{Type: "options", Args: []string{"momentum"}}, false},
 		{"empty", StrategyConfig{Type: "spot"}, false},
@@ -121,7 +121,7 @@ func TestDeprecatedEdgeStartupWarnings(t *testing.T) {
 	strategies := []StrategyConfig{
 		{ID: "s-macd", Type: "spot", OpenStrategy: StrategyRef{Name: "macd"}},
 		{ID: "s-ack", Type: "perps", OpenStrategy: StrategyRef{Name: "rsi"}, AllowDeprecated: true},
-		{ID: "s-clean", Type: "spot", OpenStrategy: StrategyRef{Name: "regime_adaptive"}},
+		{ID: "s-clean", Type: "spot", OpenStrategy: StrategyRef{Name: "chart_pattern"}},
 	}
 	warnings := deprecatedEdgeStartupWarnings(strategies)
 	if len(warnings) != 1 {
@@ -144,7 +144,7 @@ func TestEdgeStatusSummaryTagNeverHiddenByAck(t *testing.T) {
 	if got := edgeStatusSummaryTag(dep); got != "edge=deprecated_m5(ack)" {
 		t.Errorf("acknowledged tag = %q, want edge=deprecated_m5(ack)", got)
 	}
-	clean := StrategyConfig{ID: "s", Type: "spot", OpenStrategy: StrategyRef{Name: "tema_cross"}}
+	clean := StrategyConfig{ID: "s", Type: "spot", OpenStrategy: StrategyRef{Name: "chart_pattern"}}
 	if got := edgeStatusSummaryTag(clean); got != "" {
 		t.Errorf("clean strategy tag = %q, want empty", got)
 	}
@@ -227,9 +227,9 @@ func TestNewlyDeprecatedEdgeWarnings(t *testing.T) {
 		old, new []StrategyConfig
 		want     int
 	}{
-		{"switch onto deprecated", []StrategyConfig{dep("s1", "tema_cross", false)}, []StrategyConfig{dep("s1", "macd", false)}, 1},
+		{"switch onto deprecated", []StrategyConfig{dep("s1", "chart_pattern", false)}, []StrategyConfig{dep("s1", "macd", false)}, 1},
 		{"unchanged deprecated no respam", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "macd", false)}, 0},
-		{"switch away no warn", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "tema_cross", false)}, 0},
+		{"switch away no warn", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "chart_pattern", false)}, 0},
 		{"ack flipped off re-warns", []StrategyConfig{dep("s1", "macd", true)}, []StrategyConfig{dep("s1", "macd", false)}, 1},
 		{"ack flipped on silences", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "macd", true)}, 0},
 		{"deprecated-to-different-deprecated re-warns", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "rsi", false)}, 1},

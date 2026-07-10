@@ -108,6 +108,7 @@ they are indexed by study here, not enumerated script-by-script.
 | `squeeze_983` | `squeeze_momentum` close-stack (M2) sweeps, walk-forward, M1 shortlist, audit headline. | 5 | #983 |
 | `squeeze_momentum_1198` | `squeeze_momentum` regime-gate (M4) sweep, fee-drag, M1 shortlist, audit headline (+`driver_common.py`). | 4 + lib | #1198 |
 | `rahtf_1054` | `regime_adaptive_htf` entry-condition split behind the M1 noise verdict. | 1 | #1054 |
+| `limbo_1282` | Spec-only — auto_suggest BH family specs (breakout 984/1165 arms, mean_reversion_pro #981 knobs, chart_pattern #982 gate factors) behind the M5-limbo adjudication (`docs/research/1282-m5-limbo-verdicts.md`). | 0 | #1282 |
 | `ichimoku_997` | Spec-only — `atr_stop`/`time_stop`/`zscore` close-config candidates + README, no drivers. | 0 | #997 |
 
 `suggest.template.jsonc` is the annotated spec template for a new study.
