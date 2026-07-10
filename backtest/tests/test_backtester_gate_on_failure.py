@@ -206,6 +206,29 @@ def test_load_strategy_config_rejects_unknown_gate_policy(tmp_path):
         run_backtest.load_strategy_config(path, "hl-x")
 
 
+def test_load_strategy_config_rejects_unknown_global_gate_policy(tmp_path):
+    """A garbage global regime.gate_on_failure must be rejected even with no
+    per-strategy override present."""
+    path = _write_config(tmp_path, regime_extra={"gate_on_failure": "garbage"})
+    with pytest.raises(ValueError, match="regime.gate_on_failure"):
+        run_backtest.load_strategy_config(path, "hl-x")
+
+
+def test_load_strategy_config_rejects_unknown_global_gate_policy_even_with_valid_strategy_override(tmp_path):
+    """#1300 review: a valid per-strategy override must not short-circuit past
+    a garbage global value — the `or` chain resolving gate policy validated
+    only the winning (per-strategy) value, so a bogus global slipped through
+    unvalidated whenever a strategy also set its own override. Both surfaces
+    must be validated independently, mirroring Go's validateConfig."""
+    path = _write_config(
+        tmp_path,
+        strategy_extra={"regime_gate_on_failure": "closed"},
+        regime_extra={"gate_on_failure": "garbage"},
+    )
+    with pytest.raises(ValueError, match="regime.gate_on_failure"):
+        run_backtest.load_strategy_config(path, "hl-x")
+
+
 def test_backtester_accepts_load_strategy_config_kwargs(tmp_path):
     """The returned dict must still spread cleanly into Backtester(**kwargs)."""
     path = _write_config(tmp_path, strategy_extra={"regime_gate_on_failure": "closed"})
