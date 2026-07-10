@@ -2,11 +2,12 @@
 """fee_audit.py — registry-wide trade-count x fee-drag selectivity screen (#999 M5).
 
 The cheapest possible triage before any M1 effort is spent on a strategy: does
-its edge survive its own churn? At the binanceus audit fee model (0.1% taker
-per side, ~0.3% round-trip once spread is counted), a strategy that fires
-350-800 times/year pays 100%+ of capital in fees, while passing incumbents
-trade 0-8 times per window. This screen makes that arithmetic explicit and
-reproducible.
+its edge survive its own churn? At the hyperliquid audit fee model (#1315:
+base-tier 0.045% taker per side + 5 bps slippage, ~0.19% round-trip), a
+strategy that fires hundreds of times/year still pays tens of percent of
+capital in fees, while passing incumbents trade 0-8 times per window. This
+screen makes that arithmetic explicit and reproducible. (Verdicts recorded
+before #1315 used the binanceus model — 0.1%/side, ~0.3% round-trip.)
 
 For every registered strategy on the audit datasets/windows it runs each leg
 TWICE on the eval_windows.py harness (#994):

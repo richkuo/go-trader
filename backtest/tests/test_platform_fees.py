@@ -7,7 +7,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from backtester import Backtester, PLATFORM_FEE_PCT, fee_pct_for_platform
+from backtester import (
+    Backtester,
+    HYPERLIQUID_MAKER_FEE_PCT,
+    PLATFORM_FEE_PCT,
+    fee_pct_for_platform,
+)
 
 
 FEES_GO = Path(__file__).resolve().parents[2] / "scheduler" / "fees.go"
@@ -16,7 +21,7 @@ FEES_GO = Path(__file__).resolve().parents[2] / "scheduler" / "fees.go"
 # the Go source the scraper below catches it.
 EXPECTED_RATES = {
     "binanceus":   0.001,
-    "hyperliquid": 0.00035,
+    "hyperliquid": 0.00045,
     "robinhood":   0.0,
     "luno":        0.01,
     "okx":         0.001,
@@ -30,8 +35,8 @@ def _scrape_fees_go_constants() -> dict:
     silently drifting from the Go source."""
     text = FEES_GO.read_text()
     const_pattern = re.compile(
-        r"^\s*(BinanceSpotFeePct|HyperliquidTakerFeePct|LunoTakerFeePct|"
-        r"OKXSpotTakerFeePct|OKXPerpsTakerFeePct)\s*=\s*([0-9.]+)",
+        r"^\s*(BinanceSpotFeePct|HyperliquidTakerFeePct|HyperliquidMakerFeePct|"
+        r"LunoTakerFeePct|OKXSpotTakerFeePct|OKXPerpsTakerFeePct)\s*=\s*([0-9.]+)",
         re.MULTILINE,
     )
     return {m.group(1): float(m.group(2)) for m in const_pattern.finditer(text)}
@@ -54,6 +59,15 @@ def test_platform_fee_table_matches_fees_go():
     assert go_rates["OKXPerpsTakerFeePct"] == PLATFORM_FEE_PCT["okx-perps"]
 
 
+def test_hyperliquid_maker_rate_matches_fees_go():
+    """The maker constant is a Go↔Python parity pair like the taker table
+    (#1315) — scrape fees.go so the two can't silently drift."""
+    go_rates = _scrape_fees_go_constants()
+    assert go_rates["HyperliquidMakerFeePct"] == HYPERLIQUID_MAKER_FEE_PCT
+    # Base-tier sanity: maker is strictly cheaper than taker.
+    assert HYPERLIQUID_MAKER_FEE_PCT < PLATFORM_FEE_PCT["hyperliquid"]
+
+
 def test_unknown_platform_falls_back_to_binanceus():
     """Matches the ``default:`` branch in CalculatePlatformSpotFee."""
     assert fee_pct_for_platform("mystery-exchange") == PLATFORM_FEE_PCT["binanceus"]
@@ -61,7 +75,7 @@ def test_unknown_platform_falls_back_to_binanceus():
 
 def test_backtester_uses_platform_fee_by_default():
     bt = Backtester(platform="hyperliquid")
-    assert bt.commission_pct == pytest.approx(0.00035)
+    assert bt.commission_pct == pytest.approx(0.00045)
 
     bt = Backtester(platform="robinhood")
     assert bt.commission_pct == 0.0
@@ -95,7 +109,7 @@ def _one_trade_df():
     "platform,expected_rate",
     [
         ("binanceus",   0.001),
-        ("hyperliquid", 0.00035),
+        ("hyperliquid", 0.00045),
         ("robinhood",   0.0),
         ("luno",        0.01),
         ("okx",         0.001),

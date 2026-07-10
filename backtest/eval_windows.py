@@ -9,7 +9,7 @@ per-dataset Sharpe / return / max-DD / DD-adjusted-return / trades, pass/fail
 verdicts, and optional plateau sweeps.
 
 Harness is audit-identical (#956/#963/#976): registry default or supplied
-params, single mode, binanceus fee model, long-leg signal path unless the
+params, single mode, hyperliquid fee model (#1315), long-leg signal path unless the
 candidate config supplies close refs / direction. Sharpe uses the Backtester's
 timeframe-annualized scale, the same scale on both sides of the bar.
 
@@ -87,7 +87,13 @@ PROTOCOL_WINDOWS = ("is", "oos")
 HELD_OUT_WINDOWS = ("2023", "2024", "2025H1")
 
 DEFAULT_CAPITAL = 1000.0
-PLATFORM = "binanceus"  # audit fee model; fixed, not a knob
+# Audit fee model; fixed, not a knob. #1315: hyperliquid base-tier taker
+# (0.045%/side + the Backtester's 5 bps slippage) — live deployment is
+# Hyperliquid perps, so audits price the fees we actually pay. This encodes
+# an explicit perps-deployment assumption even for spot-audited strategies.
+# Verdicts recorded before #1315 were graded under "binanceus" (0.1%/side,
+# ~0.3% round-trip) — see the dated annotations in docs/research/.
+PLATFORM = "hyperliquid"
 
 
 # ---------------------------------------------------------------------------

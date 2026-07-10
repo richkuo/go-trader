@@ -391,7 +391,7 @@ Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbo
 | Binance US Spot | 0.1% taker | ±0.05% |
 | Deribit Options | 0.03% of premium | — |
 | IBKR/CME Options | $0.25/contract | — |
-| Hyperliquid Perps | 0.035% taker | ±0.05% |
+| Hyperliquid Perps | 0.045% taker / 0.015% maker (base tier) | ±0.05% |
 | TopStep Futures | Per-contract (configurable) | ±0.05% |
 | Robinhood Crypto | No commission (spread embedded) | ±0.05% |
 | Robinhood Options | $0.03/contract (regulatory fee) | — |
