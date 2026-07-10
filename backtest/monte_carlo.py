@@ -409,6 +409,10 @@ def run_leg_trades(candidate: dict, registry: str, dataset: str,
     ``close_strategies`` / ``allowed_regimes`` / stop owners / profile
     allocation replay exactly as M1 scored them. Raises ``NoCachedData`` when
     the (dataset, window) pair has no cached bars.
+
+    ``candidate`` must already have been through ``validate_candidate``, which
+    normalizes ``regime_windows_spec`` / ``regime_directional_policy`` in place;
+    the Backtester consumes the windows spec without re-parsing it.
     """
     from eval_windows import (WINDOWS, DEFAULT_CAPITAL,  # noqa: F401
                               parse_dataset_arg, run_candidate_leg)
@@ -713,7 +717,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         threshold_source = "default (portfolio kill switch)"
 
     # Resolve the run candidate (shared by single-leg and multi-leg modes).
+    # Two objects, deliberately: `candidate` is the as-authored dict echoed
+    # into the JSON payload; `run_candidate` is the NORMALIZED dict actually
+    # resampled. validate_candidate normalizes in place (regime_windows_spec
+    # via parse_regime_windows_spec_json, regime_directional_policy via the
+    # Backtester's parser), and the Backtester does NOT re-parse the windows
+    # spec — so the executed candidate must be the validated object, or a
+    # compact spec ({"medium": 14}) crashes and a partial composite spec
+    # silently classifies differently from what M1 scored on the same file.
     candidate = None
+    run_candidate = None
     if args.candidate_json:
         try:
             with open(args.candidate_json) as fh:
@@ -725,10 +738,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit(f"--candidate-json {args.candidate_json!r} is "
                              f"not valid JSON: {exc}")
         from eval_windows import validate_candidate
+        run_candidate = copy.deepcopy(candidate)
         try:
-            # validate_candidate normalizes in place; validate a copy so the
-            # payload echoes the candidate exactly as authored.
-            validate_candidate(copy.deepcopy(candidate))
+            validate_candidate(run_candidate)
         except ValueError as exc:
             raise SystemExit(f"--candidate-json {args.candidate_json!r} is "
                              f"not a valid candidate: {exc}")
@@ -739,6 +751,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise SystemExit(f"--params must be valid JSON: {exc}")
         candidate = candidate_from_strategy_args(args.strategy, params,
                                                  args.direction)
+        # No normalizable fields on this path (name/params/direction only), so
+        # the executed dict is the authored dict — byte-identical behavior.
+        run_candidate = candidate
 
     if multi_leg:
         from eval_windows import DATASETS as AUDIT_DATASETS
@@ -757,7 +772,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             for dataset in datasets:
                 try:
                     leg_values[(window_name, dataset)] = run_leg_trades(
-                        candidate, args.registry, dataset, window_name,
+                        run_candidate, args.registry, dataset, window_name,
                         args.capital, args.returns)
                 except NoCachedData as exc:
                     # One uncached alt-coin leg must not kill the whole fan.
@@ -798,7 +813,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         window_name = args.window or DEFAULT_WINDOW
         dataset = args.dataset or DEFAULT_DATASET
         try:
-            values = run_leg_trades(candidate, args.registry, dataset,
+            values = run_leg_trades(run_candidate, args.registry, dataset,
                                     window_name, args.capital, args.returns)
         except NoCachedData as exc:
             raise SystemExit(str(exc))

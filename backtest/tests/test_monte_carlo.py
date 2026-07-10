@@ -578,6 +578,110 @@ def test_candidate_json_threads_closes_gate_and_stops(tmp_path, monkeypatch):
     assert (seen["symbol"], seen["timeframe"]) == ("BTC/USDT", "1h")
 
 
+def test_candidate_json_replays_the_normalized_regime_windows_spec(tmp_path,
+                                                                   monkeypatch):
+    """validate_candidate normalizes regime_windows_spec in place and the
+    Backtester never re-parses it, so the EXECUTED candidate must be the
+    validated object. A compact bare-int spec would otherwise reach
+    _regime_primary_labels as an int and raise AttributeError."""
+    candidate = {"name": "squeeze_momentum",
+                 "allowed_regimes": ["trending_up"],
+                 "regime_windows_spec": {"medium": 14}}
+    cand_path = tmp_path / "c.json"
+    cand_path.write_text(json.dumps(candidate))
+
+    seen = {}
+
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        seen["spec"] = cand.get("regime_windows_spec")
+        return _fake_leg([3.0, -1.0, 2.0])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    out = tmp_path / "mc.json"
+    rc = mc.main(["--candidate-json", str(cand_path), "--n-paths", "20",
+                  "--windows", "is", "--datasets", "BTC/USDT:1h",
+                  "--json", str(out)])
+    assert rc == 0
+    assert seen["spec"] == {"medium": {"classifier": "adx", "period": 14}}
+    # ...and the payload still echoes the candidate exactly as authored.
+    assert json.loads(out.read_text())["candidate"] == candidate
+
+
+def test_single_leg_candidate_json_replays_the_normalized_spec(tmp_path,
+                                                               monkeypatch):
+    """Same invariant on the single-leg path, which uses a separate call."""
+    candidate = {"name": "squeeze_momentum",
+                 "regime_windows_spec": {"medium": 14}}
+    cand_path = tmp_path / "c.json"
+    cand_path.write_text(json.dumps(candidate))
+
+    seen = {}
+
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        seen["spec"] = cand.get("regime_windows_spec")
+        return _fake_leg([1.0, -2.0, 1.5])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    rc = mc.main(["--candidate-json", str(cand_path), "--n-paths", "20"])
+    assert rc == 0
+    assert seen["spec"] == {"medium": {"classifier": "adx", "period": 14}}
+
+
+def test_candidate_json_replays_the_normalized_directional_policy(tmp_path,
+                                                                  monkeypatch):
+    """regime_directional_policy is also normalized in place (invert_signal
+    defaults filled) — the executed candidate carries the compacted entries."""
+    candidate = {
+        "name": "squeeze_momentum",
+        "close_strategies": [{"name": "atr_stop", "params": {"atr_mult": 2.0}}],
+        "regime_directional_policy": {
+            "trend_regime": {"trending_up": {"direction": "long"}}},
+    }
+    cand_path = tmp_path / "c.json"
+    cand_path.write_text(json.dumps(candidate))
+
+    seen = {}
+
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        seen["rdp"] = cand.get("regime_directional_policy")
+        return _fake_leg([1.0, -2.0, 1.5])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    rc = mc.main(["--candidate-json", str(cand_path), "--n-paths", "20"])
+    assert rc == 0
+    assert seen["rdp"] == {"trend_regime": {
+        "trending_up": {"direction": "long", "invert_signal": False}}}
+
+
+def test_candidate_json_without_normalizable_fields_is_byte_identical(
+        tmp_path, monkeypatch):
+    """Normalization is a no-op for a plain candidate: the executed dict
+    equals the authored dict, so D3 leg-equivalence cannot regress."""
+    candidate = {"name": "squeeze_momentum", "params": {"kc_mult": 1.3},
+                 "direction": "short",
+                 "close_strategies": [{"name": "tiered_tp_atr"}]}
+    cand_path = tmp_path / "c.json"
+    cand_path.write_text(json.dumps(candidate))
+
+    seen = {}
+
+    def fake_run_candidate_leg(reg, cand, symbol, timeframe, window,
+                               capital=1000.0, *, keep_trades=False,
+                               intrabar_resolution="ohlc_walk"):
+        seen["candidate"] = cand
+        return _fake_leg([1.0, -2.0])
+
+    monkeypatch.setattr(ew, "run_candidate_leg", fake_run_candidate_leg)
+    assert mc.main(["--candidate-json", str(cand_path), "--n-paths", "20"]) == 0
+    assert seen["candidate"] == candidate
+
+
 def test_strategy_path_builds_minimal_candidate():
     assert mc.candidate_from_strategy_args("sq", None, None) == {"name": "sq"}
     assert mc.candidate_from_strategy_args("sq", {"a": 1}, "short") == {
