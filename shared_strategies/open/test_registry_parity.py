@@ -249,3 +249,75 @@ def test_backtest_only_flag_defaults_false_for_all_other_strategies(registry):
         full = registry.build_registry(platform, include_hidden=True)
         for name, entry in full.items():
             assert entry["backtest_only"] is (name == "analog_retrieval"), name
+
+
+# #999/#1275: the M5 fee-audit `deprecate` roster (docs/research/fee-audit-m5.md
+# verdict table) — duplicated here on purpose so a registry edit that drops or
+# adds a name fails loudly against the documented evidence.
+M5_DEPRECATE_VERDICT_NAMES = frozenset({
+    "adx_trend",
+    "amd_ifvg",
+    "atr_breakout",
+    "bollinger_bands",
+    "ema_crossover",
+    "heikin_ashi_ema",
+    "ichimoku_cloud",
+    "macd",
+    "mean_reversion",
+    "momentum",
+    "mtf_confluence",
+    "order_blocks",
+    "pairs_spread",
+    "parabolic_sar",
+    "range_scalper",
+    "rsi",
+    "rsi_macd_combo",
+    "sma_crossover",
+    "squeeze_momentum",
+    "stoch_rsi",
+    "supertrend",
+    "sweep_squeeze_combo",
+    "triple_ema",
+    "volume_weighted",
+    "vol_momentum",
+    "vwap_reversion",
+})
+
+
+def test_m5_deprecated_roster_matches_fee_audit_verdicts(registry):
+    # #1275: the quarantine set equals the documented M5 deprecate verdicts,
+    # every name is actually registered, and all are hidden from discovery.
+    assert registry.M5_DEPRECATED_EDGE_STRATEGIES == M5_DEPRECATE_VERDICT_NAMES
+    unknown = registry.M5_DEPRECATED_EDGE_STRATEGIES - set(registry.STRATEGIES)
+    assert not unknown, f"quarantined names not registered: {sorted(unknown)}"
+    assert registry.M5_DEPRECATED_EDGE_STRATEGIES <= registry.DISCOVERY_HIDDEN_STRATEGIES
+
+
+def test_edge_status_flag_matches_quarantine_roster(registry):
+    # Every registered entry carries edge_status: "deprecated_m5" exactly for
+    # the quarantined names, None everywhere else — including in the
+    # build_registry views the shims/check scripts consume.
+    for name, entry in registry.STRATEGIES.items():
+        expected = "deprecated_m5" if name in registry.M5_DEPRECATED_EDGE_STRATEGIES else None
+        assert entry["edge_status"] == expected, name
+    for platform in registry.VALID_PLATFORMS:
+        full = registry.build_registry(platform, include_hidden=True)
+        for name, entry in full.items():
+            expected = "deprecated_m5" if name in registry.M5_DEPRECATED_EDGE_STRATEGIES else None
+            assert entry["edge_status"] == expected, name
+
+
+def test_m5_deprecated_strategies_hidden_but_loadable(spot_shim, futures_shim, conftest_helpers):
+    # #1275: quarantined names leave discovery (list_strategies / --list-json)
+    # on every platform that registers them, but stay loadable for explicit
+    # configs and backtests — spot-check macd end to end.
+    for shim in (spot_shim, futures_shim):
+        listed = set(shim.list_strategies())
+        for name in shim.STRATEGY_REGISTRY:
+            if shim.STRATEGY_REGISTRY[name].get("edge_status") == "deprecated_m5":
+                assert name not in listed, name
+        assert "macd" in shim.STRATEGY_REGISTRY
+        assert shim.STRATEGY_REGISTRY["macd"]["edge_status"] == "deprecated_m5"
+        df = conftest_helpers.make_ohlcv(conftest_helpers.make_trending_up(80))
+        result = shim.apply_strategy("macd", df)
+        assert "signal" in result.columns

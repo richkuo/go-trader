@@ -150,7 +150,7 @@ jobs:
           #     on any surface. NOTE: only the keyword position counts;
           #     "review" later in the sentence ("@claude fix the review
           #     comments") no longer forces read-only.
-          #   - Route keyword "fix-pr" on a trusted-author PR comment routes to
+          #   - Route keyword "fix" on a trusted-author PR comment routes to
           #     fix-pr-review — the review-fixing playbook (validate all review
           #     feedback against the code, fix what survives, disposition
           #     comment, re-review trigger).
@@ -194,7 +194,7 @@ jobs:
             fi
             if [ "$PR_AUTHOR_TRUSTED" != "true" ]; then
               MODE=review
-            elif [ "$KEYWORD" = "fix-pr" ]; then
+            elif [ "$KEYWORD" = "fix" ]; then
               MODE=fix-pr-review
             else
               MODE=implement
@@ -292,7 +292,7 @@ jobs:
       effort: ${{ needs.classify.outputs.effort }}
     secrets: inherit
 
-  # The "@claude fix-pr" keyword route: same push capability and the same
+  # The "@claude fix" keyword route: same push capability and the same
   # independent trusted-PR-author re-assertion as implement (see above), but
   # runs the review-fixing playbook prompt — fetch all review feedback,
   # validate each finding against the code, fix what survives, post a

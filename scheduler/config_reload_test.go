@@ -1943,6 +1943,89 @@ func TestApplyHotReloadConfig_CircuitBreakerToggleWhileOpen(t *testing.T) {
 	}
 }
 
+// #1273: the cb_* timing/threshold overrides are hot-reloadable while a
+// position is open (they only parameterize FUTURE fires), values land on the
+// running config, change entries are logged, and clearing back to nil restores
+// the accessors' historical defaults.
+func TestApplyHotReloadConfig_CBOverridesWhileOpen(t *testing.T) {
+	intp := func(v int) *int { return &v }
+	base := func(mut func(*StrategyConfig)) []StrategyConfig {
+		sc := StrategyConfig{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+			Script:  "shared_scripts/check_hyperliquid.py",
+			Args:    []string{"momentum", "ETH", "1h", "--mode=paper"},
+			Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
+		}
+		if mut != nil {
+			mut(&sc)
+		}
+		return []StrategyConfig{sc}
+	}
+	openState := func() *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {
+				ID: "hl-eth", Cash: 900,
+				RiskState: RiskState{MaxDrawdownPct: 10},
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000, Leverage: 2},
+				},
+			},
+		}}
+	}
+	setOverrides := func(sc *StrategyConfig) {
+		sc.CBDrawdownCooldownMinutes = intp(720)
+		sc.CBLossStreakThreshold = intp(3)
+		sc.CBLossStreakCooldownMinutes = intp(30)
+	}
+
+	// defaults → overrides while a position is open: accepted, applied, logged.
+	cfg := minimalReloadConfig(base(nil))
+	next := minimalReloadConfig(base(setOverrides))
+	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
+	if err != nil {
+		t.Fatalf("cb_* overrides while open should be hot-reloadable: %v", err)
+	}
+	sc := &cfg.Strategies[0]
+	if got := sc.CircuitBreakerDrawdownCooldown(); got != 12*time.Hour {
+		t.Fatalf("drawdown cooldown after reload = %v, want 12h", got)
+	}
+	if got := sc.CircuitBreakerLossStreakThreshold(); got != 3 {
+		t.Fatalf("loss-streak threshold after reload = %d, want 3", got)
+	}
+	if got := sc.CircuitBreakerLossStreakCooldown(); got != 30*time.Minute {
+		t.Fatalf("loss-streak cooldown after reload = %v, want 30m", got)
+	}
+	joined := strings.Join(changes, "\n")
+	for _, want := range []string{"cb_drawdown_cooldown_minutes", "cb_loss_streak_threshold", "cb_loss_streak_cooldown_minutes"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected a %s change entry, got %v", want, changes)
+		}
+	}
+
+	// overrides → defaults (fields removed) while open: accepted, accessors
+	// fall back to the historical values.
+	cfg = minimalReloadConfig(base(setOverrides))
+	next = minimalReloadConfig(base(nil))
+	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
+		t.Fatalf("clearing cb_* overrides while open should be hot-reloadable: %v", err)
+	}
+	sc = &cfg.Strategies[0]
+	if sc.CircuitBreakerDrawdownCooldown() != 24*time.Hour || sc.CircuitBreakerLossStreakThreshold() != 5 || sc.CircuitBreakerLossStreakCooldown() != time.Hour {
+		t.Fatal("cleared overrides should fall back to the historical defaults")
+	}
+}
+
+// #1273: a cb_*-override-only change must not register in the restart shape
+// (else validateHotReloadCompatible would flag it as restart-required).
+func TestStrategyRestartShape_CBOverrideOnlyChange(t *testing.T) {
+	dd, th, lc := 720, 3, 30
+	a := StrategyConfig{ID: "hl-a"}
+	b := StrategyConfig{ID: "hl-a", CBDrawdownCooldownMinutes: &dd, CBLossStreakThreshold: &th, CBLossStreakCooldownMinutes: &lc}
+	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(b)) {
+		t.Fatal("cb_* override set-vs-nil should not affect restart shape")
+	}
+}
+
 // #1048: a circuit_breaker-only change must not register in the restart shape
 // (else validateHotReloadCompatible would flag it as restart-required).
 func TestStrategyRestartShape_CircuitBreakerOnlyChange(t *testing.T) {

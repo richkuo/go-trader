@@ -65,6 +65,47 @@ VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
 # name -> {fn, description, default_params, platforms, variants}
 STRATEGIES: Dict[str, Dict[str, Any]] = {}
 
+# Strategies the M5 fee audit (#999, docs/research/fee-audit-m5.md) assigned
+# the `deprecate` verdict: gross edge <= 0 on every measured leg, so no
+# selectivity/fee tuning can salvage them. Each carries
+# ``edge_status="deprecated_m5"`` in its registry entry and is quarantined
+# from discovery via DISCOVERY_HIDDEN_STRATEGIES below (#1275). They stay
+# registered so explicit configs keep loading and backtests keep running.
+# The operator warning lives on the Go side only (scheduler/edge_status.go
+# mirrors this roster as m5DeprecatedEdgeStrategies — keep the two rosters
+# identical): a startup [config] line + one-time owner DM, acknowledged via
+# per-strategy `allow_deprecated: true`. Per-cycle Python warnings were
+# deliberately dropped — check scripts run once per trade cycle, so a print
+# here would repeat unbounded and could never see the Go-side ack.
+M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
+    "adx_trend",
+    "amd_ifvg",
+    "atr_breakout",
+    "bollinger_bands",
+    "ema_crossover",
+    "heikin_ashi_ema",
+    "ichimoku_cloud",
+    "macd",
+    "mean_reversion",
+    "momentum",
+    "mtf_confluence",
+    "order_blocks",
+    "pairs_spread",
+    "parabolic_sar",
+    "range_scalper",
+    "rsi",
+    "rsi_macd_combo",
+    "sma_crossover",
+    "squeeze_momentum",
+    "stoch_rsi",
+    "supertrend",
+    "sweep_squeeze_combo",
+    "triple_ema",
+    "volume_weighted",
+    "vol_momentum",
+    "vwap_reversion",
+})
+
 # Strategies kept loadable for existing configs/backtests but hidden from
 # discovery surfaces such as --list-json and generated defaults.
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
@@ -74,7 +115,7 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "range_scalper",
     "session_breakout",
     "vol_momentum",
-})
+}) | M5_DEPRECATED_EDGE_STRATEGIES
 
 
 def register(
@@ -121,6 +162,12 @@ def register(
             "platforms": platforms,
             "variants": variants,
             "backtest_only": bool(backtest_only),
+            # #1275: evidence-status flag; "deprecated_m5" marks a documented
+            # negative-gross-edge verdict (roster is the module-level set so
+            # the quarantine has a single canonical source).
+            "edge_status": (
+                "deprecated_m5" if name in M5_DEPRECATED_EDGE_STRATEGIES else None
+            ),
         }
         return fn
 
@@ -167,6 +214,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
                 **variant.get("default_params", {}),
             },
             "backtest_only": entry.get("backtest_only", False),
+            "edge_status": entry.get("edge_status"),
         }
     return out
 
