@@ -989,6 +989,14 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	// #1285: refuse configs stamped below the migration floor BEFORE any
+	// migration pass runs. The pre-v13 rewrite handlers were removed, so
+	// falling through would partially migrate the file and silently mis-load
+	// it. Version-less configs (no config_version stamp) pass — they are
+	// hand-authored current-shape files and take the v13 synthesis below.
+	if err := checkRawConfigVersionSupported(data); err != nil {
+		return nil, err
+	}
 	// #640: v13 introduced co-located StrategyRef shape, which is a type-changing
 	// migration json.Unmarshal cannot do on its own. Detect pre-v13 configs and
 	// run the schema rewrite synchronously before parsing — MigrateConfig writes

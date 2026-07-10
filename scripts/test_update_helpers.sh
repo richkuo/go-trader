@@ -239,4 +239,49 @@ fi
 [[ -f "$mig2/var/live/config.json" ]] || { echo "FAIL: no-op altered the target" >&2; exit 1; }
 rm -rf "$mig2"
 
+# --- #1285: ExecStart --config extraction for the fleet config_version audit --
+assert_eq "$(update_execstart_config_path '{ path=/opt/go-trader/go-trader ; argv[]=/opt/go-trader/go-trader --config /var/lib/go-trader/config.json ; ignore_errors=no }')" \
+    "/var/lib/go-trader/config.json" "systemd ExecStart show-value with --config <path>"
+assert_eq "$(update_execstart_config_path '/opt/go-trader/go-trader --config=/var/lib/go-trader/live/config.json --once')" \
+    "/var/lib/go-trader/live/config.json" "--config=<path> form"
+assert_eq "$(update_execstart_config_path '/opt/go-trader/go-trader --status-port 8099')" \
+    "" "no --config flag -> empty (caller falls back to scheduler/config.json)"
+assert_eq "$(update_execstart_config_path '')" \
+    "" "empty ExecStart -> empty"
+
+# --- #1285: fleet audit script — read-only, explicit-dir mode ----------------
+fleet=$(mktemp -d)
+mkdir -p "$fleet/ok/scheduler" "$fleet/old/scheduler" "$fleet/none/scheduler"
+printf '{"config_version": 16}\n' > "$fleet/ok/scheduler/config.json"
+printf '{"config_version": 12}\n' > "$fleet/old/scheduler/config.json"
+printf '{"interval_seconds": 600}\n' > "$fleet/none/scheduler/config.json"
+
+audit_out=$(bash "${SCRIPT_DIR}/check-config-versions.sh" "$fleet/ok") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "fleet audit: v16-only fleet passes"
+if [[ "$audit_out" != *"VERDICT: OK"* ]]; then
+    echo "FAIL: expected OK verdict for v16 fleet, got: $audit_out" >&2
+    exit 1
+fi
+
+audit_out=$(bash "${SCRIPT_DIR}/check-config-versions.sh" "$fleet/ok" "$fleet/old") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "fleet audit: v12 deployment blocks"
+if [[ "$audit_out" != *"VERDICT: BLOCKED"* || "$audit_out" != *"below floor"* ]]; then
+    echo "FAIL: expected BLOCKED verdict for v12 deployment, got: $audit_out" >&2
+    exit 1
+fi
+
+audit_out=$(bash "${SCRIPT_DIR}/check-config-versions.sh" "$fleet/none") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "fleet audit: version-less config is OK (stamped on next start)"
+if [[ "$audit_out" != *"version-less"* ]]; then
+    echo "FAIL: expected version-less note, got: $audit_out" >&2
+    exit 1
+fi
+
+audit_out=$(bash "${SCRIPT_DIR}/check-config-versions.sh" "$fleet/missing-dir") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "fleet audit: missing config is a FAIL (cannot verify)"
+
+# The audit must never mutate a config it reads.
+assert_eq "$(cat "$fleet/old/scheduler/config.json")" '{"config_version": 12}' "fleet audit is read-only"
+rm -rf "$fleet"
+
 echo "OK: update_helpers tests passed"

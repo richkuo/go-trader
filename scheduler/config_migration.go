@@ -12,6 +12,107 @@ import (
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
 const CurrentConfigVersion = 16
 
+// MinSupportedConfigVersion is the oldest stamped config_version the migration
+// ladder can still bring forward (#1285). The v6–v12 rewrite handlers (channel
+// booleans, dm_channels translation, summary-freq cleanup, sizing_leverage
+// backfill, ATR-stop knob) were deleted after fleet verification, so a config
+// stamped below this floor is rejected loudly at load — never partially
+// migrated. A config with NO config_version stamp (0) is treated as a
+// hand-authored file in the current shape: it takes the v13 shape synthesis +
+// v14–v16 passes but NOT the deleted v6–v12 handlers. Most of those handlers
+// were inert for a current-shape file — channel/summary-freq keys are ignored
+// by the runtime, and sizing_leverage/default_stop_loss_atr_mult are covered by
+// runtime fallbacks — so their loss changes nothing. The one exception is the
+// v7 dm_paper_trades/dm_live_trades → dm_channels translation, which has no
+// runtime substitute: a version-less config still carrying those keys is
+// rejected loudly (versionlessConfigRemovedTranslationKey) rather than silently
+// losing DM trade-alert routing (#1285 review).
+const MinSupportedConfigVersion = 13
+
+// errUnsupportedConfigVersion is the fail-loud rejection for configs stamped
+// below MinSupportedConfigVersion. It names the floor and the migration path.
+func errUnsupportedConfigVersion(ver int) error {
+	return fmt.Errorf("config_version %d is no longer supported (minimum %d, current %d): the pre-v%d migration handlers were removed in #1285. Load this config once with an older go-trader build that still ships the full migration ladder — e.g. the pre-update binary preserved as ./go-trader.prev by scripts/update.sh — then restart the current binary",
+		ver, MinSupportedConfigVersion, CurrentConfigVersion, MinSupportedConfigVersion)
+}
+
+// v7DMTranslationKeys are the legacy per-section DM-routing booleans (#248) that
+// the deleted v7 handler translated into a dm_channels map. Unlike the other
+// deleted pre-floor handlers — the v6 channel_* and v8 summary-freq passes only
+// dropped inert keys — this translation has NO runtime substitute: a config
+// that skips it silently loses DM trade-alert routing. Both the discord and
+// telegram sections carried this pair.
+var v7DMTranslationKeys = []string{"dm_paper_trades", "dm_live_trades"}
+
+// errVersionlessRemovedTranslationKey rejects a version-less config that still
+// carries a v7 DM-routing key whose translation handler was removed in #1285.
+// It names the offending key and the same ./go-trader.prev recovery path as the
+// stamped-floor rejection.
+func errVersionlessRemovedTranslationKey(key string) error {
+	return fmt.Errorf("config has no config_version stamp but still carries the legacy key %q, whose v7 migration into the dm_channels map was removed in #1285. A version-less config is treated as current-shape and no longer runs that translation, so DM trade-alert routing would be silently lost. Replace it with the current discord/telegram dm_channels map, or load this config once with an older go-trader build that still ships the full migration ladder — e.g. the pre-update binary preserved as ./go-trader.prev by scripts/update.sh — then restart the current binary",
+		key)
+}
+
+// versionlessConfigRemovedTranslationKey reports the first pre-floor legacy key
+// that a version-less config (no config_version stamp) still carries and whose
+// migration handler — deleted in #1285 — performed a runtime-affecting
+// translation with no substitute (the v7 dm_* → dm_channels routing). It
+// returns ("", false) for a stamped config (the version floor covers those) or
+// one carrying no such key. Operates on raw bytes so it runs before any
+// migration/rewrite, and a JSON parse error is deferred to the normal parse
+// path. Only the v7 dm_* keys qualify — the v6 channel_* / v8 summary-freq keys
+// were inert cleanup with no runtime effect and stay accepted (and inert).
+func versionlessConfigRemovedTranslationKey(data []byte) (string, bool) {
+	var meta struct {
+		ConfigVersion int                        `json:"config_version"`
+		Discord       map[string]json.RawMessage `json:"discord"`
+		Telegram      map[string]json.RawMessage `json:"telegram"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", false
+	}
+	if meta.ConfigVersion != 0 {
+		return "", false
+	}
+	for _, section := range []struct {
+		name string
+		raw  map[string]json.RawMessage
+	}{
+		{"discord", meta.Discord},
+		{"telegram", meta.Telegram},
+	} {
+		for _, key := range v7DMTranslationKeys {
+			if _, present := section.raw[key]; present {
+				return section.name + "." + key, true
+			}
+		}
+	}
+	return "", false
+}
+
+// checkRawConfigVersionSupported enforces the MinSupportedConfigVersion floor
+// on raw config bytes before any migration pass runs. A missing/zero
+// config_version is allowed (hand-authored current-shape config), except when
+// it still carries a v7 DM-routing key the deleted handlers can no longer
+// translate — that is rejected loudly (see versionlessConfigRemovedTranslationKey).
+// A JSON parse error is deferred to the normal parse path so its message stays
+// primary.
+func checkRawConfigVersionSupported(data []byte) error {
+	var meta struct {
+		ConfigVersion int `json:"config_version"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return nil
+	}
+	if meta.ConfigVersion != 0 && meta.ConfigVersion < MinSupportedConfigVersion {
+		return errUnsupportedConfigVersion(meta.ConfigVersion)
+	}
+	if key, found := versionlessConfigRemovedTranslationKey(data); found {
+		return errVersionlessRemovedTranslationKey(key)
+	}
+	return nil
+}
+
 // ConfigField describes a config field introduced in a specific version.
 type ConfigField struct {
 	Version     int    // version this field was added
@@ -21,74 +122,12 @@ type ConfigField struct {
 	FieldType   string // "string", "bool", "int", "float"
 }
 
-// configFieldRegistry lists all fields added since v1.
-var configFieldRegistry = []ConfigField{
-	{
-		Version:     2,
-		JSONPath:    "discord.owner_id",
-		Description: "Your Discord user ID (for upgrade DMs and config prompts). Right-click your username in Discord → Copy User ID.",
-		Default:     "",
-		FieldType:   "string",
-	},
-	{
-		Version:     3,
-		JSONPath:    "portfolio_risk.warn_threshold_pct",
-		Description: "Percentage of max_drawdown_pct at which to send a warning alert (e.g. 60 means warn at 60% of the kill switch threshold).",
-		Default:     "60",
-		FieldType:   "float",
-	},
-}
-
-// v6DeprecatedFields lists fields removed in v6 (channel boolean routing replaced by
-// <platform>-paper channel key convention). These are cleaned up during migration.
-var v6DeprecatedFields = []string{
-	"discord.channel_live_trades",
-	"discord.channel_paper_trades",
-	"telegram.channel_live_trades",
-	"telegram.channel_paper_trades",
-}
-
-const v6DeprecationNotice = "**Note:** `channel_paper_trades` and `channel_live_trades` have been removed. " +
-	"Channel trade alerts are now controlled by channel presence: add `\"<platform>-paper\"` keys to " +
-	"your channels map for paper-specific routing. See issue #247."
-
-// v7DeprecatedFields lists fields removed in v7 (replaced by dm_channels map). Cleaned during migration.
-var v7DeprecatedFields = []string{
-	"discord.dm_paper_trades",
-	"discord.dm_live_trades",
-	"telegram.dm_paper_trades",
-	"telegram.dm_live_trades",
-}
-
-// v8DeprecatedFields lists fields removed in v8 (replaced by top-level
-// summary_frequency map, #30). The old spot_summary_freq / options_summary_freq
-// fields under discord were never wired to the main loop.
-var v8DeprecatedFields = []string{
-	"discord.spot_summary_freq",
-	"discord.options_summary_freq",
-}
-
-const v8DeprecationNotice = "**Note:** `discord.spot_summary_freq` and `discord.options_summary_freq` have been replaced by " +
-	"a top-level `summary_frequency` map keyed by channel (e.g. `\"spot\": \"hourly\"`, `\"options\": \"every\"`). " +
-	"Values may be `\"every\"`/`\"per_check\"`/`\"always\"` (every cycle), `\"hourly\"` (1h), `\"daily\"` (24h), or any Go duration like `\"30m\"`. " +
-	"Empty/missing falls back to legacy defaults (options/perps/futures every cycle, spot hourly). See issue #30."
-
-// v9 introduced auto-derivation of HL perps per-trade stop-loss from
-// max_drawdown_pct (#484). The field types changed from float64 to *float64
-// so omitted (nil) is distinguishable from explicit 0. Behavior change for
-// existing configs: a single HL perps strategy on a coin without an explicit
-// `stop_loss_pct` or `stop_loss_margin_pct` will now place an exchange-side
-// reduce-only trigger on every fresh open (capped at 50%). Same-coin peer
-// groups are normalized at LoadConfig time so omitted fields opt out unless
-// the operator chooses one explicit stop-loss owner (#494).
-const v9DeprecationNotice = "**Note:** HL perps strategies now auto-derive a per-trade stop-loss from `max_drawdown_pct` " +
-	"(capped at 50%) when neither `stop_loss_pct` nor `stop_loss_margin_pct` is set and the strategy is the only " +
-	"HL perps strategy for that coin. Same-coin peer groups keep omitted fields as an exchange-side stop opt-out; " +
-	"choose one explicit positive stop-loss owner if you want a shared-position trigger. See issues #484 and #494."
-
-const v10DeprecationNotice = "**Note:** perps configs now distinguish `sizing_leverage` from exchange `leverage`. " +
-	"Migration copies existing perps `leverage` into `sizing_leverage` so old configs keep identical order sizing; " +
-	"`leverage` now represents the exchange leverage used for margin drawdown and HL `update_leverage`. See issue #497."
+// configFieldRegistry lists all operator-promptable fields added since the
+// migration floor. The v2 (discord.owner_id) and v3
+// (portfolio_risk.warn_threshold_pct) entries were removed with the #1285
+// floor — every supported config (v13+) already went through those prompts.
+// Add new entries here when a future version introduces an operator-set field.
+var configFieldRegistry = []ConfigField{}
 
 // v14 replaces the legacy `allow_shorts: bool` field with `direction: "long"|"short"|"both"`,
 // unlocking dedicated short-only strategies (#656). Migration translates
@@ -104,13 +143,6 @@ const v15DeprecationNotice = "**Note:** close-strategy params now use canonical 
 	"and legacy tier-keyed `tiered_tp_atr_regime` blocks→unified top-level `trend_regime` " +
 	"(with per-label `stop_loss_atr` + `tp_tiers`). See issue #841."
 
-const v7DeprecationNotice = "**Note:** `dm_paper_trades` and `dm_live_trades` have been replaced by a `dm_channels` map. " +
-	"Paper trades use `dm_channels[\"<platform>-paper\"]`; live trades use `dm_channels[\"<platform>\"]`. " +
-	"Absent keys disable DM-style trade alerts for that platform. Values may be a user ID (delivered as a DM) " +
-	"or a channel/chat ID (delivered as a channel message) — the name \"dm_channels\" reflects the fallback behavior, " +
-	"not a restriction. Migration populates `dm_channels` only for platforms currently configured; new platforms " +
-	"added later will not auto-enroll — add an entry manually. See issue #248."
-
 // NewFieldsSince returns all ConfigFields added after the given version number.
 func NewFieldsSince(version int) []ConfigField {
 	var fields []ConfigField
@@ -124,7 +156,11 @@ func NewFieldsSince(version int) []ConfigField {
 
 // MigrateConfig loads the config as a raw JSON map, applies fieldValues at dot-paths,
 // removes deprecated fields, bumps config_version to CurrentConfigVersion, and writes back atomically.
-// cfg is optional; when non-nil it is used to translate pre-v7 dm_* booleans into dm_channels per strategy platform.
+// Configs stamped below MinSupportedConfigVersion are rejected before any pass
+// runs — never partially migrated (#1285).
+// cfg is unused since the pre-v7 dm_channels translation was removed (#1285);
+// it is retained so future migrations can consult the parsed config. Callers
+// may pass nil.
 func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -141,49 +177,25 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 		oldVer = int(v)
 	}
 
+	// #1285: fail loudly BEFORE any rewrite when the config predates the
+	// migration floor — the sub-floor handlers are gone, so falling through
+	// would silently drop their translations and mis-load the config.
+	if oldVer != 0 && oldVer < MinSupportedConfigVersion {
+		return errUnsupportedConfigVersion(oldVer)
+	}
+	// #1285: likewise reject a version-less config that still carries a v7
+	// DM-routing key — that translation was deleted, so a rewrite would preserve
+	// the dead key on disk while the runtime silently ignores it (lost DM
+	// routing). Mirrors the loadConfig-level guard in
+	// checkRawConfigVersionSupported; reject before any rewrite.
+	if oldVer == 0 {
+		if key, found := versionlessConfigRemovedTranslationKey(data); found {
+			return errVersionlessRemovedTranslationKey(key)
+		}
+	}
+
 	for path, value := range fieldValues {
 		setNestedField(raw, path, value)
-	}
-
-	// v6: remove deprecated channel boolean fields (replaced by <platform>-paper convention).
-	if oldVer < 6 {
-		for _, path := range v6DeprecatedFields {
-			removeNestedField(raw, path)
-		}
-	}
-
-	// v7: translate dm_paper_trades / dm_live_trades into dm_channels, then remove deprecated booleans.
-	if oldVer < 7 {
-		translateV7DMChannels(raw, cfg)
-		for _, path := range v7DeprecatedFields {
-			removeNestedField(raw, path)
-		}
-	}
-
-	// v8: remove dead discord.spot_summary_freq / options_summary_freq (#30).
-	// No translation — the old fields were never wired to the main loop, so
-	// silently dropping them changes no runtime behavior. Users opting in to
-	// per-channel cadence populate the top-level summary_frequency map.
-	if oldVer < 8 {
-		for _, path := range v8DeprecatedFields {
-			removeNestedField(raw, path)
-		}
-	}
-
-	// v10: split position-sizing leverage from exchange leverage (#497). Copy
-	// existing perps leverage to sizing_leverage so legacy configs keep the
-	// exact same notional sizing after `leverage` becomes exchange/risk leverage.
-	if oldVer < 10 {
-		addV10SizingLeverage(raw)
-	}
-
-	// v12: expose the hardcoded HL default ATR stop multiplier as a top-level
-	// config knob (#605). Existing behavior remains 1.0 unless the operator
-	// edits default_stop_loss_atr_mult.
-	if oldVer < 12 {
-		if _, ok := raw["default_stop_loss_atr_mult"]; !ok {
-			raw["default_stop_loss_atr_mult"] = DefaultStopLossATRMult
-		}
 	}
 
 	// v13: co-locate strategy name + params via StrategyRef (#640). Three
@@ -194,6 +206,9 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	// Legacy keys claimed by a close registry's default_params (see
 	// closeStrategyOwnedKeys) move into that close ref; everything else stays
 	// on the open ref. Any remaining empty `params` field is removed.
+	// Post-#1285 only version-less configs (oldVer==0, hand-authored without a
+	// config_version stamp) reach this pass — stamped pre-v13 configs are
+	// rejected above.
 	if oldVer < 13 {
 		migrateV13StrategyShape(raw)
 	}
@@ -247,101 +262,6 @@ func setNestedField(obj map[string]interface{}, path string, value string) {
 		obj[parts[0]] = nested
 	}
 	setNestedField(nested, parts[1], value)
-}
-
-// removeNestedField removes a field at a dot-path from a nested map[string]interface{}.
-func removeNestedField(obj map[string]interface{}, path string) {
-	parts := strings.SplitN(path, ".", 2)
-	if len(parts) == 1 {
-		delete(obj, parts[0])
-		return
-	}
-	nested, ok := obj[parts[0]].(map[string]interface{})
-	if !ok {
-		return
-	}
-	removeNestedField(nested, parts[1])
-}
-
-// translateV7DMChannels merges legacy dm_paper_trades / dm_live_trades booleans into dm_channels (#248).
-func translateV7DMChannels(raw map[string]interface{}, cfg *Config) {
-	if cfg == nil {
-		return
-	}
-	platforms := collectUniquePlatforms(cfg)
-	translateSection := func(section, ownerKey string) {
-		sec, ok := raw[section].(map[string]interface{})
-		if !ok {
-			return
-		}
-		liveB := jsonBoolish(sec["dm_live_trades"])
-		paperB := jsonBoolish(sec["dm_paper_trades"])
-		if !liveB && !paperB {
-			return
-		}
-		owner := stringFromJSON(sec[ownerKey])
-		if owner == "" {
-			fmt.Printf("[migration] %s: dm_paper_trades/dm_live_trades enabled but %s is empty — cannot populate dm_channels\n", section, ownerKey)
-			return
-		}
-		if len(platforms) == 0 {
-			fmt.Printf("[migration] %s: dm trade booleans set but no strategies found — add dm_channels manually\n", section)
-			return
-		}
-		dm := cloneOrNewJSONMap(sec["dm_channels"])
-		for _, p := range platforms {
-			if paperB {
-				k := p + "-paper"
-				if _, exists := dm[k]; !exists {
-					dm[k] = owner
-				}
-			}
-			if liveB {
-				if _, exists := dm[p]; !exists {
-					dm[p] = owner
-				}
-			}
-		}
-		sec["dm_channels"] = dm
-	}
-	translateSection("discord", "owner_id")
-	translateSection("telegram", "owner_chat_id")
-}
-
-func addV10SizingLeverage(raw map[string]interface{}) {
-	strategies, ok := raw["strategies"].([]interface{})
-	if !ok {
-		return
-	}
-	for _, item := range strategies {
-		sc, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if _, exists := sc["sizing_leverage"]; exists {
-			continue
-		}
-		if stringFromJSON(sc["type"]) != "perps" {
-			continue
-		}
-		if lev, ok := sc["leverage"]; ok {
-			sc["sizing_leverage"] = lev
-		}
-	}
-}
-
-func collectUniquePlatforms(cfg *Config) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, sc := range cfg.Strategies {
-		p := strings.TrimSpace(sc.Platform)
-		if p == "" || seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	return out
 }
 
 func jsonBoolish(v interface{}) bool {
@@ -402,46 +322,6 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		if err := MigrateConfig(configPath, nil, cfg); err != nil {
 			fmt.Printf("[migration] Failed to bump config version: %v\n", err)
 		}
-		// v6: notify about deprecated channel boolean removal.
-		if cfg.ConfigVersion < 6 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v6DeprecationNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v6DeprecationNotice)
-			}
-		}
-		// v7: notify about dm_channels migration (#248).
-		if cfg.ConfigVersion < 7 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v7DeprecationNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v7DeprecationNotice)
-			}
-		}
-		// v8: notify about summary_frequency migration (#30).
-		if cfg.ConfigVersion < 8 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v8DeprecationNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v8DeprecationNotice)
-			}
-		}
-		// v9: notify about HL perps auto-SL fallback to max_drawdown_pct (#484).
-		if cfg.ConfigVersion < 9 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v9DeprecationNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v9DeprecationNotice)
-			}
-		}
-		// v10: notify about sizing_leverage split (#497).
-		if cfg.ConfigVersion < 10 {
-			if notifier != nil && notifier.HasOwner() {
-				notifier.SendOwnerDM(v10DeprecationNotice)
-			} else {
-				fmt.Printf("[migration] %s\n", v10DeprecationNotice)
-			}
-		}
 		// v14: notify about allow_shorts → direction migration (#656).
 		if cfg.ConfigVersion < 14 {
 			if notifier != nil && notifier.HasOwner() {
@@ -465,21 +345,6 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if err := MigrateConfig(configPath, values, cfg); err != nil {
 			fmt.Printf("[migration] Failed to migrate config: %v\n", err)
-		}
-		if cfg.ConfigVersion < 6 {
-			fmt.Printf("[migration] %s\n", v6DeprecationNotice)
-		}
-		if cfg.ConfigVersion < 7 {
-			fmt.Printf("[migration] %s\n", v7DeprecationNotice)
-		}
-		if cfg.ConfigVersion < 8 {
-			fmt.Printf("[migration] %s\n", v8DeprecationNotice)
-		}
-		if cfg.ConfigVersion < 9 {
-			fmt.Printf("[migration] %s\n", v9DeprecationNotice)
-		}
-		if cfg.ConfigVersion < 10 {
-			fmt.Printf("[migration] %s\n", v10DeprecationNotice)
 		}
 		if cfg.ConfigVersion < 14 {
 			fmt.Printf("[migration] %s\n", v14DeprecationNotice)
@@ -516,26 +381,6 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 
 	notifier.SendOwnerDM("Config updated. Changes take effect next restart.")
 
-	// v6: notify about deprecated channel boolean removal.
-	if cfg.ConfigVersion < 6 {
-		notifier.SendOwnerDM(v6DeprecationNotice)
-	}
-	// v7: notify about dm_channels migration (#248).
-	if cfg.ConfigVersion < 7 {
-		notifier.SendOwnerDM(v7DeprecationNotice)
-	}
-	// v8: notify about summary_frequency migration (#30).
-	if cfg.ConfigVersion < 8 {
-		notifier.SendOwnerDM(v8DeprecationNotice)
-	}
-	// v9: notify about HL perps auto-SL fallback to max_drawdown_pct (#484).
-	if cfg.ConfigVersion < 9 {
-		notifier.SendOwnerDM(v9DeprecationNotice)
-	}
-	// v10: notify about sizing_leverage split (#497).
-	if cfg.ConfigVersion < 10 {
-		notifier.SendOwnerDM(v10DeprecationNotice)
-	}
 	// v14: notify about allow_shorts → direction migration (#656).
 	if cfg.ConfigVersion < 14 {
 		notifier.SendOwnerDM(v14DeprecationNotice)
