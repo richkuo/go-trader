@@ -419,6 +419,183 @@ func TestMigrateConfigAtFloorNeverStripsLegacyNames(t *testing.T) {
 	}
 }
 
+// assertVersionlessDMKeyError asserts the #1285-review version-less rejection:
+// the error names the offending legacy key, explains the missing config_version
+// stamp, points at dm_channels + the go-trader.prev recovery path, and (when a
+// path/original is supplied) the on-disk file is byte-identical — never
+// partially migrated.
+func assertVersionlessDMKeyError(t *testing.T, err error, key, path string, original []byte) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected version-less removed-translation-key rejection for %q, got nil", key)
+	}
+	msg := err.Error()
+	for _, want := range []string{key, "no config_version stamp", "dm_channels", "go-trader.prev"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+	if path == "" {
+		return
+	}
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, original) {
+		t.Errorf("config file was modified despite rejection — partial migration:\n%s", after)
+	}
+}
+
+// TestVersionlessConfigRejectsRemovedDMTranslationKeys covers the #1285-review
+// gap: a version-less config (no config_version stamp) is treated as
+// current-shape and no longer runs the deleted v7 dm_paper_trades/dm_live_trades
+// → dm_channels translation. That translation has no runtime substitute, so a
+// version-less file still carrying either key must be rejected loudly at the raw
+// gate, at MigrateConfig, and at LoadConfig — never silently loaded with DM
+// routing dropped, never partially migrated. Covers both the discord and
+// telegram sections and both booleans, each with a populated owner target (the
+// realistic silent-loss scenario from the review).
+func TestVersionlessConfigRejectsRemovedDMTranslationKeys(t *testing.T) {
+	cases := []struct {
+		name    string
+		section string
+		key     string
+	}{
+		{"discord_dm_paper_trades", "discord", "dm_paper_trades"},
+		{"discord_dm_live_trades", "discord", "dm_live_trades"},
+		{"telegram_dm_paper_trades", "telegram", "dm_paper_trades"},
+		{"telegram_dm_live_trades", "telegram", "dm_live_trades"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			ownerKey := "owner_id"
+			if tc.section == "telegram" {
+				ownerKey = "owner_chat_id"
+			}
+			obj := map[string]interface{}{
+				// No config_version key — version-less.
+				"interval_seconds": 3600,
+				tc.section: map[string]interface{}{
+					ownerKey: "owner-target",
+					tc.key:   true,
+				},
+			}
+			original := writeRawConfig(t, path, obj)
+			fullKey := tc.section + "." + tc.key
+
+			// Raw pre-migration gate rejects (no file to check).
+			assertVersionlessDMKeyError(t, checkRawConfigVersionSupported(original), fullKey, "", nil)
+			// MigrateConfig rejects before any rewrite — file byte-identical.
+			assertVersionlessDMKeyError(t, MigrateConfig(path, nil, nil), fullKey, path, original)
+			// LoadConfig rejects — the daemon never starts on it, file untouched.
+			_, loadErr := LoadConfig(path)
+			assertVersionlessDMKeyError(t, loadErr, fullKey, path, original)
+		})
+	}
+}
+
+// TestVersionlessConfigRemovedTranslationKeyAcceptance pins the negative side of
+// the #1285-review guard: it must fire ONLY on the removed v7 dm_* booleans and
+// never on (a) the inert v6 channel_* / v8 summary-freq keys [review must-survive
+// b], (b) the CURRENT dm_channels map — whose key merely shares the "dm_" prefix,
+// (c) a clean version-less config with no legacy keys [review must-survive c], or
+// (d) a stamped (v13+) config carrying a stray dm_* key, which the version-floor
+// path owns, not this guard.
+func TestVersionlessConfigRemovedTranslationKeyAcceptance(t *testing.T) {
+	cases := []struct {
+		name string
+		obj  map[string]interface{}
+	}{
+		{
+			name: "versionless_inert_channel_and_summary_keys",
+			obj: map[string]interface{}{
+				"discord": map[string]interface{}{
+					"channel_paper_trades": true,
+					"channel_live_trades":  true,
+					"spot_summary_freq":    "hourly",
+				},
+			},
+		},
+		{
+			name: "versionless_current_dm_channels_map",
+			obj: map[string]interface{}{
+				"discord": map[string]interface{}{
+					"dm_channels": map[string]interface{}{"hyperliquid-paper": "disc-owner"},
+				},
+			},
+		},
+		{
+			name: "versionless_clean_no_discord",
+			obj:  map[string]interface{}{"interval_seconds": 3600},
+		},
+		{
+			name: "stamped_config_with_stray_dm_key",
+			obj: map[string]interface{}{
+				"config_version": CurrentConfigVersion,
+				"discord":        map[string]interface{}{"dm_paper_trades": true},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.MarshalIndent(tc.obj, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key, found := versionlessConfigRemovedTranslationKey(data); found {
+				t.Errorf("versionlessConfigRemovedTranslationKey flagged %q — %s should be accepted", key, tc.name)
+			}
+			if err := checkRawConfigVersionSupported(data); err != nil {
+				t.Errorf("checkRawConfigVersionSupported rejected %s: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestVersionlessConfigWithInertPreFloorKeysMigrates is the migration-path proof
+// of review must-survive (b): a version-less config carrying the inert v6
+// channel_* / v8 summary-freq keys migrates cleanly to CurrentConfigVersion and
+// RETAINS those keys on disk (the runtime ignores them) — the #1285-review guard
+// never trips on them, and nothing is stripped or translated.
+func TestVersionlessConfigWithInertPreFloorKeysMigrates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	writeRawConfig(t, path, map[string]interface{}{
+		// No config_version key — version-less.
+		"interval_seconds": 3600,
+		"strategies":       []interface{}{},
+		"discord": map[string]interface{}{
+			"owner_id":             "disc-owner",
+			"channel_paper_trades": true,
+			"channel_live_trades":  true,
+			"spot_summary_freq":    "hourly",
+		},
+	})
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatalf("MigrateConfig rejected a version-less config with inert pre-floor keys: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(after, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if v := int(updated["config_version"].(float64)); v != CurrentConfigVersion {
+		t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
+	}
+	discord := updated["discord"].(map[string]interface{})
+	for _, key := range []string{"channel_paper_trades", "channel_live_trades", "spot_summary_freq"} {
+		if _, ok := discord[key]; !ok {
+			t.Errorf("discord.%s should be retained (inert) for a version-less config", key)
+		}
+	}
+}
+
 // TestMigrateConfigV8PreservesFieldsAtCurrentVersion verifies the version
 // guard — a config already at the current version must not have the v8
 // deprecated fields stripped if a user intentionally reintroduced them.

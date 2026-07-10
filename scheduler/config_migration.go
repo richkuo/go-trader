@@ -17,9 +17,16 @@ const CurrentConfigVersion = 16
 // booleans, dm_channels translation, summary-freq cleanup, sizing_leverage
 // backfill, ATR-stop knob) were deleted after fleet verification, so a config
 // stamped below this floor is rejected loudly at load — never partially
-// migrated. A config with NO config_version stamp (0) is NOT rejected: it is
-// treated as a hand-authored file in the current shape and still flows through
-// the remaining passes (v13 shape synthesis, v14–v16), exactly as before.
+// migrated. A config with NO config_version stamp (0) is treated as a
+// hand-authored file in the current shape: it takes the v13 shape synthesis +
+// v14–v16 passes but NOT the deleted v6–v12 handlers. Most of those handlers
+// were inert for a current-shape file — channel/summary-freq keys are ignored
+// by the runtime, and sizing_leverage/default_stop_loss_atr_mult are covered by
+// runtime fallbacks — so their loss changes nothing. The one exception is the
+// v7 dm_paper_trades/dm_live_trades → dm_channels translation, which has no
+// runtime substitute: a version-less config still carrying those keys is
+// rejected loudly (versionlessConfigRemovedTranslationKey) rather than silently
+// losing DM trade-alert routing (#1285 review).
 const MinSupportedConfigVersion = 13
 
 // errUnsupportedConfigVersion is the fail-loud rejection for configs stamped
@@ -29,10 +36,67 @@ func errUnsupportedConfigVersion(ver int) error {
 		ver, MinSupportedConfigVersion, CurrentConfigVersion, MinSupportedConfigVersion)
 }
 
+// v7DMTranslationKeys are the legacy per-section DM-routing booleans (#248) that
+// the deleted v7 handler translated into a dm_channels map. Unlike the other
+// deleted pre-floor handlers — the v6 channel_* and v8 summary-freq passes only
+// dropped inert keys — this translation has NO runtime substitute: a config
+// that skips it silently loses DM trade-alert routing. Both the discord and
+// telegram sections carried this pair.
+var v7DMTranslationKeys = []string{"dm_paper_trades", "dm_live_trades"}
+
+// errVersionlessRemovedTranslationKey rejects a version-less config that still
+// carries a v7 DM-routing key whose translation handler was removed in #1285.
+// It names the offending key and the same ./go-trader.prev recovery path as the
+// stamped-floor rejection.
+func errVersionlessRemovedTranslationKey(key string) error {
+	return fmt.Errorf("config has no config_version stamp but still carries the legacy key %q, whose v7 migration into the dm_channels map was removed in #1285. A version-less config is treated as current-shape and no longer runs that translation, so DM trade-alert routing would be silently lost. Replace it with the current discord/telegram dm_channels map, or load this config once with an older go-trader build that still ships the full migration ladder — e.g. the pre-update binary preserved as ./go-trader.prev by scripts/update.sh — then restart the current binary",
+		key)
+}
+
+// versionlessConfigRemovedTranslationKey reports the first pre-floor legacy key
+// that a version-less config (no config_version stamp) still carries and whose
+// migration handler — deleted in #1285 — performed a runtime-affecting
+// translation with no substitute (the v7 dm_* → dm_channels routing). It
+// returns ("", false) for a stamped config (the version floor covers those) or
+// one carrying no such key. Operates on raw bytes so it runs before any
+// migration/rewrite, and a JSON parse error is deferred to the normal parse
+// path. Only the v7 dm_* keys qualify — the v6 channel_* / v8 summary-freq keys
+// were inert cleanup with no runtime effect and stay accepted (and inert).
+func versionlessConfigRemovedTranslationKey(data []byte) (string, bool) {
+	var meta struct {
+		ConfigVersion int                        `json:"config_version"`
+		Discord       map[string]json.RawMessage `json:"discord"`
+		Telegram      map[string]json.RawMessage `json:"telegram"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return "", false
+	}
+	if meta.ConfigVersion != 0 {
+		return "", false
+	}
+	for _, section := range []struct {
+		name string
+		raw  map[string]json.RawMessage
+	}{
+		{"discord", meta.Discord},
+		{"telegram", meta.Telegram},
+	} {
+		for _, key := range v7DMTranslationKeys {
+			if _, present := section.raw[key]; present {
+				return section.name + "." + key, true
+			}
+		}
+	}
+	return "", false
+}
+
 // checkRawConfigVersionSupported enforces the MinSupportedConfigVersion floor
 // on raw config bytes before any migration pass runs. A missing/zero
-// config_version is allowed (hand-authored current-shape config); a JSON parse
-// error is deferred to the normal parse path so its message stays primary.
+// config_version is allowed (hand-authored current-shape config), except when
+// it still carries a v7 DM-routing key the deleted handlers can no longer
+// translate — that is rejected loudly (see versionlessConfigRemovedTranslationKey).
+// A JSON parse error is deferred to the normal parse path so its message stays
+// primary.
 func checkRawConfigVersionSupported(data []byte) error {
 	var meta struct {
 		ConfigVersion int `json:"config_version"`
@@ -42,6 +106,9 @@ func checkRawConfigVersionSupported(data []byte) error {
 	}
 	if meta.ConfigVersion != 0 && meta.ConfigVersion < MinSupportedConfigVersion {
 		return errUnsupportedConfigVersion(meta.ConfigVersion)
+	}
+	if key, found := versionlessConfigRemovedTranslationKey(data); found {
+		return errVersionlessRemovedTranslationKey(key)
 	}
 	return nil
 }
@@ -115,6 +182,16 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	// would silently drop their translations and mis-load the config.
 	if oldVer != 0 && oldVer < MinSupportedConfigVersion {
 		return errUnsupportedConfigVersion(oldVer)
+	}
+	// #1285: likewise reject a version-less config that still carries a v7
+	// DM-routing key — that translation was deleted, so a rewrite would preserve
+	// the dead key on disk while the runtime silently ignores it (lost DM
+	// routing). Mirrors the loadConfig-level guard in
+	// checkRawConfigVersionSupported; reject before any rewrite.
+	if oldVer == 0 {
+		if key, found := versionlessConfigRemovedTranslationKey(data); found {
+			return errVersionlessRemovedTranslationKey(key)
+		}
 	}
 
 	for path, value := range fieldValues {
