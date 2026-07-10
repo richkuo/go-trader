@@ -152,9 +152,16 @@ jobs:
           # Show full output in the job summary (important for code review results)
           show_full_output: true
 
-          # Load the code-review plugin so @claude review uses structured review skill
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
+          # Load the code-review plugin (structured @claude review) and the
+          # rk-skills plugin so @claude implement runs can invoke the rk-skills
+          # workflow skills — headless runs do not install plugins from
+          # .claude/settings.json.
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-code.git
+            https://github.com/richkuo/rk-skills.git
+          plugins: |
+            code-review@claude-code-plugins
+            rk-skills@rk-skills
 
           # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md

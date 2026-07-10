@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "rk-skills": {
+      "source": {
+        "source": "github",
+        "repo": "richkuo/rk-skills"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "rk-skills@rk-skills": true
+  }
+}

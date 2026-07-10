@@ -18,7 +18,9 @@ scheduler/config.json
 scheduler/state.json
 scheduler/state.db
 .worktrees/
-.claude/
+.claude/*
+# ...but the shared rk-skills plugin config is tracked (see CLAUDE.md "Claude Code Skills")
+!.claude/settings.json
 local/
 
 # macOS
