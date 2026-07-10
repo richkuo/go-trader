@@ -155,6 +155,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].margin_per_trade_usd: %s -> %s", sc.ID, formatFloatPtrUSD(sc.MarginPerTradeUSD), formatFloatPtrUSD(ns.MarginPerTradeUSD))
 			sc.MarginPerTradeUSD = ns.MarginPerTradeUSD
 		}
+		// #1268: risk_per_trade_pct value tweaks hot-reload (they only shape
+		// the NEXT open/flip sizing); risk↔notional mode switches while a
+		// position is open are blocked upstream in validateHotReloadStateCompatible.
+		if !floatPtrEqual(sc.RiskPerTradePct, ns.RiskPerTradePct) {
+			addChange("strategy[%s].risk_per_trade_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.RiskPerTradePct), formatFloatPtrPct(ns.RiskPerTradePct))
+			sc.RiskPerTradePct = ns.RiskPerTradePct
+		}
 		if sc.IntervalSeconds != ns.IntervalSeconds {
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
@@ -528,6 +535,19 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		// #1268: switching between risk-per-trade and notional sizing while a
+		// position is open changes what the NEXT flip/re-entry sizing means
+		// under the operator's feet — same shape as the scalar↔regime stop
+		// owner rule. Value tweaks (set→set) stay hot-reloadable; the switch
+		// applies when flat.
+		if sc.Type == "perps" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			oldRiskMode := sc.RiskPerTradePct != nil && *sc.RiskPerTradePct > 0
+			newRiskMode := ns.RiskPerTradePct != nil && *ns.RiskPerTradePct > 0
+			if oldRiskMode != newRiskMode {
+				errs = append(errs, fmt.Sprintf("strategy[%s] risk_per_trade_pct sizing mode changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
 		// #486: HL rejects margin-mode changes on an open position; treat
 		// the same way as Leverage. Stays hot-reloadable when flat.
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
@@ -707,6 +727,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
 	sc.MarginPerTradeUSD = nil // #518: hot-reloadable; nil/positive switching is purely additive
+	sc.RiskPerTradePct = nil   // #1268: hot-reloadable; state-compat blocks risk↔notional mode switches while open
 	sc.IntervalSeconds = 0
 	sc.OpenStrategy = StrategyRef{}
 	sc.CloseStrategy = nil

@@ -568,6 +568,7 @@ type StrategyConfig struct {
 	Leverage                float64                  `json:"leverage,omitempty"`                   // perps exchange leverage (default 1 = no leverage); used for exchange margin/risk and HL update_leverage (#254/#497)
 	SizingLeverage          float64                  `json:"sizing_leverage,omitempty"`            // perps notional multiplier; defaults to Leverage for backwards compatibility (#497). Notional formula: notional = cash * sizing_leverage; size = notional / price. For margin-based sizing, prefer MarginPerTradeUSD (#518).
 	MarginPerTradeUSD       *float64                 `json:"margin_per_trade_usd,omitempty"`       // perps only: USD margin to deploy per open. When set (positive), overrides SizingLeverage: notional = min(MarginPerTradeUSD, cash) * exchange_leverage; size = notional / price. Lets operators size in margin-space directly so high exchange_leverage doesn't decouple intent from outcome (#518).
+	RiskPerTradePct         *float64                 `json:"risk_per_trade_pct,omitempty"`         // HL perps only: opt-in risk-per-trade (fixed-fractional) sizing — qty = (cash × pct/100) / stop_distance, stop distance derived from the resolved stop owner, notional capped at cash × exchange_leverage (#1268). Bounds (0, 10]. Mutually exclusive with sizing_leverage, margin_per_trade_usd, and allow_scale_in; requires a stop owner resolvable at sizing time (regime-resolved owners and the unified close are rejected at load). Unresolvable stop distance at open time refuses the trade (fail-closed, never a notional fallback). Hot-reload: value tweaks always apply; risk↔notional mode switches are blocked while a position is open. Read via EffectiveRiskPerTradePct/PerpsSizingFor, never directly.
 	StopLossPct             *float64                 `json:"stop_loss_pct,omitempty"`              // HL perps only: % from entry to place a reduce-only stop-loss trigger. Pointer so omitted (nil) falls through to StopLossMarginPct then MaxDrawdownPct for single-coin strategies (#484); LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables auto-SL (#412)
 	StopLossMarginPct       *float64                 `json:"stop_loss_margin_pct,omitempty"`       // HL perps only: % of deployed margin to lose before stop-loss trigger; mutually exclusive with stop_loss_pct; price % derived as StopLossMarginPct / Leverage at order time. Pointer so omitted falls through to MaxDrawdownPct for single-coin strategies; LoadConfig normalizes omitted same-coin peers to explicit 0 (#494); explicit 0 disables (#487, #484)
 	TrailingStopPct         *float64                 `json:"trailing_stop_pct,omitempty"`          // HL perps only: synthetic trailing SL distance from the best mark seen while open; mutually exclusive with stop_loss_pct and stop_loss_margin_pct (#501)
@@ -1113,11 +1114,15 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 
 		// #254/#497: Default exchange leverage for perps strategies is 1x
 		// (no leverage) when unset. sizing_leverage inherits leverage unless
-		// explicitly set so old configs keep their order sizing.
+		// explicitly set so old configs keep their order sizing. #1268: a
+		// risk_per_trade_pct strategy must NOT inherit sizing_leverage — the
+		// two are mutually exclusive sizing modes, and materializing the
+		// notional default here would fail that validation on every
+		// risk-mode config.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Leverage <= 0 {
 			cfg.Strategies[i].Leverage = 1
 		}
-		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 {
+		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].SizingLeverage == 0 && cfg.Strategies[i].RiskPerTradePct == nil {
 			cfg.Strategies[i].SizingLeverage = cfg.Strategies[i].Leverage
 		}
 
@@ -1741,6 +1746,13 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: margin_per_trade_usd must be positive, got %g", prefix, *sc.MarginPerTradeUSD))
 			}
 		}
+
+		// #1268: risk-per-trade sizing — HL perps only, bounds (0, 10],
+		// mutually exclusive with the notional sizing fields and scale-in,
+		// and the stop owner must be resolvable at sizing time. Runs after
+		// LoadConfig's default_stop_loss_atr_mult pass so the materialized
+		// default counts as a valid ATR-mult owner.
+		errs = append(errs, validateRiskPerTradePct(sc, prefix)...)
 
 		// #873: scale-in / pyramiding is opt-in and scoped to HL perps + manual
 		// (live + paper). The blend math is platform-agnostic, but the on-chain

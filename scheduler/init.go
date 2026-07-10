@@ -392,6 +392,7 @@ type InitOptions struct {
 	PerpsCapital            float64
 	PerpsLeverage           float64  // perps exchange leverage (default 1 = no leverage) (#254/#497)
 	PerpsSizingLeverage     float64  // perps sizing multiplier; defaults to PerpsLeverage (#497)
+	PerpsRiskPerTradePct    float64  // HL perps only: opt-in risk-per-trade sizing % in (0, 10] (#1268); >0 emits risk_per_trade_pct and suppresses sizing_leverage (mutually exclusive). JSON-only surface like PerpsSizingLeverage; wizard users edit config post-init.
 	HLStopLossPct           *float64 // HL perps only: per-trade stop-loss % from entry. nil = auto-derive from MaxDrawdownPct (#484); explicit 0 = disabled; >0 = override (#412)
 	HLStopLossMarginPct     *float64 // HL perps only: per-trade stop-loss as % of deployed margin. nil = auto-derive; explicit 0 = disabled; mutually exclusive with HLStopLossPct (#487, #484)
 	HLTrailingStopPct       *float64 // HL perps only: synthetic trailing stop distance from high/low-water mark; mutually exclusive with fixed SL fields (#501)
@@ -585,6 +586,17 @@ func generateConfig(opts InitOptions) *Config {
 		if perpsSizingLeverage <= 0 {
 			perpsSizingLeverage = perpsLeverage
 		}
+		// #1268: risk-per-trade sizing is mutually exclusive with
+		// sizing_leverage — suppress the notional field so the generated
+		// config passes validateRiskPerTradePct. The stop owner defaults via
+		// LoadConfig's default_stop_loss_atr_mult pass unless the operator
+		// picked an explicit SL framing.
+		var perpsRiskPerTradePct *float64
+		if opts.PerpsRiskPerTradePct > 0 {
+			v := opts.PerpsRiskPerTradePct
+			perpsRiskPerTradePct = &v
+			perpsSizingLeverage = 0
+		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
 			// Strategies that emit bidirectional signals must opt in to
@@ -613,6 +625,7 @@ func generateConfig(opts InitOptions) *Config {
 					IntervalSeconds:   3600,
 					Leverage:          perpsLeverage,
 					SizingLeverage:    perpsSizingLeverage,
+					RiskPerTradePct:   perpsRiskPerTradePct, // *float64 — nil keeps notional sizing; >0 opts into risk-per-trade (#1268)
 					Direction:         direction,
 					StopLossPct:       opts.HLStopLossPct,       // *float64 — nil falls through to MaxDrawdownPct (#484)
 					StopLossMarginPct: opts.HLStopLossMarginPct, // *float64 — nil falls through (#484/#487)
@@ -902,7 +915,19 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
 		opts.PerpsLeverage = 1
 	}
-	if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
+	// #1268: risk-per-trade sizing is mutually exclusive with sizing_leverage;
+	// reject a contradictory --json payload here (mirrors validateRiskPerTradePct)
+	// and skip the sizing-leverage default so generateConfig emits neither.
+	if opts.EnablePerps && opts.PerpsRiskPerTradePct > 0 {
+		if opts.PerpsSizingLeverage > 0 {
+			fmt.Fprintln(os.Stderr, "Error: perpsRiskPerTradePct and perpsSizingLeverage are mutually exclusive — pick one sizing mode")
+			return 1
+		}
+		if opts.PerpsRiskPerTradePct > 10 {
+			fmt.Fprintf(os.Stderr, "Error: perpsRiskPerTradePct must be in (0, 10], got %g\n", opts.PerpsRiskPerTradePct)
+			return 1
+		}
+	} else if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
 		opts.PerpsSizingLeverage = opts.PerpsLeverage
 	}
 

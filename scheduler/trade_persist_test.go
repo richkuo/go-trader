@@ -217,7 +217,7 @@ func TestExecutePerpsWithLeverage_PersistsExchangeMetadata(t *testing.T) {
 	s := state.Strategies["hl-live"]
 
 	// Live open-long @ $2000, qty=0.5, OID=12345, fee=$0.42.
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0.5, "12345", 0.42, DirectionLong, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "12345", 0.42, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestDeferredOpenRecordsProtectionOIDSnapshotOnce(t *testing.T) {
 	}
 	logger := newTestLogger(t)
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, 1, "ETH", 2000, 1, 1, 0, 0.5, "12345", 0.42, DirectionLong, 0, logger)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "12345", 0.42, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverageDeferredOpen: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestRecordPositionOpenFallsBackWhenPositionMissing(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 	logger := newTestLogger(t)
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, 1, "ETH", 2000, 1, 1, 0, 0.5, "12345", 0.42, DirectionLong, 0, logger)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "12345", 0.42, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverageDeferredOpen: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestExecutePerpsWithLeverage_FlipDoesNotDoubleCountFee(t *testing.T) {
 
 	// Live flip buy @ $2000 qty=0.8 → closes the full 0.5 short + opens new
 	// 0.3 long = 2 in-memory trades, 1 real exchange fill worth $0.42.
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0.8, "99999", 0.42, DirectionBoth, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.8, "99999", 0.42, DirectionBoth, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
