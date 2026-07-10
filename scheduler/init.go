@@ -298,7 +298,8 @@ func hasAnyEnabledStrategyType(opts InitOptions) bool {
 }
 
 // applyMinimalStarterDefaults turns the empty/default init path into one safe,
-// easy-to-understand starter strategy: BTC spot tema_cross on BinanceUS.
+// easy-to-understand starter strategy: BTC spot starterSpotStrategyID
+// (currently chart_pattern) on BinanceUS.
 func applyMinimalStarterDefaults(opts *InitOptions) {
 	if !opts.EnableSpot && hasAnyEnabledStrategyType(*opts) {
 		return
