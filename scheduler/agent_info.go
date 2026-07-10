@@ -88,6 +88,8 @@ var agentInfoEnvVars = []agentEnvVar{
 	{Name: "ANTHROPIC_API_KEY", Purpose: "Anthropic API key for the #1137 LLM entry-analysis pipeline (shared_scripts/llm_review.py); Go only checks presence to warn when analysis is enabled without it.", Secret: true},
 	{Name: "DISCORD_BOT_TOKEN", Purpose: "Discord bot token for notifications.", Secret: true},
 	{Name: "DISCORD_OWNER_ID", Purpose: "Discord user ID that receives owner-only DMs and mutating commands.", Secret: false},
+	{Name: "FXMACRODATA_API_KEY", Purpose: "FXMacroData API key for scheduler macro, FX, COT, commodity, and session context.", Secret: true},
+	{Name: "FXMD_API_KEY", Purpose: "Fallback FXMacroData API key env var used when FXMACRODATA_API_KEY is unset.", Secret: true},
 	{Name: "GITHUB_TOKEN", Purpose: "GitHub token for the self-updater (fallback to GO_TRADER_GITHUB_TOKEN).", Secret: true},
 	{Name: "GO_TRADER_ALLOW_MISSING_STATE", Purpose: "Set to 1 to allow startup with no existing state DB (CheckStatePresence bypass).", Secret: false},
 	{Name: "GO_TRADER_CASHFLOW_JOURNAL_ALARM", Purpose: "Set to 0/off/false/no to force the legacy trade-ledger drift basis for HL shared wallets instead of the #1100 exchange-sourced cash-flow journal (default on).", Secret: false},
