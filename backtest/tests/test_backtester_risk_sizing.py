@@ -263,6 +263,34 @@ def test_config_rejects_pct_stop_owner(tmp_path):
         run_backtest.load_strategy_config(path, "hl-r-btc")
 
 
+def test_config_explicit_zero_stop_owner_rejects(tmp_path):
+    # An explicit-zero stop owner (stop_loss_pct: 0 etc.) explicitly DISABLES
+    # the stop, and live rejects the config at load ("no distance to size
+    # risk against"). The loader must treat the present-but-zero key as an
+    # owner (is not None) — never materialize a default ATR stop — so the
+    # config rejects loudly at Backtester construction instead of silently
+    # running a 1.0×ATR-stopped, risk-sized position live refuses (#1268).
+    for owner in ("stop_loss_pct", "trailing_stop_pct", "stop_loss_margin_pct",
+                  "stop_loss_atr_mult", "trailing_stop_atr_mult"):
+        sc = _risk_strategy(**{owner: 0})
+        if owner != "stop_loss_atr_mult":
+            del sc["stop_loss_atr_mult"]
+        path = _write_config(tmp_path, sc)
+        kwargs = run_backtest.load_strategy_config(path, "hl-r-btc")
+        # No default materialized — the zero owner is preserved as-is.
+        assert kwargs[owner] == 0, owner
+        # ...and the resulting sizing/stop combination rejects loudly.
+        with pytest.raises(ValueError, match="stop"):
+            Backtester(
+                risk_per_trade_pct=kwargs["risk_per_trade_pct"],
+                stop_loss_atr_mult=kwargs["stop_loss_atr_mult"],
+                stop_loss_pct=kwargs["stop_loss_pct"],
+                stop_loss_margin_pct=kwargs["stop_loss_margin_pct"],
+                trailing_stop_atr_mult=kwargs["trailing_stop_atr_mult"],
+                trailing_stop_pct=kwargs["trailing_stop_pct"],
+            )
+
+
 def test_config_materializes_default_stop_owner(tmp_path):
     # No stop-owner key: live materializes default_stop_loss_atr_mult (1.0)
     # at load, and risk sizing derives its distance from exactly that owner.

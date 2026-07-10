@@ -976,7 +976,12 @@ def load_strategy_config(config_path: str, strategy_id: str,
             # (1.0×ATR unless overridden/opted out), and risk sizing derives
             # its distance from exactly that owner — materialize it here so
             # sizing AND the simulated SL match live.
-            if not any(sc.get(k) for k in _STOP_OWNER_KEYS):
+            # Presence check must be `is not None` (matching
+            # _config_has_stop_owner): an explicit-zero owner (stop_loss_pct: 0
+            # etc.) explicitly disables the stop and live REJECTS the config at
+            # load — materializing a default here would silently size a
+            # stopped run live refuses (#1268).
+            if not any(sc.get(k) is not None for k in _STOP_OWNER_KEYS):
                 _default_mult = cfg.get("default_stop_loss_atr_mult")
                 if _default_mult is None:
                     _default_mult = 1.0
