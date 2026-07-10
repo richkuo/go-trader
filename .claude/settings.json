@@ -4,8 +4,7 @@
       "source": {
         "source": "github",
         "repo": "richkuo/rk-skills"
-      },
-      "autoUpdate": true
+      }
     }
   },
   "enabledPlugins": {
