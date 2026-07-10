@@ -14,10 +14,14 @@ WITHOUT depending on ``shared_tools`` being importable at module-load time
 ``importlib.util.spec_from_file_location`` — mirror that pattern rather than
 a bare ``import indicators_core`` from an ambiguous root.
 
-Numerics are frozen: these functions reproduce the replaced inline blocks
-byte-for-byte, including the ``>= 100`` integer-rounding convention split
-(``round_large``) and per-site ``min_periods`` overrides. Any smoothing-method
-change (e.g. Wilder RMA ATR) belongs to #1277, not here.
+Default numerics are frozen: at ``method="simple"`` (the default) these
+functions reproduce the replaced inline blocks byte-for-byte, including the
+``>= 100`` integer-rounding convention split (``round_large``) and per-site
+``min_periods`` overrides. #1277 adds ``method="wilder"`` — the published
+Wilder RMA ATR (``ewm(alpha=1/period, adjust=False)``) — as an explicit
+opt-in behind the config-gated ``atr_method`` cutover. The wilder path never
+applies the ``>= 100`` integer rounding; the simple path stays byte-frozen
+for baseline reproducibility.
 """
 
 from __future__ import annotations
@@ -63,6 +67,31 @@ def true_range(df: pd.DataFrame) -> pd.Series:
     return true_range_series(df["high"], df["low"], df["close"])
 
 
+# ATR smoothing methods (#1277). "simple" is the frozen legacy rolling mean;
+# "wilder" is the published Wilder RMA. Config-side vocabulary must stay in
+# lockstep with scheduler/config.go (ATRMethodSimple/ATRMethodWilder).
+ATR_METHOD_SIMPLE = "simple"
+ATR_METHOD_WILDER = "wilder"
+ATR_METHODS = (ATR_METHOD_SIMPLE, ATR_METHOD_WILDER)
+
+
+def normalize_atr_method(method: Optional[str]) -> str:
+    """Normalize/validate an ATR smoothing-method name (#1277).
+
+    Empty/None falls back to ``"simple"`` (the frozen default); anything
+    outside :data:`ATR_METHODS` fails loud — the ATR feeds live stop
+    geometry, so a typo must never silently degrade to a default.
+    """
+    norm = str(method or "").strip().lower()
+    if not norm:
+        return ATR_METHOD_SIMPLE
+    if norm not in ATR_METHODS:
+        raise ValueError(
+            f"atr_method must be one of {list(ATR_METHODS)}, got {method!r}"
+        )
+    return norm
+
+
 def round_atr_large(atr: pd.Series) -> pd.Series:
     """Repo ATR rounding convention (#887): integer-round only when >= 100.
 
@@ -78,12 +107,25 @@ def atr_from_true_range(
     *,
     round_large: bool = True,
     min_periods: Optional[int] = None,
+    method: str = ATR_METHOD_SIMPLE,
 ) -> pd.Series:
     """ATR from a precomputed true-range Series (see ``atr_sma_series``).
 
     For call sites that also consume the raw ``tr`` downstream (breakout,
-    session_breakout) so true range isn't computed twice.
+    session_breakout) so true range isn't computed twice. This is the single
+    smoothing choke point: ``method="wilder"`` (#1277) switches to the
+    published Wilder RMA and never rounds; ``round_large`` only applies to
+    the simple path.
     """
+    method = normalize_atr_method(method)
+    if method == ATR_METHOD_WILDER:
+        # Wilder RMA: ewm(alpha=1/period, adjust=False). min_periods defaults
+        # to the full period so warmup bars stay NaN, mirroring the rolling
+        # default of the simple path. The >= 100 integer rounding (#887) is a
+        # simple-mean-era convention frozen for baseline reproducibility —
+        # the wilder path always returns full precision.
+        mp = period if min_periods is None else min_periods
+        return tr.ewm(alpha=1 / period, min_periods=mp, adjust=False).mean()
     atr = tr.rolling(window=period, min_periods=min_periods).mean()
     if round_large:
         atr = round_atr_large(atr)
@@ -98,20 +140,24 @@ def atr_sma_series(
     *,
     round_large: bool = True,
     min_periods: Optional[int] = None,
+    method: str = ATR_METHOD_SIMPLE,
 ) -> pd.Series:
-    """ATR as a simple rolling mean of true range over ``period`` bars.
+    """ATR over ``period`` bars from aligned high/low/close Series.
 
-    ``round_large=True`` applies the ``>= 100`` integer-rounding convention
-    (``standard_atr``); ``round_large=False`` preserves the raw rolling mean
-    (supertrend / squeeze_momentum / order_blocks / session_breakout /
-    sweep_squeeze_combo / chart_patterns convention). ``min_periods`` defaults
-    to pandas' rolling default (= ``period``: NaN until a full window).
+    ``method="simple"`` (default) is the frozen legacy rolling mean of true
+    range; ``method="wilder"`` is the published Wilder RMA (#1277, never
+    rounded). On the simple path, ``round_large=True`` applies the ``>= 100``
+    integer-rounding convention (``standard_atr``); ``round_large=False``
+    preserves the raw rolling mean (supertrend / squeeze_momentum /
+    order_blocks / session_breakout / sweep_squeeze_combo / chart_patterns
+    convention). ``min_periods`` defaults to a full window (NaN warmup).
     """
     return atr_from_true_range(
         true_range_series(high, low, close),
         period,
         round_large=round_large,
         min_periods=min_periods,
+        method=method,
     )
 
 
@@ -121,6 +167,7 @@ def atr_sma(
     *,
     round_large: bool = True,
     min_periods: Optional[int] = None,
+    method: str = ATR_METHOD_SIMPLE,
 ) -> pd.Series:
     """``atr_sma_series`` over a DataFrame with ``high``/``low``/``close``."""
     return atr_sma_series(
@@ -130,4 +177,5 @@ def atr_sma(
         period,
         round_large=round_large,
         min_periods=min_periods,
+        method=method,
     )

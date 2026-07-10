@@ -399,13 +399,17 @@ func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 		t.Skipf("no config.example.json fixture: %v", err)
 	}
 
-	// Force the input to a pre-current version so MigrateConfig always attempts a
-	// write-back. Missing field unmarshals to 0 (pre-v1 baseline) — also pre-current.
+	// Force the input to a version that still triggers a SYNCHRONOUS on-disk
+	// rewrite during LoadConfig (the v16 user-defaults pass fires for
+	// version<16). CurrentConfigVersion-1 stopped working at v17 (#1277):
+	// v17 is a stamp-only additive bump handled by the async DM migration,
+	// so a v16 input takes no load-time write path and the "input unchanged"
+	// guard below would be vacuous.
 	var raw map[string]any
 	if err := json.Unmarshal(orig, &raw); err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	raw["config_version"] = CurrentConfigVersion - 1
+	raw["config_version"] = 15
 	forced, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		t.Fatalf("re-marshal fixture: %v", err)
@@ -427,8 +431,8 @@ func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 	}
 	// The load must have produced a higher effective version than the input —
 	// proving a migration genuinely ran (so "input unchanged" is a real guard).
-	if cfg.ConfigVersion <= CurrentConfigVersion-1 {
-		t.Fatalf("migration did not advance config_version (in=%d, out=%d); test no longer exercises the write path", CurrentConfigVersion-1, cfg.ConfigVersion)
+	if cfg.ConfigVersion <= 15 {
+		t.Fatalf("migration did not advance config_version (in=15, out=%d); test no longer exercises the write path", cfg.ConfigVersion)
 	}
 
 	after, _ := os.ReadFile(path)

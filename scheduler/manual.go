@@ -968,7 +968,7 @@ func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *M
 	}
 	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
 	posCtx := positionCtxFromPosition(nil) // flat at open: read the current (entry) regime
-	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, notifier, logger)
+	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger)
 	if !ok || result == nil {
 		return ""
 	}
@@ -1012,7 +1012,7 @@ func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notif
 	}
 
 	posCtx := positionCtxFromPosition(pos)
-	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, notifier, logger)
+	result, _, price, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger)
 	if !ok {
 		return 0, 0, false
 	}

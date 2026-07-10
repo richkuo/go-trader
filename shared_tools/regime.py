@@ -202,7 +202,13 @@ def _window_slice(df: pd.DataFrame, period: int) -> pd.DataFrame:
 
 
 def _atr_at_end(df: pd.DataFrame, period: int) -> float:
-    atr_series = standard_atr(df, period=period)
+    # #1277: regime classification is PINNED to method="simple" — the
+    # composite thresholds and the #1085 directional certifications were
+    # calibrated on simple-mean atr_pct, so the config-gated atr_method
+    # cutover (stop/TP geometry) deliberately does NOT flow into regime
+    # labels. Re-run the bounded-window/regime-promotion validation before
+    # ever switching this to wilder.
+    atr_series = standard_atr(df, period=period, method="simple")
     atr_val = atr_series.iloc[-1] if not atr_series.empty else float("nan")
     try:
         atr_val = float(atr_val)
@@ -421,7 +427,8 @@ def compute_regime_composite(
     result["plus_di"] = adx_df["plus_di"].values
     result["minus_di"] = adx_df["minus_di"].values
 
-    atr_series = standard_atr(result, period=period)
+    # #1277: pinned to simple — see _atr_at_end.
+    atr_series = standard_atr(result, period=period, method="simple")
     for i in range(period, n):
         window = result.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0
@@ -455,7 +462,8 @@ def composite_feature_matrix(
         return out
     adx_period = min(period, COMPOSITE_ADX_PERIOD_CAP)
     adx_df = compute_regime(df, period=adx_period, adx_threshold=th["adx"])
-    atr_series = standard_atr(df, period=period)
+    # #1277: pinned to simple — see _atr_at_end.
+    atr_series = standard_atr(df, period=period, method="simple")
     for i in range(period, n):
         window = df.iloc[i - period + 1 : i + 1]
         atr_val = float(atr_series.iloc[i]) if i < len(atr_series) else 0.0

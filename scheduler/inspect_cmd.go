@@ -536,6 +536,16 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.HTFFilter {
 		fmt.Fprintf(&b, "  htf_filter:          true\n")
 	}
+	// #1277: only shown when non-default — simple is the frozen baseline.
+	if sc.Type != "options" {
+		if m := resolveATRMethod(sc, cfg); m != ATRMethodSimple {
+			src := "inherited from global"
+			if normalizeATRMethod(sc.ATRMethod) != "" {
+				src = "per-strategy"
+			}
+			fmt.Fprintf(&b, "  atr_method:          %s (%s)\n", m, src)
+		}
+	}
 	if sc.ThetaHarvest != nil {
 		fmt.Fprintf(&b, "  theta_harvest:       enabled=%v profit=%g%% stop=%g%% min_dte=%g%s\n",
 			sc.ThetaHarvest.Enabled, sc.ThetaHarvest.ProfitTargetPct, sc.ThetaHarvest.StopLossPct, sc.ThetaHarvest.MinDTEClose,
@@ -547,7 +557,7 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 // formatStrategySummaryLine compresses the effective resolution into one line
 // for startup logging — meant to be the operator's "did my close/SL config
 // actually land?" sanity check the moment the daemon boots (#704 suggestion 2).
-func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) string {
+func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg *Config) string {
 	parts := []string{fmt.Sprintf("type=%s", sc.Type)}
 	if sc.OpenStrategy.Name != "" {
 		parts = append(parts, fmt.Sprintf("open=%s", sc.OpenStrategy.Name))
@@ -586,6 +596,14 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 	// #1150: surface a paused strategy in the startup summary line.
 	if sc.Paused {
 		parts = append(parts, "paused")
+	}
+	// #1277: surface a non-default ATR smoothing method — wilder re-derives
+	// every ATR-based stop/TP distance, so the audit line must show it
+	// (resolved, so a global wilder default tags every inheriting strategy).
+	if sc.Type != "options" {
+		if m := resolveATRMethod(sc, cfg); m != ATRMethodSimple {
+			parts = append(parts, "atr="+m)
+		}
 	}
 	// #1275: surface an M5-deprecated open strategy (documented gross edge
 	// <= 0) so the negative-edge evidence is visible in the audit line even

@@ -18,7 +18,7 @@ import pandas as pd
 # dynamically per-registry via registry_loader.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
 
-from atr import ensure_atr_indicator
+from atr import ensure_atr_indicator, normalize_atr_method
 from data_fetcher import load_cached_data
 from directional_certification import (
     config_directional_classifier,
@@ -928,6 +928,24 @@ def load_strategy_config(config_path: str, strategy_id: str,
         # any windows spec"), so a multi-window directional config keys on the
         # identical (asset,timeframe,classifier) cell. The verdict is a Backtester
         # param, so the whole returned dict still spreads cleanly into Backtester.
+        # #1277: ATR smoothing method — per-strategy atr_method wins, else
+        # the global top-level atr_method, else "simple" (the frozen legacy
+        # math), mirroring Go resolveATRMethod. Validate BOTH surfaces
+        # independently so a valid per-strategy override never short-circuits
+        # past a garbage global value (same stance as the #1278 gate above).
+        try:
+            _global_atr = normalize_atr_method(cfg.get("atr_method"))
+        except ValueError as exc:
+            raise ValueError(f"{config_path}: {exc}") from exc
+        _per_atr_raw = str(sc.get("atr_method") or "").strip().lower()
+        try:
+            atr_method = (
+                normalize_atr_method(_per_atr_raw) if _per_atr_raw else _global_atr
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} {exc}"
+            ) from exc
         # #1268: opt-in risk-per-trade sizing. Mirror the live
         # validateRiskPerTradePct gate for the parts of the surface the
         # backtester can see; the engine's own __init__ validation covers the
@@ -1042,6 +1060,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "profile_allocation": profile_allocation,
             # #1268: opt-in risk-per-trade sizing (None = legacy full-notional).
             "risk_per_trade_pct": risk_per_trade_pct,
+            # #1277: resolved ATR smoothing method ("simple" = frozen legacy).
+            "atr_method": atr_method,
         }
     raise ValueError(
         f"{config_path}: no strategy with id={strategy_id!r}. "
@@ -1084,6 +1104,7 @@ def run_single_backtest(
     profile_allocation: Optional[dict] = None,
     intrabar_resolution: str = "ohlc_walk",
     risk_per_trade_pct: Optional[float] = None,
+    atr_method: str = "simple",
 ) -> Optional[dict]:
     """Run a single backtest and print results.
 
@@ -1140,7 +1161,7 @@ def run_single_backtest(
             else:
                 df_signals["signal__" + p] = res["signal"].values
         if close_strategies:
-            df_signals = ensure_atr_indicator(df_signals)
+            df_signals = ensure_atr_indicator(df_signals, method=atr_method)
         profile_labels = _profile_label_series(
             df_signals,
             symbol,
@@ -1162,7 +1183,7 @@ def run_single_backtest(
         # `entry_atr` (tiered_tp_atr) and `market.atr` (tiered_tp_atr_live)
         # see consistent volatility input. Idempotent when `atr` already exists.
         if close_strategies:
-            df_signals = ensure_atr_indicator(df_signals)
+            df_signals = ensure_atr_indicator(df_signals, method=atr_method)
 
     if htf_filter:
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
@@ -1234,6 +1255,7 @@ def run_single_backtest(
         profile_allocation=profile_allocation,
         intrabar_resolution=intrabar_resolution,
         risk_per_trade_pct=risk_per_trade_pct,
+        atr_method=atr_method,
     )
     results = bt.run(
         df_signals,
@@ -1263,6 +1285,7 @@ def run_all_strategies(
     allowed_regimes: Optional[List[str]] = None,
     direction: Optional[str] = None,
     intrabar_resolution: str = "ohlc_walk",
+    atr_method: str = "simple",
 ) -> list:
     """Run multiple strategies on one asset and compare."""
     reg = load_registry(registry)
@@ -1283,6 +1306,7 @@ def run_all_strategies(
             allowed_regimes=allowed_regimes,
             direction=direction,
             intrabar_resolution=intrabar_resolution,
+            atr_method=atr_method,
         )
         if result:
             all_results.append(result)
@@ -1309,6 +1333,7 @@ def run_multi_asset(
     allowed_regimes: Optional[List[str]] = None,
     direction: Optional[str] = None,
     intrabar_resolution: str = "ohlc_walk",
+    atr_method: str = "simple",
 ) -> dict:
     """Run strategies across multiple assets."""
     reg = load_registry(registry)
@@ -1337,6 +1362,7 @@ def run_multi_asset(
                 allowed_regimes=allowed_regimes,
                 direction=direction,
                 intrabar_resolution=intrabar_resolution,
+                atr_method=atr_method,
             )
             if result:
                 results_by_asset[symbol].append(result)
@@ -1521,6 +1547,16 @@ def _build_parser() -> argparse.ArgumentParser:
                              "evaluator. In optimize mode defaults to long "
                              "when a close-stack grid is swept so every "
                              "stack scores on the same entry universe.")
+    parser.add_argument("--atr-method", dest="atr_method",
+                        choices=["simple", "wilder"], default=None,
+                        help="ATR smoothing for the injected standard-ATR "
+                             "series (#1277). simple (default): frozen legacy "
+                             "rolling mean with the >=100 integer rounding — "
+                             "byte-identical to documented baselines. wilder: "
+                             "published Wilder RMA, never rounded. Not allowed "
+                             "alongside --config (the live config's atr_method "
+                             "owns it). Regime classification stays pinned to "
+                             "simple either way.")
     parser.add_argument("--intrabar-resolution", dest="intrabar_resolution",
                         choices=["ohlc_walk", "bar_close"],
                         default="ohlc_walk",
@@ -1646,6 +1682,15 @@ def main():
                   "live config's `allowed_regimes` field owns the regime gate); "
                   "edit the config or backtest the strategy by name")
             sys.exit(1)
+        # #1277: the live config's atr_method owns the ATR smoothing; a CLI
+        # --atr-method alongside --config would create a run that matches
+        # neither live behavior nor the config's own baseline. Reject loudly,
+        # like --close-strategy / --direction above.
+        if args.atr_method:
+            print("--atr-method is not allowed alongside --config (the live "
+                  "config's `atr_method` field owns the ATR smoothing); "
+                  "edit the config or backtest the strategy by name")
+            sys.exit(1)
         # #1058: the config's regime.windows owns the composite spec; a CLI
         # --regime-windows-spec-json alongside --config would lose to it on the
         # thread below and silently mislead. Reject loudly, like the gates above.
@@ -1696,6 +1741,8 @@ def main():
             "regime_windows_spec",
             # #1268: opt-in risk-per-trade sizing from the live config.
             "risk_per_trade_pct",
+            # #1277: resolved ATR smoothing method from the live config.
+            "atr_method",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
         args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)
@@ -1756,6 +1803,19 @@ def main():
         # --config + --direction was rejected above, so the key can't collide.
         live_stop_kwargs["direction"] = args.direction
 
+    # #1277: CLI --atr-method drives config-less runs (e.g. re-establishing
+    # baselines under wilder). --config + explicit flag was rejected above, so
+    # setdefault can only fill the no-config case. Optimize mode constructs
+    # its own engines on the default — reject rather than silently sweeping
+    # under math the flag asked to change (same stance as --intrabar-resolution).
+    if args.atr_method and args.mode == "optimize":
+        print("--atr-method is not supported in optimize mode (the optimizer's "
+              "engines run on the default simple ATR); use --mode single/"
+              "compare/multi for wilder runs")
+        sys.exit(1)
+    if args.atr_method:
+        live_stop_kwargs.setdefault("atr_method", args.atr_method)
+
     # #1271: engine-mode selector, not a strategy config field — cannot
     # collide with --config keys, so set unconditionally for single mode.
     # compare/multi thread it explicitly below; optimize rejects the legacy
@@ -1799,7 +1859,8 @@ def main():
                            regime_adx_threshold=args.regime_adx_threshold,
                            allowed_regimes=args.allowed_regimes,
                            direction=args.direction,
-                           intrabar_resolution=args.intrabar_resolution)
+                           intrabar_resolution=args.intrabar_resolution,
+                           atr_method=args.atr_method or "simple")
 
     elif args.mode == "multi":
         strategies = None if args.strategy == "all" else [args.strategy]
@@ -1814,7 +1875,8 @@ def main():
                         regime_adx_threshold=args.regime_adx_threshold,
                         allowed_regimes=args.allowed_regimes,
                         direction=args.direction,
-                        intrabar_resolution=args.intrabar_resolution)
+                        intrabar_resolution=args.intrabar_resolution,
+                        atr_method=args.atr_method or "simple")
 
     elif args.mode == "optimize":
         # #996: close-stack co-optimization. The grid owns the close stack;

@@ -793,7 +793,8 @@ class Backtester:
                  regime_timeframe: Optional[str] = None,
                  profile_allocation: Optional[dict] = None,
                  intrabar_resolution: str = "ohlc_walk",
-                 risk_per_trade_pct: Optional[float] = None):
+                 risk_per_trade_pct: Optional[float] = None,
+                 atr_method: str = "simple"):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -924,6 +925,19 @@ class Backtester:
                 f"got {regime_gate_on_failure!r}"
             )
         self.regime_gate_on_failure = _norm_gate
+        # #1277: ATR smoothing method for the injected standard-ATR series,
+        # mirroring the live atr_method config. "simple" (default) is the
+        # frozen legacy rolling mean — byte-identical to pre-#1277 baselines;
+        # "wilder" is the published RMA (never integer-rounded). Applies only
+        # to the standard_atr injection below — a strategy-emitted `atr`
+        # column always wins (same as live ensure_atr_indicator semantics).
+        # Regime classification stays pinned to simple inside regime.py.
+        _norm_atr_method = str(atr_method or "").strip().lower() or "simple"
+        if _norm_atr_method not in ("simple", "wilder"):
+            raise ValueError(
+                f"atr_method must be 'simple' or 'wilder', got {atr_method!r}"
+            )
+        self.atr_method = _norm_atr_method
         self.stop_loss_atr_mult = stop_loss_atr_mult
         self.stop_loss_pct = stop_loss_pct
         self.stop_loss_margin_pct = stop_loss_margin_pct
@@ -1815,7 +1829,7 @@ class Backtester:
             (self.stop_loss_atr_mult is not None and self.stop_loss_atr_mult > 0)
             or (self.trailing_stop_atr_mult is not None and self.trailing_stop_atr_mult > 0)
         ):
-            atr_series = standard_atr(df)
+            atr_series = standard_atr(df, method=self.atr_method)
 
         def _initial_trail_trigger(side: str, mark: float, entry_atr: float,
                                     trail_mult: float) -> float:

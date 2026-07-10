@@ -153,6 +153,13 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 
 	livePayload := simulateConfigPayload(liveCfg, ss.regime)
 	simPayload := simulateConfigPayload(simCfg, ss.regime)
+	// #1277: stamp the RESOLVED ATR smoothing method (per-strategy > global >
+	// simple) so the simulate preview's injected ATR matches the live cycle's
+	// --atr-method. Resolved Go-side because the Python payload has no view of
+	// the global config default.
+	uiCfg := ss.uiTradeConfig()
+	livePayload["atr_method"] = resolveATRMethod(liveCfg, uiCfg)
+	simPayload["atr_method"] = resolveATRMethod(simCfg, uiCfg)
 	markersByLabel, simErr := runStrategySimulate(candles, map[string]map[string]interface{}{
 		"live":      livePayload,
 		"simulated": simPayload,

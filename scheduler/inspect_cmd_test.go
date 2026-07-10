@@ -240,7 +240,7 @@ func TestFormatStrategySummaryLineCompressesEverything(t *testing.T) {
 		CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr"},
 		StopLossATRMult: &mult,
 	}
-	line := formatStrategySummaryLine(sc, map[string]bool{"stop_loss_atr_mult": true})
+	line := formatStrategySummaryLine(sc, map[string]bool{"stop_loss_atr_mult": true}, nil)
 	for _, want := range []string{
 		"[config] hl-rmc-eth-live:",
 		"type=perps",
@@ -262,7 +262,7 @@ func TestFormatStrategySummaryLineSpotOmitsHLFields(t *testing.T) {
 		Platform:     "binanceus",
 		OpenStrategy: StrategyRef{Name: "momentum"},
 	}
-	line := formatStrategySummaryLine(sc, nil)
+	line := formatStrategySummaryLine(sc, nil, nil)
 	if strings.Contains(line, "sl=") || strings.Contains(line, "tp=") {
 		t.Errorf("spot summary should not include sl/tp fields: %s", line)
 	}
@@ -378,7 +378,7 @@ func TestFormatStrategySummaryLineRegimeTPTierCount(t *testing.T) {
 		CloseStrategy:   &StrategyRef{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"use_defaults": true}},
 		StopLossATRMult: &mult,
 	}
-	line := formatStrategySummaryLine(sc, nil)
+	line := formatStrategySummaryLine(sc, nil, nil)
 	// #870: fleet default is ragged per group (2/3/4 tiers); the summary reports
 	// the fleet maximum (clean group = 4 tiers).
 	if !strings.Contains(line, "tp=tiered_tp_atr_regime[4-tier]") {
@@ -444,7 +444,7 @@ func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
 		OpenStrategy: StrategyRef{Name: "momentum"}, CircuitBreaker: &off,
 	}
-	if line := formatStrategySummaryLine(disabled, nil); !strings.Contains(line, "cb=off") {
+	if line := formatStrategySummaryLine(disabled, nil, nil); !strings.Contains(line, "cb=off") {
 		t.Errorf("disabled CB should show cb=off: %s", line)
 	}
 
@@ -452,7 +452,7 @@ func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
 		OpenStrategy: StrategyRef{Name: "momentum"},
 	}
-	if line := formatStrategySummaryLine(enabled, nil); strings.Contains(line, "cb=") {
+	if line := formatStrategySummaryLine(enabled, nil, nil); strings.Contains(line, "cb=") {
 		t.Errorf("default CB should not mention cb=: %s", line)
 	}
 
@@ -461,7 +461,7 @@ func TestFormatStrategySummaryLineShowsCircuitBreakerOff(t *testing.T) {
 		ID: "manual-eth", Type: "manual", Platform: "hyperliquid",
 		OpenStrategy: StrategyRef{Name: "hold"}, CircuitBreaker: &off,
 	}
-	if line := formatStrategySummaryLine(manual, nil); strings.Contains(line, "cb=") {
+	if line := formatStrategySummaryLine(manual, nil, nil); strings.Contains(line, "cb=") {
 		t.Errorf("manual strategy should not mention cb=: %s", line)
 	}
 }
@@ -480,7 +480,7 @@ func TestStrategySurfacesShowCBOverrides(t *testing.T) {
 		CBLossStreakCooldownMinutes: &lc,
 	}
 
-	line := formatStrategySummaryLine(tuned, nil)
+	line := formatStrategySummaryLine(tuned, nil, nil)
 	if !strings.Contains(line, "cb[losses>=3, loss_cooldown=30m, dd_cooldown=12h0m]") {
 		t.Errorf("summary line should carry the tuned CB parameters: %s", line)
 	}
@@ -506,7 +506,7 @@ func TestStrategySurfacesShowCBOverrides(t *testing.T) {
 		ID: "spot-btc", Type: "spot", Platform: "binanceus",
 		OpenStrategy: StrategyRef{Name: "momentum"}, MaxDrawdownPct: 20,
 	}
-	if line := formatStrategySummaryLine(plain, nil); strings.Contains(line, "cb[") {
+	if line := formatStrategySummaryLine(plain, nil, nil); strings.Contains(line, "cb[") {
 		t.Errorf("default CB parameters should not surface in summary: %s", line)
 	}
 	if text := formatStrategyInspection(plain, nil, nil, nil); strings.Contains(text, "circuit_breaker:") {

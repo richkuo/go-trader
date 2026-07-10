@@ -101,6 +101,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
                      regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
                      regime_payload_json=None,
                      close_params_by_name=None,
+                     atr_method="simple",
                      mark_price=0.0):
     """Run strategy signal check using Hyperliquid OHLCV data."""
     try:
@@ -197,7 +198,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
-            atr_now = latest_atr(df)
+            atr_now = latest_atr(df, method=atr_method)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
             # #733: live regime label for tiered_tp_atr_live_regime evaluator.
@@ -225,7 +226,7 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             result_df = apply_strategy(strategy_name, df, strategy_params or None)
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
-        ensure_atr_indicator(result_df)
+        ensure_atr_indicator(result_df, method=atr_method)
         last = result_df.iloc[-1]
         price = float(last["close"])
 
@@ -1183,7 +1184,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
         sys.exit(1)
 
 
-def run_fetch_atr(symbol: str, timeframe: str, period: int):
+def run_fetch_atr(symbol: str, timeframe: str, period: int, atr_method: str = "simple"):
     """Fetch OHLCV from Hyperliquid and emit latest ATR as JSON.
 
     Used by manual-open when --atr is omitted so manual positions get the
@@ -1203,7 +1204,7 @@ def run_fetch_atr(symbol: str, timeframe: str, period: int):
             }, cls=SafeEncoder))
             return
         df = _make_dataframe(candles)
-        atr = latest_atr(df, period=period)
+        atr = latest_atr(df, period=period, method=atr_method)
         if not (atr > 0):
             print(json.dumps({
                 "error": "latest ATR is not positive",
@@ -1460,12 +1461,15 @@ def main():
         parser.add_argument("--symbol", required=True)
         parser.add_argument("--timeframe", required=True)
         parser.add_argument("--period", type=int, default=14)
+        # #1277: resolved atr_method forwarded by Go so a manual-open's fetched
+        # EntryATR matches the strategy's own check-cycle stamping.
+        parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
         parser.add_argument("--probe-only", action="store_true",
             help="Startup compatibility probe: validate argv shape and exit 0.")
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
-        run_fetch_atr(args.symbol, args.timeframe, args.period)
+        run_fetch_atr(args.symbol, args.timeframe, args.period, args.atr_method)
         return
     if "--sync-protection" in sys.argv:
         import argparse
@@ -1689,6 +1693,10 @@ def main():
         # #879: precomputed global-store regime payload; presence (even empty)
         # disables inline regime computation.
         parser.add_argument("--regime-payload-json", default=None)
+        # #1277: ATR smoothing method for the standard_atr surface (EntryATR
+        # stamping + market_ctx["atr"]). Forwarded by Go from the resolved
+        # atr_method config; "simple" is the frozen legacy default.
+        parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
         parser.add_argument("--regime-directional-window", default="")
         parser.add_argument("--params", default=None)
         parser.add_argument("--open-strategy", default=None)
@@ -1728,6 +1736,7 @@ def main():
             regime_atr_window=args.regime_atr_window,
             regime_payload_json=args.regime_payload_json,
             close_params_by_name=close_params_by_name,
+            atr_method=args.atr_method,
             mark_price=args.mark_price,
         )
 

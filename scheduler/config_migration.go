@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 16
+const CurrentConfigVersion = 17
 
 // MinSupportedConfigVersion is the oldest stamped config_version the migration
 // ladder can still bring forward (#1285). The v6–v12 rewrite handlers (channel
@@ -142,6 +142,18 @@ const v15DeprecationNotice = "**Note:** close-strategy params now use canonical 
 	"`fraction`→`close_fraction`, tier `pct`→`profit_pct`, `tp_at_pct`→single-tier `tiered_tp_pct`, " +
 	"and legacy tier-keyed `tiered_tp_atr_regime` blocks→unified top-level `trend_regime` " +
 	"(with per-label `stop_loss_atr` + `tp_tiers`). See issue #841."
+
+// v17 introduces the atr_method cutover surface (#1277). Purely additive — no
+// on-disk rewrite: an absent field means "simple" (the frozen legacy math), so
+// migration only bumps the stamp and informs the operator that the Wilder
+// option exists.
+const v17ATRMethodNotice = "**Note:** ATR smoothing is now configurable (#1277). " +
+	"`atr_method: \"wilder\"` (global, or per-strategy) switches the standard-ATR surface " +
+	"(entry-ATR stamping, live close-evaluator ATR, manual fetch-atr) from the legacy simple " +
+	"rolling mean to the published Wilder RMA and drops the >=100 integer rounding. " +
+	"Default (\"simple\") is byte-identical to previous behavior. " +
+	"Switching is blocked while the strategy holds an open position — flatten first. " +
+	"Backtest baselines were established under simple; re-validate before promoting Wilder-based results."
 
 // NewFieldsSince returns all ConfigFields added after the given version number.
 func NewFieldsSince(version int) []ConfigField {
@@ -330,6 +342,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v14DeprecationNotice)
 			}
 		}
+		// v17: notify about the atr_method surface (#1277).
+		if cfg.ConfigVersion < 17 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v17ATRMethodNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
+			}
+		}
 		return
 	}
 
@@ -351,6 +371,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if cfg.ConfigVersion < 15 {
 			fmt.Printf("[migration] %s\n", v15DeprecationNotice)
+		}
+		if cfg.ConfigVersion < 17 {
+			fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
 		}
 		return
 	}
@@ -388,6 +411,10 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	// v15: notify about close-strategy canonical keys (#841).
 	if cfg.ConfigVersion < 15 {
 		notifier.SendOwnerDM(v15DeprecationNotice)
+	}
+	// v17: notify about the atr_method surface (#1277).
+	if cfg.ConfigVersion < 17 {
+		notifier.SendOwnerDM(v17ATRMethodNotice)
 	}
 }
 

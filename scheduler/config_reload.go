@@ -44,6 +44,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
 	}
+	// #1277: global ATR smoothing method default. The state-compat check
+	// above blocks the reload when the RESOLVED method flips for any strategy
+	// holding an open position; reaching here means every affected strategy is
+	// flat and the next check cycle forwards the new --atr-method.
+	if normalizeATRMethod(cfg.ATRMethod) != normalizeATRMethod(next.ATRMethod) {
+		addChange("atr_method: %q -> %q", cfg.ATRMethod, next.ATRMethod)
+		cfg.ATRMethod = next.ATRMethod
+	}
 	if cfg.AlertThrottleInterval != next.AlertThrottleInterval {
 		addChange("alert_throttle_interval: %q -> %q", cfg.AlertThrottleInterval, next.AlertThrottleInterval)
 		cfg.AlertThrottleInterval = next.AlertThrottleInterval
@@ -235,6 +243,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if sc.MarginMode != ns.MarginMode {
 			addChange("strategy[%s].margin_mode: %q -> %q", sc.ID, sc.MarginMode, ns.MarginMode)
 			sc.MarginMode = ns.MarginMode
+		}
+		// #1277: per-strategy ATR smoothing method. Same stance as margin_mode:
+		// the state-compat check blocks the effective flip while open, so a
+		// change landing here applies to the next flat-state check cycle.
+		if normalizeATRMethod(sc.ATRMethod) != normalizeATRMethod(ns.ATRMethod) {
+			addChange("strategy[%s].atr_method: %q -> %q", sc.ID, sc.ATRMethod, ns.ATRMethod)
+			sc.ATRMethod = ns.ATRMethod
 		}
 		if !floatPtrEqual(sc.TrailingStopPct, ns.TrailingStopPct) {
 			addChange("strategy[%s].trailing_stop_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopPct), formatFloatPtrPct(ns.TrailingStopPct))
@@ -576,6 +591,19 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] invert_signal changed with open positions (%t -> %t; flatten first or restart after close)",
 				sc.ID, sc.InvertSignal, ns.InvertSignal))
 		}
+		// #1277: the effective ATR smoothing method feeds EntryATR stamping
+		// and the live close-evaluator ATR (market_ctx["atr"]). Flipping it
+		// while a position is open would re-base the in-flight stop/TP
+		// geometry that was sized under the other math — block until flat.
+		// Compares the RESOLVED value so a global atr_method flip is caught
+		// for every strategy inheriting it, not only per-strategy edits.
+		// Options are excluded (no ATR surface; the field is rejected on
+		// them at load, and a global flip must not trip on an options
+		// position).
+		if sc.Type != "options" && resolveATRMethod(sc, cfg) != resolveATRMethod(ns, next) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] effective atr_method changed with open positions (%q -> %q; flatten first or restart after close)",
+				sc.ID, resolveATRMethod(sc, cfg), resolveATRMethod(ns, next)))
+		}
 		// #873: scale-in config only gates the NEXT add decision, but mutating
 		// it mid-position is surprising (e.g. flipping add_spacing_atr sign, or
 		// lowering a cap below the current count). Block toggle/shape changes
@@ -810,6 +838,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
+	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
 	return sc
 }
 

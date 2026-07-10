@@ -69,7 +69,7 @@ func TestFetchManualEntryATR_MissingFields(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			atr, msg, ok := fetchManualEntryATR(c.sc)
+			atr, msg, ok := fetchManualEntryATR(c.sc, nil)
 			if ok {
 				t.Errorf("ok=true want false")
 			}
@@ -86,14 +86,14 @@ func TestFetchManualEntryATR_MissingFields(t *testing.T) {
 func TestFetchManualEntryATR_StubSuccess(t *testing.T) {
 	prev := runHyperliquidFetchATRFn
 	defer func() { runHyperliquidFetchATRFn = prev }()
-	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int) (*HyperliquidFetchATRResult, string, error) {
+	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int, atrMethod string) (*HyperliquidFetchATRResult, string, error) {
 		if script != "check.py" || symbol != "ETH" || timeframe != "1h" || period != 14 {
 			t.Errorf("unexpected args: script=%s symbol=%s tf=%s period=%d", script, symbol, timeframe, period)
 		}
 		return &HyperliquidFetchATRResult{ATR: 25.5, Candles: 200}, "", nil
 	}
 	sc := StrategyConfig{Script: "check.py", Symbol: "ETH", Timeframe: "1h"}
-	atr, msg, ok := fetchManualEntryATR(sc)
+	atr, msg, ok := fetchManualEntryATR(sc, nil)
 	if !ok {
 		t.Fatalf("ok=false msg=%s", msg)
 	}
@@ -129,12 +129,12 @@ func TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h(t *testing.T) {
 	prev := runHyperliquidFetchATRFn
 	defer func() { runHyperliquidFetchATRFn = prev }()
 	var gotTimeframe string
-	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int) (*HyperliquidFetchATRResult, string, error) {
+	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int, atrMethod string) (*HyperliquidFetchATRResult, string, error) {
 		gotTimeframe = timeframe
 		return &HyperliquidFetchATRResult{ATR: 18.0, Candles: 200}, "", nil
 	}
 	sc := StrategyConfig{Script: "check.py", Symbol: "ETH"} // Timeframe unset
-	atr, msg, ok := fetchManualEntryATR(sc)
+	atr, msg, ok := fetchManualEntryATR(sc, nil)
 	if !ok {
 		t.Fatalf("ok=false msg=%s; empty timeframe should default to 1h, not fail closed", msg)
 	}
@@ -149,11 +149,11 @@ func TestFetchManualEntryATR_EmptyTimeframeDefaultsTo1h(t *testing.T) {
 func TestFetchManualEntryATR_StubScriptError(t *testing.T) {
 	prev := runHyperliquidFetchATRFn
 	defer func() { runHyperliquidFetchATRFn = prev }()
-	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int) (*HyperliquidFetchATRResult, string, error) {
+	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int, atrMethod string) (*HyperliquidFetchATRResult, string, error) {
 		return &HyperliquidFetchATRResult{Error: "insufficient candles"}, "", nil
 	}
 	sc := StrategyConfig{Script: "check.py", Symbol: "ETH", Timeframe: "1h"}
-	_, msg, ok := fetchManualEntryATR(sc)
+	_, msg, ok := fetchManualEntryATR(sc, nil)
 	if ok {
 		t.Fatal("ok=true on script error")
 	}
@@ -165,11 +165,11 @@ func TestFetchManualEntryATR_StubScriptError(t *testing.T) {
 func TestFetchManualEntryATR_StubNonPositiveATR(t *testing.T) {
 	prev := runHyperliquidFetchATRFn
 	defer func() { runHyperliquidFetchATRFn = prev }()
-	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int) (*HyperliquidFetchATRResult, string, error) {
+	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int, atrMethod string) (*HyperliquidFetchATRResult, string, error) {
 		return &HyperliquidFetchATRResult{ATR: 0, Candles: 200}, "", nil
 	}
 	sc := StrategyConfig{Script: "check.py", Symbol: "ETH", Timeframe: "1h"}
-	_, _, ok := fetchManualEntryATR(sc)
+	_, _, ok := fetchManualEntryATR(sc, nil)
 	if ok {
 		t.Fatal("ok=true on zero ATR")
 	}
@@ -178,11 +178,11 @@ func TestFetchManualEntryATR_StubNonPositiveATR(t *testing.T) {
 func TestFetchManualEntryATR_StubRunError(t *testing.T) {
 	prev := runHyperliquidFetchATRFn
 	defer func() { runHyperliquidFetchATRFn = prev }()
-	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int) (*HyperliquidFetchATRResult, string, error) {
+	runHyperliquidFetchATRFn = func(script, symbol, timeframe string, period int, atrMethod string) (*HyperliquidFetchATRResult, string, error) {
 		return nil, "boom", errors.New("subprocess died")
 	}
 	sc := StrategyConfig{Script: "check.py", Symbol: "ETH", Timeframe: "1h"}
-	_, msg, ok := fetchManualEntryATR(sc)
+	_, msg, ok := fetchManualEntryATR(sc, nil)
 	if ok {
 		t.Fatal("ok=true on run error")
 	}

@@ -203,7 +203,13 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
             )
         close_refs = [dict(r) for r in legacy]
     if close_refs:
-        df_signals = ensure_atr_indicator(df_signals)
+        # #1277: Go stamps the RESOLVED atr_method (per-strategy > global >
+        # simple) into each simulate payload so the preview's injected ATR
+        # matches the live cycle's --atr-method. ensure_atr_indicator
+        # validates the vocabulary (fails loud on an unknown value).
+        df_signals = ensure_atr_indicator(
+            df_signals, method=str(cfg.get("atr_method") or "simple")
+        )
 
     if cfg.get("htf_filter"):
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)

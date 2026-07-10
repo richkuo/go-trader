@@ -417,10 +417,10 @@ func limitOrderFullyFilled(cumFilled, orderSize float64) bool {
 // be many hours/days before the fill) with the leverage-aware fallback. Mirrors
 // the market-open ATR resolution in runManualOpen. Spawns Python, so it must run
 // outside the state lock.
-func resolveLimitFillEntryATR(sc StrategyConfig, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
+func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
 	entryATR := rowATR
 	if entryATR == 0 && (effectiveManualSLATRMult(sc) > 0 || strategyUsesTieredTPATRClose(sc)) {
-		fetched, fetchErr, ok := fetchManualEntryATR(sc)
+		fetched, fetchErr, ok := fetchManualEntryATR(sc, cfg)
 		if ok && !(avgPx > 0 && fetched > 0.5*avgPx) {
 			entryATR = fetched
 		} else {
@@ -661,7 +661,7 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				mu.RUnlock()
 			}
 			if resolveATR {
-				entryATR = resolveLimitFillEntryATR(sc, o.EntryATR, avgPx, notifier)
+				entryATR = resolveLimitFillEntryATR(sc, cfg, o.EntryATR, avgPx, notifier)
 			}
 			mu.Lock()
 			tradesBooked, applyErr := applyLimitFillProgress(state, sc, o, st.FilledSize, avgPx, st.Fee, entryATR, now)
