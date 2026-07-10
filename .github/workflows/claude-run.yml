@@ -153,9 +153,9 @@ jobs:
           show_full_output: true
 
           # Load the code-review plugin (structured @claude review) and the
-          # rk-skills plugin — the implement/fix-pr-review prompts invoke its
-          # validate-issue / work-on-issue / fix-pr-review skills, and headless
-          # runs do not install plugins from .claude/settings.json.
+          # rk-skills plugin so @claude implement runs can invoke the rk-skills
+          # workflow skills — headless runs do not install plugins from
+          # .claude/settings.json.
           plugin_marketplaces: |
             https://github.com/anthropics/claude-code.git
             https://github.com/richkuo/rk-skills.git
