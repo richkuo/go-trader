@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // init sets module-level strategy lists to defaults so tests don't depend on Python.
@@ -1670,5 +1671,55 @@ func TestGenerateConfig_DisableCircuitBreaker(t *testing.T) {
 	}
 	if !sawManual {
 		t.Fatal("expected the manual tracking strategy to be generated")
+	}
+}
+
+// #1273: the init --json cb_* overrides stamp every generated non-manual
+// strategy; 0/omitted leaves the fields nil (the historical defaults), and the
+// manual tracking strategy is always skipped (exempt from CheckRisk).
+func TestGenerateConfig_CBOverrides(t *testing.T) {
+	opts := InitOptions{
+		Assets:          []string{"ETH"},
+		EnablePerps:     true,
+		PerpsMode:       "paper",
+		PerpsStrategies: []string{"momentum"},
+		PerpsCapital:    1000,
+		PerpsDrawdown:   5,
+		EnableManual:    true,
+		ManualSymbol:    "ETH",
+		ManualTimeframe: "1h",
+		ManualCapital:   1000,
+		ManualDrawdown:  20,
+		ManualLeverage:  20,
+	}
+
+	// Default: no stamping — every strategy keeps nil fields.
+	def := generateConfig(opts)
+	for _, s := range def.Strategies {
+		if s.CBDrawdownCooldownMinutes != nil || s.CBLossStreakThreshold != nil || s.CBLossStreakCooldownMinutes != nil {
+			t.Fatalf("default generateConfig should leave cb_* overrides nil on %s", s.ID)
+		}
+	}
+
+	opts.CBDrawdownCooldownMinutes = 720
+	opts.CBLossStreakThreshold = 3
+	opts.CBLossStreakCooldownMinutes = 30
+	cfg := generateConfig(opts)
+	sawNonManual, sawManual := false, false
+	for _, s := range cfg.Strategies {
+		if s.Type == "manual" {
+			sawManual = true
+			if s.CBDrawdownCooldownMinutes != nil || s.CBLossStreakThreshold != nil || s.CBLossStreakCooldownMinutes != nil {
+				t.Fatalf("manual strategy %s should be skipped (CheckRisk-exempt)", s.ID)
+			}
+			continue
+		}
+		sawNonManual = true
+		if s.CircuitBreakerDrawdownCooldown() != 12*time.Hour || s.CircuitBreakerLossStreakThreshold() != 3 || s.CircuitBreakerLossStreakCooldown() != 30*time.Minute {
+			t.Fatalf("non-manual strategy %s missing stamped cb_* overrides", s.ID)
+		}
+	}
+	if !sawNonManual || !sawManual {
+		t.Fatal("expected both a non-manual and the manual tracking strategy")
 	}
 }

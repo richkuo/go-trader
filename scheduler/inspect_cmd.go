@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // runInspect is the `go-trader inspect <strategy-id>` subcommand: load the
@@ -503,9 +504,15 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	fmt.Fprintf(&b, "  max_drawdown_pct:    %g%s\n", sc.MaxDrawdownPct, markIfDefault(explicit, "max_drawdown_pct"))
 	// #1048: circuit-breaker state (skip manual — exempt from CheckRisk). Surface
 	// only when explicitly disabled so the unprotected case is visible; the
-	// default-on state stays uncluttered.
-	if sc.Type != "manual" && !sc.CircuitBreakerEnabled() {
-		fmt.Fprintf(&b, "  circuit_breaker:     off (explicit) — drawdown + consecutive-loss halt disabled\n")
+	// default-on state stays uncluttered. #1273: when enabled with non-default
+	// timing/threshold overrides, surface those too — an operator must see a
+	// tuned breaker at a glance.
+	if sc.Type != "manual" {
+		if !sc.CircuitBreakerEnabled() {
+			fmt.Fprintf(&b, "  circuit_breaker:     off (explicit) — drawdown + consecutive-loss halt disabled\n")
+		} else if ov := circuitBreakerOverrideSummary(sc); ov != "" {
+			fmt.Fprintf(&b, "  circuit_breaker:     on — %s\n", ov)
+		}
 	}
 	// #1150: pause state. Surface only when paused so the normal case stays
 	// uncluttered.
@@ -567,9 +574,14 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 	// #1048: surface an explicitly disabled circuit breaker so a strategy
 	// trading live without the auto-protective drawdown/loss-streak halt is not
 	// silently unprotected. Manual is exempt from CheckRisk, so the flag is a
-	// no-op there and not shown.
-	if sc.Type != "manual" && !sc.CircuitBreakerEnabled() {
-		parts = append(parts, "cb=off")
+	// no-op there and not shown. #1273: non-default timing/threshold overrides
+	// on an enabled breaker are surfaced the same way.
+	if sc.Type != "manual" {
+		if !sc.CircuitBreakerEnabled() {
+			parts = append(parts, "cb=off")
+		} else if ov := circuitBreakerOverrideSummary(sc); ov != "" {
+			parts = append(parts, "cb["+ov+"]")
+		}
 	}
 	// #1150: surface a paused strategy in the startup summary line.
 	if sc.Paused {
@@ -582,6 +594,25 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool) stri
 		parts = append(parts, tag)
 	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
+}
+
+// circuitBreakerOverrideSummary renders the non-default #1273 circuit-breaker
+// timing/threshold overrides as a compact comma-joined list (e.g.
+// "losses>=3, loss_cooldown=30m, dd_cooldown=12h0m"). Empty when all three
+// fields are nil (pure defaults) so the common case stays uncluttered in both
+// the startup summary line and the inspect text view.
+func circuitBreakerOverrideSummary(sc StrategyConfig) string {
+	var parts []string
+	if sc.CBLossStreakThreshold != nil {
+		parts = append(parts, fmt.Sprintf("losses>=%d", sc.CircuitBreakerLossStreakThreshold()))
+	}
+	if sc.CBLossStreakCooldownMinutes != nil {
+		parts = append(parts, "loss_cooldown="+formatCBDuration(sc.CircuitBreakerLossStreakCooldown()))
+	}
+	if sc.CBDrawdownCooldownMinutes != nil {
+		parts = append(parts, "dd_cooldown="+formatCBDuration(sc.CircuitBreakerDrawdownCooldown()))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // buildStrategyInspectionJSON mirrors formatStrategyInspection in
@@ -613,10 +644,18 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		"max_drawdown_pct_explicit": explicit["max_drawdown_pct"],
 	}
 	// #1048: circuit-breaker enable state. Manual is exempt from CheckRisk, so
-	// the flag is meaningless there and omitted.
+	// the flag is meaningless there and omitted. #1273: effective timing/
+	// threshold parameters with the usual explicit-provenance flags so external
+	// tools can spot "field is at the default".
 	if sc.Type != "manual" {
 		out["circuit_breaker_enabled"] = sc.CircuitBreakerEnabled()
 		out["circuit_breaker_explicit"] = explicit["circuit_breaker"]
+		out["cb_drawdown_cooldown_minutes"] = int(sc.CircuitBreakerDrawdownCooldown() / time.Minute)
+		out["cb_drawdown_cooldown_minutes_explicit"] = explicit["cb_drawdown_cooldown_minutes"]
+		out["cb_loss_streak_threshold"] = sc.CircuitBreakerLossStreakThreshold()
+		out["cb_loss_streak_threshold_explicit"] = explicit["cb_loss_streak_threshold"]
+		out["cb_loss_streak_cooldown_minutes"] = int(sc.CircuitBreakerLossStreakCooldown() / time.Minute)
+		out["cb_loss_streak_cooldown_minutes_explicit"] = explicit["cb_loss_streak_cooldown_minutes"]
 	}
 	// #1150: pause state, always emitted so dashboards can key off it.
 	out["paused"] = sc.Paused

@@ -149,6 +149,10 @@ func main() {
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
 	}
+	// #1270: same for a configured same-direction exposure cap.
+	if line := exposureCapStartupSummaryLine(cfg.PortfolioRisk); line != "" {
+		fmt.Println(line)
+	}
 
 	// #339: Detect a missing state DB on a live deployment *before* OpenStateDB
 	// creates it — a wiped directory (vs. an in-place `git pull`) would otherwise
@@ -963,6 +967,7 @@ func main() {
 			killSwitchFired := false
 			notionalBlocked := false
 			dailyLossEntriesHeld := false
+			exposureCapStatus := ExposureCapStatus{}
 			usedPVFallback := false
 
 			// Partition HL live strategies up-front: shared-wallet detection
@@ -1187,6 +1192,12 @@ func main() {
 			// cycle (pure read — stale per-strategy days count as 0, matching
 			// what rolloverDailyPnL would reset them to).
 			dailyLossStatus := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC())
+			// #1270: evaluate the same-direction exposure cap once per cycle
+			// (pure read over positions + this cycle's prices; totalPV is the
+			// concentration basis). Like the notional cap, this measures the
+			// book as of cycle start — a position opened by an earlier strategy
+			// in the same cycle is picked up next cycle.
+			exposureCapStatus = evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, prices, totalPV)
 			mu.RUnlock()
 
 			mu.Lock()
@@ -1284,6 +1295,26 @@ func main() {
 					dailyLossPctBasisMissAlertDate = today
 					notifier.SendOwnerDM(formatDailyLossPctBasisMissDM(dailyLossStatus, time.Now().UTC()))
 				}
+			}
+			// #1270: exposure-cap operator surfaces — per-cycle [WARN] while any
+			// arm is blocking, a fail-safe log for unpriceable positions excluded
+			// from the sums, and an owner DM edge-triggered on the transition
+			// into blocked (per direction / per asset; re-arms when the block
+			// clears). Outside mu — notifier I/O never runs under the state
+			// lock (#880).
+			if warnMsg := exposureCapCycleWarning(exposureCapStatus); warnMsg != "" {
+				fmt.Printf("[WARN] %s\n", warnMsg)
+			}
+			if skipMsg := exposureCapSkippedWarning(exposureCapStatus); skipMsg != "" {
+				fmt.Printf("[WARN] %s\n", skipMsg)
+			}
+			if exposureCapStatus.PVBasisMiss {
+				fmt.Printf("[WARN] %s\n", exposureCapPVBasisMissWarning)
+			}
+			exposureCapDM, exposureCapNextAlerts := exposureCapAlertMessage(exposureCapStatus, exposureCapAlerts, time.Now().UTC())
+			exposureCapAlerts = exposureCapNextAlerts
+			if exposureCapDM != "" {
+				notifier.SendOwnerDM(exposureCapDM)
 			}
 
 			// #1100: switch the HL shared-wallet drift alarm onto the
@@ -1907,6 +1938,13 @@ func main() {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -1950,6 +1988,13 @@ func main() {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -1991,6 +2036,13 @@ func main() {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
+							// #1270: same-direction exposure cap — only the capped direction's
+							// position-increasing signals are held; the other direction and all
+							// position-reducing actions pass.
+							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false); capBlocked {
+								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
+								result.Signal = 0
+							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, logger)
@@ -2016,6 +2068,14 @@ func main() {
 								if dropped > 0 {
 									logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
 								}
+								result.Actions = kept
+							}
+							// #1270: same-direction exposure cap — drop option OPEN actions
+							// whose coarse delta direction is capped ("buy"/"sell" both open
+							// legs; delta sign decides the direction). Close actions and the
+							// theta-harvest walker still manage existing positions.
+							if kept, dropped, capWhy := exposureCapOptionsActions(exposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
+								logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
 								result.Actions = kept
 							}
 							// #879: options regime now comes from the global store's
@@ -2078,6 +2138,13 @@ func main() {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
+									result.Signal = 0
+								}
 								mu.Lock()
 								syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 								mu.Unlock()
@@ -2127,6 +2194,14 @@ func main() {
 							// position-increasing signals held, position-reducing actions pass.
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1270: same-direction exposure cap — only the capped direction's
+							// position-increasing signals are held; the other direction and all
+							// position-reducing actions pass. result.Signal is already
+							// invert_signal-resolved here, so its sign IS the trade direction.
+							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
+								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
 							mu.Lock()
@@ -2434,6 +2509,10 @@ func main() {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
+							// #1270: deliberately NOT gated by the same-direction exposure
+							// cap — CME futures are outside the phase-1 crypto bucket
+							// (computeAssetDeltas excludes type=futures), so the crypto
+							// bucket must not block futures entries.
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()

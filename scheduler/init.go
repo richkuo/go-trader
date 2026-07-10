@@ -400,6 +400,15 @@ type InitOptions struct {
 	CapitalPct              float64 `json:"capitalPct,omitempty"` // 0-1; global capital_pct applied to all strategies
 	HTFFilter               bool    // higher-timeframe trend filter for all strategies
 	DisableCircuitBreaker   bool    `json:"disableCircuitBreaker,omitempty"` // #1048 — when true, stamp circuit_breaker:false on every generated non-manual strategy (fleet-wide opt-out of the per-strategy circuit breaker). Default false keeps the safe default (CB on). Exposed for the JSON-driven `init --json` path; the interactive wizard leaves it false (disabling an auto-protective halt at setup is a footgun — operators opt out per-strategy via config edit + SIGHUP instead).
+	// #1273 — optional circuit-breaker timing/threshold overrides stamped on
+	// every generated non-manual strategy. 0/omitted leaves the field nil so the
+	// historical hardcoded defaults apply (24h drawdown cooldown, 5-loss streak,
+	// 1h loss-streak cooldown). Exposed for the JSON-driven `init --json` path
+	// only; the interactive wizard leaves them unset (per-strategy tuning is
+	// config-edit + SIGHUP territory, mirroring the #1048 stance).
+	CBDrawdownCooldownMinutes   int `json:"cbDrawdownCooldownMinutes,omitempty"`
+	CBLossStreakThreshold       int `json:"cbLossStreakThreshold,omitempty"`
+	CBLossStreakCooldownMinutes int `json:"cbLossStreakCooldownMinutes,omitempty"`
 	// Risk settings — prompted explicitly during live-mode setup (#85) so operators
 	// don't hit the post-launch migration DM for portfolio_risk fields.
 	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`   // kill switch threshold; 0 → default 25
@@ -769,6 +778,27 @@ func generateConfig(opts InitOptions) *Config {
 			cfg.Strategies[i].CircuitBreaker = &cbOff
 		}
 	}
+
+	// #1273: fleet-wide circuit-breaker timing/threshold overrides. 0/omitted
+	// leaves each field nil → the historical hardcoded defaults. Manual is
+	// exempt from CheckRisk (and validateConfig rejects the fields there), so
+	// it is skipped like the #1048 opt-out above. Values are validated by
+	// validateConfig when the generated config is loaded.
+	stampCBOverride := func(v int, set func(sc *StrategyConfig, p *int)) {
+		if v <= 0 {
+			return
+		}
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].Type == "manual" {
+				continue
+			}
+			val := v
+			set(&cfg.Strategies[i], &val)
+		}
+	}
+	stampCBOverride(opts.CBDrawdownCooldownMinutes, func(sc *StrategyConfig, p *int) { sc.CBDrawdownCooldownMinutes = p })
+	stampCBOverride(opts.CBLossStreakThreshold, func(sc *StrategyConfig, p *int) { sc.CBLossStreakThreshold = p })
+	stampCBOverride(opts.CBLossStreakCooldownMinutes, func(sc *StrategyConfig, p *int) { sc.CBLossStreakCooldownMinutes = p })
 
 	// #87: Apply capital_pct to all strategies if set globally.
 	if opts.CapitalPct > 0 {

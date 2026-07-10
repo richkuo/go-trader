@@ -311,9 +311,12 @@ def test_trade_samples_from_results_extracts_entry_and_pnl():
         {"entry_date": "2025-06-20 09:00:00", "pnl_pct": -0.4, "pnl": -4.0},
     ]}
     out = ew.trade_samples_from_results(results)
+    # pnl_pct_net (#1274) is additive; without notional it mirrors the gross.
     assert out == [
-        {"entry_date": "2025-06-15 04:00:00", "pnl_pct": 1.25},
-        {"entry_date": "2025-06-20 09:00:00", "pnl_pct": -0.4},
+        {"entry_date": "2025-06-15 04:00:00", "pnl_pct": 1.25,
+         "pnl_pct_net": 1.25},
+        {"entry_date": "2025-06-20 09:00:00", "pnl_pct": -0.4,
+         "pnl_pct_net": -0.4},
     ]
     assert ew.trade_samples_from_results({}) == []
     assert ew.trade_samples_from_results({"trades": None}) == []
