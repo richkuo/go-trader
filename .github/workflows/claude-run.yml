@@ -154,8 +154,8 @@ jobs:
 
           # Load the code-review plugin (structured @claude review) and the
           # rk-skills plugin so @claude implement runs can invoke the rk-skills
-          # workflow skills — headless runs do not install plugins from
-          # .claude/settings.json.
+          # workflow skills — CI must load it here; interactive installs on
+          # developer machines don't carry over to headless runs.
           plugin_marketplaces: |
             https://github.com/anthropics/claude-code.git
             https://github.com/richkuo/rk-skills.git
