@@ -53,7 +53,7 @@ fabricating a paired number.
 All scoring/aggregation/statistics below the I/O line are pure (operate on lists
 of plain dicts), unit-tested without data access — same architecture as
 ``eval_windows.py`` / ``exit_diagnostics.py``. The audit-identical data slices
-(``WINDOWS`` / ``DATASETS`` / ``PLATFORM`` / fees) are imported from
+(``WINDOWS`` / ``DATASETS`` / ``FEE_PLATFORM`` / fees) are imported from
 ``eval_windows.py`` so M6 sees byte-identical data to the rest of the suite.
 
 Usage:
@@ -92,7 +92,7 @@ sys.path.insert(0, os.path.join(_THIS_DIR, "..", "shared_tools"))
 from eval_windows import (  # noqa: E402  (path bootstrap above)
     DATASETS,
     DEFAULT_CAPITAL,
-    PLATFORM,
+    FEE_PLATFORM,
     WINDOWS,
     dataset_key,
     parse_dataset_arg,
@@ -607,7 +607,7 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
     """
     use_regime = bool(gate.get("allowed_regimes"))
     kw = dict(
-        initial_capital=capital, platform=PLATFORM,
+        initial_capital=capital, platform=FEE_PLATFORM,
         open_strategy={"name": open_name, "params": dict(params or {})},
         close_strategies=(list(close_refs) if close_refs else None),
         direction=direction,

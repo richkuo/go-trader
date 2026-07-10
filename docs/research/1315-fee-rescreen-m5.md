@@ -108,7 +108,10 @@ Context: this run re-screens the quarantine roster after #1315 switched the
 audit fee model from binanceus (0.1% taker/side + 5 bps slippage, ~0.3%
 round-trip) to hyperliquid base tier (0.045% taker/side + 5 bps slippage,
 ~0.19% round-trip). Baseline verdicts are the `docs/research/fee-audit-m5.md`
-table (generated 2026-06-12, binanceus model). Two caveats when comparing:
+table (generated 2026-06-12, binanceus model). Only the *fee* axis changed:
+the OHLCV data source is unchanged from the baseline (binanceus cached
+candles — `eval_windows._load_data` loads under the default `exchange_id`,
+independent of the audit fee model). Two caveats when comparing:
 
 - The `oos` window ends at the latest cached bar, so this run carries ~1 month
   more data than the baseline. **Gross** legs are fee-free — any gross change

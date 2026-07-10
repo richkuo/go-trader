@@ -71,7 +71,7 @@ if _THIS_DIR not in sys.path:
 from eval_windows import (  # noqa: E402  (path bootstrap above)
     DATASETS,
     DEFAULT_CAPITAL,
-    PLATFORM,
+    FEE_PLATFORM,
     WINDOWS,
     dataset_key,
     parse_dataset_arg,
@@ -286,7 +286,7 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
         f"- Datasets: {meta['datasets_desc']}",
         f"- Direction: {meta.get('direction', 'long')}",
         f"- Capital: {meta['capital']}",
-        f"- Fee model: {PLATFORM} platform taker fee + 5 bps slippage (net); "
+        f"- Fee model: {FEE_PLATFORM} platform taker fee + 5 bps slippage (net); "
         "commission=0 and slippage=0 (gross). Fee drag = mean per-leg "
         "(gross - net) return.",
         "",

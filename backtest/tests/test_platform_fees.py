@@ -68,6 +68,40 @@ def test_hyperliquid_maker_rate_matches_fees_go():
     assert HYPERLIQUID_MAKER_FEE_PCT < PLATFORM_FEE_PCT["hyperliquid"]
 
 
+def test_audit_fee_axis_decoupled_from_data_axis():
+    """#1315 review: the audit fee model and the OHLCV data source are
+    independent axes. eval_windows.PLATFORM is the data exchange_id the regime
+    research/promotion pipeline loads cached candles under — it must stay
+    binanceus (every committed regime baseline, incl. the #1211 incumbent
+    baseline, was computed on that series). FEE_PLATFORM carries the #1315
+    hyperliquid audit fee model and is the only constant fed to Backtester
+    platform= in the active M harnesses."""
+    import eval_windows
+
+    assert eval_windows.PLATFORM == "binanceus"
+    assert eval_windows.FEE_PLATFORM == "hyperliquid"
+
+    backtest_dir = Path(__file__).resolve().parents[1]
+    # Fee-axis sites: Backtester platform= must read FEE_PLATFORM, never the
+    # data-source constant.
+    for harness in ("eval_windows.py", "exit_policy_ab.py",
+                    "exit_diagnostics.py"):
+        text = (backtest_dir / harness).read_text()
+        assert "platform=FEE_PLATFORM" in text, harness
+        assert re.search(r"platform=PLATFORM\b", text) is None, (
+            f"{harness} feeds the data-source constant into a Backtester "
+            "fee model — use FEE_PLATFORM"
+        )
+    # Data-axis sites: the regime harnesses load cached OHLCV under the
+    # data-source constant, never the fee constant.
+    for harness in ("regime_bounded_window_validate.py",
+                    "regime_diagnostics.py", "regime_calibrate.py",
+                    "regime_vol_model.py"):
+        text = (backtest_dir / harness).read_text()
+        assert "exchange_id=PLATFORM" in text, harness
+        assert "exchange_id=FEE_PLATFORM" not in text, harness
+
+
 def test_unknown_platform_falls_back_to_binanceus():
     """Matches the ``default:`` branch in CalculatePlatformSpotFee."""
     assert fee_pct_for_platform("mystery-exchange") == PLATFORM_FEE_PCT["binanceus"]
