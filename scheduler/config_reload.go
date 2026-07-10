@@ -325,6 +325,18 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("portfolio_risk.daily_max_loss_pct: %.2f%% -> %.2f%%",
 			portfolioRiskDailyMaxLossPct(cfg.PortfolioRisk), portfolioRiskDailyMaxLossPct(next.PortfolioRisk))
 	}
+	// #1270: exposure-cap thresholds hot-reload with the same clone below —
+	// including while blocking (the gate re-evaluates each cycle from config).
+	// Deliberate divergence from max_notional_usd, which stays restart-required
+	// (validateHotReloadCompatible).
+	if portfolioRiskMaxSameDirectionNotional(cfg.PortfolioRisk) != portfolioRiskMaxSameDirectionNotional(next.PortfolioRisk) {
+		addChange("portfolio_risk.max_same_direction_notional_usd: $%.2f -> $%.2f",
+			portfolioRiskMaxSameDirectionNotional(cfg.PortfolioRisk), portfolioRiskMaxSameDirectionNotional(next.PortfolioRisk))
+	}
+	if portfolioRiskMaxAssetConcentration(cfg.PortfolioRisk) != portfolioRiskMaxAssetConcentration(next.PortfolioRisk) {
+		addChange("portfolio_risk.max_asset_concentration_pct: %.2f%% -> %.2f%%",
+			portfolioRiskMaxAssetConcentration(cfg.PortfolioRisk), portfolioRiskMaxAssetConcentration(next.PortfolioRisk))
+	}
 	cfg.PortfolioRisk = clonePortfolioRiskConfig(next.PortfolioRisk)
 
 	if !reflect.DeepEqual(cfg.Discord.Channels, next.Discord.Channels) {
@@ -936,6 +948,20 @@ func portfolioRiskDailyMaxLossPct(pr *PortfolioRiskConfig) float64 {
 		return 0
 	}
 	return pr.DailyMaxLossPct
+}
+
+func portfolioRiskMaxSameDirectionNotional(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.MaxSameDirectionNotionalUSD
+}
+
+func portfolioRiskMaxAssetConcentration(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.MaxAssetConcentrationPct
 }
 
 func clonePortfolioRiskConfig(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
