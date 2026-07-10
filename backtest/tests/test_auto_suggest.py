@@ -859,3 +859,129 @@ def test_dry_run_omits_the_mc_command_when_mc_is_not_enabled():
     spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
     cmds = asug._dry_run_commands(asug.expand_candidates(spec), spec, "/tmp/out")
     assert not any("monte_carlo.py" in c for c in cmds)
+
+
+# --------------------------------------------------------------------------
+# 10. #1312 review — candidate JSON freshness + MC column window selection
+# --------------------------------------------------------------------------
+
+def _open_spec(harnesses):
+    spec = asug.load_spec(_base_spec(harnesses=harnesses), _STUDY_DIR)
+    spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
+    return spec
+
+
+def _capture_candidate(monkeypatch, harness_flag):
+    """Run one open entry, returning the candidate dict the harness actually
+    read off disk at subprocess-spawn time."""
+    seen = {}
+
+    def fake_run_harness(harness, tail, out_json):
+        path = tail[tail.index(harness_flag) + 1]
+        with open(path) as fh:
+            seen[harness] = json.load(fh)
+        return {"harness": harness, "argv_tail": tail, "status": "failed"}
+
+    monkeypatch.setattr(asug, "_run_harness", fake_run_harness)
+    return seen
+
+
+def test_candidate_json_is_rewritten_over_a_stale_file_from_a_prior_run(monkeypatch, tmp_path):
+    # out_dir persists between runs (main only makedirs(exist_ok=True)) and keys
+    # are stable, so an existence-check write lets M1 — the PROMOTION GATE —
+    # score last run's candidate while the shortlist looks current.
+    spec = _open_spec(["m1"])
+    entry = asug.expand_candidates(spec)[0]
+    stale = tmp_path / f"{entry['key']}.candidate.json"
+    stale.write_text(json.dumps({"name": "STALE_STRATEGY",
+                                 "allowed_regimes": ["stale_gate"]}))
+
+    seen = _capture_candidate(monkeypatch, "--candidate-json")
+    asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
+    assert seen["m1"]["name"] == "squeeze_momentum"
+    assert "allowed_regimes" not in seen["m1"]
+    assert json.loads(stale.read_text())["name"] == "squeeze_momentum"
+
+
+def test_mc_also_reads_a_freshly_written_candidate_not_a_stale_one(monkeypatch, tmp_path):
+    spec = _open_spec(["mc"])
+    entry = asug.expand_candidates(spec)[0]
+    (tmp_path / f"{entry['key']}.candidate.json").write_text(
+        json.dumps({"name": "STALE_STRATEGY"}))
+
+    seen = _capture_candidate(monkeypatch, "--candidate-json")
+    asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
+    assert seen["mc"]["name"] == "squeeze_momentum"
+
+
+def test_candidate_json_is_written_once_per_run_and_shared_by_m1_and_mc(monkeypatch, tmp_path):
+    spec = _open_spec(["m1", "mc"])
+    entry = asug.expand_candidates(spec)[0]
+    paths, writes = [], []
+
+    real_dump = json.dump
+
+    def counting_dump(obj, fh, **kw):
+        if getattr(fh, "name", "").endswith(".candidate.json"):
+            writes.append(fh.name)
+        return real_dump(obj, fh, **kw)
+
+    monkeypatch.setattr(asug.json, "dump", counting_dump)
+    monkeypatch.setattr(asug, "_run_harness", lambda h, tail, out: (
+        paths.append(tail[tail.index("--candidate-json") + 1])
+        or {"harness": h, "argv_tail": tail, "status": "failed"}))
+
+    asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
+    assert len(paths) == 2 and paths[0] == paths[1]   # one file, both harnesses
+    assert len(writes) == 1                           # written exactly once
+
+
+# ---- MC column window selection -------------------------------------------
+
+def _mc_data(**windows):
+    """windows: name -> dict of permute stats, or None for an all-no_data bucket."""
+    out = {}
+    for w, stats in windows.items():
+        out[w] = {"per_dataset": {},
+                  "worst": {} if stats is None else {"permute": stats}}
+    return out
+
+
+_SCORED = {"p_dd_ge_kill_switch": 0.30, "p95_max_dd": 40.0,
+           "p_final_below_start": 0.20}
+_SCORED_OOS = {"p_dd_ge_kill_switch": 0.55, "p95_max_dd": 70.0,
+               "p_final_below_start": 0.40}
+_NO_TRADES = {"p_dd_ge_kill_switch": None, "p95_max_dd": None,
+              "p_final_below_start": None}
+
+
+def test_mc_column_falls_back_to_a_scored_window_when_oos_is_all_no_data():
+    mc = _mc_data(**{"is": _SCORED, "oos": None})
+    assert asug._mc_column_window(mc) == "is"
+    seg = asug._mc_segment(mc)
+    assert "MC(adv,is)=p95DD 40.0%" in seg   # not blanked
+
+
+def test_mc_column_still_prefers_oos_when_both_windows_are_scored():
+    mc = _mc_data(**{"is": _SCORED, "oos": _SCORED_OOS})
+    assert asug._mc_column_window(mc) == "oos"
+    assert "MC(adv,oos)=p95DD 70.0%" in asug._mc_segment(mc)
+
+
+def test_mc_column_prefers_a_scored_window_over_a_zero_trade_one():
+    mc = _mc_data(**{"is": _SCORED, "oos": _NO_TRADES})
+    assert asug._mc_column_window(mc) == "is"
+    assert "MC(adv,is)" in asug._mc_segment(mc)
+
+
+def test_mc_column_reports_dashes_when_every_window_was_resampled_but_empty():
+    # 0 trades everywhere: measured, nothing to resample — say so, don't hide.
+    mc = _mc_data(**{"is": _NO_TRADES, "oos": _NO_TRADES})
+    assert asug._mc_column_window(mc) == "oos"
+    assert "MC(adv,oos)=p95DD -% pKS - pDown -" in asug._mc_segment(mc)
+
+
+def test_mc_column_absent_when_no_window_was_resampled_at_all():
+    assert asug._mc_column_window(_mc_data(**{"is": None, "oos": None})) is None
+    assert asug._mc_segment(_mc_data(**{"is": None, "oos": None})) == ""
+    assert asug._mc_segment({}) == ""

@@ -851,6 +851,28 @@ def reproduction_command(entry: dict) -> list:
 # Pure — report formatting
 # ===========================================================================
 
+def _mc_column_window(mc: dict):
+    """Which window the advisory column should report, preferring ``oos``.
+
+    ``extract_mc`` buckets EVERY window it sees, including one whose datasets
+    were all ``no_data`` (empty ``worst``). Keying blindly on "oos" would let
+    such a bucket win and blank the column even though another window was
+    resampled — and since the run itself succeeded, no ``mc_run_failed`` flag
+    would explain the absence. So: prefer a window with usable numbers, then a
+    window that was resampled but had nothing to resample (0 trades -> all-None
+    stats, reported as dashes), and only then give up. ``oos`` wins each tier.
+    """
+    def pick(windows):
+        return "oos" if "oos" in windows else (sorted(windows)[0] if windows else None)
+
+    resampled = {w for w, b in mc.items()
+                 if MC_SCHEME_FOR_COLUMNS in (b.get("worst") or {})}
+    usable = {w for w in resampled
+              if any(v is not None for v in
+                     mc[w]["worst"][MC_SCHEME_FOR_COLUMNS].values())}
+    return pick(usable) or pick(resampled)
+
+
 def _mc_segment(mc: dict) -> str:
     """The advisory MC column: worst-dataset sequencing risk, OOS if scored.
 
@@ -859,10 +881,10 @@ def _mc_segment(mc: dict) -> str:
     """
     if not mc:
         return ""
-    window = "oos" if "oos" in mc else sorted(mc)[0]
-    stats = ((mc.get(window) or {}).get("worst") or {}).get(MC_SCHEME_FOR_COLUMNS)
-    if not stats:
+    window = _mc_column_window(mc)
+    if window is None:
         return ""
+    stats = mc[window]["worst"][MC_SCHEME_FOR_COLUMNS]
 
     def _f(key, prec):
         v = stats.get(key)
@@ -1012,13 +1034,20 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
     if "m1_noise" in entry["harnesses"]:
         results["m1_noise"] = noise_cache[entry["noise_family_key"]]
 
+    written = []
+
     def candidate_path() -> str:
         # Shared by m1 and mc — both consume the SAME candidate JSON, so the
         # advisory resampler cannot drift onto a narrower view of the candidate.
+        # Written once per RUN, but ALWAYS rewritten: out_dir persists across
+        # runs (main() only makedirs(exist_ok=True)) and keys are stable, so an
+        # existence check would let an edited candidate be scored from the
+        # previous run's file — silently, since the harness outputs regenerate.
         path = os.path.join(out_dir, f"{key}.candidate.json")
-        if not os.path.exists(path):
+        if not written:
             with open(path, "w") as fh:
                 json.dump(cand, fh, indent=2)
+            written.append(path)
         return path
 
     if "m1" in entry["harnesses"]:
