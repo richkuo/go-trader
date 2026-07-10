@@ -254,11 +254,14 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-    uses: ./.github/workflows/claude-run.yml
+    uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
     with:
       mode: review
       model_id: ${{ needs.classify.outputs.model_id }}
       effort: ${{ needs.classify.outputs.effort }}
+      timeout_minutes: 90
+      go_version: '1.26'
+      extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets: inherit
 
   # Implementation runs legitimately commit and push, so they keep Claude App
@@ -285,11 +288,14 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-    uses: ./.github/workflows/claude-run.yml
+    uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
     with:
       mode: implement
       model_id: ${{ needs.classify.outputs.model_id }}
       effort: ${{ needs.classify.outputs.effort }}
+      timeout_minutes: 90
+      go_version: '1.26'
+      extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets: inherit
 
   # The "@claude fix" keyword route: same push capability and the same
@@ -314,9 +320,12 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-    uses: ./.github/workflows/claude-run.yml
+    uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
     with:
       mode: fix-pr-review
       model_id: ${{ needs.classify.outputs.model_id }}
       effort: ${{ needs.classify.outputs.effort }}
+      timeout_minutes: 90
+      go_version: '1.26'
+      extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets: inherit
