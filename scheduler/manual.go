@@ -131,11 +131,17 @@ func runManualOpen(args []string) int {
 				}
 				// #1270: a resting limit open increases exposure in resolvedSide's
 				// direction once it fills — refuse while that direction's bucket
-				// is capped. nil prices → AvgCost valuation, same as the
-				// market-order core path (manualStateViewFromState).
-				if capSt := evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, nil, 0); (resolvedSide == "long" && capSt.LongBlocked) || (resolvedSide == "short" && capSt.ShortBlocked) {
-					fmt.Fprintf(os.Stderr, "error: %s — manual limit-open (%s) blocked (closes and SL edits are unaffected)\n", exposureCapHoldDetail(capSt), resolvedSide)
+				// is capped or this asset is over-concentrated in that direction.
+				// nil prices → AvgCost valuation; the concentration basis comes
+				// from manualExposureCapStatus, same as the market-order core
+				// path (manualStateViewFromState).
+				capSt := manualExposureCapStatus(cfg, state)
+				if blocked, why := exposureCapManualEntryBlock(capSt, extractAsset(sc), resolvedSide); blocked {
+					fmt.Fprintf(os.Stderr, "error: %s — manual limit-open (%s) blocked (closes and SL edits are unaffected)\n", why, resolvedSide)
 					return 1
+				}
+				if capSt.PVBasisMiss {
+					fmt.Fprintf(os.Stderr, "warning: %s\n", exposureCapPVBasisMissWarning)
 				}
 			}
 		}

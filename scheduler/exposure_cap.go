@@ -21,9 +21,10 @@ package main
 //
 // Blocking-only, mirroring the #42 notional cap contract: nothing is ever
 // force-closed, reduced, or mutated. Manual open/add/limit-open refuse next to
-// their kill-switch / pending-CB / daily-loss guards (bucket arm only there —
-// the CLI path has no live marks, so positions are valued at AvgCost and the
-// concentration arm is left to the dispatch sites).
+// their kill-switch / pending-CB / daily-loss guards — BOTH arms: the CLI path
+// has no live marks, so positions value at AvgCost and the concentration basis
+// is derived by manualExposureCapStatus (a configured protective arm is never
+// silently bypassed on an entry path it governs).
 //
 // The gate is UNLATCHED: it is recomputed once per cycle from live positions
 // and prices, so it clears itself as soon as exposure falls back under the
@@ -120,6 +121,52 @@ func evaluateExposureCap(pr *PortfolioRiskConfig, states map[string]*StrategySta
 	st.LongBlocked = st.CapUSD > 0 && st.LongUSD > st.CapUSD
 	st.ShortBlocked = st.CapUSD > 0 && st.ShortUSD > st.CapUSD
 	return st
+}
+
+// manualExposureCapStatus evaluates the exposure cap for the manual
+// open/add/limit-open guards. The manual paths have no live price feed, so
+// positions value at AvgCost (computeAssetDeltas' nil-prices fallback) and the
+// concentration basis is the sum of displayStrategyValue at the same AvgCost
+// fallback — the basis exposureCapStatusNote already uses for /status — so a
+// concentration-only config is enforced on manual entries instead of silently
+// inert. In the daemon-embedded dashboard path displayStrategyValue picks up
+// the shared-wallet-reconciled value; the standalone CLI falls back to the
+// modeled per-strategy sum (shared-wallet members virtual-sum there, which can
+// overstate the basis and make the concentration arm slightly permissive —
+// never the bucket arm, whose sums are basis-free).
+func manualExposureCapStatus(cfg *Config, state *AppState) ExposureCapStatus {
+	if cfg == nil || state == nil || !exposureCapConfigured(cfg.PortfolioRisk) {
+		return ExposureCapStatus{}
+	}
+	ids := make([]string, 0, len(state.Strategies))
+	for id := range state.Strategies {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids) // deterministic float summation
+	var pv float64
+	for _, id := range ids {
+		pv += displayStrategyValue(state.Strategies[id], nil)
+	}
+	return evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, nil, pv)
+}
+
+// exposureCapManualEntryBlock reports whether a manual position-increasing
+// entry (open/add/limit-open) for asset in direction dir must refuse, with the
+// operator detail line. Bucket arm first, then the concentration arm for this
+// asset — the same order exposureCapBlocksSignal applies at the dispatch
+// sites. dir is "long"/"short".
+func exposureCapManualEntryBlock(st ExposureCapStatus, asset, dir string) (bool, string) {
+	if !st.Configured {
+		return false, ""
+	}
+	if (dir == "long" && st.LongBlocked) || (dir == "short" && st.ShortBlocked) {
+		return true, exposureCapHoldDetail(st)
+	}
+	if stat, ok := st.OverConcentrated[asset]; ok && stat.Direction == dir {
+		return true, fmt.Sprintf("%s net %s exposure $%.2f is %.1f%% of portfolio value $%.2f (cap %.1f%%)",
+			asset, dir, stat.NetUSD, stat.Pct, st.PortfolioValue, st.ConcentrationPct)
+	}
+	return false, ""
 }
 
 // exposureCapBlocksSignal reports whether a check signal must be forced to

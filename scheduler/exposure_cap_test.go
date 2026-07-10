@@ -574,3 +574,114 @@ func TestValidateConfig_ExposureCapBounds(t *testing.T) {
 		}
 	}
 }
+
+// --- manual path (#1301 review): both arms enforced on manual entries ---------
+
+// manualExposureTestConfig builds a config whose concentration arm alone is
+// set (bucket arm = 0) plus a manual strategy on BTC, so these tests prove the
+// concentration arm protects the manual path with no bucket arm configured.
+func manualExposureTestConfig() *Config {
+	return &Config{
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxAssetConcentrationPct: 40},
+		Strategies: append(exposureTestConfigs(),
+			StrategyConfig{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Args: []string{"hold", "BTC"}}),
+	}
+}
+
+// Acceptance: with ONLY max_asset_concentration_pct set, the manual path
+// derives an AvgCost portfolio-value basis and enforces the concentration arm
+// (it is not silently inert), in the asset's net direction only.
+func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
+	cfg := manualExposureTestConfig()
+	state := &AppState{Strategies: exposureTestStates()}
+
+	st := manualExposureCapStatus(cfg, state)
+	if !st.Configured {
+		t.Fatal("expected Configured=true")
+	}
+	// AvgCost basis: 0.2*48000 + 2*2900 + 20*140 = 9600 + 5800 + 2800 = 18200.
+	if st.PortfolioValue != 18200 {
+		t.Errorf("PortfolioValue = %f, want 18200 (AvgCost basis)", st.PortfolioValue)
+	}
+	if st.PVBasisMiss {
+		t.Error("expected PVBasisMiss=false — the manual path must derive a basis")
+	}
+	// BTC 9600/18200 = 52.7% > 40%; ETH 31.9% and SOL 15.4% under.
+	stat, ok := st.OverConcentrated["BTC"]
+	if !ok || stat.Direction != "long" {
+		t.Fatalf("expected BTC over-concentrated long, got %+v", st.OverConcentrated)
+	}
+	if _, ok := st.OverConcentrated["ETH"]; ok {
+		t.Error("ETH (31.9%) must not be over a 40% cap")
+	}
+
+	// manual-open long BTC refuses with the concentration reason...
+	blocked, why := exposureCapManualEntryBlock(st, "BTC", "long")
+	if !blocked {
+		t.Fatal("expected manual long BTC entry blocked by the concentration arm")
+	}
+	if !strings.Contains(why, "BTC net long") || !strings.Contains(why, "cap 40.0%") {
+		t.Errorf("unexpected reason: %q", why)
+	}
+	// ...while the opposite direction and other assets pass.
+	if blocked, _ := exposureCapManualEntryBlock(st, "BTC", "short"); blocked {
+		t.Error("short BTC entry must pass — concentration blocks the net direction only")
+	}
+	if blocked, _ := exposureCapManualEntryBlock(st, "SOL", "long"); blocked {
+		t.Error("SOL long entry must pass (15.4% < 40%)")
+	}
+}
+
+// Acceptance: the bucket arm still refuses through the same helper, in the
+// blocked direction only (parity with the pre-#1301 manual guard).
+func TestExposureCapManualEntryBlock_BucketArm(t *testing.T) {
+	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
+	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
+	if blocked, why := exposureCapManualEntryBlock(st, "BTC", "long"); !blocked || !strings.Contains(why, "exceeds cap") {
+		t.Errorf("expected long entry blocked by bucket arm, got blocked=%v why=%q", blocked, why)
+	}
+	if blocked, _ := exposureCapManualEntryBlock(st, "BTC", "short"); blocked {
+		t.Error("short entry must pass while only the long bucket is capped")
+	}
+}
+
+// Acceptance: manualStateViewFromState carries the full status + asset key, so
+// a manual-add on an over-concentrated asset refuses in the position's
+// direction (integration of the view plumbing).
+func TestManualStateView_CarriesConcentrationArm(t *testing.T) {
+	cfg := manualExposureTestConfig()
+	states := exposureTestStates()
+	states["hl-manual"] = &StrategyState{
+		ID: "hl-manual", Type: "manual",
+		Positions:       map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 0.05, Side: "long", AvgCost: 48000}},
+		OptionPositions: make(map[string]*OptionPosition),
+	}
+	state := &AppState{Strategies: states}
+
+	view := manualStateViewFromState(cfg, state, "hl-manual", "BTC")
+	if view.ExposureCapAsset != "BTC" {
+		t.Fatalf("ExposureCapAsset = %q, want BTC", view.ExposureCapAsset)
+	}
+	if _, ok := view.ExposureCap.OverConcentrated["BTC"]; !ok {
+		t.Fatal("expected BTC over-concentrated in the view status")
+	}
+	if blocked, _ := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, "long"); !blocked {
+		t.Error("manual-add long on an over-concentrated asset must refuse")
+	}
+	if blocked, _ := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, "short"); blocked {
+		t.Error("short direction must pass")
+	}
+}
+
+// Acceptance: an empty book (no strategies, basis 0) surfaces PVBasisMiss on
+// the manual path instead of silently enforcing nothing — and blocks nothing.
+func TestManualExposureCapStatus_PVBasisMissSurfaced(t *testing.T) {
+	cfg := manualExposureTestConfig()
+	st := manualExposureCapStatus(cfg, &AppState{Strategies: map[string]*StrategyState{}})
+	if !st.PVBasisMiss {
+		t.Error("expected PVBasisMiss=true on a zero-value book")
+	}
+	if blocked, _ := exposureCapManualEntryBlock(st, "BTC", "long"); blocked {
+		t.Error("PVBasisMiss must never block — loudly inert only")
+	}
+}
