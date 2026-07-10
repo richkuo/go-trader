@@ -261,11 +261,15 @@ def trade_returns(trades: Sequence, returns: str = "net") -> List[float]:
     if returns not in ("net", "gross"):
         raise ValueError(f"returns must be 'net' or 'gross', got {returns!r}")
     out: List[float] = []
-    for t in trades:
+    for i, t in enumerate(trades):
         if isinstance(t, (int, float)):
             out.append(float(t))
             continue
         if returns == "gross":
+            if "pnl_pct" not in t:
+                raise ValueError(
+                    f"trade {i} is missing 'pnl_pct', required for "
+                    f"--returns gross")
             out.append(float(t["pnl_pct"]))
             continue
         shares = float(t.get("shares") or 0.0)
@@ -274,6 +278,11 @@ def trade_returns(trades: Sequence, returns: str = "net") -> List[float]:
         if notional > 0 and t.get("pnl") is not None:
             out.append(float(t["pnl"]) / notional * 100.0)
         else:
+            if "pnl_pct" not in t:
+                raise ValueError(
+                    f"trade {i} is missing 'pnl_pct' (required as a fallback "
+                    f"when 'shares'/'entry_price'/'pnl' can't derive a net "
+                    f"return)")
             out.append(float(t["pnl_pct"]))
     return out
 
@@ -352,7 +361,10 @@ def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
     if window_name not in WINDOWS:
         raise SystemExit(f"unknown window {window_name!r}; "
                          f"known: {list(WINDOWS)}")
-    symbol, timeframe = parse_dataset_arg(dataset)
+    try:
+        symbol, timeframe = parse_dataset_arg(dataset)
+    except ValueError:
+        raise SystemExit(f"--dataset expects SYMBOL:TIMEFRAME, got: {dataset!r}")
     reg = load_registry(registry)
     if strategy not in reg.STRATEGY_REGISTRY:
         raise SystemExit(f"Unknown strategy {strategy!r}; available: "
@@ -499,8 +511,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                          f"{out_of_range}")
 
     if args.config:
-        with open(args.config) as fh:
-            cfg = json.load(fh)
+        try:
+            with open(args.config) as fh:
+                cfg = json.load(fh)
+        except OSError as exc:
+            raise SystemExit(f"--config {args.config!r} could not be read: {exc}")
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--config {args.config!r} is not valid JSON: {exc}")
         try:
             kill_switch = resolve_kill_switch_pct(cfg, args.strategy_id)
         except ValueError as exc:
@@ -515,16 +532,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         threshold_source = "default (portfolio kill switch)"
 
     if args.trades_json:
-        with open(args.trades_json) as fh:
-            payload = json.load(fh)
+        try:
+            with open(args.trades_json) as fh:
+                payload = json.load(fh)
+        except OSError as exc:
+            raise SystemExit(
+                f"--trades-json {args.trades_json!r} could not be read: {exc}")
+        except json.JSONDecodeError as exc:
+            raise SystemExit(
+                f"--trades-json {args.trades_json!r} is not valid JSON: {exc}")
         try:
             trades = trades_from_json_payload(payload)
+            values = trade_returns(trades, returns=args.returns)
         except ValueError as exc:
             raise SystemExit(str(exc))
-        values = trade_returns(trades, returns=args.returns)
         source = args.trades_json
     else:
-        params = json.loads(args.params) if args.params else None
+        try:
+            params = json.loads(args.params) if args.params else None
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--params must be valid JSON: {exc}")
         values = run_leg_trades(args.strategy, args.registry, params,
                                 args.dataset, args.window, args.capital,
                                 args.direction, args.returns)

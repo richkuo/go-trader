@@ -432,3 +432,72 @@ def test_cli_rejects_trades_json_bare_number(tmp_path):
     src.write_text(json.dumps(42))
     with pytest.raises(SystemExit):
         mc.main(["--trades-json", str(src)])
+
+
+# ---------------------------------------------------------------------------
+# Malformed-CLI-input sub-cases (review on #1293): --config / --trades-json
+# missing or invalid, --params invalid JSON, bad --dataset, and trade dicts
+# missing pnl_pct — all must SystemExit with an actionable message, never an
+# unhandled traceback.
+# ---------------------------------------------------------------------------
+
+def test_cli_config_missing_file_exits_cleanly(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src),
+                  "--config", str(tmp_path / "does_not_exist.json"),
+                  "--strategy-id", "hl-x"])
+
+
+def test_cli_config_invalid_json_exits_cleanly(tmp_path):
+    src = _valid_trades_json(tmp_path)
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{not valid json")
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src), "--config", str(cfg),
+                  "--strategy-id", "hl-x"])
+
+
+def test_cli_trades_json_missing_file_exits_cleanly(tmp_path):
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(tmp_path / "does_not_exist.json")])
+
+
+def test_cli_trades_json_invalid_json_exits_cleanly(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text("{not valid json")
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src)])
+
+
+def test_cli_params_invalid_json_exits_cleanly(tmp_path):
+    with pytest.raises(SystemExit):
+        mc.main(["--strategy", "squeeze_momentum", "--params", "{bad json"])
+
+
+def test_run_leg_trades_rejects_bad_dataset(tmp_path):
+    with pytest.raises(SystemExit, match="--dataset"):
+        mc.run_leg_trades("squeeze_momentum", "spot", None,
+                          "not-a-valid-dataset", "is", 1000.0, None, "net")
+
+
+def test_trade_returns_missing_pnl_pct_gross_raises_value_error():
+    trade = {"shares": 2.0, "entry_price": 100.0, "pnl": 8.0}
+    with pytest.raises(ValueError, match="pnl_pct"):
+        mc.trade_returns([trade], returns="gross")
+
+
+def test_trade_returns_missing_pnl_pct_net_fallback_raises_value_error():
+    # No notional (shares=0) forces the net-fallback-to-pnl_pct path, which
+    # is also missing pnl_pct here.
+    trade = {"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}
+    with pytest.raises(ValueError, match="pnl_pct"):
+        mc.trade_returns([trade], returns="net")
+
+
+def test_cli_trades_json_missing_pnl_pct_exits_cleanly(tmp_path):
+    src = tmp_path / "results.json"
+    src.write_text(json.dumps({"trades": [
+        {"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}))
+    with pytest.raises(SystemExit):
+        mc.main(["--trades-json", str(src)])
