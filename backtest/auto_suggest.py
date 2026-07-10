@@ -25,9 +25,15 @@ Given a declarative spec (see ``backtest/candidates/<study>/suggest.json``) it:
      work; non-replayable M6 closes are excluded, mirroring
      ``_REPLAYABLE_CLOSE_NAMES``),
   3. corrects the family of primary p-values (M1 step-2 permutation + M6 paired
-     Wilcoxon) with Benjamini-Hochberg — M3/M5 emit no p-values and pass through
-     as clearly-labeled uncorrected context,
+     Wilcoxon) with Benjamini-Hochberg — M3/M5/MC emit no p-values and pass
+     through as clearly-labeled uncorrected context,
   4. ranks survivors first and writes a shortlist artifact.
+
+The Monte Carlo columns (#1295, the ``mc`` harness) are ADVISORY in the strong
+sense: they never gate a promotion whether the run succeeds, fails, or is
+skipped. See ``ADVISORY_HARNESSES`` / ``gate_relevant_results`` — "the gate does
+not read the mc key" would NOT have been sufficient, because the failed-run scan
+reads the results dict's VALUES.
 
 Usage:
   uv run --no-sync python backtest/auto_suggest.py \
@@ -69,13 +75,32 @@ HARNESS_REL = {
     "m3": "backtest/exit_diagnostics.py",
     "m5": "backtest/fee_audit.py",
     "m6": "backtest/exit_policy_ab.py",
+    "mc": "backtest/monte_carlo.py",
 }
 HARNESS_ABS = {k: os.path.join(_REPO, v) for k, v in HARNESS_REL.items()}
 
 KNOWN_HARNESSES = set(HARNESS_REL)
-OPEN_HARNESSES = ("m1_noise", "m1", "m3", "m5")  # applied to open-kind candidates
-DEFAULT_HARNESSES = ["m1_noise", "m1", "m3", "m5"]
+OPEN_HARNESSES = ("m1_noise", "m1", "m3", "m5", "mc")  # applied to open candidates
+DEFAULT_HARNESSES = ["m1_noise", "m1", "m3", "m5", "mc"]
 KNOWN_REGISTRIES = ("spot", "futures")
+
+# ADVISORY harnesses (#1295) emit no p-value AND must never influence the
+# promotion gate IN ANY STATE — including a failed run. This is strictly
+# stronger than "candidate_verdict does not read the key": both
+# ``candidate_verdict`` and ``main`` scan ``results.values()`` generically for a
+# failed status, so an advisory harness that merely APPEARS in the results dict
+# would demote a genuine survivor to ``run_failed`` and flip the exit code.
+# Every gate-facing scan goes through ``gate_relevant_results`` instead.
+#
+# M3/M5 are deliberately NOT listed. They are uncorrected CONTEXT for the
+# reader, but a failed M3/M5 run has always marked the candidate run_failed and
+# that pre-#1295 gate behavior is preserved byte-for-byte.
+ADVISORY_HARNESSES = ("mc",)
+
+# monte_carlo.py's own defaults, restated because auto_suggest passes them
+# explicitly into the argv tail.
+MC_DEFAULT_N_PATHS = 10000
+MC_SCHEME_FOR_COLUMNS = "permute"  # pure sequencing risk; block kept in evidence
 
 # Verdict vocabulary (ranked best-to-worst for the shortlist).
 VERDICT_ORDER = [
@@ -157,6 +182,33 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
             "hypothesis": c.get("hypothesis"),
         })
 
+    # ---- mc (#1295): advisory Monte Carlo block -----------------------------
+    # The threshold source mirrors monte_carlo.py's own mutual exclusion: an
+    # explicit percentage, OR a live config + strategy id to resolve the
+    # per-strategy max_drawdown_pct hierarchy — never both. Neither => the
+    # harness default (25, the portfolio kill-switch default).
+    mc = dict(raw.get("mc") or {})
+    if mc:
+        unknown_mc = set(mc) - {"kill_switch_pct", "config", "strategy_id",
+                                "n_paths"}
+        if unknown_mc:
+            raise ValueError(f"unknown mc keys {sorted(unknown_mc)}; known: "
+                             "kill_switch_pct, config, strategy_id, n_paths")
+        if mc.get("kill_switch_pct") is not None and mc.get("config"):
+            raise ValueError("mc block sets both 'kill_switch_pct' and "
+                             "'config'; they are mutually exclusive threshold "
+                             "sources (monte_carlo.py refuses both)")
+        if bool(mc.get("config")) != bool(mc.get("strategy_id")):
+            raise ValueError("mc 'config' and 'strategy_id' go together (the "
+                             "strategy id selects whose max_drawdown_pct "
+                             "hierarchy resolves)")
+        if mc.get("config"):
+            cfg = mc["config"]
+            mc["config"] = (cfg if os.path.isabs(cfg)
+                            else os.path.join(spec_dir, cfg))
+        if mc.get("n_paths") is not None and int(mc["n_paths"]) < 1:
+            raise ValueError("mc 'n_paths' must be >= 1")
+
     m6 = None
     if raw.get("m6") is not None:
         m6 = dict(raw["m6"])
@@ -212,6 +264,7 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         "sweep": raw.get("sweep"),
         "gate_variants": raw.get("gate_variants"),
         "m6": m6,
+        "mc": mc,
         "spec_dir": spec_dir,
     }
 
@@ -397,6 +450,27 @@ def m5_argv_tail(strategy, registry, direction, windows, datasets, out_json) -> 
     return tail
 
 
+def mc_argv_tail(candidate_path, registry, windows, datasets, n_paths, seed,
+                 mc: dict, out_json) -> list:
+    """Advisory Monte Carlo (#1295), multi-leg mode.
+
+    Threads the CANDIDATE JSON — not a bare --strategy/--params pair — so the
+    resampled trade series carries the candidate's close stack, entry gate and
+    stops. A bare-strategy tail would resample a strategy nobody is ranking.
+    """
+    tail = ["--candidate-json", candidate_path, "--registry", registry,
+            "--windows", _csv(windows), "--n-paths", str(n_paths),
+            "--seed", str(seed), "--json", out_json]
+    if datasets:
+        tail += ["--datasets", _csv(datasets)]
+    mc = mc or {}
+    if mc.get("config"):
+        tail += ["--config", mc["config"], "--strategy-id", mc["strategy_id"]]
+    elif mc.get("kill_switch_pct") is not None:
+        tail += ["--kill-switch-pct", str(mc["kill_switch_pct"])]
+    return tail
+
+
 def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out_json) -> list:
     tail = ["--strategy", m6_candidate["strategy_id"],
             "--registry", registry,
@@ -499,6 +573,58 @@ def extract_m3(payload: dict) -> dict:
     return out
 
 
+def _p95_max_dd(block: dict):
+    """P95 max drawdown from a monte_carlo scheme block, when the run used the
+    default percentile set. None — never a fabricated number — otherwise."""
+    return (block.get("max_dd_pct_percentiles") or {}).get("p95")
+
+
+def _worst(values: list):
+    """Max over the non-None values; None when every leg is unusable. A risk
+    column aggregates across datasets by WORST case — averaging would let one
+    benign dataset mask a fragile one."""
+    present = [v for v in values if v is not None]
+    return max(present) if present else None
+
+
+def extract_mc(payload: dict) -> dict:
+    """monte_carlo multi-leg payload -> {window: {per_dataset, worst}}.
+
+    ADVISORY ONLY (#1295): emits no p-value, and is never read by
+    ``candidate_verdict`` or ``collect_family_pvalues``. ``worst`` carries the
+    across-dataset worst case per scheme, which is what the shortlist prints.
+    """
+    out = {}
+    for leg in (payload.get("legs") or []):
+        w = leg.get("window")
+        if w is None:
+            continue
+        bucket = out.setdefault(w, {"per_dataset": {}, "worst": {}})
+        schemes = {}
+        for b in (leg.get("schemes") or []):
+            schemes[b.get("scheme")] = {
+                "p_dd_ge_kill_switch": b.get("p_dd_ge_kill_switch"),
+                "p95_max_dd": _p95_max_dd(b),
+                "p_final_below_start": b.get("p_final_below_start"),
+            }
+        bucket["per_dataset"][leg.get("dataset")] = {
+            "status": leg.get("status"),
+            "n_trades": leg.get("n_trades"),
+            "schemes": schemes,
+        }
+    for bucket in out.values():
+        per_ds = list(bucket["per_dataset"].values())
+        scheme_names = {s for d in per_ds for s in (d["schemes"] or {})}
+        for scheme in sorted(scheme_names):
+            rows = [d["schemes"].get(scheme) or {} for d in per_ds]
+            bucket["worst"][scheme] = {
+                k: _worst([r.get(k) for r in rows])
+                for k in ("p_dd_ge_kill_switch", "p95_max_dd",
+                          "p_final_below_start")
+            }
+    return out
+
+
 def extract_m5(payload: dict, strategy: str) -> dict:
     """fee_audit rows -> the salvage screen for one strategy (no p)."""
     for row in (payload.get("rows") or []):
@@ -581,6 +707,33 @@ def _tests_for(entry, tests: list) -> list:
     return [t for t in tests if t["candidate_key"] == entry["key"]]
 
 
+def gate_relevant_results(entry: dict) -> dict:
+    """The entry's harness runs MINUS the advisory ones (#1295).
+
+    The only place the promotion gate is allowed to look at ``entry["results"]``.
+    An advisory harness must not change a verdict by succeeding, by failing, or
+    by being absent — filtering here is what makes that true, since the
+    failed-run scan below keys on the dict's VALUES, not on any harness name.
+    """
+    return {h: r for h, r in (entry.get("results") or {}).items()
+            if h not in ADVISORY_HARNESSES}
+
+
+def any_gate_failure(entries: list) -> bool:
+    """Did any GATE-relevant harness run fail? Drives the process exit code."""
+    return any((v or {}).get("status") == "failed"
+               for e in entries for v in gate_relevant_results(e).values())
+
+
+def advisory_failures(entry: dict) -> list:
+    """Advisory harnesses whose run failed — surfaced as a limitation, never as
+    a verdict. Silence would be worse: an operator reads a blank MC column as
+    "low risk" rather than "not measured"."""
+    return sorted(h for h, r in (entry.get("results") or {}).items()
+                  if h in ADVISORY_HARNESSES
+                  and (r or {}).get("status") == "failed")
+
+
 def candidate_verdict(entry: dict, tests: list) -> str:
     """Pre-registered promotion gate, generalized from ``regime_1152._verdict``
     with the BH layer added. A candidate is only a ``survivor`` when its positive
@@ -588,7 +741,9 @@ def candidate_verdict(entry: dict, tests: list) -> str:
     reported as its own verdict, never as a survivor."""
     if entry.get("precondition_errors"):
         return "excluded_not_replayable"
-    r = entry.get("results") or {}
+    # Advisory harnesses are filtered OUT before the failed-run scan, and are
+    # never read below — the gate is byte-for-byte what it was pre-#1295.
+    r = gate_relevant_results(entry)
     if any((v or {}).get("status") == "failed" for v in r.values()):
         return "run_failed"
 
@@ -696,6 +851,50 @@ def reproduction_command(entry: dict) -> list:
 # Pure — report formatting
 # ===========================================================================
 
+def _mc_column_window(mc: dict):
+    """Which window the advisory column should report, preferring ``oos``.
+
+    ``extract_mc`` buckets EVERY window it sees, including one whose datasets
+    were all ``no_data`` (empty ``worst``). Keying blindly on "oos" would let
+    such a bucket win and blank the column even though another window was
+    resampled — and since the run itself succeeded, no ``mc_run_failed`` flag
+    would explain the absence. So: prefer a window with usable numbers, then a
+    window that was resampled but had nothing to resample (0 trades -> all-None
+    stats, reported as dashes), and only then give up. ``oos`` wins each tier.
+    """
+    def pick(windows):
+        return "oos" if "oos" in windows else (sorted(windows)[0] if windows else None)
+
+    resampled = {w for w, b in mc.items()
+                 if MC_SCHEME_FOR_COLUMNS in (b.get("worst") or {})}
+    usable = {w for w in resampled
+              if any(v is not None for v in
+                     mc[w]["worst"][MC_SCHEME_FOR_COLUMNS].values())}
+    return pick(usable) or pick(resampled)
+
+
+def _mc_segment(mc: dict) -> str:
+    """The advisory MC column: worst-dataset sequencing risk, OOS if scored.
+
+    Deliberately labeled ``(adv)`` and printed with the window it came from —
+    an unlabeled probability next to a promotion verdict reads as evidence.
+    """
+    if not mc:
+        return ""
+    window = _mc_column_window(mc)
+    if window is None:
+        return ""
+    stats = mc[window]["worst"][MC_SCHEME_FOR_COLUMNS]
+
+    def _f(key, prec):
+        v = stats.get(key)
+        return "-" if v is None else format(v, f".{prec}f")
+
+    return (f"  MC(adv,{window})=p95DD {_f('p95_max_dd', 1)}% "
+            f"pKS {_f('p_dd_ge_kill_switch', 3)} "
+            f"pDown {_f('p_final_below_start', 3)}")
+
+
 def format_shortlist(report: dict) -> str:
     corr = report["correction"]
     lines = [f"== auto-suggest shortlist: {report['study']} =="]
@@ -726,11 +925,19 @@ def format_shortlist(report: dict) -> str:
         m5 = (r.get("m5") or {}).get("data")
         if m5:
             extra += f"  M5(ctx)={m5.get('salvage_verdict')}"
+        extra += _mc_segment((r.get("mc") or {}).get("data"))
         limn = (" [" + ",".join(e["limitations"]) + "]") if e.get("limitations") else ""
         lines.append(f"{i:>2}  {e['key']:<40} {e['verdict']:<26}{extra}{limn}")
     lines.append("")
-    lines.append("M3/M5 figures are UNCORRECTED CONTEXT (no p-values), never "
+    lines.append("M3/M5/MC figures are UNCORRECTED CONTEXT (no p-values), never "
                  "counted as significance evidence.")
+    lines.append(f"MC(adv) = trade-order Monte Carlo (#1274), "
+                 f"{MC_SCHEME_FOR_COLUMNS} scheme, WORST dataset in the window: "
+                 "p95DD = P95 max drawdown, pKS = P(max DD >= kill switch), "
+                 "pDown = P(final < start). Advisory only — it does not gate "
+                 "promotion, and a failed MC run leaves the verdict untouched "
+                 "(flagged 'mc_run_failed'). Open candidates only; M6 exit-A/B "
+                 "entries carry no MC column.")
     lines.append(FOOTER)
     return "\n".join(lines)
 
@@ -827,10 +1034,24 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
     if "m1_noise" in entry["harnesses"]:
         results["m1_noise"] = noise_cache[entry["noise_family_key"]]
 
+    written = []
+
+    def candidate_path() -> str:
+        # Shared by m1 and mc — both consume the SAME candidate JSON, so the
+        # advisory resampler cannot drift onto a narrower view of the candidate.
+        # Written once per RUN, but ALWAYS rewritten: out_dir persists across
+        # runs (main() only makedirs(exist_ok=True)) and keys are stable, so an
+        # existence check would let an edited candidate be scored from the
+        # previous run's file — silently, since the harness outputs regenerate.
+        path = os.path.join(out_dir, f"{key}.candidate.json")
+        if not written:
+            with open(path, "w") as fh:
+                json.dump(cand, fh, indent=2)
+            written.append(path)
+        return path
+
     if "m1" in entry["harnesses"]:
-        cand_path = os.path.join(out_dir, f"{key}.candidate.json")
-        with open(cand_path, "w") as fh:
-            json.dump(cand, fh, indent=2)
+        cand_path = candidate_path()
         out = os.path.join(out_dir, f"{key}.m1.json")
         run = _run_harness("m1", m1_argv_tail(cand_path, reg, windows, datasets, out), out)
         if run["status"] == "ok":
@@ -858,7 +1079,24 @@ def run_open_entry(entry: dict, spec: dict, out_dir: str,
         # and abort the whole suggester. By this point the cache is populated.
         results["m5"] = m5_cache[_m5_family_key(cand)]
 
+    if "mc" in entry["harnesses"]:
+        # ADVISORY (#1295) — per-candidate, unlike the family-keyed noise/m5
+        # runs: the resampled trade series depends on this candidate's entry
+        # gate, close stack and params, so two siblings sharing a noise family
+        # still need their own Monte Carlo.
+        out = os.path.join(out_dir, f"{key}.mc.json")
+        mc = spec.get("mc") or {}
+        tail = mc_argv_tail(candidate_path(), reg, windows, datasets,
+                            mc.get("n_paths") or MC_DEFAULT_N_PATHS,
+                            spec["seed"], mc, out)
+        run = _run_harness("mc", tail, out)
+        if run["status"] == "ok":
+            run["data"] = extract_mc(run.pop("payload"))
+        results["mc"] = run
+
     entry["results"] = results
+    for h in advisory_failures(entry):
+        entry["limitations"].append(f"{h}_run_failed")
     return entry
 
 
@@ -876,8 +1114,18 @@ def run_exit_ab_entry(entry: dict, spec: dict, out_dir: str) -> dict:
     return entry
 
 
+def _cmd(harness: str, tail: list) -> str:
+    return ("uv run --no-sync python " + HARNESS_REL[harness] + " "
+            + " ".join(shlex.quote(str(a)) for a in tail))
+
+
 def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
-    """Every planned command, without running anything."""
+    """Every planned command, without running anything.
+
+    EVERY enabled harness appears here. A dry run that omits a harness it will
+    actually spawn under-reports the plan — the one thing a dry run exists to
+    prevent.
+    """
     cmds = []
     for e in entries:
         reg, windows, datasets = spec["registry"], spec["windows"], spec["datasets"]
@@ -886,23 +1134,40 @@ def _dry_run_commands(entries: list, spec: dict, out_dir: str) -> list:
             continue
         if e["kind"] == "open":
             cand = e["candidate"]
+            key, direction = e["key"], _direction_for(cand)
+            params_json = json.dumps(cand["params"]) if cand.get("params") else None
+            cand_path = os.path.join(out_dir, f"{key}.candidate.json")
             if "m1_noise" in e["harnesses"]:
-                cmds.append("uv run --no-sync python " + HARNESS_REL["m1_noise"] + " " + " ".join(
-                    shlex.quote(str(a)) for a in noise_argv_tail(
-                        cand["name"], json.dumps(cand["params"]) if cand.get("params") else None,
-                        reg, _direction_for(cand), windows, datasets,
-                        spec["resamples"], spec["seed"], spec["correction"]["alpha"],
-                        os.path.join(out_dir, f"{e['key']}.noise.json"))))
+                cmds.append(_cmd("m1_noise", noise_argv_tail(
+                    cand["name"], params_json, reg, direction, windows, datasets,
+                    spec["resamples"], spec["seed"], spec["correction"]["alpha"],
+                    os.path.join(out_dir, f"{key}.noise.json"))))
             if "m1" in e["harnesses"]:
-                cmds.append("uv run --no-sync python " + HARNESS_REL["m1"] + " " + " ".join(
-                    shlex.quote(str(a)) for a in m1_argv_tail(
-                        os.path.join(out_dir, f"{e['key']}.candidate.json"),
-                        reg, windows, datasets, os.path.join(out_dir, f"{e['key']}.m1.json"))))
+                cmds.append(_cmd("m1", m1_argv_tail(
+                    cand_path, reg, windows, datasets,
+                    os.path.join(out_dir, f"{key}.m1.json"))))
+            if "m3" in e["harnesses"]:
+                close_json = (json.dumps(cand["close_strategies"])
+                              if cand.get("close_strategies") else None)
+                cmds.append(_cmd("m3", m3_argv_tail(
+                    cand["name"], params_json, reg, direction, close_json,
+                    windows, datasets, os.path.join(out_dir, f"{key}.m3.json"))))
+            if "m5" in e["harnesses"]:
+                cmds.append(_cmd("m5", m5_argv_tail(
+                    cand["name"], reg, direction, windows, datasets,
+                    os.path.join(out_dir,
+                                 f"m5.{cand['name']}.{direction or 'long'}.json"))))
+            if "mc" in e["harnesses"]:
+                mc = spec.get("mc") or {}
+                cmds.append(_cmd("mc", mc_argv_tail(
+                    cand_path, reg, windows, datasets,
+                    mc.get("n_paths") or MC_DEFAULT_N_PATHS, spec["seed"], mc,
+                    os.path.join(out_dir, f"{key}.mc.json"))))
         else:
-            cmds.append("uv run --no-sync python " + HARNESS_REL["m6"] + " " + " ".join(
-                shlex.quote(str(a)) for a in m6_argv_tail(
-                    e["candidate"], reg, windows, datasets,
-                    spec["resamples"], spec["seed"], os.path.join(out_dir, f"{e['key']}.m6.json"))))
+            cmds.append(_cmd("m6", m6_argv_tail(
+                e["candidate"], reg, windows, datasets,
+                spec["resamples"], spec["seed"],
+                os.path.join(out_dir, f"{e['key']}.m6.json"))))
     return cmds
 
 
@@ -1027,9 +1292,11 @@ def main(argv=None) -> int:
             fh.write("```\n" + text + "\n```\n")
         print(f"wrote {args.markdown_out}")
 
-    failed = any((v or {}).get("status") == "failed"
-                 for e in entries for v in (e.get("results") or {}).values())
-    return 1 if failed else 0
+    # Advisory-harness failures are reported (stderr + a per-entry limitation
+    # flag + a missing MC column) but never fail the run: an unavailable Monte
+    # Carlo column must not change the process's success signal any more than
+    # it changes a verdict (#1295).
+    return 1 if any_gate_failure(entries) else 0
 
 
 if __name__ == "__main__":

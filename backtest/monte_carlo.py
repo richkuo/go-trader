@@ -49,6 +49,21 @@ All statistics are stdlib-only and deterministic under --seed.
 SUGGEST-ONLY / diagnostics-only: output never gates a promotion, writes a
 config, or feeds a live path.
 
+Three trade sources, exactly one per invocation: ``--trades-json`` (a saved
+run), ``--strategy`` (one bare registry strategy on the M1 harness), or
+``--candidate-json`` (a full eval_windows candidate — name, params, direction,
+close_strategies, allowed_regimes, regime_windows_spec, stops — resampled
+exactly as M1 scores it). The candidate source is what auto_suggest shells:
+resampling a gate-carrying candidate as if it were the bare strategy would
+report drawdowns for a strategy nobody is considering.
+
+MULTI-LEG MODE (#1295): pass ``--windows`` and/or ``--datasets`` (comma lists)
+instead of the singular ``--window``/``--dataset`` to fan one invocation across
+every (window, dataset) pair, emitting one stats block per leg under a ``legs``
+key — the same fan shape as the other M-harness payloads. ``--datasets``
+defaults to the six audit datasets. The singular flags keep their original
+single-leg payload shape (``observed`` + ``schemes`` at the top level).
+
 Usage:
   # Resample the trades of a completed run saved as JSON (a results dict
   # with a "trades" list, or a bare list of trade dicts / percent returns)
@@ -57,6 +72,10 @@ Usage:
   # Run one leg on the M1 audit-identical harness and resample its trades
   uv run --no-sync python backtest/monte_carlo.py \\
       --strategy squeeze_momentum --dataset BTC/USDT:1h --window is
+
+  # Resample a full candidate across the protocol windows and audit datasets
+  uv run --no-sync python backtest/monte_carlo.py \\
+      --candidate-json cand.json --windows is,oos
 
   # Kill-switch threshold from a live config's strategy entry
   uv run --no-sync python backtest/monte_carlo.py --trades-json results.json \\
@@ -347,36 +366,97 @@ def resolve_kill_switch_pct(cfg: dict, strategy_id: str) -> float:
 # Leg execution (I/O; everything above stays pure).
 # ---------------------------------------------------------------------------
 
+def _leg_returns(leg: Optional[dict], returns: str) -> Optional[List[float]]:
+    """Per-trade percent returns from a run_leg result; None when no data."""
+    if leg is None:
+        return None
+    key = "pnl_pct_net" if returns == "net" else "pnl_pct"
+    return [float(s[key]) for s in leg.get("trade_samples") or []]
+
+
+def _load_reg_and_window(registry: str, window_name: str):
+    from eval_windows import WINDOWS
+    from registry_loader import load_registry
+
+    if window_name not in WINDOWS:
+        raise SystemExit(f"unknown window {window_name!r}; "
+                         f"known: {list(WINDOWS)}")
+    return load_registry(registry), WINDOWS[window_name]
+
+
 def run_leg_trades(strategy: str, registry: str, params: Optional[dict],
                    dataset: str, window_name: str,
                    capital: float, direction: Optional[str],
                    returns: str) -> List[float]:
     """Run one (strategy, dataset, window) leg on the M1 audit-identical
     harness (eval_windows.run_leg, default friction) and return its per-trade
-    percent returns in close order."""
-    from eval_windows import (WINDOWS, DEFAULT_CAPITAL,  # noqa: F401
-                              parse_dataset_arg, run_leg)
-    from registry_loader import load_registry
+    percent returns in close order.
 
-    if window_name not in WINDOWS:
-        raise SystemExit(f"unknown window {window_name!r}; "
-                         f"known: {list(WINDOWS)}")
+    The BARE-STRATEGY source: ``direction`` is threaded exactly as given (None
+    = the engine's raw-signal default), matching gross_edge_noise's leg. A full
+    candidate goes through ``run_candidate_leg_trades`` instead, where the
+    validated "long" default applies (#996).
+    """
+    from eval_windows import parse_dataset_arg, run_leg
+
+    reg, window = _load_reg_and_window(registry, window_name)
     try:
         symbol, timeframe = parse_dataset_arg(dataset)
     except ValueError:
         raise SystemExit(f"--dataset expects SYMBOL:TIMEFRAME, got: {dataset!r}")
-    reg = load_registry(registry)
     if strategy not in reg.STRATEGY_REGISTRY:
         raise SystemExit(f"Unknown strategy {strategy!r}; available: "
                          f"{reg.list_strategies()}")
-    leg = run_leg(reg, strategy, params, symbol, timeframe,
-                  WINDOWS[window_name], capital=capital, direction=direction,
-                  keep_trades=True)
-    if leg is None:
+    values = _leg_returns(
+        run_leg(reg, strategy, params, symbol, timeframe, window,
+                capital=capital, direction=direction, keep_trades=True),
+        returns)
+    if values is None:
         raise SystemExit(f"no cached data for {dataset} in window "
                          f"{window_name!r}")
-    key = "pnl_pct_net" if returns == "net" else "pnl_pct"
-    return [float(s[key]) for s in leg.get("trade_samples") or []]
+    return values
+
+
+def run_candidate_leg_trades(candidate: dict, registry: str, dataset: str,
+                             window_name: str, capital: float,
+                             returns: str) -> Optional[List[float]]:
+    """Per-trade returns for ONE candidate leg, resampled exactly as M1 scores
+    it — the full candidate shape (close stack, entry gate, stops, profile
+    allocation) is threaded via ``eval_windows.run_candidate_leg``, never a
+    hand-picked subset. ``None`` when the dataset has no cached bars in the
+    window (a missing dataset must not abort a multi-leg fan)."""
+    from eval_windows import parse_dataset_arg, run_candidate_leg
+
+    reg, window = _load_reg_and_window(registry, window_name)
+    try:
+        symbol, timeframe = parse_dataset_arg(dataset)
+    except ValueError:
+        raise SystemExit(f"--datasets expects SYMBOL:TIMEFRAME, got: {dataset!r}")
+    if candidate["name"] not in reg.STRATEGY_REGISTRY:
+        raise SystemExit(f"Unknown strategy {candidate['name']!r}; available: "
+                         f"{reg.list_strategies()}")
+    return _leg_returns(
+        run_candidate_leg(reg, candidate, symbol, timeframe, window,
+                          capital=capital, keep_trades=True),
+        returns)
+
+
+def default_dataset_args() -> List[str]:
+    """The six audit datasets as SYMBOL:TIMEFRAME strings (eval_windows SSoT)."""
+    from eval_windows import DATASETS
+    return [f"{sym}:{tf}" for sym, tf in DATASETS]
+
+
+def leg_blocks(values: Sequence[float], schemes: Sequence[str], *,
+               n_paths: int, block_len: int, seed: int,
+               kill_switch_pct: float,
+               percentiles: Sequence[float]) -> List[dict]:
+    """One resample_stats block per scheme, for a single leg's trade series."""
+    return [resample_stats(values, scheme, n_paths=n_paths,
+                           block_len=block_len, seed=seed,
+                           kill_switch_pct=kill_switch_pct,
+                           percentiles=percentiles)
+            for scheme in schemes]
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +500,42 @@ def format_report(source: str, returns: str, observed: tuple,
     return "\n".join(lines)
 
 
+def format_multileg_report(source: str, returns: str, threshold_source: str,
+                           kill_switch_pct: float, legs: List[dict]) -> str:
+    lines = [
+        f"trade-order Monte Carlo: {source} ({returns} per-trade returns)",
+        f"kill-switch threshold: {kill_switch_pct:g}% ({threshold_source})",
+        f"{len(legs)} leg(s)",
+    ]
+    for leg in legs:
+        lines.append("")
+        head = f"-- {leg['window']} / {leg['dataset']}"
+        if leg["status"] != "ok":
+            lines.append(f"{head}: {leg['status']} — nothing to resample")
+            continue
+        obs = leg["observed"]
+        lines.append(f"{head} ({leg['n_trades']} trades)")
+        lines.append(f"  observed single path: max DD "
+                     f"{obs['max_dd_pct']:.2f}%, final return "
+                     f"{_fmt(obs['final_return_pct'])}%")
+        for b in leg["schemes"]:
+            if b["n_trades"] == 0:
+                lines.append(f"  {b['scheme']}: no trades")
+                continue
+            dd = b["max_dd_pct_percentiles"]
+            fr = b["final_return_pct_percentiles"]
+            keys = list(dd)
+            lines.append(f"  {b['scheme']}: maxDD% "
+                         + "  ".join(f"{k}={dd[k]:.2f}" for k in keys)
+                         + " | final% "
+                         + "  ".join(f"{k}={_fmt(fr[k])}" for k in keys))
+            lines.append(f"    P(final < start) = "
+                         f"{b['p_final_below_start']:.4f}   "
+                         f"P(max DD >= {b['kill_switch_pct']:g}%) = "
+                         f"{b['p_dd_ge_kill_switch']:.4f}   (add-one smoothed)")
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Trade-order Monte Carlo resampler — drawdown / "
@@ -432,16 +548,27 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--strategy", default=None,
                      help="Run one leg in-process on the M1 audit harness "
                           "(registry default params unless --params)")
+    src.add_argument("--candidate-json", default=None,
+                     help="Path to a full eval_windows candidate JSON (name, "
+                          "params, direction, close_strategies, "
+                          "allowed_regimes, stops, ...). Resampled exactly as "
+                          "M1 scores it")
     p.add_argument("--registry", choices=["spot", "futures"], default="spot")
     p.add_argument("--params", default=None,
                    help="Params JSON for --strategy (default: registry "
                         "default_params)")
-    p.add_argument("--dataset", default="BTC/USDT:1h",
-                   help="SYMBOL:TIMEFRAME for --strategy (default "
-                        "BTC/USDT:1h)")
-    p.add_argument("--window", default="is",
-                   help="eval_windows window name for --strategy "
-                        "(default: is)")
+    p.add_argument("--dataset", default=None,
+                   help="SYMBOL:TIMEFRAME single-leg source (default "
+                        "BTC/USDT:1h); mutually exclusive with --datasets")
+    p.add_argument("--window", default=None,
+                   help="eval_windows window name, single-leg "
+                        "(default: is); mutually exclusive with --windows")
+    p.add_argument("--windows", default=None,
+                   help="Comma list of eval_windows window names — multi-leg "
+                        "mode (#1295); one stats block per (window, dataset)")
+    p.add_argument("--datasets", default=None,
+                   help="Comma list of SYMBOL:TIMEFRAME — multi-leg mode "
+                        "(#1295). Default in multi-leg: the six audit datasets")
     p.add_argument("--direction", default=None, choices=["long", "short"])
     p.add_argument("--capital", type=float, default=1000.0)
     p.add_argument("--returns", choices=["net", "gross"], default="net",
@@ -477,9 +604,26 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
 
-    if bool(args.trades_json) == bool(args.strategy):
-        raise SystemExit("pass exactly one trade source: "
-                         "--trades-json or --strategy")
+    sources = [bool(args.trades_json), bool(args.strategy),
+               bool(args.candidate_json)]
+    if sum(sources) != 1:
+        raise SystemExit("pass exactly one trade source: --trades-json, "
+                         "--strategy or --candidate-json")
+
+    if args.candidate_json and (args.params or args.direction):
+        raise SystemExit("--params/--direction are --strategy flags; a "
+                         "candidate JSON carries its own params and direction")
+
+    multileg = bool(args.windows) or bool(args.datasets)
+    if multileg:
+        if args.trades_json:
+            raise SystemExit("--windows/--datasets are leg-fan flags; they do "
+                             "not apply to --trades-json (a saved run is one "
+                             "already-realized leg)")
+        if args.window or args.dataset:
+            raise SystemExit("--windows/--datasets (multi-leg) are mutually "
+                             "exclusive with --window/--dataset (single-leg)")
+
     if bool(args.config) != bool(args.strategy_id):
         raise SystemExit("--config and --strategy-id go together")
     if args.kill_switch_pct is not None and args.config:
@@ -531,6 +675,109 @@ def main(argv: Optional[List[str]] = None) -> int:
         kill_switch = DEFAULT_KILL_SWITCH_PCT
         threshold_source = "default (portfolio kill switch)"
 
+    candidate = None
+    if args.candidate_json:
+        from eval_windows import validate_candidate
+        try:
+            with open(args.candidate_json) as fh:
+                candidate = json.load(fh)
+        except OSError as exc:
+            raise SystemExit(f"--candidate-json {args.candidate_json!r} could "
+                             f"not be read: {exc}")
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--candidate-json {args.candidate_json!r} is not "
+                             f"valid JSON: {exc}")
+        try:
+            validate_candidate(candidate)
+        except ValueError as exc:
+            raise SystemExit(f"--candidate-json is not a valid candidate: {exc}")
+
+    common = dict(n_paths=args.n_paths, block_len=args.block_len,
+                  seed=args.seed, kill_switch_pct=kill_switch,
+                  percentiles=percentiles)
+
+    if multileg:
+        from eval_windows import dataset_key, parse_dataset_arg, run_leg
+
+        window_names = ([w.strip() for w in args.windows.split(",") if w.strip()]
+                        if args.windows else ["is", "oos"])
+        dataset_args = ([d.strip() for d in args.datasets.split(",") if d.strip()]
+                        if args.datasets else default_dataset_args())
+        if not window_names or not dataset_args:
+            raise SystemExit("--windows/--datasets must each name at least "
+                             "one value")
+        try:
+            params = json.loads(args.params) if args.params else None
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--params must be valid JSON: {exc}")
+
+        legs = []
+        for wname in window_names:
+            for ds in dataset_args:
+                try:
+                    symbol, timeframe = parse_dataset_arg(ds)
+                except ValueError:
+                    raise SystemExit(f"--datasets expects SYMBOL:TIMEFRAME, "
+                                     f"got: {ds!r}")
+                if candidate is not None:
+                    values = run_candidate_leg_trades(
+                        candidate, args.registry, ds, wname, args.capital,
+                        args.returns)
+                else:
+                    # Bare strategy: the gross_edge_noise leg (direction
+                    # threaded as given), fanned across windows/datasets.
+                    reg, window = _load_reg_and_window(args.registry, wname)
+                    if args.strategy not in reg.STRATEGY_REGISTRY:
+                        raise SystemExit(
+                            f"Unknown strategy {args.strategy!r}; available: "
+                            f"{reg.list_strategies()}")
+                    values = _leg_returns(
+                        run_leg(reg, args.strategy, params, symbol, timeframe,
+                                window, capital=args.capital,
+                                direction=args.direction, keep_trades=True),
+                        args.returns)
+                leg = {"window": wname, "dataset": dataset_key(symbol, timeframe)}
+                if values is None:
+                    # A dataset with no cached bars in this window must not
+                    # abort the fan — record it and keep going.
+                    leg.update({"status": "no_data", "n_trades": 0,
+                                "observed": None, "schemes": []})
+                else:
+                    obs = equity_path_stats(values)
+                    leg.update({
+                        "status": "ok", "n_trades": len(values),
+                        "observed": {"max_dd_pct": round(obs[0], 4),
+                                     "final_return_pct": round(obs[1], 4)},
+                        "schemes": leg_blocks(values, schemes, **common)})
+                legs.append(leg)
+
+        name = candidate["name"] if candidate is not None else args.strategy
+        source = (f"{name} windows={','.join(window_names)} "
+                  f"({args.registry} registry)")
+        print(format_multileg_report(source, args.returns, threshold_source,
+                                     kill_switch, legs))
+
+        if not any(leg["status"] == "ok" for leg in legs):
+            sys.stderr.write("no cached data for any (window, dataset) leg\n")
+            return 1
+
+        if args.json_out:
+            payload = {
+                "source": source, "returns": args.returns, "seed": args.seed,
+                "n_paths": args.n_paths, "percentiles": percentiles,
+                "kill_switch_pct": kill_switch,
+                "kill_switch_source": threshold_source,
+                "candidate": candidate,
+                "legs": legs,
+            }
+            with open(args.json_out, "w") as fh:
+                json.dump(payload, fh, indent=2, default=str)
+            print(f"\nwrote {args.json_out}")
+        return 0
+
+    window = args.window or "is"
+    dataset = args.dataset or "BTC/USDT:1h"
+
     if args.trades_json:
         try:
             with open(args.trades_json) as fh:
@@ -547,23 +794,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         except ValueError as exc:
             raise SystemExit(str(exc))
         source = args.trades_json
+    elif candidate is not None:
+        values = run_candidate_leg_trades(candidate, args.registry, dataset,
+                                          window, args.capital, args.returns)
+        if values is None:
+            raise SystemExit(f"no cached data for {dataset} in window "
+                             f"{window!r}")
+        source = (f"{candidate['name']} {dataset} window={window} "
+                  f"({args.registry} registry, candidate-json)")
     else:
         try:
             params = json.loads(args.params) if args.params else None
         except json.JSONDecodeError as exc:
             raise SystemExit(f"--params must be valid JSON: {exc}")
         values = run_leg_trades(args.strategy, args.registry, params,
-                                args.dataset, args.window, args.capital,
+                                dataset, window, args.capital,
                                 args.direction, args.returns)
-        source = (f"{args.strategy} {args.dataset} window={args.window} "
+        source = (f"{args.strategy} {dataset} window={window} "
                   f"({args.registry} registry)")
 
     observed = equity_path_stats(values)
-    blocks = [resample_stats(values, scheme, n_paths=args.n_paths,
-                             block_len=args.block_len, seed=args.seed,
-                             kill_switch_pct=kill_switch,
-                             percentiles=percentiles)
-              for scheme in schemes]
+    blocks = leg_blocks(values, schemes, **common)
 
     print(format_report(source, args.returns, observed, threshold_source,
                         blocks))

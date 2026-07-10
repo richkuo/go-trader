@@ -43,8 +43,8 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 | `exit_diagnostics.py` | **M3** holding-time / excursion diagnostics — where a strategy's PnL dies. | active | #997 |
 | `fee_audit.py` | **M5** registry-wide trade-count × fee-drag selectivity triage. Sweeps the FULL registry incl. discovery-hidden/quarantined names (#1275) — re-screening is the recovery path out of quarantine. | active | #999 #1275 |
 | `exit_policy_ab.py` | **M6** regime-conditioned incumbent-relative exit-policy A/B. | active | #1066 |
-| `auto_suggest.py` | Reusable cross-harness driver that sweeps candidates and ranks gate-survivors under one BH correction. **Suggest-only — never writes a live default/config/PR.** | active | #1210 |
-| `monte_carlo.py` | Trade-order Monte Carlo resampler — permutation + circular block bootstrap over a run's closed trades; drawdown / final-return percentile bands, P(final < start), P(max DD ≥ kill-switch threshold). Suggest-only diagnostics. | active | #1274 |
+| `auto_suggest.py` | Reusable cross-harness driver that sweeps candidates and ranks gate-survivors under one BH correction. Carries advisory Monte Carlo drawdown-risk columns (`mc` harness, #1295) that never influence the gate in any state — including a failed MC run. **Suggest-only — never writes a live default/config/PR.** | active | #1210, #1295 |
+| `monte_carlo.py` | Trade-order Monte Carlo resampler — permutation + circular block bootstrap over a run's closed trades; drawdown / final-return percentile bands, P(final < start), P(max DD ≥ kill-switch threshold). Sources: `--trades-json`, `--strategy`, or `--candidate-json` (full candidate shape); `--windows`/`--datasets` fan one run across legs (#1295). Suggest-only diagnostics. | active | #1274, #1295 |
 
 ## Regime-promotion pipeline (#1065–#1097)
 
