@@ -14,6 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma_series
+
 from mtf_confluence import _project_to_native, _resample_htf
 
 
@@ -375,12 +377,7 @@ def _detect_flag(
         return matches
 
     # Compute ATR for pole strength measurement
-    tr = pd.concat([
-        highs - lows,
-        (highs - close.shift(1)).abs(),
-        (lows - close.shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(window=14, min_periods=1).mean()
+    atr = atr_sma_series(highs, lows, close, 14, round_large=False, min_periods=1)
 
     sh_idx = _get_swing_indices(swing_highs)
     sl_idx = _get_swing_indices(swing_lows)

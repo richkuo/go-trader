@@ -44,6 +44,8 @@ Defaults: period=20 (mid/SMA), atr_period=14, k_entry=1.5.
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma
+
 
 def atr_band_revert_core(
     df: pd.DataFrame,
@@ -56,15 +58,9 @@ def atr_band_revert_core(
 
     mid = result["close"].rolling(window=period).mean()
 
-    # True range -> ATR (rolling mean), matching the repo's ATR convention:
-    # keep full precision below 100, round to int at/above 100 (atr.py).
-    tr = pd.concat([
-        result["high"] - result["low"],
-        (result["high"] - result["close"].shift(1)).abs(),
-        (result["low"] - result["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    _atr = tr.rolling(window=atr_period).mean()
-    atr = _atr.where(_atr < 100, _atr.round(0))
+    # Shared repo ATR convention (indicators_core, #1281): rolling-mean true
+    # range, full precision below 100, integer-rounded at/above 100.
+    atr = atr_sma(result, atr_period)
 
     result["atr"] = atr
     result["band_mid"] = mid

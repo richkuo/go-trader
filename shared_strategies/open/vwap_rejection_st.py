@@ -30,6 +30,8 @@ Notes
 import numpy as np
 import pandas as pd
 
+from indicators_core import wilder_rsi
+
 
 def _session_vwap(df: pd.DataFrame) -> pd.Series:
     """Session-anchored VWAP keyed by calendar date.
@@ -106,13 +108,7 @@ def vwap_rejection_st_core(
     result["ema_long"] = close.ewm(span=ema_long, adjust=False).mean()
     result["vwap"] = _session_vwap(result)
 
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    result["rsi"] = 100 - (100 / (1 + rs))
+    result["rsi"] = wilder_rsi(close, rsi_period)
 
     bearish_regime = result["ema_mid"] < result["ema_long"]
 

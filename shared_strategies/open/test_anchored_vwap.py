@@ -6,7 +6,8 @@ import os
 import numpy as np
 import pandas as pd
 
-from anchored_vwap import _inline_rsi, anchored_vwap_core
+from anchored_vwap import anchored_vwap_core
+from indicators_core import wilder_rsi as _inline_rsi
 
 
 def _hourly_index(n, start="2026-01-01 00:00:00"):

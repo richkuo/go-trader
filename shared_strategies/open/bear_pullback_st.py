@@ -16,6 +16,8 @@ Emits ``signal = -1`` on the trigger bar; otherwise 0.
 import numpy as np
 import pandas as pd
 
+from indicators_core import wilder_rsi
+
 from adx_trend import _compute_adx_components
 
 
@@ -81,13 +83,7 @@ def bear_pullback_st_core(
     comps = _compute_adx_components(high.values, low.values, close.values, adx_period)
     result["adx"] = comps["adx"]
 
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    result["rsi"] = 100 - (100 / (1 + rs))
+    result["rsi"] = wilder_rsi(close, rsi_period)
 
     bearish_regime = result["ema_mid"] < result["ema_long"]
     strong_trend = result["adx"] > adx_threshold

@@ -26,11 +26,8 @@ Complexity note: retrieval is O(n · min(n, max_index) · d) — fine for resear
 backtests (tens of thousands of bars), another reason this must never run on a
 live check path.
 
-ATR is inlined (rolling-mean True Range, integer-round only when atr >= 100)
-to match standard_atr WITHOUT importing shared_tools — open strategies cannot
-assume shared_tools is on sys.path at module-load time (the registry parity
-test loads registry.py via importlib without it, so a top-level import would
-raise ModuleNotFoundError). The inline copy is byte-identical to standard_atr.
+ATR comes from the shared open-tree module ``indicators_core`` (#1281) —
+importable at module load without shared_tools on sys.path.
 """
 
 from __future__ import annotations
@@ -38,20 +35,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma
+
 FEATURE_COLUMNS = ("ret_eff", "mom_atr", "atr_pct", "vol_ratio", "trend_atr")
-
-
-def _inline_atr(df: pd.DataFrame, period: int) -> pd.Series:
-    """ATR via simple rolling mean of True Range (standard_atr convention)."""
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    prev_close = df["close"].astype(float).shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    return atr.where(atr < 100, atr.round(0))
 
 
 def encode_features(
@@ -78,7 +64,7 @@ def encode_features(
     trend_atr : (EMA(W) - EMA(4W)) / ATR — trend state in ATR units.
     """
     close = df["close"].astype(float)
-    atr = _inline_atr(df, atr_period)
+    atr = atr_sma(df, atr_period)
 
     net_move = close - close.shift(feat_window)
     path = close.diff().abs().rolling(window=feat_window).sum()
@@ -182,7 +168,7 @@ def analog_retrieval_core(
     result["analog_mean_fwd"] = np.nan
     result["analog_t_stat"] = np.nan
     result["analog_k"] = 0
-    result["atr"] = _inline_atr(result, atr_period)
+    result["atr"] = atr_sma(result, atr_period)
     if n == 0:
         return result
 

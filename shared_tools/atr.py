@@ -2,14 +2,36 @@
 
 Provides a consistent ATR indicator for position entry stamping when the
 open strategy doesn't emit its own `atr` column (e.g. tema_cross, ema_crossover).
-Uses a simple rolling mean of True Range — the same method used by strategies
-that do emit ATR (see shared_strategies/open/registry.py: breakout_strategy,
-atr_breakout_strategy) — so stamped values are consistent across strategies.
+The math lives in the shared open-tree module
+``shared_strategies/open/indicators_core.py`` (#1281) — the same rolling-mean
+True Range every strategy site uses — loaded here by file path (the
+``close_registry_loader`` pattern) so this module stays the check-script entry
+point without ambiguous bare imports.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import os
+
 import pandas as pd
+
+_INDICATORS_CORE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "shared_strategies", "open", "indicators_core.py",
+)
+
+
+def _load_indicators_core():
+    spec = importlib.util.spec_from_file_location(
+        "_go_trader_indicators_core", _INDICATORS_CORE_PATH
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_core = _load_indicators_core()
 
 
 def standard_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -18,15 +40,7 @@ def standard_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     Requires `high`, `low`, `close` columns. Returns a Series aligned to df.index.
     Rows with insufficient history return NaN.
     """
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    prev_close = df["close"].astype(float).shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    return atr.where(atr < 100, atr.round(0))
+    return _core.atr_sma(df, period)
 
 
 def ensure_atr_indicator(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:

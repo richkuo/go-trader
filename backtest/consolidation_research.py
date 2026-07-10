@@ -18,6 +18,7 @@ Usage:
 import argparse
 import csv
 import datetime
+import importlib.util
 import json
 import os
 import sys
@@ -54,22 +55,27 @@ class Episode:
 # --------------------------------------------------------------------------- #
 
 
+_INDICATORS_CORE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "shared_strategies", "open", "indicators_core.py",
+)
+_spec = importlib.util.spec_from_file_location(
+    "_go_trader_indicators_core_research", _INDICATORS_CORE_PATH
+)
+_indicators_core = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_indicators_core)
+
+
 def true_range(df: pd.DataFrame) -> pd.Series:
-    high, low, close = df["high"], df["low"], df["close"]
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr
+    return _indicators_core.true_range(df)
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    # Mirror production standard_atr (#887): whole-number round only for
-    # BTC-scale assets (ATR >= 100) so research geometry matches the live
-    # stamped ATR; sub-100 assets pass through unrounded.
-    series = true_range(df).rolling(window=period, min_periods=1).mean()
-    return series.where(series < 100, series.round(0))
+    # Mirror production standard_atr (#887) via the shared module (#1281):
+    # whole-number round only for BTC-scale assets (ATR >= 100) so research
+    # geometry matches the live stamped ATR. min_periods=1 is deliberate here
+    # (research warmup semantics, unchanged).
+    return _indicators_core.atr_sma(df, period, min_periods=1)
 
 
 # --------------------------------------------------------------------------- #

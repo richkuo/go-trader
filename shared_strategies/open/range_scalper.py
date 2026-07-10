@@ -9,6 +9,8 @@ predictable oscillations. Stays silent during trends.
 import numpy as np
 import pandas as pd
 
+from indicators_core import wilder_rsi
+
 
 def _sma(series: pd.Series, period: int) -> pd.Series:
     return series.rolling(window=period).mean()
@@ -38,13 +40,7 @@ def range_scalper_core(df: pd.DataFrame,
     result["in_range"] = (result["bb_bandwidth"] < bw_threshold) & result["low_volume"]
 
     # Short RSI for timing entries within the range
-    delta = result["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    result["rsi"] = 100 - (100 / (1 + rs))
+    result["rsi"] = wilder_rsi(result["close"], rsi_period)
 
     # Signals: only fire in range, using crossover to avoid repeated signals
     result["signal"] = 0

@@ -12,11 +12,8 @@ hold inside the channel. No trading while the lines are inverted
 (support >= resistance) or the channel is thinner than
 min_width_atr_mult * ATR on the trigger bar.
 
-ATR is inlined (rolling-mean True Range, integer-round only when atr >= 100) to
-match standard_atr WITHOUT importing shared_tools — open strategies cannot
-assume shared_tools is on sys.path at module-load time (the registry parity test
-loads registry.py via importlib without it, so a top-level import would raise
-ModuleNotFoundError). The inline copy is byte-identical to standard_atr.
+ATR comes from the shared open-tree module ``indicators_core`` (#1281) —
+importable at module load without shared_tools on sys.path.
 """
 
 from __future__ import annotations
@@ -24,18 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
-def _inline_atr(df: pd.DataFrame, period: int) -> pd.Series:
-    """ATR via simple rolling mean of True Range (standard_atr convention)."""
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    prev_close = df["close"].astype(float).shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    return atr.where(atr < 100, atr.round(0))
+from indicators_core import atr_sma
 
 
 def anchored_vwap_channel_core(
@@ -80,7 +66,7 @@ def anchored_vwap_channel_core(
     result["avwap_resistance"] = np.nan
     result["anchor_low_index"] = -1
     result["anchor_high_index"] = -1
-    result["atr"] = _inline_atr(result, atr_period)
+    result["atr"] = atr_sma(result, atr_period)
     if n < 2 * pivot_strength + 1 + confirm_bars:
         return result
 

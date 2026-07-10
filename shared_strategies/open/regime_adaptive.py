@@ -77,6 +77,8 @@ variant sets ``allow_short=True`` for bidirectional perps.
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma_series
+
 from adx_trend import _compute_adx_components
 
 # Mirrors regime.COMPOSITE_ADX_PERIOD_CAP — ADX persistence uses a capped
@@ -180,15 +182,9 @@ def regime_adaptive_core(
     high = result["high"]
     low = result["low"]
 
-    # ATR mirrors the in-repo convention (shared_tools/atr.standard_atr and the
-    # inline registry sites): SMA of true range, integer-rounded only when >= 100.
-    tr = pd.concat([
-        high - low,
-        (high - close.shift(1)).abs(),
-        (low - close.shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    _atr = tr.rolling(window=period).mean()
-    atr = _atr.where(_atr < 100, _atr.round(0))
+    # ATR follows the shared repo convention (indicators_core, #1281): SMA of
+    # true range, integer-rounded only when >= 100.
+    atr = atr_sma_series(high, low, close, period)
 
     # Rolling equivalents of regime._composite_efficiency_metrics: a window of
     # `period` bars ending at bar t spans close_{t-period+1}..close_t, i.e.

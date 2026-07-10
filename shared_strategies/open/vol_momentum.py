@@ -43,6 +43,8 @@ long→short flip is clamped to a single step, like ``tema_cross_bd``).
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma_series
+
 
 def vol_momentum_core(
     df: pd.DataFrame,
@@ -84,15 +86,10 @@ def vol_momentum_core(
     close = result["close"].astype(float)
     high = result["high"].astype(float)
     low = result["low"].astype(float)
-    prev_close = close.shift(1)
 
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    atr = tr.rolling(window=atr_period).mean()
-    # standard_atr convention: integer-round only when ATR >= 100.
-    result["atr"] = atr.where(atr < 100, atr.round(0))
+    # standard_atr convention (indicators_core, #1281): SMA of true range,
+    # integer-rounded only when ATR >= 100.
+    result["atr"] = atr_sma_series(high, low, close, atr_period)
 
     net = close - close.shift(mom_window)
     denom = result["atr"] * float(mom_window)
