@@ -477,6 +477,67 @@ func TestSnapshotHedgeCoherenceJobs_PriceMovementAloneNoJob(t *testing.T) {
 
 // --- PR #1337 review fixes ---
 
+// unwindShouldBookPartial is the pure decision unwindPrimaryAfterHedgeOpenFailure
+// uses to pick between a partial and a full close booking. This pins the
+// regression: a scale-in-add unwind (unwoundQty == addQty, less than the
+// state quantity that already blended in the add) must book PARTIAL; a
+// fresh-open/flip unwind (unwoundQty == the whole position) must book FULL.
+func TestUnwindShouldBookPartial(t *testing.T) {
+	// Scale-in add failure: state already blended addQty into preQty+addQty
+	// before the unwind runs, so the unwound quantity (addQty=0.3) is less
+	// than the current state quantity (1.3 = preQty 1.0 + addQty 0.3).
+	if !unwindShouldBookPartial(0.3, 1.3) {
+		t.Errorf("scale-in-add unwind (0.3 of 1.3) must book partial")
+	}
+	// Fresh open / flip-reopen failure: the unwound quantity IS the whole
+	// position (preQty was 0 before this open).
+	if unwindShouldBookPartial(1.0, 1.0) {
+		t.Errorf("fresh-open unwind (1.0 of 1.0) must book full, not partial")
+	}
+	// Defensive: an unwound qty that (erroneously) exceeds state qty must
+	// never be treated as partial either.
+	if unwindShouldBookPartial(1.5, 1.0) {
+		t.Errorf("unwound qty exceeding state qty must book full, not partial")
+	}
+}
+
+// End-to-end regression at the state level for the #1337 finding: a
+// scale-in-add unwind must leave the PRE-EXISTING primary+hedge pair
+// intact, reduced only by the actual on-chain-reversed add quantity — never
+// delete the whole blended position (which would corrupt state, strand the
+// pre-existing on-chain quantity untracked, and let the coherence sweep
+// unhedge it via a spurious close_hedge job). Exercises the same booking
+// primitives unwindPrimaryAfterHedgeOpenFailure calls, with the branch
+// selected exactly as unwindPrimaryAfterHedgeOpenFailure now does.
+func TestUnwindAfterScaleInAddFailure_BooksPartialNotFull(t *testing.T) {
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			// preQty=1.0 already blended with addQty=0.3 by
+			// executeHyperliquidScaleInDeferredOpen before the unwind runs.
+			"ETH": {Symbol: "ETH", Quantity: 1.3, AvgCost: 2000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	addQty := 0.3
+	pos := s.Positions["ETH"]
+	if unwindShouldBookPartial(addQty, pos.Quantity) {
+		bookPerpsPartialCloseWithFillFee(s, "ETH", addQty, 2050, 1.0, true, "oid-1", "hedge_open_failed_unwind", "HEDGE-OPEN-FAILED unwind", "HEDGE-OPEN-FAILED unwind", nil)
+	} else {
+		t.Fatalf("expected the partial branch to be selected")
+	}
+	remaining, exists := s.Positions["ETH"]
+	if !exists {
+		t.Fatalf("pre-existing primary position must survive an add-only unwind")
+	}
+	if diff := remaining.Quantity - 1.0; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("remaining primary Quantity = %g, want 1.0 (preQty, add reversed)", remaining.Quantity)
+	}
+	if _, hedgeStillExists := s.Positions["BTC"]; !hedgeStillExists {
+		t.Errorf("pre-existing hedge position must survive an add-only unwind (state must not go H-without-P)")
+	}
+}
+
 // resolveHedgeMid's fast path (a usable cycle mid already present) must
 // return it directly with no network call — only the missing-mid path
 // attempts a retry fetch.

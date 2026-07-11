@@ -197,6 +197,21 @@ func alertHedgeOpenRefusedOppositeSide(sc StrategyConfig, primaryCoin, hedgeSym 
 	}
 }
 
+// unwindShouldBookPartial reports whether unwindPrimaryAfterHedgeOpenFailure
+// must book a PARTIAL close (bookPerpsPartialCloseWithFillFee) rather than a
+// full close (bookPerpsCloseWithFillFee) for a given unwind. unwoundQty is
+// the quantity that was actually reduced ON-CHAIN by the unwind order;
+// currentPosQty is the primary Position's quantity in STATE at the moment
+// of booking. They diverge specifically on a scale-in-add failure
+// (mirrorHedgeAdd unwinds only the just-added delta, but state already
+// blended the add into the pre-existing quantity before the mirror ran) —
+// a fresh-open or flip-reopen failure unwinds the WHOLE position, so
+// unwoundQty == currentPosQty there and the full-close path is correct
+// (#1337 review).
+func unwindShouldBookPartial(unwoundQty, currentPosQty float64) bool {
+	return unwoundQty < currentPosQty-1e-9
+}
+
 // unwindPrimaryAfterHedgeOpenFailure implements constraint 4's fail-closed
 // unwind: a sized (never sz=None — the primary coin may be shared with
 // peers) reduce-only close of the just-opened primary quantity. Booking the
@@ -231,7 +246,28 @@ func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, s *StrategyState, mu 
 		closeOID = fmt.Sprintf("%d", fill.OID)
 	}
 	mu.Lock()
-	bookPerpsCloseWithFillFee(s, primaryCoin, fill.AvgPx, fill.Fee, true, closeOID, "hedge_open_failed_unwind", "HEDGE-OPEN-FAILED unwind", "HEDGE-OPEN-FAILED unwind", logger)
+	// #1337 review: primaryQty is the WHOLE position only for a fresh-open
+	// or flip-reopen failure (the primary was flat before this open, so its
+	// full quantity IS the unwind quantity). For a scale-in-add failure
+	// (mirrorHedgeAdd passes only addQty), the pre-existing primary
+	// quantity is already blended into state by
+	// executeHyperliquidScaleInDeferredOpen before this ever runs — a full
+	// close here would delete the WHOLE blended position in state while the
+	// on-chain unwind only reversed the add, stranding the pre-existing
+	// quantity open on-chain, untracked, and (once the sweep sees
+	// H-without-P and closes the surviving hedge) unhedged too. Detect the
+	// partial case by comparing the unwound quantity to the CURRENT state
+	// quantity — a genuinely partial unwind must book a partial close (the
+	// same primitive mirrorHedgeReduce's live path already uses), never the
+	// full-close path that deletes the position outright. Uses the fill's
+	// actual size (not the requested primaryQty), mirroring the convention
+	// mirrorHedgeReduce's live branch already follows.
+	pos := s.Positions[primaryCoin]
+	if pos != nil && unwindShouldBookPartial(primaryQty, pos.Quantity) {
+		bookPerpsPartialCloseWithFillFee(s, primaryCoin, fill.TotalSz, fill.AvgPx, fill.Fee, true, closeOID, "hedge_open_failed_unwind", "HEDGE-OPEN-FAILED unwind", "HEDGE-OPEN-FAILED unwind", logger)
+	} else {
+		bookPerpsCloseWithFillFee(s, primaryCoin, fill.AvgPx, fill.Fee, true, closeOID, "hedge_open_failed_unwind", "HEDGE-OPEN-FAILED unwind", "HEDGE-OPEN-FAILED unwind", logger)
+	}
 	mu.Unlock()
 	msg := fmt.Sprintf("strategy %s: hedge open failed for primary %s (%s) — the primary was immediately unwound (fail-closed, #1159 constraint 4). No unhedged exposure remains.", sc.ID, primaryCoin, hedgeFailureReason)
 	if notifier != nil {
