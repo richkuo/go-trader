@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- resolveATRMethod precedence (#1277) -----------------------------------
@@ -480,5 +481,124 @@ func TestSummaryLineSurfacesNonDefaultATRMethod(t *testing.T) {
 	opt := StrategyConfig{ID: "opt", Type: "options", Platform: "deribit"}
 	if line := formatStrategySummaryLine(opt, nil, globalWilder); strings.Contains(line, "atr=") {
 		t.Errorf("options must never carry the atr= tag: %s", line)
+	}
+}
+
+// --- manual-open stamping (#1277 review round 2) ----------------------------
+// Manual positions run live-recomputed ATR close evaluators (the #1115 default
+// is tiered_tp_atr_live), so an unstamped manual open would permanently hide
+// the position from checkATRMethodDriftAtStartup.
+
+func TestApplyManualActionOpenStampsATRMethod(t *testing.T) {
+	newState := func(id string) *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			id: {ID: id, Platform: "hyperliquid", Type: "manual", Positions: map[string]*Position{}, Cash: 10000},
+		}}
+	}
+	scByID := map[string]StrategyConfig{
+		"hl-manual-eth-live": {ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 10},
+	}
+	origRecorder := tradeRecorder
+	tradeRecorder = func(string, Trade) error { return nil }
+	defer func() { tradeRecorder = origRecorder }()
+
+	open := PendingManualAction{
+		StrategyID: "hl-manual-eth-live", Action: "open", Symbol: "ETH", Side: "long",
+		Quantity: 0.5, FillPrice: 2000, EntryATR: 50, CreatedAt: time.Now().UTC(),
+	}
+
+	t.Run("queue-time value wins over drain-time config", func(t *testing.T) {
+		state := newState("hl-manual-eth-live")
+		a := open
+		a.ATRMethod = ATRMethodSimple
+		// Drain-time config resolves wilder — the carried queue-time method must
+		// win, because the EntryATR on the row was computed under it.
+		cfg := &Config{ATRMethod: "wilder"}
+		if err := applyManualAction(state, cfg, scByID, a); err != nil {
+			t.Fatalf("applyManualAction: %v", err)
+		}
+		pos := state.Strategies["hl-manual-eth-live"].Positions["ETH"]
+		if pos == nil || pos.ATRMethodAtOpen != ATRMethodSimple {
+			t.Fatalf("ATRMethodAtOpen = %+v, want %q", pos, ATRMethodSimple)
+		}
+	})
+
+	t.Run("pre-upgrade row falls back to drain-time resolution", func(t *testing.T) {
+		state := newState("hl-manual-eth-live")
+		a := open // ATRMethod empty: row queued before the column existed
+		cfg := &Config{ATRMethod: "wilder"}
+		if err := applyManualAction(state, cfg, scByID, a); err != nil {
+			t.Fatalf("applyManualAction: %v", err)
+		}
+		pos := state.Strategies["hl-manual-eth-live"].Positions["ETH"]
+		if pos == nil || pos.ATRMethodAtOpen != ATRMethodWilder {
+			t.Fatalf("ATRMethodAtOpen = %+v, want %q", pos, ATRMethodWilder)
+		}
+	})
+
+	t.Run("nil cfg defaults to simple", func(t *testing.T) {
+		state := newState("hl-manual-eth-live")
+		a := open
+		if err := applyManualAction(state, nil, scByID, a); err != nil {
+			t.Fatalf("applyManualAction: %v", err)
+		}
+		pos := state.Strategies["hl-manual-eth-live"].Positions["ETH"]
+		if pos == nil || pos.ATRMethodAtOpen != ATRMethodSimple {
+			t.Fatalf("ATRMethodAtOpen = %+v, want %q", pos, ATRMethodSimple)
+		}
+	})
+}
+
+func TestApplyLimitFillProgressStampsATRMethodAtFirstFill(t *testing.T) {
+	sc, state := newLimitTestStrategy()
+	origRecorder := tradeRecorder
+	tradeRecorder = func(string, Trade) error { return nil }
+	defer func() { tradeRecorder = origRecorder }()
+
+	o := PendingLimitOrder{
+		ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long",
+		OrderOID: 9001, LimitPrice: 2000, OrderSize: 1.0, FilledSize: 0,
+	}
+	now := time.Now().UTC()
+	if _, err := applyLimitFillProgress(state, sc, o, 0.4, 2000, 0.2, 50, ATRMethodWilder, now); err != nil {
+		t.Fatalf("apply first fill: %v", err)
+	}
+	pos := state.Strategies[sc.ID].Positions["ETH"]
+	if pos == nil || pos.ATRMethodAtOpen != ATRMethodWilder {
+		t.Fatalf("ATRMethodAtOpen after first fill = %+v, want %q", pos, ATRMethodWilder)
+	}
+
+	// A subsequent partial fill grows the position but never re-stamps — the
+	// method is frozen at open like EntryATR/RiskAnchorPrice.
+	o.FilledSize = 0.4
+	o.FillFee = 0.2
+	if _, err := applyLimitFillProgress(state, sc, o, 1.0, 2010, 0.5, 50, ATRMethodSimple, now); err != nil {
+		t.Fatalf("apply partial fill: %v", err)
+	}
+	if pos.ATRMethodAtOpen != ATRMethodWilder {
+		t.Fatalf("ATRMethodAtOpen re-stamped on partial fill: got %q, want %q", pos.ATRMethodAtOpen, ATRMethodWilder)
+	}
+}
+
+func TestPendingManualActionATRMethodRoundTrip(t *testing.T) {
+	db, err := OpenStateDB(":memory:")
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.InsertPendingManualAction(PendingManualAction{
+		StrategyID: "hl-manual-eth-live", Action: "open", Symbol: "ETH", Side: "long",
+		Quantity: 0.5, FillPrice: 2000, EntryATR: 50, ATRMethod: ATRMethodWilder,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	actions, err := db.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(actions) != 1 || actions[0].ATRMethod != ATRMethodWilder {
+		t.Fatalf("round-trip = %+v, want ATRMethod %q", actions, ATRMethodWilder)
 	}
 }

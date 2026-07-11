@@ -760,6 +760,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		StopLossOID:                     stopLossOID,
 		StopLossTriggerPx:               stopLossTriggerPx,
 		EntryATR:                        entryATR,
+		ATRMethod:                       resolveATRMethod(sc, cfg),
 		TPOIDs:                          tpOIDs,
 		RatchetFallbackNormalizePending: ratchetFallbackNormalizePending && stopLossOID > 0 && stopLossTriggerPx > 0,
 		CreatedAt:                       time.Now().UTC(),

@@ -240,6 +240,7 @@ CREATE TABLE IF NOT EXISTS pending_manual_actions (
     stop_loss_oid INTEGER NOT NULL DEFAULT 0,
     stop_loss_trigger_px REAL NOT NULL DEFAULT 0,
     entry_atr REAL NOT NULL DEFAULT 0,
+    atr_method TEXT NOT NULL DEFAULT '',
     realized_pnl REAL NOT NULL DEFAULT 0,
     is_full_close INTEGER NOT NULL DEFAULT 0,
     tp_oids_json TEXT NOT NULL DEFAULT '',
@@ -605,6 +606,13 @@ func (sdb *StateDB) migrateSchema() error {
 		// open — a gap the SIGHUP hot-reload guard can't see. "" = pre-#1277
 		// position, never stamped.
 		"ALTER TABLE positions ADD COLUMN atr_method_at_open TEXT NOT NULL DEFAULT ''",
+		// #1277 hardening (review round 2): manual opens resolve atr_method at
+		// queue time (next to the EntryATR fetch in manualOpenCore) and carry
+		// it through the pending queue so the drain stamps the method the ATR
+		// was actually computed under — a drain-time re-resolve would mask a
+		// config edit + restart landing between queue and drain. "" = row
+		// queued pre-upgrade; the drain falls back to drain-time resolution.
+		"ALTER TABLE pending_manual_actions ADD COLUMN atr_method TEXT NOT NULL DEFAULT ''",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -2150,6 +2158,7 @@ type PendingManualAction struct {
 	StopLossOID                     int64
 	StopLossTriggerPx               float64
 	EntryATR                        float64
+	ATRMethod                       string // open-only: atr_method resolved at queue time, next to the EntryATR fetch (#1277)
 	RealizedPnL                     float64
 	IsFullClose                     bool    // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
 	TPOIDs                          []int64 // open: placed TP OIDs; close: canceled TP OIDs that must be cleared for re-arm
@@ -2172,10 +2181,10 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 		ratchetFallbackNormalizePending = 1
 	}
 	_, err := sdb.db.Exec(`INSERT INTO pending_manual_actions
-		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, is_full_close, tp_oids_json, ratchet_fallback_normalize_pending, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, atr_method, realized_pnl, is_full_close, tp_oids_json, ratchet_fallback_normalize_pending, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.StrategyID, a.Action, a.Symbol, a.Side, a.Quantity, a.FillPrice, a.FillFee,
-		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.RealizedPnL,
+		a.ExchangeOrderID, a.StopLossOID, a.StopLossTriggerPx, a.EntryATR, a.ATRMethod, a.RealizedPnL,
 		isFullClose, marshalTPOIDsJSON(a.TPOIDs), ratchetFallbackNormalizePending, formatTime(a.CreatedAt))
 	return err
 }
@@ -2185,7 +2194,7 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
 	}
-	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, created_at FROM pending_manual_actions ORDER BY id`)
+	rows, err := sdb.db.Query(`SELECT id, strategy_id, action, symbol, side, quantity, fill_price, fill_fee, exchange_order_id, stop_loss_oid, stop_loss_trigger_px, entry_atr, COALESCE(atr_method, '') AS atr_method, realized_pnl, COALESCE(is_full_close, 0) AS is_full_close, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, created_at FROM pending_manual_actions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load pending manual actions: %w", err)
 	}
@@ -2197,7 +2206,7 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 		var isFullCloseInt int
 		var tpOIDsJSON string
 		var ratchetFallbackNormalizePending int
-		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.RealizedPnL, &isFullCloseInt, &tpOIDsJSON, &ratchetFallbackNormalizePending, &createdStr); err != nil {
+		if err := rows.Scan(&a.ID, &a.StrategyID, &a.Action, &a.Symbol, &a.Side, &a.Quantity, &a.FillPrice, &a.FillFee, &a.ExchangeOrderID, &a.StopLossOID, &a.StopLossTriggerPx, &a.EntryATR, &a.ATRMethod, &a.RealizedPnL, &isFullCloseInt, &tpOIDsJSON, &ratchetFallbackNormalizePending, &createdStr); err != nil {
 			return nil, fmt.Errorf("scan pending manual action: %w", err)
 		}
 		a.IsFullClose = isFullCloseInt != 0

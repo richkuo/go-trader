@@ -407,7 +407,7 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 	applied := make(map[string]*manualAlert)
 	var order []string // preserves id-sorted insertion order for deterministic alert emission
 	for _, a := range actions {
-		if err := applyManualAction(state, scByID, a); err != nil {
+		if err := applyManualAction(state, cfg, scByID, a); err != nil {
 			fmt.Printf("[manual] failed to apply action %d (%s %s): %v\n", a.ID, a.Action, a.StrategyID, err)
 			continue
 		}
@@ -445,7 +445,9 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 }
 
 // applyManualAction materialises one pending_manual_actions row into AppState.
-func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a PendingManualAction) error {
+// cfg is needed only to fall back to drain-time atr_method resolution for
+// "open" rows queued before the atr_method column existed (#1277).
+func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyConfig, a PendingManualAction) error {
 	sc, hasSC := scByID[a.StrategyID]
 	if !hasSC {
 		return fmt.Errorf("strategy %q not found in config", a.StrategyID)
@@ -484,6 +486,16 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			StopLossTriggerPx:               a.StopLossTriggerPx,
 			TPOIDs:                          a.TPOIDs,
 			RatchetFallbackNormalizePending: a.RatchetFallbackNormalizePending,
+		}
+		// #1277: freeze the atr_method the EntryATR was computed under, so
+		// checkATRMethodDriftAtStartup sees manual positions too. Prefer the
+		// queue-time value carried on the row (resolved next to the EntryATR
+		// fetch in manualOpenCore); fall back to drain-time resolution only
+		// for rows queued before the column existed — leaving it "" would
+		// permanently hide this position from the drift check.
+		pos.ATRMethodAtOpen = normalizeATRMethod(a.ATRMethod)
+		if pos.ATRMethodAtOpen == "" {
+			pos.ATRMethodAtOpen = resolveATRMethod(sc, cfg)
 		}
 		pos.TradePositionID = newTradePositionID(a.StrategyID, a.Symbol, now)
 		ss.Positions[a.Symbol] = pos

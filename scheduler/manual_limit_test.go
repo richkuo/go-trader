@@ -220,7 +220,7 @@ func TestApplyLimitFillProgressCreate(t *testing.T) {
 		OrderOID: 9001, LimitPrice: 2000, OrderSize: 0.5, FilledSize: 0,
 	}
 	now := time.Now().UTC()
-	n, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, now)
+	n, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, ATRMethodSimple, now)
 	if err != nil {
 		t.Fatalf("apply create: %v", err)
 	}
@@ -251,14 +251,14 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 
 	// First fill 0.4 @ 2000.
 	o := PendingLimitOrder{ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001, LimitPrice: 2000, OrderSize: 1.0, FilledSize: 0}
-	if _, err := applyLimitFillProgress(state, sc, o, 0.4, 2000, 0.2, 50, now); err != nil {
+	if _, err := applyLimitFillProgress(state, sc, o, 0.4, 2000, 0.2, 50, ATRMethodSimple, now); err != nil {
 		t.Fatalf("first fill: %v", err)
 	}
 	// Watermark advances (simulating the reconcile loop).
 	o.FilledSize, o.AvgFillPrice, o.FillFee = 0.4, 2000, 0.2
 
 	// Second fill grows to cumulative 1.0 @ VWAP 2010, cumulative fee 0.5.
-	n, err := applyLimitFillProgress(state, sc, o, 1.0, 2010, 0.5, 50, now)
+	n, err := applyLimitFillProgress(state, sc, o, 1.0, 2010, 0.5, 50, ATRMethodSimple, now)
 	if err != nil {
 		t.Fatalf("grow: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestApplyLimitFillProgressOwnerGuard(t *testing.T) {
 	// Pre-existing foreign position; a first fill must NOT adopt it.
 	state.Strategies[sc.ID].Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 3, OwnerStrategyID: "someone-else"}
 	o := PendingLimitOrder{ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001, LimitPrice: 2000, OrderSize: 0.5, FilledSize: 0}
-	if _, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, time.Now().UTC()); err == nil {
+	if _, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, ATRMethodSimple, time.Now().UTC()); err == nil {
 		t.Fatal("expected error adopting a pre-existing foreign position")
 	}
 	if state.Strategies[sc.ID].Positions["ETH"].Quantity != 3 {
