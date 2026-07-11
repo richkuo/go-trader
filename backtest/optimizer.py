@@ -808,6 +808,13 @@ DEFAULT_PARAM_RANGES = {
         "touch_entry": [0, 1],
         "turn_entry": [0, 1],
     },
+    "rsi_bb_combo": {
+        "bb_period": [14, 20, 30],
+        "bb_std": [1.5, 2.0, 2.5],
+        "rsi_oversold": [25.0, 30.0, 35.0],
+        "rsi_overbought": [65.0, 70.0, 75.0],
+        "confirm_window": [2, 3, 5],
+    },
     "mtf_confluence": {
         "htf_factor": [3, 4, 6],
         "htf_ema_fast": [10, 20, 26],

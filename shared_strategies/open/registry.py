@@ -52,6 +52,7 @@ from donchian_breakout import donchian_breakout_core
 from funding_skew import funding_skew_core
 from momentum_pro import momentum_pro_core
 from mean_reversion_pro import mean_reversion_pro_core
+from rsi_bb_combo import rsi_bb_combo_core
 from mtf_confluence import mtf_confluence_core
 from regime_adaptive import regime_adaptive_core
 from regime_adaptive_htf import regime_adaptive_htf_core
@@ -1531,6 +1532,25 @@ def mean_reversion_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "rsi_bb_combo",
+    "RSI+BB Combo — Bollinger Band mean reversion confirmed by RSI extremes. No inline trend filter BY DESIGN — run behind the composite ranging regime gate (init wires it by default) or it fades trends. NOTE: default params LOSE on BTC 1h (-47% gated w/ tiered TP + 2xATR SL); BTC 4h gated showed edge (+27%, PF 1.42, MaxDD -16%) but the strategy FAILED M1 incumbent-relative validation in both plain and gated shapes — mean_reversion_pro dominates head-to-head (docs/research/1329-rsi-bb-combo-m1.md); NOT a promotion candidate, tune per-market before any use",
+    {
+        "bb_period": 20, "bb_std": 2.0,
+        "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
+        "confirm_window": 3,
+    },
+    constraints=[
+        "bb_period > 0",
+        "rsi_period > 0",
+        "confirm_window > 0",
+        "rsi_oversold < rsi_overbought",
+    ],
+)
+def rsi_bb_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return rsi_bb_combo_core(df, **params)
+
+
+@register(
     "consolidation_range",
     "Consolidation Range — enters at the edges of a consolidation box (long near the bottom, short near the top); exit via a trailing ATR stop. NOTE: default params LOSE in run_backtest.py (~-40% to -47% on BTC 4h, see docs/research/consolidation-findings.md) — ship as a tunable baseline, adjust box width / stop / trail per market before live use",
     {"box_width_pct": 0.05, "min_bars": 16, "edge_entry_frac": 0.2},
@@ -1707,7 +1727,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "anchored_vwap_channel", "anchored_vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
-        "momentum_pro", "mean_reversion_pro", "atr_band_revert", "mtf_confluence",
+        "momentum_pro", "mean_reversion_pro", "rsi_bb_combo", "atr_band_revert", "mtf_confluence",
         "vol_momentum", "regime_adaptive", "regime_adaptive_htf",
         "analog_retrieval",
         "hold",
@@ -1722,7 +1742,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
-        "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
+        "vwap_rejection_st", "momentum_pro", "mean_reversion_pro", "rsi_bb_combo",
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval", "hold",
     ],

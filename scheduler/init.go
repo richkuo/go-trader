@@ -84,6 +84,7 @@ var knownShortNames = map[string]string{
 	"vwap_rejection_st":       "vrs",
 	"momentum_pro":            "mompro",
 	"mean_reversion_pro":      "mrpro",
+	"rsi_bb_combo":            "rsibb",
 	"consolidation_range":     "cr",
 	"atr_band_revert":         "abr",
 	"mtf_confluence":          "mtfc",
@@ -110,6 +111,7 @@ var bidirectionalPerpsStrategies = map[string]bool{
 	"anchored_vwap_reversion": true, // single-AVWAP stretch fade; emits short on a buffered snap-back from above the band (#1170)
 	"momentum_pro":            true, // emits short on stacked-bearish-EMA trend-pullback breakdowns
 	"mean_reversion_pro":      true, // emits short on overbought reversion in no-trend regimes
+	"rsi_bb_combo":            true, // emits short on overbought reversion back through the upper Bollinger Band (#1329)
 	"consolidation_range":     true, // emits short at the top edge of a consolidation box (range-edge mean-reversion)
 	"atr_band_revert":         true, // futures variant (allow_short) shorts the upper ATR band in ranging conditions
 	"mtf_confluence":          true, // futures variant (allow_short) shorts LTF pullback rallies in HTF downtrends (#957)
@@ -138,6 +140,10 @@ var strategiesDefaultingToCompositeRangingGate = map[string][]string{
 	// anchored_vwap_reversion fades ATR-measured stretches beyond the anchored
 	// line — same mean-reversion class, gated for the same reason (#1170).
 	"anchored_vwap_reversion": {"ranging_quiet", "ranging_volatile"},
+	// rsi_bb_combo fades Bollinger Band extremes with RSI confirmation but
+	// carries NO inline trend filter by design — the composite regime gate IS
+	// its no-trend filter, so the wizard must wire it by default (#1329).
+	"rsi_bb_combo": {"ranging_quiet", "ranging_volatile"},
 }
 
 // defaultCompositeRangingGate returns a fresh copy of the default composite
