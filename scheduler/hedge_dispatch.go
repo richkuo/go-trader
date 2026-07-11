@@ -114,6 +114,7 @@ func mirrorHedgeAfterPrimaryFill(sc StrategyConfig, s *StrategyState, mu *sync.R
 // from chain) and the coherence sweep retries the unwind every cycle.
 func mirrorHedgeOpen(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, primaryCoin, primaryPositionID string, primaryQty float64, primarySide string, primaryFillPx float64, primaryFillOID string, primaryFillFee float64, useFillFee, live bool, hedgeMid float64, notifier *MultiNotifier, logger *StrategyLogger) {
 	side := hedgeSideForPrimary(sideForPositionSide(primarySide))
+	hedgeMid = resolveHedgeMid(sc, hedgeMid)
 	qty, ok := hedgeOpenQty(primaryQty, primaryFillPx, hedgeRatio(sc), hedgeMid)
 	if !ok {
 		if reason := hedgeOrderSkipReason(qty, hedgeMid); reason != "" && logger != nil {
@@ -247,6 +248,7 @@ func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, s *StrategyState, mu 
 // pair stays intact; only the just-added primary quantity is unwound.
 func mirrorHedgeAdd(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, primaryCoin string, addQty float64, primarySide string, fillPx float64, fillOID string, fillFee float64, useFillFee, live bool, hedgeMid float64, notifier *MultiNotifier, logger *StrategyLogger) {
 	side := hedgeSideForPrimary(sideForPositionSide(primarySide))
+	hedgeMid = resolveHedgeMid(sc, hedgeMid)
 	qty, ok := hedgeOpenQty(addQty, fillPx, hedgeRatio(sc), hedgeMid)
 	if !ok {
 		if live {

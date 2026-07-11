@@ -371,7 +371,7 @@ func TestSnapshotHedgeCoherenceJobs_PrimaryWithoutHedge(t *testing.T) {
 			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long"},
 		}},
 	}}
-	jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}, nil)
+	jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc})
 	if len(jobs) != 1 || jobs[0].Action != hedgeSweepClosePrimary {
 		t.Fatalf("want one close_primary job, got: %+v", jobs)
 	}
@@ -391,7 +391,7 @@ func TestSnapshotHedgeCoherenceJobs_HedgeWithoutPrimary(t *testing.T) {
 			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
 		}},
 	}}
-	jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}, nil)
+	jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc})
 	if len(jobs) != 1 || jobs[0].Action != hedgeSweepCloseHedge {
 		t.Fatalf("want one close_hedge job, got: %+v", jobs)
 	}
@@ -403,24 +403,29 @@ func TestSnapshotHedgeCoherenceJobs_BothAbsentNoJob(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"eth-long": {ID: "eth-long", Positions: map[string]*Position{}},
 	}}
-	if jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}, nil); len(jobs) != 0 {
+	if jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}); len(jobs) != 0 {
 		t.Fatalf("want no jobs, got: %+v", jobs)
 	}
 }
 
+// #1337 review: the oversized-hedge target must come from each leg's own
+// AvgCost (entry-price accounting), not live marks — otherwise it reduces
+// on price movement alone. This is the genuine case it must still catch: an
+// out-of-band primary reduction (e.g. reconcile-booked SL/TP fill) that
+// bypassed the synchronous dispatch mirror, leaving the hedge oversized
+// relative to a SMALLER primary AvgCost-basis quantity, unrelated to price.
 func TestSnapshotHedgeCoherenceJobs_OversizedHedgeReduces(t *testing.T) {
 	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1.0})
 	sc.Args = []string{"sma_crossover", "ETH", "1h", "--mode=live"}
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"eth-long": {ID: "eth-long", Positions: map[string]*Position{
 			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"},
-			// Target hedge qty at these marks: (1*2000*1.0)/50000 = 0.04. Booked
+			// Target hedge qty from AvgCost: (1*2000*1.0)/50000 = 0.04. Booked
 			// hedge holds 0.1 — well beyond the dust tolerance.
 			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
 		}},
 	}}
-	prices := map[string]float64{"ETH": 2000, "BTC": 50000}
-	jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}, prices)
+	jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc})
 	if len(jobs) != 1 || jobs[0].Action != hedgeSweepReduceHedge {
 		t.Fatalf("want one reduce_hedge job, got: %+v", jobs)
 	}
@@ -439,13 +444,48 @@ func TestSnapshotHedgeCoherenceJobs_ConsistentPairNoJob(t *testing.T) {
 			"BTC": {Symbol: "BTC", Quantity: 0.04, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
 		}},
 	}}
-	prices := map[string]float64{"ETH": 2000, "BTC": 50000}
-	if jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}, prices); len(jobs) != 0 {
+	if jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}); len(jobs) != 0 {
 		t.Fatalf("want no jobs for a consistent pair, got: %+v", jobs)
 	}
 }
 
+// #1337 review regression: relative price movement between the primary and
+// hedge coin, with NEITHER position's quantity changed, must never fire a
+// reduce job — the target is computed from AvgCost (frozen at each leg's
+// entry), which is immune to live mark noise by construction. Both legs
+// here have the SAME AvgCost as TestSnapshotHedgeCoherenceJobs_OversizedHedgeReduces
+// (a real divergence), but the hedge quantity matches the AvgCost-based
+// target exactly — proving a mark-noise scenario (which would have produced
+// the same AvgCost inputs regardless of where price is NOW) produces no job.
+func TestSnapshotHedgeCoherenceJobs_PriceMovementAloneNoJob(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1.0})
+	sc.Args = []string{"sma_crossover", "ETH", "1h", "--mode=live"}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		// Hedge was opened when ETH was $2000 and BTC was $50000 (ratio 1.0
+		// -> 0.04 BTC), matching the position sizes below exactly. Live
+		// marks have since moved (e.g. ETH down 5% relative to BTC) but
+		// NEITHER leg's Quantity/AvgCost has changed — nothing was traded.
+		"eth-long": {ID: "eth-long", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.04, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		}},
+	}}
+	if jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}); len(jobs) != 0 {
+		t.Fatalf("want no jobs from price movement alone (positions unchanged), got: %+v", jobs)
+	}
+}
+
 // --- PR #1337 review fixes ---
+
+// resolveHedgeMid's fast path (a usable cycle mid already present) must
+// return it directly with no network call — only the missing-mid path
+// attempts a retry fetch.
+func TestResolveHedgeMid_FastPathNoRetry(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	if got := resolveHedgeMid(sc, 50000); got != 50000 {
+		t.Errorf("got %g, want 50000 (cycle mid used as-is)", got)
+	}
+}
 
 // applyHedgeOpenFill must never blend a new-side fill into an existing
 // opposite-side hedge Position (a flip whose close leg failed must not

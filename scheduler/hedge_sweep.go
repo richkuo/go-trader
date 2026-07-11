@@ -54,7 +54,7 @@ type hedgeCoherenceJob struct {
 // order never mutates state (existing live-exec guardrail), re-detecting the
 // same divergence next cycle IS the retry mechanism — no separate pending-
 // action table is needed.
-func snapshotHedgeCoherenceJobs(state *AppState, strategies []StrategyConfig, hlPeerAll []StrategyConfig, prices map[string]float64) []hedgeCoherenceJob {
+func snapshotHedgeCoherenceJobs(state *AppState, strategies []StrategyConfig, hlPeerAll []StrategyConfig) []hedgeCoherenceJob {
 	var jobs []hedgeCoherenceJob
 	for _, sc := range strategies {
 		if !sc.HedgeEnabled() || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
@@ -95,16 +95,30 @@ func snapshotHedgeCoherenceJobs(state *AppState, strategies []StrategyConfig, hl
 			})
 		default:
 			// Both open: converge an over-sized hedge back toward the
-			// configured ratio using live marks when available. Never
-			// auto-upsizes an under-sized hedge outside a primary entry
-			// event (an up-sizing order outside that event risks
-			// compounding a booking error) — alert-only, no job.
-			primaryMid := prices[primaryCoin]
-			hedgeMid := prices[hedgeCoin(sc)]
-			if primaryMid <= 0 || hedgeMid <= 0 {
+			// configured ratio. Never auto-upsizes an under-sized hedge
+			// outside a primary entry event (an up-sizing order outside
+			// that event risks compounding a booking error) — alert-only,
+			// no job.
+			//
+			// #1337 review: the target MUST be computed from each leg's own
+			// entry-price accounting (AvgCost), never live marks. AvgCost is
+			// a trade-derived value that only changes on an actual fill
+			// (open/scale-in add) — unlike a live mid, it does not drift
+			// with ordinary relative price movement between the primary and
+			// hedge coins. Using live marks here previously fired a
+			// reduce_hedge job on price noise alone (no quantity change on
+			// either leg), permanently ratcheting the hedge smaller on every
+			// adverse relative move with no path to re-grow it. Recomputing
+			// from AvgCost reproduces the EXACT original sizing at rest
+			// (target == hedge.Quantity when nothing has actually traded)
+			// and only diverges when primary.Quantity itself changes — the
+			// real event this branch exists to react to (an async
+			// reconcile-booked partial close that bypassed the synchronous
+			// dispatch mirror).
+			if primary.AvgCost <= 0 || hedge.AvgCost <= 0 {
 				continue
 			}
-			targetHedgeQty, ok := hedgeOpenQty(primary.Quantity, primaryMid, hedgeRatio(sc), hedgeMid)
+			targetHedgeQty, ok := hedgeOpenQty(primary.Quantity, primary.AvgCost, hedgeRatio(sc), hedge.AvgCost)
 			if !ok {
 				continue
 			}

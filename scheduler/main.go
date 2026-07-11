@@ -1725,7 +1725,7 @@ func main() {
 				// after reconcile, before per-strategy dispatch.
 				if hlStateFetched {
 					mu.RLock()
-					hedgeJobs := snapshotHedgeCoherenceJobs(state, cfg.Strategies, hlReconcileAll, prices)
+					hedgeJobs := snapshotHedgeCoherenceJobs(state, cfg.Strategies, hlReconcileAll)
 					mu.RUnlock()
 					if len(hedgeJobs) > 0 {
 						runHedgeCoherenceSweep(shutdownSideEffectCtx, state, cfg.Strategies, hedgeJobs, hlPositions, &mu, notifier, logMgr)

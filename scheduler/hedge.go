@@ -71,6 +71,39 @@ func hedgeOrderSkipReason(qty, hedgeMid float64) string {
 	return ""
 }
 
+// resolveHedgeMid returns cycleMid when it's already usable (the common
+// case — the cycle's mark fetch covered the hedge coin), else attempts a
+// single inline re-fetch of just that coin's mid before giving up.
+//
+// #1337 review (Recommended Optional): every other consumer of a missing HL
+// mark degrades gracefully (portfolio valuation falls back to AvgCost, WARN-
+// logged) — a hedge-open/add is the only path that turned a transient,
+// recoverable one-cycle data gap into an irreversible cost, since
+// hedgeMid<=0 fails hedgeOpenQty and triggers the fail-closed unwind of a
+// real, just-opened primary position. There is no "next cycle" retry for a
+// fresh open — the position that failed to hedge is closed by the unwind,
+// so an inline retry within the SAME event is the only chance to recover a
+// blip; deferring to the coherence sweep is not an option since the sweep
+// never opens a hedge (#1159 phase 1: hedge lifecycle is open/scale-in-only
+// at the dispatch mirror). Returns 0 if the coin has no usable mid.
+func resolveHedgeMid(sc StrategyConfig, cycleMid float64) float64 {
+	if cycleMid > 0 {
+		return cycleMid
+	}
+	coin := hedgeCoin(sc)
+	if coin == "" {
+		return 0
+	}
+	mids, err := fetchHyperliquidMids([]string{coin})
+	if err != nil {
+		return 0
+	}
+	if mid, ok := mids[coin]; ok && mid > 0 {
+		return mid
+	}
+	return 0
+}
+
 // runHyperliquidHedgeOpenOrder places a live HL order on the hedge coin: a
 // fresh open when prevPosQty==0 (the sole-owner case guaranteed by collision
 // rejection), or a scale-in-shaped add when prevPosQty>0. No stop-loss is
