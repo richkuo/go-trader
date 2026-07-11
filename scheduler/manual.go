@@ -780,6 +780,12 @@ func clearForceCloseCanceledProtectionOIDs(pos *Position, canceledSLOID int64, c
 }
 
 func validatePendingManualActionStrategy(sc StrategyConfig, a PendingManualAction) error {
+	// #1159: the scheduler's coherence sweep owns the hedge leg exclusively —
+	// no manual action (open/add/close/SL-edit) should ever target it. Fail
+	// closed if one somehow got queued rather than let it race the sweep.
+	if sc.HedgeEnabled() && a.Symbol != "" && a.Symbol == hedgeCoin(sc) {
+		return fmt.Errorf("strategy %q: manual actions are not permitted on hedge coin %q — the scheduler manages the hedge leg exclusively (#1159)", a.StrategyID, a.Symbol)
+	}
 	if sc.Type == "manual" {
 		return nil
 	}

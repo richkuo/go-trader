@@ -533,6 +533,19 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: also register the hedge leg's virtual qty at its own coin key
+		// so ingestFundingEvent books hedge-coin funding payments to the
+		// owning strategy instead of landing as a wallet-level "funding_orphan".
+		if key.Platform == "hyperliquid" && sc.HedgeEnabled() {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hp, hok := ss.Positions[hc]; hok && hp != nil && hp.Quantity > 0 {
+					if virtualQty[hc] == nil {
+						virtualQty[hc] = make(map[string]float64)
+					}
+					virtualQty[hc][id] = hp.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

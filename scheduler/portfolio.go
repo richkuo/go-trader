@@ -119,6 +119,18 @@ type Position struct {
 	// compares this stamp to the live resolution once per boot to catch that
 	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
 	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
+	// Hedge pairing (#1159 phase 1). Exactly one side of these two groups is
+	// ever set on a given Position:
+	//   - On the HEDGE leg: IsHedge=true, HedgeForSymbol/HedgeForPositionID
+	//     identify the primary position it hedges.
+	//   - On the PRIMARY leg: HedgeSymbol names the paired hedge coin.
+	// HedgeForPositionID (not coin inference) is the sole restart/reconcile
+	// pairing key, per phase-1 constraint 5 — ownership recovery must never
+	// derive from coin->config lookup.
+	IsHedge            bool   `json:"is_hedge,omitempty"`
+	HedgeForSymbol     string `json:"hedge_for_symbol,omitempty"`
+	HedgeForPositionID string `json:"hedge_for_position_id,omitempty"`
+	HedgeSymbol        string `json:"hedge_symbol,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are
@@ -299,10 +311,15 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 			PnLGross:        true,
 			ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
 			FeeSource:       FeeSourceModeled,
+			IsHedge:         pos.IsHedge,
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, 0)
+		if pos.IsHedge {
+			RecordHedgeTradeResult(&s.RiskState, 0)
+		} else {
+			RecordTradeResult(&s.RiskState, 0)
+		}
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -382,6 +399,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
 		ExchangeFee:     fee,
 		FeeSource:       feeSource,
+		IsHedge:         pos.IsHedge,
 	}
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
@@ -389,7 +407,11 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.IsHedge {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
 	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -465,6 +487,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		ExchangeOrderID: exchangeOrderIDForTrade(exchangeOrderID, useFillFee),
 		ExchangeFee:     fee,
 		FeeSource:       feeSource,
+		IsHedge:         pos.IsHedge,
 	}
 	trade.Regime = s.Regime
 	trade.EntryATR = pos.EntryATR
@@ -472,7 +495,11 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.IsHedge {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {
@@ -620,7 +647,8 @@ type Trade struct {
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
 	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"`
 	TPOIDs            []int64 `json:"tp_oids,omitempty"`
-	Manual            bool    `json:"manual,omitempty"` // set when position was opened via manual-open CLI (#569)
+	Manual            bool    `json:"manual,omitempty"`   // set when position was opened via manual-open CLI (#569)
+	IsHedge           bool    `json:"is_hedge,omitempty"` // set on hedge-leg open/close rows (#1159); excluded from LifetimeTradeStats #T/W-L (not alpha positions), included in tradeLedgerDeltaSQL (still books to the owning strategy's ledger)
 
 	// SL arming method + TP tier snapshot at fill time (#669). StopLossATRMult
 	// is non-nil iff SL was ATR-armed (sc.StopLossATRMult>0 OR

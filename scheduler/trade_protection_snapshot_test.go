@@ -221,7 +221,7 @@ func TestApplyHyperliquidCircuitCloseFill_StampsProtectionSnapshot(t *testing.T)
 			},
 		},
 	}
-	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0, 0, "")
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0, 0, false, "")
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))

@@ -276,6 +276,12 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: detect a config edit + restart that changed a strategy's hedge
+	// pairing while a leg was open — the same restart-only gap
+	// checkATRMethodDriftAtStartup covers for atr_method, since SIGHUP
+	// already blocks the equivalent hot-reload edit while open.
+	hedgeStateDriftWarnings := checkHedgeStateDriftAtStartup(cfg, state)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -495,6 +501,13 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward startup hedge-pairing-drift warnings.
+	if len(hedgeStateDriftWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateDriftWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1703,6 +1716,22 @@ func main() {
 					reportHLReconcileGaps(notifier, collectHLReconcileGapResults(state, &mu))
 				}
 
+				// #1159: hedge coherence sweep — the single repair engine for
+				// every async path that can desync a primary/hedge pair
+				// (on-chain SL/TP fills just booked by reconcile above,
+				// kill-switch/CB residue, manual force-close, externally-
+				// closed legs, crash-between-legs restarts, and retries of a
+				// failed hedge-open unwind or hedge close). Runs every cycle,
+				// after reconcile, before per-strategy dispatch.
+				if hlStateFetched {
+					mu.RLock()
+					hedgeJobs := snapshotHedgeCoherenceJobs(state, cfg.Strategies, hlReconcileAll)
+					mu.RUnlock()
+					if len(hedgeJobs) > 0 {
+						runHedgeCoherenceSweep(shutdownSideEffectCtx, state, cfg.Strategies, hedgeJobs, hlPositions, &mu, notifier, logMgr)
+					}
+				}
+
 				// #621: Build a coin→|on-chain qty| map from the pre-fetched positions
 				// so SL placement can cap its size when virtual qty > on-chain qty
 				// (e.g. after a manual TP reduced the position without the bot's knowledge).
@@ -2485,6 +2514,14 @@ func main() {
 									mu.Unlock()
 								}
 							}
+							// #1159 phase 1: mirror whatever the primary leg's fill delta
+							// was (open/scale-in add/partial close/full close/flip) onto
+							// the hedge leg. Delta-based (hlPosQty/hlPosSide captured
+							// before this cycle's signal ran vs the post-apply state) so
+							// it's a no-op on a Signal==0 manage cycle or a skipped/failed
+							// signal — preQty==postQty in both cases — without needing to
+							// duplicate every branch above.
+							mirrorHedgeAfterPrimaryFill(sc, stratState, &mu, result.Symbol, hlPosQty, hlPosSide, price, execResult, prices[hedgeCoin(sc)], notifier, logger)
 							// #998: stamp the active profile on a freshly opened
 							// position (freezes it for the position's life) and commit
 							// the resolved switch state. Runs whenever the check

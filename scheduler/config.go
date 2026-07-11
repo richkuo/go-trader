@@ -660,6 +660,40 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // HL perps (live+paper) only, phase 1 (#1159): opt-in correlated hedge leg mirrored 1:1 with this strategy's primary position lifecycle (open/scale-in/partial-close/full-close/flip/kill-switch/CB). Nil/disabled = no hedge, default behavior. Read via HedgeEnabled/hedgeCoin/hedgeRatio/hedgeExchangeLeverage, never directly.
+}
+
+// HedgeConfig declares a per-strategy correlated hedge leg (#1159, phase 1:
+// Hyperliquid perps only, strictly coupled to the primary position's
+// lifecycle — no independent hedge SL/TP or close evaluator). The hedge
+// carries its own MarginMode/Leverage — it never silently inherits the
+// primary's, since the hedge coin needs its own explicit on-chain margin
+// assignment. Validated in validateConfig; collision rules (own-coin,
+// peer-coin, hedge-vs-hedge) enforced by hyperliquidHedgeCollisionErrors so
+// every hedge coin has exactly one on-chain owner in phase 1.
+type HedgeConfig struct {
+	Enabled bool `json:"enabled"`
+	// Symbol is the hedge coin ticker, e.g. "BTC". Accepts the
+	// "BTC/USDC:USDC" perps-market form too — normalized by stripping
+	// everything from the first "/" — so either spelling resolves to "BTC".
+	Symbol string `json:"symbol"`
+	// Side is the hedge's directional policy relative to the primary. Only
+	// "inverse" (or empty, which defaults to "inverse") is supported in
+	// phase 1: primary long -> hedge short, primary short -> hedge long.
+	Side string `json:"side,omitempty"`
+	// Ratio is hedge notional / primary notional. 0 defaults to 1.0. Bounds
+	// (0, 10].
+	Ratio float64 `json:"ratio,omitempty"`
+	// Platform must be "hyperliquid" (or empty, defaulting to it) in phase 1.
+	Platform string `json:"platform,omitempty"`
+	// Type must be "perps" (or empty, defaulting to it) in phase 1.
+	Type string `json:"type,omitempty"`
+	// MarginMode is the hedge coin's HL margin mode: "isolated" or "cross".
+	// Explicit — never inherited from the primary strategy's MarginMode.
+	MarginMode string `json:"margin_mode,omitempty"`
+	// Leverage is the hedge coin's exchange leverage. 0 defaults to 1
+	// (no leverage).
+	Leverage float64 `json:"leverage,omitempty"`
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -737,6 +771,66 @@ func cloneCloseStrategyRef(ref *StrategyRef) *StrategyRef {
 		}
 	}
 	return &out
+}
+
+// HedgeEnabled reports whether sc has an opted-in, enabled hedge leg (#1159).
+// Always read the hedge block through this accessor, never sc.Hedge directly.
+func (sc StrategyConfig) HedgeEnabled() bool {
+	return sc.Hedge != nil && sc.Hedge.Enabled
+}
+
+// hedgeCoin normalizes sc.Hedge.Symbol to an HL coin ticker: upper-cased,
+// trimmed, and truncated at the first "/" so both "BTC" and the perps-market
+// form "BTC/USDC:USDC" resolve identically. Mirrors hyperliquidConfiguredCoin's
+// normalization so hedge/primary coin comparisons are exact. Returns "" when
+// no hedge is configured.
+func hedgeCoin(sc StrategyConfig) string {
+	if sc.Hedge == nil {
+		return ""
+	}
+	raw := sc.Hedge.Symbol
+	if idx := strings.Index(raw, "/"); idx >= 0 {
+		raw = raw[:idx]
+	}
+	return strings.ToUpper(strings.TrimSpace(raw))
+}
+
+// hedgeRatio returns the hedge notional / primary notional multiplier,
+// defaulting an unset (<=0) ratio to 1.0.
+func hedgeRatio(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Ratio <= 0 {
+		return 1.0
+	}
+	return sc.Hedge.Ratio
+}
+
+// hedgeExchangeLeverage returns the hedge coin's exchange leverage, defaulting
+// an unset (<=0) value to 1 (no leverage). Never inherits sc.Leverage — the
+// hedge coin's on-chain margin assignment is independent of the primary's.
+func hedgeExchangeLeverage(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Leverage <= 0 {
+		return 1
+	}
+	return sc.Hedge.Leverage
+}
+
+// hedgeMarginMode returns the hedge coin's HL margin mode, defaulting an
+// unset value to "isolated" (same default as the primary MarginMode field).
+func hedgeMarginMode(sc StrategyConfig) string {
+	if sc.Hedge == nil || sc.Hedge.MarginMode == "" {
+		return "isolated"
+	}
+	return sc.Hedge.MarginMode
+}
+
+// hedgeSideForPrimary maps a primary HL order side to the inverse hedge side
+// (phase 1 supports only side="inverse"): a primary "buy" (long) pairs with
+// a hedge "sell" (short) and vice versa.
+func hedgeSideForPrimary(primarySide string) string {
+	if primarySide == "buy" {
+		return "sell"
+	}
+	return "buy"
 }
 
 // EffectiveSizingLeverage returns the notional-sizing multiplier for perps.
@@ -1501,6 +1595,76 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	return errs
 }
 
+// hyperliquidHedgeCollisionErrors returns validation messages rejecting
+// hedge-coin collisions (#1159 phase 1). Every shared-coin HL mechanism
+// (hlLiveStrategiesForCoin, hyperliquidPeerStrategyErrors, CB drain,
+// kill-switch fill share, reconcile owner mapping) derives coin membership
+// from hyperliquidConfiguredCoin only, so a hedge coin that collided with any
+// of those would be invisible to all of them. Phase 1 avoids that entirely by
+// requiring every hedge coin to be sole-owned:
+//   - a hedge symbol must not equal any configured HL strategy's primary coin
+//     (perps or manual, live or paper);
+//   - two hedge-enabled strategies must not share a hedge symbol.
+//
+// The strategy's-own-coin case is validated per-strategy in validateConfig
+// (needs only sc, not the full list); this function only needs the
+// cross-strategy view.
+func hyperliquidHedgeCollisionErrors(strategies []StrategyConfig) []string {
+	primaryCoins := make(map[string][]string) // coin -> owning strategy IDs
+	for _, sc := range strategies {
+		if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" {
+			continue
+		}
+		coin := hyperliquidConfiguredCoin(sc)
+		if coin == "" {
+			continue
+		}
+		primaryCoins[coin] = append(primaryCoins[coin], sc.ID)
+	}
+
+	type hedgeOwner struct {
+		ID   string
+		Coin string
+	}
+	var hedges []hedgeOwner
+	for _, sc := range strategies {
+		if !sc.HedgeEnabled() {
+			continue
+		}
+		coin := hedgeCoin(sc)
+		if coin == "" {
+			continue // reported per-strategy in validateConfig
+		}
+		hedges = append(hedges, hedgeOwner{ID: sc.ID, Coin: coin})
+	}
+	sort.Slice(hedges, func(i, j int) bool { return hedges[i].ID < hedges[j].ID })
+
+	var errs []string
+	hedgeCoinOwners := make(map[string][]string) // hedge coin -> hedge-owning strategy IDs
+	for _, h := range hedges {
+		hedgeCoinOwners[h.Coin] = append(hedgeCoinOwners[h.Coin], h.ID)
+		if owners, ok := primaryCoins[h.Coin]; ok {
+			errs = append(errs, fmt.Sprintf(
+				"strategy[%s]: hedge.symbol (%s) collides with the primary coin of strategy/strategies %s — Hyperliquid aggregates positions per coin per account, so a hedge leg on that coin would share the on-chain position, margin assignment, and reduce-only order slots with its peer",
+				h.ID, h.Coin, strings.Join(owners, ", ")))
+		}
+	}
+	hedgeCoins := make([]string, 0, len(hedgeCoinOwners))
+	for coin := range hedgeCoinOwners {
+		hedgeCoins = append(hedgeCoins, coin)
+	}
+	sort.Strings(hedgeCoins)
+	for _, coin := range hedgeCoins {
+		owners := hedgeCoinOwners[coin]
+		if len(owners) > 1 {
+			errs = append(errs, fmt.Sprintf(
+				"hedge.symbol %s is configured as a hedge coin by multiple strategies (%s) — two hedge legs on one coin would recreate the same on-chain aggregation problem collision rejection exists to avoid",
+				coin, strings.Join(owners, ", ")))
+		}
+	}
+	return errs
+}
+
 // ParseLeaderboardPostTime parses a "HH:MM" string and returns (hour, minute, ok).
 func ParseLeaderboardPostTime(s string) (int, int, bool) {
 	if s == "" {
@@ -2211,6 +2375,45 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: theta_harvest.min_dte_close must be >= 0", prefix))
 			}
 		}
+
+		// #1159 phase 1: per-strategy correlated hedge leg. HL perps only
+		// (live + paper); strictly coupled to the primary lifecycle, so no
+		// independent hedge SL/TP/close evaluator surface exists to validate.
+		// Cross-strategy collision rules (own-coin, peer-coin, hedge-vs-hedge)
+		// are validated once after this loop by hyperliquidHedgeCollisionErrors,
+		// since they need the full strategy list.
+		if sc.Hedge != nil {
+			h := sc.Hedge
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: hedge is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+			}
+			if h.Enabled {
+				if h.Platform != "" && h.Platform != "hyperliquid" {
+					errs = append(errs, fmt.Sprintf("%s: hedge.platform must be \"hyperliquid\" (or omitted), got %q", prefix, h.Platform))
+				}
+				if h.Type != "" && h.Type != "perps" {
+					errs = append(errs, fmt.Sprintf("%s: hedge.type must be \"perps\" (or omitted), got %q", prefix, h.Type))
+				}
+				if h.Side != "" && h.Side != "inverse" {
+					errs = append(errs, fmt.Sprintf("%s: hedge.side must be \"inverse\" (or omitted), got %q", prefix, h.Side))
+				}
+				if h.Ratio != 0 && (h.Ratio <= 0 || h.Ratio > 10) {
+					errs = append(errs, fmt.Sprintf("%s: hedge.ratio must be in (0, 10] (or omitted, defaulting to 1.0), got %g", prefix, h.Ratio))
+				}
+				if h.MarginMode != "" && h.MarginMode != "isolated" && h.MarginMode != "cross" {
+					errs = append(errs, fmt.Sprintf("%s: hedge.margin_mode must be \"isolated\" or \"cross\" (or omitted), got %q", prefix, h.MarginMode))
+				}
+				if h.Leverage != 0 && (h.Leverage < 1 || h.Leverage > 100) {
+					errs = append(errs, fmt.Sprintf("%s: hedge.leverage must be in [1, 100] (or omitted, defaulting to 1), got %g", prefix, h.Leverage))
+				}
+				coin := hedgeCoin(sc)
+				if coin == "" {
+					errs = append(errs, fmt.Sprintf("%s: hedge.enabled requires hedge.symbol", prefix))
+				} else if sc.Type == "perps" && sc.Platform == "hyperliquid" && coin == hyperliquidConfiguredCoin(sc) {
+					errs = append(errs, fmt.Sprintf("%s: hedge.symbol (%s) must not equal the strategy's own primary coin — a same-coin \"hedge\" just nets the position on-chain", prefix, coin))
+				}
+			}
+		}
 	}
 
 	// #491: Two HL perps strategies on the same coin land on a single on-chain
@@ -2220,6 +2423,15 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+
+	// #1159 phase 1: hedge coin collision rejection. Every shared-coin
+	// mechanism (peer detection, margin compatibility, CB drain, kill-switch
+	// fill share, reconcile owner mapping) derives coin membership from
+	// hyperliquidConfiguredCoin only, so hedge coins are invisible to all of
+	// them today. Rejecting collisions keeps every hedge coin sole-owned.
+	for _, msg := range hyperliquidHedgeCollisionErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 

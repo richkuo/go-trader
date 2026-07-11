@@ -473,6 +473,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		if sc.MarginMode != "" {
 			fmt.Fprintf(&b, "  margin_mode:         %s%s\n", sc.MarginMode, markIfDefault(explicit, "margin_mode"))
 		}
+		if sc.HedgeEnabled() {
+			fmt.Fprintf(&b, "  hedge:               %s x%g inverse %s@%gx\n", hedgeCoin(sc), hedgeRatio(sc), hedgeMarginMode(sc), hedgeExchangeLeverage(sc))
+		}
 	}
 
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
@@ -690,6 +693,15 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["leverage"] = EffectiveExchangeLeverage(sc)
 		out["sizing_leverage"] = EffectiveSizingLeverage(sc)
 		out["margin_mode"] = sc.MarginMode
+		if sc.HedgeEnabled() {
+			out["hedge"] = map[string]interface{}{
+				"symbol":      hedgeCoin(sc),
+				"side":        "inverse",
+				"ratio":       hedgeRatio(sc),
+				"margin_mode": hedgeMarginMode(sc),
+				"leverage":    hedgeExchangeLeverage(sc),
+			}
+		}
 	}
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
@@ -862,7 +874,13 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 			if pos.DirectionCertifiedAtOpen {
 				certSrc = "certified at open → policy"
 			}
-			fmt.Fprintf(b, "  position %s:         side=%s effective_direction=%s (regime=%s, %s; %s)\n", sym, pos.Side, effDir, effRegime, regimeSrc, certSrc)
+			hedgeTag := ""
+			if pos.IsHedge {
+				hedgeTag = fmt.Sprintf(" [hedge for %s]", pos.HedgeForSymbol)
+			} else if pos.HedgeSymbol != "" {
+				hedgeTag = fmt.Sprintf(" [hedged by %s]", pos.HedgeSymbol)
+			}
+			fmt.Fprintf(b, "  position %s%s:         side=%s effective_direction=%s (regime=%s, %s; %s)\n", sym, hedgeTag, pos.Side, effDir, effRegime, regimeSrc, certSrc)
 			if len(pos.RegimeWindows) > 0 {
 				fmt.Fprintf(b, "    regime_windows:    %v\n", pos.RegimeWindows)
 			}
@@ -912,7 +930,7 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 				continue
 			}
 			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
-			positions = append(positions, map[string]interface{}{
+			entry := map[string]interface{}{
 				"symbol":                      sym,
 				"side":                        pos.Side,
 				"quantity":                    pos.Quantity,
@@ -921,7 +939,15 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 				"effective_direction":         EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen),
 				"effective_policy_regime":     effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity),
 				"direction_certified_at_open": pos.DirectionCertifiedAtOpen,
-			})
+			}
+			if pos.IsHedge {
+				entry["is_hedge"] = true
+				entry["hedge_for_symbol"] = pos.HedgeForSymbol
+			}
+			if pos.HedgeSymbol != "" {
+				entry["hedge_symbol"] = pos.HedgeSymbol
+			}
+			positions = append(positions, entry)
 		}
 		if len(positions) > 0 {
 			sort.Slice(positions, func(i, j int) bool {

@@ -84,6 +84,15 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		case "okx":
 			okxSet[coin] = true
 		}
+		// #1159: a strategy's hedge leg needs a mark too — portfolio valuation,
+		// forceCloseAllPositions pricing, and exposure-cap deltas all read
+		// PortfolioValue's prices map, which comes from this coin set. Hedge is
+		// HL perps only in phase 1.
+		if sc.HedgeEnabled() && sc.Platform == "hyperliquid" {
+			if hc := hedgeCoin(sc); hc != "" {
+				hlSet[hc] = true
+			}
+		}
 	}
 	hlCoins = make([]string, 0, len(hlSet))
 	for c := range hlSet {
@@ -943,18 +952,35 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
-	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		return
+	var symbols []PendingCircuitCloseSymbol
+	// #1159: when the primary coin is shared with a peer, the primary leg is
+	// skipped below (no safe sole-owner close primitive on a shared coin —
+	// forceCloseAllPositions handles the virtual side instead), but a
+	// hedge-enabled strategy's hedge coin is, by collision-rejection
+	// construction, ALWAYS sole-owned — it must still be enqueued so the CB
+	// drain doesn't orphan a real on-chain hedge leg while only the virtual
+	// primary gets cleaned up.
+	if !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		if _, ok := s.Positions[sym]; ok {
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+			}
+		}
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(*sc); hc != "" {
+			if _, ok := s.Positions[hc]; ok {
+				if qty, ok := computeHyperliquidCircuitCloseQty(hc, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hc, Size: qty})
+				}
+			}
+		}
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
+	if len(symbols) == 0 {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1260,9 +1286,14 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			StopLossTriggerPx: pos.StopLossTriggerPx,
 			StopLossATRMult:   pos.StopLossATRMult,
 			TPTiersJSON:       pos.TPTiersJSON,
+			IsHedge:           pos.IsHedge,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		if pos.IsHedge {
+			RecordHedgeTradeResult(&s.RiskState, pnl)
+		} else {
+			RecordTradeResult(&s.RiskState, pnl)
+		}
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1590,8 +1621,28 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 // RecordTradeResult updates risk state with realized PnL for daily limits and
 // consecutive-loss circuit breakers. Lifetime trade stats come from SQLite.
 func RecordTradeResult(r *RiskState, pnl float64) {
+	recordTradeResultForClose(r, pnl, false)
+}
+
+// RecordHedgeTradeResult is RecordTradeResult for a hedge-leg close (#1159/
+// #1337 review). The hedge's realized PnL still belongs in DailyPnL — it's
+// real money moving in the portfolio-wide daily-loss basis — but it must
+// NEVER move ConsecutiveLosses. Hedge legs are not alpha positions (the same
+// principle LifetimeTradeStats already applies via Trade.IsHedge), and
+// because a hedge is inverse-correlated to the primary, a winning hedge
+// close would otherwise silently reset the loss streak set by the losing
+// primary close it's paired with — defeating the consecutive-loss circuit
+// breaker for every hedge-enabled strategy.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	recordTradeResultForClose(r, pnl, true)
+}
+
+func recordTradeResultForClose(r *RiskState, pnl float64, isHedge bool) {
 	rolloverDailyPnL(r)
 	r.DailyPnL += pnl
+	if isHedge {
+		return
+	}
 	if pnl >= 0 {
 		r.ConsecutiveLosses = 0
 	} else {
