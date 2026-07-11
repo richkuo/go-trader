@@ -2369,7 +2369,11 @@ func main() {
 									if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu); hedgeErr != nil {
 										logger.Error("[hedge] sync failed: %v", hedgeErr)
 									} else if hedgeDetail != "" {
-										detail = hedgeDetail
+										if detail != "" {
+											detail = detail + "; " + hedgeDetail
+										} else {
+											detail = hedgeDetail
+										}
 									}
 								}
 							}
@@ -2452,7 +2456,11 @@ func main() {
 										if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu); hedgeErr != nil {
 											logger.Error("[hedge] sync failed: %v", hedgeErr)
 										} else if hedgeDetail != "" {
-											detail = hedgeDetail
+											if detail != "" {
+												detail = detail + "; " + hedgeDetail
+											} else {
+												detail = hedgeDetail
+											}
 										}
 									}
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)

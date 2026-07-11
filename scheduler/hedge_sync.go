@@ -138,6 +138,17 @@ func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, p
 		return findPrimaryPosition(s, primarySym), findHedgePosition(s, sc)
 	}
 	primary, current := read()
+	if primary != nil && current != nil {
+		if mu != nil {
+			mu.Lock()
+		}
+		ensureHedgeQtyPerPrimaryUnit(current, primary)
+		if mu != nil {
+			mu.Unlock()
+		}
+		// Re-read after possible stamp so the plan uses the frozen ratio.
+		primary, current = read()
+	}
 	failClosed := func(reason error) (string, bool, error) {
 		// Primary is open but the required hedge cannot be established/sized —
 		// never leave an unhedged primary (#1159 constraint 4).
@@ -151,15 +162,30 @@ func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, p
 	}
 	target := hedgeTarget{}
 	if primary != nil {
-		target, err = hedgeTargetForPrimary(sc, primary.Side, primary.Quantity, prices[primarySym], prices[hedgeCoin(sc)])
+		target, err = hedgeTargetForLifecycle(sc, primary, current, prices[primarySym], prices[hedgeCoin(sc)])
 		if err != nil {
+			// Already-balanced hedged pair: hold through a transient mark gap.
+			// Fail-closed only when establishing a hedge for an unhedged primary
+			// (#1159 review judgment: spurious liquidation on data-feed gaps is worse).
+			if current != nil {
+				if logger != nil {
+					logger.Warn("[hedge] holding existing hedged pair through sizing gap: %v", err)
+				}
+				return "", false, nil
+			}
 			return failClosed(err)
 		}
 	}
 	orders, err := planHedgeTransition(current, target)
 	if err != nil {
-		if primary != nil {
+		if primary != nil && current == nil {
 			return failClosed(err)
+		}
+		if primary != nil && current != nil {
+			if logger != nil {
+				logger.Warn("[hedge] holding existing hedged pair through plan error: %v", err)
+			}
+			return "", false, nil
 		}
 		return "", false, err
 	}

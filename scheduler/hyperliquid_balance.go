@@ -845,6 +845,10 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	}
 
 	// Reconcile non-shared coins normally for due strategies.
+	// Hedge legs are reconciled independently of whether the primary coin is
+	// shared — ownership comes from persisted IsHedge metadata (#1159 review).
+	// Phase-1 validation also rejects hedge+shared-primary, so the shared
+	// continue below is defense-in-depth for the primary path only.
 	for _, sc := range dueStrategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
@@ -854,16 +858,15 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		if sym == "" {
 			continue
 		}
-		if sharedCoins[sym] {
-			continue // handled below
-		}
 		logger, err := logMgr.GetStrategyLogger(sc.ID)
 		if err != nil {
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
-			changed = true
+		if !sharedCoins[sym] {
+			if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+				changed = true
+			}
 		}
 		if hedgeEnabled(sc) {
 			hedgeSym := hedgeCoin(sc)

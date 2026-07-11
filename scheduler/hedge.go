@@ -38,6 +38,17 @@ func hyperliquidCoinFromSymbol(symbol string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
 }
 
+func hedgeInverseSide(primarySide string) (string, error) {
+	switch primarySide {
+	case "long":
+		return "short", nil
+	case "short":
+		return "long", nil
+	default:
+		return "", fmt.Errorf("invalid primary side %q", primarySide)
+	}
+}
+
 func hedgeTargetForPrimary(sc StrategyConfig, primarySide string, primaryQty, primaryPrice, hedgePrice float64) (hedgeTarget, error) {
 	if !hedgeEnabled(sc) || primaryQty <= hedgeQtyEpsilon {
 		return hedgeTarget{}, nil
@@ -45,20 +56,49 @@ func hedgeTargetForPrimary(sc StrategyConfig, primarySide string, primaryQty, pr
 	if primaryPrice <= 0 || hedgePrice <= 0 {
 		return hedgeTarget{}, fmt.Errorf("hedge sizing requires positive primary and hedge prices")
 	}
-	side := ""
-	switch primarySide {
-	case "long":
-		side = "short"
-	case "short":
-		side = "long"
-	default:
-		return hedgeTarget{}, fmt.Errorf("invalid primary side %q", primarySide)
+	side, err := hedgeInverseSide(primarySide)
+	if err != nil {
+		return hedgeTarget{}, err
 	}
 	qty := primaryQty * primaryPrice * sc.Hedge.Ratio / hedgePrice
 	if math.IsNaN(qty) || math.IsInf(qty, 0) || qty <= hedgeQtyEpsilon {
 		return hedgeTarget{}, fmt.Errorf("resolved hedge quantity is not positive")
 	}
 	return hedgeTarget{Side: side, Quantity: qty}, nil
+}
+
+// hedgeTargetForLifecycle sizes the hedge from primary quantity only once a
+// frozen qty-per-primary-unit ratio exists. Live marks are used solely for a
+// fresh open (no hedge yet). Mark drift with an unchanged primary qty yields
+// a zero-order plan (#1159 review: no per-cycle rebalance churn).
+func hedgeTargetForLifecycle(sc StrategyConfig, primary, hedge *Position, primaryPrice, hedgePrice float64) (hedgeTarget, error) {
+	if !hedgeEnabled(sc) || primary == nil || primary.Quantity <= hedgeQtyEpsilon {
+		return hedgeTarget{}, nil
+	}
+	if hedge != nil && hedge.HedgeQtyPerPrimaryUnit > hedgeQtyEpsilon {
+		side, err := hedgeInverseSide(primary.Side)
+		if err != nil {
+			return hedgeTarget{}, err
+		}
+		qty := primary.Quantity * hedge.HedgeQtyPerPrimaryUnit
+		if math.IsNaN(qty) || math.IsInf(qty, 0) || qty <= hedgeQtyEpsilon {
+			return hedgeTarget{}, fmt.Errorf("resolved hedge quantity is not positive")
+		}
+		return hedgeTarget{Side: side, Quantity: qty}, nil
+	}
+	return hedgeTargetForPrimary(sc, primary.Side, primary.Quantity, primaryPrice, hedgePrice)
+}
+
+// ensureHedgeQtyPerPrimaryUnit stamps (or self-heals) the frozen qty ratio so
+// upgrades / pre-stamp positions stop mark-driven churn on the next sync.
+func ensureHedgeQtyPerPrimaryUnit(hedge, primary *Position) {
+	if hedge == nil || primary == nil || primary.Quantity <= hedgeQtyEpsilon || hedge.Quantity <= hedgeQtyEpsilon {
+		return
+	}
+	if hedge.HedgeQtyPerPrimaryUnit > hedgeQtyEpsilon {
+		return
+	}
+	hedge.HedgeQtyPerPrimaryUnit = hedge.Quantity / primary.Quantity
 }
 
 func planHedgeTransition(current *Position, target hedgeTarget) ([]hedgeOrder, error) {
@@ -100,10 +140,12 @@ func openSideForPosition(side string) string {
 func validateHedgeConfigs(strategies []StrategyConfig) []string {
 	var errs []string
 	primaryOwners := make(map[string]string)
+	primaryCounts := make(map[string]int)
 	hedgeOwners := make(map[string]string)
 	for _, sc := range strategies {
 		if coin := hyperliquidConfiguredCoin(sc); coin != "" {
 			primaryOwners[coin] = sc.ID
+			primaryCounts[coin]++
 		}
 	}
 	for _, sc := range strategies {
@@ -142,6 +184,12 @@ func validateHedgeConfigs(strategies []StrategyConfig) []string {
 			errs = append(errs, fmt.Sprintf("%s.symbol is shared by hedge-enabled strategies %s and %s", prefix, owner, sc.ID))
 		} else if coin != "" {
 			hedgeOwners[coin] = sc.ID
+		}
+		// Phase 1: hedge reconcile lives on the sole-owner primary path. A
+		// shared primary coin would skip that path and strand the hedge leg —
+		// reject at load so ownership stays structurally unambiguous (#1159 review).
+		if primary != "" && primaryCounts[primary] > 1 {
+			errs = append(errs, prefix+": phase 1 rejects hedge when the primary coin is shared with another strategy")
 		}
 	}
 	return errs
@@ -201,6 +249,9 @@ func applyHedgeOpen(s *StrategyState, sc StrategyConfig, primary *Position, side
 		AvgCost: px, Side: side, Multiplier: 1, Leverage: sc.Hedge.Leverage,
 		OwnerStrategyID: sc.ID, IsHedge: true,
 		HedgePrimarySymbol: primary.Symbol, HedgePrimaryPositionID: primaryID, OpenedAt: now,
+	}
+	if primary.Quantity > hedgeQtyEpsilon {
+		pos.HedgeQtyPerPrimaryUnit = qty / primary.Quantity
 	}
 	pos.TradePositionID = primaryID + ":hedge"
 	s.Positions[coin] = pos

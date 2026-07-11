@@ -158,7 +158,7 @@ func TestApplyHedgeOpenStampsOwnershipMetadata(t *testing.T) {
 		t.Fatal("expected hedge trade")
 	}
 	pos := s.Positions["BTC"]
-	if pos == nil || !pos.IsHedge || pos.OwnerStrategyID != sc.ID || pos.HedgePrimarySymbol != "ETH" || pos.HedgePrimaryPositionID == "" || pos.TradePositionID != pos.HedgePrimaryPositionID+":hedge" || pos.Multiplier != 1 || pos.Leverage != sc.Hedge.Leverage {
+	if pos == nil || !pos.IsHedge || pos.OwnerStrategyID != sc.ID || pos.HedgePrimarySymbol != "ETH" || pos.HedgePrimaryPositionID == "" || pos.TradePositionID != pos.HedgePrimaryPositionID+":hedge" || pos.Multiplier != 1 || pos.Leverage != sc.Hedge.Leverage || pos.HedgeQtyPerPrimaryUnit != 0.02 {
 		t.Fatalf("hedge position metadata = %+v", pos)
 	}
 	if !strings.Contains(trade.Details, "[hedge]") || trade.StrategyID != sc.ID {
@@ -187,8 +187,9 @@ func TestApplyHedgePartialAndFullCloseClearsResidual(t *testing.T) {
 func TestSyncStrategyHedge_ScaleInMirrorsNotional(t *testing.T) {
 	sc := hedgeTestConfig("a", "ETH", "BTC")
 	s := NewStrategyState(sc)
-	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 2, AvgCost: 2500, Side: "long"}
-	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.04, InitialQuantity: 0.04, AvgCost: 50000, Side: "short", IsHedge: true}
+	// Primary scaled from 2→3; frozen ratio 0.02 keeps mark drift out of the plan.
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 3, AvgCost: 2500, Side: "long"}
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.04, InitialQuantity: 0.04, AvgCost: 50000, Side: "short", IsHedge: true, HedgeQtyPerPrimaryUnit: 0.02}
 	var calls []float64
 	exec := func(_ string, symbol, side string, size float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error) {
 		calls = append(calls, size)
@@ -203,6 +204,28 @@ func TestSyncStrategyHedge_ScaleInMirrorsNotional(t *testing.T) {
 	}
 	if got := s.Positions["BTC"].Quantity; got < 0.059999 || got > 0.060001 {
 		t.Fatalf("hedge quantity = %g, want 0.06", got)
+	}
+}
+
+func TestSyncStrategyHedge_MarkDriftDoesNotRebalance(t *testing.T) {
+	sc := hedgeTestConfig("a", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 2, AvgCost: 2500, Side: "long"}
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.04, InitialQuantity: 0.04, AvgCost: 50000, Side: "short", IsHedge: true, HedgeQtyPerPrimaryUnit: 0.02}
+	calls := 0
+	exec := func(_ string, _ string, _ string, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error) {
+		calls++
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 1, TotalSz: 1}}}, "", nil
+	}
+	detail, _, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 3000, "BTC": 51000}, nil, exec, nil, nil, &sync.RWMutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || detail != "" {
+		t.Fatalf("mark drift must not rebalance: calls=%d detail=%q", calls, detail)
+	}
+	if got := s.Positions["BTC"].Quantity; got != 0.04 {
+		t.Fatalf("hedge quantity changed to %g", got)
 	}
 }
 
@@ -233,31 +256,7 @@ func TestSyncStrategyHedge_FailedOpenUnwindsPrimary(t *testing.T) {
 	}
 }
 
-func TestHedgeMetadataPersistsAcrossRestart(t *testing.T) {
-	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	state := &AppState{Strategies: map[string]*StrategyState{"a": {
-		ID: "a", Type: "perps", Platform: "hyperliquid", Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", TradePositionID: "primary-1:hedge", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, OwnerStrategyID: "a", IsHedge: true, HedgePrimarySymbol: "ETH", HedgePrimaryPositionID: "primary-1"},
-		}, OptionPositions: map[string]*OptionPosition{},
-	}}}
-	if err := db.SaveState(state); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := db.LoadState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := loaded.Strategies["a"].Positions["BTC"]
-	if h == nil || !h.IsHedge || h.HedgePrimarySymbol != "ETH" || h.HedgePrimaryPositionID != "primary-1" {
-		t.Fatalf("loaded hedge = %+v", h)
-	}
-}
-
-func TestSyncStrategyHedge_MissingMarkUnwindsPrimary(t *testing.T) {
+func TestSyncStrategyHedge_MissingMarkUnwindsUnhedgedPrimary(t *testing.T) {
 	sc := hedgeTestConfig("a", "ETH", "BTC")
 	s := NewStrategyState(sc)
 	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
@@ -271,10 +270,62 @@ func TestSyncStrategyHedge_MissingMarkUnwindsPrimary(t *testing.T) {
 	}
 	_, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000}, nil, nil, nil, nil, &sync.RWMutex{})
 	if err == nil || !unwound {
-		t.Fatalf("err=%v unwound=%v, want fail-closed unwind on missing hedge mark", err, unwound)
+		t.Fatalf("err=%v unwound=%v, want fail-closed unwind when establishing hedge without marks", err, unwound)
 	}
 	if len(s.Positions) != 0 {
 		t.Fatalf("positions after missing-mark unwind = %+v", s.Positions)
+	}
+}
+
+func TestSyncStrategyHedge_MissingMarkHoldsExistingPair(t *testing.T) {
+	sc := hedgeTestConfig("a", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.02, AvgCost: 50000, Side: "short", IsHedge: true, HedgeQtyPerPrimaryUnit: 0.02}
+	detail, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000}, nil, nil, nil, nil, &sync.RWMutex{})
+	if err != nil || unwound || detail != "" {
+		t.Fatalf("want hold: err=%v unwound=%v detail=%q", err, unwound, detail)
+	}
+	if s.Positions["ETH"] == nil || s.Positions["BTC"] == nil {
+		t.Fatalf("existing hedged pair must survive missing hedge mark: %+v", s.Positions)
+	}
+}
+
+func TestValidateHedgeConfigRejectsSharedPrimaryCoin(t *testing.T) {
+	a := hedgeTestConfig("a", "ETH", "BTC")
+	b := StrategyConfig{
+		ID: "b", Type: "perps", Platform: "hyperliquid",
+		Script:  "shared_scripts/check_hyperliquid.py",
+		Args:    []string{"rsi", "ETH", "--mode=live"},
+		Capital: 1000, MaxDrawdownPct: 20, Leverage: 3,
+	}
+	err := validateConfig(&Config{Strategies: []StrategyConfig{a, b}}, true)
+	if err == nil || !strings.Contains(err.Error(), "primary coin is shared") {
+		t.Fatalf("error = %v, want shared primary rejection", err)
+	}
+}
+
+func TestHedgeMetadataPersistsAcrossRestart(t *testing.T) {
+	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	state := &AppState{Strategies: map[string]*StrategyState{"a": {
+		ID: "a", Type: "perps", Platform: "hyperliquid", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", TradePositionID: "primary-1:hedge", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, OwnerStrategyID: "a", IsHedge: true, HedgePrimarySymbol: "ETH", HedgePrimaryPositionID: "primary-1", HedgeQtyPerPrimaryUnit: 0.05},
+		}, OptionPositions: map[string]*OptionPosition{},
+	}}}
+	if err := db.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := loaded.Strategies["a"].Positions["BTC"]
+	if h == nil || !h.IsHedge || h.HedgePrimarySymbol != "ETH" || h.HedgePrimaryPositionID != "primary-1" || h.HedgeQtyPerPrimaryUnit != 0.05 {
+		t.Fatalf("loaded hedge = %+v", h)
 	}
 }
 
