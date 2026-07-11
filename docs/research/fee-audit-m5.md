@@ -150,3 +150,9 @@ protocol, BH family passes). Final verdicts:
 Rows already settled elsewhere (unchanged): `donchian_breakout` #985,
 `session_breakout` #1031, `vol_momentum` #1021, `liquidity_sweeps` #1022,
 `vwap_rejection_st` #990. `bear_pullback_st` is owned by #1280.
+
+The five strategies missing from this table entirely (`anchored_vwap_channel`,
+`anchored_vwap_reversion`, `atr_band_revert`), plus the `no_trades` row 47
+(`delta_neutral_funding` — harness-shape artifact: no funding attach in
+fee_audit.py, short entries dropped) and the `unscreened_short` row 45
+(`bear_pullback_st`), are adjudicated in `1280-edge-verdicts.md`.
