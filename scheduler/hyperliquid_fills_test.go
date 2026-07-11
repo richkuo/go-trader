@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,25 @@ func withFastFillRetries(t *testing.T) {
 		hlFillLookupRetries = origRetries
 		hlFillLookupRetryDelay = origDelay
 	})
+}
+
+func TestFindUniqueHyperliquidHedgeOpenFillRejectsWrongDirectionAndAmbiguity(t *testing.T) {
+	start := time.Now().UTC().UnixMilli()
+	fill := func(oid int64, dir, qty string) hlFillRecord {
+		return hlFillRecord{Coin: "BTC", Sz: qty, Px: "50000", Fee: "0.2", OID: json.Number(strconv.FormatInt(oid, 10)), Dir: dir, Time: start + 1}
+	}
+	fills := []hlFillRecord{
+		fill(1, "Close Long", "0.02"),
+		fill(2, "Open Short", "0.02"),
+	}
+	lookup, ok := findUniqueHyperliquidHedgeOpenFill(fills, "BTC", "short", 0.02, 1e-9, start)
+	if !ok || lookup.OID != 2 || normalizedHLFillDirection(lookup.Direction) != "open short" {
+		t.Fatalf("lookup=%+v ok=%v", lookup, ok)
+	}
+	fills = append(fills, fill(3, "Open Short", "0.02"))
+	if _, ok := findUniqueHyperliquidHedgeOpenFill(fills, "BTC", "short", 0.02, 1e-9, start); ok {
+		t.Fatal("multiple exact opening fills must be rejected as ambiguous")
+	}
 }
 
 func TestLookupHyperliquidFillByOID_AggregatesPartialFills(t *testing.T) {

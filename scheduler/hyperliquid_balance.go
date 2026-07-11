@@ -867,12 +867,12 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		}
 		if hedgeEnabled(sc) {
 			hedgeSym := hedgeCoin(sc)
-			if hedgeSym != "" && findHedgePosition(ss, sc) != nil {
+			if hedgeSym != "" {
 				// Hedge ownership comes from the persisted IsHedge metadata above,
-				// never coin→configured-primary inference. Use the low-level
-				// reconciler with an empty config so hedge legs cannot acquire the
+				// or from an exact post-primary userFills-backed open recovered after
+				// a crash/ambiguous execute response. Hedge legs never acquire the
 				// primary's TP/SL or regime-direction policies.
-				if reconcileHyperliquidHedgePosition(ss, hedgeSym, positions, resolveFee, logger) {
+				if reconcileHyperliquidHedgePosition(sc, ss, hedgeSym, positions, resolveFee, logger) {
 					changed = true
 				}
 			}
@@ -1372,21 +1372,60 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	return changed, fillHints, pendingOrphanCloses
 }
 
-// reconcileHyperliquidHedgePosition recovers a persisted hedge exclusively
-// from exact userFills-backed deltas. It never adopts an unowned on-chain leg
-// and never books a guessed close at mark/AvgCost; ambiguous or missing fill
-// evidence leaves state intact for operator review (#1159).
-func reconcileHyperliquidHedgePosition(s *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger) bool {
+// reconcileHyperliquidHedgePosition recovers persisted hedge deltas and an
+// untracked configured hedge open exclusively from exact userFills evidence.
+// It never books a guessed fill at mark/AvgCost; ambiguous or missing evidence
+// leaves state intact for operator review (#1159).
+func reconcileHyperliquidHedgePosition(sc StrategyConfig, s *StrategyState, sym string, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger) bool {
 	pos := s.Positions[sym]
-	if pos == nil || !pos.IsHedge || pos.Quantity <= 0 {
-		return false
-	}
 	var onChain *HLPosition
 	for i := range positions {
 		if positions[i].Coin == sym {
 			onChain = &positions[i]
 			break
 		}
+	}
+	if pos == nil {
+		primary := findPrimaryPosition(s, hyperliquidSymbol(sc.Args))
+		if primary == nil || onChain == nil || math.Abs(onChain.Size) <= hedgeQtyEpsilon {
+			return false
+		}
+		expectedSide := "short"
+		if primary.Side == "short" {
+			expectedSide = "long"
+		}
+		onChainSide := "long"
+		if onChain.Size < 0 {
+			onChainSide = "short"
+		}
+		if onChainSide != expectedSide {
+			return false
+		}
+		onChainQty := math.Abs(onChain.Size)
+		lookup, ok := resolveFee(sym, 0, onChainQty)
+		if !ok || lookup.OID <= 0 || lookup.TimeMs <= 0 || lookup.FilledQty <= 0 || lookup.Px <= 0 || math.Abs(lookup.FilledQty-onChainQty) > hlReconcileFillSizeTolerance || normalizedHLFillDirection(lookup.Direction) != "open "+expectedSide {
+			if logger != nil {
+				logger.Warn("hl-sync: configured hedge %s exists on-chain without one exact post-primary open fill; refusing ownership adoption", sym)
+			}
+			return false
+		}
+		if !primary.OpenedAt.IsZero() && lookup.TimeMs < primary.OpenedAt.Add(-2*time.Second).UnixMilli() {
+			return false
+		}
+		oid := ""
+		if lookup.OID > 0 {
+			oid = strconv.FormatInt(lookup.OID, 10)
+		}
+		if applyHedgeOpen(s, sc, primary, expectedSide, lookup.FilledQty, lookup.Px, lookup.Fee, oid, logger) == nil {
+			return false
+		}
+		if logger != nil {
+			logger.Warn("hl-sync: recovered untracked hedge %s from exact userFills oid=%s qty=%.6f", sym, oid, lookup.FilledQty)
+		}
+		return true
+	}
+	if !pos.IsHedge || pos.Quantity <= 0 {
+		return false
 	}
 	if onChain == nil {
 		lookup, ok := resolveFee(sym, 0, pos.Quantity)

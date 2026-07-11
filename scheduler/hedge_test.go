@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func hedgeTestConfig(id, symbol, hedgeSymbol string) StrategyConfig {
@@ -261,6 +262,202 @@ func TestSyncStrategyHedge_FailedOpenUnwindsPrimary(t *testing.T) {
 	}
 }
 
+func TestHedgeClosesDoNotClassifyPrimaryRoundTripOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		primaryPx  float64
+		hedgePx    float64
+		wantLosses int
+	}{
+		{name: "winning primary is not inverted by losing hedge", primaryPx: 110, hedgePx: 110, wantLosses: 0},
+		{name: "losing primary is not reset by winning hedge", primaryPx: 90, hedgePx: 90, wantLosses: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := hedgeTestConfig("risk-"+strings.ReplaceAll(tc.name, " ", "-"), "ETH", "BTC")
+			s := NewStrategyState(sc)
+			s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long"}
+			s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+			if !bookPerpsCloseWithFillFee(s, "ETH", tc.primaryPx, 0, true, "1", "test", "primary", "primary", nil) {
+				t.Fatal("primary close failed")
+			}
+			if !bookPerpsCloseWithFillFee(s, "BTC", tc.hedgePx, 0, true, "2", "test", "hedge", "hedge", nil) {
+				t.Fatal("hedge close failed")
+			}
+			if s.RiskState.ConsecutiveLosses != tc.wantLosses {
+				t.Fatalf("ConsecutiveLosses=%d want %d", s.RiskState.ConsecutiveLosses, tc.wantLosses)
+			}
+			if math.Abs(s.RiskState.DailyPnL) > 1e-9 {
+				t.Fatalf("DailyPnL=%g, want both realized legs represented and net zero", s.RiskState.DailyPnL)
+			}
+		})
+	}
+}
+
+func TestHedgeRebalanceReduceUpdatesDailyPnLWithoutChangingLossStreak(t *testing.T) {
+	sc := hedgeTestConfig("risk-rebalance", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.RiskState.DailyPnL = 5
+	s.RiskState.DailyPnLDate = todayUTC()
+	s.RiskState.ConsecutiveLosses = 3
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 2, AvgCost: 100, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+	if !bookPerpsPartialCloseWithFillFee(s, "BTC", 1, 90, 0, true, "3", "test", "hedge", "hedge", nil) {
+		t.Fatal("hedge rebalance reduce failed")
+	}
+	if s.RiskState.DailyPnL != 15 || s.RiskState.ConsecutiveLosses != 3 {
+		t.Fatalf("risk state daily=%g losses=%d, want daily=15 losses=3", s.RiskState.DailyPnL, s.RiskState.ConsecutiveLosses)
+	}
+}
+
+func TestSyncStrategyHedge_HoldTopUpFailureKeepsCoveredPair(t *testing.T) {
+	sc := hedgeTestConfig("topup-hold", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.02, AvgCost: 50000, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+	oldLookup := lookupHedgeOpenFill
+	oldCloser := hedgeLiveCloser
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
+	t.Cleanup(func() {
+		lookupHedgeOpenFill = oldLookup
+		hedgeLiveCloser = oldCloser
+		clearHedgeExposureFailureAlert(sc, "BTC")
+	})
+	lookupHedgeOpenFill = func(string, string, string, float64, int64) (HLFillLookup, bool) { return HLFillLookup{}, false }
+	hedgeLiveCloser = func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+		t.Fatal("hold-cycle top-up failure must not close either leg")
+		return nil, nil
+	}
+	exec := func(string, string, string, float64, string, float64, bool, hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error) {
+		return nil, "timeout", fmt.Errorf("timeout")
+	}
+	for i := 0; i < 2; i++ {
+		_, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 3000, "BTC": 50000}, nil, exec, notifier, nil, &sync.RWMutex{}, false)
+		if err == nil || unwound || len(s.Positions) != 2 {
+			t.Fatalf("attempt=%d err=%v unwound=%v positions=%+v, want covered HOLD", i, err, unwound, s.Positions)
+		}
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "existing hedge retained") {
+		t.Fatalf("top-up failure DMs=%+v", mock.dms)
+	}
+}
+
+func TestSyncStrategyHedge_ForcedTopUpFailureRollsBackPrimaryIncrement(t *testing.T) {
+	sc := hedgeTestConfig("topup-rollback", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.5, AvgCost: 2000, Side: "long"}
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.02, AvgCost: 50000, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+	oldLookup := lookupHedgeOpenFill
+	oldFetch := fetchHedgeAccountState
+	oldCloser := hedgeLiveCloser
+	t.Cleanup(func() {
+		lookupHedgeOpenFill = oldLookup
+		fetchHedgeAccountState = oldFetch
+		hedgeLiveCloser = oldCloser
+		clearHedgeExposureFailureAlert(sc, "BTC")
+	})
+	lookupHedgeOpenFill = func(string, string, string, float64, int64) (HLFillLookup, bool) { return HLFillLookup{}, false }
+	fetchHedgeAccountState = func(string) (float64, []HLPosition, error) {
+		return 0, []HLPosition{{Coin: "BTC", Size: -0.02}}, nil
+	}
+	hedgeLiveCloser = func(symbol string, partial *float64, _ []int64) (*HyperliquidCloseResult, error) {
+		if symbol != "ETH" || partial == nil || math.Abs(*partial-0.5) > 1e-9 {
+			t.Fatalf("rollback close symbol=%s partial=%v", symbol, partial)
+		}
+		return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 2000, TotalSz: 0.5, OID: 44}}}, nil
+	}
+	exec := func(string, string, string, float64, string, float64, bool, hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error) {
+		return nil, "rejected", fmt.Errorf("rejected")
+	}
+	_, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000, "BTC": 50000}, nil, exec, nil, nil, &sync.RWMutex{}, true)
+	if err == nil || unwound {
+		t.Fatalf("err=%v unwound=%v", err, unwound)
+	}
+	if got := s.Positions["ETH"].Quantity; math.Abs(got-1) > 1e-9 {
+		t.Fatalf("primary qty=%g want 1 after rollback", got)
+	}
+	if got := s.Positions["BTC"].Quantity; math.Abs(got-0.02) > 1e-9 {
+		t.Fatalf("hedge qty=%g want 0.02", got)
+	}
+}
+
+func TestSyncStrategyHedge_AmbiguousOpenRecoversExactUserFill(t *testing.T) {
+	sc := hedgeTestConfig("ambiguous-open", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+	oldLookup := lookupHedgeOpenFill
+	oldCloser := hedgeLiveCloser
+	t.Cleanup(func() {
+		lookupHedgeOpenFill = oldLookup
+		hedgeLiveCloser = oldCloser
+	})
+	lookupHedgeOpenFill = func(account, coin, side string, qty float64, _ int64) (HLFillLookup, bool) {
+		if account != "0xtest" || coin != "BTC" || side != "short" || math.Abs(qty-0.02) > 1e-9 {
+			t.Fatalf("lookup args account=%s coin=%s side=%s qty=%g", account, coin, side, qty)
+		}
+		return HLFillLookup{OID: 77, FilledQty: 0.02, Px: 50000, Fee: 0.25, Direction: "Open Short"}, true
+	}
+	hedgeLiveCloser = func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+		t.Fatal("recovered hedge fill must not unwind the primary")
+		return nil, nil
+	}
+	exec := func(string, string, string, float64, string, float64, bool, hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error) {
+		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Symbol: "BTC", Action: "sell", Size: 0.02}}, "", nil
+	}
+	detail, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000, "BTC": 50000}, nil, exec, nil, nil, &sync.RWMutex{}, true)
+	if err != nil || unwound || !strings.Contains(detail, "open") {
+		t.Fatalf("detail=%q unwound=%v err=%v", detail, unwound, err)
+	}
+	if hedge := s.Positions["BTC"]; hedge == nil || !hedge.IsHedge || hedge.Quantity != 0.02 {
+		t.Fatalf("recovered hedge=%+v", hedge)
+	}
+}
+
+func TestReconcileHyperliquidHedgePositionRecoversCrashOrphan(t *testing.T) {
+	sc := hedgeTestConfig("crash-recover", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	opened := time.Now().UTC().Add(-time.Minute)
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long", OpenedAt: opened}
+	resolver := func(coin string, oid int64, qty float64) (HLFillLookup, bool) {
+		return HLFillLookup{OID: 88, FilledQty: qty, Px: 50000, Fee: 0.2, Direction: "Open Short", TimeMs: opened.Add(time.Second).UnixMilli()}, true
+	}
+	if !reconcileHyperliquidHedgePosition(sc, s, "BTC", []HLPosition{{Coin: "BTC", Size: -0.02, EntryPrice: 50000}}, resolver, nil) {
+		t.Fatal("expected exact crash-orphan recovery")
+	}
+	if hedge := s.Positions["BTC"]; hedge == nil || !hedge.IsHedge || hedge.HedgePrimarySymbol != "ETH" {
+		t.Fatalf("recovered hedge=%+v", hedge)
+	}
+}
+
+func TestReconcileHyperliquidAccountPositionsRecoversCrashOrphanEndToEnd(t *testing.T) {
+	sc := hedgeTestConfig("crash-recover-e2e", "ETH", "BTC")
+	opened := time.Now().UTC().Add(-time.Minute)
+	s := NewStrategyState(sc)
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long", OpenedAt: opened}
+	state := &AppState{Strategies: map[string]*StrategyState{sc.ID: s}}
+	oldFetch := fetchHyperliquidUserFillsByTime
+	t.Cleanup(func() { fetchHyperliquidUserFillsByTime = oldFetch })
+	fetchHyperliquidUserFillsByTime = func(account string, startTimeMs int64) ([]hlFillRecord, error) {
+		if account != "0xtest" || startTimeMs > opened.Add(time.Second).UnixMilli() {
+			t.Fatalf("account=%s start=%d", account, startTimeMs)
+		}
+		return []hlFillRecord{{Coin: "BTC", Sz: "0.02", Px: "50000", Fee: "0.2", OID: "99", Dir: "Open Short", Time: opened.Add(time.Second).UnixMilli()}}, nil
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 2000}, {Coin: "BTC", Size: -0.02, EntryPrice: 50000}}
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	changed, _, _ := reconcileHyperliquidAccountPositions([]StrategyConfig{sc}, []StrategyConfig{sc}, state, &mu, logMgr, positions, map[string]float64{"ETH": 2000, "BTC": 50000}, "0xtest", nil, false)
+	if !changed {
+		t.Fatal("expected crash-orphan reconciliation change")
+	}
+	if hedge := s.Positions["BTC"]; hedge == nil || !hedge.IsHedge || hedge.Quantity != 0.02 {
+		t.Fatalf("recovered hedge=%+v", hedge)
+	}
+}
+
 func TestHedgeMetadataPersistsAcrossRestart(t *testing.T) {
 	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -289,7 +486,7 @@ func TestReconcileHedgeNeverBooksGuessedClose(t *testing.T) {
 	s := &StrategyState{ID: "a", Type: "perps", Platform: "hyperliquid", Positions: map[string]*Position{
 		"BTC": {Symbol: "BTC", TradePositionID: "p:hedge", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, IsHedge: true, HedgePrimarySymbol: "ETH"},
 	}}
-	changed := reconcileHyperliquidHedgePosition(s, "BTC", nil, noFillFeeResolver, nil)
+	changed := reconcileHyperliquidHedgePosition(hedgeTestConfig("a", "ETH", "BTC"), s, "BTC", nil, noFillFeeResolver, nil)
 	if changed || s.Positions["BTC"] == nil || len(s.TradeHistory) != 0 {
 		t.Fatalf("guessed reconciliation mutated state: changed=%t positions=%+v trades=%+v", changed, s.Positions, s.TradeHistory)
 	}
@@ -305,7 +502,7 @@ func TestReconcileHedgeBooksExactFillToOwnerLedger(t *testing.T) {
 		}
 		return HLFillLookup{OID: 77, FilledQty: 0.1, Px: 49000, Fee: 1.25}, true
 	}
-	if !reconcileHyperliquidHedgePosition(s, "BTC", nil, resolver, nil) {
+	if !reconcileHyperliquidHedgePosition(hedgeTestConfig("a", "ETH", "BTC"), s, "BTC", nil, resolver, nil) {
 		t.Fatal("expected exact hedge close reconciliation")
 	}
 	if s.Positions["BTC"] != nil || len(s.TradeHistory) != 1 {

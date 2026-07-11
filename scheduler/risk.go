@@ -1594,14 +1594,28 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 	}
 }
 
-// RecordTradeResult updates risk state with realized PnL for daily limits and
-// consecutive-loss circuit breakers. Lifetime trade stats come from SQLite.
-func RecordTradeResult(r *RiskState, pnl float64) {
+// RecordRealizedPnL updates the portfolio-wide daily realized-PnL ledger.
+// It deliberately does not classify the fill as a winning/losing round trip.
+func RecordRealizedPnL(r *RiskState, pnl float64) {
 	rolloverDailyPnL(r)
 	r.DailyPnL += pnl
+}
+
+// RecordTradeOutcome updates the consecutive-loss circuit breaker for one
+// completed directional round trip. Coupled hedge legs are not independent
+// outcomes and must not call this helper.
+func RecordTradeOutcome(r *RiskState, pnl float64) {
 	if pnl >= 0 {
 		r.ConsecutiveLosses = 0
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordTradeResult updates risk state with realized PnL for daily limits and
+// classifies one completed directional round trip for the consecutive-loss
+// circuit breaker. Lifetime trade stats come from SQLite.
+func RecordTradeResult(r *RiskState, pnl float64) {
+	RecordRealizedPnL(r, pnl)
+	RecordTradeOutcome(r, pnl)
 }
