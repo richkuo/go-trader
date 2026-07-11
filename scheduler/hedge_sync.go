@@ -269,8 +269,8 @@ func flattenHedgeAfterFailure(sc StrategyConfig, s *StrategyState, logger *Strat
 
 // syncStrategyHedge runs after confirmed primary fills and during hold cycles.
 // It converges the hedge to the primary's current notional. Every reduction
-// uses the reduce-only closer; a failed hedge increase immediately unwinds the
-// primary, preserving the fail-closed invariant.
+// uses the reduce-only closer. Initial-establishment failure unwinds the
+// unhedged primary; incremental failures retain or restore existing coverage.
 func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, prices map[string]float64, hlPositions []HLPosition, exec hedgeLiveExecFn, notifier *MultiNotifier, logger *StrategyLogger, mu *sync.RWMutex, forceRebalance bool) (detail string, primaryUnwound bool, err error) {
 	if !hedgeEnabled(sc) || s == nil {
 		return "", false, nil
