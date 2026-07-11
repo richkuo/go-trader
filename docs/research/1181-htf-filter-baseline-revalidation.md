@@ -148,6 +148,24 @@ fee-net change left win-rate and every equity figure untouched here (no trade
 crossed zero PnL as a result). The #1181 "no decision rested on a leak-inflated
 number" disposition stands.
 
+## Addendum 2026-07-10 — re-run under intra-bar stop resolution + corrected HL fees (#1294)
+
+Re-ran both `sma_crossover --htf-filter` baselines on current `main` (#1271
+`ohlc_walk` intrabar default, #1320 fee-model correction) against the identical
+cache snapshot (audit-dataset last bars 2026-06-04 → 2026-06-12). **Every
+figure reproduces to the digit under BOTH `--intrabar-resolution` modes** —
+BTC/USDT 1h: +147.80% / 0.998 / 1.415 / -36.85% / 75 / 32.0%; ETH/USDT 4h:
++7.94% / 0.248 / 0.354 / -51.79% / 13 / 38.5% — identical to the 2026-07-05
+addendum tables above.
+
+Why nothing moved: these runs arm no engine-tracked stop (`sma_crossover
+--htf-filter` exits open-signal-as-close), so the #1271 intra-bar SL walk has
+no surface to act on — `ohlc_walk` vs `bar_close` produce byte-identical
+output. And `run_backtest.py` prices the default `binanceus` platform fee,
+which #1320 did not change. **These baselines are current under the new
+default; no verdict or number changes.**
+
 ---
 Created with LLM: Fable 5 | high | Harness: Claude Code
 Updated with LLM: Opus 4.8 | high | Harness: Claude Code
+Updated with LLM: Fable 5 | high | Harness: Claude Code

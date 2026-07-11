@@ -216,7 +216,8 @@ RUNS: list[dict] = [
 
 
 def _run_one(open_key: str, run: dict, out_dir: str, windows: str,
-             datasets: str | None, resamples: int) -> dict:
+             datasets: str | None, resamples: int,
+             intrabar_resolution: str = "ohlc_walk") -> dict:
     spec = OPENS[open_key][run["experiment"]]
     full_key = f"{open_key}.{run['key']}"
     json_path = os.path.join(out_dir, f"{full_key}.json")
@@ -228,6 +229,7 @@ def _run_one(open_key: str, run: dict, out_dir: str, windows: str,
         "--candidate-close", run["candidate_close"],
         "--windows", windows,
         "--bootstrap-resamples", str(resamples),
+        "--intrabar-resolution", intrabar_resolution,
         "--json", json_path,
     ]
     for label in run["gate"]:
@@ -311,6 +313,10 @@ def main() -> int:
     ap.add_argument("--datasets", default=None,
                     help="comma list SYMBOL:TIMEFRAME (default: audit six)")
     ap.add_argument("--bootstrap-resamples", type=int, default=10000)
+    ap.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                    choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
+                    help="Same-bar SL/TP race resolution (#1271), forwarded to "
+                         "exit_policy_ab.py; bar_close reproduces pre-#1271 runs")
     args = ap.parse_args()
 
     matrix = [(ok, r) for ok in OPENS for r in RUNS]
@@ -325,7 +331,8 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as ex:
         results = list(ex.map(
             lambda item: _run_one(item[0], item[1], args.out_dir, args.windows,
-                                  args.datasets, args.bootstrap_resamples),
+                                  args.datasets, args.bootstrap_resamples,
+                                  args.intrabar_resolution),
             matrix))
 
     aggregate = {

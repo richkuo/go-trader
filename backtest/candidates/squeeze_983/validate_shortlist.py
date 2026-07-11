@@ -41,6 +41,10 @@ CANDIDATES = [
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--json", default=None, dest="json_out")
+    p.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                   choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
+                   help="Same-bar SL/TP race resolution (#1271); bar_close "
+                        "reproduces pre-#1271 legacy baselines")
     p.add_argument("--candidates", default=None,
                    help="Comma list of candidate JSON files in this dir "
                         "(default: the committed shortlist)")
@@ -66,7 +70,8 @@ def main(argv=None):
         scores = []
         for wname in window_names:
             score = evaluate_window(reg, candidate, list(DATASETS), wname,
-                                    1000.0, bars_memo)
+                                    1000.0, bars_memo,
+                                    intrabar_resolution=args.intrabar_resolution)
             scores.append(score)
             print(format_window_report(score))
         print(format_summary(scores))

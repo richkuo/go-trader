@@ -194,6 +194,29 @@ from the fee-inclusive cash path, not the per-trade `pnl` field #1250 revised).
 The pre-registered `NO_POSITIVE_EDGE` verdict and the deprecate recommendation
 (scoped to the fade-only default, pending the M4 adjudication) are unchanged.
 
+## Addendum 2026-07-10 — re-run under intra-bar stop resolution + corrected HL fees (#1294)
+
+Re-ran the noise gates and the fee-audit row on current `main` (#1271
+`ohlc_walk` intrabar default, #1320 audit fee model binanceus → hyperliquid)
+against the identical cache snapshot (audit-dataset last bars 2026-06-04 →
+2026-06-12). **The deprecate recommendation stands.**
+
+| harness | documented (2026-07-05 addendum) | re-run (current main) | status |
+|---|---|---|---|
+| noise (M5 slices) | n=37, mean +0.082%/trade, p=0.3913, `INDISTINGUISHABLE_FROM_ZERO` | n=37, +0.082%, p=0.3913, `INDISTINGUISHABLE_FROM_ZERO` | identical |
+| noise (all windows) | n=173, mean -0.022%/trade, p=0.5516, sign 110/173 p=0.0004, `NO_POSITIVE_EDGE` | n=173, -0.022%, p=0.5516, 110/173 p=0.0004, `NO_POSITIVE_EDGE` | identical |
+| M5 fee-audit row | 37 trades, gross +0.27, net -0.66, drag 0.94pp, `graduate_m1` | 37, gross +0.27, **net -0.32, drag 0.59pp**, `graduate_m1` | net shifted (#1320 fee model only) |
+
+Attribution: the strategy arms no engine-tracked stop (open-signal-as-close
+exit), so #1271 has no surface here — the zero-friction gross legs and both
+pre-registered noise verdicts reproduce bit-for-bit. The only mover is the M5
+net leg, and its entire shift is the #1320 fee-model switch (same 37 trades,
+same gross +0.27; hyperliquid 0.045%/side prices ~0.35pp less round-trip drag
+than binanceus 0.1%/side). The verdict rests on the gross-edge noise gates,
+which are unchanged — **`NO_POSITIVE_EDGE` and the deprecate recommendation
+hold under the current engine.**
+
 ---
 Created with LLM: Fable 5 | high | Harness: Claude Code + live M1 runs
 Updated with LLM: Opus 4.8 | high | Harness: Claude Code
+Updated with LLM: Fable 5 | high | Harness: Claude Code

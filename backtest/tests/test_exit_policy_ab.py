@@ -687,3 +687,28 @@ def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
     assert captured["sig_pos"] == 2
     assert captured["regime_frame_len"] == 8  # df_signals, not df (10)
     assert res is not None and res["paired_diag"]["paired"] == 1
+
+
+# --------------------------------------------------------------------------
+# intrabar_resolution threading (#1294)
+# --------------------------------------------------------------------------
+
+def test_backtester_kwargs_carry_intrabar_resolution():
+    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
+    assert kw["intrabar_resolution"] == m.INTRABAR_RESOLUTION == "ohlc_walk"
+
+
+def test_parser_accepts_and_rejects_intrabar_modes():
+    p = m.build_parser()
+    base = ["--strategy", "momentum", "--candidate-close", "[]"]
+    assert p.parse_args(base).intrabar_resolution == "ohlc_walk"
+    assert p.parse_args(base + ["--intrabar-resolution", "bar_close"]
+                        ).intrabar_resolution == "bar_close"
+    with pytest.raises(SystemExit):
+        p.parse_args(base + ["--intrabar-resolution", "nonsense"])
+
+
+def test_module_mode_reaches_backtester_kwargs(monkeypatch):
+    monkeypatch.setattr(m, "INTRABAR_RESOLUTION", "bar_close")
+    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
+    assert kw["intrabar_resolution"] == "bar_close"

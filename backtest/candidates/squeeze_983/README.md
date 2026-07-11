@@ -223,5 +223,38 @@ M1 protocol PASS/FAIL table — **every verdict identical to the documented run*
 the #1251 DDadj-floor and half-open-window changes. The keep-baseline verdict
 and the "-58.5% DD is regime exposure, not exit quality → M4" disposition stand.
 
+## Addendum 2026-07-10 — re-run under intra-bar stop resolution + corrected HL fees (#1294)
+
+Re-ran `audit_headline.py` (baseline + `tp_default`) and `validate_shortlist.py`
+(default shortlist) on current `main` — #1271 `ohlc_walk` intrabar default and
+the #1320 audit fee-model switch (binanceus → hyperliquid) — under BOTH
+`--intrabar-resolution` modes (the drivers now thread the flag, #1294),
+identical cache snapshot (last bars 2026-06-04 → 2026-06-12, zero drift).
+**Verdict holds: no close stack ships; keep the baseline stack.**
+
+**#1271 does not reach this shortlist.** Every headline and M1 number is
+byte-identical between `ohlc_walk` and `bar_close` — the shortlist's exits are
+close-evaluator ladders/trails scored bar-close, with no engine-tracked
+`stop_loss_atr_mult` armed, so the intra-bar walk has no surface. All movement
+vs the 2026-07-05 addendum is therefore the #1320 fee model alone:
+
+| run | metric | documented (2026-07-05) | re-run (both modes) | status |
+|---|---|---:|---:|---|
+| baseline | Sharpe / ret / vsB&H / worstDD / #T | +0.07 / +1.07% / +45.90 / -58.46% / 130 | +0.136 / +3.84% / +48.67 / -57.58% / 130 | fee model only (same 130 entries) |
+| `tp_default` | " | -0.532 / -24.07% / +20.76 / -72.38% / 158 | -0.506 / -23.55% / +21.27 / -72.38% / **94** | fee model only; still collapses |
+
+`tp_default`'s trade count drops 158 → 94 with the entry set frozen — the
+cheaper hyperliquid fees change the equity path enough to move which ladder
+tiers fill — but the stitched frame stays a -72% worst-DD, negative-return
+collapse, so the step-5 conclusion is unchanged.
+
+M1 protocol: baseline OOS PASS (held-out 1/3), `tp_default` OOS PASS (2/3),
+`sl_atr_1.5` / `trail_atr_3.0` FAIL (0/3) — all identical to the documented
+table, in both modes. One label moved: **`tp_runner_trail3` judged-OOS FAIL →
+PASS** (held-out still 0/3), identical across modes, i.e. a pure fee-model
+artifact, not intra-bar semantics. With 0/3 held-out windows it remains a
+non-shipper, so the keep-baseline verdict is unaffected.
+
 ---
 Updated with LLM: Opus 4.8 | high | Harness: Claude Code
+Updated with LLM: Fable 5 | high | Harness: Claude Code

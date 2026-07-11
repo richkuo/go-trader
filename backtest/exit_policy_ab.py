@@ -105,6 +105,12 @@ DEFAULT_BOOTSTRAP_RESAMPLES = 10000
 DEFAULT_CI = 0.95
 DEFAULT_SEED = 1066
 
+# Same-bar SL/TP race resolution (#1271) shared by BOTH arms and the
+# entry-locked replay — a single module-level mode guarantees arm parity by
+# construction. Set once from --intrabar-resolution in main(); "bar_close"
+# reproduces pre-#1271 legacy baselines (#1294).
+INTRABAR_RESOLUTION = "ohlc_walk"
+
 # Regime label stamped on an entry whose classifier produced an empty/unknown
 # bucket (warmup rows, mid-series NaN) — kept distinct so it never silently
 # merges with a real regime.
@@ -616,6 +622,7 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
     use_regime = bool(gate.get("allowed_regimes"))
     kw = dict(
         initial_capital=capital, platform=FEE_PLATFORM,
+        intrabar_resolution=INTRABAR_RESOLUTION,
         open_strategy={"name": open_name, "params": dict(params or {})},
         close_strategies=(list(close_refs) if close_refs else None),
         direction=direction,
@@ -1089,6 +1096,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
+    p.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                   choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
+                   help="Same-bar SL/TP race resolution (#1271); bar_close "
+                        "reproduces pre-#1271 legacy baselines")
     return p
 
 
@@ -1200,6 +1211,8 @@ def _resolve_spec(args) -> dict:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    global INTRABAR_RESOLUTION
+    INTRABAR_RESOLUTION = args.intrabar_resolution
     spec = _resolve_spec(args)
 
     if args.windows:
@@ -1260,6 +1273,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "regime_cfg": spec["regime_cfg"],
             "gate_allowed_regimes": spec["gate"]["allowed_regimes"],
             "registry": args.registry,
+            "intrabar_resolution": INTRABAR_RESOLUTION,
             "windows": {w: list(WINDOWS[w]) for w in window_names},
             "datasets": [dataset_key(s, t) for s, t in datasets],
             "bootstrap": {"n_resamples": spec["n_resamples"], "ci": spec["ci"],

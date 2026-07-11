@@ -196,6 +196,44 @@ Every other run's verdict label is unchanged. The `ranging_quiet` evidence gap
 re-run `b2_rv_wider` cross-style once the OOS window accumulates more squeeze
 entries, both stand under the corrected engine.**
 
+## Addendum 2026-07-10 — re-run under intra-bar stop resolution + corrected HL fees (#1294)
+
+Re-ran the decisive `b2_rv_wider` gate pair (`--only sq.b2_rv_wider,mr.b2_rv_wider`)
+on the identical cache snapshot in BOTH `--intrabar-resolution` modes (the M6
+harness now threads the flag, this PR). Two engine changes have landed since
+the 2026-07-05 addendum: the #1271 intra-bar SL/TP race resolution
+(`ohlc_walk` default) and the #1320 fee-model switch (audit fees binanceus →
+hyperliquid, inherited via `eval_windows.FEE_PLATFORM`).
+
+**`bar_close` control — the fee model alone changes nothing that matters.**
+`sq.b2_rv_wider` reproduces `incumbent_stands` (IS +0.052 sig+0 / OOS -0.054
+sig+0 vs documented +0.060/-0.054) and `mr.b2_rv_wider` reproduces
+`candidate_beats_incumbent` (IS +0.0052 / OOS +0.048, matching the documented
++0.005/+0.048 to the digit; the lower fees lift one more IS dataset over
+p<0.05, sig+2 → sig+3).
+
+**`ohlc_walk` — the intra-bar change downgrades the lone gate pass.**
+`sq.b2_rv_wider` is unchanged (`incumbent_stands`, IS +0.057 / OOS -0.054).
+`mr.b2_rv_wider` drops `candidate_beats_incumbent` →
+`positive_but_not_significant`: pooled deltas stay positive (IS +0.0066
+n=365 / OOS +0.0562 n=241→255) but intra-bar stop fills leave only one
+individually-significant positive dataset per window and introduce one
+significant OOS **contradiction** (sig- 0 → 1), which the pre-registered gate
+treats as disqualifying. This is a genuine #1271 effect — the mode pair is the
+only difference between the two runs.
+
+**No decision changes.** The standing verdict was already "keep the collapsed
+group" because the gate requires BOTH entry styles and squeeze fails OOS; the
+mean-reversion pass was the near-miss, and under the more realistic intra-bar
+geometry it no longer passes even alone. The cross-entry-style re-run
+recommendation stands, now with a higher bar: a future `ranging_volatile` B2
+split needs `mr.b2_rv_wider` to re-clear the gate under `ohlc_walk` defaults,
+not merely reproduce the legacy bar-close pass. Committed artifact
+`backtest/research/regime_1152_exit_retune.json` remains the full 18-run
+2026-07-05 matrix; this addendum's two-candidate re-runs live in the PR record
+only.
+
 ---
 Created with LLM: Fable 5 | high | Harness: Claude Code
+Updated with LLM: Fable 5 | high | Harness: Claude Code
 Updated with LLM: Opus 4.8 | high | Harness: Claude Code
