@@ -21,6 +21,23 @@ type hedgeOrder struct {
 	FullClose bool
 }
 
+// hedgeLifecycleDueInterval returns the due-check interval for a hedge-enabled
+// strategy. With open primary/hedge exposure it caps at the global cadence so
+// reconcile+sync bound the naked-hedge window after an on-chain primary SL/TP
+// fill (#1159 review). Flat / non-hedge strategies keep their strategy interval.
+func hedgeLifecycleDueInterval(sc StrategyConfig, ss *StrategyState, strategyInterval, globalInterval int) int {
+	if !hedgeEnabled(sc) {
+		return strategyInterval
+	}
+	primarySym := hyperliquidConfiguredCoin(sc)
+	if strategyHasOpenHedgeLeg(ss) || findPrimaryPosition(ss, primarySym) != nil {
+		if globalInterval > 0 && (strategyInterval <= 0 || globalInterval < strategyInterval) {
+			return globalInterval
+		}
+	}
+	return strategyInterval
+}
+
 func hedgeEnabled(sc StrategyConfig) bool { return sc.Hedge != nil && sc.Hedge.Enabled }
 
 func hedgeCoin(sc StrategyConfig) string {

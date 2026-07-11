@@ -373,10 +373,51 @@ func TestForceCloseHyperliquidLiveIncludesConfiguredAndOrphanHedgeCoins(t *testi
 			"SOL": {Symbol: "SOL", Quantity: 2, Side: "short", IsHedge: true},
 		}},
 	}
-	report := forceCloseHyperliquidLive(context.Background(), positions, []StrategyConfig{sc}, closer, nil, strategies)
+	traded := hyperliquidKillSwitchTradedCoins([]StrategyConfig{sc}, strategies)
+	report := forceCloseHyperliquidLive(context.Background(), positions, []StrategyConfig{sc}, closer, nil, traded)
 	for _, coin := range []string{"ETH", "BTC", "SOL"} {
 		if !closed[coin] {
 			t.Fatalf("expected kill-switch to close %s; closed=%v report=%+v", coin, closed, report)
 		}
+	}
+}
+
+func TestHyperliquidKillSwitchTradedCoinsSnapshotsUnderCaller(t *testing.T) {
+	sc := hedgeTestConfig("a", "ETH", "BTC")
+	strategies := map[string]*StrategyState{
+		"a": {Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "short", IsHedge: true},
+			"SOL": {Symbol: "SOL", Quantity: 1, Side: "short", IsHedge: true},
+		}},
+	}
+	got := hyperliquidKillSwitchTradedCoins([]StrategyConfig{sc}, strategies)
+	for _, coin := range []string{"ETH", "BTC", "SOL"} {
+		if !got[coin] {
+			t.Fatalf("missing traded coin %s in %v", coin, got)
+		}
+	}
+	// nil strategies still covers configured primary + hedge
+	cfgOnly := hyperliquidKillSwitchTradedCoins([]StrategyConfig{sc}, nil)
+	if !cfgOnly["ETH"] || !cfgOnly["BTC"] || cfgOnly["SOL"] {
+		t.Fatalf("config-only snapshot = %v", cfgOnly)
+	}
+}
+
+func TestHedgeLifecycleDueIntervalCapsOpenExposure(t *testing.T) {
+	sc := hedgeTestConfig("a", "ETH", "BTC")
+	open := &StrategyState{Positions: map[string]*Position{
+		"ETH": {Symbol: "ETH", Quantity: 1, Side: "long"},
+		"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "short", IsHedge: true},
+	}}
+	if got := hedgeLifecycleDueInterval(sc, open, 14400, 60); got != 60 {
+		t.Fatalf("open hedged pair interval = %d, want global 60", got)
+	}
+	flat := &StrategyState{Positions: map[string]*Position{}}
+	if got := hedgeLifecycleDueInterval(sc, flat, 14400, 60); got != 14400 {
+		t.Fatalf("flat hedge strategy interval = %d, want strategy 14400", got)
+	}
+	sc.Hedge = nil
+	if got := hedgeLifecycleDueInterval(sc, open, 14400, 60); got != 14400 {
+		t.Fatalf("non-hedge strategy interval = %d, want unchanged", got)
 	}
 }

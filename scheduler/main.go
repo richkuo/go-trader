@@ -798,6 +798,7 @@ func main() {
 
 		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
+		mu.RLock()
 		for _, sc := range cfg.Strategies {
 			// #100: Skip strategies where capital_pct is set but capital resolved to $0
 			// (balance fetch failed and no fallback capital configured).
@@ -806,11 +807,17 @@ func main() {
 				continue
 			}
 			interval := intervals[sc.ID]
+			// #1159 review: a hedge-enabled strategy with open primary/hedge
+			// exposure must reconcile+sync at the global cadence, not wait for
+			// a multi-hour strategy interval — otherwise an on-chain primary
+			// SL/TP fill leaves the hedge naked until the next due cycle.
+			interval = hedgeLifecycleDueInterval(sc, state.Strategies[sc.ID], interval, cfg.IntervalSeconds)
 			last, exists := lastRun[sc.ID]
 			if !exists || cycleStart.Sub(last) >= time.Duration(interval)*time.Second {
 				dueStrategies = append(dueStrategies, sc)
 			}
 		}
+		mu.RUnlock()
 
 		if len(dueStrategies) == 0 {
 			// Nothing due, wait for next tick
@@ -1424,6 +1431,9 @@ func main() {
 					}
 				}
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
+				// Snapshot traded coins under the same RLock — forceCloseHyperliquidLive
+				// must not range live Strategies/Positions maps after unlock (#1159 review).
+				hlTradedCoins := hyperliquidKillSwitchTradedCoins(hlLiveAll, state.Strategies)
 				mu.RUnlock()
 
 				inputs := KillSwitchCloseInputs{
@@ -1435,7 +1445,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
-					HLStrategies:      state.Strategies,
+					HLTradedCoins:     hlTradedCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,

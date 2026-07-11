@@ -1967,16 +1967,17 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 // should be cancelled before the close fires, so kill-switch flattening
 // doesn't leave orphan triggers consuming HL's open-order cap (#421, #479).
 // nil/empty disables the cancel; the closer is otherwise unchanged.
-func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64, strategies map[string]*StrategyState) HyperliquidLiveCloseReport {
+func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64, tradedCoins map[string]bool) HyperliquidLiveCloseReport {
 	report := HyperliquidLiveCloseReport{
 		Fills:  make(map[string]HyperliquidCloseFill),
 		Errors: make(map[string]error),
 	}
 
-	// strategies may be nil in unit tests that only exercise configured coins;
-	// production kill-switch threads AppState.Strategies so orphan IsHedge
-	// claims still flatten (#1159).
-	tradedCoins := hyperliquidKillSwitchTradedCoins(hlLiveAll, strategies)
+	// tradedCoins must be a snapshot taken under mu by the caller. nil is the
+	// unit-test path: derive from config only (no live state.Strategies range).
+	if tradedCoins == nil {
+		tradedCoins = hyperliquidKillSwitchTradedCoins(hlLiveAll, nil)
+	}
 
 	for _, p := range positions {
 		if !tradedCoins[p.Coin] {
