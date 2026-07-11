@@ -779,15 +779,22 @@ func reconcileHedgeLegForStrategy(sc StrategyConfig, ss *StrategyState, position
 	if hedge.Quantity != qty || hedge.Side != side {
 		logger.Info("hl-sync: reconciled hedge %s: state=%.6f %s → on-chain=%.6f %s @ $%.2f",
 			sym, hedge.Quantity, hedge.Side, qty, side, onChainPos.EntryPrice)
+		// The covered watermark was derived from the pre-drift quantity, so
+		// rescale it by the observed size change (review on #1333). This
+		// handles BOTH drift directions: an upward lost-add (crash between an
+		// add fill and its booking) rescales covered up to ≈ the grown
+		// primary so the next sync doesn't double-place the add, while a
+		// DOWNWARD drift (partial ADL / liquidation / manual reduction of the
+		// hedge) rescales covered down so the next sync re-adds the shortfall
+		// — zeroing here would instead mark the shrunken hedge as FULL
+		// coverage via the adopt branch and leave the primary silently
+		// under-hedged for its remaining life, violating the never-run-
+		// unhedged-silently guarantee. hedge.Quantity > 0 is guaranteed by
+		// findHedgePosition's qty filter.
+		hedge.HedgeCoveredPrimaryQty = hedge.HedgeCoveredPrimaryQty * qty / hedge.Quantity
 		hedge.Quantity = qty
 		hedge.Side = side
 		hedge.AvgCost = onChainPos.EntryPrice
-		// The covered watermark was derived from the pre-drift quantity —
-		// e.g. a crash between an add fill and its booking, now folded in
-		// from chain. Zero it so the next hedge_sync cycle ADOPTS the current
-		// primary quantity instead of re-deriving deltas against a stale
-		// baseline (which would double-place the lost add).
-		hedge.HedgeCoveredPrimaryQty = 0
 		changed = true
 	}
 	if hedge.Multiplier != 1 {

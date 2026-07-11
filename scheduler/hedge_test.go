@@ -431,7 +431,7 @@ func TestReconcileHedgeLegExternalClose(t *testing.T) {
 func TestReconcileHedgeLegResyncsDrift(t *testing.T) {
 	sc := hedgeTestConfig("a", "ETH", "BTC")
 	ss := hedgeTestState("a")
-	ss.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 0, IsHedge: true, HedgePrimarySymbol: "ETH", OwnerStrategyID: "a"}
+	ss.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 0, IsHedge: true, HedgePrimarySymbol: "ETH", HedgeCoveredPrimaryQty: 4, OwnerStrategyID: "a"}
 	onChain := []HLPosition{{Coin: "BTC", Size: -0.08, EntryPrice: 50100, Leverage: 2}}
 	resolve := func(coin string, oid int64, qty float64) (HLFillLookup, bool) { return HLFillLookup{}, false }
 	if !reconcileHedgeLegForStrategy(sc, ss, onChain, resolve, hedgeSilentLogger("a")) {
@@ -441,11 +441,13 @@ func TestReconcileHedgeLegResyncsDrift(t *testing.T) {
 	if pos.Quantity != 0.08 || pos.Side != "short" || pos.AvgCost != 50100 || pos.Multiplier != 1 {
 		t.Fatalf("resynced pos = %+v", pos)
 	}
-	// A qty resync invalidates the covered watermark — it must zero so the
-	// next hedge_sync ADOPTS the current primary quantity instead of
-	// re-deriving deltas against the pre-drift baseline.
-	if pos.HedgeCoveredPrimaryQty != 0 {
-		t.Fatalf("covered watermark not reset on drift resync: %g", pos.HedgeCoveredPrimaryQty)
+	// A qty resync rescales the covered watermark proportionally (review
+	// finding on #1333): 4 covered by 0.10 → 0.08 on-chain ⇒ covers 3.2.
+	// Zeroing (adopt) would mark the shrunken hedge as FULL coverage and
+	// leave the position silently under-hedged; rescaling re-triggers the
+	// shortfall add while still absorbing lost-add upward drift.
+	if math.Abs(pos.HedgeCoveredPrimaryQty-3.2) > 1e-9 {
+		t.Fatalf("covered watermark = %g after drift resync, want proportional 3.2", pos.HedgeCoveredPrimaryQty)
 	}
 }
 

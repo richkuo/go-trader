@@ -344,3 +344,106 @@ func TestHedgeSyncSkipsNonHedgeAndPaperStrategies(t *testing.T) {
 		t.Fatalf("paper strategy produced hedge orders: %v %v", f.execCalls, f.closeCalls)
 	}
 }
+
+// Review finding 1 (#1333): downward on-chain hedge drift (partial ADL /
+// liquidation / manual reduction while the primary is unchanged) must
+// re-trigger an add that restores coverage — never be adopted as "fully
+// covering" and leave the position silently under-hedged.
+func TestHedgeSyncDownwardDriftReAddsShortfall(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(4, true)
+	ss := state.Strategies["a"]
+	// Reconcile observes the hedge shrunk on-chain 0.10 → 0.08.
+	resolve := func(coin string, oid int64, qty float64) (HLFillLookup, bool) { return HLFillLookup{}, false }
+	if !reconcileHedgeLegForStrategy(sc, ss, []HLPosition{{Coin: "BTC", Size: -0.08, EntryPrice: 50000, Leverage: 2}}, resolve, hedgeSilentLogger("a")) {
+		t.Fatal("expected drift resync")
+	}
+	// Covered must rescale proportionally (4 × 0.08/0.10 = 3.2), so the next
+	// sync re-adds the uncovered 0.8 ETH worth: 0.8×2500×0.5÷50000 = 0.02 BTC.
+	f := &fakeHedgeDeps{}
+	trades := runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 4}, {Coin: "BTC", Size: -0.08}}, true, f)
+	if trades != 1 || len(f.execCalls) != 1 {
+		t.Fatalf("trades=%d exec=%+v, want one re-add", trades, f.execCalls)
+	}
+	if f.execCalls[0].Side != "sell" || math.Abs(f.execCalls[0].Size-0.02) > 1e-9 {
+		t.Fatalf("re-add order = %+v, want sell 0.02 BTC", f.execCalls[0])
+	}
+	pos := ss.Positions["BTC"]
+	if pos == nil || math.Abs(pos.Quantity-0.10) > 1e-9 || math.Abs(pos.HedgeCoveredPrimaryQty-4) > 1e-9 {
+		t.Fatalf("hedge after re-add = %+v, want qty 0.10 covering 4", pos)
+	}
+}
+
+// Review finding 1 must-survive (b): the upward lost-add drift (crash between
+// an add fill and its booking) still must not double-place the add after the
+// proportional rescale.
+func TestHedgeSyncUpwardDriftNoDoubleAdd(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(4, true)
+	ss := state.Strategies["a"]
+	// Primary scale-in booked (4 → 6) but the matching hedge add fill was
+	// lost: covered is still 4, chain shows the add (0.10 → 0.15).
+	ss.Positions["ETH"].Quantity = 6
+	resolve := func(coin string, oid int64, qty float64) (HLFillLookup, bool) { return HLFillLookup{}, false }
+	if !reconcileHedgeLegForStrategy(sc, ss, []HLPosition{{Coin: "BTC", Size: -0.15, EntryPrice: 50000, Leverage: 2}}, resolve, hedgeSilentLogger("a")) {
+		t.Fatal("expected drift resync")
+	}
+	// covered rescales 4 × 0.15/0.10 = 6 = primary → converged, no orders.
+	f := &fakeHedgeDeps{}
+	if n := runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 6}, {Coin: "BTC", Size: -0.15}}, true, f); n != 0 {
+		t.Fatalf("double-placed after lost-add resync: exec=%+v close=%+v", f.execCalls, f.closeCalls)
+	}
+}
+
+// Review finding 2 (#1333): a flip whose stale-hedge close FAILS leaves the
+// hedge on the SAME side as the flipped primary (2× directional exposure, no
+// stop) — the engine must de-risk the primary reduce-only, not passively
+// retry, and must not mislabel the state as a benign over-hedge.
+func TestHedgeSyncFlipCloseFailureDeRisksPrimary(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(4, true)
+	ss := state.Strategies["a"]
+	ss.Positions["ETH"].Side = "short" // primary flipped; stale hedge is also short
+	f := &fakeHedgeDeps{closeErr: map[string]error{"BTC": fmt.Errorf("api down")}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: -4}, {Coin: "BTC", Size: -0.1}}, true, f)
+	// The failed BTC close, then the fail-closed ETH primary close.
+	if len(f.closeCalls) != 2 || f.closeCalls[0].Coin != "BTC" || f.closeCalls[1].Coin != "ETH" {
+		t.Fatalf("close calls = %+v, want failed BTC close then ETH de-risk", f.closeCalls)
+	}
+	if f.closeCalls[1].Partial == nil || math.Abs(*f.closeCalls[1].Partial-4) > 1e-9 {
+		t.Fatalf("primary de-risk close = %+v, want sized 4 ETH", f.closeCalls[1])
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("primary not de-risked after flip-close failure")
+	}
+	joined := strings.Join(f.alerts, "\n")
+	if strings.Contains(joined, "over-hedged") {
+		t.Fatalf("same-side residual mislabeled as over-hedged: %v", f.alerts)
+	}
+	if !strings.Contains(joined, "SAME side") {
+		t.Fatalf("alert must name the same-side 2x exposure: %v", f.alerts)
+	}
+	// Exposure must not compound on later cycles: primary is flat, so the
+	// next pass just retries the stale-hedge close.
+	f2 := &fakeHedgeDeps{closeErr: map[string]error{"BTC": fmt.Errorf("api down")}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "BTC", Size: -0.1}}, true, f2)
+	if len(f2.execCalls) != 0 || len(f2.closeCalls) != 1 || f2.closeCalls[0].Coin != "BTC" {
+		t.Fatalf("follow-up cycle = exec %+v close %+v, want only the hedge-close retry", f2.execCalls, f2.closeCalls)
+	}
+}
+
+// Review finding 2 must-survive (c): flip where the stale-hedge close
+// succeeds but the reopen fails → the existing full-primary fail-close path.
+func TestHedgeSyncFlipReopenFailureClosesPrimary(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(4, true)
+	ss := state.Strategies["a"]
+	ss.Positions["ETH"].Side = "short"
+	f := &fakeHedgeDeps{
+		execErr:   fmt.Errorf("reopen rejected"),
+		closeFill: map[string]*HyperliquidCloseFill{"BTC": {AvgPx: 50000, TotalSz: 0.1, OID: 5005, Fee: 0.4}},
+	}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: -4}, {Coin: "BTC", Size: -0.1}}, true, f)
+	if _, open := ss.Positions["BTC"]; open {
+		t.Fatal("stale hedge not closed on flip")
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("primary not fail-closed when the flip reopen failed")
+	}
+}

@@ -204,7 +204,20 @@ func syncHedgeLegForStrategy(sc StrategyConfig, ss *StrategyState, mu *sync.RWMu
 			}
 			result, err := deps.closer(hcoin, partial, nil)
 			if err != nil {
-				hedgeAlert(deps, logger, fmt.Sprintf("[CRITICAL] hedge-sync %s: reduce-only close of hedge leg %s (qty %.6f, full=%t) failed: %v — over-hedged until the next cycle retry", sc.ID, hcoin, order.Quantity, order.FullClose, err))
+				// The "retry next cycle" stance is safe ONLY while the
+				// residual hedge is INVERSE to the primary (a true over-
+				// hedge, which reduces net exposure). After a primary FLIP
+				// the stale hedge is the SAME side as the flipped primary —
+				// a failed close there holds 2× directional exposure with no
+				// stop on the hedge leg, so de-risk the primary reduce-only
+				// instead of passively retrying (review on #1333). Exposure
+				// cannot compound across cycles: once the primary is closed,
+				// later cycles only retry the stale-hedge close.
+				if prim != nil && hedge != nil && hedge.Side == prim.Side {
+					return trades + hedgeFailClosePrimary(sc, ss, mu, prim, 0, deps, logger,
+						fmt.Sprintf("stale hedge leg %s could not be closed after a primary flip (%v) — the residual hedge is the SAME side as the flipped primary (2x directional exposure, no hedge stop)", hcoin, err))
+				}
+				hedgeAlert(deps, logger, fmt.Sprintf("[CRITICAL] hedge-sync %s: reduce-only close of hedge leg %s (qty %.6f, full=%t) failed: %v — residual hedge stays inverse to the primary (over-hedged, net exposure reduced) until the next cycle retry", sc.ID, hcoin, order.Quantity, order.FullClose, err))
 				return trades
 			}
 			if result == nil || result.Close == nil || result.Close.AlreadyFlat || result.Close.Fill == nil {
