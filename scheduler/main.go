@@ -1435,6 +1435,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLStrategies:      state.Strategies,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -2359,9 +2360,18 @@ func main() {
 									}
 								}
 							}
-							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON)
-								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 {
+								if hlPosQty > 0 {
+									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON)
+									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
+								}
+								if hedgeEnabled(sc) {
+									if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu); hedgeErr != nil {
+										logger.Error("[hedge] sync failed: %v", hedgeErr)
+									} else if hedgeDetail != "" {
+										detail = hedgeDetail
+									}
+								}
 							}
 							// #873 scale-in: a same-direction signal on an open HL
 							// perps position ADDS size when allow_scale_in is
@@ -2438,6 +2448,13 @@ func main() {
 								// for the scale-in branch and when no tier tightened.
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
 								if execResult != nil && trades > 0 {
+									if hedgeEnabled(sc) {
+										if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu); hedgeErr != nil {
+											logger.Error("[hedge] sync failed: %v", hedgeErr)
+										} else if hedgeDetail != "" {
+											detail = hedgeDetail
+										}
+									}
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									// #873/#882: for a trailing-SL owner the post-trade sync

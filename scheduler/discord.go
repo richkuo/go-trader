@@ -1117,6 +1117,9 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
 		extras := ""
+		if pos.IsHedge {
+			extras += fmt.Sprintf(" | HEDGE for %s", pos.HedgePrimarySymbol)
+		}
 		if name := closeStrategySummaryName(sc); name != "" {
 			extras += fmt.Sprintf(" | close: %s", name)
 		}
