@@ -322,9 +322,12 @@ M1 protocol table (default shortlist): baseline OOS PASS (held-out 0/3),
 judged-OOS crash-window failure of every non-baseline candidate is intact, so
 no promotion guidance changes.
 
-Continuous audit window — this study contains the one candidate in the #1294
-sweep where #1271 actually bites, `trail_atr_3.0` (a real engine-tracked
-trailing stop):
+Two shortlist candidates arm engine-tracked stops and are therefore
+#1271-reached: `trail_atr_3.0` (bare trailing stop) and `tp_tight_trail3`
+(tiered TP + `trailing_stop_atr_mult` 3.0, the analog of squeeze_983's
+`tp_runner_trail3`). Both have mode-different numbers; `baseline` and
+`tp_tight` (evaluator ladders only) reproduce byte-identically across the
+mode pair. Continuous audit window:
 
 | run | metric | documented (2026-07-05) | `bar_close` re-run | `ohlc_walk` re-run | attribution |
 |---|---|---:|---:|---:|---|
@@ -336,7 +339,12 @@ The `trail_atr_3.0` mode-pair isolates #1271 cleanly: the intra-bar walk
 converts stop touches into same-bar trigger-price exits (#T 371 → 412), trims
 the worst DD (-50.13% → -47.50%) and gives back return/Sharpe — the expected
 "strictly more conservative for tight stops" direction. It stays a deep M1
-FAIL either way. The #1243 finding that `tp_tight`'s documented continuous
+FAIL either way. `tp_tight_trail3`'s mode pair (M1 pooled windows, Sharpe /
+DDadj): IS +0.09 / +0.70 under `bar_close` → **-0.39 / +0.58** under
+`ohlc_walk`; OOS -1.11 / -0.62 → -0.98 / -0.58. Its pooled-IS window label
+flips PASS → FAIL under the intra-bar walk, but the protocol verdict is
+unchanged in both modes (judged-OOS FAIL, held-out 0/3, matching the
+documented table). The #1243 finding that `tp_tight`'s documented continuous
 collapse was refuted stands (it is intrabar-unreached; only fees moved it).
 
 ---
