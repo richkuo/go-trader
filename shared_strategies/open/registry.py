@@ -1533,7 +1533,7 @@ def mean_reversion_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 @register(
     "rsi_bb_combo",
-    "RSI+BB Combo — Bollinger Band mean reversion confirmed by RSI extremes. No inline trend filter BY DESIGN — run behind the composite ranging regime gate (init wires it by default) or it fades trends. NOTE: default params LOSE on BTC 1h (-47% gated w/ tiered TP + 2xATR SL); BTC 4h gated is the shape that showed edge (+27%, PF 1.42, MaxDD -16%, see PR 1330) — needs M1 + gross_edge_noise validation before promotion (#1329)",
+    "RSI+BB Combo — Bollinger Band mean reversion confirmed by RSI extremes. No inline trend filter BY DESIGN — run behind the composite ranging regime gate (init wires it by default) or it fades trends. NOTE: default params LOSE on BTC 1h (-47% gated w/ tiered TP + 2xATR SL); BTC 4h gated showed edge (+27%, PF 1.42, MaxDD -16%) but the strategy FAILED M1 incumbent-relative validation in both plain and gated shapes — mean_reversion_pro dominates head-to-head (docs/research/1329-rsi-bb-combo-m1.md); NOT a promotion candidate, tune per-market before any use",
     {
         "bb_period": 20, "bb_std": 2.0,
         "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
