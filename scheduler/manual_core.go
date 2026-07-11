@@ -680,7 +680,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	if !in.RecordOnly && entryATR == 0 {
 		needsATRProtection := effectiveATRMult > 0 || strategyUsesTieredTPATRClose(sc)
 		if needsATRProtection {
-			fetched, fetchErr, fetchedOK := fetchManualEntryATR(sc)
+			fetched, fetchErr, fetchedOK := fetchManualEntryATR(sc, cfg)
 			if fetchedOK {
 				if resolvedFillPrice > 0 && fetched > 0.5*resolvedFillPrice {
 					fetchErr = fmt.Sprintf("fetched ATR=%.6f exceeds 50%% of fill price %.4f", fetched, resolvedFillPrice)
@@ -760,6 +760,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		StopLossOID:                     stopLossOID,
 		StopLossTriggerPx:               stopLossTriggerPx,
 		EntryATR:                        entryATR,
+		ATRMethod:                       resolveATRMethod(sc, cfg),
 		TPOIDs:                          tpOIDs,
 		RatchetFallbackNormalizePending: ratchetFallbackNormalizePending && stopLossOID > 0 && stopLossTriggerPx > 0,
 		CreatedAt:                       time.Now().UTC(),

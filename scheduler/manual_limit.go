@@ -417,10 +417,10 @@ func limitOrderFullyFilled(cumFilled, orderSize float64) bool {
 // be many hours/days before the fill) with the leverage-aware fallback. Mirrors
 // the market-open ATR resolution in runManualOpen. Spawns Python, so it must run
 // outside the state lock.
-func resolveLimitFillEntryATR(sc StrategyConfig, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
+func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
 	entryATR := rowATR
 	if entryATR == 0 && (effectiveManualSLATRMult(sc) > 0 || strategyUsesTieredTPATRClose(sc)) {
-		fetched, fetchErr, ok := fetchManualEntryATR(sc)
+		fetched, fetchErr, ok := fetchManualEntryATR(sc, cfg)
 		if ok && !(avgPx > 0 && fetched > 0.5*avgPx) {
 			entryATR = fetched
 		} else {
@@ -465,7 +465,10 @@ func effectiveManualSLATRMult(sc StrategyConfig) float64 {
 // newly-filled delta. MUST be called with the state write lock held. Returns the
 // number of trades booked (0 or 1). The watermark advance + protection sync are
 // the caller's responsibility (they happen outside the lock).
-func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOrder, cumFilled, avgPx, cumFee, entryATR float64, now time.Time) (int, error) {
+// atrMethod is the resolved atr_method (#1277) at fill-adoption time — the same
+// moment entryATR is fetched — frozen on the position at first fill so
+// checkATRMethodDriftAtStartup sees limit-opened manual positions too.
+func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOrder, cumFilled, avgPx, cumFee, entryATR float64, atrMethod string, now time.Time) (int, error) {
 	ss := state.Strategies[o.StrategyID]
 	if ss == nil {
 		return 0, fmt.Errorf("strategy state for %q not found", o.StrategyID)
@@ -491,6 +494,7 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 			Leverage:        sc.Leverage,
 			OwnerStrategyID: o.StrategyID,
 			OpenedAt:        now,
+			ATRMethodAtOpen: atrMethod,
 		}
 		pos.TradePositionID = newTradePositionID(o.StrategyID, o.Symbol, now)
 		ss.Positions[o.Symbol] = pos
@@ -661,10 +665,10 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				mu.RUnlock()
 			}
 			if resolveATR {
-				entryATR = resolveLimitFillEntryATR(sc, o.EntryATR, avgPx, notifier)
+				entryATR = resolveLimitFillEntryATR(sc, cfg, o.EntryATR, avgPx, notifier)
 			}
 			mu.Lock()
-			tradesBooked, applyErr := applyLimitFillProgress(state, sc, o, st.FilledSize, avgPx, st.Fee, entryATR, now)
+			tradesBooked, applyErr := applyLimitFillProgress(state, sc, o, st.FilledSize, avgPx, st.Fee, entryATR, resolveATRMethod(sc, cfg), now)
 			mu.Unlock()
 			if applyErr != nil {
 				warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s %s: %v", o.StrategyID, o.Symbol, applyErr))

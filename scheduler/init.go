@@ -392,6 +392,7 @@ type InitOptions struct {
 	CapitalPct              float64 `json:"capitalPct,omitempty"` // 0-1; global capital_pct applied to all strategies
 	HTFFilter               bool    // higher-timeframe trend filter for all strategies
 	DisableCircuitBreaker   bool    `json:"disableCircuitBreaker,omitempty"` // #1048 — when true, stamp circuit_breaker:false on every generated non-manual strategy (fleet-wide opt-out of the per-strategy circuit breaker). Default false keeps the safe default (CB on). Exposed for the JSON-driven `init --json` path; the interactive wizard leaves it false (disabling an auto-protective halt at setup is a footgun — operators opt out per-strategy via config edit + SIGHUP instead).
+	ATRMethod               string  `json:"atrMethod,omitempty"`             // #1277 — top-level atr_method emitted into the generated config ("simple"|"wilder"; empty omits the field = simple). Exposed for the JSON-driven `init --json` path only; the interactive wizard leaves it unset (switching live stop-geometry math at setup is a footgun — operators opt in via config edit + restart/SIGHUP after reading the cutover notes).
 	// #1273 — optional circuit-breaker timing/threshold overrides stamped on
 	// every generated non-manual strategy. 0/omitted leaves the field nil so the
 	// historical hardcoded defaults apply (24h drawdown cooldown, 5-loss streak,
@@ -456,6 +457,7 @@ func generateConfig(opts InitOptions) *Config {
 			Channels:    opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
+		ATRMethod:  normalizeATRMethod(opts.ATRMethod), // #1277: "" omitted from JSON (= simple)
 	}
 
 	// Build asset name → exchange symbol map.
@@ -915,6 +917,12 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	// sizing leverage inherits it to preserve legacy order sizing.
 	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
 		opts.PerpsLeverage = 1
+	}
+	// #1277: validate the JSON-only atr_method surface before generateConfig
+	// stamps it — an invalid value must fail the init, not the first daemon load.
+	if !validATRMethodValue(opts.ATRMethod) {
+		fmt.Fprintf(os.Stderr, "Error: atrMethod must be %q or %q, got %q\n", ATRMethodSimple, ATRMethodWilder, opts.ATRMethod)
+		return 1
 	}
 	// #1268: risk-per-trade sizing is mutually exclusive with sizing_leverage;
 	// reject a contradictory --json payload here (mirrors validateRiskPerTradePct)

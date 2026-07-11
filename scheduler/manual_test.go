@@ -110,7 +110,7 @@ func TestApplyManualActionOpen(t *testing.T) {
 	}
 	defer func() { tradeRecorder = origRecorder }()
 
-	if err := applyManualAction(state, scByID, a); err != nil {
+	if err := applyManualAction(state, nil, scByID, a); err != nil {
 		t.Fatalf("applyManualAction open: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestApplyManualActionClose(t *testing.T) {
 		IsFullClose: true,
 		CreatedAt:   now,
 	}
-	if err := applyManualAction(state, scByID, a); err != nil {
+	if err := applyManualAction(state, nil, scByID, a); err != nil {
 		t.Fatalf("applyManualAction close: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestApplyManualActionPartialClose(t *testing.T) {
 		RealizedPnL: 40,
 		CreatedAt:   time.Now().UTC(),
 	}
-	if err := applyManualAction(state, scByID, a); err != nil {
+	if err := applyManualAction(state, nil, scByID, a); err != nil {
 		t.Fatalf("partial close: %v", err)
 	}
 
@@ -336,7 +336,7 @@ func TestApplyManualActionCloseRejectsOwnerMismatch(t *testing.T) {
 	}
 	defer func() { tradeRecorder = origRecorder }()
 
-	err := applyManualAction(state, scByID, PendingManualAction{
+	err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:  "hl-manual-eth-live",
 		Action:      "close",
 		Symbol:      "ETH",
@@ -398,7 +398,7 @@ func TestApplyManualAction99PercentPartialNotCollapsedToFull(t *testing.T) {
 		IsFullClose: false, // explicit partial-close intent
 		CreatedAt:   time.Now().UTC(),
 	}
-	if err := applyManualAction(state, scByID, a); err != nil {
+	if err := applyManualAction(state, nil, scByID, a); err != nil {
 		t.Fatalf("99%% partial close: %v", err)
 	}
 
@@ -594,7 +594,7 @@ func TestApplyManualAction_PerpsForceCloseFull(t *testing.T) {
 		},
 	}
 
-	if err := applyManualAction(state, scByID, PendingManualAction{
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:      stratID,
 		Action:          "close",
 		Symbol:          "ETH",
@@ -669,7 +669,7 @@ func TestApplyManualAction_PerpsForceCloseLossUpdatesRiskState(t *testing.T) {
 		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"tcross", "ETH", "1h", "--mode=live"}},
 	}
 
-	if err := applyManualAction(state, scByID, PendingManualAction{
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:  stratID,
 		Action:      "close",
 		Symbol:      "ETH",
@@ -721,7 +721,7 @@ func TestApplyManualAction_PerpsForceClosePartialUpdatesDailyPnL(t *testing.T) {
 		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"tcross", "ETH", "1h", "--mode=live"}},
 	}
 
-	if err := applyManualAction(state, scByID, PendingManualAction{
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:  stratID,
 		Action:      "close",
 		Symbol:      "ETH",
@@ -778,7 +778,7 @@ func TestApplyManualAction_ManualCloseDoesNotUpdateRiskState(t *testing.T) {
 		stratID: {ID: stratID, Type: "manual", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h", "--mode=live"}},
 	}
 
-	if err := applyManualAction(state, scByID, PendingManualAction{
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:  stratID,
 		Action:      "close",
 		Symbol:      "ETH",
@@ -834,7 +834,7 @@ func TestApplyManualAction_PerpsPartialForceCloseClearsCanceledProtection(t *tes
 		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"tcross", "ETH", "1h", "--mode=live"}},
 	}
 
-	if err := applyManualAction(state, scByID, PendingManualAction{
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:  stratID,
 		Action:      "close",
 		Symbol:      "ETH",
@@ -917,7 +917,7 @@ func TestApplyManualAction_PerpsForceCloseDuplicateOIDSkipsPartial(t *testing.T)
 		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"tcross", "ETH", "1h", "--mode=live"}},
 	}
 
-	if err := applyManualAction(state, scByID, PendingManualAction{
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:      stratID,
 		Action:          "close",
 		Symbol:          "ETH",
@@ -977,7 +977,7 @@ func TestApplyManualAction_PerpsForceCloseDuplicateOIDSkipsMissingPosition(t *te
 		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"tcross", "ETH", "1h", "--mode=live"}},
 	}
 
-	if err := applyManualAction(state, scByID, PendingManualAction{
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:      stratID,
 		Action:          "close",
 		Symbol:          "ETH",
@@ -1018,7 +1018,7 @@ func TestApplyManualAction_PerpsForceCloseRejectsPaper(t *testing.T) {
 			Args:     []string{"tcross", "ETH", "1h", "--mode=paper"},
 		},
 	}
-	err := applyManualAction(state, scByID, PendingManualAction{
+	err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID: stratID, Action: "close", Symbol: "ETH", Quantity: 0.4, FillPrice: 2100, IsFullClose: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "live Hyperliquid perps") {

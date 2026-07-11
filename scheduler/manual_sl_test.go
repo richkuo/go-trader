@@ -247,7 +247,7 @@ func TestApplyManualActionUpdateSL(t *testing.T) {
 	}
 	defer func() { tradeRecorder = origRecorder }()
 
-	err := applyManualAction(state, scByID, PendingManualAction{
+	err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:        "hl-manual-eth-live",
 		Action:            "update-sl",
 		Symbol:            "ETH",
@@ -275,7 +275,7 @@ func TestApplyManualActionUpdateSL(t *testing.T) {
 func TestApplyManualActionCancelSL(t *testing.T) {
 	state, scByID := manualSLTestState(1001, 1900)
 
-	err := applyManualAction(state, scByID, PendingManualAction{
+	err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID: "hl-manual-eth-live",
 		Action:     "cancel-sl",
 		Symbol:     "ETH",
@@ -297,7 +297,7 @@ func TestApplyManualActionUpdateSLRejectsOwnerMismatch(t *testing.T) {
 	state, scByID := manualSLTestState(1001, 1900)
 	state.Strategies["hl-manual-eth-live"].Positions["ETH"].OwnerStrategyID = "hl-other-eth-live"
 
-	err := applyManualAction(state, scByID, PendingManualAction{
+	err := applyManualAction(state, nil, scByID, PendingManualAction{
 		StrategyID:        "hl-manual-eth-live",
 		Action:            "update-sl",
 		Symbol:            "ETH",
@@ -319,7 +319,7 @@ func TestApplyManualActionSLNoPosition(t *testing.T) {
 	delete(state.Strategies["hl-manual-eth-live"].Positions, "ETH")
 
 	for _, action := range []string{"update-sl", "cancel-sl"} {
-		err := applyManualAction(state, scByID, PendingManualAction{
+		err := applyManualAction(state, nil, scByID, PendingManualAction{
 			StrategyID: "hl-manual-eth-live",
 			Action:     action,
 			Symbol:     "ETH",

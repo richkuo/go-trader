@@ -118,3 +118,61 @@ def test_latest_atr_strict_positive():
         "volume": [1.0] * n,
     })
     assert latest_atr(df) == 0.0
+
+
+# --- #1277: method threading --------------------------------------------------
+
+
+def _make_big_ohlcv(n: int = 60, seed: int = 7) -> pd.DataFrame:
+    """BTC-scale frame whose ATR exceeds 100, exercising the #887 rounding."""
+    rng = np.random.default_rng(seed)
+    close = 50_000 + np.cumsum(rng.normal(0, 300, n))
+    high = close + rng.uniform(50, 400, n)
+    low = close - rng.uniform(50, 400, n)
+    return pd.DataFrame({"open": close, "high": high, "low": low, "close": close, "volume": 1.0})
+
+
+def test_ensure_atr_indicator_threads_method():
+    big = _make_big_ohlcv()
+    simple = ensure_atr_indicator(big.copy(), period=14)["atr"].dropna()
+    wilder = ensure_atr_indicator(big.copy(), period=14, method="wilder")["atr"].dropna()
+    # Simple path integer-rounds >=100 (#887); wilder never does.
+    assert (simple == simple.round(0)).all()
+    assert (wilder != wilder.round(0)).any()
+
+
+def test_ensure_atr_indicator_preserves_strategy_atr_regardless_of_method():
+    # A strategy-emitted `atr` column always wins — the #1277 cutover must
+    # never re-base it (the cutover-roster invariant).
+    df = _make_ohlcv(30)
+    df["atr"] = 42.0
+    out = ensure_atr_indicator(df, period=14, method="wilder")
+    assert (out["atr"] == 42.0).all()
+
+
+def test_latest_atr_rejects_unknown_method():
+    df = _make_ohlcv(30)
+    try:
+        latest_atr(df, method="rma")
+    except ValueError as exc:
+        assert "atr_method" in str(exc)
+    else:
+        raise AssertionError("unknown method must fail loud")
+
+
+def test_regime_classifier_pinned_to_simple():
+    """#1277: regime atr_pct must stay on the frozen simple math even when a
+    caller would resolve wilder for stop geometry — composite thresholds and
+    the #1085 directional certifications were calibrated on simple."""
+    spec_r = importlib.util.spec_from_file_location(
+        "_t_regime_1277", pathlib.Path(__file__).parent / "regime.py"
+    )
+    regime_mod = importlib.util.module_from_spec(spec_r)
+    spec_r.loader.exec_module(regime_mod)
+    big = _make_big_ohlcv()
+    got = regime_mod._atr_at_end(big, 14)
+    want = float(standard_atr(big, 14, method="simple").iloc[-1])
+    assert got == want
+    # Sanity: the wilder value differs on this frame, so the equality above
+    # genuinely proves the pin (not a frame where both methods coincide).
+    assert got != float(standard_atr(big, 14, method="wilder").iloc[-1])

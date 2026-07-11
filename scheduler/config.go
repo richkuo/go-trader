@@ -206,6 +206,7 @@ type Config struct {
 	SummaryFrequency       map[string]string          `json:"summary_frequency,omitempty"`          // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every channel run; spot: hourly)
 	RiskFreeRate           *float64                   `json:"risk_free_rate,omitempty"`             // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
 	DefaultStopLossATRMult *float64                   `json:"default_stop_loss_atr_mult,omitempty"` // #605 — top-level default applied to HL perps/manual strategies that omit all stop_loss_* / trailing_stop_* fields. Nil/missing falls back to 1.0; explicit values let operators tune the ATR stop without recompiling.
+	ATRMethod              string                     `json:"atr_method,omitempty"`                 // #1277 — global default ATR smoothing method for the standard_atr surface (EntryATR stamping, live market_ctx["atr"], manual fetch-atr, tuner simulate): "simple" (default; frozen legacy rolling mean with the #887 >=100 integer rounding) or "wilder" (published Wilder RMA, never rounded). Per-strategy atr_method overrides. Strategy-internal indicator math is NOT config-driven (see docs/research/1277-wilder-atr-cutover.md). Read via resolveATRMethod(sc, cfg), never directly. Hot-reload: blocked while the affected strategy has open positions (EntryATR/frozen stop geometry must not be re-based mid-position); applies when flat.
 	NotifyTPSLFills        *bool                      `json:"notify_tp_sl_fills,omitempty"`         // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
 	NotifyRatchetTriggers  *bool                      `json:"notify_ratchet_triggers,omitempty"`    // #1110 — owner DM when a trailing_tp_ratchet* tier clears and tightens the trail. Nil/missing → enabled; explicit false disables.
 	AlertThrottleInterval  string                     `json:"alert_throttle_interval,omitempty"`    // #1266 — fleet-wide re-alert back-off for throttled operator alerts. Go duration ("6h", "30m"); empty → 6h.
@@ -635,6 +636,7 @@ type StrategyConfig struct {
 	Paused                      bool                     `json:"paused,omitempty"`                          // #1150 — per-strategy pause. The strategy stays in dueStrategies and runs its full cycle (manage-only, mirroring the #1046 latched-CB shape), but position-INCREASING signals are forced to hold via pausedBlocksSignal: fresh opens, scale-in adds, and bidirectional flips. Position-REDUCING actions pass through — close-registry actions (closeFraction>0) and pure-close directional exits — so an open position rides its natural exit; trailing SL, ratchet, protection sync, and paper SL/TP simulation all keep running on the Signal==0 manage path. Hot-reloadable via SIGHUP unconditionally, including while a position is open (pausing never strands protection). No effect on type=manual (no open signal to suppress; the manual dispatch is pure management).
 	IntervalSeconds             int                      `json:"interval_seconds,omitempty"`                // per-strategy override (0 = use global)
 	HTFFilter                   bool                     `json:"htf_filter,omitempty"`                      // higher-timeframe trend filter
+	ATRMethod                   string                   `json:"atr_method,omitempty"`                      // #1277 — per-strategy override of the global atr_method ("simple"|"wilder"; empty inherits). Governs the standard_atr surface only (EntryATR stamping when the open strategy emits no atr column, live market_ctx["atr"], manual fetch-atr); strategy-emitted atr columns and regime classification (pinned simple) are untouched. Rejected on type=options (no ATR surface). Read via resolveATRMethod(sc, cfg), never directly. Hot-reload blocked while open.
 	InvertSignal                bool                     `json:"invert_signal,omitempty"`                   // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.
 	AllowShorts                 bool                     `json:"allow_shorts,omitempty"`                    // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).
 	Direction                   string                   `json:"direction,omitempty"`                       // perps only: "long" (default; signal=1 opens, signal=-1 closes long), "short" (signal=-1 opens, signal=1 closes short), "both" (bidirectional). Empty falls back to AllowShorts (legacy). v14 migration converts allow_shorts→direction. (#656)
@@ -1597,6 +1599,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// regime vocabulary.
 	errs = append(errs, validateUserDefaults(cfg.UserDefaults)...)
 
+	// #1277: global ATR smoothing method vocabulary. Empty = "simple".
+	if !validATRMethodValue(cfg.ATRMethod) {
+		errs = append(errs, fmt.Sprintf("atr_method must be %q or %q, got %q", ATRMethodSimple, ATRMethodWilder, cfg.ATRMethod))
+	}
+
 	for i, sc := range cfg.Strategies {
 		prefix := fmt.Sprintf("strategy[%d]", i)
 
@@ -1633,6 +1640,14 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		}
 		// #1137: LLM entry-analysis block bounds (nil = feature off).
 		errs = append(errs, validateLLMEntryAnalysis(prefix, sc)...)
+		// #1277: per-strategy ATR smoothing method. Empty inherits the global
+		// value. Rejected on options strategies — check_options.py has no
+		// standard_atr surface, so the field would be silently inert.
+		if !validATRMethodValue(sc.ATRMethod) {
+			errs = append(errs, fmt.Sprintf("%s: atr_method must be %q or %q, got %q", prefix, ATRMethodSimple, ATRMethodWilder, sc.ATRMethod))
+		} else if sc.Type == "options" && normalizeATRMethod(sc.ATRMethod) != "" {
+			errs = append(errs, fmt.Sprintf("%s: atr_method is not supported on options strategies (no ATR surface); remove it", prefix))
+		}
 		// #842: a strategy has at most one close. A legacy close_strategies
 		// array with >1 entry no longer composes via max close_fraction —
 		// reject it so the operator picks one profit-taking close and moves any

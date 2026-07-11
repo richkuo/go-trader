@@ -1,5 +1,5 @@
 {
-  "config_version": 16,
+  "config_version": 17,
   "interval_seconds": 300,
   "db_file": "scheduler/state.db",
   "status_port": 8099,

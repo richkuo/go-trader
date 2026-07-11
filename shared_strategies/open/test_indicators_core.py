@@ -382,3 +382,103 @@ def test_optimizer_treats_constraint_violation_as_skippable():
     finally:
         sys.path.remove(os.path.join(_ROOT, "backtest"))
     assert ValueError in optimizer._EXPECTED_FOLD_ERRORS
+
+
+# --- #1277: Wilder RMA method -------------------------------------------------
+
+
+def _ref_wilder_atr(df, period):
+    """Hand-computed Wilder RMA recursion, independent of pandas ewm.
+
+    y[0] = tr[0]; y[t] = y[t-1] + (tr[t] - y[t-1]) / period — the exact
+    recurrence ewm(alpha=1/period, adjust=False) implements. Warmup rows
+    (< period-1 TR observations) are NaN, mirroring min_periods=period.
+    """
+    tr = _ref_unrounded_atr(df, 1)  # rolling(1).mean() == raw true range
+    out = []
+    prev = None
+    for v in tr:
+        prev = v if prev is None else prev + (v - prev) / period
+        out.append(prev)
+    series = pd.Series(out, index=df.index)
+    series.iloc[: period - 1] = float("nan")
+    return series
+
+
+@pytest.mark.parametrize("scale", [1.0, 200.0])
+@pytest.mark.parametrize("period", [5, 14])
+def test_wilder_atr_matches_hand_computed_rma(scale, period):
+    df = _ohlcv(scale)
+    got = atr_sma(df, period, method="wilder")
+    ref = _ref_wilder_atr(df, period)
+    pd.testing.assert_series_equal(got, ref, check_exact=False, rtol=1e-12)
+
+
+def test_wilder_atr_never_integer_rounds():
+    # scale=200 puts ATR well above 100 — the simple path integer-rounds
+    # there (#887); wilder must return full precision regardless of
+    # round_large.
+    df = _ohlcv(200.0)
+    got = atr_sma(df, 14, method="wilder").dropna()
+    assert (got >= 100).any()
+    assert (got != got.round(0)).any(), "wilder output looks integer-rounded"
+    # round_large is a simple-path knob; it must not change wilder output.
+    got_flag_off = atr_sma(df, 14, method="wilder", round_large=False).dropna()
+    pd.testing.assert_series_equal(got, got_flag_off, check_exact=True)
+
+
+def test_wilder_atr_warmup_and_min_periods():
+    df = _ohlcv(1.0, n=40)
+    got = atr_sma(df, 14, method="wilder")
+    assert got.iloc[:13].isna().all()
+    assert not pd.isna(got.iloc[13])
+    # Explicit min_periods override is honored on the wilder path too.
+    early = atr_sma(df, 14, method="wilder", min_periods=1)
+    assert not pd.isna(early.iloc[0])
+
+
+def test_wilder_differs_from_simple():
+    # Regression guard that the method parameter actually switches the math —
+    # if a refactor silently ignored it, this fails.
+    df = _ohlcv(1.0)
+    simple = atr_sma(df, 14).dropna()
+    wilder = atr_sma(df, 14, method="wilder").dropna()
+    common = simple.index.intersection(wilder.index)
+    assert not simple.loc[common].equals(wilder.loc[common])
+
+
+def test_explicit_simple_is_byte_identical_to_default():
+    df = _ohlcv(200.0)
+    pd.testing.assert_series_equal(
+        atr_sma(df, 14, method="simple"), atr_sma(df, 14), check_exact=True
+    )
+
+
+def test_normalize_atr_method_vocabulary():
+    from indicators_core import normalize_atr_method
+    assert normalize_atr_method(None) == "simple"
+    assert normalize_atr_method("") == "simple"
+    assert normalize_atr_method(" Wilder ") == "wilder"
+    assert normalize_atr_method("SIMPLE") == "simple"
+    for bad in ("rma", "ema", "wilders"):
+        with pytest.raises(ValueError, match="atr_method"):
+            normalize_atr_method(bad)
+
+
+def test_unknown_method_fails_loud_at_choke_point():
+    df = _ohlcv(1.0)
+    with pytest.raises(ValueError, match="atr_method"):
+        atr_sma(df, 14, method="rma")
+
+
+def test_standard_atr_reexport_threads_wilder():
+    df = _ohlcv(200.0)
+    atr_mod = _load_by_path("_t_atr_1277", os.path.join(_ROOT, "shared_tools", "atr.py"))
+    pd.testing.assert_series_equal(
+        atr_mod.standard_atr(df, 14, method="wilder"),
+        atr_sma(df, 14, method="wilder"),
+        check_exact=True,
+    )
+    # latest_atr threads the method: on a >=100-ATR frame the simple value is
+    # integer-rounded and the wilder one is not, so they must differ.
+    assert atr_mod.latest_atr(df, method="wilder") != atr_mod.latest_atr(df)

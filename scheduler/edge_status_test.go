@@ -149,7 +149,7 @@ func TestEdgeStatusSummaryTagNeverHiddenByAck(t *testing.T) {
 		t.Errorf("clean strategy tag = %q, want empty", got)
 	}
 	// The startup summary line carries the tag (both raw and acknowledged).
-	line := formatStrategySummaryLine(dep, nil)
+	line := formatStrategySummaryLine(dep, nil, nil)
 	if !strings.Contains(line, "edge=deprecated_m5(ack)") {
 		t.Errorf("summary line missing edge tag: %s", line)
 	}

@@ -66,6 +66,7 @@ func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
 		"BUY",
 		100,
 		nil,
+		nil,
 		silentStrategyLogger("spot-test"),
 	)
 	if trades != 1 {

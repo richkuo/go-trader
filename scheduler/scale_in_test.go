@@ -203,7 +203,7 @@ func TestApplyManualActionAddBlendsAndRecords(t *testing.T) {
 		StrategyID: "hl-manual-eth", Action: "add", Symbol: "ETH", Side: "long",
 		Quantity: 1, FillPrice: 2200, FillFee: 1.5, CreatedAt: now,
 	}
-	if err := applyManualAction(state, scByID, add); err != nil {
+	if err := applyManualAction(state, nil, scByID, add); err != nil {
 		t.Fatalf("applyManualAction add: %v", err)
 	}
 	pos := ss.Positions["ETH"]
@@ -238,7 +238,7 @@ func TestApplyManualActionAddBlendsAndRecords(t *testing.T) {
 	// refuse when flat
 	flat := &StrategyState{ID: "hl-manual-eth", Type: "manual", Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}}
 	state2 := &AppState{Strategies: map[string]*StrategyState{"hl-manual-eth": flat}}
-	if err := applyManualAction(state2, scByID, add); err == nil {
+	if err := applyManualAction(state2, nil, scByID, add); err == nil {
 		t.Errorf("expected error adding to a flat strategy")
 	}
 }
