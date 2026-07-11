@@ -1716,6 +1716,84 @@ func TestPerpsMarginDrawdownInputs_ZeroConfigLeverageReturnsZero(t *testing.T) {
 	}
 }
 
+// #1159 (review on #1333): an IsHedge leg is deliberately inverse to its
+// primary, so the drawdown numerator must see the hedged pair's NET PnL, not
+// each leg's isolated loss — a correlated move that puts the hedge underwater
+// while the primary wins must not force-close a net-profitable pair.
+func TestPerpsMarginDrawdownInputs_HedgePairNetFlatNoLoss(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			// Primary long ETH +15%: PnL = 4 * (2875 - 2500) = +1500
+			"ETH": {Symbol: "ETH", Quantity: 4, AvgCost: 2500, Side: "long", Multiplier: 1, Leverage: 3},
+			// Inverse hedge short BTC underwater by the same amount:
+			// PnL = 0.1 * (50000 - 65000) = -1500 → net pair PnL = 0
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, Leverage: 2,
+				IsHedge: true, HedgePrimarySymbol: "ETH", HedgeCoveredPrimaryQty: 4},
+		},
+	}
+	prices := map[string]float64{"ETH": 2875, "BTC": 65000}
+	loss, margin := perpsMarginDrawdownInputs(s, 3, prices)
+	if loss > 1e-9 {
+		t.Errorf("net-flat hedged pair produced drawdown loss %.4f; want 0", loss)
+	}
+	// Denominator untouched: primary at configLeverage=3, hedge at its own 2.
+	wantMargin := 4*2875/3.0 + 0.1*65000/2.0
+	if math.Abs(margin-wantMargin) > 1e-6 {
+		t.Errorf("margin = %.4f; want %.4f", margin, wantMargin)
+	}
+}
+
+// Correlation break — BOTH legs of the hedged pair underwater — must count in
+// full. Bare exclusion of the hedge leg (instead of pair netting) would hide
+// the hedge's real loss here.
+func TestPerpsMarginDrawdownInputs_HedgePairBothLosingCountsNet(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			// Primary long ETH down: PnL = 4 * (2400 - 2500) = -400
+			"ETH": {Symbol: "ETH", Quantity: 4, AvgCost: 2500, Side: "long", Multiplier: 1, Leverage: 3},
+			// Hedge short BTC also down: PnL = 0.1 * (50000 - 53000) = -300
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, Leverage: 2,
+				IsHedge: true, HedgePrimarySymbol: "ETH", HedgeCoveredPrimaryQty: 4},
+		},
+	}
+	prices := map[string]float64{"ETH": 2400, "BTC": 53000}
+	loss, _ := perpsMarginDrawdownInputs(s, 3, prices)
+	if math.Abs(loss-700) > 1e-6 {
+		t.Errorf("both-losing hedged pair loss = %.4f; want 700 (400 + 300)", loss)
+	}
+}
+
+// A genuine primary drawdown partially offset by the hedge gain counts as the
+// NET loss (the offset is real money); an orphaned hedge leg with no primary
+// counts alone — it is a naked directional position at that point.
+func TestPerpsMarginDrawdownInputs_HedgePairNetLossAndOrphan(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			// Primary long ETH down: PnL = 4 * (2400 - 2500) = -400
+			"ETH": {Symbol: "ETH", Quantity: 4, AvgCost: 2500, Side: "long", Multiplier: 1, Leverage: 3},
+			// Hedge short BTC in profit: PnL = 0.1 * (50000 - 48500) = +150
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, Leverage: 2,
+				IsHedge: true, HedgePrimarySymbol: "ETH", HedgeCoveredPrimaryQty: 4},
+		},
+	}
+	loss, _ := perpsMarginDrawdownInputs(s, 3, map[string]float64{"ETH": 2400, "BTC": 48500})
+	if math.Abs(loss-250) > 1e-6 {
+		t.Errorf("net pair loss = %.4f; want 250 (400 primary - 150 hedge offset)", loss)
+	}
+
+	// Orphaned hedge (primary already closed): its loss counts in full.
+	orphan := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", Multiplier: 1, Leverage: 2,
+				IsHedge: true, HedgePrimarySymbol: "ETH", HedgeCoveredPrimaryQty: 4},
+		},
+	}
+	loss, _ = perpsMarginDrawdownInputs(orphan, 3, map[string]float64{"BTC": 53000})
+	if math.Abs(loss-300) > 1e-6 {
+		t.Errorf("orphaned hedge loss = %.4f; want 300", loss)
+	}
+}
+
 // #418: AggregatePerpsMarginInputs portfolio-kill-switch variant must also
 // source leverage from configs, not from pos.Leverage. Two strategies, one
 // with corrupted pos.Leverage from on-chain overwrite — the aggregate must

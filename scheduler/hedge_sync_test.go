@@ -447,3 +447,73 @@ func TestHedgeSyncFlipReopenFailureClosesPrimary(t *testing.T) {
 		t.Fatal("primary not fail-closed when the flip reopen failed")
 	}
 }
+
+// Review on #1333 (round 2): a PARTIALLY-filled hedge open must scale the
+// covered watermark by the actual fill ratio and alert — stamping the full
+// primary quantity would record coverage the leg doesn't have, and the next
+// cycle would see primary==covered and never re-add the shortfall (a silent,
+// permanent under-hedge that reconcile cannot repair).
+func TestHedgeSyncPartialOpenFillScalesCoveredAndReAdds(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(4, false)
+	// Requested open is 0.1 BTC (4 ETH x $2500 x ratio 0.5 / $50000); the
+	// exchange fills only half.
+	f := &fakeHedgeDeps{execFill: &HyperliquidFill{AvgPx: 50000, TotalSz: 0.05, OID: 1001, Fee: 0.5}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 4}}, true, f)
+	ss := state.Strategies["a"]
+	pos := ss.Positions["BTC"]
+	if pos == nil || math.Abs(pos.Quantity-0.05) > 1e-9 {
+		t.Fatalf("hedge leg = %+v", pos)
+	}
+	if math.Abs(pos.HedgeCoveredPrimaryQty-2) > 1e-9 {
+		t.Fatalf("covered = %g, want 2 (4 x 0.05/0.10 fill ratio)", pos.HedgeCoveredPrimaryQty)
+	}
+	underFillAlerted := false
+	for _, a := range f.alerts {
+		if strings.Contains(a, "under-filled") {
+			underFillAlerted = true
+		}
+	}
+	if !underFillAlerted {
+		t.Fatalf("partial open fill must alert; got %v", f.alerts)
+	}
+	// Next cycle re-adds the uncovered 2 ETH → a 0.05 BTC top-up.
+	f2 := &fakeHedgeDeps{}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 4}, {Coin: "BTC", Size: -0.05}}, true, f2)
+	if len(f2.execCalls) != 1 || f2.execCalls[0].Coin != "BTC" || math.Abs(f2.execCalls[0].Size-0.05) > 1e-9 {
+		t.Fatalf("top-up calls = %+v", f2.execCalls)
+	}
+	if math.Abs(pos.HedgeCoveredPrimaryQty-4) > 1e-9 || math.Abs(pos.Quantity-0.1) > 1e-9 {
+		t.Fatalf("after top-up: covered=%g qty=%g, want 4 / 0.1", pos.HedgeCoveredPrimaryQty, pos.Quantity)
+	}
+	// Fully converged: a third pass is a no-op (no churn regression).
+	f3 := &fakeHedgeDeps{}
+	if n := runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 4}, {Coin: "BTC", Size: -0.1}}, true, f3); n != 0 {
+		t.Fatalf("third pass placed orders: exec=%v close=%v", f3.execCalls, f3.closeCalls)
+	}
+}
+
+// Same invariant for a scale-in ADD: covered advances only by the filled
+// fraction of the delta, so the next cycle tops up the remainder.
+func TestHedgeSyncPartialAddFillScalesCovered(t *testing.T) {
+	// Primary grew 4 → 6 ETH with covered=4: the add for the 2-ETH delta
+	// requests 0.05 BTC; the exchange fills half of it.
+	sc, state, prices := hedgeSyncFixture(6, true)
+	f := &fakeHedgeDeps{execFill: &HyperliquidFill{AvgPx: 50000, TotalSz: 0.025, OID: 1002, Fee: 0.3}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 6}, {Coin: "BTC", Size: -0.1}}, true, f)
+	pos := state.Strategies["a"].Positions["BTC"]
+	if pos == nil || math.Abs(pos.Quantity-0.125) > 1e-9 {
+		t.Fatalf("hedge leg = %+v", pos)
+	}
+	if math.Abs(pos.HedgeCoveredPrimaryQty-5) > 1e-9 {
+		t.Fatalf("covered = %g, want 5 (4 + half of the 2-ETH delta)", pos.HedgeCoveredPrimaryQty)
+	}
+	underFillAlerted := false
+	for _, a := range f.alerts {
+		if strings.Contains(a, "under-filled") {
+			underFillAlerted = true
+		}
+	}
+	if !underFillAlerted {
+		t.Fatalf("partial add fill must alert; got %v", f.alerts)
+	}
+}

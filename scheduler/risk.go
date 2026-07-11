@@ -1356,6 +1356,21 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 	if configLeverage <= 0 {
 		return 0, 0
 	}
+	// #1159 (review on #1333): an IsHedge leg is deliberately inverse to its
+	// primary, so its isolated unrealized loss is not a drawdown — it loses
+	// exactly when the primary wins. The numerator sees the hedged pair's NET
+	// PnL instead of each leg's loss: a net-flat/profitable pair contributes
+	// nothing, while a correlation break where BOTH legs lose still counts in
+	// full (bare exclusion of the hedge leg would hide that). An orphaned
+	// hedge with no live primary nets against nothing, so its loss counts.
+	hedgedPrimaries := map[string]bool{}
+	for _, pos := range s.Positions {
+		if pos.IsHedge && pos.Multiplier > 0 && pos.HedgePrimarySymbol != "" {
+			hedgedPrimaries[pos.HedgePrimarySymbol] = true
+		}
+	}
+	var pairPnL float64
+	pairHasLegs := false
 	for sym, pos := range s.Positions {
 		if pos.Multiplier <= 0 {
 			continue
@@ -1387,9 +1402,17 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 		} else {
 			pnl = pos.Quantity * pos.Multiplier * (pos.AvgCost - price)
 		}
+		if pos.IsHedge || hedgedPrimaries[sym] {
+			pairPnL += pnl
+			pairHasLegs = true
+			continue
+		}
 		if pnl < 0 {
 			unrealizedLoss += -pnl
 		}
+	}
+	if pairHasLegs && pairPnL < 0 {
+		unrealizedLoss += -pairPnL
 	}
 	return unrealizedLoss, margin
 }

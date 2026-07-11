@@ -269,13 +269,30 @@ func syncHedgeLegForStrategy(sc StrategyConfig, ss *StrategyState, mu *sync.RWMu
 			return trades + hedgeFailClosePrimary(sc, ss, mu, prim, closeQty, deps, logger,
 				fmt.Sprintf("hedge %s order on %s (qty %.6f) failed: %s", order.Side, hcoin, order.Quantity, why))
 		}
+		// A partial fill covers proportionally less of the primary than the
+		// order intended: stamping the full CoveredAfter would record coverage
+		// the leg doesn't have, so the next cycle sees primary==covered and
+		// never re-adds the shortfall — a silent, permanent under-hedge that
+		// reconcile cannot repair (state qty == on-chain qty, no drift).
+		// Scale the watermark by the actual fill ratio so the shortfall
+		// re-triggers an add next cycle, and alert: under-hedged is the
+		// unsafe direction (review on #1333).
+		coveredAfter := order.CoveredAfter
+		if fill.TotalSz < order.Quantity*(1-hedgeCoveredRelEpsilon) {
+			coveredBefore := 0.0
+			if hedgeOpenLegLive && hedge != nil {
+				coveredBefore = hedge.Covered
+			}
+			coveredAfter = coveredBefore + (order.CoveredAfter-coveredBefore)*fill.TotalSz/order.Quantity
+			hedgeAlert(deps, logger, fmt.Sprintf("[WARN] hedge-sync %s: hedge %s on %s under-filled %.6f/%.6f — covered watermark scaled to %.6f of %.6f; the primary is under-hedged until the next cycle re-adds the shortfall", sc.ID, order.Side, hcoin, fill.TotalSz, order.Quantity, coveredAfter, order.CoveredAfter))
+		}
 		mu.Lock()
 		if hedgeOpenLegLive {
 			if hp := findHedgePosition(ss, sc); hp != nil {
-				applyHedgeAddFill(ss, hp, fill.TotalSz, fill.AvgPx, fill.Fee, fill.OID, order.CoveredAfter, logger)
+				applyHedgeAddFill(ss, hp, fill.TotalSz, fill.AvgPx, fill.Fee, fill.OID, coveredAfter, logger)
 			}
 		} else {
-			applyHedgeOpenFill(ss, sc, psym, inverseSide(prim.Side), fill.TotalSz, fill.AvgPx, fill.Fee, fill.OID, order.CoveredAfter, logger)
+			applyHedgeOpenFill(ss, sc, psym, inverseSide(prim.Side), fill.TotalSz, fill.AvgPx, fill.Fee, fill.OID, coveredAfter, logger)
 			hedgeOpenLegLive = true
 		}
 		mu.Unlock()
