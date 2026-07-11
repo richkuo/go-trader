@@ -2377,7 +2377,7 @@ func main() {
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 								}
 								if hedgeEnabled(sc) {
-									if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu); hedgeErr != nil {
+									if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu, false); hedgeErr != nil {
 										logger.Error("[hedge] sync failed: %v", hedgeErr)
 									} else if hedgeDetail != "" {
 										detail = hedgeDetail
@@ -2460,7 +2460,7 @@ func main() {
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
 								if execResult != nil && trades > 0 {
 									if hedgeEnabled(sc) {
-										if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu); hedgeErr != nil {
+										if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, result.Symbol, prices, hlPositions, nil, notifier, logger, &mu, true); hedgeErr != nil {
 											logger.Error("[hedge] sync failed: %v", hedgeErr)
 										} else if hedgeDetail != "" {
 											detail = hedgeDetail

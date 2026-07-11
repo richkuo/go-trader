@@ -475,8 +475,8 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		}
 	}
 	if hedgeEnabled(sc) {
-		fmt.Fprintf(&b, "  hedge:               %s × %.4f inverse (%s %dx)\n",
-			hedgeCoin(sc), sc.Hedge.Ratio, sc.Hedge.MarginMode, int(sc.Hedge.Leverage))
+		fmt.Fprintf(&b, "  hedge:               %s × %.4f inverse (%s %dx, rebalance ≥ %.3g%%)\n",
+			hedgeCoin(sc), sc.Hedge.Ratio, sc.Hedge.MarginMode, int(sc.Hedge.Leverage), hedgeRebalanceMinMovePct(sc))
 	}
 
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
@@ -602,7 +602,7 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 		parts = append(parts, "paused")
 	}
 	if hedgeEnabled(sc) {
-		parts = append(parts, fmt.Sprintf("hedge=%s×%.4g", hedgeCoin(sc), sc.Hedge.Ratio))
+		parts = append(parts, fmt.Sprintf("hedge=%s×%.4g@%.3g%%", hedgeCoin(sc), sc.Hedge.Ratio, hedgeRebalanceMinMovePct(sc)))
 	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it

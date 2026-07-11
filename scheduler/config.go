@@ -609,14 +609,15 @@ const HedgeSideInverse = "inverse"
 
 // HedgeConfig declares a strictly-coupled Hyperliquid perps hedge leg.
 type HedgeConfig struct {
-	Enabled    bool    `json:"enabled"`
-	Symbol     string  `json:"symbol"`
-	Side       string  `json:"side"`
-	Ratio      float64 `json:"ratio"`
-	Platform   string  `json:"platform"`
-	Type       string  `json:"type"`
-	MarginMode string  `json:"margin_mode"`
-	Leverage   float64 `json:"leverage"`
+	Enabled             bool    `json:"enabled"`
+	Symbol              string  `json:"symbol"`
+	Side                string  `json:"side"`
+	Ratio               float64 `json:"ratio"`
+	Platform            string  `json:"platform"`
+	Type                string  `json:"type"`
+	MarginMode          string  `json:"margin_mode"`
+	Leverage            float64 `json:"leverage"`
+	RebalanceMinMovePct float64 `json:"rebalance_min_move_pct,omitempty"` // 0/missing → 0.5%; hold-cycle target drift below this is suppressed. Confirmed primary lifecycle mutations bypass the gate.
 }
 
 // StrategyConfig describes a single strategy job.

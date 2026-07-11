@@ -12,9 +12,37 @@ import (
 type hedgeLiveExecFn func(script, symbol, side string, size float64, marginMode string, leverage float64, closeFull bool, snapshot hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error)
 
 var hedgeLiveCloser HyperliquidLiveCloser = defaultHyperliquidLiveCloser
+var hedgeCloseFailureAlerts sync.Map
 
 func defaultHedgeLiveExec(script, symbol, side string, size float64, marginMode string, leverage float64, closeFull bool, snapshot hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error) {
 	return RunHyperliquidExecute(script, symbol, side, size, 0, 0, 0, marginMode, leverage, closeFull, snapshot)
+}
+
+func hedgeCloseFailureAlertKey(sc StrategyConfig, coin string) string {
+	return sc.ID + "\x00" + strings.ToUpper(strings.TrimSpace(coin))
+}
+
+func notifyHedgeCloseFailure(sc StrategyConfig, coin string, fullClose bool, qty float64, primaryOpen bool, cause error, notifier *MultiNotifier) {
+	if notifier == nil {
+		return
+	}
+	key := hedgeCloseFailureAlertKey(sc, coin)
+	if _, loaded := hedgeCloseFailureAlerts.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	action := "reduce"
+	exposure := "oversized while the primary remains open"
+	if fullClose {
+		action = "full-close"
+	}
+	if !primaryOpen {
+		exposure = "NAKED because the primary is flat"
+	}
+	notifier.SendOwnerDM(fmt.Sprintf("CRITICAL [%s] hedge %s %s failed qty=%.6f — leg is %s: %v", sc.ID, coin, action, qty, exposure, cause))
+}
+
+func clearHedgeCloseFailureAlert(sc StrategyConfig, coin string) {
+	hedgeCloseFailureAlerts.Delete(hedgeCloseFailureAlertKey(sc, coin))
 }
 
 func hedgeFill(result *HyperliquidExecuteResult, fallback float64) (px, qty, fee float64, oid string, ok bool) {
@@ -115,11 +143,11 @@ func flattenHedgeAfterFailure(sc StrategyConfig, s *StrategyState, logger *Strat
 	return bookPerpsCloseWithFillFee(s, hedge.Symbol, f.AvgPx, f.Fee, true, oid, "hedge_failure_flatten", "[hedge] failure flatten", "[hedge] failure flatten", logger)
 }
 
-// syncStrategyHedge runs only after a confirmed primary fill has been applied
-// to virtual state. It converges the hedge to the primary's current notional.
-// Every reduction uses the reduce-only closer; a failed hedge increase
-// immediately unwinds the primary, preserving the fail-closed invariant.
-func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, prices map[string]float64, hlPositions []HLPosition, exec hedgeLiveExecFn, notifier *MultiNotifier, logger *StrategyLogger, mu *sync.RWMutex) (detail string, primaryUnwound bool, err error) {
+// syncStrategyHedge runs after confirmed primary fills and during hold cycles.
+// It converges the hedge to the primary's current notional. Every reduction
+// uses the reduce-only closer; a failed hedge increase immediately unwinds the
+// primary, preserving the fail-closed invariant.
+func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, prices map[string]float64, hlPositions []HLPosition, exec hedgeLiveExecFn, notifier *MultiNotifier, logger *StrategyLogger, mu *sync.RWMutex, forceRebalance bool) (detail string, primaryUnwound bool, err error) {
 	if !hedgeEnabled(sc) || s == nil {
 		return "", false, nil
 	}
@@ -151,12 +179,28 @@ func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, p
 	}
 	target := hedgeTarget{}
 	if primary != nil {
-		target, err = hedgeTargetForPrimary(sc, primary.Side, primary.Quantity, prices[primarySym], prices[hedgeCoin(sc)])
+		primaryPrice := prices[primarySym]
+		hedgePrice := prices[hedgeCoin(sc)]
+		if primaryPrice <= 0 || hedgePrice <= 0 {
+			markErr := fmt.Errorf("hedge sizing requires positive primary and hedge prices (primary=%g hedge=%g)", primaryPrice, hedgePrice)
+			if current != nil {
+				// Existing coverage is safer than a fleet-wide liquidation on a
+				// transient/partial mids response. No order was attempted, so hold
+				// both legs and retry on the next cycle. A fresh unhedged primary
+				// still takes failClosed below.
+				if logger != nil {
+					logger.Warn("[hedge] marks unavailable for %s/%s; holding existing hedge without rebalance: %v", primarySym, hedgeCoin(sc), markErr)
+				}
+				return "", false, nil
+			}
+			return failClosed(markErr)
+		}
+		target, err = hedgeTargetForPrimary(sc, primary.Side, primary.Quantity, primaryPrice, hedgePrice)
 		if err != nil {
 			return failClosed(err)
 		}
 	}
-	orders, err := planHedgeTransition(current, target)
+	orders, err := planHedgeTransitionWithPolicy(current, target, forceRebalance, hedgeRebalanceMinMovePct(sc))
 	if err != nil {
 		if primary != nil {
 			return failClosed(err)
@@ -164,6 +208,16 @@ func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, p
 		return "", false, err
 	}
 	var actions []string
+	hasCloseOrder := false
+	for _, order := range orders {
+		if order.Close {
+			hasCloseOrder = true
+			break
+		}
+	}
+	if !hasCloseOrder {
+		clearHedgeCloseFailureAlert(sc, hedgeCoin(sc))
+	}
 	for _, order := range orders {
 		coin := hedgeCoin(sc)
 		if order.Close {
@@ -177,11 +231,14 @@ func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, p
 				if callErr == nil {
 					callErr = fmt.Errorf("no confirmed hedge close fill")
 				}
+				notifyHedgeCloseFailure(sc, coin, order.FullClose, order.Quantity, primary != nil, callErr, notifier)
 				return strings.Join(actions, "; "), false, fmt.Errorf("hedge reduce-only close failed: %w", callErr)
 			}
 			f := res.Close.Fill
 			if f.AvgPx <= 0 || f.TotalSz <= 0 {
-				return strings.Join(actions, "; "), false, fmt.Errorf("hedge reduce-only close for %s returned no usable fill (avg_px=%.6f total_sz=%.6f)", coin, f.AvgPx, f.TotalSz)
+				fillErr := fmt.Errorf("hedge reduce-only close for %s returned no usable fill (avg_px=%.6f total_sz=%.6f)", coin, f.AvgPx, f.TotalSz)
+				notifyHedgeCloseFailure(sc, coin, order.FullClose, order.Quantity, primary != nil, fillErr, notifier)
+				return strings.Join(actions, "; "), false, fillErr
 			}
 			oid := ""
 			if f.OID > 0 {
@@ -200,8 +257,11 @@ func syncStrategyHedge(sc StrategyConfig, s *StrategyState, primarySym string, p
 				mu.Unlock()
 			}
 			if !booked {
-				return strings.Join(actions, "; "), false, fmt.Errorf("hedge reduce-only close for %s filled on-chain but virtual booking failed", coin)
+				bookingErr := fmt.Errorf("hedge reduce-only close for %s filled on-chain but virtual booking failed", coin)
+				notifyHedgeCloseFailure(sc, coin, order.FullClose, order.Quantity, primary != nil, bookingErr, notifier)
+				return strings.Join(actions, "; "), false, bookingErr
 			}
+			clearHedgeCloseFailureAlert(sc, coin)
 			actions = append(actions, fmt.Sprintf("close %.6f %s", f.TotalSz, coin))
 			if mu != nil {
 				mu.RLock()

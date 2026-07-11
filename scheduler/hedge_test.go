@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -81,6 +82,21 @@ func TestPlanHedgeTransitionLifecycle(t *testing.T) {
 	}
 }
 
+func TestPlanHedgeTransitionDeadband(t *testing.T) {
+	current := &Position{Side: "short", Quantity: 1, IsHedge: true}
+	if got, err := planHedgeTransitionWithPolicy(current, hedgeTarget{Side: "short", Quantity: 1.004}, false, 0.5); err != nil || len(got) != 0 {
+		t.Fatalf("sub-threshold drift orders=%+v err=%v, want hold", got, err)
+	}
+	got, err := planHedgeTransitionWithPolicy(current, hedgeTarget{Side: "short", Quantity: 1.006}, false, 0.5)
+	if err != nil || len(got) != 1 || math.Abs(got[0].Quantity-0.006) > 1e-12 {
+		t.Fatalf("accumulated drift orders=%+v err=%v, want 0.006 add", got, err)
+	}
+	got, err = planHedgeTransitionWithPolicy(current, hedgeTarget{Side: "short", Quantity: 1.001}, true, 0.5)
+	if err != nil || len(got) != 1 || math.Abs(got[0].Quantity-0.001) > 1e-12 {
+		t.Fatalf("forced lifecycle rebalance orders=%+v err=%v, want 0.001 add", got, err)
+	}
+}
+
 func TestValidateHedgeConfigRejectsCollisions(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -112,6 +128,7 @@ func TestValidateHedgeConfigRejectsUnsupportedShape(t *testing.T) {
 		{"ratio", func(sc *StrategyConfig) { sc.Hedge.Ratio = 0 }, "ratio must be > 0"},
 		{"margin", func(sc *StrategyConfig) { sc.Hedge.MarginMode = "" }, "margin_mode"},
 		{"leverage", func(sc *StrategyConfig) { sc.Hedge.Leverage = 0 }, "leverage must"},
+		{"rebalance threshold", func(sc *StrategyConfig) { sc.Hedge.RebalanceMinMovePct = 101 }, "rebalance_min_move_pct"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,6 +139,17 @@ func TestValidateHedgeConfigRejectsUnsupportedShape(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestHedgeRebalanceMinMovePctDefaultAndOverride(t *testing.T) {
+	sc := hedgeTestConfig("a", "ETH", "BTC")
+	if got := hedgeRebalanceMinMovePct(sc); got != DefaultHedgeRebalanceMinMovePct {
+		t.Fatalf("default threshold=%g", got)
+	}
+	sc.Hedge.RebalanceMinMovePct = 1.25
+	if got := hedgeRebalanceMinMovePct(sc); got != 1.25 {
+		t.Fatalf("override threshold=%g", got)
 	}
 }
 
@@ -194,7 +222,7 @@ func TestSyncStrategyHedge_ScaleInMirrorsNotional(t *testing.T) {
 		calls = append(calls, size)
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Symbol: symbol, Action: side, Fill: &HyperliquidFill{AvgPx: 50000, TotalSz: size}}}, "", nil
 	}
-	_, _, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 3000, "BTC": 50000}, nil, exec, nil, nil, &sync.RWMutex{})
+	_, _, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 3000, "BTC": 50000}, nil, exec, nil, nil, &sync.RWMutex{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +252,7 @@ func TestSyncStrategyHedge_FailedOpenUnwindsPrimary(t *testing.T) {
 		}
 		return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{Fill: &HyperliquidFill{AvgPx: 2000, TotalSz: 1}}}, "", nil
 	}
-	_, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000, "BTC": 50000}, nil, exec, nil, nil, &sync.RWMutex{})
+	_, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000, "BTC": 50000}, nil, exec, nil, nil, &sync.RWMutex{}, true)
 	if err == nil || !unwound {
 		t.Fatalf("err=%v unwound=%v", err, unwound)
 	}
@@ -301,12 +329,105 @@ func TestSyncStrategyHedge_MissingMarkUnwindsPrimary(t *testing.T) {
 		}
 		return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 1995, TotalSz: 1, OID: 11}}}, nil
 	}
-	_, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000}, nil, nil, nil, nil, &sync.RWMutex{})
+	_, unwound, err := syncStrategyHedge(sc, s, "ETH", map[string]float64{"ETH": 2000}, nil, nil, nil, nil, &sync.RWMutex{}, true)
 	if err == nil || !unwound {
 		t.Fatalf("err=%v unwound=%v, want fail-closed unwind on missing hedge mark", err, unwound)
 	}
 	if len(s.Positions) != 0 {
 		t.Fatalf("positions after missing-mark unwind = %+v", s.Positions)
+	}
+}
+
+func TestSyncStrategyHedge_MissingMarksHoldExistingCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prices map[string]float64
+	}{
+		{name: "total mids failure", prices: map[string]float64{}},
+		{name: "hedge coin omitted", prices: map[string]float64{"ETH": 2000}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := hedgeTestConfig("a-"+strings.ReplaceAll(tc.name, " ", "-"), "ETH", "BTC")
+			s := NewStrategyState(sc)
+			s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"}
+			s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.02, AvgCost: 50000, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+			oldCloser := hedgeLiveCloser
+			t.Cleanup(func() { hedgeLiveCloser = oldCloser })
+			hedgeLiveCloser = func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+				t.Fatal("missing marks must not close either existing leg")
+				return nil, nil
+			}
+			exec := func(string, string, string, float64, string, float64, bool, hlExecuteSnapshot) (*HyperliquidExecuteResult, string, error) {
+				t.Fatal("missing marks must not place a rebalance order")
+				return nil, "", nil
+			}
+			_, unwound, err := syncStrategyHedge(sc, s, "ETH", tc.prices, nil, exec, nil, nil, &sync.RWMutex{}, false)
+			if err != nil || unwound {
+				t.Fatalf("err=%v unwound=%v, want hold", err, unwound)
+			}
+			if len(s.Positions) != 2 {
+				t.Fatalf("positions changed on mark gap: %+v", s.Positions)
+			}
+		})
+	}
+}
+
+func TestSyncStrategyHedge_CloseFailureAlertsAreEdgeTriggered(t *testing.T) {
+	sc := hedgeTestConfig("close-alert", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.02, AvgCost: 50000, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
+	oldCloser := hedgeLiveCloser
+	t.Cleanup(func() {
+		hedgeLiveCloser = oldCloser
+		clearHedgeCloseFailureAlert(sc, "BTC")
+	})
+	hedgeLiveCloser = func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+		return nil, fmt.Errorf("rate limited")
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := syncStrategyHedge(sc, s, "ETH", nil, nil, nil, notifier, nil, &sync.RWMutex{}, false); err == nil {
+			t.Fatal("expected hedge close failure")
+		}
+	}
+	mock.mu.Lock()
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "NAKED because the primary is flat") {
+		t.Fatalf("first failure episode DMs=%+v", mock.dms)
+	}
+	mock.mu.Unlock()
+
+	hedgeLiveCloser = func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{AvgPx: 50000, TotalSz: 0.02, OID: 91}}}, nil
+	}
+	if _, _, err := syncStrategyHedge(sc, s, "ETH", nil, nil, nil, notifier, nil, &sync.RWMutex{}, false); err != nil {
+		t.Fatal(err)
+	}
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.02, AvgCost: 50000, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+	hedgeLiveCloser = func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
+		return nil, fmt.Errorf("rate limited again")
+	}
+	if _, _, err := syncStrategyHedge(sc, s, "ETH", nil, nil, nil, notifier, nil, &sync.RWMutex{}, false); err == nil {
+		t.Fatal("expected second failure episode")
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.dms) != 2 {
+		t.Fatalf("re-armed failure episode DMs=%+v", mock.dms)
+	}
+}
+
+func TestNotifyHedgeCloseFailureDistinguishesOversizedLeg(t *testing.T) {
+	sc := hedgeTestConfig("oversized-alert", "ETH", "BTC")
+	clearHedgeCloseFailureAlert(sc, "BTC")
+	t.Cleanup(func() { clearHedgeCloseFailureAlert(sc, "BTC") })
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
+	notifyHedgeCloseFailure(sc, "BTC", false, 0.01, true, fmt.Errorf("rejected"), notifier)
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.dms) != 1 || !strings.Contains(mock.dms[0].content, "oversized while the primary remains open") || !strings.Contains(mock.dms[0].content, "reduce") {
+		t.Fatalf("DMs=%+v", mock.dms)
 	}
 }
 

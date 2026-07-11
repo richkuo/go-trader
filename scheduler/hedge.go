@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-const hedgeQtyEpsilon = 1e-9
+const (
+	hedgeQtyEpsilon                 = 1e-9
+	DefaultHedgeRebalanceMinMovePct = 0.5
+)
 
 type hedgeTarget struct {
 	Side     string
@@ -62,6 +65,15 @@ func hedgeTargetForPrimary(sc StrategyConfig, primarySide string, primaryQty, pr
 }
 
 func planHedgeTransition(current *Position, target hedgeTarget) ([]hedgeOrder, error) {
+	return planHedgeTransitionWithPolicy(current, target, true, 0)
+}
+
+// planHedgeTransitionWithPolicy suppresses hold-cycle churn below the
+// configured relative quantity move. A confirmed primary lifecycle mutation
+// passes force=true so even a small scale/reduce is mirrored immediately.
+// Because the comparison is always target-vs-current, skipped drift accumulates
+// and eventually crosses the threshold rather than resetting each cycle.
+func planHedgeTransitionWithPolicy(current *Position, target hedgeTarget, force bool, minMovePct float64) ([]hedgeOrder, error) {
 	if current != nil && (!current.IsHedge || current.Quantity <= 0 || (current.Side != "long" && current.Side != "short")) {
 		return nil, fmt.Errorf("ambiguous or corrupt hedge ownership state")
 	}
@@ -84,10 +96,23 @@ func planHedgeTransition(current *Position, target hedgeTarget) ([]hedgeOrder, e
 	if math.Abs(delta) <= hedgeQtyEpsilon {
 		return nil, nil
 	}
+	if !force && current.Quantity > hedgeQtyEpsilon && minMovePct > 0 {
+		movePct := math.Abs(delta) / current.Quantity * 100
+		if movePct < minMovePct {
+			return nil, nil
+		}
+	}
 	if delta > 0 {
 		return []hedgeOrder{{Side: openSideForPosition(target.Side), Quantity: delta}}, nil
 	}
 	return []hedgeOrder{{Close: true, Quantity: -delta}}, nil
+}
+
+func hedgeRebalanceMinMovePct(sc StrategyConfig) float64 {
+	if !hedgeEnabled(sc) || sc.Hedge.RebalanceMinMovePct <= 0 {
+		return DefaultHedgeRebalanceMinMovePct
+	}
+	return sc.Hedge.RebalanceMinMovePct
 }
 
 func openSideForPosition(side string) string {
@@ -131,6 +156,9 @@ func validateHedgeConfigs(strategies []StrategyConfig) []string {
 		}
 		if h.Leverage < 1 || h.Leverage > 50 {
 			errs = append(errs, prefix+".leverage must be in [1, 50]")
+		}
+		if h.RebalanceMinMovePct < 0 || h.RebalanceMinMovePct > 100 {
+			errs = append(errs, prefix+".rebalance_min_move_pct must be in [0, 100] (0 = default 0.5%)")
 		}
 		if coin != "" && coin == primary {
 			errs = append(errs, prefix+".symbol matches its primary coin")
