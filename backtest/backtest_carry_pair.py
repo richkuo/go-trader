@@ -244,6 +244,7 @@ class CarryEpisode:
     price_pnl: float = 0.0       # perp short + spot long price PnL (marked)
     funding: float = 0.0         # cumulative funding carry (perp leg only)
     fees: float = 0.0            # entry + exit + rebalance fees
+    realized_spot_pnl: float = 0.0  # PnL locked in on spot units sold at a rebalance
     rebalances: int = 0
     exit_reason: str = ""
 
@@ -360,8 +361,11 @@ class CarryPairBacktester:
                 mark_perp = perp_close[i]
                 mark_spot = spot_close[i]
                 # Short perp: profit when price falls. Long spot: profit when
-                # price rises. In single-series mode these cancel exactly.
+                # price rises. In single-series mode these cancel exactly. The
+                # spot leg carries realized PnL locked in at prior rebalances
+                # (average-cost accounting) plus the open qty marked vs entry.
                 pos.price_pnl = (pos.qty_perp * (pos.entry_perp - mark_perp)
+                                 + pos.realized_spot_pnl
                                  + pos.qty_spot * (mark_spot - pos.entry_spot))
                 # Funding booked on the perp (short) leg only: receive when
                 # accrual > 0 (longs pay shorts). Timeframe-correct via #988.
@@ -369,9 +373,9 @@ class CarryPairBacktester:
                 # T_{entry_bar}, so a newly-opened position first accrues over
                 # the NEXT full bar (i > entry_bar), never the pre-entry interval
                 # accrual[entry_bar] — matching backtester.py:2425. The exit
-                # bar's funding is booked at the close site (signal exit) or is
-                # already covered here (liquidation/end-of-data both mark the
-                # exit bar in this loop).
+                # bar's funding is booked in the signal-exit branch below (which
+                # this loop never marks) or is already covered here
+                # (liquidation/end-of-data both mark the exit bar in this loop).
                 if i > pos.entry_bar:
                     bars_funded += self._book_funding_bar(pos, i, mark_perp, accrual)
 
@@ -383,7 +387,8 @@ class CarryPairBacktester:
                     # Cap the perp loss at posted margin (isolated mode). The
                     # spot leg's offsetting gain is still credited in full.
                     capped_perp = -min(perp_loss, pos.margin_perp)
-                    spot_pnl = pos.qty_spot * (mark_spot - pos.entry_spot)
+                    spot_pnl = (pos.realized_spot_pnl
+                                + pos.qty_spot * (mark_spot - pos.entry_spot))
                     pos.price_pnl = capped_perp + spot_pnl
                     pos.fees += (pos.qty_perp * mark_perp * self.perp_fee_pct
                                  + pos.qty_spot * mark_spot * self.spot_fee_pct)
@@ -409,10 +414,12 @@ class CarryPairBacktester:
                     # Signal exit fills at bar i+1, which this loop never marks
                     # (pos is cleared here), so book that bar's funding — the
                     # final held interval (T_{exit_bar-1}, T_{exit_bar}] — now.
+                    # Value it at the bar close, like every other funded bar
+                    # (mark loop) and backtester.py:2425 — not the fill/open.
                     exit_bar = i + 1
                     if exit_bar > pos.entry_bar:
                         bars_funded += self._book_funding_bar(
-                            pos, exit_bar, perp_open[exit_bar], accrual)
+                            pos, exit_bar, perp_close[exit_bar], accrual)
                     self._close_pair(pos, exit_bar, perp_open, spot_open,
                                      df.index, "exit_signal")
                     equity += pos.net_pnl
@@ -469,6 +476,7 @@ class CarryPairBacktester:
         ep.exit_bar = fill_bar
         ep.exit_time = index[fill_bar]
         ep.price_pnl = (ep.qty_perp * (ep.entry_perp - exit_perp)
+                        + ep.realized_spot_pnl
                         + ep.qty_spot * (exit_spot - ep.entry_spot))
         ep.fees += (ep.qty_perp * exit_perp * self.perp_fee_pct
                     + ep.qty_spot * exit_spot * self.spot_fee_pct)
@@ -482,7 +490,22 @@ class CarryPairBacktester:
         if drift <= self.drift_threshold:
             return
         target_qty_spot, _ = rebalance_spot_qty(ep.qty_perp, mark_perp, mark_spot)
-        traded_notional = abs(target_qty_spot - ep.qty_spot) * mark_spot
+        delta = target_qty_spot - ep.qty_spot
+        traded_notional = abs(delta) * mark_spot
+        # Average-cost accounting so the spot leg's total PnL (realized +
+        # unrealized) is invariant to when/how often it rebalances:
+        #   sell (delta<0): lock in PnL on the sold units at their entry cost;
+        #     the units that remain keep the original entry_spot.
+        #   buy  (delta>0): blend entry_spot toward mark_spot so the new units
+        #     are priced from their actual purchase price, not the old entry.
+        # Without this, both PnL sites price the post-rebalance qty against the
+        # unchanged entry_spot and silently drop/misattribute earned PnL.
+        if delta < 0:
+            ep.realized_spot_pnl += (-delta) * (mark_spot - ep.entry_spot)
+        elif delta > 0:
+            ep.entry_spot = (
+                (ep.qty_spot * ep.entry_spot + delta * mark_spot) / target_qty_spot
+            )
         ep.qty_spot = target_qty_spot
         ep.fees += traded_notional * self.spot_fee_pct
         ep.rebalances += 1

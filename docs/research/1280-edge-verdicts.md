@@ -152,7 +152,11 @@ dominates. Structure: perp short on isolated margin (default 3× / 2% MMR,
 gap-through liquidation cap), spot long fully funded (no funding, no
 liquidation), entry/exit from the same registry signal the live strategy emits,
 and delta-drift-triggered spot rebalancing (`drift_threshold`, since the
-registry's `delta_drift_pct`/`rebalance_needed` columns are 0.0 placeholders).
+registry's `delta_drift_pct`/`rebalance_needed` columns are 0.0 placeholders;
+rebalancing uses average-cost accounting so realized PnL locked in on resized
+units survives to the close — #1335 review fix). Rebalancing only fires in
+`--perp-symbol` basis mode; the single-series audit below has 0 rebalances, so
+the recorded verdict is unaffected by it.
 
 Command:
 
@@ -163,7 +167,11 @@ uv run --no-sync python backtest/backtest_carry_pair.py \
 
 Funding is booked on the perp leg only, over exactly the held interval
 `[entry_bar+1, exit_bar]` (a newly-opened position first accrues the bar AFTER
-its fill, matching `backtester.py:2425`; #1335 review fix).
+its fill, matching `backtester.py:2425`; #1335 review fix). Every funded bar —
+including the exit bar on a signal close — values funding at the bar close, the
+same convention as the mark loop and `backtester.py:2425` (#1335 review fix; the
+shift from the exit-fill open changed the recorded numbers only at the 4th
+decimal, below the precision of the tables above).
 
 Result (registry defaults: `entry_threshold=0.0001`/hr ≈ 88% APY, six audit
 datasets × five M1 windows):
@@ -218,3 +226,4 @@ demonstrated carry edge rather than a withheld verdict.
 ---
 Created with LLM: Fable 5 | medium | Harness: Claude Code
 Updated with LLM: Opus 4.8 | high | Harness: Claude Code | fableplan-work-on-issue
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code | fix-pr-review

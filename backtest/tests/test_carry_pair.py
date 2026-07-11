@@ -128,6 +128,35 @@ def test_funding_roundtrip_books_each_held_interval() -> None:
     assert res.funding_pnl == pytest.approx(750.0 * 0.001 * 6)
 
 
+def test_exit_bar_funding_valued_at_close_not_open() -> None:
+    """The signal-exit branch books the exit bar's funding at the bar CLOSE,
+    like every other funded bar and backtester.py:2425 — not the open (which is
+    the exit fill price). A bar with a large open→close move pins the choice;
+    the exit fires at the open (100) but the funding marks at the close (300)."""
+    # Only the exit bar (4) carries funding; its open and close differ sharply.
+    idx = pd.date_range("2024-01-01", periods=6, freq="1h")
+    df = pd.DataFrame({
+        "open":   [100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+        "high":   [300.0] * 6,
+        "low":    [100.0] * 6,
+        "close":  [100.0, 100.0, 100.0, 100.0, 300.0, 100.0],
+        "volume": [1.0] * 6,
+        "signal": [-1, 0, 0, 1, 0, 0],  # open→fill bar 1, close signal → exit bar 4
+        "funding_accrual": [0.0, 0.0, 0.0, 0.0, 0.001, 0.0],
+    }, index=idx)
+    bt = CarryPairBacktester(base_notional=1000.0, leverage=1.0,
+                             maintenance_margin=0.0, perp_fee_pct=0.0,
+                             spot_fee_pct=0.0)
+    res = bt.run(df)
+    ep = res.episodes[0]
+    assert ep.exit_reason == "exit_signal"
+    assert ep.exit_bar == 4
+    assert res.bars_funded == 1
+    # qty_perp = 1000/100 = 10; mark at CLOSE 300 → 10 * 300 * 0.001 = 3.0.
+    # The pre-fix code used the open (100) → 1.0.
+    assert res.funding_pnl == pytest.approx(3.0)
+
+
 def test_hedge_cancels_price_pnl() -> None:
     """Single-series hedge: perp short loss exactly offsets spot long gain, so
     price PnL nets ~0 regardless of the price path."""
@@ -290,6 +319,70 @@ def test_single_series_never_drifts() -> None:
                              maintenance_margin=0.0, drift_threshold=2.0)
     res = bt.run(df)
     assert res.rebalances == 0
+
+
+def test_rebalance_preserves_spot_leg_pnl_across_sell_rebalances() -> None:
+    """Must-survive (a): an episode's total spot-leg PnL is invariant to how
+    many times it rebalances. Mirrors the reviewer's example — qty 10 @ entry
+    100, price ramps to 200 then 250, forcing two sell-side rebalances. The PnL
+    realized at each rebalance must survive to the close. The pre-fix code
+    priced the shrunk qty against the original entry and dropped it (would
+    report 600, not 1250)."""
+    # Perp flat isolates the spot leg (perp price PnL = 0, never liquidates);
+    # the spot leg ramps up, so the legs drift and it is sold down twice.
+    spot = [100.0, 100.0, 200.0, 250.0, 250.0]
+    perp = [100.0] * 5
+    sig = [-1, 0, 0, 0, 0]  # open→fill bar 1, hold to end-of-data close
+    df = _make_df(spot, sig, perp_prices=perp)
+    bt = CarryPairBacktester(initial_capital=100_000.0, base_notional=1000.0,
+                             leverage=3.0, drift_threshold=2.0,
+                             perp_fee_pct=0.0, spot_fee_pct=0.0)
+    res = bt.run(df)
+    ep = res.episodes[0]
+    assert ep.rebalances == 2                                # 10→5 @200, 5→4 @250
+    assert ep.realized_spot_pnl == pytest.approx(650.0)      # 5*100 + 1*150
+    # Perp leg flat (0 PnL): total price PnL is the spot leg — 650 realized
+    # + 4 units * (250-100) unrealized = 1250 (pre-fix: 4*(250-100) = 600).
+    assert ep.price_pnl == pytest.approx(1250.0)
+
+
+def test_rebalance_that_increases_qty_prices_new_units_from_purchase() -> None:
+    """Must-survive (b): a buy-side rebalance blends entry_spot so the newly
+    bought units are priced from their purchase price, not the original entry.
+    Spot dips (legs drift → buy more), then recovers (→ sell back). The true
+    spot economic PnL is +500; the pre-fix code left entry_spot at 100 and
+    reported 0."""
+    spot = [100.0, 100.0, 50.0, 100.0, 100.0]
+    perp = [100.0] * 5
+    sig = [-1, 0, 0, 0, 0]
+    df = _make_df(spot, sig, perp_prices=perp)
+    bt = CarryPairBacktester(initial_capital=100_000.0, base_notional=1000.0,
+                             leverage=3.0, drift_threshold=2.0,
+                             perp_fee_pct=0.0, spot_fee_pct=0.0)
+    res = bt.run(df)
+    ep = res.episodes[0]
+    assert ep.rebalances == 2                # buy 10→20 @50, sell 20→10 @100
+    assert ep.price_pnl == pytest.approx(500.0)
+
+
+def test_rebalance_pnl_survives_into_signal_close() -> None:
+    """Must-survive (c): a rebalance immediately followed by a signal close must
+    not leak mis-stated PnL into the episode's final price_pnl. A sell-side
+    rebalance at 200 locks in +500; the close a bar later must report 1000, not
+    the pre-fix 500."""
+    spot = [100.0, 100.0, 200.0, 200.0, 200.0, 200.0]
+    perp = [100.0] * 6
+    sig = [-1, 0, 0, 1, 0, 0]  # open→fill bar 1, sell rebalance, close signal → exit bar 4
+    df = _make_df(spot, sig, perp_prices=perp)
+    bt = CarryPairBacktester(initial_capital=100_000.0, base_notional=1000.0,
+                             leverage=3.0, drift_threshold=2.0,
+                             perp_fee_pct=0.0, spot_fee_pct=0.0)
+    res = bt.run(df)
+    ep = res.episodes[0]
+    assert ep.exit_reason == "exit_signal"
+    assert ep.rebalances == 1                          # 10→5 @200
+    assert ep.realized_spot_pnl == pytest.approx(500.0)  # 5*(200-100)
+    assert ep.price_pnl == pytest.approx(1000.0)       # 500 realized + 5*(200-100)
 
 
 # ---------------------------------------------------------------------------
