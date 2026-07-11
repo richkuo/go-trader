@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -150,6 +151,34 @@ func TestHedgeSkipReason(t *testing.T) {
 	}
 }
 
+// TestRunHedgeSync_RefusesOpenOntoUnadoptedLeg verifies the #1159-review gate:
+// hedge sync must not open onto a hedge coin that already carries an on-chain
+// position the virtual state doesn't account for — HL would aggregate the order
+// onto it, doubling live exposure. Live-args strategy exercises the gate (paper
+// has no shared on-chain position).
+func TestRunHedgeSync_RefusesOpenOntoUnadoptedLeg(t *testing.T) {
+	sc := hedgeSC()
+	sc.Args = []string{"tema_cross_bd", "ETH", "1h", "--mode=live"} // hyperliquidIsLive true
+	var mu sync.RWMutex
+	// Primary held, hedge virtually flat, but the hedge coin has an on-chain leg.
+	s := &StrategyState{ID: "eth-long", Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{
+		"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1},
+	}}
+	mock := &mockNotifier{}
+	notifier := NewMultiNotifier(notifierBackend{notifier: mock, ownerID: "owner"})
+	// hedgeOnChainQty = 0.05 (a foreign/unadopted leg), virtual hedge qty = 0.
+	n := runHedgeSync(sc, s, &mu, notifier, nil, 3000, 60000, 0.05, true)
+	if n != 0 {
+		t.Errorf("expected no hedge trade when an unadopted on-chain leg exists, got %d", n)
+	}
+	if _, ok := s.Positions["BTC"]; ok {
+		t.Error("hedge leg must not be opened on top of an unadopted on-chain position")
+	}
+	if len(mock.dms) == 0 {
+		t.Error("expected an owner DM alerting the unadopted hedge leg")
+	}
+}
+
 func TestApplyHedgeOpenFill(t *testing.T) {
 	sc := hedgeSC()
 	s := &StrategyState{ID: "eth-long", Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{}}
@@ -204,6 +233,30 @@ func TestApplyHedgeOpenPartialFillBasis(t *testing.T) {
 	}
 }
 
+// TestBookPerpsPartialHedgeReduceUsesActualQty guards the #1159-review fix: a
+// hedge reduce books the actual filled quantity, not the requested one. Verified
+// at the booking layer (bookPerpsPartialCloseWithFillFee), which runHedgeReduceOrClose
+// now feeds fill.TotalSz — a partial fill must decrement the virtual hedge by
+// exactly the filled qty.
+func TestBookPerpsPartialHedgeReduceUsesActualQty(t *testing.T) {
+	s := &StrategyState{ID: "eth-long", Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{
+		"BTC": {Symbol: "BTC", Quantity: 0.05, InitialQuantity: 0.05, AvgCost: 60000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+	}}
+	// Requested 0.02 but only 0.012 filled — book the actual 0.012.
+	if !bookPerpsPartialCloseWithFillFee(s, "BTC", 0.012, 61000, 0, false, "", "hedge_reduce", "hedge", "hedge", nil) {
+		t.Fatal("partial hedge reduce should book")
+	}
+	pos := s.Positions["BTC"]
+	if !approxEq(pos.Quantity, 0.038) {
+		t.Errorf("remaining hedge qty = %g, want 0.038 (0.05 - actual 0.012)", pos.Quantity)
+	}
+	// The close leg is labeled hedge (excluded from W/L).
+	last := s.TradeHistory[len(s.TradeHistory)-1]
+	if last.TradeType != "hedge" || !last.IsClose || !approxEq(last.Quantity, 0.012) {
+		t.Errorf("hedge close leg = %+v, want hedge/is_close/qty 0.012", last)
+	}
+}
+
 func TestApplyHedgeAddFillBlends(t *testing.T) {
 	sc := hedgeSC()
 	s := &StrategyState{ID: "eth-long", Platform: "hyperliquid", Type: "perps", Cash: 1000, Positions: map[string]*Position{
@@ -221,17 +274,5 @@ func TestApplyHedgeAddFillBlends(t *testing.T) {
 	}
 	if !approxEq(pos.HedgePrimaryQtyBasis, 1.5) {
 		t.Errorf("basis = %g, want 1.5", pos.HedgePrimaryQtyBasis)
-	}
-}
-
-func TestHedgeReduceProportionalQty(t *testing.T) {
-	if q := hedgeReduceProportionalQty(0.05, 0.5); !approxEq(q, 0.025) {
-		t.Errorf("proportional qty = %g, want 0.025", q)
-	}
-	if q := hedgeReduceProportionalQty(0.05, 2); !approxEq(q, 0.05) {
-		t.Errorf("over-fraction should clamp to full, got %g", q)
-	}
-	if q := hedgeReduceProportionalQty(0, 0.5); q != 0 {
-		t.Errorf("no hedge → 0, got %g", q)
 	}
 }

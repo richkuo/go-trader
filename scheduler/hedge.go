@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"sync"
 	"time"
 )
@@ -321,21 +320,6 @@ func applyHedgeOpenOrAddFill(s *StrategyState, sc StrategyConfig, action hedgeAc
 	}
 }
 
-// hedgeReduceProportionalQty returns the hedge quantity to close when the
-// primary is closed by closeFraction (0,1] — used by the manual force-close
-// partial path where the hedge must mirror a proportional primary reduction
-// deterministically rather than waiting a cycle. Clamped to the held qty.
-func hedgeReduceProportionalQty(hedgeQty, closeFraction float64) float64 {
-	if hedgeQty <= 0 || closeFraction <= 0 {
-		return 0
-	}
-	q := hedgeQty * math.Min(closeFraction, 1)
-	if q > hedgeQty {
-		q = hedgeQty
-	}
-	return q
-}
-
 // snapshotHedgeState captures the primary + hedge position state for a strategy
 // under the caller's read lock. Returns the snapshot and whether the strategy
 // carries an enabled hedge with a resolvable coin.
@@ -370,7 +354,16 @@ func snapshotHedgeState(s *StrategyState, sc StrategyConfig) (hedgeSnapshot, boo
 //
 // Lock discipline mirrors runHyperliquidProtectionSync: the exclusive lock is
 // held only for the snapshot and the apply, never across the subprocess spawn.
-func runHedgeSync(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger, primaryPx, hedgePx float64, freshOpenPrimary bool) int {
+//
+// hedgeOnChainQty is the current ABSOLUTE on-chain size of the hedge coin (0 if
+// none), passed from the cycle's clearinghouseState snapshot. It gates a
+// position-INCREASING hedge action (open/add) so hedge sync never blindly opens
+// a second leg on top of an unadopted on-chain position — HL aggregates per
+// coin per account, so opening onto an existing on-chain leg would double live
+// exposure. Reachable via a manual/external position on the hedge coin, or a
+// crash after a hedge fill but before SaveState (on-chain leg present, virtual
+// hedge absent). See #1159 review.
+func runHedgeSync(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger, primaryPx, hedgePx, hedgeOnChainQty float64, freshOpenPrimary bool) int {
 	if s == nil || mu == nil || !HedgeEnabled(sc) {
 		return 0
 	}
@@ -384,6 +377,28 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, notifie
 	}
 
 	action := hedgeTargetDecision(sc, snap, primaryPx, hedgePx)
+
+	// #1159: never OPEN/ADD onto a hedge coin that already carries an on-chain
+	// position the virtual state does not account for — HL would aggregate the
+	// new order onto it, doubling live exposure. An OPEN targets a virtually-flat
+	// hedge, so ANY on-chain size is unadopted; an ADD is safe only up to the
+	// tracked virtual qty (on-chain beyond that is unadopted). Freeze + alert
+	// instead of trading; the operator adopts or clears the foreign leg. Live
+	// only — paper has no shared on-chain position. Reduce/close are always safe
+	// (they shrink exposure) and pass through.
+	if isLive && (action.Kind == hedgeActionOpen || action.Kind == hedgeActionAdd) {
+		unadopted := hedgeOnChainQty > snap.HedgeQty+hedgeQtyEpsilon
+		if unadopted {
+			msg := fmt.Sprintf("⚠️ strategy %s: refusing to %s hedge %s — on-chain size %.6f exceeds tracked virtual %.6f (unadopted/foreign leg). Adopt or clear it before the hedge can resume (#1159).", sc.ID, action.Kind, snap.HedgeSymbol, hedgeOnChainQty, snap.HedgeQty)
+			if logger != nil {
+				logger.Warn("%s", msg)
+			}
+			if notifier != nil {
+				notifier.SendOwnerDM(msg)
+			}
+			return 0
+		}
+	}
 	if action.Kind == hedgeActionNone {
 		// A fail-closed no-op on a fresh-open cycle (unusable price) must not run
 		// the primary unhedged: escalate to unwind. Other none reasons (dust
@@ -499,6 +514,11 @@ func runHedgeReduceOrClose(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex
 	var closePx, closeFee float64
 	var closeOID string
 	var useFillFee bool
+	// #1159 review: a virtual reduce must book the ACTUAL on-chain filled
+	// quantity, never the requested one — a partial fill would otherwise
+	// over-reduce the virtual hedge and mis-book PnL. Defaults to the requested
+	// qty for paper (no real fill); overwritten with fill.TotalSz on a live fill.
+	bookedQty := action.Qty
 
 	if isLive {
 		var partialSz *float64
@@ -523,6 +543,7 @@ func runHedgeReduceOrClose(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex
 		fill := closeResult.Close.Fill
 		closePx = fill.AvgPx
 		closeFee = fill.Fee
+		bookedQty = fill.TotalSz
 		if fill.OID != 0 {
 			closeOID = fmt.Sprintf("%d", fill.OID)
 		}
@@ -543,7 +564,7 @@ func runHedgeReduceOrClose(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex
 		}
 		return 0
 	}
-	if bookPerpsPartialCloseWithFillFee(s, hedgeSym, action.Qty, closePx, closeFee, useFillFee, closeOID, "hedge_reduce", detail, detail, logger) {
+	if bookPerpsPartialCloseWithFillFee(s, hedgeSym, bookedQty, closePx, closeFee, useFillFee, closeOID, "hedge_reduce", detail, detail, logger) {
 		// Keep the basis watermark aligned with the primary after a partial
 		// hedge reduce so the next cycle diffs against the new target.
 		if h := s.Positions[hedgeSym]; h != nil {

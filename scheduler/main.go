@@ -2529,7 +2529,10 @@ func main() {
 							// only (hedge validation rejects everything else). Hedge coin
 							// mark comes from prices (collectPerpsMarkSymbols includes it).
 							if HedgeEnabled(sc) {
-								runHedgeSync(sc, stratState, &mu, notifier, logger, prices[hyperliquidConfiguredCoin(sc)], prices[hedgeCoin(sc)], primaryOpenedThisCycle)
+								// hlOnChainAbsQty is this cycle's on-chain size by
+								// coin; pass the hedge coin's so hedge sync refuses to
+								// open/add onto an unadopted on-chain leg (#1159 review).
+								runHedgeSync(sc, stratState, &mu, notifier, logger, prices[hyperliquidConfiguredCoin(sc)], prices[hedgeCoin(sc)], hlOnChainAbsQty[hedgeCoin(sc)], primaryOpenedThisCycle)
 							}
 						}
 					case "futures":
