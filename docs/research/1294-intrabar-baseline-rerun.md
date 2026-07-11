@@ -36,7 +36,7 @@ every such study in this sweep verified byte-identical across the mode pair.
 |---|---|---|---|
 | #1181 HTF-filter baselines | `1181-htf-filter-baseline-revalidation.md` | none (no stops; binanceus platform → fee-unreached too) | reproduces to the digit in both modes; baselines current |
 | #1054 regime_adaptive_htf M1 | `1054-regime-adaptive-htf-m1.md` | none (no stops) | noise gates bit-identical; M5 net -0.66 → -0.32/leg (pure fee model); deprecate stands |
-| #983 squeeze close sweep | `backtest/candidates/squeeze_983/README.md` | none (evaluator ladders only) | mode-identical; fee model moved `tp_default` (158→94 trades, still collapses) and flipped `tp_runner_trail3` judged-OOS FAIL→PASS (held-out 0/3, non-shipper); keep-baseline stands |
+| #983 squeeze close sweep | `backtest/candidates/squeeze_983/README.md` | **`sl_atr_1.5` / `trail_atr_3.0` / `tp_runner_trail3`** (engine-tracked stops); baseline + `tp_default` unreached (byte-identical) | all five M1 verdicts mode-identical; #1271 shifts the three engine-stop candidates' numbers without moving a verdict; fee model moved `tp_default` (158→94 trades, still collapses) and flipped `tp_runner_trail3` judged-OOS FAIL→PASS (flip present under `bar_close`, held-out 0/3, non-shipper); keep-baseline stands |
 | #984 breakout close sweep | `backtest/candidates/breakout_984/README.md` | **`trail_atr_3.0` only** (real engine trailing stop) | M1 table identical in both modes; the mode pair isolates #1271 on `trail_atr_3.0` (#T 371→412, worstDD -50.13→-47.50%, Sharpe -0.288→-0.433); keep-baseline stands |
 | #1152 ranging exit M6 | `1152-ranging-exit-geometry-m6.md` | **`b2_rv_wider` gate pair** (ratchet trailing legs are engine stops) | `bar_close` reproduces both documented verdicts (fee model only lifts one IS dataset over p<0.05); under `ohlc_walk` the lone single-style gate pass `mr.b2_rv_wider` downgrades `candidate_beats_incumbent` → `positive_but_not_significant` (one significant OOS contradiction appears) — a real #1271 effect, but the shipped decision (keep the collapsed group; gate requires both entry styles, squeeze fails) was already negative and stands |
 
@@ -57,7 +57,8 @@ cross-entry-style rule.
   vol-regime bake-off** — none arms an engine-tracked stop (all exit
   open-signal-as-close or via evaluator ladders; no `stop_loss_atr_mult` /
   trailing fields anywhere in their candidate specs), so #1271 is unreached by
-  the same construction verified byte-for-byte on #983/#1181 above. Their
+  the same construction verified byte-for-byte on the stop-free runs above
+  (#1181, #1054, and #983's `baseline`/`tp_default`). Their
   gross-edge / incumbent-relative gate verdicts are fee-free and unchanged;
   net columns shift by the #1320 fee model in the favorable direction (lower
   fees), which cannot un-justify a deprecate/negative verdict reached under
