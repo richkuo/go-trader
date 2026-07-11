@@ -350,9 +350,9 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 	})
 }
 
-// TestValidateConfigRegimeDirectionalPolicy covers config-level validation:
+// TestConfigValidationRegimeDirectionalPolicy covers config-level validation:
 // HL perps only, requires regime.enabled, valid shape.
-func TestValidateConfigRegimeDirectionalPolicy(t *testing.T) {
+func TestConfigValidationRegimeDirectionalPolicy(t *testing.T) {
 	makePolicyJSON := `{"trend_regime": {
 		"trending_up":   {"direction": "long",  "invert_signal": false},
 		"trending_down": {"direction": "short", "invert_signal": true},
@@ -383,7 +383,7 @@ func TestValidateConfigRegimeDirectionalPolicy(t *testing.T) {
 			Regime:        &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		if err := ValidateConfig(&cfg); err != nil {
+		if err := validateConfig(&cfg, false); err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
 	})
@@ -405,7 +405,7 @@ func TestValidateConfigRegimeDirectionalPolicy(t *testing.T) {
 			Regime:        &RegimeConfig{Enabled: false},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		err := ValidateConfig(&cfg)
+		err := validateConfig(&cfg, false)
 		if err == nil || !strings.Contains(err.Error(), "regime_directional_policy requires top-level regime.enabled=true") {
 			t.Fatalf("expected regime-enabled error, got: %v", err)
 		}
@@ -428,7 +428,7 @@ func TestValidateConfigRegimeDirectionalPolicy(t *testing.T) {
 			Regime:        &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		err := ValidateConfig(&cfg)
+		err := validateConfig(&cfg, false)
 		if err == nil || !strings.Contains(err.Error(), "regime_directional_policy is only supported for HL perps") {
 			t.Fatalf("expected HL-perps-only error, got: %v", err)
 		}
@@ -514,7 +514,7 @@ func TestValidateConfigRegimeDirectionalPolicy(t *testing.T) {
 			Regime:        &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		err := ValidateConfig(&cfg)
+		err := validateConfig(&cfg, false)
 		if err == nil || !strings.Contains(err.Error(), "regime_directional_policy is only supported for HL perps") {
 			t.Fatalf("expected HL-perps-only error, got: %v", err)
 		}

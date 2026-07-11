@@ -268,6 +268,11 @@ def test_enumerate_targets_both_skips_hold_and_handles_variants():
     # A futures-only name resolves to futures.
     assert ("delta_neutral_funding", "futures") in pairs
 
+    # #1275: discovery-hidden (quarantined) names stay in the audit sweep —
+    # re-screening them is the only recovery path out of quarantine.
+    assert ("range_scalper", "spot") in pairs
+    assert ("macd", "spot") in pairs
+
     # A shared name with byte-identical params is screened ONCE (spot only).
     assert ("sma_crossover", "spot") in pairs
     assert ("sma_crossover", "futures") not in pairs

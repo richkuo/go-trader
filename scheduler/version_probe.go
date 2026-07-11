@@ -39,6 +39,12 @@ var probeArgv = []string{
 	// #879: new Go injects the global-store regime payload on every check;
 	// probe it so a stale Python that rejects the flag fails startup loudly.
 	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0,"plus_di":20.0,"minus_di":10.0,"atr_pct":1.0}}}`,
+	// #1277: new Go forwards --atr-method on every signal check; probe it so a
+	// stale Python that rejects the flag fails startup loudly. Signal-check
+	// argv only — the execute argv never carries it, so executeProbeArgv
+	// stays a faithful mirror without it (the script-level parser is shared,
+	// so this probe covers the flag for every mode of the same script).
+	"--atr-method=simple",
 	"--probe-only",
 }
 
@@ -52,6 +58,7 @@ var probeCompositeArgv = []string{
 	"--regime-windows-spec-json", `{"macro":{"classifier":"composite","period":14,"thresholds":{"return_eff":0.05,"range_eff":0.03,"adx":25}}}`,
 	"--regime-atr-window", "",
 	"--regime-payload-json", `{"macro":{"regime":"trending_up_clean","score":0.5,"classifier":"composite","metrics":{"adx":30.0}}}`,
+	"--atr-method=simple",
 	"--probe-only",
 }
 
@@ -59,7 +66,7 @@ var probeCompositeArgv = []string{
 // stale Python missing run_fetch_atr fails startup loudly instead of degrading
 // silently to computeFallbackATR on every manual-open.
 var fetchATRProbeArgv = []string{
-	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--probe-only",
+	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--atr-method=simple", "--probe-only",
 }
 
 // executeProbeArgv probes check_hyperliquid.py's --execute mode (PR #769

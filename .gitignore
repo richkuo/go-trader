@@ -18,7 +18,7 @@ scheduler/config.json
 scheduler/state.json
 scheduler/state.db
 .worktrees/
-.claude/
+.claude/*
 local/
 
 # macOS

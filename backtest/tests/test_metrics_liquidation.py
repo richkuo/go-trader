@@ -254,6 +254,43 @@ def test_format_window_report_silent_when_no_liquidation():
 
 
 # ---------------------------------------------------------------------------
+# fee_audit — screen_leg propagation (#1005/#1235): the leg row must flag
+# liquidation when EITHER the net or the gross (zero-friction) run blew the
+# account; dropping either side of the OR silently hides a blown leg.
+# ---------------------------------------------------------------------------
+
+def _screen_leg_with(monkeypatch, net_liquidated, gross_liquidated):
+    def fake_run_leg(reg, name, params, sym, tf, window, capital=0.0,
+                     direction=None, commission_pct=None, slippage_pct=None,
+                     **kw):
+        # commission_pct=0.0 identifies the gross (zero-friction) re-run.
+        is_gross = commission_pct == 0.0
+        blown = gross_liquidated if is_gross else net_liquidated
+        return {"trades": 3, "span_days": 30.0,
+                "return_pct": -100.0 if blown else 1.0,
+                "sharpe": -100.0 if blown else 0.5,
+                "liquidated": blown}
+
+    monkeypatch.setattr(fa, "run_leg", fake_run_leg, raising=True)
+    leg = fa.screen_leg(object(), "x", "BTC/USDT", "1h",
+                        ("2026-01-01", None), capital=1000.0)
+    assert leg is not None and leg["error"] is None
+    return leg
+
+
+def test_screen_leg_liquidated_when_net_run_busts(monkeypatch):
+    assert _screen_leg_with(monkeypatch, True, False)["liquidated"] is True
+
+
+def test_screen_leg_liquidated_when_only_gross_run_busts(monkeypatch):
+    assert _screen_leg_with(monkeypatch, False, True)["liquidated"] is True
+
+
+def test_screen_leg_not_liquidated_when_neither_run_busts(monkeypatch):
+    assert _screen_leg_with(monkeypatch, False, False)["liquidated"] is False
+
+
+# ---------------------------------------------------------------------------
 # fee_audit — aggregation count + markdown section
 # ---------------------------------------------------------------------------
 
@@ -287,3 +324,29 @@ def test_render_markdown_liquidated_section_only_when_present():
     clean = fa.aggregate_strategy("ok", "spot", [_fa_leg(False)])
     md_clean = fa.render_markdown(fa.rank_rows([clean]), meta)
     assert "## Liquidated legs" not in md_clean
+
+
+# ---------------------------------------------------------------------------
+# #1228: DDadj liquidation floor — a dead account must never outrank a
+# surviving losing leg on the ddadj axis (raw DDadj of a blown leg is
+# −100/|−100| = −1.0, better than a −50%/25%-DD survivor's −2.0).
+# ---------------------------------------------------------------------------
+
+def test_liquidated_ddadj_floor_constant_mirrors_backtester():
+    from backtester import LIQUIDATED_METRIC_FLOOR
+    assert ew.LIQUIDATED_DDADJ_FLOOR == -LIQUIDATED_METRIC_FLOOR
+
+
+def test_leg_from_results_floors_ddadj_when_liquidated():
+    blown = ew.leg_from_results(_results())
+    assert blown["ddadj"] == ew.LIQUIDATED_DDADJ_FLOOR
+    survivor = ew.leg_from_results(
+        _results(ret=-50.0, dd=-25.0, sharpe=-1.0, liquidated=False))
+    assert survivor["ddadj"] == pytest.approx(-2.0)
+    # The whole point: the survivor must outrank the blown leg.
+    assert survivor["ddadj"] > blown["ddadj"]
+
+
+def test_leg_from_results_ddadj_unfloored_when_not_liquidated():
+    leg = ew.leg_from_results(_results(ret=30.0, dd=-15.0, liquidated=False))
+    assert leg["ddadj"] == pytest.approx(2.0)

@@ -1141,6 +1141,16 @@ func TestCheckPortfolioRisk_EventLoggedOnTrigger(t *testing.T) {
 
 // --- ClearLatchedKillSwitchSharedWallet (#244) ---
 
+// resetSchedulerStarted clears the #1272 startup-phase guard between tests.
+// The package-level flag persists across the test binary. t.Cleanup restores
+// false after the test so a markSchedulerStarted() call (e.g. the panic-path
+// test) cannot leak into a later Clear-calling test that forgets to reset.
+func resetSchedulerStarted(t *testing.T) {
+	t.Helper()
+	schedulerStarted.Store(false)
+	t.Cleanup(func() { schedulerStarted.Store(false) })
+}
+
 // latchedSharedWalletState builds an AppState with a latched kill switch and
 // shared-wallet strategies for use in #244 regression tests.
 func latchedSharedWalletState() *AppState {
@@ -1168,6 +1178,7 @@ func sharedHLStrategies() []StrategyConfig {
 // that PeakValue is re-baselined so the next CheckPortfolioRisk call does
 // not immediately re-latch the switch (#244 regression).
 func TestClearLatchedKillSwitchSharedWallet_Success(t *testing.T) {
+	resetSchedulerStarted(t)
 	state := latchedSharedWalletState()
 	strategies := sharedHLStrategies()
 
@@ -1227,6 +1238,7 @@ func TestClearLatchedKillSwitchSharedWallet_Success(t *testing.T) {
 // This reproduces the exact scenario from the issue — a $20K peak from
 // shared-wallet double-counting against a real $5K balance.
 func TestClearLatchedKillSwitchSharedWallet_NoRelatchOnNextTick(t *testing.T) {
+	resetSchedulerStarted(t)
 	state := &AppState{
 		Strategies: map[string]*StrategyState{},
 		PortfolioRisk: PortfolioRiskState{
@@ -1265,6 +1277,7 @@ func TestClearLatchedKillSwitchSharedWallet_NoRelatchOnNextTick(t *testing.T) {
 // that a network/config failure on the balance fetch leaves the kill switch
 // latched (acceptance criterion #2).
 func TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch(t *testing.T) {
+	resetSchedulerStarted(t)
 	state := latchedSharedWalletState()
 	strategies := sharedHLStrategies()
 	originalLatchedAt := state.PortfolioRisk.KillSwitchAt
@@ -1291,6 +1304,7 @@ func TestClearLatchedKillSwitchSharedWallet_FetchFailurePreservesLatch(t *testin
 // TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp verifies that
 // non-shared-wallet setups are unaffected (acceptance criterion #3).
 func TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp(t *testing.T) {
+	resetSchedulerStarted(t)
 	state := latchedSharedWalletState()
 	// Strategies without capital_pct (or only one strategy on a wallet) are
 	// not "shared" — there is no double-counting risk to recover from.
@@ -1322,6 +1336,7 @@ func TestClearLatchedKillSwitchSharedWallet_NoSharedWalletNoOp(t *testing.T) {
 // helper is a no-op (and skips the network fetch entirely) when the kill
 // switch is not active.
 func TestClearLatchedKillSwitchSharedWallet_InactiveSwitchNoOp(t *testing.T) {
+	resetSchedulerStarted(t)
 	state := &AppState{
 		PortfolioRisk: PortfolioRiskState{PeakValue: 10000, KillSwitchActive: false},
 	}
@@ -1346,6 +1361,7 @@ func TestClearLatchedKillSwitchSharedWallet_InactiveSwitchNoOp(t *testing.T) {
 // switch is cleared and PeakValue is re-baselined to the SUM of all
 // fetched balances (not just the first).
 func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAllSuccess(t *testing.T) {
+	resetSchedulerStarted(t)
 	state := latchedSharedWalletState()
 	strategies := []StrategyConfig{
 		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
@@ -1390,6 +1406,7 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAllSuccess(t *testing.T
 // re-baselining peak — a partial slice would under-baseline and still be
 // unsafe.
 func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t *testing.T) {
+	resetSchedulerStarted(t)
 	state := latchedSharedWalletState()
 	originalLatchedAt := state.PortfolioRisk.KillSwitchAt
 	originalPeak := state.PortfolioRisk.PeakValue
@@ -1424,6 +1441,53 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t
 	if len(state.PortfolioRisk.Events) != 0 {
 		t.Errorf("expected no audit event on partial failure; got %d", len(state.PortfolioRisk.Events))
 	}
+}
+
+// TestClearLatchedKillSwitchSharedWallet_PanicsAfterSchedulerStarted is the
+// #1272 regression: post-startup misuse must panic before any mutation so a
+// future refactor cannot silently race the kill-switch latch.
+func TestClearLatchedKillSwitchSharedWallet_PanicsAfterSchedulerStarted(t *testing.T) {
+	resetSchedulerStarted(t)
+	state := latchedSharedWalletState()
+	originalPeak := state.PortfolioRisk.PeakValue
+	originalLatchedAt := state.PortfolioRisk.KillSwitchAt
+	strategies := sharedHLStrategies()
+
+	markSchedulerStarted()
+
+	fetcherCalls := 0
+	fetcher := func(platform string) (float64, error) {
+		fetcherCalls++
+		return 4500, nil
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic when ClearLatchedKillSwitchSharedWallet runs after markSchedulerStarted")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "after scheduler started") {
+			t.Errorf("unexpected panic value: %#v", r)
+		}
+		if fetcherCalls != 0 {
+			t.Errorf("expected fetcher not called on panic path; got %d calls", fetcherCalls)
+		}
+		if !state.PortfolioRisk.KillSwitchActive {
+			t.Error("expected latch untouched after panic")
+		}
+		if state.PortfolioRisk.PeakValue != originalPeak {
+			t.Errorf("expected PeakValue untouched; got %.2f", state.PortfolioRisk.PeakValue)
+		}
+		if !state.PortfolioRisk.KillSwitchAt.Equal(originalLatchedAt) {
+			t.Error("expected KillSwitchAt untouched after panic")
+		}
+		if len(state.PortfolioRisk.Events) != 0 {
+			t.Errorf("expected no audit event on panic path; got %d", len(state.PortfolioRisk.Events))
+		}
+	}()
+
+	ClearLatchedKillSwitchSharedWallet(state, strategies, fetcher)
 }
 
 func TestAutoResetConfirmedFlatKillSwitch_Success(t *testing.T) {
@@ -1611,13 +1675,13 @@ func TestPerpsMarginDrawdownInputs_NoPositions(t *testing.T) {
 // #418: config leverage (sc.Leverage) is the source of truth for the
 // margin-drawdown denominator, NOT pos.Leverage. This regression test fails
 // before the fix: pos.Leverage = 20 (on-chain margin tier overwrite from
-// reconcileHyperliquidPositions) would inflate the drawdown ratio 10x against
+// reconcileHyperliquidPositionsWithResolver) would inflate the drawdown ratio 10x against
 // a config Leverage of 2.
 func TestPerpsMarginDrawdownInputs_UsesConfigLeverageNotPosLeverage(t *testing.T) {
 	s := &StrategyState{
 		Positions: map[string]*Position{
 			// pos.Leverage = 20 simulates the corrupted state that
-			// reconcileHyperliquidPositions writes when on-chain margin tier
+			// reconcileHyperliquidPositionsWithResolver writes when on-chain margin tier
 			// (HL exchange max leverage) differs from trader's intent.
 			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 20},
 		},

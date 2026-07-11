@@ -25,21 +25,24 @@ type UIStrategy struct {
 	Symbol    string `json:"symbol"`
 	Timeframe string `json:"timeframe"`
 	Direction string `json:"direction,omitempty"`
+	Paused    bool   `json:"paused,omitempty"` // #1150: position-increasing signals held
 }
 
 type UIStrategyOverview struct {
-	ID               string                 `json:"id"`
-	Platform         string                 `json:"platform"`
-	Symbol           string                 `json:"symbol"`
-	PnLPct           float64                `json:"pnl_pct"`
-	WinRate          float64                `json:"win_rate,omitempty"`
-	Sharpe           float64                `json:"sharpe,omitempty"`
-	Regime           string                 `json:"regime,omitempty"`
-	Direction        string                 `json:"direction,omitempty"`
-	PnL              float64                `json:"pnl"`
-	PortfolioValue   float64                `json:"portfolio_value"`
-	InitialCapital   float64                `json:"initial_capital"`
-	RegimeDivergence *RegimeDivergenceState `json:"regime_divergence,omitempty"` // #907: active window-divergence state; nil when none
+	ID                   string                 `json:"id"`
+	Platform             string                 `json:"platform"`
+	Symbol               string                 `json:"symbol"`
+	PnLPct               float64                `json:"pnl_pct"`
+	WinRate              float64                `json:"win_rate,omitempty"`
+	Sharpe               float64                `json:"sharpe,omitempty"`
+	Regime               string                 `json:"regime,omitempty"`
+	Direction            string                 `json:"direction,omitempty"`
+	PnL                  float64                `json:"pnl"`
+	PortfolioValue       float64                `json:"portfolio_value"`
+	InitialCapital       float64                `json:"initial_capital"`
+	RegimeDivergence     *RegimeDivergenceState `json:"regime_divergence,omitempty"`       // #907: active window-divergence state; nil when none
+	Paused               bool                   `json:"paused,omitempty"`                  // #1150
+	RegimeGateFailClosed bool                   `json:"regime_gate_fail_closed,omitempty"` // #1278: entry gate actively failing closed (opens held while regime unknown)
 }
 
 type UIStrategyStatus struct {
@@ -66,6 +69,16 @@ type UIStrategyStatus struct {
 	Leverage         float64                    `json:"leverage,omitempty"`
 	SizingLeverage   float64                    `json:"sizing_leverage,omitempty"`
 	MarginMode       string                     `json:"margin_mode,omitempty"`
+	Paused           bool                       `json:"paused,omitempty"` // #1150
+
+	// #779/#1157: directional-policy display fields, mirroring /status.
+	EffectiveDirection             string              `json:"effective_direction,omitempty"`
+	EffectiveInvertSignal          bool                `json:"effective_invert_signal,omitempty"`
+	RegimeDirectionalPolicy        bool                `json:"regime_directional_policy,omitempty"`
+	EffectivePolicyRegime          string              `json:"effective_policy_regime,omitempty"`
+	DirectionalCertificationStatus string              `json:"directional_certification_status,omitempty"`
+	DirectionalCertificationCell   string              `json:"directional_certification_cell,omitempty"`
+	RegimeProfile                  *RegimeProfileState `json:"regime_profile,omitempty"` // #998: active regime-profile allocation switch state
 }
 
 type UIEquityPoint struct {
@@ -235,6 +248,17 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 			return
 		}
 		ss.handleAPIStrategySimulate(w, r, id)
+	// #1256 low-risk mutations (ui_mutations.go); POST-only enforced inside.
+	case "pause":
+		ss.handleAPIStrategyPause(w, r, id)
+	case "notifications":
+		ss.handleAPIStrategyNotifications(w, r, id)
+	// #1257 confirm-nonce-gated trade actions (ui_trade_actions.go).
+	case "open", "add", "close", "force-close", "update-sl", "cancel-sl":
+		ss.handleAPIStrategyTradeAction(w, r, id, resource)
+	// #1258 confirm-nonce-gated structural mutations (ui_structural.go).
+	case "remove-strategy", "paper-to-live", "apply-regime-gate":
+		ss.handleAPIStrategyStructural(w, r, id, resource)
 	default:
 		http.NotFound(w, r)
 	}
@@ -283,6 +307,7 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 		Symbol:    strategyDisplaySymbol(sc),
 		Timeframe: strategyDisplayTimeframe(sc),
 		Direction: strategyDisplayDirection(sc),
+		Paused:    sc.Paused,
 	}
 }
 
@@ -453,18 +478,20 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 	}
 
 	return UIStrategyOverview{
-		ID:               id,
-		Platform:         sc.Platform,
-		Symbol:           strategyDisplaySymbol(sc),
-		PnLPct:           pnlPct,
-		WinRate:          winRate,
-		Sharpe:           sharpe,
-		Regime:           strategyDisplayRegimeLabel(&snapshot, sc, ss.regime),
-		Direction:        strategyDisplayDirection(sc),
-		PnL:              pnl,
-		PortfolioValue:   pv,
-		InitialCapital:   initCap,
-		RegimeDivergence: snapshot.RegimeDivergence,
+		ID:                   id,
+		Platform:             sc.Platform,
+		Symbol:               strategyDisplaySymbol(sc),
+		PnLPct:               pnlPct,
+		WinRate:              winRate,
+		Sharpe:               sharpe,
+		Regime:               strategyDisplayRegimeLabel(&snapshot, sc, ss.regime),
+		Direction:            strategyDisplayDirection(sc),
+		PnL:                  pnl,
+		PortfolioValue:       pv,
+		InitialCapital:       initCap,
+		RegimeDivergence:     snapshot.RegimeDivergence,
+		Paused:               sc.Paused,
+		RegimeGateFailClosed: regimeGateFailClosedActive(sc, &snapshot, ss.regime),
 	}, lifetime, true
 }
 
@@ -520,7 +547,16 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		Leverage:         EffectiveExchangeLeverage(sc),
 		SizingLeverage:   EffectiveSizingLeverage(sc),
 		MarginMode:       sc.MarginMode,
+		Paused:           sc.Paused,
+		RegimeProfile:    snapshot.RegimeProfile,
 	}
+	dirView := directionalStatusForStrategy(sc, &snapshot, ss.regime, time.Now().UTC())
+	resp.EffectiveDirection = dirView.EffectiveDirection
+	resp.EffectiveInvertSignal = dirView.EffectiveInvertSignal
+	resp.RegimeDirectionalPolicy = dirView.PolicyConfigured
+	resp.EffectivePolicyRegime = dirView.EffectivePolicyRegime
+	resp.DirectionalCertificationStatus = dirView.CertStatus
+	resp.DirectionalCertificationCell = dirView.CertCell
 	writeJSON(w, resp)
 }
 

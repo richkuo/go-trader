@@ -214,7 +214,7 @@ func (b *RegimeATRBlock) EqualEffectiveForReload(other *RegimeATRBlock) bool {
 // callers that have already gone through ResolveSurface (which populates
 // UseDefaults/TrendRegime from raw). Callers that may run BEFORE
 // ResolveSurface (e.g. LoadConfig's defaults loop, which runs before
-// ValidateConfig) MUST use IsConfigured instead — IsZero returns true on
+// validateConfig) MUST use IsConfigured instead — IsZero returns true on
 // a freshly-unmarshaled block that has captured raw JSON but not yet been
 // resolved, which would mis-apply scalar auto-defaults on top of an
 // operator's explicit regime config.
@@ -373,34 +373,6 @@ func cloneRegimeMap(in map[string]RegimeATREntry) map[string]RegimeATREntry {
 		out[k] = v
 	}
 	return out
-}
-
-// parseRegimeATRBlock validates and parses the raw map[string]interface{}
-// JSON shape into a RegimeATRBlock. ctxLabel is prefixed onto error messages
-// so callers (LoadConfig, tier parser) can scope the failures.
-//
-// Returns (block, errs). Errors are returned as a slice so the parser can
-// report multiple problems at once instead of stopping on the first; callers
-// should treat any non-empty slice as a config-load failure.
-//
-// surface controls which baseline expansion applies for `use_defaults: true`
-// (tier surfaces handle their own expansion since tiers are an ordered list,
-// so passing a tier surface here returns a zero block — the caller must
-// special-case tier-level use_defaults before reaching this function).
-func labelsAreCanonicalADX(labels []string) bool {
-	if len(labels) != len(canonicalTrendRegimeLabels) {
-		return false
-	}
-	set := make(map[string]bool, len(labels))
-	for _, l := range labels {
-		set[l] = true
-	}
-	for _, l := range canonicalTrendRegimeLabels {
-		if !set[l] {
-			return false
-		}
-	}
-	return true
 }
 
 // mapRegimeToBaselineFamily resolves a single regime label to its ADX-family
@@ -823,7 +795,7 @@ func resolveRegimeTPTiers(raw interface{}, regime string) []hlProtectionTier {
 // validateRegimeATRConfig runs the full surface-aware parsing pass over every
 // strategy's regime blocks and accumulates errors with strategy-scoped
 // prefixes. Mutex with scalar siblings + regime-enabled requirement are
-// also enforced here. Called from ValidateConfig before the runtime-only
+// also enforced here. Called from validateConfig before the runtime-only
 // post-validation pass; on success the strategies' RegimeATRBlock fields
 // carry typed UseDefaults / TrendRegime values for runtime resolution.
 func validateRegimeATRConfig(cfg *Config) []string {

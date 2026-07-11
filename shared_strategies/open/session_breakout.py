@@ -16,6 +16,8 @@ breakout can fire, avoiding look-ahead.
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_from_true_range, true_range
+
 
 # UTC hour windows [start, end). ``end`` is exclusive.
 SESSION_WINDOWS = {
@@ -107,15 +109,10 @@ def session_breakout_core(
     high_volume = result["volume"] > result["vol_sma"] * volume_threshold
 
     if atr_multiplier > 0:
-        tr = pd.concat(
-            [
-                result["high"] - result["low"],
-                (result["high"] - result["close"].shift(1)).abs(),
-                (result["low"] - result["close"].shift(1)).abs(),
-            ],
-            axis=1,
-        ).max(axis=1)
-        atr = tr.rolling(window=atr_period, min_periods=atr_period).mean()
+        tr = true_range(result)
+        atr = atr_from_true_range(
+            tr, atr_period, round_large=False, min_periods=atr_period,
+        )
         atr_ok = tr > atr * atr_multiplier
     else:
         atr_ok = pd.Series(True, index=result.index)

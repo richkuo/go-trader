@@ -3,38 +3,43 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestNewFieldsSince(t *testing.T) {
-	cases := []struct {
-		version  int
-		minCount int // at least this many fields
-	}{
-		{0, 2}, // v2 owner_id + v3 warn_threshold (v4 dm booleans removed in v7)
-		{1, 2}, // v1 baseline → v2+ fields
-		{2, 1}, // v3+ only
-		{3, 0}, // nothing after v3 in registry
-		{4, 0},
-		{CurrentConfigVersion, 0}, // no new fields
-		{999, 0},                  // future version
-	}
-
-	for _, tc := range cases {
-		fields := NewFieldsSince(tc.version)
-		if len(fields) < tc.minCount {
-			t.Errorf("NewFieldsSince(%d) returned %d fields, want >= %d", tc.version, len(fields), tc.minCount)
+	// #1285: the v2/v3 registry entries were removed with the migration floor —
+	// every supported config (v13+) already carries those fields. The registry
+	// stays empty until a future version introduces an operator-set field.
+	cases := []int{0, 1, MinSupportedConfigVersion, CurrentConfigVersion, 999}
+	for _, version := range cases {
+		fields := NewFieldsSince(version)
+		if len(fields) != 0 {
+			t.Errorf("NewFieldsSince(%d) returned %d fields, want 0 (registry emptied by #1285 floor)", version, len(fields))
 		}
-		// All returned fields should have Version > tc.version
+		// Any future registry entry must have Version > the queried version.
 		for _, f := range fields {
-			if f.Version <= tc.version {
-				t.Errorf("NewFieldsSince(%d) returned field %q with version %d", tc.version, f.JSONPath, f.Version)
+			if f.Version <= version {
+				t.Errorf("NewFieldsSince(%d) returned field %q with version %d", version, f.JSONPath, f.Version)
 			}
 		}
+	}
+}
+
+// TestMinSupportedConfigVersionFloor pins the floor and its relation to the
+// current version — a floor above CurrentConfigVersion would reject every
+// config, and a floor below 13 would reference deleted handlers.
+func TestMinSupportedConfigVersionFloor(t *testing.T) {
+	if MinSupportedConfigVersion != 13 {
+		t.Errorf("MinSupportedConfigVersion = %d, want 13 — raising the floor requires fresh fleet verification (#1285)", MinSupportedConfigVersion)
+	}
+	if MinSupportedConfigVersion > CurrentConfigVersion {
+		t.Errorf("MinSupportedConfigVersion (%d) > CurrentConfigVersion (%d)", MinSupportedConfigVersion, CurrentConfigVersion)
 	}
 }
 
@@ -60,8 +65,9 @@ func TestMigrateConfigBasic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
+	// Version-less config (no config_version stamp): treated as a hand-authored
+	// current-shape file — migrates and stamps CurrentConfigVersion (#1285).
 	original := map[string]interface{}{
-		"config_version":   1,
 		"interval_seconds": 300,
 		"strategies":       []interface{}{},
 	}
@@ -109,8 +115,11 @@ func TestMigrateConfigBasic(t *testing.T) {
 	if updated["interval_seconds"].(float64) != 300 {
 		t.Error("interval_seconds should be preserved")
 	}
-	if updated["default_stop_loss_atr_mult"].(float64) != DefaultStopLossATRMult {
-		t.Errorf("default_stop_loss_atr_mult = %v, want %g", updated["default_stop_loss_atr_mult"], DefaultStopLossATRMult)
+	// The v12 default_stop_loss_atr_mult on-disk backfill was removed with the
+	// #1285 floor; LoadConfig's nil→DefaultStopLossATRMult runtime default
+	// keeps behavior identical without the disk write.
+	if _, ok := updated["default_stop_loss_atr_mult"]; ok {
+		t.Error("default_stop_loss_atr_mult should no longer be backfilled on disk (#1285)")
 	}
 }
 
@@ -118,7 +127,7 @@ func TestMigrateConfigCreatesNestedPaths(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	original := map[string]interface{}{"config_version": 1}
+	original := map[string]interface{}{"interval_seconds": 300}
 	data, err := json.MarshalIndent(original, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +163,7 @@ func TestMigrateConfigNilValues(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	original := map[string]interface{}{"config_version": 2}
+	original := map[string]interface{}{"interval_seconds": 300}
 	data, err := json.MarshalIndent(original, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +196,7 @@ func TestMigrateConfigAtomicWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	original := map[string]interface{}{"config_version": 1}
+	original := map[string]interface{}{"interval_seconds": 300}
 	data, err := json.MarshalIndent(original, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -248,286 +257,146 @@ func TestSetNestedField(t *testing.T) {
 	}
 }
 
-func TestRemoveNestedField(t *testing.T) {
-	obj := map[string]interface{}{
-		"top_level": "value1",
-		"nested": map[string]interface{}{
-			"field": "value2",
-			"keep":  "preserved",
-		},
-	}
-
-	removeNestedField(obj, "top_level")
-	if _, ok := obj["top_level"]; ok {
-		t.Error("top_level should have been removed")
-	}
-
-	removeNestedField(obj, "nested.field")
-	nested := obj["nested"].(map[string]interface{})
-	if _, ok := nested["field"]; ok {
-		t.Error("nested.field should have been removed")
-	}
-	if nested["keep"] != "preserved" {
-		t.Error("nested.keep should be preserved")
-	}
-
-	// Removing a non-existent field should be a no-op.
-	removeNestedField(obj, "nonexistent.path")
-}
-
-func TestMigrateConfigV6SkipsRemovalForCurrentVersion(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-
-	// Config already at v6 with fields that happen to match deprecated names
-	// should NOT have them removed (version guard).
-	original := map[string]interface{}{
-		"config_version": 6,
-		"discord": map[string]interface{}{
-			"channel_paper_trades": true,
-			"channel_live_trades":  true,
-		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
+// writeRawConfig marshals obj to path and returns the on-disk bytes, for the
+// #1285 rejection tests that assert the file is left byte-identical.
+func writeRawConfig(t *testing.T, path string, obj map[string]interface{}) []byte {
+	t.Helper()
+	data, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
+	return data
+}
 
-	if err := MigrateConfig(path, nil, nil); err != nil {
-		t.Fatalf("MigrateConfig failed: %v", err)
+// assertUnsupportedVersionError asserts the #1285 fail-loud rejection: the
+// error names the stamped version, the floor, and the migration path, and the
+// config file on disk is byte-identical (no partial migration).
+func assertUnsupportedVersionError(t *testing.T, err error, version int, path string, original []byte) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected unsupported-config_version error for version %d, got nil", version)
 	}
-
-	result, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	msg := err.Error()
+	for _, want := range []string{
+		fmt.Sprintf("config_version %d is no longer supported", version),
+		fmt.Sprintf("minimum %d", MinSupportedConfigVersion),
+		"go-trader.prev",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
 	}
-	var updated map[string]interface{}
-	if err := json.Unmarshal(result, &updated); err != nil {
-		t.Fatal(err)
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
-
-	// Fields should still be present since config was already at v6.
-	discord := updated["discord"].(map[string]interface{})
-	if _, ok := discord["channel_paper_trades"]; !ok {
-		t.Error("discord.channel_paper_trades should NOT have been removed for v6+ config")
-	}
-	if _, ok := discord["channel_live_trades"]; !ok {
-		t.Error("discord.channel_live_trades should NOT have been removed for v6+ config")
+	if !bytes.Equal(after, original) {
+		t.Errorf("config file was modified despite rejection — partial migration:\n%s", after)
 	}
 }
 
-func TestMigrateConfigV6RemovesChannelBooleans(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-
-	original := map[string]interface{}{
-		"config_version": 5,
-		"discord": map[string]interface{}{
-			"enabled":              true,
-			"channel_paper_trades": true,
-			"channel_live_trades":  true,
-			"channels": map[string]interface{}{
-				"hyperliquid": "ch-123",
+// TestMigrateConfigRejectsPreFloorVersions covers the #1285 floor: every
+// stamped version below MinSupportedConfigVersion fails loudly with an
+// actionable message and leaves the file untouched. Fixtures carry the legacy
+// fields the deleted v6–v12 handlers used to rewrite, proving nothing is
+// silently dropped or translated on the rejection path.
+func TestMigrateConfigRejectsPreFloorVersions(t *testing.T) {
+	cases := []struct {
+		name    string
+		version int
+		extra   map[string]interface{}
+	}{
+		{
+			// Pre-v6 channel booleans (deleted v6 handler).
+			name:    "v5_channel_booleans",
+			version: 5,
+			extra: map[string]interface{}{
+				"discord": map[string]interface{}{
+					"enabled":              true,
+					"channel_paper_trades": true,
+					"channel_live_trades":  true,
+				},
 			},
 		},
-		"telegram": map[string]interface{}{
-			"channel_paper_trades": false,
+		{
+			// Pre-v7 dm booleans (deleted v7 dm_channels translation).
+			name:    "v6_dm_booleans",
+			version: 6,
+			extra: map[string]interface{}{
+				"discord": map[string]interface{}{
+					"owner_id":        "disc-owner",
+					"dm_paper_trades": true,
+					"dm_live_trades":  false,
+				},
+			},
+		},
+		{
+			// Pre-v8 dead summary-freq fields (deleted v8 cleanup).
+			name:    "v7_summary_freq",
+			version: 7,
+			extra: map[string]interface{}{
+				"discord": map[string]interface{}{
+					"spot_summary_freq":    "hourly",
+					"options_summary_freq": "per_check",
+				},
+			},
+		},
+		{
+			// Pre-v10 perps leverage without sizing_leverage (deleted v10
+			// backfill). Runtime stays identical: EffectiveSizingLeverage
+			// falls back to Leverage when sizing_leverage is unset.
+			name:    "v9_sizing_leverage",
+			version: 9,
+			extra: map[string]interface{}{
+				"strategies": []interface{}{
+					map[string]interface{}{"id": "hl-eth", "type": "perps", "leverage": float64(2)},
+				},
+			},
+		},
+		{
+			// Last version below the floor.
+			name:    "v12_boundary",
+			version: 12,
+			extra:   map[string]interface{}{},
+		},
+		{
+			name:    "v1_ancient",
+			version: 1,
+			extra:   map[string]interface{}{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			obj := map[string]interface{}{"config_version": tc.version}
+			for k, v := range tc.extra {
+				obj[k] = v
+			}
+			original := writeRawConfig(t, path, obj)
+			err := MigrateConfig(path, nil, nil)
+			assertUnsupportedVersionError(t, err, tc.version, path, original)
+		})
+	}
+}
+
+// TestMigrateConfigAtFloorNeverStripsLegacyNames — supported configs (v13+)
+// keep fields that happen to match the pre-floor deprecated names; the
+// deleted v6/v8 removal handlers must not resurface at any supported version.
+func TestMigrateConfigAtFloorNeverStripsLegacyNames(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	writeRawConfig(t, path, map[string]interface{}{
+		"config_version": MinSupportedConfigVersion,
+		"discord": map[string]interface{}{
+			"channel_paper_trades": true,
 			"channel_live_trades":  true,
-		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := MigrateConfig(path, nil, nil); err != nil {
-		t.Fatalf("MigrateConfig failed: %v", err)
-	}
-
-	result, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var updated map[string]interface{}
-	if err := json.Unmarshal(result, &updated); err != nil {
-		t.Fatal(err)
-	}
-
-	// Version should be bumped to CurrentConfigVersion.
-	version := int(updated["config_version"].(float64))
-	if version != CurrentConfigVersion {
-		t.Errorf("config_version = %d, want %d", version, CurrentConfigVersion)
-	}
-
-	// Channel booleans should be removed from both discord and telegram.
-	discord := updated["discord"].(map[string]interface{})
-	if _, ok := discord["channel_paper_trades"]; ok {
-		t.Error("discord.channel_paper_trades should have been removed")
-	}
-	if _, ok := discord["channel_live_trades"]; ok {
-		t.Error("discord.channel_live_trades should have been removed")
-	}
-
-	telegram := updated["telegram"].(map[string]interface{})
-	if _, ok := telegram["channel_paper_trades"]; ok {
-		t.Error("telegram.channel_paper_trades should have been removed")
-	}
-	if _, ok := telegram["channel_live_trades"]; ok {
-		t.Error("telegram.channel_live_trades should have been removed")
-	}
-
-	// Other fields should be preserved.
-	if discord["enabled"] != true {
-		t.Error("discord.enabled should be preserved")
-	}
-	channels := discord["channels"].(map[string]interface{})
-	if channels["hyperliquid"] != "ch-123" {
-		t.Error("discord.channels.hyperliquid should be preserved")
-	}
-}
-
-func TestMigrateConfigV7TranslatesDMBooleans(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-
-	original := map[string]interface{}{
-		"config_version": 6,
-		"discord": map[string]interface{}{
-			"owner_id":        "disc-owner",
-			"dm_paper_trades": true,
-			"dm_live_trades":  false,
-		},
-		"telegram": map[string]interface{}{
-			"owner_chat_id":   "tg-owner",
-			"dm_paper_trades": false,
-			"dm_live_trades":  true,
-		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{
-		Strategies: []StrategyConfig{
-			{Platform: "hyperliquid"},
-			{Platform: "deribit"},
-		},
-	}
-	if err := MigrateConfig(path, nil, cfg); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var updated map[string]interface{}
-	if err := json.Unmarshal(result, &updated); err != nil {
-		t.Fatal(err)
-	}
-
-	discord := updated["discord"].(map[string]interface{})
-	if _, ok := discord["dm_paper_trades"]; ok {
-		t.Error("discord.dm_paper_trades should be removed")
-	}
-	if _, ok := discord["dm_live_trades"]; ok {
-		t.Error("discord.dm_live_trades should be removed")
-	}
-	dmD := discord["dm_channels"].(map[string]interface{})
-	if dmD["hyperliquid-paper"] != "disc-owner" || dmD["deribit-paper"] != "disc-owner" {
-		t.Errorf("discord dm_channels (paper) = %#v", dmD)
-	}
-	if _, ok := dmD["hyperliquid"]; ok {
-		t.Error("discord live hyperliquid should not be set when dm_live_trades is false")
-	}
-
-	tg := updated["telegram"].(map[string]interface{})
-	if _, ok := tg["dm_live_trades"]; ok {
-		t.Error("telegram.dm_live_trades should be removed")
-	}
-	dmT := tg["dm_channels"].(map[string]interface{})
-	if dmT["hyperliquid"] != "tg-owner" || dmT["deribit"] != "tg-owner" {
-		t.Errorf("telegram dm_channels (live) = %#v", dmT)
-	}
-	if _, ok := dmT["hyperliquid-paper"]; ok {
-		t.Error("telegram paper key should not exist when dm_paper_trades is false")
-	}
-}
-
-func TestMigrateConfigV7RemovesDMBooleansWhenUnset(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-
-	original := map[string]interface{}{
-		"config_version": 6,
-		"discord": map[string]interface{}{
-			"owner_id":        "o1",
-			"dm_paper_trades": false,
-			"dm_live_trades":  false,
-		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &Config{Strategies: []StrategyConfig{{Platform: "hyperliquid"}}}
-	if err := MigrateConfig(path, nil, cfg); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var updated map[string]interface{}
-	if err := json.Unmarshal(result, &updated); err != nil {
-		t.Fatal(err)
-	}
-	discord := updated["discord"].(map[string]interface{})
-	if _, ok := discord["dm_paper_trades"]; ok {
-		t.Error("dm_paper_trades should be removed")
-	}
-	if _, ok := discord["dm_channels"]; ok {
-		t.Error("dm_channels should not be added when both dm booleans are false")
-	}
-}
-
-// TestMigrateConfigV8RemovesDeadSummaryFreqFields verifies that the dead
-// discord.spot_summary_freq / discord.options_summary_freq fields (replaced by
-// the top-level summary_frequency map in #30) are stripped when upgrading
-// from v7.
-func TestMigrateConfigV8RemovesDeadSummaryFreqFields(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	original := map[string]interface{}{
-		"config_version": 7,
-		"discord": map[string]interface{}{
-			"enabled":              true,
 			"spot_summary_freq":    "hourly",
-			"options_summary_freq": "per_check",
 		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	})
 	if err := MigrateConfig(path, nil, nil); err != nil {
 		t.Fatalf("MigrateConfig failed: %v", err)
 	}
@@ -543,11 +412,187 @@ func TestMigrateConfigV8RemovesDeadSummaryFreqFields(t *testing.T) {
 		t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
 	}
 	discord := updated["discord"].(map[string]interface{})
-	if _, ok := discord["spot_summary_freq"]; ok {
-		t.Error("discord.spot_summary_freq should have been removed")
+	for _, key := range []string{"channel_paper_trades", "channel_live_trades", "spot_summary_freq"} {
+		if _, ok := discord[key]; !ok {
+			t.Errorf("discord.%s should NOT be removed for a supported config", key)
+		}
 	}
-	if _, ok := discord["options_summary_freq"]; ok {
-		t.Error("discord.options_summary_freq should have been removed")
+}
+
+// assertVersionlessDMKeyError asserts the #1285-review version-less rejection:
+// the error names the offending legacy key, explains the missing config_version
+// stamp, points at dm_channels + the go-trader.prev recovery path, and (when a
+// path/original is supplied) the on-disk file is byte-identical — never
+// partially migrated.
+func assertVersionlessDMKeyError(t *testing.T, err error, key, path string, original []byte) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected version-less removed-translation-key rejection for %q, got nil", key)
+	}
+	msg := err.Error()
+	for _, want := range []string{key, "no config_version stamp", "dm_channels", "go-trader.prev"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+	if path == "" {
+		return
+	}
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, original) {
+		t.Errorf("config file was modified despite rejection — partial migration:\n%s", after)
+	}
+}
+
+// TestVersionlessConfigRejectsRemovedDMTranslationKeys covers the #1285-review
+// gap: a version-less config (no config_version stamp) is treated as
+// current-shape and no longer runs the deleted v7 dm_paper_trades/dm_live_trades
+// → dm_channels translation. That translation has no runtime substitute, so a
+// version-less file still carrying either key must be rejected loudly at the raw
+// gate, at MigrateConfig, and at LoadConfig — never silently loaded with DM
+// routing dropped, never partially migrated. Covers both the discord and
+// telegram sections and both booleans, each with a populated owner target (the
+// realistic silent-loss scenario from the review).
+func TestVersionlessConfigRejectsRemovedDMTranslationKeys(t *testing.T) {
+	cases := []struct {
+		name    string
+		section string
+		key     string
+	}{
+		{"discord_dm_paper_trades", "discord", "dm_paper_trades"},
+		{"discord_dm_live_trades", "discord", "dm_live_trades"},
+		{"telegram_dm_paper_trades", "telegram", "dm_paper_trades"},
+		{"telegram_dm_live_trades", "telegram", "dm_live_trades"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.json")
+			ownerKey := "owner_id"
+			if tc.section == "telegram" {
+				ownerKey = "owner_chat_id"
+			}
+			obj := map[string]interface{}{
+				// No config_version key — version-less.
+				"interval_seconds": 3600,
+				tc.section: map[string]interface{}{
+					ownerKey: "owner-target",
+					tc.key:   true,
+				},
+			}
+			original := writeRawConfig(t, path, obj)
+			fullKey := tc.section + "." + tc.key
+
+			// Raw pre-migration gate rejects (no file to check).
+			assertVersionlessDMKeyError(t, checkRawConfigVersionSupported(original), fullKey, "", nil)
+			// MigrateConfig rejects before any rewrite — file byte-identical.
+			assertVersionlessDMKeyError(t, MigrateConfig(path, nil, nil), fullKey, path, original)
+			// LoadConfig rejects — the daemon never starts on it, file untouched.
+			_, loadErr := LoadConfig(path)
+			assertVersionlessDMKeyError(t, loadErr, fullKey, path, original)
+		})
+	}
+}
+
+// TestVersionlessConfigRemovedTranslationKeyAcceptance pins the negative side of
+// the #1285-review guard: it must fire ONLY on the removed v7 dm_* booleans and
+// never on (a) the inert v6 channel_* / v8 summary-freq keys [review must-survive
+// b], (b) the CURRENT dm_channels map — whose key merely shares the "dm_" prefix,
+// (c) a clean version-less config with no legacy keys [review must-survive c], or
+// (d) a stamped (v13+) config carrying a stray dm_* key, which the version-floor
+// path owns, not this guard.
+func TestVersionlessConfigRemovedTranslationKeyAcceptance(t *testing.T) {
+	cases := []struct {
+		name string
+		obj  map[string]interface{}
+	}{
+		{
+			name: "versionless_inert_channel_and_summary_keys",
+			obj: map[string]interface{}{
+				"discord": map[string]interface{}{
+					"channel_paper_trades": true,
+					"channel_live_trades":  true,
+					"spot_summary_freq":    "hourly",
+				},
+			},
+		},
+		{
+			name: "versionless_current_dm_channels_map",
+			obj: map[string]interface{}{
+				"discord": map[string]interface{}{
+					"dm_channels": map[string]interface{}{"hyperliquid-paper": "disc-owner"},
+				},
+			},
+		},
+		{
+			name: "versionless_clean_no_discord",
+			obj:  map[string]interface{}{"interval_seconds": 3600},
+		},
+		{
+			name: "stamped_config_with_stray_dm_key",
+			obj: map[string]interface{}{
+				"config_version": CurrentConfigVersion,
+				"discord":        map[string]interface{}{"dm_paper_trades": true},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.MarshalIndent(tc.obj, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key, found := versionlessConfigRemovedTranslationKey(data); found {
+				t.Errorf("versionlessConfigRemovedTranslationKey flagged %q — %s should be accepted", key, tc.name)
+			}
+			if err := checkRawConfigVersionSupported(data); err != nil {
+				t.Errorf("checkRawConfigVersionSupported rejected %s: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestVersionlessConfigWithInertPreFloorKeysMigrates is the migration-path proof
+// of review must-survive (b): a version-less config carrying the inert v6
+// channel_* / v8 summary-freq keys migrates cleanly to CurrentConfigVersion and
+// RETAINS those keys on disk (the runtime ignores them) — the #1285-review guard
+// never trips on them, and nothing is stripped or translated.
+func TestVersionlessConfigWithInertPreFloorKeysMigrates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	writeRawConfig(t, path, map[string]interface{}{
+		// No config_version key — version-less.
+		"interval_seconds": 3600,
+		"strategies":       []interface{}{},
+		"discord": map[string]interface{}{
+			"owner_id":             "disc-owner",
+			"channel_paper_trades": true,
+			"channel_live_trades":  true,
+			"spot_summary_freq":    "hourly",
+		},
+	})
+	if err := MigrateConfig(path, nil, nil); err != nil {
+		t.Fatalf("MigrateConfig rejected a version-less config with inert pre-floor keys: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated map[string]interface{}
+	if err := json.Unmarshal(after, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if v := int(updated["config_version"].(float64)); v != CurrentConfigVersion {
+		t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
+	}
+	discord := updated["discord"].(map[string]interface{})
+	for _, key := range []string{"channel_paper_trades", "channel_live_trades", "spot_summary_freq"} {
+		if _, ok := discord[key]; !ok {
+			t.Errorf("discord.%s should be retained (inert) for a version-less config", key)
+		}
 	}
 }
 
@@ -584,67 +629,6 @@ func TestMigrateConfigV8PreservesFieldsAtCurrentVersion(t *testing.T) {
 	discord := updated["discord"].(map[string]interface{})
 	if _, ok := discord["spot_summary_freq"]; !ok {
 		t.Error("discord.spot_summary_freq should NOT be removed when already at CurrentConfigVersion")
-	}
-}
-
-func TestMigrateConfigV10AddsSizingLeverage(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	original := map[string]interface{}{
-		"config_version": 9,
-		"strategies": []interface{}{
-			map[string]interface{}{
-				"id":       "hl-eth",
-				"type":     "perps",
-				"leverage": float64(2),
-			},
-			map[string]interface{}{
-				"id":              "okx-btc",
-				"type":            "perps",
-				"leverage":        float64(20),
-				"sizing_leverage": float64(3),
-			},
-			map[string]interface{}{
-				"id":       "spot-btc",
-				"type":     "spot",
-				"leverage": float64(2),
-			},
-		},
-	}
-	data, err := json.MarshalIndent(original, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := MigrateConfig(path, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	result, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var updated map[string]interface{}
-	if err := json.Unmarshal(result, &updated); err != nil {
-		t.Fatal(err)
-	}
-	strategies := updated["strategies"].([]interface{})
-	hl := strategies[0].(map[string]interface{})
-	if got := hl["sizing_leverage"].(float64); got != 2 {
-		t.Errorf("hl sizing_leverage = %g, want 2", got)
-	}
-	okx := strategies[1].(map[string]interface{})
-	if got := okx["sizing_leverage"].(float64); got != 3 {
-		t.Errorf("okx sizing_leverage = %g, want existing 3", got)
-	}
-	spot := strategies[2].(map[string]interface{})
-	if _, ok := spot["sizing_leverage"]; ok {
-		t.Error("spot sizing_leverage should not be added")
-	}
-	if v := int(updated["config_version"].(float64)); v != CurrentConfigVersion {
-		t.Errorf("config_version = %d, want %d", v, CurrentConfigVersion)
 	}
 }
 
@@ -755,10 +739,11 @@ func TestMigrateV13StrategyShape(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	// v12 config: tema_cross_bd open + tiered_tp_atr close, with legacy `tiers`
-	// in flat params (the bug that motivated #640).
+	// Version-less config (post-#1285 the only consumer of the v13 shape
+	// synthesis — stamped pre-v13 configs are rejected at the floor):
+	// tema_cross_bd open + tiered_tp_atr close, with legacy `tiers` in flat
+	// params (the bug that motivated #640).
 	original := map[string]interface{}{
-		"config_version": 12,
 		"strategies": []interface{}{
 			map[string]interface{}{
 				"id":               "hl-temacb-btc",
@@ -944,15 +929,15 @@ print(json.dumps(out))
 }
 
 // TestMigrateV13ManualStrategyDefaultsHold covers #640 review #2: type=manual
-// strategies in v12 typically have empty `args`, so the migration must not
-// leave open_strategy.name = "". Default to "hold" (matches LoadConfig's
-// runtime auto-fill for type=manual).
+// strategies without a stamp typically have empty `args`, so the migration
+// must not leave open_strategy.name = "". Default to "hold" (matches
+// LoadConfig's runtime auto-fill for type=manual). Version-less fixture —
+// stamped pre-v13 configs are rejected at the #1285 floor.
 func TestMigrateV13ManualStrategyDefaultsHold(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
 	original := map[string]interface{}{
-		"config_version": 12,
 		"strategies": []interface{}{
 			map[string]interface{}{
 				"id":        "hl-manual-eth",
@@ -992,7 +977,7 @@ func TestMigrateV13ManualStrategyDefaultsHold(t *testing.T) {
 // where someone wrote an object/array shape without bumping config_version.
 // Returning "" lets the v13 migration's args[0] fallback take over instead
 // of writing a corrupted "map[name:foo]" name (#640 review #3).
-// stringFromJSON keeps its lenient fmt.Sprint behavior for v6/v7 callers.
+// stringFromJSON keeps its lenient fmt.Sprint behavior for the v14 type check.
 func TestStrictStringFromJSON(t *testing.T) {
 	if got := strictStringFromJSON(map[string]interface{}{"name": "foo"}); got != "" {
 		t.Errorf("strictStringFromJSON(map) = %q, want empty (fail-safe)", got)
@@ -1008,12 +993,15 @@ func TestStrictStringFromJSON(t *testing.T) {
 	}
 }
 
-// TestLoadConfigMigratesV12EndToEnd is the smoke equivalent of running
-// `./go-trader --once` against a real v12 config (PR #642 re-review item #5).
-// It writes a v12 config containing both a tiered_tp_atr close ref AND extra
-// non-tiered keys in flat `params`, then exercises the full pipeline:
+// TestLoadConfigMigratesVersionlessEndToEnd is the smoke equivalent of running
+// `./go-trader --once` against a version-less legacy-shaped config (originally
+// PR #642 re-review item #5 at v12; converted to version-less by the #1285
+// floor — stamped pre-v13 configs are now rejected, see
+// TestLoadConfigRejectsPreFloorVersion). It writes a config containing both a
+// tiered_tp_atr close ref AND extra non-tiered keys in flat `params`, then
+// exercises the full pipeline:
 //
-//	raw v12 JSON → schema migration → file rewritten → LoadConfig parse →
+//	raw legacy JSON → schema migration → file rewritten → LoadConfig parse →
 //	defaults + validation → in-memory StrategyConfig with split refs.
 //
 // Failure modes this catches:
@@ -1022,12 +1010,11 @@ func TestStrictStringFromJSON(t *testing.T) {
 //   - on-disk file isn't actually rewritten (LoadConfig would error)
 //   - validation rejects the migrated shape
 //   - close ref doesn't carry its tiers through to where buildHyperliquidProtectionPlan reads them
-func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
+func TestLoadConfigMigratesVersionlessEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	v12 := map[string]interface{}{
-		"config_version":             12,
+	legacy := map[string]interface{}{
 		"interval_seconds":           3600,
 		"log_dir":                    "logs",
 		"db_file":                    filepath.Join(dir, "state.db"),
@@ -1059,7 +1046,7 @@ func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
 			},
 		},
 	}
-	data, err := json.MarshalIndent(v12, "", "  ")
+	data, err := json.MarshalIndent(legacy, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1071,8 +1058,8 @@ func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 
 	if got := cfg.ConfigVersion; got != CurrentConfigVersion {
@@ -1131,6 +1118,34 @@ func TestLoadConfigMigratesV12EndToEnd(t *testing.T) {
 	if !reflect.DeepEqual(cfg.Strategies[0].OpenStrategy, cfg2.Strategies[0].OpenStrategy) {
 		t.Error("re-load produced different OpenStrategy — migration is not idempotent")
 	}
+}
+
+// TestLoadConfigRejectsPreFloorVersion is the LoadConfig-level #1285 floor
+// check: a config stamped below MinSupportedConfigVersion must fail the load
+// with the actionable rejection BEFORE any migration pass touches the file —
+// the daemon must never start on (or partially rewrite) an ancient config.
+func TestLoadConfigRejectsPreFloorVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	original := writeRawConfig(t, path, map[string]interface{}{
+		"config_version":   12,
+		"interval_seconds": 3600,
+		"strategies": []interface{}{
+			map[string]interface{}{
+				"id":               "hl-temacb-btc",
+				"type":             "perps",
+				"platform":         "hyperliquid",
+				"script":           "shared_scripts/check_hyperliquid.py",
+				"args":             []interface{}{"tema_cross_bd", "BTC", "1h", "--mode=paper"},
+				"open_strategy":    "tema_cross_bd",
+				"close_strategies": []interface{}{"tiered_tp_atr"},
+				"capital":          1000.0,
+				"max_drawdown_pct": 25.0,
+			},
+		},
+	})
+	_, err := LoadConfig(path)
+	assertUnsupportedVersionError(t, err, 12, path, original)
 }
 
 // #656 — v14 migration converts allow_shorts:bool → direction:string. Both
@@ -1215,15 +1230,16 @@ func TestMigrateV14Direction(t *testing.T) {
 	}
 }
 
-// #656 — full LoadConfig migration path: a v12 config with allow_shorts:true
-// must end up with Direction="both" and no AllowShorts in the parsed struct
-// (since the JSON key is gone). Mirror of the v13 schema-shape migration test.
+// #656 — full LoadConfig migration path: a pre-v14 config with
+// allow_shorts:true must end up with Direction="both" and no AllowShorts in
+// the parsed struct (since the JSON key is gone). Fixture stamped at the
+// #1285 floor (v13) — the oldest version that still migrates.
 func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "v12.json")
+	path := filepath.Join(dir, "v13.json")
 
-	v12 := map[string]interface{}{
-		"config_version": 12,
+	v13 := map[string]interface{}{
+		"config_version": MinSupportedConfigVersion,
 		"strategies": []interface{}{
 			map[string]interface{}{
 				"id":               "hl-temab-eth",
@@ -1231,7 +1247,7 @@ func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
 				"platform":         "hyperliquid",
 				"script":           "shared_scripts/check_hyperliquid.py",
 				"args":             []interface{}{"triple_ema_bidir", "ETH", "1h", "--mode=paper"},
-				"open_strategy":    "triple_ema_bidir",
+				"open_strategy":    map[string]interface{}{"name": "triple_ema_bidir"},
 				"capital":          1000.0,
 				"max_drawdown_pct": 25.0,
 				"leverage":         1.0,
@@ -1243,7 +1259,7 @@ func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
 				"platform":         "hyperliquid",
 				"script":           "shared_scripts/check_hyperliquid.py",
 				"args":             []interface{}{"triple_ema", "BTC", "1h", "--mode=paper"},
-				"open_strategy":    "triple_ema",
+				"open_strategy":    map[string]interface{}{"name": "triple_ema"},
 				"capital":          1000.0,
 				"max_drawdown_pct": 25.0,
 				"leverage":         1.0,
@@ -1251,7 +1267,7 @@ func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
 			},
 		},
 	}
-	data, err := json.MarshalIndent(v12, "", "  ")
+	data, err := json.MarshalIndent(v13, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

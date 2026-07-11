@@ -375,6 +375,7 @@ def test_backtester_breakeven_after_tp1_long():
         atrs=[10, 10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -407,6 +408,7 @@ def test_backtester_breakeven_after_tp1_short():
         open_actions=["short"] + ["none"] * 5,
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -436,6 +438,7 @@ def test_backtester_atr_offset_after_tp1_long():
         atrs=[10, 10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -475,6 +478,7 @@ def test_backtester_trail_from_here_long_walks_up():
         atrs=[10, 10, 10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -505,6 +509,7 @@ def test_backtester_tp_atr_fraction_uses_firing_tier_multiple():
         atrs=[10, 10, 10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -564,6 +569,7 @@ def test_backtester_trail_from_here_short_walks_down():
         open_actions=["short"] + ["none"] * 6,
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -831,6 +837,7 @@ def test_backtester_multi_tier_cleared_same_bar_highest_wins():
         atrs=[10, 10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=2.0,
@@ -1009,6 +1016,7 @@ def test_backtester_sl_after_no_same_bar_fire_after_bump_long():
         atrs=[10, 10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -1058,6 +1066,7 @@ def test_backtester_sl_after_no_same_bar_fire_after_bump_short():
         open_actions=["short"] + ["none"] * 5,
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -1105,6 +1114,7 @@ def test_backtester_sl_after_flag_clears_for_next_bar_long():
         atrs=[10, 10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,
@@ -1148,6 +1158,7 @@ def test_backtester_sl_after_does_not_seed_when_no_tier_thresholds():
         atrs=[10, 10, 10, 10, 10],
     )
     bt = Backtester(
+        intrabar_resolution="bar_close",  # pin pre-#1271 legacy fill semantics this scenario encodes
         initial_capital=1000, commission_pct=0, slippage_pct=0,
         platform="hyperliquid", strategy_type="perps",
         stop_loss_atr_mult=1.0,

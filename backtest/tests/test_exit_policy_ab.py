@@ -37,6 +37,32 @@ def test_sign_test_drops_zeros_not_splits():
     assert r["p_value"] == pytest.approx(0.5)  # 2 * 0.25
 
 
+def test_binom_p_large_n_no_overflow():
+    # math.comb(n, n//2) overflows float conversion past n ~ 1030; pooled
+    # multi-window samples (#1282) exceed that. Must stay finite and exact.
+    p = m._binom_two_sided_p(700, 2000)
+    assert 0.0 <= p <= 1.0
+    # Heavily imbalanced split is decisively significant.
+    assert p < 1e-6
+    # Balanced split is not.
+    assert m._binom_two_sided_p(1000, 2000) > 0.9
+
+
+def test_binom_p_log_space_matches_small_n_exact():
+    # Small-n values must match the direct math.comb sum the log-space
+    # rewrite replaced.
+    def direct(k, n, pr=0.5):
+        def cdf(u):
+            return sum(math.comb(n, i) * (pr ** i) * ((1.0 - pr) ** (n - i))
+                       for i in range(0, u + 1))
+        lo = cdf(k)
+        hi = 1.0 - cdf(k - 1) if k > 0 else 1.0
+        return min(1.0, 2.0 * min(lo, hi))
+
+    for k, n in [(0, 5), (3, 10), (7, 8), (25, 60)]:
+        assert m._binom_two_sided_p(k, n) == pytest.approx(direct(k, n), rel=1e-9)
+
+
 def test_sign_test_empty():
     r = m.sign_test([])
     assert r["n"] == 0 and r["p_value"] == 1.0
@@ -661,3 +687,28 @@ def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
     assert captured["sig_pos"] == 2
     assert captured["regime_frame_len"] == 8  # df_signals, not df (10)
     assert res is not None and res["paired_diag"]["paired"] == 1
+
+
+# --------------------------------------------------------------------------
+# intrabar_resolution threading (#1294)
+# --------------------------------------------------------------------------
+
+def test_backtester_kwargs_carry_intrabar_resolution():
+    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
+    assert kw["intrabar_resolution"] == m.INTRABAR_RESOLUTION == "ohlc_walk"
+
+
+def test_parser_accepts_and_rejects_intrabar_modes():
+    p = m.build_parser()
+    base = ["--strategy", "momentum", "--candidate-close", "[]"]
+    assert p.parse_args(base).intrabar_resolution == "ohlc_walk"
+    assert p.parse_args(base + ["--intrabar-resolution", "bar_close"]
+                        ).intrabar_resolution == "bar_close"
+    with pytest.raises(SystemExit):
+        p.parse_args(base + ["--intrabar-resolution", "nonsense"])
+
+
+def test_module_mode_reaches_backtester_kwargs(monkeypatch):
+    monkeypatch.setattr(m, "INTRABAR_RESOLUTION", "bar_close")
+    kw = m._backtester_kwargs("momentum", None, None, None, 1000.0, {})
+    assert kw["intrabar_resolution"] == "bar_close"

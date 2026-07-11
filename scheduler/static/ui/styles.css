@@ -323,6 +323,14 @@ h3 {
   border-color: rgba(102, 112, 98, 0.28);
 }
 
+/* #1150: paused badge — muted, informational */
+.regime-badge--paused {
+  color: var(--muted);
+  background: rgba(102, 112, 98, 0.12);
+  border-color: rgba(102, 112, 98, 0.32);
+  cursor: help;
+}
+
 /* #907: divergence badge — amber warning colour */
 .regime-badge--divergence {
   color: var(--amber);
@@ -544,6 +552,53 @@ h3 {
 
 .pos-short {
   color: var(--red);
+}
+
+/* #1230: risk / regime-store / transitions panels in the status rail */
+.risk-panel,
+.regime-store-panel,
+.transitions-panel,
+.controls-panel {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.panel-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.panel-row {
+  border-bottom: 1px solid var(--position-line);
+  padding: 7px 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.panel-row:last-child {
+  border-bottom: 0;
+}
+
+.panel-title {
+  font-weight: 600;
+}
+
+.panel-indent {
+  padding-left: 12px;
+}
+
+.panel-muted {
+  color: var(--muted);
+}
+
+.risk-alert {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.panel-list .regime-badge {
+  font-size: 11px;
+  padding: 1px 7px;
 }
 
 .trade-history {
@@ -823,6 +878,83 @@ h3 {
   background: #e8efe8;
 }
 
+/* #1231: ops panels (leaderboard / diagnostics / cashflow / correlation /
+   dead strategies / close evaluators) below the overview table */
+.ops-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.ops-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--panel);
+}
+
+.ops-panel--wide {
+  grid-column: 1 / -1;
+}
+
+.ops-panel h3 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.ops-table-scroll {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.ops-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.ops-table th,
+.ops-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--position-line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ops-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+.ops-badge {
+  display: inline-block;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.ops-badge--live {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.ops-badge--shadow {
+  color: var(--muted);
+}
+
 .overview-table td {
   font-variant-numeric: tabular-nums;
 }
@@ -850,7 +982,11 @@ h3 {
 }
 
 .tuner-header h3,
-.positions h3 {
+.positions h3,
+.risk-panel h3,
+.regime-store-panel h3,
+.transitions-panel h3,
+.controls-panel h3 {
   margin: 0;
   font-size: 14px;
 }
@@ -998,4 +1134,94 @@ h3 {
 
 .overview-panel[hidden] {
   display: none;
+}
+
+/* #1256: low-risk mutation controls (pause + ratchet-alert toggles) */
+.controls-row {
+  margin: 10px 0 6px;
+}
+
+.controls-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 5px 0;
+}
+
+.controls-field select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.controls-message {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* #1257 trade actions */
+.trade-panel {
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.trade-panel h3 {
+  margin: 0 0 8px;
+}
+.trade-row-button {
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  margin-left: 4px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.4));
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.trade-row-button:hover {
+  background: rgba(128, 128, 128, 0.15);
+}
+.trade-row-button.danger {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+/* #1258 structural mutations */
+.structural-panel {
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+  margin-top: 12px;
+  padding-top: 10px;
+}
+.structural-panel h3 {
+  margin: 0 0 8px;
+}
+.controls-field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.tuner-button.danger {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+.trade-confirm-hint {
+  font-size: 0.85rem;
+}
+#trade-confirm-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 6px 8px;
+  margin: 4px 0 10px;
+  border: 1px solid var(--border, rgba(128, 128, 128, 0.4));
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
 }

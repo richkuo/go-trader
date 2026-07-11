@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeTestConfig(t *testing.T, dir, content string) string {
@@ -323,7 +324,7 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestValidateConfigErrors(t *testing.T) {
+func TestConfigValidationErrors(t *testing.T) {
 	cases := []struct {
 		name    string
 		cfg     Config
@@ -433,7 +434,7 @@ func TestValidateConfigErrors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateConfig(&tc.cfg)
+			err := validateConfig(&tc.cfg, false)
 			if err == nil {
 				t.Fatal("expected validation error")
 			}
@@ -444,7 +445,7 @@ func TestValidateConfigErrors(t *testing.T) {
 	}
 }
 
-func TestValidateConfigValidConfig(t *testing.T) {
+func TestConfigValidationValidConfig(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID:             "test-spot",
@@ -459,12 +460,12 @@ func TestValidateConfigValidConfig(t *testing.T) {
 		},
 	}
 
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
 
-func TestValidateConfigOpenCloseFields(t *testing.T) {
+func TestConfigValidationOpenCloseFields(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID:             "test-spot",
@@ -479,7 +480,7 @@ func TestValidateConfigOpenCloseFields(t *testing.T) {
 		}},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("expected valid open/close config, got: %v", err)
 	}
 }
@@ -513,7 +514,7 @@ func TestLoadConfigRejectsMultipleCloseStrategies(t *testing.T) {
 	}
 }
 
-func TestValidateConfigOpenCloseRejectsOptions(t *testing.T) {
+func TestConfigValidationOpenCloseRejectsOptions(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID:             "test-options",
@@ -527,7 +528,7 @@ func TestValidateConfigOpenCloseRejectsOptions(t *testing.T) {
 		}},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil {
 		t.Fatal("expected options open/close validation error")
 	}
@@ -536,7 +537,7 @@ func TestValidateConfigOpenCloseRejectsOptions(t *testing.T) {
 	}
 }
 
-func TestValidateConfigCloseStrategyName(t *testing.T) {
+func TestConfigValidationCloseStrategyName(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID:             "test-spot",
@@ -550,7 +551,7 @@ func TestValidateConfigCloseStrategyName(t *testing.T) {
 		}},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil {
 		t.Fatal("expected close strategy name validation error")
 	}
@@ -559,7 +560,7 @@ func TestValidateConfigCloseStrategyName(t *testing.T) {
 	}
 }
 
-func TestValidateConfigOpenCloseDefersRegistryLookupToCheckScript(t *testing.T) {
+func TestConfigValidationOpenCloseDefersRegistryLookupToCheckScript(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID:             "test-spot",
@@ -574,12 +575,12 @@ func TestValidateConfigOpenCloseDefersRegistryLookupToCheckScript(t *testing.T) 
 		}},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("syntactically valid strategy names should be accepted by config validation: %v", err)
 	}
 }
 
-func TestValidateConfigPortfolioRisk(t *testing.T) {
+func TestConfigValidationPortfolioRisk(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{{
 			ID: "test", Type: "spot", Script: "check.py", Capital: 100, MaxDrawdownPct: 10,
@@ -590,7 +591,7 @@ func TestValidateConfigPortfolioRisk(t *testing.T) {
 		},
 	}
 
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil {
 		t.Fatal("expected error for invalid portfolio risk")
 	}
@@ -633,7 +634,7 @@ func TestParseLeaderboardPostTime(t *testing.T) {
 	}
 }
 
-func TestValidateConfigLeaderboardPostTime(t *testing.T) {
+func TestConfigValidationLeaderboardPostTime(t *testing.T) {
 	base := Config{
 		Strategies: []StrategyConfig{{
 			ID: "test", Type: "spot", Script: "shared_scripts/check_strategy.py",
@@ -646,21 +647,21 @@ func TestValidateConfigLeaderboardPostTime(t *testing.T) {
 	// Valid time should pass.
 	cfg := base
 	cfg.LeaderboardPostTime = "11:00"
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Errorf("expected valid config with leaderboard_post_time=11:00, got: %v", err)
 	}
 
 	// Empty (disabled) should pass.
 	cfg2 := base
 	cfg2.LeaderboardPostTime = ""
-	if err := ValidateConfig(&cfg2); err != nil {
+	if err := validateConfig(&cfg2, false); err != nil {
 		t.Errorf("expected valid config with empty leaderboard_post_time, got: %v", err)
 	}
 
 	// Invalid format should fail.
 	cfg3 := base
 	cfg3.LeaderboardPostTime = "noon"
-	err := ValidateConfig(&cfg3)
+	err := validateConfig(&cfg3, false)
 	if err == nil {
 		t.Fatal("expected error for invalid leaderboard_post_time")
 	}
@@ -733,7 +734,7 @@ func TestEffectiveInitialCapital(t *testing.T) {
 	}
 }
 
-func TestValidateConfigInitialCapitalNegative(t *testing.T) {
+func TestConfigValidationInitialCapitalNegative(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{{
 			ID:             "test",
@@ -744,7 +745,7 @@ func TestValidateConfigInitialCapitalNegative(t *testing.T) {
 			MaxDrawdownPct: 10,
 		}},
 	}
-	err := ValidateConfig(cfg)
+	err := validateConfig(cfg, false)
 	if err == nil {
 		t.Fatal("expected error for negative initial_capital")
 	}
@@ -1972,7 +1973,7 @@ func TestLoadConfigHLPerpsPeersOmittedStopLossDoesNotConflict(t *testing.T) {
 	}
 }
 
-func TestValidateConfigDMChannelsInvalidKey(t *testing.T) {
+func TestConfigValidationDMChannelsInvalidKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [{
@@ -1999,7 +2000,7 @@ func TestValidateConfigDMChannelsInvalidKey(t *testing.T) {
 	}
 }
 
-func TestValidateConfigDMChannelsEmptyValue(t *testing.T) {
+func TestConfigValidationDMChannelsEmptyValue(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [{
@@ -2026,7 +2027,7 @@ func TestValidateConfigDMChannelsEmptyValue(t *testing.T) {
 	}
 }
 
-func TestValidateConfigDMChannelsValidKeys(t *testing.T) {
+func TestConfigValidationDMChannelsValidKeys(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [{
@@ -2066,7 +2067,7 @@ func TestValidateConfigDMChannelsValidKeys(t *testing.T) {
 	}
 }
 
-func TestValidateConfigDMChannelsOrphanSuffix(t *testing.T) {
+func TestConfigValidationDMChannelsOrphanSuffix(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
 		"strategies": [{
@@ -2093,7 +2094,7 @@ func TestValidateConfigDMChannelsOrphanSuffix(t *testing.T) {
 	}
 }
 
-func TestValidateConfigLeaderboardSummariesInvalid(t *testing.T) {
+func TestConfigValidationLeaderboardSummariesInvalid(t *testing.T) {
 	tests := []struct {
 		name string
 		lc   LeaderboardSummaryConfig
@@ -2112,7 +2113,7 @@ func TestValidateConfigLeaderboardSummariesInvalid(t *testing.T) {
 				Strategies:           []StrategyConfig{{ID: "s1", Type: "spot", Platform: "binanceus", Capital: 100, MaxDrawdownPct: 10, Script: "x.py"}},
 				LeaderboardSummaries: []LeaderboardSummaryConfig{tt.lc},
 			}
-			err := ValidateConfig(cfg)
+			err := validateConfig(cfg, false)
 			if err == nil {
 				t.Fatalf("expected error for %s, got nil", tt.name)
 			}
@@ -2123,11 +2124,11 @@ func TestValidateConfigLeaderboardSummariesInvalid(t *testing.T) {
 	}
 }
 
-// TestValidateConfigLeaderboardSummariesDuplicateKey covers review item 4 on
+// TestConfigValidationLeaderboardSummariesDuplicateKey covers review item 4 on
 // #309: two entries with identical platform/ticker/channel share a single
 // LastLeaderboardSummaries timestamp, so whichever posts first silently blocks
 // the other. Detect the collision at config load instead.
-func TestValidateConfigLeaderboardSummariesDuplicateKey(t *testing.T) {
+func TestConfigValidationLeaderboardSummariesDuplicateKey(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 60,
 		Strategies: []StrategyConfig{
@@ -2139,7 +2140,7 @@ func TestValidateConfigLeaderboardSummariesDuplicateKey(t *testing.T) {
 			{Platform: "Hyperliquid", Ticker: "eth", Channel: "chan-1", Frequency: "12h"},
 		},
 	}
-	err := ValidateConfig(cfg)
+	err := validateConfig(cfg, false)
 	if err == nil {
 		t.Fatal("expected duplicate-key validation error, got nil")
 	}
@@ -2151,10 +2152,10 @@ func TestValidateConfigLeaderboardSummariesDuplicateKey(t *testing.T) {
 	}
 }
 
-// TestValidateConfigLeaderboardSummariesDistinctTickersSameChannel confirms we
+// TestConfigValidationLeaderboardSummariesDistinctTickersSameChannel confirms we
 // don't flag legitimate configurations where the same channel hosts multiple
 // leaderboards scoped by distinct tickers.
-func TestValidateConfigLeaderboardSummariesDistinctTickersSameChannel(t *testing.T) {
+func TestConfigValidationLeaderboardSummariesDistinctTickersSameChannel(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 60,
 		Strategies: []StrategyConfig{
@@ -2165,12 +2166,12 @@ func TestValidateConfigLeaderboardSummariesDistinctTickersSameChannel(t *testing
 			{Platform: "hyperliquid", Ticker: "ETH", Channel: "hl-ch", Frequency: "12h"}, // ticker-scoped
 		},
 	}
-	if err := ValidateConfig(cfg); err != nil {
+	if err := validateConfig(cfg, false); err != nil {
 		t.Errorf("expected distinct-ticker same-channel config to validate, got: %v", err)
 	}
 }
 
-func TestValidateConfigLeaderboardSummariesValid(t *testing.T) {
+func TestConfigValidationLeaderboardSummariesValid(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 60,
 		Strategies: []StrategyConfig{
@@ -2182,7 +2183,7 @@ func TestValidateConfigLeaderboardSummariesValid(t *testing.T) {
 			{Platform: "binanceus", TopN: 5, Channel: "chan-3"}, // no freq = on-demand only
 		},
 	}
-	if err := ValidateConfig(cfg); err != nil {
+	if err := validateConfig(cfg, false); err != nil {
 		t.Errorf("expected valid config, got: %v", err)
 	}
 }
@@ -2335,10 +2336,10 @@ func TestOrdinal(t *testing.T) {
 	}
 }
 
-// TestValidateConfigManualSymbolSharingAllowed covers issue #619: manual
+// TestConfigValidationManualSymbolSharingAllowed covers issue #619: manual
 // strategies may share a coin with manual or automated perps peers because
 // close paths now use the same sized-close sole-peer guard as perps.
-func TestValidateConfigManualSymbolSharingAllowed(t *testing.T) {
+func TestConfigValidationManualSymbolSharingAllowed(t *testing.T) {
 	cases := []struct {
 		name  string
 		other StrategyConfig
@@ -2402,7 +2403,7 @@ func TestValidateConfigManualSymbolSharingAllowed(t *testing.T) {
 				},
 				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 			}
-			err := ValidateConfig(&cfg)
+			err := validateConfig(&cfg, false)
 			if err != nil {
 				t.Fatalf("expected no error, got: %v", err)
 			}
@@ -2410,7 +2411,7 @@ func TestValidateConfigManualSymbolSharingAllowed(t *testing.T) {
 	}
 }
 
-func TestValidateConfigManualPerpsPeerLeverageMismatchRejected(t *testing.T) {
+func TestConfigValidationManualPerpsPeerLeverageMismatchRejected(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{
 			{
@@ -2436,17 +2437,17 @@ func TestValidateConfigManualPerpsPeerLeverageMismatchRejected(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil || !strings.Contains(err.Error(), "disagree on leverage") {
 		t.Fatalf("expected leverage peer error, got: %v", err)
 	}
 }
 
-// TestValidateConfigManualPerpsPeerMarginModeMismatchRejected covers the
+// TestConfigValidationManualPerpsPeerMarginModeMismatchRejected covers the
 // type-set widening in hyperliquidPeerStrategyErrors (#619/#620): manual peers
 // must share margin_mode with co-resident perps peers because HL aggregates
 // per coin per account.
-func TestValidateConfigManualPerpsPeerMarginModeMismatchRejected(t *testing.T) {
+func TestConfigValidationManualPerpsPeerMarginModeMismatchRejected(t *testing.T) {
 	cfg := Config{
 		Strategies: []StrategyConfig{
 			{
@@ -2474,13 +2475,13 @@ func TestValidateConfigManualPerpsPeerMarginModeMismatchRejected(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil || !strings.Contains(err.Error(), "disagree on margin_mode") {
 		t.Fatalf("expected margin_mode peer error, got: %v", err)
 	}
 }
 
-func TestValidateConfigManualPerpsMultipleTrailingStopOwnersAllowed(t *testing.T) {
+func TestConfigValidationManualPerpsMultipleTrailingStopOwnersAllowed(t *testing.T) {
 	manualTrailing := 1.5
 	perpsTrailingPct := 0.02
 	cfg := Config{
@@ -2511,13 +2512,13 @@ func TestValidateConfigManualPerpsMultipleTrailingStopOwnersAllowed(t *testing.T
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err != nil {
 		t.Fatalf("expected manual+perps trailing peers to validate, got: %v", err)
 	}
 }
 
-func TestValidateConfigMultipleTrailingRatchetRegimeOwnersAllowed(t *testing.T) {
+func TestConfigValidationMultipleTrailingRatchetRegimeOwnersAllowed(t *testing.T) {
 	regimeTrail := func() *RegimeATRBlock {
 		return &RegimeATRBlock{raw: map[string]interface{}{
 			"trend_regime": map[string]interface{}{
@@ -2557,17 +2558,17 @@ func TestValidateConfigMultipleTrailingRatchetRegimeOwnersAllowed(t *testing.T) 
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("expected multiple trailing_tp_ratchet_regime owners to validate, got: %v", err)
 	}
 }
 
-// TestValidateConfigInvertSignal covers #775: invert_signal must be accepted
+// TestConfigValidationInvertSignal covers #775: invert_signal must be accepted
 // on HL perps/manual regardless of direction (long/short/both compose with
 // invert at different signal layers — invert runs in the Go executor before
 // direction interprets the sign), but must still be rejected on platforms or
 // strategy types where the Go layer never sees a numeric +1/-1 signal to flip.
-func TestValidateConfigInvertSignal(t *testing.T) {
+func TestConfigValidationInvertSignal(t *testing.T) {
 	hlPerps := func(direction string, invert bool) StrategyConfig {
 		return StrategyConfig{
 			ID:             "hl-test-eth",
@@ -2602,7 +2603,7 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 			Strategies:    []StrategyConfig{hlPerps(DirectionShort, true)},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		if err := ValidateConfig(&cfg); err != nil {
+		if err := validateConfig(&cfg, false); err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
 	})
@@ -2612,7 +2613,7 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 			Strategies:    []StrategyConfig{hlPerps(DirectionLong, true)},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		if err := ValidateConfig(&cfg); err != nil {
+		if err := validateConfig(&cfg, false); err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
 	})
@@ -2622,7 +2623,7 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 			Strategies:    []StrategyConfig{hlPerps(DirectionBoth, true)},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		if err := ValidateConfig(&cfg); err != nil {
+		if err := validateConfig(&cfg, false); err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
 	})
@@ -2632,7 +2633,7 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 			Strategies:    []StrategyConfig{hlManual(DirectionShort, true)},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		if err := ValidateConfig(&cfg); err != nil {
+		if err := validateConfig(&cfg, false); err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
 	})
@@ -2650,7 +2651,7 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 			}},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		err := ValidateConfig(&cfg)
+		err := validateConfig(&cfg, false)
 		if err == nil || !strings.Contains(err.Error(), "invert_signal is only supported for HL perps/manual") {
 			t.Fatalf("expected HL-perps/manual-only error, got: %v", err)
 		}
@@ -2671,7 +2672,7 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 			}},
 			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 		}
-		err := ValidateConfig(&cfg)
+		err := validateConfig(&cfg, false)
 		if err == nil || !strings.Contains(err.Error(), "invert_signal is only supported for HL perps/manual") {
 			t.Fatalf("expected HL-perps/manual-only error, got: %v", err)
 		}
@@ -2679,7 +2680,7 @@ func TestValidateConfigInvertSignal(t *testing.T) {
 }
 
 // #787: normal startup still requires live credentials in the environment.
-func TestValidateConfigHLLiveRequiresSecretKey(t *testing.T) {
+func TestConfigValidationHLLiveRequiresSecretKey(t *testing.T) {
 	t.Setenv("HYPERLIQUID_SECRET_KEY", "")
 	cfg := Config{
 		Strategies: []StrategyConfig{{
@@ -2692,7 +2693,7 @@ func TestValidateConfigHLLiveRequiresSecretKey(t *testing.T) {
 			MaxDrawdownPct: 60,
 		}},
 	}
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil || !strings.Contains(err.Error(), "HYPERLIQUID_SECRET_KEY") {
 		t.Fatalf("expected live secret error, got: %v", err)
 	}
@@ -2766,6 +2767,121 @@ func TestCircuitBreakerEnabled_DefaultsToTrue(t *testing.T) {
 	sc.CircuitBreaker = &tr
 	if !sc.CircuitBreakerEnabled() {
 		t.Fatal("explicit true should report enabled")
+	}
+}
+
+// #1273: the CB timing/threshold accessors fall back to the historical
+// hardcoded values (24h / 5 losses / 1h) on a nil receiver or nil fields, and
+// honor explicit overrides. Call sites read only through these accessors.
+func TestCircuitBreakerOverrideAccessors(t *testing.T) {
+	for name, sc := range map[string]*StrategyConfig{"nil receiver": nil, "nil fields": {}} {
+		if got := sc.CircuitBreakerDrawdownCooldown(); got != 24*time.Hour {
+			t.Errorf("%s: drawdown cooldown = %v, want 24h", name, got)
+		}
+		if got := sc.CircuitBreakerLossStreakThreshold(); got != 5 {
+			t.Errorf("%s: loss-streak threshold = %d, want 5", name, got)
+		}
+		if got := sc.CircuitBreakerLossStreakCooldown(); got != time.Hour {
+			t.Errorf("%s: loss-streak cooldown = %v, want 1h", name, got)
+		}
+	}
+	dd, th, lc := 720, 3, 30
+	sc := &StrategyConfig{CBDrawdownCooldownMinutes: &dd, CBLossStreakThreshold: &th, CBLossStreakCooldownMinutes: &lc}
+	if got := sc.CircuitBreakerDrawdownCooldown(); got != 12*time.Hour {
+		t.Errorf("override drawdown cooldown = %v, want 12h", got)
+	}
+	if got := sc.CircuitBreakerLossStreakThreshold(); got != 3 {
+		t.Errorf("override loss-streak threshold = %d, want 3", got)
+	}
+	if got := sc.CircuitBreakerLossStreakCooldown(); got != 30*time.Minute {
+		t.Errorf("override loss-streak cooldown = %v, want 30m", got)
+	}
+}
+
+// #1273: validateConfig accepts in-bounds cb_* overrides and rejects
+// non-positive values, out-of-bounds values, and any of the fields on
+// type=manual (exempt from CheckRisk, where they would silently do nothing).
+func TestConfigValidationCBOverrides(t *testing.T) {
+	intp := func(v int) *int { return &v }
+	mk := func(mut func(*StrategyConfig)) Config {
+		sc := StrategyConfig{
+			ID: "test-spot", Type: "spot", Platform: "binanceus",
+			Script:  "shared_scripts/check_strategy.py",
+			Args:    []string{"sma_crossover", "BTC/USDT", "1h"},
+			Capital: 1000, MaxDrawdownPct: 60,
+		}
+		mut(&sc)
+		return Config{
+			Strategies:    []StrategyConfig{sc},
+			PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+		}
+	}
+
+	valid := mk(func(sc *StrategyConfig) {
+		sc.CBDrawdownCooldownMinutes = intp(720)
+		sc.CBLossStreakThreshold = intp(3)
+		sc.CBLossStreakCooldownMinutes = intp(30)
+	})
+	if err := validateConfig(&valid, false); err != nil {
+		t.Fatalf("in-bounds cb_* overrides should validate: %v", err)
+	}
+	// Boundary values are inclusive.
+	boundary := mk(func(sc *StrategyConfig) {
+		sc.CBDrawdownCooldownMinutes = intp(30 * 24 * 60)
+		sc.CBLossStreakThreshold = intp(100)
+		sc.CBLossStreakCooldownMinutes = intp(1)
+	})
+	if err := validateConfig(&boundary, false); err != nil {
+		t.Fatalf("boundary cb_* overrides should validate: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		mut     func(*StrategyConfig)
+		wantErr string
+	}{
+		{"zero drawdown cooldown", func(sc *StrategyConfig) { sc.CBDrawdownCooldownMinutes = intp(0) }, "cb_drawdown_cooldown_minutes must be positive"},
+		{"negative loss threshold", func(sc *StrategyConfig) { sc.CBLossStreakThreshold = intp(-1) }, "cb_loss_streak_threshold must be positive"},
+		{"zero loss cooldown", func(sc *StrategyConfig) { sc.CBLossStreakCooldownMinutes = intp(0) }, "cb_loss_streak_cooldown_minutes must be positive"},
+		{"loss threshold above cap", func(sc *StrategyConfig) { sc.CBLossStreakThreshold = intp(101) }, "cb_loss_streak_threshold must be <= 100"},
+		{"drawdown cooldown above 30 days", func(sc *StrategyConfig) { sc.CBDrawdownCooldownMinutes = intp(30*24*60 + 1) }, "cb_drawdown_cooldown_minutes must be <= 43200"},
+		{"loss cooldown above 30 days", func(sc *StrategyConfig) { sc.CBLossStreakCooldownMinutes = intp(30*24*60 + 1) }, "cb_loss_streak_cooldown_minutes must be <= 43200"},
+		{"manual rejects drawdown cooldown", func(sc *StrategyConfig) {
+			sc.Type = "manual"
+			sc.Platform = "hyperliquid"
+			sc.Symbol = "ETH"
+			sc.Timeframe = "1h"
+			sc.Leverage = 2
+			sc.CBDrawdownCooldownMinutes = intp(720)
+		}, "cb_drawdown_cooldown_minutes is not supported for manual strategies"},
+		{"manual rejects loss threshold", func(sc *StrategyConfig) {
+			sc.Type = "manual"
+			sc.Platform = "hyperliquid"
+			sc.Symbol = "ETH"
+			sc.Timeframe = "1h"
+			sc.Leverage = 2
+			sc.CBLossStreakThreshold = intp(3)
+		}, "cb_loss_streak_threshold is not supported for manual strategies"},
+		{"manual rejects loss cooldown", func(sc *StrategyConfig) {
+			sc.Type = "manual"
+			sc.Platform = "hyperliquid"
+			sc.Symbol = "ETH"
+			sc.Timeframe = "1h"
+			sc.Leverage = 2
+			sc.CBLossStreakCooldownMinutes = intp(30)
+		}, "cb_loss_streak_cooldown_minutes is not supported for manual strategies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mk(tc.mut)
+			err := validateConfig(&cfg, false)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q should contain %q", err.Error(), tc.wantErr)
+			}
+		})
 	}
 }
 

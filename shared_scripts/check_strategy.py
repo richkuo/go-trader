@@ -81,6 +81,17 @@ def main():
     # #879: precomputed global-store regime payload; presence (even empty)
     # disables inline regime computation. None when the flag is absent.
     regime_payload_json = _arg_value("--regime-payload-json")
+    # #1277: ATR smoothing method for the standard_atr surface (EntryATR
+    # stamping + market_ctx["atr"]). Forwarded by Go from the resolved
+    # atr_method config; "simple" is the frozen legacy default. Fails loud on
+    # an unknown value — ATR feeds live stop geometry, so a vocabulary
+    # mismatch must never silently degrade to a default.
+    atr_method = (_arg_value("--atr-method") or "simple").strip().lower()
+    if atr_method not in ("simple", "wilder"):
+        print(json.dumps({
+            "error": f"--atr-method must be 'simple' or 'wilder', got {atr_method!r}",
+        }))
+        sys.exit(1)
     open_strategy = _arg_value("--open-strategy")
     close_strategies_raw = _arg_value("--close-strategies")
     position_side = (_arg_value("--position-side", "") or "").lower()
@@ -117,7 +128,7 @@ def main():
             "--position-regime",
             "--regime-windows-spec-json", "--ohlcv-limit",
             "--regime-atr-window", "--regime-directional-window",
-            "--regime-payload-json",
+            "--regime-payload-json", "--atr-method",
         ):
             skip_next = True
             continue
@@ -225,7 +236,7 @@ def main():
         decision = None
         if open_close_enabled:
             market_ctx = {"mark_price": float(df["close"].iloc[-1])}
-            atr_now = latest_atr(df)
+            atr_now = latest_atr(df, method=atr_method)
             if atr_now > 0:
                 market_ctx["atr"] = atr_now
             # #733: live regime label for tiered_tp_atr_live_regime evaluator.
@@ -253,7 +264,7 @@ def main():
             signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
 
         # Get the last row's signal
-        ensure_atr_indicator(result_df)
+        ensure_atr_indicator(result_df, method=atr_method)
         last = result_df.iloc[-1]
         price = float(last["close"])
 

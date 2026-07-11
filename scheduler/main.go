@@ -110,6 +110,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
 	}
+	if err := applyAlertThrottleFromConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to apply alert throttle interval: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
 	// #1085: load the directional-certification artifact (SSoT for the
@@ -130,7 +134,24 @@ func main() {
 	// summary still shows the resolved source.
 	explicitKeys, _ := loadStrategyExplicitKeys(*configPath)
 	for _, sc := range cfg.Strategies {
-		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID]))
+		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID], cfg))
+	}
+	// #1275: warn loudly when a configured open strategy carries the M5
+	// fee-audit deprecate verdict (documented gross edge <= 0). Advisory only
+	// — the config keeps loading and trading; the same lines are replayed to
+	// the owner DM once the notifier is wired.
+	deprecatedEdgeWarnings := deprecatedEdgeStartupWarnings(cfg.Strategies)
+	for _, msg := range deprecatedEdgeWarnings {
+		fmt.Fprintln(os.Stderr, "[config] "+msg)
+	}
+	// #1269: surface a configured daily loss limit at startup so the operator
+	// can audit the portfolio-wide entry gate without grepping the JSON.
+	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
+		fmt.Println(line)
+	}
+	// #1270: same for a configured same-direction exposure cap.
+	if line := exposureCapStartupSummaryLine(cfg.PortfolioRisk); line != "" {
+		fmt.Println(line)
 	}
 
 	// #339: Detect a missing state DB on a live deployment *before* OpenStateDB
@@ -248,6 +269,13 @@ func main() {
 	// once the notifier is wired below.
 	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
 
+	// #1277 optional hardening: detect a config edit + restart (not SIGHUP)
+	// that changed a strategy's effective atr_method while it still holds a
+	// position opened under the old one — the only gap the SIGHUP hot-reload
+	// guard (config_reload.go validateHotReloadStateCompatible) can't see.
+	// Collect here, forward to owner DM once the notifier is wired below.
+	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -279,7 +307,11 @@ func main() {
 	// Start HTTP status server. Priority: CLI flag > config > default.
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
-	server.SetConfigContext(*configPath, cfg.Regime)
+	server.SetConfigContext(*configPath, cfg)
+	// #1272: end single-threaded startup before the first state-reading
+	// goroutine (http.Serve). ClearLatchedKillSwitchSharedWallet above must
+	// stay before this call.
+	markSchedulerStarted()
 	server.Start(statusPort)
 
 	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
@@ -320,6 +352,9 @@ func main() {
 	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
 	defer cleanupNotifier()
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
+	// #1257: the dashboard trade-action cores share the daemon notifier so
+	// their protection warnings reach the operator like the manual CLI's do.
+	server.SetNotifier(notifier)
 
 	// #1137 LLM entry analysis: dedicated async lane (own queue + concurrency
 	// cap, own per-job deadline — never the shared pythonSemaphore path). Rides
@@ -455,8 +490,27 @@ func main() {
 		}
 	}
 
+	// #1277 optional hardening: forward startup atr_method-drift warnings —
+	// the only place that catches a config edit + restart-while-open, since
+	// the SIGHUP guard never runs on this path.
+	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
 	// #1157: surface uncertified/expired directional policy to owner DM at startup.
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
+
+	// #1275: replay M5-deprecated-strategy warnings to the owner DM so an
+	// operator live-trading a documented negative-gross-edge strategy sees it
+	// even when not tailing stderr. One-time per startup; suppressed
+	// per-strategy by allow_deprecated.
+	if len(deprecatedEdgeWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range deprecatedEdgeWarnings {
+			notifier.SendOwnerDM("[config] " + msg)
+		}
+	}
 
 	// #339: Forward the missing-state-DB warning to the owner. Captured before
 	// OpenStateDB ran (which would have created an empty DB), surfaced here
@@ -607,6 +661,10 @@ func main() {
 			return
 		}
 		mu.Lock()
+		// #1275: snapshot the pre-reload strategy shapes so a hot reload that
+		// moves an open leg onto an M5-deprecated name (or drops an
+		// allow_deprecated ack) re-fires the deprecated-edge warning below.
+		prevStrategies := append([]StrategyConfig(nil), cfg.Strategies...)
 		changes, err := applyHotReloadConfig(cfg, nextCfg, state, notifier, server)
 		if err != nil {
 			mu.Unlock()
@@ -634,6 +692,18 @@ func main() {
 			fmt.Printf("[reload] %s\n", line)
 		}
 		notifyDirectionalCertStartupSummary(notifier, reloadCertLines)
+
+		// #1275: a hot reload can move a strategy's open leg onto an
+		// M5-deprecated name or flip allow_deprecated off — surface the same
+		// loud warning (stderr + owner DM) the startup path emits, but only
+		// for strategies whose deprecated-unacked state is new to this reload
+		// so unchanged strategies don't re-spam on every SIGHUP.
+		for _, msg := range newlyDeprecatedEdgeWarnings(prevStrategies, cfg.Strategies) {
+			fmt.Fprintln(os.Stderr, "[reload] "+msg)
+			if notifier.HasOwner() {
+				notifier.SendOwnerDM("[reload] " + msg)
+			}
+		}
 
 		if len(changes) == 0 {
 			fmt.Println("[reload] Config reload applied: no hot-reloadable changes")
@@ -912,6 +982,8 @@ func main() {
 			// perps strategies on the same account don't get double-counted.
 			killSwitchFired := false
 			notionalBlocked := false
+			dailyLossEntriesHeld := false
+			exposureCapStatus := ExposureCapStatus{}
 			usedPVFallback := false
 
 			// Partition HL live strategies up-front: shared-wallet detection
@@ -1132,6 +1204,16 @@ func main() {
 			// leveraged margin blow-up that would otherwise hide inside
 			// equity-only drawdown for all-perps accounts.
 			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, cfg.Strategies, prices)
+			// #1269: evaluate the portfolio-wide daily loss limit once per
+			// cycle (pure read — stale per-strategy days count as 0, matching
+			// what rolloverDailyPnL would reset them to).
+			dailyLossStatus := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC())
+			// #1270: evaluate the same-direction exposure cap once per cycle
+			// (pure read over positions + this cycle's prices; totalPV is the
+			// concentration basis). Like the notional cap, this measures the
+			// book as of cycle start — a position opened by an earlier strategy
+			// in the same cycle is picked up next cycle.
+			exposureCapStatus = evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, prices, totalPV)
 			mu.RUnlock()
 
 			mu.Lock()
@@ -1181,6 +1263,23 @@ func main() {
 			if notionalBlocked {
 				fmt.Printf("[WARN] %s\n", portfolioReason)
 			}
+			// #1269: hold position-increasing signals for the rest of the UTC
+			// day once the aggregate daily realized loss reaches the limit.
+			// Entry-suppression only — the manage-only paths below keep
+			// running, nothing is force-closed, and the gate clears itself at
+			// the UTC rollover (DailyPnL date keys roll per strategy). The
+			// once-per-day owner DM fires after mu is released below (#880
+			// convention: no notifier I/O under the state lock).
+			dailyLossEntriesHeld = dailyLossStatus.Tripped
+			if dailyLossEntriesHeld {
+				fmt.Printf("[WARN] %s — entries held until UTC rollover\n", dailyLossHoldDetail(dailyLossStatus))
+			}
+			// #1291 review: a configured pct arm that cannot evaluate is an
+			// auto-protective gap — surface it every cycle, not only in the
+			// pull-based /status (even while the USD arm still enforces).
+			if dailyLossStatus.PctBasisMiss {
+				fmt.Printf("[WARN] %s\n", dailyLossPctBasisMissWarning)
+			}
 			// #954: book this cycle's funding payments + non-trade flows into
 			// the ledger BEFORE the display reconcile reads the ledger sums —
 			// the wallet balance being reconciled already includes them.
@@ -1193,6 +1292,46 @@ func main() {
 			// StrategyState.SharedWalletValue*).
 			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, stateDB, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
 			mu.Unlock()
+
+			// #1269: once-per-UTC-day owner DM on a tripped daily loss limit.
+			// Outside mu (notifier I/O never runs under the state lock, #880).
+			if dailyLossEntriesHeld {
+				today := time.Now().UTC().Format("2006-01-02")
+				if dailyLossAlertDue(true, dailyLossLastAlertDate, today) {
+					dailyLossLastAlertDate = today
+					notifier.SendOwnerDM(formatDailyLossTripDM(dailyLossStatus, time.Now().UTC()))
+				}
+			}
+			// #1291 review: once-per-UTC-day owner DM while a configured pct
+			// arm cannot evaluate (initial_capital basis is 0) — a silently
+			// inert protection must reach an active operator channel.
+			if dailyLossStatus.PctBasisMiss {
+				today := time.Now().UTC().Format("2006-01-02")
+				if dailyLossAlertDue(true, dailyLossPctBasisMissAlertDate, today) {
+					dailyLossPctBasisMissAlertDate = today
+					notifier.SendOwnerDM(formatDailyLossPctBasisMissDM(dailyLossStatus, time.Now().UTC()))
+				}
+			}
+			// #1270: exposure-cap operator surfaces — per-cycle [WARN] while any
+			// arm is blocking, a fail-safe log for unpriceable positions excluded
+			// from the sums, and an owner DM edge-triggered on the transition
+			// into blocked (per direction / per asset; re-arms when the block
+			// clears). Outside mu — notifier I/O never runs under the state
+			// lock (#880).
+			if warnMsg := exposureCapCycleWarning(exposureCapStatus); warnMsg != "" {
+				fmt.Printf("[WARN] %s\n", warnMsg)
+			}
+			if skipMsg := exposureCapSkippedWarning(exposureCapStatus); skipMsg != "" {
+				fmt.Printf("[WARN] %s\n", skipMsg)
+			}
+			if exposureCapStatus.PVBasisMiss {
+				fmt.Printf("[WARN] %s\n", exposureCapPVBasisMissWarning)
+			}
+			exposureCapDM, exposureCapNextAlerts := exposureCapAlertMessage(exposureCapStatus, exposureCapAlerts, time.Now().UTC())
+			exposureCapAlerts = exposureCapNextAlerts
+			if exposureCapDM != "" {
+				notifier.SendOwnerDM(exposureCapDM)
+			}
 
 			// #1100: switch the HL shared-wallet drift alarm onto the
 			// exchange-sourced cash-flow journal — the wallet TOTAL is
@@ -1582,6 +1721,10 @@ func main() {
 				// consumer — wait (bounded by regimeStorePhaseBudget) for the
 				// population kicked off before the risk phase.
 				regimeStoreReady()
+				// #1224: persist per-window labels, detect transitions, and
+				// alert on cross-window reversals. Sequential main loop,
+				// outside mu; fail-open — never blocks the dispatch below.
+				processRegimeTransitionAlerts(stateDB, globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -1787,7 +1930,7 @@ func main() {
 					switch sc.Type {
 					case "spot":
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 								prices[result.Symbol] = price
 								// #879: single-source regime — read the global store for this
 								// strategy's signature instead of the check output, and point
@@ -1795,7 +1938,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1803,6 +1946,19 @@ func main() {
 								// natural exit. The Signal==0 manage path below keeps running.
 								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+									result.Signal = 0
+								}
+								// #1269: daily loss limit tripped — identical hold semantics to pause:
+								// position-increasing signals held, position-reducing actions pass.
+								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
+									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
 								}
 								mu.Lock()
@@ -1819,12 +1975,12 @@ func main() {
 								}
 								if !liveExecFailed {
 									mu.Lock()
-									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, logger)
+									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
 								}
 							}
 						} else if sc.Platform == "robinhood" {
-							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, notifier, logger); ok {
+							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 								prices[result.Symbol] = price
 								// #879: single-source regime — read the global store for this
 								// strategy's signature instead of the check output, and point
@@ -1832,7 +1988,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, rhPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1840,6 +1996,19 @@ func main() {
 								// natural exit. The Signal==0 manage path below keeps running.
 								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+									result.Signal = 0
+								}
+								// #1269: daily loss limit tripped — identical hold semantics to pause:
+								// position-increasing signals held, position-reducing actions pass.
+								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
+									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
 								}
 								mu.Lock()
@@ -1856,18 +2025,18 @@ func main() {
 								}
 								if !liveExecFailed {
 									mu.Lock()
-									trades, detail = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, logger)
+									trades, detail = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, notifier, logger); ok {
+						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							// #879: single-source regime — read the global store for this
 							// strategy's signature instead of the check output, and point
 							// result.Regime at it so stamp-at-open inside execute* shares it.
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1877,9 +2046,22 @@ func main() {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
+							// #1269: daily loss limit tripped — identical hold semantics to pause:
+							// position-increasing signals held, position-reducing actions pass.
+							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
+								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1270: same-direction exposure cap — only the capped direction's
+							// position-increasing signals are held; the other direction and all
+							// position-reducing actions pass.
+							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false); capBlocked {
+								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
+								result.Signal = 0
+							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
-							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, logger)
+							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, cfg, logger)
 							mu.Unlock()
 						}
 					case "options":
@@ -1892,6 +2074,24 @@ func main() {
 								if dropped > 0 {
 									logger.Info("Paused: %d option open action(s) dropped — close actions still execute (#1150)", dropped)
 								}
+								result.Actions = kept
+							}
+							// #1269: daily loss limit tripped — drop option open actions
+							// ("buy"/"sell" both OPEN legs); close actions and the
+							// theta-harvest walker still manage existing positions.
+							if dailyLossEntriesHeld {
+								kept, dropped := pausedOptionsActions(result.Actions)
+								if dropped > 0 {
+									logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
+								}
+								result.Actions = kept
+							}
+							// #1270: same-direction exposure cap — drop option OPEN actions
+							// whose coarse delta direction is capped ("buy"/"sell" both open
+							// legs; delta sign decides the direction). Close actions and the
+							// theta-harvest walker still manage existing positions.
+							if kept, dropped, capWhy := exposureCapOptionsActions(exposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
+								logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
 								result.Actions = kept
 							}
 							// #879: options regime now comes from the global store's
@@ -1930,7 +2130,7 @@ func main() {
 								sc.RegimeProfileAllocation.Window, palLabel, hlProfileActive, hlProfileNext.PendingProfile, hlProfileNext.PendingBarsSeen)
 						}
 						if sc.Platform == "okx" {
-							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, notifier, logger); ok {
+							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 								prices[result.Symbol] = price
 								// #879: single-source regime — read the global store for this
 								// strategy's signature instead of the check output, and point
@@ -1938,7 +2138,7 @@ func main() {
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
-									logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1946,6 +2146,19 @@ func main() {
 								// natural exit. The Signal==0 manage path below keeps running.
 								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+									result.Signal = 0
+								}
+								// #1269: daily loss limit tripped — identical hold semantics to pause:
+								// position-increasing signals held, position-reducing actions pass.
+								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
+								// #1270: same-direction exposure cap — only the capped direction's
+								// position-increasing signals are held; the other direction and all
+								// position-reducing actions pass.
+								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
+									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
 								}
 								mu.Lock()
@@ -1962,11 +2175,11 @@ func main() {
 								}
 								if !liveExecFailed {
 									mu.Lock()
-									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, logger)
+									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, notifier, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							prices[result.Symbol] = price
 							// #1046: circuit breaker latched — force hold so no entry/
 							// add/flip/close executes (every execution path below gates
@@ -1983,7 +2196,7 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -1991,6 +2204,20 @@ func main() {
 							// natural exit. The Signal==0 manage path below keeps running.
 							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
+								result.Signal = 0
+							}
+							// #1269: daily loss limit tripped — identical hold semantics to pause:
+							// position-increasing signals held, position-reducing actions pass.
+							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1270: same-direction exposure cap — only the capped direction's
+							// position-increasing signals are held; the other direction and all
+							// position-reducing actions pass. result.Signal is already
+							// invert_signal-resolved here, so its sign IS the trade direction.
+							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
+								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
 							mu.Lock()
@@ -2145,6 +2372,9 @@ func main() {
 							// blends (no on-chain order / re-size).
 							scaleInAddQty := 0.0
 							if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {
+								// #1268: risk_per_trade_pct + allow_scale_in is
+								// rejected at config load, so the notional
+								// default here never runs under risk sizing.
 								defOpenNotional := PerpsOpenNotional(hlScaleInCash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
 								snap := scaleInSnapshot{Side: hlPosSide, Quantity: hlPosQty, AvgCost: hlAvgCost, EntryATR: hlEntryATR, ScaleInCount: hlScaleInCount, AddedNotionalUSD: hlAddedNotionalUSD, LastAddPrice: hlLastAddPrice}
 								if q, okAdd, reason := perpsScaleInDecision(sc, snap, result.Signal, price, defOpenNotional); okAdd {
@@ -2200,7 +2430,7 @@ func main() {
 								if scaleInAddQty > 0 {
 									trades, detail, openTrade = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
 								} else {
-									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, logger)
+									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 								}
 								mu.Unlock()
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
@@ -2268,7 +2498,7 @@ func main() {
 							}
 						}
 					case "futures":
-						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, notifier, logger); ok {
+						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							prices[result.Symbol] = price
 							// #879: single-source regime — read the global store for this
 							// strategy's signature instead of the check output, and point
@@ -2276,13 +2506,13 @@ func main() {
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, tsContracts); regimeBlocked {
-								logger.Info("Regime gate: open signal blocked (regime=%s)", gateRegime)
+								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
 							// flip); position-reducing actions pass so open positions ride their
 							// natural exit. The Signal==0 manage path below keeps running.
-							// allowsLong=allowsShort=true: ExecuteFuturesSignal is
+							// allowsLong=allowsShort=true: ExecuteFuturesSignalWithFillFee is
 							// unconditionally bidirectional — a sell on a long (closeFraction
 							// 0) closes AND opens a fresh short ("Open short … after closing
 							// long"), and a buy on a short mirrors it — so an opposite-side
@@ -2292,6 +2522,16 @@ func main() {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
+							// #1269: daily loss limit tripped — identical hold semantics to pause:
+							// position-increasing signals held, position-reducing actions pass.
+							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
+								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1270: deliberately NOT gated by the same-direction exposure
+							// cap — CME futures are outside the phase-1 crypto bucket
+							// (computeAssetDeltas excludes type=futures), so the crypto
+							// bucket must not block futures entries.
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
@@ -2306,7 +2546,7 @@ func main() {
 							}
 							if !liveExecFailed {
 								mu.Lock()
-								trades, detail = executeTopStepResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, logger)
+								trades, detail = executeTopStepResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 								mu.Unlock()
 							}
 						}
@@ -2565,6 +2805,12 @@ func main() {
 					posCount := len(stratState.Positions) + len(stratState.OptionPositions)
 					cash := stratState.Cash
 					regimeLabel := strategyDisplayRegimeLabel(stratState, sc, cfg.Regime)
+					// #1278: name an actively fail-closed entry gate in the status
+					// line so an operator scanning logs during a regime-store
+					// outage sees WHY the strategy is not opening.
+					if regimeGateFailClosedActive(sc, stratState, cfg.Regime) {
+						regimeLabel = decorateRegimeLabelGateClosed(regimeLabel)
+					}
 					mu.RUnlock()
 
 					logger.Info("%s", formatStatusLine(cash, posCount, pv, trades, regimeLabel))
@@ -2900,7 +3146,7 @@ func spotSymbol(args []string) string {
 
 // runSpotCheck runs the spot check subprocess and returns the parsed result.
 // No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
-func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
+func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -2909,6 +3155,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
+	args = appendATRMethodArg(args, atrMethod)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -2961,7 +3208,7 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 }
 
 // executeSpotResult applies a spot signal to state. Must be called under Lock.
-func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *SpotResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string) {
+func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *SpotResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
 	exec, err := ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
@@ -2971,6 +3218,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
+	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -3007,6 +3255,18 @@ func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[strin
 		return
 	}
 	pos.EntryATR = atr
+}
+
+// indicatorsATRValue extracts the check payload's "atr" for risk-per-trade
+// sizing (#1268), returning 0 when absent or non-positive. Plausibility
+// against price is enforced downstream in PerpsRiskStopDistance (same 50%-of-
+// price bound as stampEntryATRIfOpened).
+func indicatorsATRValue(indicators map[string]interface{}) float64 {
+	atr, ok := indicatorFloat(indicators, "atr")
+	if !ok || atr <= 0 {
+		return 0
+	}
+	return atr
 }
 
 func indicatorFloat(indicators map[string]interface{}, key string) (float64, bool) {
@@ -3226,7 +3486,7 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 // result.Regime is known, so downstream EffectiveDirection / perpsLiveOrderSize
 // / PerpsOrderSkipReason calls in execute paths see the effective values.
 // Mutation is scoped to the loop-local sc; cfg.Strategies is never touched.
-func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	// Suppress in-process close evaluators that overlap on-chain reduce-only
 	// protection — running both races on the shared on-chain position
@@ -3240,6 +3500,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, *sc, regime)
 	args = appendRegimePayloadArg(args, *sc, regime)
+	args = appendATRMethodArg(args, atrMethod)
 	if refsArgs, err := buildStrategyRefsArg(scForCheck); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -3401,7 +3662,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 //
 // posSide is the current position side captured under RLock in Phase 1
 // ("long", "short", or "" for flat). We consult PerpsOrderSkipReason BEFORE
-// calling the Python executor: if ExecutePerpsSignal would treat the result
+// calling the Python executor: if ExecutePerpsSignalWithLeverage would treat the result
 // as a no-op, placing the live order would fill on-chain but never produce a
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
@@ -3413,13 +3674,15 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497/#518: perps sizing — sizing_leverage scales cash → notional in
-	// the legacy formula; margin_per_trade_usd (when set) overrides to a
-	// margin-space formula so high exchange leverage doesn't shrink intent.
-	sizingLeverage := EffectiveSizingLeverage(sc)
-	exchangeLeverage := EffectiveExchangeLeverage(sc)
-	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
-	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, directionEnum, result.CloseFraction)
+	// #254/#497/#518/#1268: perps sizing — sizing_leverage scales cash →
+	// notional in the legacy formula; margin_per_trade_usd (when set) overrides
+	// to a margin-space formula so high exchange leverage doesn't shrink
+	// intent; risk_per_trade_pct (when set) sizes qty from the resolved stop
+	// distance (ATR owners read the check payload's indicators.atr — the same
+	// value stampEntryATRIfOpened later freezes, so sizing and SL geometry
+	// agree) and fails closed on fresh opens when the distance is unresolvable.
+	sizing := PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators))
+	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
 		return nil, false
@@ -3586,8 +3849,8 @@ func isHLOpenOrderCapRejection(errStr string) bool {
 	return strings.Contains(lower, "trigger order") || strings.Contains(lower, "open order") || strings.Contains(lower, "open orders")
 }
 
-func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string) {
-	trades, detail, openTrade, _ := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, regime, logger)
+func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
+	trades, detail, openTrade, _ := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, regime, cfg, logger)
 	if openTrade != nil {
 		var pos *Position
 		if p, ok := s.Positions[result.Symbol]; ok {
@@ -3602,7 +3865,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 // Must be called under Lock. execResult is non-nil for successful live orders;
 // nil for paper mode. Live open trades are returned so the caller can run
 // same-cycle protection sync before the single INSERT.
-func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
+func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	fillPrice := price
 	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
@@ -3611,11 +3874,12 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	exchangeLeverage := EffectiveExchangeLeverage(sc)
-	sizingLeverage := EffectiveSizingLeverage(sc)
-	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
+	// #1268: sizing bundle resolved at the apply price; only consulted when
+	// this is a paper open (fillQty==0) — live orders were already sized in
+	// runHyperliquidExecuteOrder from the same config surface.
+	sizing := PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators))
 
-	// Thread exchange metadata into ExecutePerpsSignal so each Trade is built
+	// Thread exchange metadata into ExecutePerpsSignalWithLeverage so each Trade is built
 	// with the OID and fee before RecordTrade persists it (#289). Stamping the
 	// fields onto s.TradeHistory after the fact would never reach SQLite — the
 	// eager INSERT has already happened and SaveState's timestamp dedup skips
@@ -3630,7 +3894,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		fillFee = fill.Fee
 	}
 
-	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, sizing, fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", nil, nil
@@ -3640,6 +3904,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, regime)
+	stampATRMethodAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, cfg)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
 	}
@@ -3743,7 +4008,7 @@ func topstepSymbol(args []string) string {
 }
 
 // runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
-func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
+func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -3752,6 +4017,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
+	args = appendATRMethodArg(args, atrMethod)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -3810,7 +4076,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 // ("long", "short", or "" for flat). We consult FuturesOrderSkipReason BEFORE
 // calling the Python executor: without this guard a live sell fires while
 // posSide=="short" (Quantity is always positive so posQty<=0 cannot
-// distinguish short from flat) but ExecuteFuturesSignal is a no-op in that
+// distinguish short from flat) but ExecuteFuturesSignalWithFillFee is a no-op in that
 // state — producing a silent state drift identical in shape to #298/#300.
 func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
 	if reason := FuturesOrderSkipReason(result.Signal, posSide); reason != "" {
@@ -3888,7 +4154,7 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 }
 
 // executeTopStepResult applies a TopStep futures result to state. Must be called under Lock.
-func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string) {
+func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillContracts int
 	var fillFee float64
@@ -3917,6 +4183,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
+	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -3947,7 +4214,7 @@ func robinhoodSymbol(args []string) string {
 }
 
 // runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
-func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
+func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -3956,6 +4223,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
+	args = appendATRMethodArg(args, atrMethod)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -4007,7 +4275,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 //
 // posSide is the current position side captured under RLock in Phase 1
 // ("long", "short", or "" for flat). We consult SpotOrderSkipReason BEFORE
-// calling the Python executor: otherwise a no-op ExecuteSpotSignal (e.g.
+// calling the Python executor: otherwise a no-op ExecuteSpotSignalWithFillFee (e.g.
 // already-long with signal=1) would not record the live fill — the same bug
 // class as #298. See #300.
 func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
@@ -4067,7 +4335,7 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 }
 
 // executeRobinhoodResult applies a Robinhood result to state. Must be called under Lock.
-func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string) {
+func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -4089,6 +4357,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
+	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -4129,7 +4398,7 @@ func okxInstType(args []string) string {
 }
 
 // runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
-func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
+func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
 	if sc.HTFFilter {
@@ -4138,6 +4407,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	args = appendRegimeArgs(args, regime)
 	args = appendStrategyRegimeWindowArgs(args, sc, regime)
 	args = appendRegimePayloadArg(args, sc, regime)
+	args = appendATRMethodArg(args, atrMethod)
 	if refsArgs, err := buildStrategyRefsArg(sc); err != nil {
 		logger.Warn("Failed to marshal strategy refs: %v", err)
 	} else if len(refsArgs) > 0 {
@@ -4190,8 +4460,8 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 // posSide is the current position side captured under RLock in Phase 1
 // ("long", "short", or "" for flat). We consult Perps/SpotOrderSkipReason
 // BEFORE calling the Python executor — OKX covers both spot and perps, and
-// each has its own side-based no-op branches in ExecuteSpotSignal /
-// ExecutePerpsSignal that must be mirrored to avoid the #298 bug class
+// each has its own side-based no-op branches in ExecuteSpotSignalWithFillFee /
+// ExecutePerpsSignalWithLeverage that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
 func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
@@ -4209,15 +4479,15 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	// #254/#497/#518: perps sizing uses PerpsOpenNotional (sizing_leverage or
 	// margin_per_trade_usd). EffectiveSizingLeverage returns 1 for spot, so
 	// the spot branch below remains a simple cash buy. #518 removed the
-	// hardcoded 0.95 safety buffer.
-	sizingLeverage := EffectiveSizingLeverage(sc)
-	exchangeLeverage := EffectiveExchangeLeverage(sc)
-	marginPerTradeUSD := EffectiveMarginPerTradeUSD(sc)
+	// hardcoded 0.95 safety buffer. risk_per_trade_pct (#1268) is HL-only, so
+	// PerpsSizingFor resolves zero risk fields here (validation rejects it on
+	// OKX at load).
+	sizing := PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators))
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool
 		var reason string
-		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD, posSide, EffectiveDirection(sc), result.CloseFraction)
+		size, ok, reason = perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, EffectiveDirection(sc), result.CloseFraction)
 		if !ok {
 			logger.Info("%s for %s", reason, result.Symbol)
 			return nil, false
@@ -4276,7 +4546,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 }
 
 // executeOKXResult applies an OKX result to state. Must be called under Lock.
-func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string) {
+func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -4297,7 +4567,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	var exec SignalExecutionResult
 	var err error
 	if sc.Type == "perps" {
-		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	} else {
 		exec, err = ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	}
@@ -4309,6 +4579,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
+	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}

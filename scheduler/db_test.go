@@ -888,6 +888,43 @@ func TestSaveLoadState_PositionIDsRoundTrip(t *testing.T) {
 	}
 }
 
+// ATRMethodAtOpen (#1277 optional hardening) must round-trip through SQLite
+// so checkATRMethodDriftAtStartup can compare it against the live-resolved
+// method on the NEXT restart — a value lost on save/load would silently
+// disable the only check that catches a config edit + restart-while-open.
+func TestSaveLoadState_ATRMethodAtOpenRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"hl-eth": {
+				ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+				Cash: 1000, InitialCapital: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long", OpenedAt: now, ATRMethodAtOpen: ATRMethodWilder},
+					// Pre-#1277 position: never stamped, must round-trip as "".
+					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now},
+				},
+				TradeHistory: []Trade{},
+			},
+		},
+	}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["hl-eth"].Positions["ETH"].ATRMethodAtOpen; got != ATRMethodWilder {
+		t.Errorf("ATRMethodAtOpen = %q, want %q", got, ATRMethodWilder)
+	}
+	if got := loaded.Strategies["hl-eth"].Positions["BTC"].ATRMethodAtOpen; got != "" {
+		t.Errorf("pre-#1277 position ATRMethodAtOpen = %q, want empty", got)
+	}
+}
+
 func TestSaveStateFlushWritesTradePositionID(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Nanosecond)
@@ -1246,7 +1283,7 @@ func TestClosedPositions_Flush(t *testing.T) {
 }
 
 // TestRecordClosedPosition_ExecuteSignal verifies that closing a position via
-// ExecuteSpotSignal appends to the ClosedPositions buffer with the correct
+// ExecuteSpotSignalWithFillFee appends to the ClosedPositions buffer with the correct
 // PnL, reason, and duration (#288).
 func TestRecordClosedPosition_ExecuteSignal(t *testing.T) {
 	openedAt := time.Now().UTC().Add(-2 * time.Hour)
@@ -1259,8 +1296,8 @@ func TestRecordClosedPosition_ExecuteSignal(t *testing.T) {
 	}
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
-	if _, err := ExecuteSpotSignal(s, -1, "BTC", 110, 0, logger); err != nil {
-		t.Fatalf("ExecuteSpotSignal: %v", err)
+	if _, err := ExecuteSpotSignalWithFillFee(s, -1, "BTC", 110, 0, 0, "", 0, logger); err != nil {
+		t.Fatalf("ExecuteSpotSignalWithFillFee: %v", err)
 	}
 	if _, exists := s.Positions["BTC"]; exists {
 		t.Fatal("position should have been closed")

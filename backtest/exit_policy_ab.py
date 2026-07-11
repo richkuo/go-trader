@@ -53,7 +53,7 @@ fabricating a paired number.
 All scoring/aggregation/statistics below the I/O line are pure (operate on lists
 of plain dicts), unit-tested without data access — same architecture as
 ``eval_windows.py`` / ``exit_diagnostics.py``. The audit-identical data slices
-(``WINDOWS`` / ``DATASETS`` / ``PLATFORM`` / fees) are imported from
+(``WINDOWS`` / ``DATASETS`` / ``FEE_PLATFORM`` / fees) are imported from
 ``eval_windows.py`` so M6 sees byte-identical data to the rest of the suite.
 
 Usage:
@@ -92,7 +92,7 @@ sys.path.insert(0, os.path.join(_THIS_DIR, "..", "shared_tools"))
 from eval_windows import (  # noqa: E402  (path bootstrap above)
     DATASETS,
     DEFAULT_CAPITAL,
-    PLATFORM,
+    FEE_PLATFORM,
     WINDOWS,
     dataset_key,
     parse_dataset_arg,
@@ -104,6 +104,12 @@ from exit_diagnostics import trade_metrics  # noqa: E402  (per-leg net% netting,
 DEFAULT_BOOTSTRAP_RESAMPLES = 10000
 DEFAULT_CI = 0.95
 DEFAULT_SEED = 1066
+
+# Same-bar SL/TP race resolution (#1271) shared by BOTH arms and the
+# entry-locked replay — a single module-level mode guarantees arm parity by
+# construction. Set once from --intrabar-resolution in main(); "bar_close"
+# reproduces pre-#1271 legacy baselines (#1294).
+INTRABAR_RESOLUTION = "ohlc_walk"
 
 # Regime label stamped on an entry whose classifier produced an empty/unknown
 # bucket (warmup rows, mid-series NaN) — kept distinct so it never silently
@@ -139,17 +145,25 @@ def _norm_cdf(z: float) -> float:
 def _binom_two_sided_p(k: int, n: int, p: float = 0.5) -> float:
     """Two-sided exact binomial p-value for k successes in n trials.
 
-    p = 2·min(P(X≤k), P(X≥k)) clamped to 1.0. n is a trade count (small), so the
-    exact sum via ``math.comb`` is cheap and avoids a normal approximation on
-    the tiny samples M6 routinely sees.
+    p = 2·min(P(X≤k), P(X≥k)) clamped to 1.0. Still an exact sum, but each
+    term is computed in log space (lgamma) rather than via ``math.comb``:
+    the raw binomial coefficient overflows float conversion past n ≈ 1030,
+    and pooled multi-window samples (#1282) routinely exceed that.
     """
     if n <= 0:
         return 1.0
     k = max(0, min(k, n))
 
+    log_p = math.log(p)
+    log_q = math.log(1.0 - p)
+    lg_n1 = math.lgamma(n + 1)
+
+    def _log_pmf(i: int) -> float:
+        return (lg_n1 - math.lgamma(i + 1) - math.lgamma(n - i + 1)
+                + i * log_p + (n - i) * log_q)
+
     def _cdf(upper: int) -> float:
-        return sum(math.comb(n, i) * (p ** i) * ((1.0 - p) ** (n - i))
-                   for i in range(0, upper + 1))
+        return sum(math.exp(_log_pmf(i)) for i in range(0, upper + 1))
 
     lower_tail = _cdf(k)
     upper_tail = 1.0 - _cdf(k - 1) if k > 0 else 1.0
@@ -607,7 +621,8 @@ def _backtester_kwargs(open_name: str, params: Optional[dict],
     """
     use_regime = bool(gate.get("allowed_regimes"))
     kw = dict(
-        initial_capital=capital, platform=PLATFORM,
+        initial_capital=capital, platform=FEE_PLATFORM,
+        intrabar_resolution=INTRABAR_RESOLUTION,
         open_strategy={"name": open_name, "params": dict(params or {})},
         close_strategies=(list(close_refs) if close_refs else None),
         direction=direction,
@@ -1081,6 +1096,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
+    p.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                   choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
+                   help="Same-bar SL/TP race resolution (#1271); bar_close "
+                        "reproduces pre-#1271 legacy baselines")
     return p
 
 
@@ -1192,6 +1211,8 @@ def _resolve_spec(args) -> dict:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    global INTRABAR_RESOLUTION
+    INTRABAR_RESOLUTION = args.intrabar_resolution
     spec = _resolve_spec(args)
 
     if args.windows:
@@ -1252,6 +1273,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "regime_cfg": spec["regime_cfg"],
             "gate_allowed_regimes": spec["gate"]["allowed_regimes"],
             "registry": args.registry,
+            "intrabar_resolution": INTRABAR_RESOLUTION,
             "windows": {w: list(WINDOWS[w]) for w in window_names},
             "datasets": [dataset_key(s, t) for s, t in datasets],
             "bootstrap": {"n_resamples": spec["n_resamples"], "ci": spec["ci"],

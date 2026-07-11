@@ -16,16 +16,22 @@ type HyperliquidFetchATRResult struct {
 }
 
 // RunHyperliquidFetchATR invokes check_hyperliquid.py --fetch-atr to compute
-// latest ATR from HL OHLCV. Read-only (no on-chain side effects).
-func RunHyperliquidFetchATR(script, symbol, timeframe string, period int) (*HyperliquidFetchATRResult, string, error) {
+// latest ATR from HL OHLCV. Read-only (no on-chain side effects). atrMethod
+// is the strategy's resolved ATR smoothing method (#1277) so a manual-open's
+// fetched EntryATR matches what the strategy's own check cycle would stamp.
+func RunHyperliquidFetchATR(script, symbol, timeframe string, period int, atrMethod string) (*HyperliquidFetchATRResult, string, error) {
 	if period <= 0 {
 		period = 14
+	}
+	if atrMethod == "" {
+		atrMethod = ATRMethodSimple
 	}
 	args := []string{
 		"--fetch-atr",
 		fmt.Sprintf("--symbol=%s", symbol),
 		fmt.Sprintf("--timeframe=%s", timeframe),
 		fmt.Sprintf("--period=%d", period),
+		"--atr-method=" + atrMethod,
 	}
 	stdout, stderr, err := RunPythonScript(script, args)
 	return parseHyperliquidFetchATROutput(stdout, string(stderr), err)
@@ -69,7 +75,7 @@ func resolveManualATRTimeframe(sc StrategyConfig) string {
 	return sc.Timeframe
 }
 
-func fetchManualEntryATR(sc StrategyConfig) (float64, string, bool) {
+func fetchManualEntryATR(sc StrategyConfig, cfg *Config) (float64, string, bool) {
 	if sc.Script == "" || sc.Symbol == "" {
 		return 0, "missing script/symbol on strategy config", false
 	}
@@ -80,7 +86,7 @@ func fetchManualEntryATR(sc StrategyConfig) (float64, string, bool) {
 	if sc.Timeframe == "" {
 		fmt.Fprintf(os.Stderr, "[manual-open] defaulting to 1h ATR (strategy timeframe unset)\n")
 	}
-	result, stderr, err := runHyperliquidFetchATRFn(sc.Script, sc.Symbol, timeframe, 14)
+	result, stderr, err := runHyperliquidFetchATRFn(sc.Script, sc.Symbol, timeframe, 14, resolveATRMethod(sc, cfg))
 	if err != nil {
 		msg := err.Error()
 		if stderr != "" {

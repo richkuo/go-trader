@@ -232,8 +232,8 @@ func TestLoadConfig_V15_RegimeFoldStripsScalarStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig after v15 migration: %v", err)
 	}
-	if err := ValidateConfig(cfg); err != nil {
-		t.Fatalf("ValidateConfig: %v", err)
+	if err := validateConfig(cfg, false); err != nil {
+		t.Fatalf("validateConfig: %v", err)
 	}
 	sc := cfg.Strategies[0]
 	if sc.StopLossATRMult != nil {

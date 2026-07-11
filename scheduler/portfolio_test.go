@@ -66,6 +66,7 @@ func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
 		"BUY",
 		100,
 		nil,
+		nil,
 		silentStrategyLogger("spot-test"),
 	)
 	if trades != 1 {
@@ -275,7 +276,7 @@ func TestPortfolioValueWithOptions(t *testing.T) {
 	}
 }
 
-func TestExecuteSpotSignalHold(t *testing.T) {
+func TestExecuteSpotWithFillFeeHold(t *testing.T) {
 	s := &StrategyState{
 		Cash:            1000,
 		Positions:       make(map[string]*Position),
@@ -287,7 +288,7 @@ func TestExecuteSpotSignalHold(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecuteSpotSignal(s, 0, "BTC/USDT", 60000, 0, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, 0, "BTC/USDT", 60000, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +300,7 @@ func TestExecuteSpotSignalHold(t *testing.T) {
 	}
 }
 
-func TestExecuteSpotSignalBuy(t *testing.T) {
+func TestExecuteSpotWithFillFeeBuy(t *testing.T) {
 	s := &StrategyState{
 		Cash:            1000,
 		Platform:        "binanceus",
@@ -313,7 +314,7 @@ func TestExecuteSpotSignalBuy(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecuteSpotSignal(s, 1, "BTC/USDT", 50000, 0, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC/USDT", 50000, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func TestExecuteSpotSignalBuy(t *testing.T) {
 	}
 }
 
-func TestExecuteSpotSignalSell(t *testing.T) {
+func TestExecuteSpotWithFillFeeSell(t *testing.T) {
 	s := &StrategyState{
 		ID:       "test",
 		Cash:     100,
@@ -357,7 +358,7 @@ func TestExecuteSpotSignalSell(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecuteSpotSignal(s, -1, "BTC/USDT", 55000, 0, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, -1, "BTC/USDT", 55000, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +384,7 @@ func TestExecuteSpotSignalSell(t *testing.T) {
 	}
 }
 
-func TestExecuteSpotSignalBuyAlreadyLong(t *testing.T) {
+func TestExecuteSpotWithFillFeeBuyAlreadyLong(t *testing.T) {
 	s := &StrategyState{
 		Cash: 1000,
 		Positions: map[string]*Position{
@@ -397,13 +398,13 @@ func TestExecuteSpotSignalBuyAlreadyLong(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := ExecuteSpotSignal(s, 1, "BTC/USDT", 60000, 0, logger)
+	trades, _ := ExecuteSpotSignalWithFillFee(s, 1, "BTC/USDT", 60000, 0, 0, "", 0, logger)
 	if trades != 0 {
 		t.Error("should not buy when already long")
 	}
 }
 
-func TestExecuteSpotSignalSellNoPosition(t *testing.T) {
+func TestExecuteSpotWithFillFeeSellNoPosition(t *testing.T) {
 	s := &StrategyState{
 		Cash:            1000,
 		Positions:       make(map[string]*Position),
@@ -415,13 +416,13 @@ func TestExecuteSpotSignalSellNoPosition(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := ExecuteSpotSignal(s, -1, "BTC/USDT", 60000, 0, logger)
+	trades, _ := ExecuteSpotSignalWithFillFee(s, -1, "BTC/USDT", 60000, 0, 0, "", 0, logger)
 	if trades != 0 {
 		t.Error("should not sell when no position")
 	}
 }
 
-func TestExecuteSpotSignalInsufficientCash(t *testing.T) {
+func TestExecuteSpotWithFillFeeInsufficientCash(t *testing.T) {
 	s := &StrategyState{
 		Cash:            0.5, // too little
 		Positions:       make(map[string]*Position),
@@ -433,13 +434,13 @@ func TestExecuteSpotSignalInsufficientCash(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := ExecuteSpotSignal(s, 1, "BTC/USDT", 60000, 0, logger)
+	trades, _ := ExecuteSpotSignalWithFillFee(s, 1, "BTC/USDT", 60000, 0, 0, "", 0, logger)
 	if trades != 0 {
 		t.Error("should not buy with insufficient cash")
 	}
 }
 
-func TestExecuteSpotSignalOKXPerpsFee(t *testing.T) {
+func TestExecuteSpotWithFillFeeOKXPerpsFee(t *testing.T) {
 	s := NewStrategyState(StrategyConfig{
 		ID:       "okx-perps-test",
 		Type:     "perps",
@@ -451,7 +452,7 @@ func TestExecuteSpotSignalOKXPerpsFee(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000.0, 0, logger)
+	_, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", 50000.0, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -474,7 +475,7 @@ func TestExecuteSpotSignalOKXPerpsFee(t *testing.T) {
 	}
 }
 
-func TestExecuteFuturesSignalBuy(t *testing.T) {
+func TestExecuteFuturesWithFillFeeBuy(t *testing.T) {
 	s := &StrategyState{
 		ID:              "test",
 		Cash:            10000,
@@ -490,7 +491,7 @@ func TestExecuteFuturesSignalBuy(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
-	trades, err := ExecuteFuturesSignal(s, 1, "ES", 5000, spec, 2.5, 5, 0, logger)
+	trades, err := ExecuteFuturesSignalWithFillFee(s, 1, "ES", 5000, spec, 2.5, 5, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +511,7 @@ func TestExecuteFuturesSignalBuy(t *testing.T) {
 	}
 }
 
-func TestExecuteFuturesSignalHold(t *testing.T) {
+func TestExecuteFuturesWithFillFeeHold(t *testing.T) {
 	s := &StrategyState{
 		Positions:       make(map[string]*Position),
 		OptionPositions: make(map[string]*OptionPosition),
@@ -522,13 +523,13 @@ func TestExecuteFuturesSignalHold(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{Multiplier: 50, Margin: 500}
-	trades, _ := ExecuteFuturesSignal(s, 0, "ES", 5000, spec, 2.5, 5, 0, logger)
+	trades, _ := ExecuteFuturesSignalWithFillFee(s, 0, "ES", 5000, spec, 2.5, 5, 0, 0, "", 0, logger)
 	if trades != 0 {
 		t.Error("should not trade on hold signal")
 	}
 }
 
-func TestExecuteSpotSignalSetsOwnerStrategyID(t *testing.T) {
+func TestExecuteSpotWithFillFeeSetsOwnerStrategyID(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-momentum-btc",
 		Cash:            1000,
@@ -542,7 +543,7 @@ func TestExecuteSpotSignalSetsOwnerStrategyID(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	_, err := ExecuteSpotSignal(s, 1, "BTC", 50000, 0, logger)
+	_, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", 50000, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +557,7 @@ func TestExecuteSpotSignalSetsOwnerStrategyID(t *testing.T) {
 	}
 }
 
-func TestExecuteFuturesSignalSetsOwnerStrategyID(t *testing.T) {
+func TestExecuteFuturesWithFillFeeSetsOwnerStrategyID(t *testing.T) {
 	s := &StrategyState{
 		ID:              "ts-momentum-es",
 		Cash:            10000,
@@ -571,7 +572,7 @@ func TestExecuteFuturesSignalSetsOwnerStrategyID(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
-	_, err := ExecuteFuturesSignal(s, 1, "ES", 5000, spec, 2.5, 5, 0, logger)
+	_, err := ExecuteFuturesSignalWithFillFee(s, 1, "ES", 5000, spec, 2.5, 5, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +586,7 @@ func TestExecuteFuturesSignalSetsOwnerStrategyID(t *testing.T) {
 	}
 }
 
-func TestExecuteFuturesSignalShortSetsOwnerStrategyID(t *testing.T) {
+func TestExecuteFuturesWithFillFeeShortSetsOwnerStrategyID(t *testing.T) {
 	s := &StrategyState{
 		ID:              "ts-trend-es",
 		Cash:            10000,
@@ -600,7 +601,7 @@ func TestExecuteFuturesSignalShortSetsOwnerStrategyID(t *testing.T) {
 	defer logger.Close()
 
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
-	_, err := ExecuteFuturesSignal(s, -1, "ES", 5000, spec, 2.5, 5, 0, logger)
+	_, err := ExecuteFuturesSignalWithFillFee(s, -1, "ES", 5000, spec, 2.5, 5, 0, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +618,7 @@ func TestExecuteFuturesSignalShortSetsOwnerStrategyID(t *testing.T) {
 	}
 }
 
-func TestExecuteSpotSignalLiveFill(t *testing.T) {
+func TestExecuteSpotWithFillFeeLiveFill(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-momentum-btc",
 		Cash:            1000,
@@ -635,7 +636,7 @@ func TestExecuteSpotSignalLiveFill(t *testing.T) {
 	// Live fill: exchange filled 0.015 BTC at exact price 50000
 	fillQty := 0.015
 	fillPrice := 50000.0
-	trades, err := ExecuteSpotSignal(s, 1, "BTC", fillPrice, fillQty, logger)
+	trades, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", fillPrice, fillQty, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,7 +681,7 @@ func TestExecutionFeeSelection(t *testing.T) {
 	}
 }
 
-func TestExecuteSpotSignalLiveFillUsesExchangeFee(t *testing.T) {
+func TestExecuteSpotWithFillFeeLiveFillUsesExchangeFee(t *testing.T) {
 	s := &StrategyState{
 		ID:              "rh-momentum-btc",
 		Cash:            1000,
@@ -714,7 +715,7 @@ func TestExecuteSpotSignalLiveFillUsesExchangeFee(t *testing.T) {
 	}
 }
 
-func TestExecuteSpotSignalLiveFillUsesExchangeOrderID(t *testing.T) {
+func TestExecuteSpotWithFillFeeLiveFillUsesExchangeOrderID(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -766,11 +767,11 @@ func TestExecuteSpotSignalLiveFillUsesExchangeOrderID(t *testing.T) {
 	})
 }
 
-// #254: ExecutePerpsSignal — margin-based accounting. Paper buy should NOT
+// #254: ExecutePerpsSignalWithLeverage — margin-based accounting. Paper buy should NOT
 // deplete cash by the full notional (unlike spot). Only the fee leaves cash,
 // and the opened position is stamped with Multiplier=1 so PortfolioValue
 // routes through the PnL branch.
-func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
+func TestExecutePerpsWithLeveragePaperBuyNoNotionalDeduction(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
 		Cash:            1000,
@@ -785,7 +786,7 @@ func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 5, 0, "", 0, false, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 5, ExchangeLeverage: 5}, 0, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,7 +822,7 @@ func TestExecutePerpsSignalPaperBuyNoNotionalDeduction(t *testing.T) {
 	}
 }
 
-func TestExecutePerpsSignalDecouplesSizingAndExchangeLeverage(t *testing.T) {
+func TestExecutePerpsWithLeverageDecouplesSizingAndExchangeLeverage(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
 		Cash:            1000,
@@ -836,7 +837,7 @@ func TestExecutePerpsSignalDecouplesSizingAndExchangeLeverage(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 2, 20, 0, 0, "", 0, DirectionLong, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 2, ExchangeLeverage: 20}, 0, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +861,7 @@ func TestExecutePerpsSignalDecouplesSizingAndExchangeLeverage(t *testing.T) {
 	}
 }
 
-func TestExecutePerpsSignalLiveOpenUsesExchangeFee(t *testing.T) {
+func TestExecutePerpsWithLeverageLiveOpenUsesExchangeFee(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
 		Cash:            1000,
@@ -876,7 +877,7 @@ func TestExecutePerpsSignalLiveOpenUsesExchangeFee(t *testing.T) {
 	defer logger.Close()
 
 	fillFee := 0.42
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "oid-1", fillFee, false, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "oid-1", fillFee, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -895,7 +896,7 @@ func TestExecutePerpsSignalLiveOpenUsesExchangeFee(t *testing.T) {
 // #254: verify PortfolioValue handles the perps position correctly using the
 // futures branch (qty * multiplier * (price - avgCost)). Cash is preserved,
 // and a favorable price move shows up as PnL on top of cash.
-func TestExecutePerpsSignalPortfolioValueAfterMove(t *testing.T) {
+func TestExecutePerpsWithLeveragePortfolioValueAfterMove(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
 		Cash:            1000,
@@ -911,7 +912,7 @@ func TestExecutePerpsSignalPortfolioValueAfterMove(t *testing.T) {
 	defer logger.Close()
 
 	// Open at exactly 2000 via live fill (no slippage).
-	_, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.5, "", 0, false, logger)
+	_, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -937,10 +938,10 @@ func TestExecutePerpsSignalPortfolioValueAfterMove(t *testing.T) {
 
 // #254: regression — before the fix, perps positions stored with
 // Multiplier=0 hit the spot branch (qty * price) which inflated portfolio
-// value by the full notional. After the fix, ExecutePerpsSignal stamps
+// value by the full notional. After the fix, ExecutePerpsSignalWithLeverage stamps
 // Multiplier=1 so valuation uses the PnL branch. This test pins the wrong
 // "spot-like" valuation vs the correct "perps" valuation to prevent drift.
-func TestExecutePerpsSignalNotInflatedByNotional(t *testing.T) {
+func TestExecutePerpsWithLeverageNotInflatedByNotional(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-rmc-eth-live",
 		Cash:            644,
@@ -956,7 +957,7 @@ func TestExecutePerpsSignalNotInflatedByNotional(t *testing.T) {
 	defer logger.Close()
 
 	// Live fill 0.279 ETH @ 2210.71 (matching the issue example).
-	_, err := ExecutePerpsSignal(s, 1, "ETH", 2210.71, 1, 0.279, "", 0, false, logger)
+	_, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2210.71, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.279, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -973,7 +974,7 @@ func TestExecutePerpsSignalNotInflatedByNotional(t *testing.T) {
 }
 
 // #254: closing a perps long realizes PnL directly (not notional swing).
-func TestExecutePerpsSignalCloseLong(t *testing.T) {
+func TestExecutePerpsWithLeverageCloseLong(t *testing.T) {
 	s := &StrategyState{
 		ID:       "hl-test-eth",
 		Cash:     990,
@@ -999,7 +1000,7 @@ func TestExecutePerpsSignalCloseLong(t *testing.T) {
 	defer logger.Close()
 
 	// Close at 2100 — PnL = 0.5 * (2100 - 2000) = $50 gross.
-	_, err := ExecutePerpsSignal(s, -1, "ETH", 2100, 1, 0.5, "", 0, false, logger)
+	_, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1013,7 +1014,7 @@ func TestExecutePerpsSignalCloseLong(t *testing.T) {
 }
 
 // #298 regression — PerpsOrderSkipReason must mirror every skip branch of
-// ExecutePerpsSignal. Live execution paths consult this guard BEFORE placing
+// ExecutePerpsSignalWithLeverage. Live execution paths consult this guard BEFORE placing
 // on-chain orders; a missed case re-introduces the "trade fills but isn't
 // recorded" gap that lost 0.716 ETH on Hyperliquid.
 //
@@ -1065,7 +1066,7 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 }
 
 // #300 regression — SpotOrderSkipReason must mirror every side-based skip
-// branch of ExecuteSpotSignal. Live helpers (Robinhood, OKX spot) consult
+// branch of ExecuteSpotSignalWithFillFee. Live helpers (Robinhood, OKX spot) consult
 // this guard BEFORE placing live orders; a missed case re-introduces the
 // #298 "fill lands but no Trade" class of bug on those platforms.
 func TestSpotOrderSkipReason(t *testing.T) {
@@ -1099,7 +1100,7 @@ func TestSpotOrderSkipReason(t *testing.T) {
 // previously unprotected is `sell_short`: Position.Quantity is always
 // positive, so the existing posQty<=0 check could not distinguish a flat
 // account from a short one, allowing a live sell to fire while
-// ExecuteFuturesSignal would treat it as a no-op (same #298-class drift).
+// ExecuteFuturesSignalWithFillFee would treat it as a no-op (same #298-class drift).
 func TestFuturesOrderSkipReason(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1127,13 +1128,13 @@ func TestFuturesOrderSkipReason(t *testing.T) {
 }
 
 // #298 — demonstrates the in-memory contract the guard protects: when
-// ExecutePerpsSignal is called while already long with signal=1, it returns
+// ExecutePerpsSignalWithLeverage is called while already long with signal=1, it returns
 // trades=0 and no Trade is recorded. If a live fill has already happened
 // at this point, it's lost. The guard in runHyperliquidExecuteOrder prevents
 // the live fill from firing in this state; this test pins the behavior that
-// ExecutePerpsSignal itself performs no side-effects in the skip case, so
+// ExecutePerpsSignalWithLeverage itself performs no side-effects in the skip case, so
 // the guard is sufficient (no cleanup needed after a skipped live call).
-func TestExecutePerpsSignalAlreadyLongIsInertNoOp(t *testing.T) {
+func TestExecutePerpsWithLeverageAlreadyLongIsInertNoOp(t *testing.T) {
 	s := &StrategyState{
 		ID:       "hl-test-eth",
 		Cash:     1000,
@@ -1153,7 +1154,7 @@ func TestExecutePerpsSignalAlreadyLongIsInertNoOp(t *testing.T) {
 	qtyBefore := s.Positions["ETH"].Quantity
 	tradesBefore := len(s.TradeHistory)
 
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2334, 1, 0.238, "oid-123", 0.42, false, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2334, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.238, "oid-123", 0.42, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1171,7 +1172,7 @@ func TestExecutePerpsSignalAlreadyLongIsInertNoOp(t *testing.T) {
 	}
 }
 
-func TestExecuteFuturesSignalLiveFill(t *testing.T) {
+func TestExecuteFuturesWithFillFeeLiveFill(t *testing.T) {
 	s := &StrategyState{
 		ID:              "ts-momentum-es",
 		Cash:            10000,
@@ -1189,7 +1190,7 @@ func TestExecuteFuturesSignalLiveFill(t *testing.T) {
 	spec := ContractSpec{TickSize: 0.25, TickValue: 12.5, Multiplier: 50, Margin: 500}
 	fillContracts := 2
 	fillPrice := 5000.0
-	trades, err := ExecuteFuturesSignal(s, 1, "ES", fillPrice, spec, 2.5, 5, fillContracts, logger)
+	trades, err := ExecuteFuturesSignalWithFillFee(s, 1, "ES", fillPrice, spec, 2.5, 5, fillContracts, 0, "", 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1211,7 +1212,7 @@ func TestExecuteFuturesSignalLiveFill(t *testing.T) {
 	}
 }
 
-func TestExecuteFuturesSignalLiveFillUsesExchangeFee(t *testing.T) {
+func TestExecuteFuturesWithFillFeeLiveFillUsesExchangeFee(t *testing.T) {
 	s := &StrategyState{
 		ID:              "ts-momentum-es",
 		Cash:            10000,
@@ -1244,7 +1245,7 @@ func TestExecuteFuturesSignalLiveFillUsesExchangeFee(t *testing.T) {
 	}
 }
 
-func TestExecuteFuturesSignalLiveFillUsesExchangeOrderID(t *testing.T) {
+func TestExecuteFuturesWithFillFeeLiveFillUsesExchangeOrderID(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1303,7 +1304,7 @@ func TestExecuteFuturesSignalLiveFillUsesExchangeOrderID(t *testing.T) {
 
 // #328 — AllowShorts=true lets signal=-1 from flat open a short perp position.
 // Without AllowShorts the same call returns 0 trades (legacy close-long-only).
-func TestExecutePerpsSignalOpenShortFromFlat(t *testing.T) {
+func TestExecutePerpsWithLeverageOpenShortFromFlat(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1319,9 +1320,9 @@ func TestExecutePerpsSignalOpenShortFromFlat(t *testing.T) {
 		RiskState:       RiskState{},
 	}
 
-	trades, err := ExecutePerpsSignal(s, -1, "ETH", 2000, 1, 0, "", 0, true, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionBoth, 0, logger)
 	if err != nil {
-		t.Fatalf("ExecutePerpsSignal: %v", err)
+		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
 	if trades != 1 {
 		t.Errorf("trades = %d, want 1 (short open)", trades)
@@ -1362,7 +1363,7 @@ func TestExecutePerpsSignalOpenShortFromFlat(t *testing.T) {
 // #328 — legacy behavior regression: without AllowShorts, signal=-1 on flat
 // must not open a short (otherwise triple_ema / rsi_macd_combo et al. would
 // silently start trading shorts they never intended).
-func TestExecutePerpsSignalLegacyFlatNoShort(t *testing.T) {
+func TestExecutePerpsWithLeverageLegacyFlatNoShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1377,9 +1378,9 @@ func TestExecutePerpsSignalLegacyFlatNoShort(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 
-	trades, err := ExecutePerpsSignal(s, -1, "ETH", 2000, 1, 0, "", 0, false, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionLong, 0, logger)
 	if err != nil {
-		t.Fatalf("ExecutePerpsSignal: %v", err)
+		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
 	if trades != 0 {
 		t.Errorf("trades = %d, want 0 (legacy no-op)", trades)
@@ -1399,7 +1400,7 @@ func TestExecutePerpsSignalLegacyFlatNoShort(t *testing.T) {
 // direction="both" but rejecting any signal=1 from flat. This is the headline
 // new feature: existing bidirectional strategies can run as bear-only
 // instruments without writing dedicated short strategies.
-func TestExecutePerpsSignal_DirectionShort_OpenShortFromFlat(t *testing.T) {
+func TestExecutePerpsWithLeverage_DirectionShort_OpenShortFromFlat(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1414,7 +1415,7 @@ func TestExecutePerpsSignal_DirectionShort_OpenShortFromFlat(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionShort, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1431,9 +1432,9 @@ func TestExecutePerpsSignal_DirectionShort_OpenShortFromFlat(t *testing.T) {
 }
 
 // #656 — direction="short" with signal=1 from flat must be a no-op (no short
-// to close, and longs are forbidden). Mirror of TestExecutePerpsSignalLegacyFlatNoShort
+// to close, and longs are forbidden). Mirror of TestExecutePerpsWithLeverageLegacyFlatNoShort
 // for the new short-only mode.
-func TestExecutePerpsSignal_DirectionShort_BuyFromFlatSkipped(t *testing.T) {
+func TestExecutePerpsWithLeverage_DirectionShort_BuyFromFlatSkipped(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1448,7 +1449,7 @@ func TestExecutePerpsSignal_DirectionShort_BuyFromFlatSkipped(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionShort, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1465,7 +1466,7 @@ func TestExecutePerpsSignal_DirectionShort_BuyFromFlatSkipped(t *testing.T) {
 
 // #656 — direction="short" with signal=1 on an existing short closes the
 // short cleanly. Reduce-only behavior; no flip into long.
-func TestExecutePerpsSignal_DirectionShort_BuyClosesShort(t *testing.T) {
+func TestExecutePerpsWithLeverage_DirectionShort_BuyClosesShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1482,7 +1483,7 @@ func TestExecutePerpsSignal_DirectionShort_BuyClosesShort(t *testing.T) {
 		TradeHistory:    []Trade{},
 	}
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionShort, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1502,7 +1503,7 @@ func TestExecutePerpsSignal_DirectionShort_BuyClosesShort(t *testing.T) {
 
 // #656 — direction="short" must NOT auto-close an orphan long (state-config
 // gap). The validator surfaces it; the executor leaves it visible.
-func TestExecutePerpsSignal_DirectionShort_OrphanLongNotAutoClosed(t *testing.T) {
+func TestExecutePerpsWithLeverage_DirectionShort_OrphanLongNotAutoClosed(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1522,7 +1523,7 @@ func TestExecutePerpsSignal_DirectionShort_OrphanLongNotAutoClosed(t *testing.T)
 	}
 	cashBefore := s.Cash
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionShort, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1539,7 +1540,7 @@ func TestExecutePerpsSignal_DirectionShort_OrphanLongNotAutoClosed(t *testing.T)
 
 // #656 — direction="short" must NOT flip on signal=-1 with an existing short;
 // it dedupes (mirrors the "Already long ... skipping buy" branch).
-func TestExecutePerpsSignal_DirectionShort_AlreadyShortDedupes(t *testing.T) {
+func TestExecutePerpsWithLeverage_DirectionShort_AlreadyShortDedupes(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1557,7 +1558,7 @@ func TestExecutePerpsSignal_DirectionShort_AlreadyShortDedupes(t *testing.T) {
 	}
 	cashBefore := s.Cash
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, 1, 1, 0, 0, "", 0, DirectionShort, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionShort, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
@@ -1608,7 +1609,7 @@ func TestEffectiveDirection_PrecedenceAndFallback(t *testing.T) {
 	}
 }
 
-func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testing.T) {
+func TestExecutePerpsWithLeverageLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1626,9 +1627,9 @@ func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testin
 		RiskState:       RiskState{},
 	}
 
-	trades, err := ExecutePerpsSignal(s, 1, "ETH", 2000, 1, 0.3, "legacy-open-oid", 0.42, false, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.3, "legacy-open-oid", 0.42, DirectionLong, 0, logger)
 	if err != nil {
-		t.Fatalf("ExecutePerpsSignal: %v", err)
+		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
 	if trades != 2 {
 		t.Fatalf("trades = %d, want 2 (legacy close short + open long)", trades)
@@ -1665,7 +1666,7 @@ func TestExecutePerpsSignalLegacyCloseShortThenOpenLongUsesOpenFillFee(t *testin
 // two Trade rows sharing the flip OID; the single real fill fee apportions
 // across them by quantity share so it is neither double-counted nor padded
 // with a modeled open fee (#451, reworked by #954 for ledger accuracy).
-func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
+func TestExecutePerpsWithLeverageFlipLongToShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1684,11 +1685,11 @@ func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 	}
 
 	// Live flip: exchange executes a single net-flip sell of size
-	// (closeLongQty + newShortQty) = 0.5 + 0.5 = 1.0. ExecutePerpsSignal
+	// (closeLongQty + newShortQty) = 0.5 + 0.5 = 1.0. ExecutePerpsSignalWithLeverage
 	// subtracts the close leg when sizing the new short side.
-	trades, err := ExecutePerpsSignal(s, -1, "ETH", 2000, 1, 1.0, "live-flip-oid", 0.5, true, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 1.0, "live-flip-oid", 0.5, DirectionBoth, 0, logger)
 	if err != nil {
-		t.Fatalf("ExecutePerpsSignal: %v", err)
+		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
 	if trades != 2 {
 		t.Errorf("trades = %d, want 2 (close long + open short)", trades)
@@ -1724,7 +1725,7 @@ func TestExecutePerpsSignalFlipLongToShort(t *testing.T) {
 
 // #328 — symmetric dedupe: already-short + signal=-1 + AllowShorts is a no-op,
 // just like already-long + signal=1.
-func TestExecutePerpsSignalAlreadyShortIsInertNoOp(t *testing.T) {
+func TestExecutePerpsWithLeverageAlreadyShortIsInertNoOp(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
@@ -1742,9 +1743,9 @@ func TestExecutePerpsSignalAlreadyShortIsInertNoOp(t *testing.T) {
 	}
 	cashBefore := s.Cash
 
-	trades, err := ExecutePerpsSignal(s, -1, "ETH", 1950, 1, 0, "", 0, true, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 1950, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionBoth, 0, logger)
 	if err != nil {
-		t.Fatalf("ExecutePerpsSignal: %v", err)
+		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
 	}
 	if trades != 0 {
 		t.Errorf("trades = %d, want 0 (already short dedupe)", trades)
@@ -1793,7 +1794,7 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, 1.0, 1.0, 0, tc.posSide, tc.direction, 0)
+			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, tc.posQty, tc.avgCost, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, tc.posSide, tc.direction, 0)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v (reason=%q), want %v", ok, reason, tc.wantOK)
 			}
@@ -1809,7 +1810,7 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 // (the old close-only behavior that silently broke bidirectional execution).
 func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 	posQty := 0.5
-	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0)
+	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatal("expected ok")
 	}
@@ -1829,7 +1830,7 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	// After #518 (no 0.95 buffer): new-side budget = 950 * 5 / 1900 = 2.5 →
 	// flip size = 0.5 + 2.5 = 3.0. Pre-close sizing (bug) would yield:
 	// 1000 * 5 / 1900 = 2.6316 → 3.1316, over-sized.
-	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "long", DirectionBoth, 0)
+	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, PerpsSizing{SizingLeverage: 5.0, ExchangeLeverage: 5.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
 	}
@@ -1853,7 +1854,7 @@ func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
 	// long 1.0 ETH @ 2000, price crashes to 500, 1x leverage, cash=100.
 	// closePnL = 1.0 * (500 - 2000) = -1500 → effectiveCash = 100 - 1500 = -1400.
 	// PerpsOpenNotional returns 0 for non-positive cash → fallback to close-only.
-	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0)
+	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatalf("expected ok (should degrade to close-only, not abort); reason=%q", reason)
 	}
@@ -1870,7 +1871,7 @@ func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
 	// Close leg realizes: 0.5 * (2000 - 1900) = +50 → post-close cash = 1050.
 	// After #518 (no 0.95 buffer): new-side budget = 1050 * 5 / 1900 = 2.7632 →
 	// flip size = 0.5 + 2.7632 = 3.2632.
-	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, 5.0, 5.0, 0, "short", DirectionBoth, 0)
+	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, PerpsSizing{SizingLeverage: 5.0, ExchangeLeverage: 5.0}, "short", DirectionBoth, 0)
 	if !ok {
 		t.Fatal("expected ok")
 	}
@@ -1933,7 +1934,7 @@ func TestPerpsOpenNotional(t *testing.T) {
 // #518 — ExecutePerpsSignalWithLeverage: paper opens with margin_per_trade_usd
 // set should produce the margin-space notional, not the legacy sizing_leverage
 // notional. This exercises the fix end-to-end inside the executor.
-func TestExecutePerpsSignalMarginPerTradeUSDOverridesSizingLeverage(t *testing.T) {
+func TestExecutePerpsWithLeverageMarginPerTradeUSDOverridesSizingLeverage(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
 		Cash:            560,
@@ -1951,7 +1952,7 @@ func TestExecutePerpsSignalMarginPerTradeUSDOverridesSizingLeverage(t *testing.T
 	// Mirrors issue #518: sizing_leverage=0.1, exchange leverage=20, price=2257.
 	// Without margin_per_trade_usd: notional = 560 * 0.1 = 56 → qty ≈ 0.025 ETH.
 	// With margin_per_trade_usd=56: notional = 56 * 20 = 1120 → qty ≈ 0.50 ETH.
-	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2257, 0.1, 20, 56, 0, "", 0, DirectionLong, 0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2257, PerpsSizing{SizingLeverage: 0.1, ExchangeLeverage: 20, MarginPerTradeUSD: 56}, 0, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1973,7 +1974,7 @@ func TestExecutePerpsSignalMarginPerTradeUSDOverridesSizingLeverage(t *testing.T
 // live order to match the residual it intends to leave behind.
 func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
 	// long 0.4 ETH @ 2000, signal=-1 (close), fraction=0.5 → size 0.2.
-	size, ok, reason := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, 0.5)
+	size, ok, reason := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionLong, 0.5)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
 	}
@@ -1986,7 +1987,7 @@ func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
 // pin: don't accidentally re-scale the close leg on a complete tier hit.
 func TestPerpsLiveOrderSize_FullCloseFractionIsFullPosQty(t *testing.T) {
 	for _, frac := range []float64{0, 1.0} {
-		size, ok, _ := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionLong, frac)
+		size, ok, _ := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionLong, frac)
 		if !ok || math.Abs(size-0.4) > 1e-9 {
 			t.Errorf("frac=%g: size = %g (ok=%v), want 0.4", frac, size, ok)
 		}
@@ -1997,7 +1998,7 @@ func TestPerpsLiveOrderSize_FullCloseFractionIsFullPosQty(t *testing.T) {
 // position open with the residual quantity, share the original PositionID
 // across legs (so round-trip grouping holds), preserve InitialQuantity, and
 // realize PnL only on the closed slice.
-func TestExecutePerpsSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T) {
+func TestExecutePerpsWithLeverage_PartialCloseLongPaperPreservesRemainder(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
 		TradePositionID: "etrip-1",
@@ -2024,7 +2025,7 @@ func TestExecutePerpsSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T
 	defer logger.Close()
 
 	// Close 0.5 of 0.4 ETH @ 2100 (+5% from cost). closeFraction=0.5.
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionLong, 0.5, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionLong, 0.5, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2075,7 +2076,7 @@ func TestExecutePerpsSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T
 // into a fresh short even when AllowShorts=true. compose_signal never emits
 // a close+open in the same cycle, so closeFraction>0 + AllowShorts=true is
 // close-only.
-func TestExecutePerpsSignal_PartialCloseDoesNotFlipShortWithAllowShorts(t *testing.T) {
+func TestExecutePerpsWithLeverage_PartialCloseDoesNotFlipShortWithAllowShorts(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
 		TradePositionID: "etrip-1",
@@ -2101,7 +2102,7 @@ func TestExecutePerpsSignal_PartialCloseDoesNotFlipShortWithAllowShorts(t *testi
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionBoth, 0.5, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionBoth, 0.5, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2124,7 +2125,7 @@ func TestExecutePerpsSignal_PartialCloseDoesNotFlipShortWithAllowShorts(t *testi
 // also skip the bidirectional open-leg path. Pre-fix, signal=-1 with
 // AllowShorts=true would close the long AND open a fresh short in the same
 // cycle, but compose_signal never composes that pair.
-func TestExecutePerpsSignal_FullCloseFromRegistryDoesNotFlip(t *testing.T) {
+func TestExecutePerpsWithLeverage_FullCloseFromRegistryDoesNotFlip(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
 		TradePositionID: "etrip-1",
@@ -2150,7 +2151,7 @@ func TestExecutePerpsSignal_FullCloseFromRegistryDoesNotFlip(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0, "", 0, DirectionBoth, 1.0, logger)
+	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionBoth, 1.0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2165,7 +2166,7 @@ func TestExecutePerpsSignal_FullCloseFromRegistryDoesNotFlip(t *testing.T) {
 // #519 — live partial close on perps uses fillQty (the actual exchange
 // fill) for the close leg, not pos.Quantity * closeFraction; the live
 // helper sized the order to the fraction so fillQty is already partial.
-func TestExecutePerpsSignal_PartialCloseLongLiveUsesFillQty(t *testing.T) {
+func TestExecutePerpsWithLeverage_PartialCloseLongLiveUsesFillQty(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
 		TradePositionID: "etrip-live",
@@ -2194,7 +2195,7 @@ func TestExecutePerpsSignal_PartialCloseLongLiveUsesFillQty(t *testing.T) {
 	// fillQty=0.18 (slightly below the 0.2 the order requested due to
 	// exchange rounding). closeFraction signals "partial" but the actual
 	// closed qty must come from fillQty.
-	_, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, 1, 1, 0, 0.18, "live-oid", 0.05, DirectionLong, 0.5, logger)
+	_, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.18, "live-oid", 0.05, DirectionLong, 0.5, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2238,7 +2239,7 @@ func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, 0.4, 2000, 1.0, 1.0, 0, tc.posSide, DirectionBoth, tc.frac)
+			size, ok, reason := perpsLiveOrderSize(tc.signal, 2000, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, tc.posSide, DirectionBoth, tc.frac)
 			if !ok {
 				t.Fatalf("expected ok, got reason=%q", reason)
 			}
@@ -2254,7 +2255,7 @@ func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
 // breaking legitimate same-cycle reversals.
 func TestPerpsLiveOrderSize_GenuineFlipStillFlipSizes(t *testing.T) {
 	// long 0.4 @ 2000, sell reversal (frac=0) → posQty + newSize > posQty.
-	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, 0.4, 2000, 1.0, 1.0, 0, "long", DirectionBoth, 0)
+	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatal("expected ok")
 	}
@@ -2268,7 +2269,7 @@ func TestPerpsLiveOrderSize_GenuineFlipStillFlipSizes(t *testing.T) {
 // residual never goes negative and the close-leg PnL is not overstated.
 // Without the cap, pos.Quantity -= fillQty stored a negative-quantity position
 // and booked realized_pnl against the full (over-large) fill qty.
-func TestExecutePerpsSignal_PartialCloseCapsCloseQtyAtPosQuantity(t *testing.T) {
+func TestExecutePerpsWithLeverage_PartialCloseCapsCloseQtyAtPosQuantity(t *testing.T) {
 	cases := []struct {
 		name    string
 		signal  int
@@ -2307,7 +2308,7 @@ func TestExecutePerpsSignal_PartialCloseCapsCloseQtyAtPosQuantity(t *testing.T) 
 			// partial-close path (the pre-fix corruption scenario). Close at
 			// avgCost so the closed-leg PnL is ~0 — a capped close leg books
 			// ~0, an uncapped one would book against 1.192 qty.
-			_, err := ExecutePerpsSignalWithLeverage(s, tc.signal, "ETH", 2000, 1, 1, 0, 1.192, "oid", 0, DirectionBoth, 0.5, logger)
+			_, err := ExecutePerpsSignalWithLeverage(s, tc.signal, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 1.192, "oid", 0, DirectionBoth, 0.5, logger)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2374,7 +2375,7 @@ func TestPerpsCloseActionSuppressesNewSL(t *testing.T) {
 
 // #519 — paper partial close on a spot long must keep the position with
 // the residual quantity and realize PnL only on the closed slice.
-func TestExecuteSpotSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T) {
+func TestExecuteSpotWithFillFee_PartialCloseLongPaperPreservesRemainder(t *testing.T) {
 	pos := &Position{
 		Symbol:          "BTC/USDT",
 		TradePositionID: "spot-trip",
@@ -2425,7 +2426,7 @@ func TestExecuteSpotSignal_PartialCloseLongPaperPreservesRemainder(t *testing.T)
 // #519 — futures partial close rounds DOWN to whole contracts so the
 // residual position has at least one contract remaining. Tier returning a
 // fraction smaller than one contract is a no-op rather than a full close.
-func TestExecuteFuturesSignal_PartialCloseRoundsDownContracts(t *testing.T) {
+func TestExecuteFuturesWithFillFee_PartialCloseRoundsDownContracts(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ES",
 		TradePositionID: "futures-trip",
@@ -2472,7 +2473,7 @@ func TestExecuteFuturesSignal_PartialCloseRoundsDownContracts(t *testing.T) {
 
 // #519 — when closeFraction rounds to <1 contract the futures executor
 // must no-op rather than full-close the position.
-func TestExecuteFuturesSignal_PartialCloseFractionTooSmallNoOps(t *testing.T) {
+func TestExecuteFuturesWithFillFee_PartialCloseFractionTooSmallNoOps(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ES",
 		TradePositionID: "futures-trip-2",

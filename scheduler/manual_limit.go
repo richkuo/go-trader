@@ -188,6 +188,7 @@ func RunHyperliquidCancelOrder(script, symbol string, oid int64) (*HyperliquidCa
 
 // Package vars so reconcile tests can stub the subprocess calls without a .venv.
 var (
+	runHyperliquidLimitOpenFn   = RunHyperliquidLimitOpen
 	runHyperliquidLimitStatusFn = RunHyperliquidLimitStatus
 	runHyperliquidCancelOrderFn = RunHyperliquidCancelOrder
 )
@@ -242,10 +243,21 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 		fmt.Fprintln(os.Stderr, "warning: --stop-loss-atr-mult / --stop-loss-pct are ignored for --limit-price orders; the scheduler arms SL/TP from strategy config after the fill")
 	}
 
-	// Placement guard: one resting order / open position per strategy+symbol. On
-	// fill the scheduler creates a fresh position; a pre-existing position or
-	// resting order would collide (the fill path fails closed rather than adopt a
-	// foreign position).
+	// Hold the same cross-process lock as the synchronous manual-action cores from
+	// before the guard reads through the pending_limit_orders insert. Without it,
+	// two CLIs (or a CLI racing the dashboard market-open core) can both observe no
+	// pending row and both fire on-chain before either row is visible (#1261).
+	unlock, lockErr := acquireManualActionFileLock(cfg.DBFile)
+	if lockErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v — refusing to avoid double-firing an on-chain order\n", lockErr)
+		return 1
+	}
+	defer unlock()
+
+	// Placement guard: one un-drained position-changing action, resting order, or
+	// open position per strategy+symbol. On fill the scheduler creates a fresh
+	// position; a pre-existing position or resting/queued open would collide (the
+	// fill path fails closed rather than adopt a foreign position).
 	state, loadErr := LoadStateWithDB(cfg, stateDB)
 	if loadErr != nil {
 		fmt.Fprintf(os.Stderr, "error: could not load state for placement guard: %v\n", loadErr)
@@ -265,12 +277,16 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 			return 1
 		}
 	}
-	if existing, _ := stateDB.CountPendingLimitOrders(in.strategyID, sc.Symbol); existing > 0 {
-		fmt.Fprintf(os.Stderr, "error: %s already has a resting limit order for %s — cancel it first (go-trader manual-cancel %s)\n", in.strategyID, sc.Symbol, in.strategyID)
+	if err := refuseIfPendingManualPositionAction(stateDB, "manual-open --limit-price", in.strategyID, sc.Symbol); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	if err := refuseIfRestingLimitOrderQueued(stateDB, "manual-open --limit-price", in.strategyID, sc.Symbol); err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
 	}
 
-	res, stderr, err := RunHyperliquidLimitOpen(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
+	res, stderr, err := runHyperliquidLimitOpenFn(sc.Script, sc.Symbol, in.openSide, size, in.limitPrice, in.tif, sc.MarginMode, sc.Leverage, hlExecuteSnapshot{})
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "HL limit-open stderr: %s\n", stderr)
 	}
@@ -401,10 +417,10 @@ func limitOrderFullyFilled(cumFilled, orderSize float64) bool {
 // be many hours/days before the fill) with the leverage-aware fallback. Mirrors
 // the market-open ATR resolution in runManualOpen. Spawns Python, so it must run
 // outside the state lock.
-func resolveLimitFillEntryATR(sc StrategyConfig, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
+func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx float64, notifier *MultiNotifier) float64 {
 	entryATR := rowATR
 	if entryATR == 0 && (effectiveManualSLATRMult(sc) > 0 || strategyUsesTieredTPATRClose(sc)) {
-		fetched, fetchErr, ok := fetchManualEntryATR(sc)
+		fetched, fetchErr, ok := fetchManualEntryATR(sc, cfg)
 		if ok && !(avgPx > 0 && fetched > 0.5*avgPx) {
 			entryATR = fetched
 		} else {
@@ -449,7 +465,10 @@ func effectiveManualSLATRMult(sc StrategyConfig) float64 {
 // newly-filled delta. MUST be called with the state write lock held. Returns the
 // number of trades booked (0 or 1). The watermark advance + protection sync are
 // the caller's responsibility (they happen outside the lock).
-func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOrder, cumFilled, avgPx, cumFee, entryATR float64, now time.Time) (int, error) {
+// atrMethod is the resolved atr_method (#1277) at fill-adoption time — the same
+// moment entryATR is fetched — frozen on the position at first fill so
+// checkATRMethodDriftAtStartup sees limit-opened manual positions too.
+func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOrder, cumFilled, avgPx, cumFee, entryATR float64, atrMethod string, now time.Time) (int, error) {
 	ss := state.Strategies[o.StrategyID]
 	if ss == nil {
 		return 0, fmt.Errorf("strategy state for %q not found", o.StrategyID)
@@ -475,6 +494,7 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 			Leverage:        sc.Leverage,
 			OwnerStrategyID: o.StrategyID,
 			OpenedAt:        now,
+			ATRMethodAtOpen: atrMethod,
 		}
 		pos.TradePositionID = newTradePositionID(o.StrategyID, o.Symbol, now)
 		ss.Positions[o.Symbol] = pos
@@ -645,10 +665,10 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				mu.RUnlock()
 			}
 			if resolveATR {
-				entryATR = resolveLimitFillEntryATR(sc, o.EntryATR, avgPx, notifier)
+				entryATR = resolveLimitFillEntryATR(sc, cfg, o.EntryATR, avgPx, notifier)
 			}
 			mu.Lock()
-			tradesBooked, applyErr := applyLimitFillProgress(state, sc, o, st.FilledSize, avgPx, st.Fee, entryATR, now)
+			tradesBooked, applyErr := applyLimitFillProgress(state, sc, o, st.FilledSize, avgPx, st.Fee, entryATR, resolveATRMethod(sc, cfg), now)
 			mu.Unlock()
 			if applyErr != nil {
 				warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s %s: %v", o.StrategyID, o.Symbol, applyErr))
@@ -686,6 +706,31 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				warnNotifier(notifier, fmt.Sprintf(
 					"[limit] %s %s: limit order cancelled with no fill (oid=%d)",
 					o.StrategyID, o.Symbol, o.OrderOID))
+			}
+			// Durably flush the position carrying this order's adopted fills
+			// BEFORE the terminal row disappears, so a cross-process reader (a CLI
+			// manual-close / manual-add reading state.db) never observes the row
+			// gone while the DB position still understates the adopted fill
+			// (#1263 review-3 race). This loop grows the position in-memory
+			// (applyLimitFillProgress) but only persists it at the end-of-cycle
+			// SaveState; deleting the row first opens a window where state.db is
+			// stale and the CLI has no pending row left to reconcile against, so a
+			// sized shared-coin close would leak an untracked residual. Persisting
+			// here establishes the invariant "terminal row absent ⇒ state.db
+			// reflects the adopted fill." Only a fill changes a position, so a
+			// no-fill cancel skips the flush. On a save failure keep the row and
+			// retry the flush+delete next cycle rather than deleting against a
+			// stale DB.
+			if o.FilledSize > 0 {
+				mu.Lock()
+				saveErr := SaveStateWithDB(state, cfg, stateDB)
+				mu.Unlock()
+				if saveErr != nil {
+					warnNotifier(notifier, fmt.Sprintf(
+						"[limit] %s %s: could not flush adopted fill before finalizing oid=%d (%v) — retrying next cycle",
+						o.StrategyID, o.Symbol, o.OrderOID, saveErr))
+					continue
+				}
 			}
 			if err := stateDB.DeletePendingLimitOrder(o.ID); err != nil {
 				fmt.Printf("[limit] failed to delete terminal row %d: %v\n", o.ID, err)

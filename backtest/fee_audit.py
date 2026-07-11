@@ -2,11 +2,12 @@
 """fee_audit.py — registry-wide trade-count x fee-drag selectivity screen (#999 M5).
 
 The cheapest possible triage before any M1 effort is spent on a strategy: does
-its edge survive its own churn? At the binanceus audit fee model (0.1% taker
-per side, ~0.3% round-trip once spread is counted), a strategy that fires
-350-800 times/year pays 100%+ of capital in fees, while passing incumbents
-trade 0-8 times per window. This screen makes that arithmetic explicit and
-reproducible.
+its edge survive its own churn? At the hyperliquid audit fee model (#1315:
+base-tier 0.045% taker per side + 5 bps slippage, ~0.19% round-trip), a
+strategy that fires hundreds of times/year still pays tens of percent of
+capital in fees, while passing incumbents trade 0-8 times per window. This
+screen makes that arithmetic explicit and reproducible. (Verdicts recorded
+before #1315 used the binanceus model — 0.1%/side, ~0.3% round-trip.)
 
 For every registered strategy on the audit datasets/windows it runs each leg
 TWICE on the eval_windows.py harness (#994):
@@ -70,7 +71,7 @@ if _THIS_DIR not in sys.path:
 from eval_windows import (  # noqa: E402  (path bootstrap above)
     DATASETS,
     DEFAULT_CAPITAL,
-    PLATFORM,
+    FEE_PLATFORM,
     WINDOWS,
     dataset_key,
     parse_dataset_arg,
@@ -285,7 +286,7 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
         f"- Datasets: {meta['datasets_desc']}",
         f"- Direction: {meta.get('direction', 'long')}",
         f"- Capital: {meta['capital']}",
-        f"- Fee model: {PLATFORM} platform taker fee + 5 bps slippage (net); "
+        f"- Fee model: {FEE_PLATFORM} platform taker fee + 5 bps slippage (net); "
         "commission=0 and slippage=0 (gross). Fee drag = mean per-leg "
         "(gross - net) return.",
         "",
@@ -476,16 +477,20 @@ def enumerate_targets(registry_choice: str,
     targets: List[tuple] = []
     seen = set()
     spot_reg = None
+    # #1275: enumerate the FULL registry (STRATEGY_REGISTRY includes
+    # discovery-hidden names), not list_strategies() — the audit is the tool
+    # that produces quarantine verdicts, so it must keep re-screening
+    # quarantined strategies; a discovery-only sweep could never revisit them.
     if registry_choice in ("spot", "both"):
         spot_reg = load_registry("spot")
-        for n in spot_reg.list_strategies():
+        for n in spot_reg.STRATEGY_REGISTRY:
             if n in SKIP_STRATEGIES:
                 continue
             targets.append((n, "spot", spot_reg))
             seen.add(n)
     if registry_choice in ("futures", "both"):
         fut_reg = load_registry("futures")
-        for n in fut_reg.list_strategies():
+        for n in fut_reg.STRATEGY_REGISTRY:
             if n in SKIP_STRATEGIES:
                 continue
             if registry_choice == "both" and n in seen:

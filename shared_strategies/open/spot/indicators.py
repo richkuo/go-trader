@@ -3,9 +3,21 @@ Technical indicators for trading signals.
 Each indicator returns a DataFrame with signal columns added.
 """
 
+import os
+import sys
+
 import numpy as np
 import pandas as pd
 from typing import Tuple
+
+# indicators_core lives one directory up (shared_strategies/open/). The
+# registry inserts that dir onto sys.path before importing this module; insert
+# it here too so a standalone ``import indicators`` keeps working (#1281).
+_OPEN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _OPEN_DIR not in sys.path:
+    sys.path.insert(0, _OPEN_DIR)
+
+from indicators_core import wilder_rsi
 
 
 def sma(series: pd.Series, period: int) -> pd.Series:
@@ -51,16 +63,7 @@ def rsi(df: pd.DataFrame, period: int = 14, overbought: float = 70,
     Adds columns: rsi, signal
     """
     result = df.copy()
-    delta = result["close"].diff()
-
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-
-    rs = avg_gain / avg_loss
-    result["rsi"] = 100 - (100 / (1 + rs))
+    result["rsi"] = wilder_rsi(result["close"], period)
 
     # Signals based on oversold/overbought crossovers
     result["signal"] = 0

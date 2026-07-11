@@ -105,6 +105,20 @@ type Position struct {
 	// disabled, failed, or not finished before the close.
 	LLMAnalysisRequested bool   `json:"llm_analysis_requested,omitempty"`
 	LLMVerdict           string `json:"llm_verdict,omitempty"`
+	// ATRMethodAtOpen freezes the resolved atr_method (#1277) the moment this
+	// position opened (stampATRMethodAtOpenIfOpened; never re-stamped on a
+	// scale-in add — mirrors RiskAnchorPrice/EntryATR freeze-at-entry
+	// semantics). EntryATR and on-chain reduce-only protection are sized once
+	// from the frozen EntryATR and therefore immune to a later atr_method
+	// change, but a live-recomputed close evaluator (tiered_tp_atr_live,
+	// atr_stop/avwap_stop with atr_source=live) reads market_ctx["atr"] fresh
+	// every cycle under whatever method the CURRENT config resolves — the
+	// SIGHUP hot-reload guard (config_reload.go) blocks an effective-method
+	// flip while open, but a config edit + process restart bypasses it (no
+	// "old" resolved value to diff against). checkATRMethodDriftAtStartup
+	// compares this stamp to the live resolution once per boot to catch that
+	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
+	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are
@@ -419,8 +433,10 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-	// TP fills are typically maker-priced; use the taker rate as a conservative
-	// fallback when userFills misses so virtual cash is not overstated.
+	// TP fills are typically maker-priced (HyperliquidMakerFeePct exists for
+	// that), but this fallback fires only when userFills misses and the true
+	// fill type is unknown — deliberately keep the taker rate (#1315 decision)
+	// so virtual cash is never overstated by an optimistic maker assumption.
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {
@@ -509,22 +525,11 @@ func recordPerpsStopLossCloseWithFillFee(s *StrategyState, symbol string, trigge
 	return bookPerpsCloseWithFillFee(s, symbol, triggerPx, fillFee, useFillFee, exchangeOrderID, reason, stopLossCloseDetailsPrefix(reason), "SL close reconciled", logger)
 }
 
-// recordPerpsExternalClose books a perps close detected by reconciliation
-// when the position has disappeared on-chain without a tracked trigger fill
-// (manual UI close, kill-switch close from a peer, etc.). The caller supplies
-// a close price (typically the current mark) so realized PnL is approximated
-// and credited to s.Cash — matching how recordPerpsStopLossClose handles the
-// SL-owner case. Returns false if the price is non-positive or the position
-// is missing, so callers can fall back to a zero-PnL recordClosedPosition (#584).
-func recordPerpsExternalClose(s *StrategyState, symbol string, closePx float64, reason string, logger *StrategyLogger) bool {
-	return bookPerpsClose(s, symbol, closePx, reason, "External close @ mark", "External close reconciled", logger)
-}
-
-// recordPerpsExternalCloseWithFillFee is the reconciler entry point — same
-// as recordPerpsExternalClose but threads the userFills-resolved fee and
-// (optional) exchange OID. The OID is rarely available for external closes
-// since the close happened off-scheduler, but the coin+size match path
-// can still recover the fee.
+// recordPerpsExternalCloseWithFillFee is the reconciler entry point for an
+// external perps close. It threads the userFills-resolved fee and (optional)
+// exchange OID. The OID is rarely available for external closes since the
+// close happened off-scheduler, but the coin+size match path can still
+// recover the fee.
 func recordPerpsExternalCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
 	return bookPerpsCloseWithFillFee(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, "External close @ mark", "External close reconciled", logger)
 }
@@ -787,9 +792,9 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 	return total
 }
 
-// PerpsOrderSkipReason returns a non-empty reason when ExecutePerpsSignal
+// PerpsOrderSkipReason returns a non-empty reason when ExecutePerpsSignalWithLeverage
 // would treat (signal, current position side) as a no-op. Callers that place
-// live orders BEFORE invoking ExecutePerpsSignal (e.g. runHyperliquidExecuteOrder)
+// live orders BEFORE invoking ExecutePerpsSignalWithLeverage (e.g. runHyperliquidExecuteOrder)
 // must consult this guard first — otherwise the on-chain fill happens but the
 // in-memory execution path returns 0 and no Trade is recorded, leaving
 // virtual state permanently behind actual exchange positions (#298).
@@ -809,7 +814,7 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 // cash after a flip-close leg cannot be derived from (signal, posSide) alone —
 // live callers guard cash upstream before placing the order (see
 // runHyperliquidExecuteOrder). If a new side-based no-op branch is added to
-// ExecutePerpsSignal, add it here too.
+// ExecutePerpsSignalWithLeverage, add it here too.
 func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 	switch direction {
 	case DirectionLong, "":
@@ -834,7 +839,7 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 				return "already short, skipping sell"
 			}
 			// #656: orphan long under direction="short" must NOT place an
-			// open-short order. ExecutePerpsSignal would skip-and-warn, so
+			// open-short order. ExecutePerpsSignalWithLeverage would skip-and-warn, so
 			// skipping the live order here mirrors that and avoids the #298
 			// "live fill lands but no Trade recorded" gap.
 			if posSide == "long" {
@@ -876,7 +881,7 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 //   - signal=-1 + long  → flip = posQty + new
 //
 // The flip branch is what this helper exists for: without `posQty + newSize`
-// a bidirectional scheduler tells ExecutePerpsSignal to virtually close+open
+// a bidirectional scheduler tells ExecutePerpsSignalWithLeverage to virtually close+open
 // in one step, but the exchange only closes (size = newSize or size = posQty
 // picked either way would desync). A single net-flip order of
 // `posQty + newSize` settles to the new side at the intended notional and
@@ -889,10 +894,14 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 // zeroes out the post-close budget the flip degrades to close-only sizing
 // (reported as insufficient cash rather than silently undersizing).
 //
-// marginPerTradeUSD opts the sizing into margin-space (#518): when positive,
+// sizing bundles the notional/risk sizing inputs (#497/#518/#1268). With
+// sizing.MarginPerTradeUSD positive the open budget is margin-space:
 // notional = min(marginPerTradeUSD, effectiveCash) × exchangeLeverage,
-// independent of sizingLeverage. The hardcoded 0.95 safety buffer was
-// removed in #518.
+// independent of sizingLeverage (the hardcoded 0.95 safety buffer was removed
+// in #518). With sizing.RiskPerTradePct positive the budget is risk-based
+// (PerpsRiskBasedNotional); an unresolvable stop distance FAILS CLOSED on a
+// fresh open (ok=false with the resolver's reason — never a silent notional
+// fallback) and degrades a flip to close-only, same as insufficient cash.
 //
 // Returns (size, ok); when ok is false `reason` is a log-ready string.
 //
@@ -904,7 +913,7 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 // unreachable when closeFraction > 0 because compose_signal does not emit a
 // flip alongside a close (open_action is dropped while a position is open),
 // so closeFraction is intentionally ignored on the open/flip path.
-func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, posSide, direction string, closeFraction float64) (size float64, ok bool, reason string) {
+func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing PerpsSizing, posSide, direction string, closeFraction float64) (size float64, ok bool, reason string) {
 	isBuy := signal == 1
 	allowsLong := direction == DirectionLong || direction == DirectionBoth || direction == ""
 	allowsShort := direction == DirectionShort || direction == DirectionBoth
@@ -933,6 +942,13 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 	}
 
 	if openingFresh || flipping {
+		// #1268 fail-closed: risk-per-trade sizing with an unresolvable stop
+		// distance refuses a FRESH open outright (the generic insufficient-cash
+		// message below would misattribute the cause). A flip falls through to
+		// the budget<1 close-only degrade — the close leg must still fire.
+		if openingFresh && sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
+			return 0, false, fmt.Sprintf("risk_per_trade_pct sizing: %s — refusing open (fail-closed)", sizing.riskUnresolvedLabel())
+		}
 		effectiveCash := cash
 		if flipping {
 			// Close leg realizes PnL before the new side opens on-chain;
@@ -946,7 +962,7 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost, sizingLeverage
 			}
 			effectiveCash = cash + closePnL
 		}
-		budget := PerpsOpenNotional(effectiveCash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+		budget := PerpsOpenNotionalSized(effectiveCash, price, sizing)
 		if budget < 1 || price <= 0 {
 			// Flip + catastrophic drawdown (realized loss wipes out post-close
 			// margin): the new side can't be sized, but the close leg still
@@ -1017,14 +1033,14 @@ func perpsCloseActionSuppressesNewSL(signal int, posSide string, allowsLong, all
 	return false
 }
 
-// SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignal's
+// SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignalWithFillFee's
 // side-based skip branches ("already long, skipping buy" at signal=1,
 // "No long position to sell, skipping" at signal=-1) must be consulted BEFORE
 // the live helper spawns a Python order placer — otherwise a live fill lands
-// on the exchange but ExecuteSpotSignal returns 0 and no Trade is recorded,
+// on the exchange but ExecuteSpotSignalWithFillFee returns 0 and no Trade is recorded,
 // leaving virtual state behind real holdings. See #298 / #300.
 //
-// Matching conditions to ExecuteSpotSignal:
+// Matching conditions to ExecuteSpotSignalWithFillFee:
 //   - signal == 1 && pos.Side == "long"  → "Already long, skipping buy"
 //   - signal == -1 && no long position    → "No long position to sell, skipping"
 //
@@ -1047,14 +1063,14 @@ func SpotOrderSkipReason(signal int, posSide string) string {
 // FuturesOrderSkipReason is the futures peer of PerpsOrderSkipReason. It
 // reflects the CLOSE-LONG-ONLY semantics of the current TopStep live helper
 // (runTopStepExecuteOrder treats signal=-1 as close-long and never opens a
-// live short, even though paper-mode ExecuteFuturesSignal can). With those
+// live short, even though paper-mode ExecuteFuturesSignalWithFillFee can). With those
 // semantics, the guard matches spot/perps:
 //   - signal == 1 && pos.Side == "long" → "Already long, skipping buy"
 //   - signal == -1 && no long position   → "No long position to sell, skipping"
 //
 // Without this guard, a live sell fires with posSide=="short" (Quantity is
 // always positive so the posQty<=0 check does not catch it) but
-// ExecuteFuturesSignal is a side-based no-op when already short, producing a
+// ExecuteFuturesSignalWithFillFee is a side-based no-op when already short, producing a
 // silent state drift identical in shape to #298. If the live helper is ever
 // extended to open shorts, this guard must be revisited.
 func FuturesOrderSkipReason(signal int, posSide string) string {
@@ -1069,45 +1085,6 @@ func FuturesOrderSkipReason(signal int, posSide string) string {
 		}
 	}
 	return ""
-}
-
-// ExecutePerpsSignal processes a perps (perpetual futures) signal with
-// margin-based accounting (#254). Unlike spot, perps positions do NOT consume
-// the full notional from cash — only the fee is deducted, matching the
-// futures model. The resulting Position is stamped with Multiplier=1 so
-// PortfolioValue takes the PnL branch (cash + qty*(price-entry)).
-//
-// sizingLeverage determines notional sizing in paper mode: quantity =
-// cash * sizingLeverage / price (the hardcoded 0.95 buffer was removed in
-// #518). exchangeLeverage is stored on Position for exchange-margin reporting
-// and risk math. The legacy wrapper passes the same value for both so old
-// behavior is unchanged (#497). marginPerTradeUSD opts the open into
-// margin-space sizing (#518): when positive, paper notional becomes
-// min(marginPerTradeUSD, cash) × exchangeLeverage, independent of
-// sizingLeverage.
-//
-// fillQty > 0 means a live fill: use price and fillQty as-is (no slippage,
-// no notional recalc). fillQty == 0 means paper mode: compute qty from
-// sizing-leverage budget with slippage applied.
-//
-// fillOID/fillFee carry exchange metadata for live fills (empty/zero for
-// paper). One live fill = one exchange fee; if a bidirectional signal flips an
-// opposite-side position, ExecutePerpsSignal synthesizes a close+open pair.
-// The close leg owns the exchange-reported fill fee; the open leg uses modeled
-// fee cash math so the real fee is not counted twice. See #451.
-//
-// allowShorts toggles bidirectional semantics (#328). When true, signal=-1
-// from flat opens a short, and signal=-1 on an existing long flips to a
-// short after closing (mirrored to the existing signal=1 + short branch
-// which already closes-and-flips). When false (default), signal=-1 only
-// closes a long and never opens a short — the legacy long-only behavior
-// that strategies like triple_ema and rsi_macd_combo depend on.
-//
-// allowShorts maps to the direction enum (#656): false → "long",
-// true → "both". To get short-only semantics (#656), call
-// ExecutePerpsSignalWithDirection directly with direction="short".
-func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float64, leverage float64, fillQty float64, fillOID string, fillFee float64, allowShorts bool, logger *StrategyLogger) (int, error) {
-	return ExecutePerpsSignalWithLeverage(s, signal, symbol, price, leverage, leverage, 0, fillQty, fillOID, fillFee, directionFromAllowShorts(allowShorts), 0, logger)
 }
 
 // ExecutePerpsSignalWithLeverage processes a perps signal.
@@ -1127,15 +1104,15 @@ func ExecutePerpsSignal(s *StrategyState, signal int, symbol string, price float
 //   - "both": fully bidirectional (legacy AllowShorts=true).
 //
 // Empty direction is treated as "long" for safety.
-func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+func ExecutePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (int, error) {
+	return executePerpsSignalWithLeverage(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
 }
 
-func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizingLeverage, exchangeLeverage, marginPerTradeUSD, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
+	trades, err := executePerpsSignalWithLeverage(s, signal, symbol, price, sizing, fillQty, fillOID, fillFee, direction, closeFraction, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
@@ -1143,7 +1120,7 @@ func ExecutePerpsSignalWithLeverageDeferredOpen(s *StrategyState, signal int, sy
 	return result, err
 }
 
-func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizingLeverage, exchangeLeverage, marginPerTradeUSD float64, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
+func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string, price float64, sizing PerpsSizing, fillQty float64, fillOID string, fillFee float64, direction string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if direction == "" {
 		direction = DirectionLong
 	}
@@ -1153,14 +1130,15 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 	if signal == 0 {
 		return 0, nil
 	}
-	if sizingLeverage <= 0 {
-		sizingLeverage = 1
+	if sizing.SizingLeverage <= 0 {
+		sizing.SizingLeverage = 1
 	}
-	if exchangeLeverage <= 0 {
-		exchangeLeverage = sizingLeverage
+	if sizing.ExchangeLeverage <= 0 {
+		sizing.ExchangeLeverage = sizing.SizingLeverage
 	}
+	exchangeLeverage := sizing.ExchangeLeverage
 	tradesExecuted := 0
-	leverageLabel := perpsLeverageLabel(exchangeLeverage, sizingLeverage)
+	leverageLabel := perpsSizingLabel(sizing)
 	// #519: partial close suppresses the bidirectional open-leg path —
 	// compose_signal never composes a close+open in the same cycle, so any
 	// fractional close emitted by the open/close registry is close-only.
@@ -1329,8 +1307,16 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			// Notional sizing (#518): margin-based when MarginPerTradeUSD set,
 			// else legacy cash × sizing_leverage. The 0.95 safety buffer was
 			// removed in #518 — operators wanting headroom set a smaller
-			// sizing_leverage or margin_per_trade_usd explicitly.
-			budget := PerpsOpenNotional(s.Cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+			// sizing_leverage or margin_per_trade_usd explicitly. Risk mode
+			// (#1268) sizes qty from stop distance and FAILS CLOSED when the
+			// distance is unresolvable — never a notional fallback. On a paper
+			// flip the close-short leg above already realized its PnL into
+			// s.Cash, so the risk base is post-close cash, matching live.
+			if sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
+				logger.Info("Risk-per-trade sizing: %s — refusing open long %s (fail-closed)", sizing.riskUnresolvedLabel(), symbol)
+				return tradesExecuted, nil
+			}
+			budget := PerpsOpenNotionalSized(s.Cash, execPrice, sizing)
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice
@@ -1526,7 +1512,13 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-			budget := PerpsOpenNotional(s.Cash, sizingLeverage, exchangeLeverage, marginPerTradeUSD)
+			// #1268: same risk-mode dispatch + fail-closed guard as the
+			// open-long branch above.
+			if sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
+				logger.Info("Risk-per-trade sizing: %s — refusing open short %s (fail-closed)", sizing.riskUnresolvedLabel(), symbol)
+				return tradesExecuted, nil
+			}
+			budget := PerpsOpenNotionalSized(s.Cash, execPrice, sizing)
 			qty = budget / execPrice
 		}
 		notional := qty * execPrice
@@ -1593,11 +1585,13 @@ func perpsLeverageLabel(exchangeLeverage, sizingLeverage float64) string {
 	return fmt.Sprintf("%.1fx exchange, %.1fx sizing", exchangeLeverage, sizingLeverage)
 }
 
-// ExecuteSpotSignal processes a spot signal and executes paper or live trades.
-// fillQty > 0 means a live fill: use price as-is (no slippage) and fillQty as position quantity for buys.
-// fillQty == 0 means paper mode: apply ApplySlippage and compute qty from state budget.
-func ExecuteSpotSignal(s *StrategyState, signal int, symbol string, price float64, fillQty float64, logger *StrategyLogger) (int, error) {
-	return ExecuteSpotSignalWithFillFee(s, signal, symbol, price, fillQty, 0, "", 0, logger)
+// perpsSizingLabel renders the sizing mode for trade Details/log lines: the
+// legacy leverage label, or the risk-per-trade form when the mode is on (#1268).
+func perpsSizingLabel(sizing PerpsSizing) string {
+	if sizing.RiskPerTradePct > 0 {
+		return fmt.Sprintf("%.1fx exchange, risk %g%%/trade", sizing.ExchangeLeverage, sizing.RiskPerTradePct)
+	}
+	return perpsLeverageLabel(sizing.ExchangeLeverage, sizing.SizingLeverage)
 }
 
 // ExecuteSpotSignalWithFillFee processes a spot signal with optional live
@@ -1844,13 +1838,6 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		}
 	}
 	return tradesExecuted, nil
-}
-
-// ExecuteFuturesSignal processes a futures signal with whole-contract sizing.
-// fillContracts > 0 means a live fill: use price as-is (no slippage) and fillContracts as contract count for opens.
-// fillContracts == 0 means paper mode: apply ApplySlippage and compute contracts from state budget.
-func ExecuteFuturesSignal(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, logger *StrategyLogger) (int, error) {
-	return ExecuteFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, 0, "", 0, logger)
 }
 
 // ExecuteFuturesSignalWithFillFee processes a futures signal with optional

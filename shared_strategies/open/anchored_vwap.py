@@ -7,11 +7,10 @@ Unlike the session-reset VWAP strategies (vwap_reversion, vwap_rejection_st),
 this accumulates the volume-weighted price from a structural event (a confirmed
 swing pivot) forward and re-anchors only when a newer pivot confirms.
 
-ATR is inlined (rolling-mean True Range, integer-round only when atr >= 100) to
-match standard_atr WITHOUT importing shared_tools — open strategies cannot
-assume shared_tools is on sys.path at module-load time (the registry parity test
-loads registry.py via importlib without it, so a top-level import would raise
-ModuleNotFoundError). The inline copy is byte-identical to standard_atr.
+ATR/RSI come from the shared open-tree module ``indicators_core`` (#1281) —
+importable at module load without shared_tools on sys.path (the registry parity
+test loads registry.py via importlib with a bare sys.path; indicators_core lives
+in this directory, which the registry inserts before importing core modules).
 """
 
 from __future__ import annotations
@@ -19,31 +18,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
-def _inline_atr(df: pd.DataFrame, period: int) -> pd.Series:
-    """ATR via simple rolling mean of True Range (standard_atr convention)."""
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    prev_close = df["close"].astype(float).shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    return atr.where(atr < 100, atr.round(0))
-
-
-def _inline_rsi(close: pd.Series, period: int) -> pd.Series:
-    """Wilder RSI, same convention as the registry's rsi strategy
-    (``ewm(alpha=1/period, min_periods=period, adjust=False)``): NaN through
-    the warmup window, 100 when the window has no losses."""
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+from indicators_core import atr_sma, wilder_rsi
 
 
 def anchored_vwap_core(
@@ -97,7 +72,7 @@ def anchored_vwap_core(
     result["signal"] = 0
     result["avwap"] = np.nan
     result["anchor_index"] = -1
-    result["atr"] = _inline_atr(result, atr_period)
+    result["atr"] = atr_sma(result, atr_period)
     if n < 2 * pivot_strength + 1 + confirm_bars:
         return result
 
@@ -174,7 +149,7 @@ def anchored_vwap_core(
     # strategy would otherwise emit (same layering as the #982 chart_pattern
     # HTF gate). Warmup bars fail open: a gate with no data never blocks.
     if gate_rsi_period and int(gate_rsi_period) > 0:
-        rsi = _inline_rsi(result["close"].astype(float), int(gate_rsi_period))
+        rsi = wilder_rsi(result["close"].astype(float), int(gate_rsi_period))
         result["gate_rsi"] = rsi
         r = rsi.to_numpy()
         level = float(gate_rsi_level)

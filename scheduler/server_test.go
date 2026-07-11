@@ -207,7 +207,7 @@ func TestHandleStatusUncertifiedPolicyGatedDirection(t *testing.T) {
 	}
 	var mu sync.RWMutex
 	ss := NewStatusServer(state, &mu, "", strategies, nil)
-	ss.SetConfigContext("", &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20})
+	ss.SetConfigContext("", &Config{Regime: &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}})
 
 	req := httptest.NewRequest("GET", "/status", nil)
 	w := httptest.NewRecorder()
@@ -391,6 +391,89 @@ func TestHandleHistory_QueryParams(t *testing.T) {
 	}
 	if resp.Limit != 1 {
 		t.Errorf("limit = %d, want 1", resp.Limit)
+	}
+}
+
+// #1230: paused (#1150), regime-profile (#998) and directional-cert (#1157)
+// state must ride the dashboard API endpoints so the UI can render badges and
+// the risk/detail panels without new endpoints.
+func TestUIPausedAndDirectionalSerialization(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["okx-eth"] = &StrategyState{
+		ID:              "okx-eth",
+		Type:            "perps",
+		Cash:            1000,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		RegimeProfile:   &RegimeProfileState{ActiveProfile: "bull", PendingProfile: "bear", PendingBarsSeen: 1},
+	}
+	var mu sync.RWMutex
+	strategies := []StrategyConfig{
+		{ID: "okx-eth", Platform: "okx", Type: "perps", Args: []string{"ema", "ETH", "4h"}, Direction: DirectionBoth, Paused: true},
+	}
+	ss := NewStatusServer(state, &mu, "", strategies, nil)
+
+	// Sidebar list carries paused.
+	req := httptest.NewRequest("GET", "/api/strategies", nil)
+	w := httptest.NewRecorder()
+	ss.handleAPIStrategies(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("strategies status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var listResp struct {
+		Strategies []UIStrategy `json:"strategies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode strategies: %v", err)
+	}
+	if len(listResp.Strategies) != 1 || !listResp.Strategies[0].Paused {
+		t.Errorf("strategies paused = %+v, want paused true", listResp.Strategies)
+	}
+
+	// Overview table carries paused.
+	req = httptest.NewRequest("GET", "/api/strategies/overview", nil)
+	w = httptest.NewRecorder()
+	ss.handleAPIStrategiesOverview(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("overview status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var ovResp struct {
+		Strategies []UIStrategyOverview `json:"strategies"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&ovResp); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if len(ovResp.Strategies) != 1 || !ovResp.Strategies[0].Paused {
+		t.Errorf("overview paused = %+v, want paused true", ovResp.Strategies)
+	}
+
+	// Detail status carries paused + regime profile; directional fields stay
+	// at base values when no policy is configured.
+	req = httptest.NewRequest("GET", "/api/strategies/okx-eth/status", nil)
+	w = httptest.NewRecorder()
+	ss.handleAPIStrategy(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var st UIStrategyStatus
+	if err := json.NewDecoder(w.Body).Decode(&st); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if !st.Paused {
+		t.Errorf("status paused = false, want true")
+	}
+	if st.RegimeProfile == nil || st.RegimeProfile.ActiveProfile != "bull" || st.RegimeProfile.PendingProfile != "bear" {
+		t.Errorf("status regime_profile = %+v, want bull→bear", st.RegimeProfile)
+	}
+	if st.RegimeDirectionalPolicy {
+		t.Errorf("regime_directional_policy = true, want false (none configured)")
+	}
+	if st.EffectiveDirection != DirectionBoth {
+		t.Errorf("effective_direction = %q, want %q (base)", st.EffectiveDirection, DirectionBoth)
+	}
+	if st.DirectionalCertificationStatus != "" {
+		t.Errorf("cert status = %q, want empty without policy", st.DirectionalCertificationStatus)
 	}
 }
 

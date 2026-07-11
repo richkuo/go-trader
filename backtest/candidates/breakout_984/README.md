@@ -257,3 +257,96 @@ burns 24.8pp; `tp_tight` cuts trades but cuts gross return even faster.
    sweep.
 
 A negative result is a valid M1 finding — documented, not deleted (#995 step 4).
+
+## Addendum 2026-07-05 — re-run under the corrected simulation geometry (#1243)
+
+Re-ran the headline drivers (`audit_headline.py` continuous-window;
+`validate_shortlist.py` M1 protocol; `fee_drag.py`) on current `main` (the
+#1238 audit fixes plus #1250 fee-net-per-trade and #1251 canonical Sortino /
+`None` profit-factor / half-open windows), identical cache snapshot. **The
+keep-baseline verdict holds** — but one candidate, `tp_tight`, shifted
+materially, so read the detail before reusing the step-5 numbers.
+
+**Verdict unchanged, and why.** The decision rests on the M1 protocol: baseline
+is the only shortlist member passing judged IS+OOS, and every non-baseline
+candidate still FAILS the judged OOS (2026 crash) window — the window
+breakout's keep verdict lives in. That table is unchanged: baseline OOS PASS
+(held-out 0/3); `trail_atr_3.0` FAIL 0/3; `tp_tight` FAIL 2/3;
+`tp_tight_trail3` FAIL 0/3; `time_stop_250` FAIL 3/3. `tp_tight`'s OOS mean
+Sharpe is if anything slightly worse (-1.67 vs the documented -1.63), so the
+decisive crash-window failure is intact. **No promotion guidance changes.**
+
+**But the step-5 continuous-collapse claim for `tp_tight` does NOT reproduce.**
+Under the corrected closed-bar EntryATR geometry, the tiered-TP ladder's fills
+move and the stitched-frame collapse the doc headlines is gone:
+
+| run | metric | documented | re-run | status |
+|---|---|---:|---:|---|
+| baseline | Sharpe / ret / vsB&H / worstDD / #T | +0.02 / -1.1% / +43.7 / -52.2% / 260 | +0.02 / -1.08% / +43.74 / -52.17% / 260 | identical |
+| `trail_atr_3.0` | " | -0.33 / -9.4% / +35.5 / -52.3% / 364 | -0.495 / -14.86% / +29.97 / -51.62% / 371 | shifted worse |
+| `tp_tight` | " | -0.26 / -10.5% / +34.4 / **-69.0%** / 148 | **+0.150 / +0.86% / +45.69 / -34.28%** / 148 | **shifted much better** |
+| `tp_tight_trail3` | " | -0.57 / -11.9% / +32.9 / -48.6% / 961 | -0.720 / -15.62% / +29.21 / -47.89% / 963 | shifted worse |
+| `time_stop_250` | " | -0.39 / -25.3% / +19.6 / -68.4% / 109 | -0.386 / -25.27% / +19.56 / -68.36% / 109 | identical |
+
+`tp_tight` keeps the same 148 entries (the entry set is frozen), so the whole
+move is exit-geometry: on the stitched continuous frame it goes from a -69.0%
+worst-DD, -10.5%-return collapse to a **-34.28% worst DD, +0.86% return, +45.69
+vs-B&H** profile essentially level with baseline. `fee_drag.py` corroborates —
+its net flips from a documented -10.5% to +0.86% with drag collapsing 13.6pp →
+1.5pp — while `trail_atr_3.0`'s gross edge instead erodes (8.4% → 1.47%). So the
+specific documented narrative "`tp_tight` deepens the worst DD to -69.0%,
+amputating the fat-tail trends" is **refuted under corrected geometry**; the
+generic step-5 methodology lesson (per-window PASS can hide a stitched-frame
+problem) is unaffected — it still holds for other candidates and studies.
+
+**Net:** the promotion decision (keep baseline; do not ship `tp_tight`) is
+unchanged because it is driven by the judged-OOS crash-window failure, not by
+the stitched frame. `tp_tight` is now the candidate to revisit **if and only
+if** breakout's keep rationale is ever reweighted away from crash-window
+outperformance — but that is a hypothetical, not a flip today, so no follow-up
+decision issue is filed. The corrected `tp_tight` continuous numbers above
+supersede the step-5 table for any future comparison.
+
+## Addendum 2026-07-10 — re-run under intra-bar stop resolution + corrected HL fees (#1294)
+
+Re-ran `audit_headline.py` (baseline; `tp_tight` + `trail_atr_3.0`) and
+`validate_shortlist.py` (default shortlist) on current `main` — #1271
+`ohlc_walk` intrabar default and the #1320 audit fee-model switch — under BOTH
+`--intrabar-resolution` modes (the drivers now thread the flag, #1294),
+identical cache snapshot (last bars 2026-06-04 → 2026-06-12, zero drift).
+**The keep-baseline verdict holds.**
+
+M1 protocol table (default shortlist): baseline OOS PASS (held-out 0/3),
+`trail_atr_3.0` FAIL (0/3), `tp_tight` FAIL (2/3), `tp_tight_trail3` FAIL (0/3)
+— **identical to the documented table, in both modes.** The decisive
+judged-OOS crash-window failure of every non-baseline candidate is intact, so
+no promotion guidance changes.
+
+Two shortlist candidates arm engine-tracked stops and are therefore
+#1271-reached: `trail_atr_3.0` (bare trailing stop) and `tp_tight_trail3`
+(tiered TP + `trailing_stop_atr_mult` 3.0, the analog of squeeze_983's
+`tp_runner_trail3`). Both have mode-different numbers; `baseline` and
+`tp_tight` (evaluator ladders only) reproduce byte-identically across the
+mode pair. Continuous audit window:
+
+| run | metric | documented (2026-07-05) | `bar_close` re-run | `ohlc_walk` re-run | attribution |
+|---|---|---:|---:|---:|---|
+| baseline | Sharpe / ret / vsB&H / worstDD / #T | +0.02 / -1.08% / +43.74 / -52.17% / 260 | +0.145 / +3.87% / +48.70 / -51.80% / 260 | identical to bar_close | fee model only |
+| `tp_tight` | " | +0.150 / +0.86% / +45.69 / -34.28% / 148 | +0.203 / +1.96% / +46.79 / -34.22% / 148 | identical to bar_close | fee model only (evaluator ladder, no engine stop) |
+| `trail_atr_3.0` | " | -0.495 / -14.86% / +29.97 / -51.62% / 371 | -0.288 / -9.34% / +35.49 / -50.13% / 371 | **-0.433 / -10.54% / +34.29 / -47.50% / 412** | fee model (bar_close column) + intra-bar walk (delta between the two re-run columns) |
+
+The `trail_atr_3.0` mode-pair isolates #1271 cleanly: the intra-bar walk
+converts stop touches into same-bar trigger-price exits (#T 371 → 412), trims
+the worst DD (-50.13% → -47.50%) and gives back return/Sharpe — the expected
+"strictly more conservative for tight stops" direction. It stays a deep M1
+FAIL either way. `tp_tight_trail3`'s mode pair (M1 pooled windows, Sharpe /
+DDadj): IS +0.09 / +0.70 under `bar_close` → **-0.39 / +0.58** under
+`ohlc_walk`; OOS -1.11 / -0.62 → -0.98 / -0.58. Its pooled-IS window label
+flips PASS → FAIL under the intra-bar walk, but the protocol verdict is
+unchanged in both modes (judged-OOS FAIL, held-out 0/3, matching the
+documented table). The #1243 finding that `tp_tight`'s documented continuous
+collapse was refuted stands (it is intrabar-unreached; only fees moved it).
+
+---
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code
+Updated with LLM: Fable 5 | high | Harness: Claude Code

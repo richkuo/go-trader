@@ -15,6 +15,8 @@ Sell: 2+ sub-strategies signal sell on the same candle
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma, wilder_rsi
+
 from liquidity_sweeps import liquidity_sweep_core
 
 
@@ -42,12 +44,7 @@ def _squeeze_signals(
     bb_lower = bb_mid - (bb_std * bb_stddev)
 
     kc_mid = _ema(result["close"], kc_period)
-    tr = pd.concat([
-        result["high"] - result["low"],
-        (result["high"] - result["close"].shift(1)).abs(),
-        (result["low"] - result["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(window=kc_period).mean()
+    atr = atr_sma(result, kc_period, round_large=False)
     kc_upper = kc_mid + (kc_mult * atr)
     kc_lower = kc_mid - (kc_mult * atr)
 
@@ -91,13 +88,7 @@ def _stoch_rsi_signals(
 ) -> pd.Series:
     """Return stochastic RSI signal series: 1 (buy), -1 (sell), 0 (hold)."""
     close = df["close"]
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / rsi_period, min_periods=rsi_period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
+    rsi = wilder_rsi(close, rsi_period)
 
     rsi_min = rsi.rolling(window=stoch_period).min()
     rsi_max = rsi.rolling(window=stoch_period).max()

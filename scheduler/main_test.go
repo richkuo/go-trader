@@ -86,7 +86,7 @@ func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 		},
 		{
 			name:   "consecutive losses",
-			reason: RiskReasonConsecutiveLosses,
+			reason: RiskReasonConsecutiveLosses + " (5 in a row, threshold 5)",
 		},
 	}
 
@@ -123,7 +123,7 @@ func TestNotifyPerStrategyCircuitBreaker_BroadcastsFreshTriggers(t *testing.T) {
 					!strings.Contains(msg, "BinanceUS, BTC, 30m, sma_cross, spot") {
 					t.Fatalf("notification missing required context: %q", msg)
 				}
-				if tc.reason == RiskReasonConsecutiveLosses && !strings.Contains(msg, "5 consecutive losses") {
+				if strings.HasPrefix(tc.reason, RiskReasonConsecutiveLosses) && !strings.Contains(msg, "consecutive losses (5 in a row, threshold 5)") {
 					t.Fatalf("expected consecutive-loss trigger in %q", msg)
 				}
 				if strings.HasPrefix(tc.reason, RiskReasonMaxDrawdownExceeded) && !strings.Contains(msg, "30.0% > 25.0%") {
@@ -853,7 +853,7 @@ func TestExecuteHyperliquidResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeHyperliquidResult(sc, s, result, execResult, "BUY", 50000, nil, logger)
+	trades, _ := executeHyperliquidResult(sc, s, result, execResult, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -890,7 +890,7 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 	defer logger.Close()
 
 	// Paper mode: execResult is nil
-	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, nil, logger)
+	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -933,7 +933,7 @@ func TestExecuteOKXResult_PerpsStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, logger)
+	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -972,7 +972,7 @@ func TestExecuteOKXResult_SpotStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, logger)
+	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1011,7 +1011,7 @@ func TestExecuteRobinhoodResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, logger)
+	trades, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1109,7 +1109,7 @@ func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeTopStepResult(sc, s, nil, result, execResult, "BUY", 5000, nil, logger)
+	trades, _ := executeTopStepResult(sc, s, nil, result, execResult, "BUY", 5000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}

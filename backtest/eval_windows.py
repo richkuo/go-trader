@@ -9,7 +9,7 @@ per-dataset Sharpe / return / max-DD / DD-adjusted-return / trades, pass/fail
 verdicts, and optional plateau sweeps.
 
 Harness is audit-identical (#956/#963/#976): registry default or supplied
-params, single mode, binanceus fee model, long-leg signal path unless the
+params, single mode, hyperliquid fee model (#1315), long-leg signal path unless the
 candidate config supplies close refs / direction. Sharpe uses the Backtester's
 timeframe-annualized scale, the same scale on both sides of the bar.
 
@@ -87,7 +87,31 @@ PROTOCOL_WINDOWS = ("is", "oos")
 HELD_OUT_WINDOWS = ("2023", "2024", "2025H1")
 
 DEFAULT_CAPITAL = 1000.0
-PLATFORM = "binanceus"  # audit fee model; fixed, not a knob
+# Two independent platform axes (#1315 review): the fee model a harness prices
+# and the exchange whose cached OHLCV it loads must never be coupled — changing
+# one must not silently repoint the other.
+#
+# PLATFORM — the DATA-SOURCE exchange_id for cached OHLCV. Imported by the
+# regime research/promotion pipeline (regime_bounded_window_validate,
+# regime_diagnostics, regime_calibrate, regime_vol_model, the regime_10xx /
+# regime_1211 research one-shots) and passed to load_cached_data(exchange_id=…).
+# Stays "binanceus": every committed regime baseline (incl. the #1211 incumbent
+# baseline) was computed on this series. NOT the fee model.
+PLATFORM = "binanceus"
+
+# FEE_PLATFORM — the audit fee model; fixed, not a knob. Used only at the
+# Backtester platform= sites of the active M harnesses (eval_windows,
+# exit_policy_ab, exit_diagnostics; fee_audit/gross_edge_noise/auto_suggest
+# inherit). #1315: hyperliquid base-tier taker (0.045%/side + the Backtester's
+# 5 bps slippage) — live deployment is Hyperliquid perps, so audits price the
+# fees we actually pay. This encodes an explicit perps-deployment assumption
+# even for spot-audited strategies. Verdicts recorded before #1315 were graded
+# under "binanceus" (0.1%/side, ~0.3% round-trip) — see the dated annotations
+# in docs/research/. The frozen research one-shots (regime_1081/regime_1083)
+# deliberately keep their Backtester fee model on the data-source constant so
+# their committed negative-result artifacts stay reproducible under the fee
+# model they were graded with.
+FEE_PLATFORM = "hyperliquid"
 
 
 # ---------------------------------------------------------------------------
@@ -100,12 +124,23 @@ def trade_samples_from_results(results: dict) -> List[dict]:
 
     ``pnl_pct`` is computed purely from entry/exit fill prices, so on a
     zero-friction (gross) run it is the raw per-trade price edge the M1
-    step-2 noise check adjudicates. ``entry_date`` rides along so callers
-    pooling overlapping windows can deduplicate the same physical entry.
+    step-2 noise check adjudicates. ``pnl_pct_net`` (#1274, additive) is the
+    fee-deducted return on entry notional (Trade.pnl has both commissions
+    subtracted; falls back to the gross figure when notional is unavailable)
+    for consumers that need the real equity path, e.g. the Monte Carlo
+    trade-order resampler. ``entry_date`` rides along so callers pooling
+    overlapping windows can deduplicate the same physical entry.
     Missing/empty trade lists yield [].
     """
-    return [{"entry_date": str(t["entry_date"]), "pnl_pct": float(t["pnl_pct"])}
-            for t in results.get("trades") or []]
+    out = []
+    for t in results.get("trades") or []:
+        gross = float(t["pnl_pct"])
+        notional = float(t.get("shares") or 0.0) * float(t.get("entry_price") or 0.0)
+        net = (float(t["pnl"]) / notional * 100.0
+               if notional > 0 and t.get("pnl") is not None else gross)
+        out.append({"entry_date": str(t["entry_date"]), "pnl_pct": gross,
+                    "pnl_pct_net": round(net, 6)})
+    return out
 
 
 def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
@@ -120,20 +155,33 @@ def dd_adjusted_return(return_pct: float, max_dd_pct: float) -> float:
     return return_pct / abs(max_dd_pct)
 
 
+# #1005/#1228: mirrors backtest/backtester.py LIQUIDATED_METRIC_FLOOR (kept in
+# sync by test_eval_windows). A liquidated leg reads return −100% / DD −100%,
+# so raw DDadj is −1.0 — OUTRANKING a surviving losing leg (e.g. −50% return
+# on 25% DD scores −2.0). Floor the axis like Sharpe so a dead account always
+# sorts below any survivor.
+LIQUIDATED_DDADJ_FLOOR = -100.0
+
+
 def leg_from_results(results: dict, bh_return_pct: Optional[float] = None) -> dict:
     """Collapse a Backtester result dict to the per-leg metrics M1 reports."""
     ret = float(results["total_return_pct"])
     dd = float(results["max_drawdown_pct"])
+    liquidated = bool(results.get("liquidated"))
     return {
         "sharpe": float(results["sharpe_ratio"]),
         "return_pct": ret,
         "max_dd_pct": dd,
-        "ddadj": round(dd_adjusted_return(ret, dd), 3),
+        "ddadj": (
+            LIQUIDATED_DDADJ_FLOOR
+            if liquidated
+            else round(dd_adjusted_return(ret, dd), 3)
+        ),
         "trades": int(results["total_trades"]),
         "bh_return_pct": bh_return_pct,
         # #1005: equity hit 0 — metrics are floored at the bust bar (return
         # and DD read −100%); surfaced so blown legs are never silent.
-        "liquidated": bool(results.get("liquidated")),
+        "liquidated": liquidated,
     }
 
 
@@ -289,7 +337,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             *,
             commission_pct: Optional[float] = None,
             slippage_pct: Optional[float] = None,
-            keep_trades: bool = False) -> Optional[dict]:
+            keep_trades: bool = False,
+            intrabar_resolution: str = "ohlc_walk") -> Optional[dict]:
     """Run one (strategy, dataset, window) leg on the audit-identical harness.
 
     ``commission_pct`` / ``slippage_pct`` are keyword-only friction overrides
@@ -301,6 +350,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     annualize trade counts. ``keep_trades`` (#1054) additionally attaches
     ``trade_samples`` (per-trade ``{entry_date, pnl_pct}``) so the gross-edge
     noise check can resample the trade universe the same harness produced.
+    ``intrabar_resolution`` (#1271) selects how a same-bar SL/TP race is
+    resolved: ``"ohlc_walk"`` (default) walks the bar's O/H/L/C path; pass
+    ``"bar_close"`` to reproduce pre-#1271 documented baselines.
 
     allowed_regimes (when provided) turns on the regime entry gate for this
     leg; regime_enabled is forced true in that case so the Backtester injects
@@ -321,6 +373,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     present (the Backtester rejects a policy without regime compute).
     """
     from atr import ensure_atr_indicator
+    import pandas as pd
     from data_fetcher import load_cached_data
     from backtester import Backtester
     from run_backtest import (FUNDING_COLUMN_STRATEGIES, _attach_funding_if_needed,
@@ -330,6 +383,18 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
     df = load_cached_data(symbol, timeframe, start_date=start, end_date=end)
     if df.empty:
         return None
+    # load_ohlcv's end bound is INCLUSIVE (timestamp <= end_ts), but M1 windows
+    # share boundaries ("is" ends where "oos" begins, "2023" where "2024"
+    # begins, ...) and gross_edge_noise documents a half-open [start, end)
+    # convention. Slice the end EXCLUSIVELY here — dropping any bar whose OPEN
+    # time equals `end` — so adjacent windows never double-count the boundary
+    # bar. We fix it at this caller rather than in load_ohlcv, whose inclusive
+    # contract other callers rely on. end=None means "latest cached bar" (no
+    # upper bound), so it is left untouched.
+    if end is not None:
+        df = df[df.index < pd.Timestamp(end)]
+        if df.empty:
+            return None
     if name in FUNDING_COLUMN_STRATEGIES:
         df = _attach_funding_if_needed(df, name, symbol, start)
 
@@ -368,7 +433,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                   or bool(regime_windows_spec)
                   or bool(regime_directional_policy))
     bt_kwargs = dict(
-        initial_capital=capital, platform=PLATFORM,
+        initial_capital=capital, platform=FEE_PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
         close_strategies=close_strategies,
         direction=direction, invert_signal=invert_signal,
@@ -383,6 +448,7 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
         # commission_pct=None keeps the Backtester's platform-derived fee — the
         # M1 default; an explicit 0.0 (fee audit gross run) overrides it.
         commission_pct=commission_pct,
+        intrabar_resolution=intrabar_resolution,
     )
     # Only override slippage when asked; otherwise the Backtester's 5 bps
     # default stands (passing None would zero it out via the constructor).
@@ -413,7 +479,8 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
 
 
 def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
-                           capital: float) -> dict:
+                           capital: float, *,
+                           intrabar_resolution: str = "ohlc_walk") -> dict:
     """All incumbent legs for one window: {dataset_key: {name: leg|None}}."""
     out = {}
     for symbol, timeframe in datasets:
@@ -421,7 +488,8 @@ def compute_incumbent_legs(reg, datasets: List[tuple], window: tuple,
         out[ds] = {}
         for name in INCUMBENTS:
             out[ds][name] = run_leg(reg, name, None, symbol, timeframe,
-                                    window, capital=capital)
+                                    window, capital=capital,
+                                    intrabar_resolution=intrabar_resolution)
     return out
 
 
@@ -564,38 +632,66 @@ def validate_candidate(candidate: dict) -> dict:
     return candidate
 
 
+def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
+                      window: tuple, capital: float = DEFAULT_CAPITAL, *,
+                      keep_trades: bool = False,
+                      intrabar_resolution: str = "ohlc_walk") -> Optional[dict]:
+    """Single source of truth for candidate-dict -> ``run_leg`` kwargs.
+
+    Every field ``validate_candidate`` accepts and the backtester can model is
+    threaded here. Callers that resample or re-score a candidate (M1's
+    ``evaluate_window``, monte_carlo's per-leg trade series) MUST go through
+    this rather than hand-picking a subset: a caller that quietly drops
+    ``close_strategies`` / ``allowed_regimes`` reports numbers for a DIFFERENT
+    strategy than the one under test, while looking correct.
+    """
+    return run_leg(
+        reg, candidate["name"], candidate.get("params"),
+        symbol, timeframe, window, capital=capital,
+        close_strategies=candidate.get("close_strategies"),
+        # The validated default ("long") must also be the EXECUTED
+        # default: with close refs and direction=None the engine path
+        # would open shorts on raw signal=-1, silently scoring a
+        # different entry universe than the long-leg harness (#996).
+        direction=candidate.get("direction") or "long",
+        invert_signal=bool(candidate.get("invert_signal")),
+        stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
+        trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
+        profile_allocation=candidate.get("profile_allocation"),
+        allowed_regimes=candidate.get("allowed_regimes"),
+        regime_windows_spec=candidate.get("regime_windows_spec"),
+        regime_directional_policy=candidate.get("regime_directional_policy"),
+        keep_trades=keep_trades,
+        intrabar_resolution=intrabar_resolution,
+    )
+
+
 def evaluate_window(reg, candidate: dict, datasets: List[tuple],
                     window_name: str, capital: float,
-                    bars_memo: dict) -> dict:
-    """Candidate legs + incumbent bars + verdict for one window."""
+                    bars_memo: dict, *,
+                    intrabar_resolution: str = "ohlc_walk") -> dict:
+    """Candidate legs + incumbent bars + verdict for one window.
+
+    ``intrabar_resolution`` (#1271) is threaded into both the incumbent and
+    candidate legs so they always share one SL/TP race-resolution mode.
+    ``bars_memo`` is keyed by window name only (not by resolution mode), so
+    a single process/invocation must run with one mode throughout — true for
+    every CLI entry point here, where the mode is fixed for the whole run.
+    """
     validate_candidate(candidate)
     window = WINDOWS[window_name]
     if window_name not in bars_memo:
         bars_memo[window_name] = incumbent_bars(
-            compute_incumbent_legs(reg, datasets, window, capital))
+            compute_incumbent_legs(reg, datasets, window, capital,
+                                   intrabar_resolution=intrabar_resolution))
     bars = bars_memo[window_name]
 
     candidate_legs = {}
     for symbol, timeframe in datasets:
         ds = dataset_key(symbol, timeframe)
-        candidate_legs[ds] = run_leg(
-            reg, candidate["name"], candidate.get("params"),
-            symbol, timeframe, window, capital=capital,
-            close_strategies=candidate.get("close_strategies"),
-            # The validated default ("long") must also be the EXECUTED
-            # default: with close refs and direction=None the engine path
-            # would open shorts on raw signal=-1, silently scoring a
-            # different entry universe than the long-leg harness (#996).
-            direction=candidate.get("direction") or "long",
-            invert_signal=bool(candidate.get("invert_signal")),
-            stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
-            trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
-            profile_allocation=candidate.get("profile_allocation"),
-            allowed_regimes=candidate.get("allowed_regimes"),
-            regime_windows_spec=candidate.get("regime_windows_spec"),
-            regime_directional_policy=candidate.get(
-                "regime_directional_policy"),
-        )
+        candidate_legs[ds] = run_candidate_leg(
+            reg, candidate, symbol, timeframe, window, capital=capital,
+            intrabar_resolution=intrabar_resolution)
     score = score_candidate(candidate_legs, bars)
     score["window"] = window_name
     score["window_range"] = list(window)
@@ -770,6 +866,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "Scores the switched composite on the same harness.")
     p.add_argument("--json", default=None, dest="json_out",
                    help="Write the full structured result to this path")
+    p.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                   choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
+                   help="SL race resolution (#1271): ohlc_walk (default) or "
+                        "bar_close (reproduce pre-#1271 documented baselines).")
     return p
 
 
@@ -835,7 +935,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     window_scores = []
     for wname in window_names:
         score = evaluate_window(reg, candidate, datasets, wname,
-                                args.capital, bars_memo)
+                                args.capital, bars_memo,
+                                intrabar_resolution=args.intrabar_resolution)
         window_scores.append(score)
         print(format_window_report(score))
 
@@ -849,7 +950,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             combo = dict(candidate)
             combo["params"] = params
             score = evaluate_window(reg, combo, datasets, args.sweep_window,
-                                    args.capital, bars_memo)
+                                    args.capital, bars_memo,
+                                    intrabar_resolution=args.intrabar_resolution)
             sweep_rows.append({"label": label, "params": params, "score": score})
         print(format_sweep_report(sweep_rows, args.sweep_window))
 

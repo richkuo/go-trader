@@ -85,6 +85,8 @@ a sweepable research knob only.
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma_series
+
 from adx_trend import _compute_adx_components
 from mtf_confluence import _project_to_native, _resample_htf
 
@@ -139,15 +141,9 @@ def _classify_buckets(
     high = htf["high"]
     low = htf["low"]
 
-    # ATR mirrors the in-repo convention (shared_tools/atr.standard_atr):
-    # SMA of true range, integer-rounded only when >= 100.
-    tr = pd.concat([
-        high - low,
-        (high - close.shift(1)).abs(),
-        (low - close.shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    _atr = tr.rolling(window=period).mean()
-    atr = _atr.where(_atr < 100, _atr.round(0))
+    # ATR follows the shared repo convention (indicators_core, #1281): SMA of
+    # true range, integer-rounded only when >= 100.
+    atr = atr_sma_series(high, low, close, period)
 
     denom = atr * period
     net = close - close.shift(period - 1)
@@ -352,13 +348,7 @@ def regime_adaptive_htf_core(
     # NaN warmup compares False on both sides — no veto until primed. The ATR
     # window reuses mr_lookback (the fade's own scale; both default 20).
     if slow_trend_lookback > 0:
-        tr_native = pd.concat([
-            high - low,
-            (high - close.shift(1)).abs(),
-            (low - close.shift(1)).abs(),
-        ], axis=1).max(axis=1)
-        _atr_native = tr_native.rolling(window=mr_lookback).mean()
-        atr_native = _atr_native.where(_atr_native < 100, _atr_native.round(0))
+        atr_native = atr_sma_series(high, low, close, mr_lookback)
         slow_denom = atr_native * slow_trend_lookback
         slow_eff = ((close - close.shift(slow_trend_lookback)) / slow_denom).where(
             slow_denom > 0, 0.0

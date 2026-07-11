@@ -113,18 +113,27 @@ func canonicalizeRegimeBlock(raw interface{}) map[string]interface{} {
 		labelOut := make(map[string]interface{}, len(lm))
 		for ek, ev := range lm {
 			switch ek {
-			case "atr", "multiple":
-				if _, has := labelOut["atr_multiple"]; !has {
-					labelOut["atr_multiple"] = ev
-				}
-			case "atr_multiple":
-				labelOut["atr_multiple"] = ev
-			case "fraction":
-				if _, has := labelOut["close_fraction"]; !has {
-					labelOut["close_fraction"] = ev
-				}
+			case "atr", "multiple", "atr_multiple", "fraction":
+				// Resolved below with explicit precedence — folding aliases
+				// inside a map-range made the survivor depend on Go's
+				// randomized iteration order when two legacy aliases were
+				// both set.
 			default:
 				labelOut[ek] = ev
+			}
+		}
+		// Deterministic alias precedence: canonical atr_multiple wins, then
+		// legacy "atr", then legacy "multiple".
+		for _, key := range []string{"multiple", "atr", "atr_multiple"} {
+			if v, ok := lm[key]; ok {
+				labelOut["atr_multiple"] = v
+			}
+		}
+		// close_fraction (canonical, copied in the default arm above) wins
+		// over the legacy "fraction" alias.
+		if v, ok := lm["fraction"]; ok {
+			if _, has := labelOut["close_fraction"]; !has {
+				labelOut["close_fraction"] = v
 			}
 		}
 		trOut[label] = labelOut

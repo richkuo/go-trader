@@ -16,7 +16,10 @@ file. ``DISCOVERY_HIDDEN_STRATEGIES`` entries keep that canonical order for
 explicit loads but are omitted from ``--list-json`` discovery.
 """
 
+import functools
+import inspect
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,6 +39,7 @@ for _p in (
 
 from indicators import sma, ema
 from rsi_bb_combo import rsi_bb_combo_core
+from indicators_core import atr_from_true_range, atr_sma, true_range, wilder_rsi
 from amd_ifvg import amd_ifvg_core
 from chart_patterns import chart_pattern_core
 from liquidity_sweeps import liquidity_sweep_core
@@ -66,6 +70,53 @@ VALID_PLATFORMS: Tuple[str, ...] = ("spot", "futures")
 # name -> {fn, description, default_params, platforms, variants}
 STRATEGIES: Dict[str, Dict[str, Any]] = {}
 
+# Strategies the M5 fee audit (#999, docs/research/fee-audit-m5.md) assigned
+# the `deprecate` verdict: gross edge <= 0 on every measured leg, so no
+# selectivity/fee tuning can salvage them. Each carries
+# ``edge_status="deprecated_m5"`` in its registry entry and is quarantined
+# from discovery via DISCOVERY_HIDDEN_STRATEGIES below (#1275). They stay
+# registered so explicit configs keep loading and backtests keep running.
+# The operator warning lives on the Go side only (scheduler/edge_status.go
+# mirrors this roster as m5DeprecatedEdgeStrategies — keep the two rosters
+# identical): a startup [config] line + one-time owner DM, acknowledged via
+# per-strategy `allow_deprecated: true`. Per-cycle Python warnings were
+# deliberately dropped — check scripts run once per trade cycle, so a print
+# here would repeat unbounded and could never see the Go-side ack.
+M5_DEPRECATED_EDGE_STRATEGIES = frozenset({
+    "adx_trend",
+    "amd_ifvg",
+    "atr_breakout",
+    "bollinger_bands",
+    "consolidation_range",
+    "ema_crossover",
+    "funding_skew",
+    "heikin_ashi_ema",
+    "ichimoku_cloud",
+    "macd",
+    "mean_reversion",
+    "momentum",
+    "mtf_confluence",
+    "order_blocks",
+    "pairs_spread",
+    "parabolic_sar",
+    "range_scalper",
+    "regime_adaptive",
+    "rsi",
+    "rsi_macd_combo",
+    "sma_crossover",
+    "squeeze_momentum",
+    "stoch_rsi",
+    "supertrend",
+    "sweep_squeeze_combo",
+    "tema_cross",
+    "tema_cross_bd",
+    "triple_ema",
+    "triple_ema_bidir",
+    "vol_momentum",
+    "volume_weighted",
+    "vwap_reversion",
+})
+
 # Strategies kept loadable for existing configs/backtests but hidden from
 # discovery surfaces such as --list-json and generated defaults.
 DISCOVERY_HIDDEN_STRATEGIES = frozenset({
@@ -75,7 +126,111 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
     "range_scalper",
     "session_breakout",
     "vol_momentum",
-})
+}) | M5_DEPRECATED_EDGE_STRATEGIES
+
+
+# --- Declarative parameter constraints (#1281) -----------------------------
+#
+# Each constraint is a string ``"<param> <op> <param-or-literal>"`` with op in
+# {<, <=, >, >=}, declared per strategy via ``@register(..., constraints=[...])``
+# next to ``default_params``. The registered fn is wrapped so every call path
+# (spot/futures shims' ``apply_strategy``, check scripts, backtester, direct
+# calls) validates the *effective* parameters — declared defaults overlaid with
+# whatever the caller passed — and raises ``ValueError`` naming the strategy,
+# the constraint, and the offending values. Failures surface through the
+# existing subprocess JSON-error contract, so a bad config fails loudly at
+# check/backtest time instead of trading on garbage signals.
+#
+# Only declare constraints a parameter must ALWAYS satisfy: several params use
+# 0 as a documented "disabled" sentinel (e.g. ``gate_rsi_period``,
+# ``slow_trend_lookback``, ``htf_gate_factor``, session_breakout's
+# ``atr_multiplier``) and must NOT get a blanket positivity constraint.
+
+_CONSTRAINT_RE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(<=|>=|<|>)\s*"
+    r"([A-Za-z_][A-Za-z0-9_]*|[-+]?\d+(?:\.\d+)?)\s*$"
+)
+
+_CONSTRAINT_OPS = {
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+}
+
+
+def _parse_constraint(name: str, expr: str) -> Tuple[str, str, Any]:
+    m = _CONSTRAINT_RE.match(expr)
+    if not m:
+        raise ValueError(
+            f"{name}: unparseable parameter constraint {expr!r}; expected "
+            f"'<param> <op> <param-or-number>' with op in {sorted(_CONSTRAINT_OPS)}"
+        )
+    lhs, op, rhs = m.groups()
+    try:
+        rhs = float(rhs)
+    except ValueError:
+        pass  # rhs is a parameter name
+    return lhs, op, rhs
+
+
+def _effective_params(fn, default_params: dict, args: tuple, kwargs: dict) -> dict:
+    """Declared defaults overlaid with the caller's bound arguments.
+
+    Handles both explicit signatures and ``def x_strategy(df, **params)``
+    wrappers (the VAR_KEYWORD dict is flattened). Binding errors fall through —
+    the real call will raise the natural TypeError.
+    """
+    effective = dict(default_params)
+    try:
+        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+    except TypeError:
+        return effective
+    for pname, value in bound.arguments.items():
+        if pname == "df":
+            continue
+        kind = inspect.signature(fn).parameters[pname].kind
+        if kind is inspect.Parameter.VAR_KEYWORD:
+            effective.update(value)
+        elif kind is not inspect.Parameter.VAR_POSITIONAL:
+            effective[pname] = value
+    return effective
+
+
+def _validated(name: str, fn, default_params: dict, constraints: Tuple[str, ...]):
+    """Wrap ``fn`` to enforce ``constraints`` on every call (functools.wraps
+    keeps the signature transparent for ``strip_unsupported_position_context``)."""
+    parsed = [(expr, _parse_constraint(name, expr)) for expr in constraints]
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        effective = _effective_params(fn, default_params, args, kwargs)
+        for expr, (lhs, op, rhs) in parsed:
+            if lhs not in effective:
+                continue
+            a = effective[lhs]
+            b = rhs if isinstance(rhs, float) else effective.get(rhs)
+            if a is None or b is None:
+                continue
+            try:
+                ok = _CONSTRAINT_OPS[op](float(a), float(b))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"{name}: invalid parameters: constraint {expr!r} needs "
+                    f"numeric values (got {lhs}={a!r}"
+                    + ("" if isinstance(rhs, float) else f", {rhs}={b!r}")
+                    + ")"
+                )
+            if not ok:
+                raise ValueError(
+                    f"{name}: invalid parameters: constraint {expr!r} violated "
+                    f"({lhs}={a!r}"
+                    + ("" if isinstance(rhs, float) else f", {rhs}={b!r}")
+                    + ")"
+                )
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def register(
@@ -85,6 +240,7 @@ def register(
     platforms: Tuple[str, ...] = ("spot", "futures"),
     variants: Optional[Dict[str, Dict[str, Any]]] = None,
     backtest_only: bool = False,
+    constraints: Optional[List[str]] = None,
 ):
     """Register a strategy once.
 
@@ -114,14 +270,41 @@ def register(
             f"{name}: variants keys {sorted(bad_v)} not in platforms {platforms}"
         )
 
+    constraint_list = tuple(constraints or ())
+    # Parse eagerly so a typo in a constraint fails at import time, not on the
+    # first strategy call. Also validate that every referenced parameter name
+    # (lhs, and rhs when it's a param name rather than a numeric literal)
+    # actually exists in default_params (base + variant overrides) — otherwise
+    # the runtime wrapper's `if lhs not in effective: continue` / `.get(rhs)`
+    # guards silently skip the constraint forever.
+    known_params = set(default_params)
+    for _variant in variants.values():
+        known_params |= set(_variant.get("default_params", {}))
+    for _expr in constraint_list:
+        _lhs, _op, _rhs = _parse_constraint(name, _expr)
+        for _pname in (_lhs, _rhs) if not isinstance(_rhs, float) else (_lhs,):
+            if _pname not in known_params:
+                raise ValueError(
+                    f"{name}: constraint {_expr!r} references unknown "
+                    f"parameter {_pname!r} (not in default_params)"
+                )
+
     def decorator(fn):
+        wrapped = _validated(name, fn, default_params, constraint_list) if constraint_list else fn
         STRATEGIES[name] = {
-            "fn": fn,
+            "fn": wrapped,
             "description": description,
             "default_params": dict(default_params),
+            "constraints": constraint_list,
             "platforms": platforms,
             "variants": variants,
             "backtest_only": bool(backtest_only),
+            # #1275: evidence-status flag; "deprecated_m5" marks a documented
+            # negative-gross-edge verdict (roster is the module-level set so
+            # the quarantine has a single canonical source).
+            "edge_status": (
+                "deprecated_m5" if name in M5_DEPRECATED_EDGE_STRATEGIES else None
+            ),
         }
         return fn
 
@@ -168,6 +351,7 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
                 **variant.get("default_params", {}),
             },
             "backtest_only": entry.get("backtest_only", False),
+            "edge_status": entry.get("edge_status"),
         }
     return out
 
@@ -190,6 +374,10 @@ def rsi_bb_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "sma_crossover",
     "SMA Crossover \u2014 buy when fast SMA crosses above slow SMA",
     {"fast_period": 20, "slow_period": 50},
+    constraints=[
+        "fast_period > 0",
+        "fast_period < slow_period",
+    ],
 )
 def sma_crossover_strategy(df: pd.DataFrame, fast_period: int = 20, slow_period: int = 50) -> pd.DataFrame:
     result = df.copy()
@@ -204,6 +392,10 @@ def sma_crossover_strategy(df: pd.DataFrame, fast_period: int = 20, slow_period:
     "ema_crossover",
     "EMA Crossover \u2014 faster response than SMA crossover",
     {"fast_period": 12, "slow_period": 26},
+    constraints=[
+        "fast_period > 0",
+        "fast_period < slow_period",
+    ],
 )
 def ema_crossover_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26) -> pd.DataFrame:
     result = df.copy()
@@ -221,16 +413,14 @@ def ema_crossover_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period:
     variants={
         "futures": {"description": "RSI \u2014 overbought/oversold signals for futures"},
     },
+    constraints=[
+        "period > 0",
+        "oversold < overbought",
+    ],
 )
 def rsi_strategy(df: pd.DataFrame, period: int = 14, overbought: float = 70, oversold: float = 30) -> pd.DataFrame:
     result = df.copy()
-    delta = result["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    result["rsi"] = 100 - (100 / (1 + rs))
+    result["rsi"] = wilder_rsi(result["close"], period)
     result["signal"] = 0
     result.loc[(result["rsi"] > oversold) & (result["rsi"].shift(1) <= oversold), "signal"] = 1
     result.loc[(result["rsi"] < overbought) & (result["rsi"].shift(1) >= overbought), "signal"] = -1
@@ -241,6 +431,7 @@ def rsi_strategy(df: pd.DataFrame, period: int = 14, overbought: float = 70, ove
     "bollinger_bands",
     "Bollinger Bands \u2014 mean reversion at band touches",
     {"period": 20, "num_std": 2.0},
+    constraints=["period > 0"],
 )
 def bollinger_strategy(df: pd.DataFrame, period: int = 20, num_std: float = 2.0) -> pd.DataFrame:
     result = df.copy()
@@ -261,6 +452,11 @@ def bollinger_strategy(df: pd.DataFrame, period: int = 20, num_std: float = 2.0)
     variants={
         "futures": {"description": "MACD \u2014 momentum crossover for futures"},
     },
+    constraints=[
+        "fast_period > 0",
+        "signal_period > 0",
+        "fast_period < slow_period",
+    ],
 )
 def macd_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> pd.DataFrame:
     result = df.copy()
@@ -281,6 +477,10 @@ def macd_strategy(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26
     variants={
         "futures": {"description": "Mean Reversion \u2014 range-bound index futures trading"},
     },
+    constraints=[
+        "lookback > 0",
+        "exit_std < entry_std",
+    ],
 )
 def mean_reversion_strategy(df: pd.DataFrame, lookback: int = 30, entry_std: float = 1.5, exit_std: float = 0.5) -> pd.DataFrame:
     result = df.copy()
@@ -303,6 +503,7 @@ def mean_reversion_strategy(df: pd.DataFrame, lookback: int = 30, entry_std: flo
             "default_params": {"threshold": 3.0},
         },
     },
+    constraints=["roc_period > 0"],
 )
 def momentum_strategy(df: pd.DataFrame, roc_period: int = 14, threshold: float = 5.0) -> pd.DataFrame:
     result = df.copy()
@@ -317,6 +518,7 @@ def momentum_strategy(df: pd.DataFrame, roc_period: int = 14, threshold: float =
     "volume_weighted",
     "Volume-Weighted \u2014 confirms trend with volume analysis",
     {"sma_period": 20, "vol_multiplier": 1.5},
+    constraints=["sma_period > 0"],
 )
 def volume_weighted_strategy(df: pd.DataFrame, sma_period: int = 20, vol_multiplier: float = 1.5) -> pd.DataFrame:
     result = df.copy()
@@ -335,6 +537,11 @@ def volume_weighted_strategy(df: pd.DataFrame, sma_period: int = 20, vol_multipl
     "triple_ema",
     "Triple EMA \u2014 trend confirmation using 3 EMAs (short/mid/long)",
     {"short_period": 8, "mid_period": 21, "long_period": 55},
+    constraints=[
+        "short_period > 0",
+        "short_period < mid_period",
+        "mid_period < long_period",
+    ],
 )
 def triple_ema_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int = 21, long_period: int = 55) -> pd.DataFrame:
     result = df.copy()
@@ -352,6 +559,11 @@ def triple_ema_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int
     "Triple EMA Bidirectional \u2014 long on bullish stack, short on bearish stack",
     {"short_period": 8, "mid_period": 21, "long_period": 55},
     platforms=("futures",),
+    constraints=[
+        "short_period > 0",
+        "short_period < mid_period",
+        "mid_period < long_period",
+    ],
 )
 def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_period: int = 21, long_period: int = 55) -> pd.DataFrame:
     result = df.copy()
@@ -370,6 +582,11 @@ def triple_ema_bidir_strategy(df: pd.DataFrame, short_period: int = 8, mid_perio
     "tema_cross",
     "Triple EMA Crossover — EMA fast/mid cross with long EMA trend filter",
     {"short_period": 5, "mid_period": 13, "long_period": 34},
+    constraints=[
+        "short_period > 0",
+        "short_period < mid_period",
+        "mid_period < long_period",
+    ],
 )
 def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int = 13, long_period: int = 34) -> pd.DataFrame:
     result = df.copy()
@@ -398,6 +615,11 @@ def tema_cross_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int
     "Triple EMA Crossover Bidirectional — long/short on cross with trend filter",
     {"short_period": 5, "mid_period": 13, "long_period": 34},
     platforms=("futures",),
+    constraints=[
+        "short_period > 0",
+        "short_period < mid_period",
+        "mid_period < long_period",
+    ],
 )
 def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: int = 13, long_period: int = 34) -> pd.DataFrame:
     result = df.copy()
@@ -431,19 +653,20 @@ def tema_cross_bd_strategy(df: pd.DataFrame, short_period: int = 5, mid_period: 
     {"rsi_period": 14, "rsi_oversold": 35, "rsi_overbought": 65,
      "macd_fast": 12, "macd_slow": 26, "macd_signal": 9,
      "rsi_short_min": 50, "rsi_long_max": 50},
+    constraints=[
+        "rsi_period > 0",
+        "macd_fast > 0",
+        "macd_signal > 0",
+        "macd_fast < macd_slow",
+        "rsi_oversold < rsi_overbought",
+    ],
 )
 def rsi_macd_combo_strategy(df: pd.DataFrame,
                              rsi_period: int = 14, rsi_oversold: float = 35, rsi_overbought: float = 65,
                              macd_fast: int = 12, macd_slow: int = 26, macd_signal: int = 9,
                              rsi_short_min: float = 50, rsi_long_max: float = 50) -> pd.DataFrame:
     result = df.copy()
-    delta = result["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    result["rsi"] = 100 - (100 / (1 + rs))
+    result["rsi"] = wilder_rsi(result["close"], rsi_period)
     ema_fast = ema(result["close"], macd_fast)
     ema_slow = ema(result["close"], macd_slow)
     result["macd_line"] = ema_fast - ema_slow
@@ -467,19 +690,20 @@ def rsi_macd_combo_strategy(df: pd.DataFrame,
     "Stochastic RSI \u2014 earlier momentum signals via stochastic oscillator on RSI",
     {"rsi_period": 14, "stoch_period": 14, "k_smooth": 3, "d_smooth": 3,
      "overbought": 80, "oversold": 20},
+    constraints=[
+        "rsi_period > 0",
+        "stoch_period > 0",
+        "k_smooth > 0",
+        "d_smooth > 0",
+        "oversold < overbought",
+    ],
 )
 def stoch_rsi_strategy(df: pd.DataFrame,
                        rsi_period: int = 14, stoch_period: int = 14,
                        k_smooth: int = 3, d_smooth: int = 3,
                        overbought: float = 80, oversold: float = 20) -> pd.DataFrame:
     result = df.copy()
-    delta = result["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/rsi_period, min_periods=rsi_period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    result["rsi"] = 100 - (100 / (1 + rs))
+    result["rsi"] = wilder_rsi(result["close"], rsi_period)
     rsi_min = result["rsi"].rolling(window=stoch_period).min()
     rsi_max = result["rsi"].rolling(window=stoch_period).max()
     stoch_rsi = (result["rsi"] - rsi_min) / (rsi_max - rsi_min) * 100
@@ -497,15 +721,11 @@ def stoch_rsi_strategy(df: pd.DataFrame,
     "supertrend",
     "Supertrend \u2014 ATR-based trend following with dynamic support/resistance",
     {"atr_period": 10, "multiplier": 3.0},
+    constraints=["atr_period > 0"],
 )
 def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: float = 3.0) -> pd.DataFrame:
     result = df.copy()
-    tr = pd.concat([
-        result["high"] - result["low"],
-        (result["high"] - result["close"].shift(1)).abs(),
-        (result["low"] - result["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(window=atr_period).mean()
+    atr = atr_sma(result, atr_period, round_large=False)
 
     hl2 = (result["high"] + result["low"]) / 2
     basic_upper = hl2 + (multiplier * atr)
@@ -557,6 +777,11 @@ def supertrend_strategy(df: pd.DataFrame, atr_period: int = 10, multiplier: floa
     "ichimoku_cloud",
     "Ichimoku Cloud \u2014 trend confirmation via Tenkan/Kijun cross, cloud position, and Chikou span",
     {"tenkan_period": 9, "kijun_period": 26, "senkou_b_period": 52},
+    constraints=[
+        "tenkan_period > 0",
+        "kijun_period > 0",
+        "senkou_b_period > 0",
+    ],
 )
 def ichimoku_cloud_strategy(df: pd.DataFrame, tenkan_period: int = 9, kijun_period: int = 26, senkou_b_period: int = 52) -> pd.DataFrame:
     result = df.copy()
@@ -592,6 +817,10 @@ def ichimoku_cloud_strategy(df: pd.DataFrame, tenkan_period: int = 9, kijun_peri
     "Pairs/Spread Trading \u2014 trade z-score of price ratio between two assets (needs 'close_b' column)",
     {"lookback": 30, "entry_z": 2.0, "exit_z": 0.5},
     platforms=("spot",),
+    constraints=[
+        "lookback > 0",
+        "exit_z < entry_z",
+    ],
 )
 def pairs_spread_strategy(df: pd.DataFrame, lookback: int = 30, entry_z: float = 2.0, exit_z: float = 0.5) -> pd.DataFrame:
     """
@@ -617,6 +846,11 @@ def pairs_spread_strategy(df: pd.DataFrame, lookback: int = 30, entry_z: float =
     "squeeze_momentum",
     "Squeeze Momentum \u2014 BB inside KC detects coiling, trades breakout with momentum confirmation",
     {"bb_period": 20, "bb_std": 2.0, "kc_period": 20, "kc_mult": 1.5, "mom_lookback": 12},
+    constraints=[
+        "bb_period > 0",
+        "kc_period > 0",
+        "mom_lookback > 0",
+    ],
 )
 def squeeze_momentum_strategy(df: pd.DataFrame,
                               bb_period: int = 20, bb_std: float = 2.0,
@@ -628,12 +862,7 @@ def squeeze_momentum_strategy(df: pd.DataFrame,
     bb_upper = bb_mid + (bb_std * bb_stddev)
     bb_lower = bb_mid - (bb_std * bb_stddev)
     kc_mid = ema(result["close"], kc_period)
-    tr = pd.concat([
-        result["high"] - result["low"],
-        (result["high"] - result["close"].shift(1)).abs(),
-        (result["low"] - result["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(window=kc_period).mean()
+    atr = atr_sma(result, kc_period, round_large=False)
     kc_upper = kc_mid + (kc_mult * atr)
     kc_lower = kc_mid - (kc_mult * atr)
     result["squeeze_on"] = (bb_lower > kc_lower) & (bb_upper < kc_upper)
@@ -664,18 +893,17 @@ def squeeze_momentum_strategy(df: pd.DataFrame,
     "Breakout \u2014 trade breakouts from overnight/session range",
     {"lookback": 20, "atr_period": 14, "atr_multiplier": 1.5},
     platforms=("futures",),
+    constraints=[
+        "lookback > 0",
+        "atr_period > 0",
+    ],
 )
 def breakout_strategy(df: pd.DataFrame, lookback: int = 20, atr_period: int = 14, atr_multiplier: float = 1.5) -> pd.DataFrame:
     result = df.copy()
     result["high_roll"] = result["high"].rolling(window=lookback).max()
     result["low_roll"] = result["low"].rolling(window=lookback).min()
-    tr = pd.concat([
-        result["high"] - result["low"],
-        (result["high"] - result["close"].shift(1)).abs(),
-        (result["low"] - result["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    _atr = tr.rolling(window=atr_period).mean()
-    result["atr"] = _atr.where(_atr < 100, _atr.round(0))
+    tr = true_range(result)
+    result["atr"] = atr_from_true_range(tr, atr_period)
     result["signal"] = 0
     breakout_up = (result["close"] > result["high_roll"].shift(1)) & (tr > result["atr"] * atr_multiplier)
     result.loc[breakout_up & ~breakout_up.shift(1, fill_value=False), "signal"] = 1
@@ -688,16 +916,11 @@ def breakout_strategy(df: pd.DataFrame, lookback: int = 20, atr_period: int = 14
     "atr_breakout",
     "ATR Breakout \u2014 enter on volatility breakout beyond ATR band",
     {"atr_period": 14, "multiplier": 1.5},
+    constraints=["atr_period > 0"],
 )
 def atr_breakout_strategy(df: pd.DataFrame, atr_period: int = 14, multiplier: float = 1.5) -> pd.DataFrame:
     result = df.copy()
-    tr = pd.concat([
-        result["high"] - result["low"],
-        (result["high"] - result["close"].shift(1)).abs(),
-        (result["low"] - result["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    _atr = tr.rolling(window=atr_period).mean()
-    result["atr"] = _atr.where(_atr < 100, _atr.round(0))
+    result["atr"] = atr_sma(result, atr_period)
     prev_close = result["close"].shift(1)
     upper = prev_close + (multiplier * result["atr"])
     lower = prev_close - (multiplier * result["atr"])
@@ -728,6 +951,7 @@ def amd_ifvg_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "heikin_ashi_ema",
     "Heikin Ashi + EMA \u2014 smoothed candles with EMA trend filter; 2 consecutive HA candles + price side of EMA",
     {"ema_period": 21, "confirmation": 2},
+    constraints=["ema_period > 0"],
 )
 def heikin_ashi_ema_strategy(df: pd.DataFrame, ema_period: int = 21, confirmation: int = 2) -> pd.DataFrame:
     result = df.copy()
@@ -760,6 +984,10 @@ def heikin_ashi_ema_strategy(df: pd.DataFrame, ema_period: int = 21, confirmatio
     "order_blocks",
     "Order Blocks (ICT/SMC) \u2014 institutional supply/demand zones from displacement candles",
     {"atr_period": 14, "displacement_mult": 1.5, "ob_lookback": 20, "max_ob_age": 50},
+    constraints=[
+        "atr_period > 0",
+        "ob_lookback > 0",
+    ],
 )
 def order_blocks_strategy(df: pd.DataFrame,
                           atr_period: int = 14, displacement_mult: float = 1.5,
@@ -771,12 +999,7 @@ def order_blocks_strategy(df: pd.DataFrame,
     opn = result["open"].values
     n = len(result)
 
-    tr = pd.concat([
-        result["high"] - result["low"],
-        (result["high"] - result["close"].shift(1)).abs(),
-        (result["low"] - result["close"].shift(1)).abs(),
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(window=atr_period).mean().values
+    atr = atr_sma(result, atr_period, round_large=False).values
 
     signal = np.zeros(n, dtype=int)
 
@@ -833,6 +1056,7 @@ def order_blocks_strategy(df: pd.DataFrame,
     "vwap_reversion",
     "VWAP Reversion \u2014 buy when price drops below VWAP by N std devs, sell when above",
     {"entry_std": 1.5, "exit_std": 0.2},
+    constraints=["exit_std < entry_std"],
 )
 def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: float = 0.2) -> pd.DataFrame:
     result = df.copy()
@@ -875,6 +1099,10 @@ def vwap_reversion_strategy(df: pd.DataFrame, entry_std: float = 1.5, exit_std: 
         "htf_gate_factor": 0, "htf_gate_mode": "veto",
         "htf_gate_ema_fast": 20, "htf_gate_ema_slow": 40,
     },
+    constraints=[
+        "pivot_lookback > 0",
+        "vol_period > 0",
+    ],
 )
 def chart_pattern_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return chart_pattern_core(df, **params)
@@ -884,6 +1112,7 @@ def chart_pattern_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "liquidity_sweeps",
     "Liquidity Sweeps (ICT) \u2014 fades stop-hunt wicks beyond swing highs/lows after price closes back inside range",
     {"swing_lookback": 20, "confirmation": 1},
+    constraints=["swing_lookback > 0"],
 )
 def liquidity_sweeps_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return liquidity_sweep_core(df, **params)
@@ -972,6 +1201,11 @@ def parabolic_sar_strategy(df: pd.DataFrame, iaf: float = 0.02, af_step: float =
     "range_scalper",
     "Range Scalper \u2014 detects low-volatility consolidation via Bollinger bandwidth + volume, then mean-reverts at band touches",
     {"bb_period": 14, "bb_std": 1.5, "bw_threshold": 0.008, "vol_ratio": 0.8, "rsi_period": 7, "rsi_ob": 70, "rsi_os": 30},
+    constraints=[
+        "bb_period > 0",
+        "rsi_period > 0",
+        "rsi_os < rsi_ob",
+    ],
 )
 def range_scalper_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return range_scalper_core(df, **params)
@@ -981,6 +1215,7 @@ def range_scalper_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "sweep_squeeze_combo",
     "Sweep Squeeze Combo \u2014 2-of-3 consensus (liquidity sweeps + squeeze momentum + stochastic RSI) for high-conviction reversals",
     {"swing_lookback": 10, "min_agree": 2},
+    constraints=["swing_lookback > 0"],
 )
 def sweep_squeeze_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return sweep_squeeze_combo_core(df, **params)
@@ -990,6 +1225,7 @@ def sweep_squeeze_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "adx_trend",
     "ADX Trend Rider \u2014 enters on DI crossovers when ADX confirms strong trend (>25)",
     {"adx_period": 14, "adx_threshold": 25},
+    constraints=["adx_period > 0"],
 )
 def adx_trend_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return adx_trend_core(df, **params)
@@ -1090,6 +1326,10 @@ def delta_neutral_funding_strategy(df: pd.DataFrame,
         "allow_short": True,
     },
     platforms=("futures",),
+    constraints=[
+        "funding_window > 0",
+        "z_exit < z_entry",
+    ],
 )
 def funding_skew_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return funding_skew_core(df, **params)
@@ -1099,6 +1339,10 @@ def funding_skew_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "donchian_breakout",
     "Donchian Channel Breakout \u2014 turtle-trading style entry on new high/low channel breakouts",
     {"entry_period": 20, "exit_period": 10},
+    constraints=[
+        "entry_period > 0",
+        "exit_period > 0",
+    ],
 )
 def donchian_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return donchian_breakout_core(df, **params)
@@ -1114,6 +1358,15 @@ def donchian_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "pullback_window": 5, "pullback_touch_buffer_pct": 0.001,
     },
     platforms=("futures",),
+    constraints=[
+        "ema_short > 0",
+        "adx_period > 0",
+        "rsi_period > 0",
+        "pullback_window > 0",
+        "ema_short < ema_mid",
+        "ema_mid < ema_long",
+        "rsi_lower < rsi_upper",
+    ],
 )
 def bear_pullback_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return bear_pullback_st_core(df, **params)
@@ -1127,6 +1380,11 @@ def bear_pullback_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "vol_period": 20, "atr_period": 14, "atr_multiplier": 0.0,
     },
     platforms=("futures",),
+    constraints=[
+        "lookback > 0",
+        "vol_period > 0",
+        "atr_period > 0",
+    ],
 )
 def session_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return session_breakout_core(df, **params)
@@ -1141,6 +1399,13 @@ def session_breakout_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "rally_window": 5, "rally_touch_buffer_pct": 0.001,
     },
     platforms=("futures",),
+    constraints=[
+        "ema_short > 0",
+        "rsi_period > 0",
+        "rally_window > 0",
+        "ema_short < ema_mid",
+        "ema_mid < ema_long",
+    ],
 )
 def vwap_rejection_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return vwap_rejection_st_core(df, **params)
@@ -1157,6 +1422,10 @@ def vwap_rejection_st_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "gate_rsi_period": 0, "gate_rsi_level": 50.0,
         "gate_ema_period": 0,
     },
+    constraints=[
+        "pivot_strength > 0",
+        "atr_period > 0",
+    ],
 )
 def anchored_vwap_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return anchored_vwap_core(df, **params)
@@ -1172,6 +1441,10 @@ def anchored_vwap_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "min_width_atr_mult": 1.5,
         "atr_period": 14,
     },
+    constraints=[
+        "pivot_strength > 0",
+        "atr_period > 0",
+    ],
 )
 def anchored_vwap_channel_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return anchored_vwap_channel_core(df, **params)
@@ -1187,6 +1460,10 @@ def anchored_vwap_channel_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "confirm_bars": 2,
         "atr_period": 14,
     },
+    constraints=[
+        "pivot_strength > 0",
+        "atr_period > 0",
+    ],
 )
 def anchored_vwap_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return anchored_vwap_reversion_core(df, **params)
@@ -1207,6 +1484,12 @@ def anchored_vwap_reversion_strategy(df: pd.DataFrame, **params) -> pd.DataFrame
         "min_edge_atr": 0.25,
     },
     backtest_only=True,
+    constraints=[
+        "feat_window > 0",
+        "atr_period > 0",
+        "horizon > 0",
+        "k_neighbors > 0",
+    ],
 )
 def analog_retrieval_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return analog_retrieval_core(df, **params)
@@ -1221,6 +1504,14 @@ def analog_retrieval_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         "pullback_window": 6, "pullback_touch_buffer_pct": 0.0,
         "vol_period": 20, "vol_mult": 1.2,
     },
+    constraints=[
+        "ema_fast > 0",
+        "adx_period > 0",
+        "vol_period > 0",
+        "pullback_window > 0",
+        "ema_fast < ema_mid",
+        "ema_mid < ema_long",
+    ],
 )
 def momentum_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return momentum_pro_core(df, **params)
@@ -1238,6 +1529,12 @@ def momentum_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
         # behind the ADX no-trend gate + RSI-extreme evidence).
         "touch_entry": 0, "turn_entry": 0,
     },
+    constraints=[
+        "lookback > 0",
+        "adx_period > 0",
+        "rsi_period > 0",
+        "rsi_oversold < rsi_overbought",
+    ],
 )
 def mean_reversion_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return mean_reversion_pro_core(df, **params)
@@ -1248,6 +1545,7 @@ def mean_reversion_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     "Consolidation Range — enters at the edges of a consolidation box (long near the bottom, short near the top); exit via a trailing ATR stop. NOTE: default params LOSE in run_backtest.py (~-40% to -47% on BTC 4h, see docs/research/consolidation-findings.md) — ship as a tunable baseline, adjust box width / stop / trail per market before live use",
     {"box_width_pct": 0.05, "min_bars": 16, "edge_entry_frac": 0.2},
     platforms=("futures",),
+    constraints=["min_bars > 0"],
 )
 def consolidation_range_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return consolidation_range_core(df, **params)
@@ -1263,6 +1561,10 @@ def consolidation_range_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
             "default_params": {"allow_short": True},
         },
     },
+    constraints=[
+        "period > 0",
+        "atr_period > 0",
+    ],
 )
 def atr_band_revert_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return atr_band_revert_core(df, **params)
@@ -1282,6 +1584,13 @@ def atr_band_revert_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
             "default_params": {"allow_short": True},
         },
     },
+    constraints=[
+        "htf_factor > 0",
+        "htf_ema_fast > 0",
+        "ltf_ema > 0",
+        "pullback_window > 0",
+        "htf_ema_fast < htf_ema_slow",
+    ],
 )
 def mtf_confluence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return mtf_confluence_core(df, **params)
@@ -1302,6 +1611,10 @@ def mtf_confluence_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
             "default_params": {"allow_short": True},
         },
     },
+    constraints=[
+        "mom_window > 0",
+        "atr_period > 0",
+    ],
 )
 def vol_momentum_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return vol_momentum_core(df, **params)
@@ -1327,6 +1640,11 @@ def vol_momentum_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     variants={
         "futures": {"default_params": {"allow_short": True}},
     },
+    constraints=[
+        "period > 0",
+        "breakout_lookback > 0",
+        "mr_lookback > 0",
+    ],
 )
 def regime_adaptive_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return regime_adaptive_core(df, **params)
@@ -1360,6 +1678,12 @@ def regime_adaptive_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     # allow_short=True benchmarked at OOS mean Sharpe -1.68 vs -0.32 long-only
     # (short fades of range tops get run over by squeezes). Long/flat on
     # perps; allow_short stays sweepable.
+    constraints=[
+        "htf_factor > 0",
+        "period > 0",
+        "breakout_lookback > 0",
+        "mr_lookback > 0",
+    ],
 )
 def regime_adaptive_htf_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
     return regime_adaptive_htf_core(df, **params)

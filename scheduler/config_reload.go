@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 )
 
 // applyHotReloadConfig applies the subset of config fields that are safe to
@@ -31,9 +32,32 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("interval_seconds: %d -> %d", cfg.IntervalSeconds, next.IntervalSeconds)
 		cfg.IntervalSeconds = next.IntervalSeconds
 	}
+	// #1256: the GLOBAL notify_ratchet_triggers default (#1110) hot-reloads —
+	// notification-only, never touches position/order state, mirroring the
+	// per-strategy #1118 override handled below. Without this copy a dashboard
+	// or Discord toggle of the global would silently wait for a restart.
+	if !boolPtrEqual(cfg.NotifyRatchetTriggers, next.NotifyRatchetTriggers) {
+		addChange("notify_ratchet_triggers: %s -> %s", formatNotifyRatchetTriggers(cfg.NotifyRatchetTriggers), formatNotifyRatchetTriggers(next.NotifyRatchetTriggers))
+		cfg.NotifyRatchetTriggers = next.NotifyRatchetTriggers
+	}
 	if !floatPtrEqual(cfg.DefaultStopLossATRMult, next.DefaultStopLossATRMult) {
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
+	}
+	// #1277: global ATR smoothing method default. The state-compat check
+	// above blocks the reload when the RESOLVED method flips for any strategy
+	// holding an open position; reaching here means every affected strategy is
+	// flat and the next check cycle forwards the new --atr-method.
+	if normalizeATRMethod(cfg.ATRMethod) != normalizeATRMethod(next.ATRMethod) {
+		addChange("atr_method: %q -> %q", cfg.ATRMethod, next.ATRMethod)
+		cfg.ATRMethod = next.ATRMethod
+	}
+	if cfg.AlertThrottleInterval != next.AlertThrottleInterval {
+		addChange("alert_throttle_interval: %q -> %q", cfg.AlertThrottleInterval, next.AlertThrottleInterval)
+		cfg.AlertThrottleInterval = next.AlertThrottleInterval
+		if err := applyAlertThrottleFromConfig(cfg); err != nil {
+			return nil, fmt.Errorf("alert_throttle_interval: %w", err)
+		}
 	}
 	// #1135: user_defaults flows through hot-reload so SIGHUP edits to the
 	// operator-default layer shape subsequent manual-open invocations, new
@@ -55,6 +79,20 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	if cfg.Regime != nil && next.Regime != nil && normalizeRegimeTimeframe(cfg.Regime.Timeframe) != normalizeRegimeTimeframe(next.Regime.Timeframe) {
 		addChange("regime.timeframe: %q -> %q", normalizeRegimeTimeframe(cfg.Regime.Timeframe), normalizeRegimeTimeframe(next.Regime.Timeframe))
 		cfg.Regime.Timeframe = normalizeRegimeTimeframe(next.Regime.Timeframe)
+	}
+	// #1224: transitions alerting is alerting-only — always hot-reloadable.
+	// Masked in regimeConfigEqualIgnoringReloadableFields so the pre-flight
+	// compat gate above doesn't reject the reload before this copy runs.
+	if cfg.Regime != nil && next.Regime != nil && !reflect.DeepEqual(cfg.Regime.Transitions, next.Regime.Transitions) {
+		addChange("regime.transitions: %+v -> %+v", cfg.Regime.Transitions, next.Regime.Transitions)
+		cfg.Regime.Transitions = cloneRegimeTransitionAlertsConfig(next.Regime.Transitions)
+	}
+	// #1278: global entry-gate failure-policy default is hot-reloadable —
+	// same flat-only open-gating rationale as the per-strategy field below.
+	if cfg.Regime != nil && next.Regime != nil &&
+		normalizeRegimeGateOnFailure(cfg.Regime.GateOnFailure) != normalizeRegimeGateOnFailure(next.Regime.GateOnFailure) {
+		addChange("regime.gate_on_failure: %q -> %q", cfg.Regime.GateOnFailure, next.Regime.GateOnFailure)
+		cfg.Regime.GateOnFailure = next.Regime.GateOnFailure
 	}
 
 	nextByID := strategyConfigByID(next.Strategies)
@@ -80,6 +118,23 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if !boolPtrEqual(sc.CircuitBreaker, ns.CircuitBreaker) {
 			addChange("strategy[%s].circuit_breaker: %s -> %s", sc.ID, formatCircuitBreaker(sc.CircuitBreaker), formatCircuitBreaker(ns.CircuitBreaker))
 			sc.CircuitBreaker = ns.CircuitBreaker
+		}
+		// #1273: circuit-breaker timing/threshold overrides are hot-reloadable
+		// always, including while a position is open — they only parameterize
+		// FUTURE fires read via the accessors on the next CheckRisk cycle. An
+		// already-latched CircuitBreakerUntil in RiskState is never rewritten,
+		// so no state mutation is needed here (same stance as #1048).
+		if !intPtrEqual(sc.CBDrawdownCooldownMinutes, ns.CBDrawdownCooldownMinutes) {
+			addChange("strategy[%s].cb_drawdown_cooldown_minutes: %s -> %s", sc.ID, formatCBMinutes(sc.CBDrawdownCooldownMinutes, DefaultCBDrawdownCooldown), formatCBMinutes(ns.CBDrawdownCooldownMinutes, DefaultCBDrawdownCooldown))
+			sc.CBDrawdownCooldownMinutes = ns.CBDrawdownCooldownMinutes
+		}
+		if !intPtrEqual(sc.CBLossStreakThreshold, ns.CBLossStreakThreshold) {
+			addChange("strategy[%s].cb_loss_streak_threshold: %s -> %s", sc.ID, formatCBThreshold(sc.CBLossStreakThreshold), formatCBThreshold(ns.CBLossStreakThreshold))
+			sc.CBLossStreakThreshold = ns.CBLossStreakThreshold
+		}
+		if !intPtrEqual(sc.CBLossStreakCooldownMinutes, ns.CBLossStreakCooldownMinutes) {
+			addChange("strategy[%s].cb_loss_streak_cooldown_minutes: %s -> %s", sc.ID, formatCBMinutes(sc.CBLossStreakCooldownMinutes, DefaultCBLossStreakCooldown), formatCBMinutes(ns.CBLossStreakCooldownMinutes, DefaultCBLossStreakCooldown))
+			sc.CBLossStreakCooldownMinutes = ns.CBLossStreakCooldownMinutes
 		}
 		// #1118: per-strategy notify_ratchet_triggers override is hot-reloadable
 		// always, including while a position is open — it only changes whether the
@@ -107,6 +162,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
 			sc.Paused = ns.Paused
 		}
+		// #1275: allow_deprecated is hot-reloadable always, including while a
+		// position is open — an acknowledgment flag only, never gates loading,
+		// probing, or trading. reloadConfig re-evaluates the deprecated-edge
+		// warning after apply, so flipping the ack off re-warns immediately.
+		if sc.AllowDeprecated != ns.AllowDeprecated {
+			addChange("strategy[%s].allow_deprecated: %t -> %t", sc.ID, sc.AllowDeprecated, ns.AllowDeprecated)
+			sc.AllowDeprecated = ns.AllowDeprecated
+		}
 		if sc.CapitalPct == 0 && sc.Capital != ns.Capital {
 			addChange("strategy[%s].capital: $%.2f -> $%.2f", sc.ID, sc.Capital, ns.Capital)
 			sc.Capital = ns.Capital
@@ -133,6 +196,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].margin_per_trade_usd: %s -> %s", sc.ID, formatFloatPtrUSD(sc.MarginPerTradeUSD), formatFloatPtrUSD(ns.MarginPerTradeUSD))
 			sc.MarginPerTradeUSD = ns.MarginPerTradeUSD
 		}
+		// #1268: risk_per_trade_pct value tweaks hot-reload (they only shape
+		// the NEXT open/flip sizing); risk↔notional mode switches while a
+		// position is open are blocked upstream in validateHotReloadStateCompatible.
+		if !floatPtrEqual(sc.RiskPerTradePct, ns.RiskPerTradePct) {
+			addChange("strategy[%s].risk_per_trade_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.RiskPerTradePct), formatFloatPtrPct(ns.RiskPerTradePct))
+			sc.RiskPerTradePct = ns.RiskPerTradePct
+		}
 		if sc.IntervalSeconds != ns.IntervalSeconds {
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
@@ -158,6 +228,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].allowed_regimes: %v -> %v", sc.ID, sc.AllowedRegimes, ns.AllowedRegimes)
 			sc.AllowedRegimes = append([]string{}, ns.AllowedRegimes...)
 		}
+		// #1278: entry-gate failure policy is hot-reloadable always, including
+		// while a position is open — it only changes flat-strategy open gating
+		// from the next cycle (mirrors the #1150 pause pattern); closes,
+		// trailing SL, ratchet, and protection sync are untouched.
+		if normalizeRegimeGateOnFailure(sc.RegimeGateOnFailure) != normalizeRegimeGateOnFailure(ns.RegimeGateOnFailure) {
+			addChange("strategy[%s].regime_gate_on_failure: %q -> %q", sc.ID, sc.RegimeGateOnFailure, ns.RegimeGateOnFailure)
+			sc.RegimeGateOnFailure = ns.RegimeGateOnFailure
+		}
 		// #486: Margin mode is hot-reloadable when flat. The state-compat
 		// check above blocks the change when positions are open; if we got
 		// here with new MarginMode != current, the strategy is flat and the
@@ -165,6 +243,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if sc.MarginMode != ns.MarginMode {
 			addChange("strategy[%s].margin_mode: %q -> %q", sc.ID, sc.MarginMode, ns.MarginMode)
 			sc.MarginMode = ns.MarginMode
+		}
+		// #1277: per-strategy ATR smoothing method. Same stance as margin_mode:
+		// the state-compat check blocks the effective flip while open, so a
+		// change landing here applies to the next flat-state check cycle.
+		if normalizeATRMethod(sc.ATRMethod) != normalizeATRMethod(ns.ATRMethod) {
+			addChange("strategy[%s].atr_method: %q -> %q", sc.ID, sc.ATRMethod, ns.ATRMethod)
+			sc.ATRMethod = ns.ATRMethod
 		}
 		if !floatPtrEqual(sc.TrailingStopPct, ns.TrailingStopPct) {
 			addChange("strategy[%s].trailing_stop_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopPct), formatFloatPtrPct(ns.TrailingStopPct))
@@ -275,6 +360,28 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("portfolio_risk.warn_threshold_pct: %.2f%% -> %.2f%%",
 			portfolioRiskWarnThreshold(cfg.PortfolioRisk), portfolioRiskWarnThreshold(next.PortfolioRisk))
 	}
+	// #1269: daily loss limit thresholds hot-reload with the same clone below —
+	// including while tripped (the gate re-evaluates each cycle from config).
+	if portfolioRiskDailyMaxLossUSD(cfg.PortfolioRisk) != portfolioRiskDailyMaxLossUSD(next.PortfolioRisk) {
+		addChange("portfolio_risk.daily_max_loss_usd: $%.2f -> $%.2f",
+			portfolioRiskDailyMaxLossUSD(cfg.PortfolioRisk), portfolioRiskDailyMaxLossUSD(next.PortfolioRisk))
+	}
+	if portfolioRiskDailyMaxLossPct(cfg.PortfolioRisk) != portfolioRiskDailyMaxLossPct(next.PortfolioRisk) {
+		addChange("portfolio_risk.daily_max_loss_pct: %.2f%% -> %.2f%%",
+			portfolioRiskDailyMaxLossPct(cfg.PortfolioRisk), portfolioRiskDailyMaxLossPct(next.PortfolioRisk))
+	}
+	// #1270: exposure-cap thresholds hot-reload with the same clone below —
+	// including while blocking (the gate re-evaluates each cycle from config).
+	// Deliberate divergence from max_notional_usd, which stays restart-required
+	// (validateHotReloadCompatible).
+	if portfolioRiskMaxSameDirectionNotional(cfg.PortfolioRisk) != portfolioRiskMaxSameDirectionNotional(next.PortfolioRisk) {
+		addChange("portfolio_risk.max_same_direction_notional_usd: $%.2f -> $%.2f",
+			portfolioRiskMaxSameDirectionNotional(cfg.PortfolioRisk), portfolioRiskMaxSameDirectionNotional(next.PortfolioRisk))
+	}
+	if portfolioRiskMaxAssetConcentration(cfg.PortfolioRisk) != portfolioRiskMaxAssetConcentration(next.PortfolioRisk) {
+		addChange("portfolio_risk.max_asset_concentration_pct: %.2f%% -> %.2f%%",
+			portfolioRiskMaxAssetConcentration(cfg.PortfolioRisk), portfolioRiskMaxAssetConcentration(next.PortfolioRisk))
+	}
 	cfg.PortfolioRisk = clonePortfolioRiskConfig(next.PortfolioRisk)
 
 	if !reflect.DeepEqual(cfg.Discord.Channels, next.Discord.Channels) {
@@ -324,7 +431,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	}
 	if server != nil {
 		server.UpdateStrategies(cfg.Strategies)
-		server.SetConfigContext(server.configPath, cfg.Regime)
+		server.SetConfigContext(server.configPath, cfg)
 	}
 
 	sort.Strings(changes)
@@ -332,10 +439,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 }
 
 // regimeConfigEqualIgnoringReloadableFields reports whether two regime configs
-// are identical except for hot-reloadable fields (#1062/#1139). nil-vs-non-nil
-// counts as a difference (regime add/remove is restart-required). Copies the
-// structs before zeroing fields so the live configs are untouched; Windows (a
-// map) is only read by DeepEqual.
+// are identical except for hot-reloadable fields (#1062/#1139/#1224). nil-vs-
+// non-nil counts as a difference (regime add/remove is restart-required).
+// Copies the structs before zeroing fields so the live configs are untouched;
+// Windows (a map) is only read by DeepEqual. Every field masked here MUST have
+// a matching copy branch in applyHotReloadConfig — otherwise the field is
+// documented as hot-reloadable but this gate rejects the reload before the
+// copy logic ever runs.
 func regimeConfigEqualIgnoringReloadableFields(a, b *RegimeConfig) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -345,6 +455,10 @@ func regimeConfigEqualIgnoringReloadableFields(a, b *RegimeConfig) bool {
 	bc.DisplayWindows = nil
 	ac.Timeframe = ""
 	bc.Timeframe = ""
+	ac.Transitions = nil
+	bc.Transitions = nil
+	ac.GateOnFailure = "" // #1278: hot-reloadable — explicit apply path in applyHotReloadConfig
+	bc.GateOnFailure = ""
 	return reflect.DeepEqual(ac, bc)
 }
 
@@ -477,6 +591,19 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] invert_signal changed with open positions (%t -> %t; flatten first or restart after close)",
 				sc.ID, sc.InvertSignal, ns.InvertSignal))
 		}
+		// #1277: the effective ATR smoothing method feeds EntryATR stamping
+		// and the live close-evaluator ATR (market_ctx["atr"]). Flipping it
+		// while a position is open would re-base the in-flight stop/TP
+		// geometry that was sized under the other math — block until flat.
+		// Compares the RESOLVED value so a global atr_method flip is caught
+		// for every strategy inheriting it, not only per-strategy edits.
+		// Options are excluded (no ATR surface; the field is rejected on
+		// them at load, and a global flip must not trip on an options
+		// position).
+		if sc.Type != "options" && resolveATRMethod(sc, cfg) != resolveATRMethod(ns, next) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] effective atr_method changed with open positions (%q -> %q; flatten first or restart after close)",
+				sc.ID, resolveATRMethod(sc, cfg), resolveATRMethod(ns, next)))
+		}
 		// #873: scale-in config only gates the NEXT add decision, but mutating
 		// it mid-position is surprising (e.g. flipping add_spacing_atr sign, or
 		// lowering a cap below the current count). Block toggle/shape changes
@@ -488,6 +615,19 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID, sc.AllowScaleIn, ns.AllowScaleIn))
 			} else if !scaleInConfigEqual(sc.ScaleIn, ns.ScaleIn) {
 				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
+		// #1268: switching between risk-per-trade and notional sizing while a
+		// position is open changes what the NEXT flip/re-entry sizing means
+		// under the operator's feet — same shape as the scalar↔regime stop
+		// owner rule. Value tweaks (set→set) stay hot-reloadable; the switch
+		// applies when flat.
+		if sc.Type == "perps" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			oldRiskMode := sc.RiskPerTradePct != nil && *sc.RiskPerTradePct > 0
+			newRiskMode := ns.RiskPerTradePct != nil && *ns.RiskPerTradePct > 0
+			if oldRiskMode != newRiskMode {
+				errs = append(errs, fmt.Sprintf("strategy[%s] risk_per_trade_pct sizing mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
 		}
@@ -662,19 +802,25 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 
 func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.MaxDrawdownPct = 0
-	sc.CircuitBreaker = nil        // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
-	sc.NotifyRatchetTriggers = nil // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
-	sc.Paused = false              // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
-	sc.LLMEntryAnalysis = nil      // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
+	sc.CircuitBreaker = nil              // #1048: hot-reloadable always, including while open. No state-compat guard — disabling only suppresses new fires; an already-latched CB and pending close still drain, and re-enabling just resumes evaluation on the next cycle.
+	sc.CBDrawdownCooldownMinutes = nil   // #1273: hot-reloadable always, including while open — parameterizes only FUTURE fires; a latched CircuitBreakerUntil is never rewritten. Applied in applyHotReloadConfig.
+	sc.CBLossStreakThreshold = nil       // #1273: same stance — the next CheckRisk cycle reads the new threshold via the accessor.
+	sc.CBLossStreakCooldownMinutes = nil // #1273: same stance as the drawdown cooldown.
+	sc.NotifyRatchetTriggers = nil       // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
+	sc.Paused = false                    // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
+	sc.LLMEntryAnalysis = nil            // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
+	sc.AllowDeprecated = false           // #1275: hot-reloadable always, including while open — acknowledgment flag only, never gates loading, probing, or trading. Applied in applyHotReloadConfig; reloadConfig re-evaluates the deprecated-edge warning after apply, so flipping the ack off re-warns.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
 	sc.MarginPerTradeUSD = nil // #518: hot-reloadable; nil/positive switching is purely additive
+	sc.RiskPerTradePct = nil   // #1268: hot-reloadable; state-compat blocks risk↔notional mode switches while open
 	sc.IntervalSeconds = 0
 	sc.OpenStrategy = StrategyRef{}
 	sc.CloseStrategy = nil
 	sc.closeStrategiesLegacy = nil
 	sc.AllowedRegimes = nil
+	sc.RegimeGateOnFailure = ""      // #1278: hot-reloadable always, including while open — flat-only open gating, never state-shifting. Applied in applyHotReloadConfig.
 	sc.MarginMode = ""               // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	sc.TrailingStopPct = nil         // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopATRMult = nil     // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
@@ -692,6 +838,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
+	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
 	return sc
 }
 
@@ -739,6 +886,32 @@ func boolPtrEqual(a, b *bool) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// formatCBMinutes renders an optional minutes override for reload change logs.
+// nil → "default(<n>m)" derived from the built-in cooldown so an operator sees
+// the implicit value a cleared override falls back to. (#1273)
+func formatCBMinutes(p *int, def time.Duration) string {
+	if p == nil {
+		return fmt.Sprintf("default(%dm)", int(def/time.Minute))
+	}
+	return fmt.Sprintf("%dm", *p)
+}
+
+// formatCBThreshold renders the optional loss-streak-threshold override for
+// reload change logs. nil → "default(<n>)". (#1273)
+func formatCBThreshold(p *int) string {
+	if p == nil {
+		return fmt.Sprintf("default(%d)", DefaultCBLossStreakThreshold)
+	}
+	return fmt.Sprintf("%d", *p)
 }
 
 // formatCircuitBreaker renders the per-strategy circuit-breaker flag for reload
@@ -840,11 +1013,52 @@ func portfolioRiskMaxNotional(pr *PortfolioRiskConfig) float64 {
 	return pr.MaxNotionalUSD
 }
 
+func portfolioRiskDailyMaxLossUSD(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.DailyMaxLossUSD
+}
+
+func portfolioRiskDailyMaxLossPct(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.DailyMaxLossPct
+}
+
+func portfolioRiskMaxSameDirectionNotional(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.MaxSameDirectionNotionalUSD
+}
+
+func portfolioRiskMaxAssetConcentration(pr *PortfolioRiskConfig) float64 {
+	if pr == nil {
+		return 0
+	}
+	return pr.MaxAssetConcentrationPct
+}
+
 func clonePortfolioRiskConfig(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
 	if pr == nil {
 		return nil
 	}
 	cp := *pr
+	return &cp
+}
+
+// cloneRegimeTransitionAlertsConfig deep-copies the #1224 transitions-alerting
+// block for hot-reload. The struct is flat (bool + three ints, no nested
+// pointers/slices) so a shallow copy is a full deep copy; mirrors the
+// defensive posture of clonePortfolioRiskConfig even though the freshly
+// LoadConfig'd `next` this is copied from is discarded after the reload call.
+func cloneRegimeTransitionAlertsConfig(t *RegimeTransitionAlertsConfig) *RegimeTransitionAlertsConfig {
+	if t == nil {
+		return nil
+	}
+	cp := *t
 	return &cp
 }
 

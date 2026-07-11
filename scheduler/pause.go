@@ -32,14 +32,14 @@ package main
 //     open);
 //   - a pure-close directional exit, mirroring perpsCloseActionSuppressesNewSL:
 //     sell on a long with shorts disallowed, or buy on a short with longs
-//     disallowed (spot is long-only — ExecuteSpotSignal's sell branch only
+//     disallowed (spot is long-only — ExecuteSpotSignalWithFillFee's sell branch only
 //     ever closes a long — so spot sells always qualify).
 //
 // posSide is the open position's side ("long"/"short"; spot positions are
 // "long"). allowsLong/allowsShort describe what the EXECUTOR can open for an
 // opposite-side signal, not just the config gate: PerpsAllowsLong/
 // PerpsAllowsShort for perps, true/false for long-only spot, and true/true
-// for futures — ExecuteFuturesSignal is unconditionally bidirectional (a sell
+// for futures — ExecuteFuturesSignalWithFillFee is unconditionally bidirectional (a sell
 // on a long with closeFraction 0 closes the long AND opens a fresh short, and
 // a buy on a short mirrors it), so a futures opposite-side signal is never a
 // pure close and must be held.

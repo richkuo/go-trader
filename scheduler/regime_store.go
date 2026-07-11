@@ -13,10 +13,13 @@ package main
 // The store is in-memory only and rebuilt every cycle (like the pre-#879
 // stratState.Regime refresh); pos.Regime stays the frozen-at-open stamp.
 // Failure policy (issue #879, option b): a failed/missing bundle yields an
-// EMPTY payload — the entry gate fails open, syncStrategyRegimeState shows
-// regime=-, and there is no reuse-last or inline-recompute fallback. Open
-// positions are unaffected because regime-keyed life-of-position features
-// read pos.Regime, not this store.
+// EMPTY payload — display and management consumers fail open,
+// syncStrategyRegimeState shows regime=-, and there is no reuse-last or
+// inline-recompute fallback. The allowed_regimes ENTRY gate resolves the
+// empty label per regime_gate_on_failure (#1278): "open" (default, the
+// legacy behavior) admits the entry; "closed" holds fresh opens while the
+// regime is unknown. Open positions are unaffected either way because
+// regime-keyed life-of-position features read pos.Regime, not this store.
 
 import (
 	"context"
@@ -451,6 +454,44 @@ func regimeBundleAlertConfig(key regimeBundleKey) StrategyConfig {
 	}
 }
 
+// regimeGateOutagePolicyNote renders the entry-gate failure policy in effect
+// for the gated strategies on a failed regime signature (#1278), appended to
+// the scriptFailureTracker alert message so the outage DM says whether the
+// affected strategies' opens were held (fail-closed) or admitted ungated
+// (fail-open) while the label was unavailable. Empty when no due strategy
+// with an allowed_regimes gate maps to the key. Strategy IDs are sorted (Go
+// map/slice order must never leak into operator-facing text).
+func regimeGateOutagePolicyNote(key regimeBundleKey, due []StrategyConfig, rc *RegimeConfig) string {
+	var closed, open []string
+	for _, sc := range due {
+		if len(sc.AllowedRegimes) == 0 {
+			continue
+		}
+		req, ok := strategyRegimeBundleRequest(sc, rc)
+		if !ok || req.Key != key {
+			continue
+		}
+		if resolveRegimeGateOnFailure(sc, rc) == RegimeGateOnFailureClosed {
+			closed = append(closed, sc.ID)
+		} else {
+			open = append(open, sc.ID)
+		}
+	}
+	if len(closed) == 0 && len(open) == 0 {
+		return ""
+	}
+	sort.Strings(closed)
+	sort.Strings(open)
+	var parts []string
+	if len(closed) > 0 {
+		parts = append(parts, "fail-closed (opens held): "+strings.Join(closed, ", "))
+	}
+	if len(open) > 0 {
+		parts = append(parts, "fail-open (entries ungated): "+strings.Join(open, ", "))
+	}
+	return "; entry gates — " + strings.Join(parts, "; ")
+}
+
 // startRegimeStorePopulation rebuilds the global store for this cycle: clear,
 // union due-strategy signatures, one subprocess per distinct signature
 // (parallel; pythonSemaphore caps concurrency at 4). It kicks the work off on
@@ -501,15 +542,21 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 		wg.Wait()
 		// Alerts fire after the parallel wave, off the population goroutine
 		// only (never fanned out across the per-request goroutines). A
-		// budget-cancelled request still records a failure — its signature
-		// failed open this cycle, and the 3-strike streak should surface a
-		// chronically starved signature — with a message naming the cause.
+		// budget-cancelled request still records a failure — its signature is
+		// unavailable this cycle (entry gates resolve per
+		// regime_gate_on_failure, #1278), and the 3-strike streak should
+		// surface a chronically starved signature — with a message naming the
+		// cause.
 		for i, req := range reqs {
 			if errs[i] != nil {
 				msg := errs[i].Error()
 				if errors.Is(errs[i], context.Canceled) {
-					msg = fmt.Sprintf("cancelled at phase-budget seal (%s); signature failed open this cycle", regimeStorePhaseBudget)
+					msg = fmt.Sprintf("cancelled at phase-budget seal (%s); signature unavailable this cycle", regimeStorePhaseBudget)
 				}
+				// #1278: name the entry-gate policy in effect for the gated
+				// strategies on this signature — the outage DM must say whether
+				// opens were held (fail-closed) or admitted ungated (fail-open).
+				msg += regimeGateOutagePolicyNote(req.Key, due, rc)
 				fmt.Printf("[WARN] regime store %s: %s\n", req.Key, msg)
 				notifyScriptFailure(notifier, regimeBundleAlertConfig(req.Key), scriptFailureError, msg)
 			} else {
@@ -527,7 +574,7 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 			// subprocesses are SIGKILLed and queued ones fast-fail on the
 			// dead context, freeing semaphore slots for the check fan-out.
 			popCancel()
-			fmt.Printf("[WARN] regime store: phase budget %s exceeded; sealed with %d/%d bundles — missing signatures fail open this cycle\n",
+			fmt.Printf("[WARN] regime store: phase budget %s exceeded; sealed with %d/%d bundles — missing signatures resolve per regime_gate_on_failure this cycle (default fail-open)\n",
 				regimeStorePhaseBudget, kept, len(reqs))
 		}
 		if summary := regimeStoreSummary(store); summary != "" {
@@ -559,8 +606,8 @@ func regimeStoreSummary(store *RegimeStore) string {
 
 // PayloadForStrategy returns the live regime payload for sc's signature this
 // cycle. Empty when sc has no signature (regime disabled) or the bundle is
-// missing/failed — every consumer's existing empty-case behavior is the
-// fail-open path.
+// missing/failed — display/management consumers treat the empty case as
+// fail-open; the entry gate resolves it per regime_gate_on_failure (#1278).
 func (s *RegimeStore) PayloadForStrategy(sc StrategyConfig, rc *RegimeConfig) RegimePayload {
 	req, ok := strategyRegimeBundleRequest(sc, rc)
 	if !ok {

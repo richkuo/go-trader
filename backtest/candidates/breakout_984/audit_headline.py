@@ -58,6 +58,10 @@ def main(argv=None):
     p.add_argument("--candidates", default=DEFAULT_CANDIDATES,
                    help="comma list of candidate JSON files in this dir")
     p.add_argument("--json", default=None, dest="json_out")
+    p.add_argument("--intrabar-resolution", dest="intrabar_resolution",
+                   choices=["ohlc_walk", "bar_close"], default="ohlc_walk",
+                   help="Same-bar SL/TP race resolution (#1271); bar_close "
+                        "reproduces pre-#1271 legacy baselines")
     args = p.parse_args(argv)
 
     from registry_loader import load_registry
@@ -65,6 +69,7 @@ def main(argv=None):
 
     window = (args.start, args.end)
     out = {"window": {"start": args.start, "end": args.end},
+           "intrabar_resolution": args.intrabar_resolution,
            "effective_range": {}, "candidates": {}}
     for symbol, tf in DATASETS:
         out["effective_range"][dataset_key(symbol, tf)] = effective_range(
@@ -83,7 +88,8 @@ def main(argv=None):
                           invert_signal=bool(candidate.get("invert_signal")),
                           stop_loss_atr_mult=candidate.get("stop_loss_atr_mult"),
                           trailing_stop_atr_mult=candidate.get(
-                              "trailing_stop_atr_mult"))
+                              "trailing_stop_atr_mult"),
+                          intrabar_resolution=args.intrabar_resolution)
             legs[dataset_key(symbol, tf)] = leg
             print(f"{label:<11} {symbol} {tf}: sharpe {leg['sharpe']:+.2f}  "
                   f"ret {leg['return_pct']:+8.2f}%  DD {leg['max_dd_pct']:8.2f}%  "

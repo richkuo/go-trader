@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -39,18 +40,12 @@ const sharedWalletDriftAlertThreshold = 2
 // continuously and defeat the hourly back-off.
 const sharedWalletDriftRealertRatio = 0.10
 
-// sharedWalletDriftLogInterval is the heartbeat ceiling for the stdout [WARN]
-// drift line per wallet (#1088): once an over-tolerance episode is underway, a
-// STABLE, unchanging drift re-logs at most once per this interval. It is aligned
-// to the hourly notification back-off (time.Hour) so a persistent stable drift's
-// stdout cadence matches its alert cadence instead of spamming the log — a flat
-// per-cycle log produced 620 lines in 6h, and even a 1-minute interval still
-// logged ~once/70s ≈ 310. A drift that materially CHANGES
-// (sharedWalletDriftRealertRatio, anchored to the last logged line) logs
-// immediately regardless of this interval, and so does any cycle that fires an
-// operator alert, so onset, worsening, and alert visibility are all preserved
-// while a stable drift collapses to onset + the hourly heartbeat + alert cycles.
-const sharedWalletDriftLogInterval = time.Hour
+// sharedWalletDriftLogInterval returns the heartbeat ceiling for the stdout
+// [WARN] drift line per wallet (#1088), aligned to the configured notification
+// back-off so a persistent stable drift's stdout cadence matches its alert cadence.
+func sharedWalletDriftLogInterval() time.Duration {
+	return effectiveAlertThrottleInterval()
+}
 
 // sharedWalletDriftEntry is one slot in the per-wallet drift tracker.
 type sharedWalletDriftEntry struct {
@@ -203,7 +198,7 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 		float64(logDeltaCents) > sharedWalletDriftRealertRatio*float64(absInt64(e.lastLoggedDriftCents))
 	shouldLog = e.lastLoggedAt.IsZero() ||
 		logSigChanged ||
-		now.Sub(e.lastLoggedAt) >= sharedWalletDriftLogInterval
+		now.Sub(e.lastLoggedAt) >= sharedWalletDriftLogInterval()
 
 	// Confirmation window: no coin has stayed unowned long enough yet — a
 	// transient one-cycle orphan never reaches the threshold (it clears next
@@ -221,7 +216,7 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 		shouldNotify = true // a coin crossed its confirmation window
 	case e.alerted && sigChanged:
 		shouldNotify = true
-	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
+	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= effectiveAlertThrottleInterval():
 		shouldNotify = true
 	}
 	if shouldNotify {
@@ -264,6 +259,44 @@ func (t *SharedWalletDriftTracker) Clear(walletKey string) (bool, int) {
 	priorCount := e.cycles
 	delete(t.entries, walletKey)
 	return recovered, priorCount
+}
+
+// SharedWalletDriftView is a read-only projection of one wallet's active
+// drift-tracker entry for the #1231 /api/cashflow endpoint. All fields are
+// copies; the tracker's internals stay private.
+type SharedWalletDriftView struct {
+	Wallet         string    `json:"wallet"`
+	Cycles         int       `json:"cycles"`
+	Alerted        bool      `json:"alerted"`
+	LastNotifiedAt time.Time `json:"last_notified_at,omitzero"`
+	OrphanCoins    []string  `json:"orphan_coins,omitempty"`
+}
+
+// Snapshot returns a copy of every active (over-tolerance) wallet entry,
+// sorted by wallet key. Within-tolerance wallets have no entry (Clear deletes
+// them), so an empty slice means every shared wallet reconciles to the cent.
+// In-memory only — resets on restart, like the tracker itself.
+func (t *SharedWalletDriftTracker) Snapshot() []SharedWalletDriftView {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]SharedWalletDriftView, 0, len(t.entries))
+	for key, e := range t.entries {
+		view := SharedWalletDriftView{
+			Wallet:         key,
+			Cycles:         e.cycles,
+			Alerted:        e.alerted,
+			LastNotifiedAt: e.lastNotifiedAt,
+		}
+		for coin := range e.coinStreaks {
+			if coin != "" {
+				view.OrphanCoins = append(view.OrphanCoins, coin)
+			}
+		}
+		sort.Strings(view.OrphanCoins)
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Wallet < out[j].Wallet })
+	return out
 }
 
 // sharedWalletDriftTracker is the package-level singleton; resets on restart.

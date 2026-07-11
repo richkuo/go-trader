@@ -27,6 +27,8 @@ committed at open inversely with ATR/close. Signals are never affected.
 import numpy as np
 import pandas as pd
 
+from indicators_core import atr_sma_series
+
 from adx_trend import _compute_adx_components
 
 
@@ -149,13 +151,7 @@ def momentum_pro_core(
     # (rolling-mean True Range, integer-round only when ATR >= 100 — keep in
     # sync with shared_tools/atr.py and the other inline copies).
     if vol_target_atr_pct > 0:
-        prev_close = close.shift(1)
-        tr = pd.concat(
-            [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-            axis=1,
-        ).max(axis=1)
-        atr = tr.rolling(window=vol_target_atr_period).mean()
-        atr = atr.where(atr < 100, atr.round(0))
+        atr = atr_sma_series(high, low, close, vol_target_atr_period)
         atr_pct = atr / close
         fraction = (vol_target_atr_pct / atr_pct).clip(
             lower=vol_target_min_fraction, upper=1.0,

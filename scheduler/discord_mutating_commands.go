@@ -614,22 +614,11 @@ func (d *DiscordNotifier) configOpsReady() (string, error) {
 }
 
 // mutateConfig serializes a read → mutate → validated-write cycle on the live
-// config file under configWriteMu so it can't race the dashboard tuner.
-func (d *DiscordNotifier) mutateConfig(path string, fn func(root map[string]json.RawMessage) error) error {
-	d.ss.configWriteMu.Lock()
-	defer d.ss.configWriteMu.Unlock()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return fmt.Errorf("parse config: %w", err)
-	}
-	if err := fn(root); err != nil {
-		return err
-	}
-	return writeValidatedConfigRoot(path, root)
+// config file under configWriteMu so it can't race the dashboard tuner or the
+// #1258 structural endpoints. Delegates to the shared StatusServer helper —
+// path is always d.ss.configPath (configOpsReady returned it).
+func (d *DiscordNotifier) mutateConfig(_ string, fn func(root map[string]json.RawMessage) error) error {
+	return d.ss.mutateConfigRoot(fn)
 }
 
 // followupText posts a deferred-interaction follow-up message (truncated to the
@@ -835,8 +824,7 @@ func (d *DiscordNotifier) handleAddPlatform(s *discordgo.Session, i *discordgo.I
 // it switches a strategy to placing real orders with real funds.
 func (d *DiscordNotifier) handlePaperToLive(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
-	path, err := d.configOpsReady()
-	if err != nil {
+	if _, err := d.configOpsReady(); err != nil {
 		followupText(s, i, err.Error())
 		return
 	}
@@ -845,21 +833,20 @@ func (d *DiscordNotifier) handlePaperToLive(s *discordgo.Session, i *discordgo.I
 		followupText(s, i, "usage: /go-trader-paper-to-live <strategy>")
 		return
 	}
+	if reason := d.ss.paperToLiveBlockedReason(id, false); reason != "" {
+		followupText(s, i, "Refused: "+reason)
+		return
+	}
 	if !d.confirmDestructive(interactionUserID(i), fmt.Sprintf("⚠️ Switch strategy `%s` from PAPER to LIVE? After restart it places **real orders with real funds**.", id)) {
 		followupText(s, i, "Cancelled — no confirmation received.")
 		return
 	}
-	var after []string
-	wErr := d.mutateConfig(path, func(root map[string]json.RawMessage) error {
-		_, a, e := flipStrategyToLive(root, id)
-		after = a
-		return e
-	})
-	if wErr != nil {
-		followupText(s, i, "paper-to-live failed: "+wErr.Error())
+	msg, err := d.ss.executePaperToLive(id)
+	if err != nil {
+		followupText(s, i, "paper-to-live failed: "+err.Error())
 		return
 	}
-	d.applyConfigChange(s, i, true, fmt.Sprintf("Strategy `%s` switched to **LIVE** (args: %s).", id, strings.Join(after, " ")))
+	d.applyConfigChange(s, i, true, msg)
 }
 
 // subcommandOptions extracts the chosen subcommand name and its options from a

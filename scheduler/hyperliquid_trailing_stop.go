@@ -404,7 +404,7 @@ func clearATRMultMissingEntryATRWarning(strategyID, symbol string) {
 
 // clearATRMultMissingEntryATRWarningOnHLPerpsClose is a no-op shortcut for
 // non-HL-perps state. Position-close call sites in shared code (e.g.
-// ExecutePerpsSignal close-long/short, forceCloseAllPositions) live on a
+// ExecutePerpsSignalWithLeverage close-long/short, forceCloseAllPositions) live on a
 // path that may run for spot or futures strategies as well; this helper
 // avoids spraying platform/type checks at every call site.
 func clearATRMultMissingEntryATRWarningOnHLPerpsClose(s *StrategyState, symbol string) {

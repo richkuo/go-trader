@@ -324,7 +324,16 @@ def test_registered_long_only_on_both_platforms():
     allow_short=False with no futures override. Pins the docstring/registry
     agreement — re-adding a futures allow_short variant must consciously
     update all three (registry, docstring, init.go) together."""
-    import registry as open_registry
+    # Load the OPEN registry by path — a bare `import registry` resolves to
+    # whichever registry.py (open or close) hit sys.modules first, which
+    # varies with test collection order (flaky under pytest-xdist).
+    import importlib.util
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry.py")
+    spec = importlib.util.spec_from_file_location("_open_registry_1304", path)
+    open_registry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(open_registry)
     entry = open_registry.STRATEGIES["regime_adaptive_htf"]
     assert entry["default_params"]["allow_short"] is False
     assert entry["variants"] == {}

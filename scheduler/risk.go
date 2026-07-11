@@ -6,8 +6,21 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// schedulerStarted is set once in main immediately before server.Start — the
+// first spawn that can read PortfolioRisk under mu. ClearLatchedKillSwitchSharedWallet
+// may only run while this is false (#1272).
+var schedulerStarted atomic.Bool
+
+// markSchedulerStarted ends the single-threaded startup phase. Call exactly
+// once immediately before server.Start (or any other goroutine that reads
+// AppState under mu).
+func markSchedulerStarted() {
+	schedulerStarted.Store(true)
+}
 
 // collectPriceSymbols returns the list of BinanceUS-format symbols to fetch
 // for spot strategy valuation/notional. Only "spot" strategy types are
@@ -282,11 +295,15 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 // peak — the original root cause from #244.
 //
 // CONCURRENCY: This function mutates state.PortfolioRisk without holding any
-// lock. It is only safe to call during startup, before the state mutex is
-// created and before any goroutines are spawned. See main.go:109.
+// lock. It is only safe during the single-threaded startup phase — before
+// markSchedulerStarted(). Calling it after that panics (#1272); do not hold
+// mu across the balance fetcher I/O inside this helper.
 //
 // Returns true iff the kill switch was cleared.
 func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyConfig, fetcher SharedWalletBalanceFetcher) bool {
+	if schedulerStarted.Load() {
+		panic("ClearLatchedKillSwitchSharedWallet called after scheduler started")
+	}
 	if state == nil || !state.PortfolioRisk.KillSwitchActive {
 		return false
 	}
@@ -346,6 +363,10 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 // operator-required gaps such as OKX spot or Robinhood options. Those venues do
 // not block OnChainConfirmedFlat because there is no safe automated close path,
 // but resuming trading without a human reset would hide remaining live exposure.
+//
+// CONCURRENCY: lock-free body — the caller must hold mu while invoking this
+// (hot-loop site in main does). Unlike ClearLatchedKillSwitchSharedWallet,
+// this helper is intended for post-startup use under the state lock.
 func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue float64, details string) bool {
 	if prs == nil || !prs.KillSwitchActive {
 		return false
@@ -1347,13 +1368,18 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 }
 
 // Shared reason-string prefixes for CheckRisk return values. Consumers
-// (main.go notification dispatch, tests) must reference these constants
-// rather than re-typing literals so reason-string tweaks stay safe under
-// refactor.
+// (main.go notification dispatch, circuit_breaker_alert.go classification,
+// tests) must reference these constants rather than re-typing literals so
+// reason-string tweaks stay safe under refactor.
+//
+// RiskReasonConsecutiveLosses is deliberately threshold-free (#1273): the
+// loss-streak threshold is per-strategy-configurable, so the fire site appends
+// the actual count/threshold after the prefix and every consumer matches with
+// strings.HasPrefix — a non-default threshold can never break classification.
 const (
 	RiskReasonCircuitBreakerActive = "circuit breaker active"
 	RiskReasonMaxDrawdownExceeded  = "max drawdown exceeded"
-	RiskReasonConsecutiveLosses    = "5 consecutive losses"
+	RiskReasonConsecutiveLosses    = "consecutive losses"
 )
 
 // circuitBreakerPermitsManagement reports whether a CheckRisk block should still
@@ -1369,7 +1395,7 @@ const (
 // trailing-SL/TP-ratchet walker. Manual strategies are exempt from CheckRisk
 // entirely (returns allowed early), and other platforms/types have no equivalent
 // in-loop SL ratchet, so they keep the plain skip. The first-fire cycle (reason
-// "max drawdown exceeded" / "5 consecutive losses") is deliberately excluded:
+// "max drawdown exceeded" / "consecutive losses") is deliberately excluded:
 // that is the cycle that force-closes / enqueues the reduce-only drain, so the
 // position state is mid-transition; management resumes on the next (latched)
 // cycle, which is ~the entire latch window.
@@ -1469,7 +1495,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		}
 		if r.CurrentDrawdownPct > r.MaxDrawdownPct && cbEnabled {
 			r.CircuitBreaker = true
-			r.CircuitBreakerUntil = now.Add(24 * time.Hour)
+			r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerDrawdownCooldown())
 			setHyperliquidCircuitBreakerPending(sc, s, assist)
 			setOKXCircuitBreakerPending(sc, s, assist)
 			setRobinhoodCircuitBreakerPending(sc, s, assist)
@@ -1483,10 +1509,15 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		}
 	}
 
-	// Consecutive losses circuit breaker (5 in a row → pause 1h, close positions)
-	if r.ConsecutiveLosses >= 5 && cbEnabled {
+	// Consecutive losses circuit breaker (default 5 in a row → pause 1h, close
+	// positions; threshold and cooldown per-strategy-tunable, #1273). The
+	// reason string keeps RiskReasonConsecutiveLosses as its prefix — every
+	// classifier matches on that prefix, so the appended count/threshold is
+	// operator display only.
+	lossStreakThreshold := sc.CircuitBreakerLossStreakThreshold()
+	if r.ConsecutiveLosses >= lossStreakThreshold && cbEnabled {
 		r.CircuitBreaker = true
-		r.CircuitBreakerUntil = now.Add(1 * time.Hour)
+		r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerLossStreakCooldown())
 		setHyperliquidCircuitBreakerPending(sc, s, assist)
 		setOKXCircuitBreakerPending(sc, s, assist)
 		setRobinhoodCircuitBreakerPending(sc, s, assist)
@@ -1495,14 +1526,14 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
 			forceCloseAllPositions(s, prices, logger)
 		}
-		return false, RiskReasonConsecutiveLosses
+		return false, fmt.Sprintf("%s (%d in a row, threshold %d)", RiskReasonConsecutiveLosses, r.ConsecutiveLosses, lossStreakThreshold)
 	}
 
 	// #1048: if the circuit breaker is disabled and a halt threshold was just
 	// crossed, the two arms above fell through silently. Leave a runtime trace
 	// (a WARNING, not a halt) so the missing auto-protection is observable in
 	// logs at the cycle it matters — not only at startup / on-demand inspect.
-	recordCircuitBreakerSuppression(s, cbEnabled, logger)
+	recordCircuitBreakerSuppression(s, cbEnabled, lossStreakThreshold, logger)
 
 	return true, ""
 }
@@ -1523,7 +1554,10 @@ var circuitBreakerSuppressedWarned sync.Map
 // episode and cleared when the breaker is re-enabled or all thresholds clear —
 // so a later genuine fire (once re-enabled) still alerts through the normal
 // circuit-breaker path, and a subsequent re-disable warns afresh. (#1048)
-func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, logger *StrategyLogger) {
+// lossStreakThreshold is the caller's resolved CircuitBreakerLossStreakThreshold()
+// so the warning fires at exactly the same streak length as the firing arm,
+// including per-strategy overrides (#1273).
+func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStreakThreshold int, logger *StrategyLogger) {
 	if s == nil {
 		return
 	}
@@ -1532,7 +1566,7 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, logger *S
 	// stays in sync if that gate is later edited — the PeakValue>0 guard is
 	// implicit there (CurrentDrawdownPct is 0 when PeakValue is 0). (#1048)
 	drawdownBreached := r.CurrentDrawdownPct > r.MaxDrawdownPct
-	lossBreached := r.ConsecutiveLosses >= 5
+	lossBreached := r.ConsecutiveLosses >= lossStreakThreshold
 	if cbEnabled || (!drawdownBreached && !lossBreached) {
 		circuitBreakerSuppressedWarned.Delete(s.ID)
 		return

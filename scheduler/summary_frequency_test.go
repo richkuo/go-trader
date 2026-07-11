@@ -193,7 +193,7 @@ func TestShouldPostSummary_InvalidValueFallsBackToLegacy(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_SummaryFrequency(t *testing.T) {
+func TestConfigValidation_SummaryFrequency(t *testing.T) {
 	base := &Config{
 		IntervalSeconds: 60,
 		Strategies: []StrategyConfig{
@@ -208,7 +208,7 @@ func TestValidateConfig_SummaryFrequency(t *testing.T) {
 			"options":     "every",
 			"hyperliquid": "30m",
 		}
-		if err := ValidateConfig(&cfg); err != nil {
+		if err := validateConfig(&cfg, false); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -216,7 +216,7 @@ func TestValidateConfig_SummaryFrequency(t *testing.T) {
 	t.Run("invalid value rejected", func(t *testing.T) {
 		cfg := *base
 		cfg.SummaryFrequency = map[string]string{"spot": "sometimes"}
-		err := ValidateConfig(&cfg)
+		err := validateConfig(&cfg, false)
 		if err == nil {
 			t.Fatal("expected validation error for invalid value")
 		}
@@ -228,7 +228,7 @@ func TestValidateConfig_SummaryFrequency(t *testing.T) {
 	t.Run("empty key rejected", func(t *testing.T) {
 		cfg := *base
 		cfg.SummaryFrequency = map[string]string{"": "hourly"}
-		err := ValidateConfig(&cfg)
+		err := validateConfig(&cfg, false)
 		if err == nil {
 			t.Fatal("expected validation error for empty key")
 		}

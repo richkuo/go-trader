@@ -46,9 +46,21 @@
   //   "m5"       — M5 fee audit / salvage verdict (context; no p; screens
   //                registry DEFAULT params only — swept candidates get a
   //                "m5_params_unaudited" limitation flag, never audited wrong).
+  //   "mc"       — trade-order Monte Carlo drawdown risk (#1295; ADVISORY
+  //                context; no p). Never gates promotion — not when it passes,
+  //                not when it fails (a failed run only adds an
+  //                "mc_run_failed" limitation flag). Open candidates only.
+  //                NOT run by default (#1316) — must be named explicitly.
   // (M6 is NOT listed here — it is driven by the "m6" block below, one entry
   // per close variant.) Default: ["m1_noise", "m1", "m3", "m5"].
-  "harnesses": ["m1_noise", "m1", "m3", "m5", "m6"],
+  "harnesses": ["m1_noise", "m1", "m3", "m5", "mc", "m6"],
+
+  // ---- Advisory Monte Carlo tuning (#1295). Optional; omit for the defaults
+  // (kill-switch threshold 25 = the portfolio kill-switch default; 10000
+  // paths). The threshold has exactly two sources and they are mutually
+  // exclusive: an explicit "kill_switch_pct", OR a live daemon "config" plus
+  // the "strategy_id" whose max_drawdown_pct hierarchy should resolve.
+  "mc": {"kill_switch_pct": 25, "n_paths": 10000},
 
   // Walk-forward windows to score. Any of eval_windows.WINDOWS:
   //   "is", "oos" (the protocol pair the promotion gate keys off),

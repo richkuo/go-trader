@@ -154,26 +154,6 @@ func TestValidateRegimeWindowsConfig_RejectsWindowWithoutGlobalWindows(t *testin
 	}
 }
 
-func TestRegimeLabelAtOpen_PrefersStampedWindow(t *testing.T) {
-	rc := &RegimeConfig{
-		Enabled: true,
-		Windows: RegimeWindowsMap{"short": {Period: 168}, "medium": {Period: 720}},
-	}
-	pos := &Position{
-		Regime: "trending_up",
-		RegimeWindows: map[string]string{
-			"short":  "ranging",
-			"medium": "trending_down",
-		},
-	}
-	if got := regimeLabelAtOpen(pos, "medium", rc); got != "trending_down" {
-		t.Fatalf("medium = %q", got)
-	}
-	if got := regimeLabelAtOpen(pos, "", rc); got != "trending_down" {
-		t.Fatalf("default primary = %q", got)
-	}
-}
-
 func TestRegimePayload_UnmarshalWindowNamedRegime(t *testing.T) {
 	raw := `{"regime":{"regime":"ranging","score":0.1,"metrics":{"adx":10}}}`
 	var p RegimePayload

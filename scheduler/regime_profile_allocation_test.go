@@ -360,7 +360,7 @@ func TestProfileAllocation_DBRoundTrip(t *testing.T) {
 }
 
 // fullProfileAllocConfig builds a complete HL-perps + regime config with a
-// valid regime_profile_allocation for ValidateConfig integration tests.
+// valid regime_profile_allocation for validateConfig integration tests.
 func fullProfileAllocConfig(t *testing.T, palJSON string) Config {
 	t.Helper()
 	var a RegimeProfileAllocation
@@ -397,34 +397,34 @@ const validPALJSON = `{
 	"initial_profile": "fade"
 }`
 
-func TestValidateConfig_ProfileAllocation_Valid(t *testing.T) {
+func TestConfigValidation_ProfileAllocation_Valid(t *testing.T) {
 	cfg := fullProfileAllocConfig(t, validPALJSON)
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
 
-func TestValidateConfig_ProfileAllocation_RejectsRegimeDisabled(t *testing.T) {
+func TestConfigValidation_ProfileAllocation_RejectsRegimeDisabled(t *testing.T) {
 	cfg := fullProfileAllocConfig(t, validPALJSON)
 	cfg.Regime.Enabled = false
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil || !indexOfErr(err, "regime_profile_allocation requires top-level regime.enabled=true") {
 		t.Fatalf("expected regime-enabled error, got: %v", err)
 	}
 }
 
-func TestValidateConfig_ProfileAllocation_RejectsNonHL(t *testing.T) {
+func TestConfigValidation_ProfileAllocation_RejectsNonHL(t *testing.T) {
 	cfg := fullProfileAllocConfig(t, validPALJSON)
 	cfg.Strategies[0].Platform = "okx"
 	cfg.Strategies[0].Args = []string{"regime_adaptive_htf", "BTC-USDT-SWAP", "1h"}
 	cfg.Strategies[0].Script = "shared_scripts/check_okx.py"
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil || !indexOfErr(err, "regime_profile_allocation is only supported for HL perps") {
 		t.Fatalf("expected HL-perps-only error, got: %v", err)
 	}
 }
 
-func TestValidateConfig_ProfileAllocation_RejectsThreeProfiles(t *testing.T) {
+func TestConfigValidation_ProfileAllocation_RejectsThreeProfiles(t *testing.T) {
 	cfg := fullProfileAllocConfig(t, `{
 		"window": "profile_long",
 		"profiles": {"trending_up_clean":"a","trending_up_choppy":"a","trending_down_clean":"a","trending_down_choppy":"a","ranging_quiet":"b","ranging_volatile":"b","ranging_directional":"c"},
@@ -432,7 +432,7 @@ func TestValidateConfig_ProfileAllocation_RejectsThreeProfiles(t *testing.T) {
 		"confirm_bars": 24,
 		"initial_profile": "a"
 	}`)
-	err := ValidateConfig(&cfg)
+	err := validateConfig(&cfg, false)
 	if err == nil || !indexOfErr(err, "exactly 2 profiles") {
 		t.Fatalf("expected param_sets count error, got: %v", err)
 	}

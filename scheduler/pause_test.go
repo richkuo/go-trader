@@ -56,7 +56,7 @@ func TestPausedBlocksSignal(t *testing.T) {
 		{"legacy buy on short under long", 1, 0, 2, "short", true, false, true},
 
 		// Futures dispatch args (allowsLong=allowsShort=true):
-		// ExecuteFuturesSignal is unconditionally bidirectional — a sell on a
+		// ExecuteFuturesSignalWithFillFee is unconditionally bidirectional — a sell on a
 		// long (closeFraction 0) closes AND opens a fresh short, a buy on a
 		// short mirrors it — so opposite-side signals are held; only
 		// close-registry actions pass, and flat signals are fresh opens.

@@ -290,26 +290,6 @@ func regimeWindowsSpecJSON(rc *RegimeConfig) string {
 	return string(blob)
 }
 
-func regimeWindowClassifierEqual(a, b RegimeWindowSpec) bool {
-	return a.effectiveClassifier() == b.effectiveClassifier()
-}
-
-func regimeWindowsClassifiersEqual(old, new RegimeWindowsMap) bool {
-	if len(old) != len(new) {
-		return false
-	}
-	for name, ospec := range old {
-		nspec, ok := new[name]
-		if !ok {
-			return false
-		}
-		if !regimeWindowClassifierEqual(ospec, nspec) {
-			return false
-		}
-	}
-	return true
-}
-
 func openPositionsReferenceRegimeWindow(state *AppState, windowKey string) bool {
 	if state == nil || windowKey == "" {
 		return false

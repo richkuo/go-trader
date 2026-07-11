@@ -53,6 +53,7 @@
               <div class="topbar-title-row">
                 <h2 id="active-title">Dashboard</h2>
                 <span id="regime-badge" class="regime-badge" hidden></span>
+                <span id="paused-badge" class="regime-badge regime-badge--paused" hidden title="Strategy paused — position-increasing signals held; closes and SL/TP management still run">⏸ paused</span>
                 <span id="divergence-badge" class="regime-badge regime-badge--divergence" hidden title="Regime window divergence active"></span>
               </div>
               <p id="active-subtitle">Select a strategy</p>
@@ -92,6 +93,75 @@
               </thead>
               <tbody id="overview-body"></tbody>
             </table>
+            <div class="ops-panels">
+              <div class="ops-panel ops-panel--wide">
+                <h3>Leaderboard</h3>
+                <div class="ops-table-scroll">
+                  <table class="ops-table">
+                    <thead>
+                      <tr><th>#</th><th>ID</th><th>PnL %</th><th>PnL $</th><th>#T</th><th>W/L</th><th>Value</th></tr>
+                    </thead>
+                    <tbody id="leaderboard-body"></tbody>
+                  </table>
+                </div>
+                <p id="leaderboard-empty" class="panel-muted" hidden>No strategies to rank</p>
+              </div>
+              <div class="ops-panel ops-panel--wide">
+                <h3>Trade diagnostics</h3>
+                <div class="ops-table-scroll">
+                  <table class="ops-table">
+                    <thead>
+                      <tr><th>Closed</th><th>Strategy</th><th>Symbol</th><th>Side</th><th>Net PnL</th><th>MFE %</th><th>MAE %</th><th>Capture</th><th>Status</th></tr>
+                    </thead>
+                    <tbody id="diagnostics-body"></tbody>
+                  </table>
+                </div>
+                <p id="diagnostics-empty" class="panel-muted" hidden>No diagnostics rows yet</p>
+              </div>
+              <div class="ops-panel">
+                <h3>Cashflow journal</h3>
+                <div id="cashflow-content" class="panel-list"></div>
+              </div>
+              <div class="ops-panel">
+                <h3>Correlation</h3>
+                <div id="correlation-content" class="panel-list"></div>
+              </div>
+              <div class="ops-panel">
+                <h3>Dead strategies</h3>
+                <div id="dead-strategies-content" class="panel-list"></div>
+              </div>
+              <div class="ops-panel">
+                <h3>Close evaluators</h3>
+                <div id="closing-strategies-content" class="panel-list"></div>
+              </div>
+              <div class="ops-panel">
+                <h3>Add strategy</h3>
+                <p class="panel-muted">Created in paper mode; promote later with Paper → Live. Restart-required change.</p>
+                <label class="controls-field">
+                  <span>Strategy</span>
+                  <input id="add-strat-name" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. momentum">
+                </label>
+                <label class="controls-field">
+                  <span>Platform</span>
+                  <select id="add-strat-platform">
+                    <option value="hyperliquid">Hyperliquid (perps)</option>
+                    <option value="binanceus">BinanceUS (spot)</option>
+                  </select>
+                </label>
+                <label class="controls-field">
+                  <span>Asset</span>
+                  <input id="add-strat-asset" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. BTC">
+                </label>
+                <label class="controls-field controls-field--inline">
+                  <input id="add-strat-restart" type="checkbox">
+                  <span>Restart daemon after write</span>
+                </label>
+                <div class="controls-row">
+                  <button id="add-strat-button" type="button" class="tuner-button primary">Add strategy…</button>
+                </div>
+                <p id="add-strat-message" class="controls-message" hidden></p>
+              </div>
+            </div>
           </div>
           <div id="detail-panel" class="detail-panel">
             <div class="chart-panel">
@@ -137,6 +207,97 @@
                 <h3>Positions</h3>
                 <div id="positions-list"></div>
               </div>
+              <div class="risk-panel">
+                <h3>Risk</h3>
+                <div id="risk-content" class="panel-list"></div>
+              </div>
+              <div class="regime-store-panel">
+                <h3>Regime windows</h3>
+                <div id="regime-store-content" class="panel-list"></div>
+              </div>
+              <div class="transitions-panel">
+                <h3>Regime transitions</h3>
+                <div id="transitions-content" class="panel-list"></div>
+              </div>
+              <div class="controls-panel">
+                <h3>Controls</h3>
+                <div class="controls-row">
+                  <button id="pause-toggle" type="button" class="tuner-button secondary" hidden>Pause</button>
+                </div>
+                <label class="controls-field">
+                  <span>Ratchet alerts</span>
+                  <select id="ratchet-notify-select">
+                    <option value="inherit">Inherit global</option>
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+                <label class="controls-field">
+                  <span>Global ratchet alerts</span>
+                  <select id="global-ratchet-select">
+                    <option value="default">Default (on)</option>
+                    <option value="on">On</option>
+                    <option value="off">Off</option>
+                  </select>
+                </label>
+                <p id="controls-message" class="controls-message" hidden></p>
+              </div>
+              <div class="trade-panel" id="trade-panel" hidden>
+                <h3>Trade actions</h3>
+                <div id="trade-open-form" hidden>
+                  <label class="controls-field">
+                    <span>Side</span>
+                    <select id="trade-open-side">
+                      <option value="">Default</option>
+                      <option value="long">Long</option>
+                      <option value="short">Short</option>
+                    </select>
+                  </label>
+                  <label class="controls-field">
+                    <span>Sizing</span>
+                    <select id="trade-sizing-mode">
+                      <option value="margin">Margin (USD)</option>
+                      <option value="notional">Notional (USD)</option>
+                      <option value="size">Size (coin)</option>
+                    </select>
+                  </label>
+                  <label class="controls-field">
+                    <span>Amount</span>
+                    <input id="trade-sizing-amount" type="number" min="0" step="any" placeholder="Default margin">
+                  </label>
+                  <div class="controls-row">
+                    <button id="trade-open-button" type="button" class="tuner-button primary">Open position</button>
+                    <button id="trade-add-button" type="button" class="tuner-button secondary" hidden>Add to position</button>
+                  </div>
+                </div>
+                <div id="trade-position-form" hidden>
+                  <label class="controls-field">
+                    <span>Close qty (blank = full)</span>
+                    <input id="trade-close-qty" type="number" min="0" step="any" placeholder="Full position">
+                  </label>
+                  <label class="controls-field" id="trade-sl-field">
+                    <span>New SL trigger</span>
+                    <input id="trade-sl-trigger" type="number" min="0" step="any" placeholder="Trigger price">
+                  </label>
+                </div>
+                <p id="trade-message" class="controls-message" hidden></p>
+              </div>
+              <div class="structural-panel" id="structural-panel" hidden>
+                <h3>Structural</h3>
+                <p class="panel-muted">Restart-required changes — each requires a typed confirmation.</p>
+                <label class="controls-field controls-field--inline">
+                  <input id="structural-restart" type="checkbox">
+                  <span>Restart daemon after write</span>
+                </label>
+                <div class="controls-row">
+                  <button id="paper-to-live-button" type="button" class="tuner-button secondary" hidden>Paper → Live…</button>
+                  <button id="apply-regime-gate-button" type="button" class="tuner-button secondary" hidden>Apply regime gate…</button>
+                </div>
+                <div class="controls-row">
+                  <button id="remove-strategy-button" type="button" class="tuner-button danger">Remove strategy…</button>
+                </div>
+                <p id="structural-message" class="controls-message" hidden></p>
+              </div>
               <section id="tuner-panel" class="tuner-panel" hidden>
                 <div class="tuner-header">
                   <h3>Strategy tuner</h3>
@@ -162,6 +323,18 @@
         <div class="tuner-dialog-actions">
           <button value="cancel" type="submit" class="tuner-button secondary">Cancel</button>
           <button id="tuner-confirm-apply" value="apply" type="submit" class="tuner-button primary">Apply</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="trade-confirm-dialog" class="tuner-dialog">
+      <form method="dialog" class="tuner-dialog-body">
+        <h3>Confirm trade action</h3>
+        <p id="trade-confirm-desc"></p>
+        <p class="trade-confirm-hint">Type <strong id="trade-confirm-phrase"></strong> to confirm (expires in <span id="trade-confirm-ttl">60</span>s):</p>
+        <input id="trade-confirm-input" type="text" autocomplete="off" spellcheck="false" placeholder="Confirmation phrase">
+        <div class="tuner-dialog-actions">
+          <button value="cancel" type="submit" class="tuner-button secondary">Cancel</button>
+          <button id="trade-confirm-go" value="confirm" type="submit" class="tuner-button primary" disabled>Confirm</button>
         </div>
       </form>
     </dialog>

@@ -180,7 +180,7 @@ func recordScriptFailureAtThreshold(t *ScriptFailureTracker, strategyID, errSig 
 		shouldNotify = true
 	case e.count%10 == 0:
 		shouldNotify = true
-	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= time.Hour:
+	case !e.lastNotifiedAt.IsZero() && now.Sub(e.lastNotifiedAt) >= effectiveAlertThrottleInterval():
 		shouldNotify = true
 	}
 	if shouldNotify {

@@ -270,26 +270,6 @@ func RunOptionsCheckWithStdin(script string, args []string, positionsJSON string
 	return &result, stderrStr, nil
 }
 
-// RunOptionsCheck runs check_options.py and parses the result.
-func RunOptionsCheck(script string, args []string) (*OptionsResult, string, error) {
-	stdout, stderr, err := RunPythonScript(script, args)
-	stderrStr := string(stderr)
-	if err != nil {
-		// Try to parse JSON even on non-zero exit (script may exit(1) with JSON error output)
-		var result OptionsResult
-		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
-			return &result, stderrStr, nil
-		}
-		return nil, stderrStr, fmt.Errorf("script error: %w (stderr: %s)", err, stderrStr)
-	}
-
-	var result OptionsResult
-	if err := json.Unmarshal(stdout, &result); err != nil {
-		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", err, string(stdout))
-	}
-	return &result, stderrStr, nil
-}
-
 // RunHyperliquidCheck runs check_hyperliquid.py in signal check mode and parses the result.
 func RunHyperliquidCheck(script string, args []string) (*HyperliquidResult, string, error) {
 	stdout, stderr, err := RunPythonScript(script, args)

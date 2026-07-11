@@ -759,7 +759,7 @@ func TestPlanTradeLedgerForStrategy_MigratesAndTruesUp(t *testing.T) {
 		"100": {Fee: 1.95, Qty: 0.1, Px: 60010},
 		"200": {Fee: 2.05, ClosedPnLGross: 99, Qty: 0.1, Px: 60990},
 	}
-	plan := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, 0)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, 0, nil)
 
 	if plan.MigratedCount != 2 || plan.MatchedCount != 2 {
 		t.Fatalf("migrated=%d matched=%d, want 2/2", plan.MigratedCount, plan.MatchedCount)
@@ -802,7 +802,7 @@ func TestPlanTradeLedgerForStrategy_SkipsReconcileAdjustmentRows(t *testing.T) {
 		"matched-adjustment": {Fee: 2.05, ClosedPnLGross: 99, Qty: 0.1, Px: 60990},
 	}
 
-	plan := planTradeLedgerForStrategy("hl-residual", trades, fills, 1000, 1145)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-residual", trades, fills, 1000, 1145, nil)
 	if len(plan.Changes) != 0 {
 		t.Fatalf("changes = %d, want 0 for model-only adjustment", len(plan.Changes))
 	}
@@ -825,7 +825,7 @@ func TestPlanTradeLedgerForStrategy_SkipsReconcileAdjustmentRows(t *testing.T) {
 		t.Errorf("NewCash = %v, want 1145 (rows are replayed, only userFills true-up is skipped)", plan.NewCash)
 	}
 
-	second := planTradeLedgerForStrategy("hl-residual", trades, fills, 1000, plan.NewCash)
+	second := planTradeLedgerForStrategyWithOIDTotals("hl-residual", trades, fills, 1000, plan.NewCash, nil)
 	if len(second.Changes) != 0 || second.ReconcileAdjustCount != 2 || second.CashBaselineDivergent {
 		t.Fatalf("second pass = changes %d reconcile_adjustment %d divergent %v, want 0 / 2 / false",
 			len(second.Changes), second.ReconcileAdjustCount, second.CashBaselineDivergent)
@@ -854,7 +854,7 @@ func TestPlanTradeLedgerForStrategy_RepairsNoOIDReconcileAdjustment(t *testing.T
 		},
 	}
 
-	plan := planTradeLedgerForStrategy("hl-eth", trades, fills, 1000, 984.92)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-eth", trades, fills, 1000, 984.92, nil)
 	if len(plan.Changes) != 1 {
 		t.Fatalf("changes = %d, want 1 (%+v)", len(plan.Changes), plan)
 	}
@@ -885,7 +885,7 @@ func TestPlanTradeLedgerForStrategy_RepairsNoOIDReconcileAdjustment(t *testing.T
 	applied[0].RealizedPnL = c.NewPnL
 	applied[0].FeeSource = c.NewFeeSource
 	applied[0].PnLGross = true
-	second := planTradeLedgerForStrategy("hl-eth", applied, fills, 1000, plan.NewCash)
+	second := planTradeLedgerForStrategyWithOIDTotals("hl-eth", applied, fills, 1000, plan.NewCash, nil)
 	if len(second.Changes) != 0 || second.ReconcileAdjustMatchedCount != 0 || second.CashBaselineDivergent {
 		t.Fatalf("second pass = changes %d repaired %d divergent %v, want 0/0/false",
 			len(second.Changes), second.ReconcileAdjustMatchedCount, second.CashBaselineDivergent)
@@ -913,7 +913,7 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairApportionsSharedFillByQty(t *test
 		},
 	}
 
-	plan := planTradeLedgerForStrategy("hl-a", trades, fills, 1000, 0)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-a", trades, fills, 1000, 0, nil)
 	if len(plan.Changes) != 2 {
 		t.Fatalf("changes = %d, want 2", len(plan.Changes))
 	}
@@ -951,7 +951,7 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsFillAlreadyOwnedByOIDRow(t *
 		"474": {Coin: "ETH", LastTimeMS: base.UnixMilli(), Fee: 0.4, ClosedPnLGross: 60, Count: 1, Qty: 0.3, Px: 3200},
 	}
 
-	plan := planTradeLedgerForStrategy("hl-a", trades, fills, 1000, 0)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-a", trades, fills, 1000, 0, nil)
 	if len(plan.Changes) != 0 {
 		t.Fatalf("changes = %+v, want none; no-OID residual must not claim already-owned OID", plan.Changes)
 	}
@@ -978,7 +978,7 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsIncompleteSharedFill(t *test
 		"500": {Coin: "ETH", LastTimeMS: base.UnixMilli(), Fee: 1.0, ClosedPnLGross: 50, Qty: 0.5, Px: 2100},
 	}
 
-	plan := planTradeLedgerForStrategy("hl-eth", trades, fills, 1000, 1020)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-eth", trades, fills, 1000, 1020, nil)
 	if len(plan.Changes) != 0 {
 		t.Fatalf("changes = %+v, want none when no-OID rows do not sum to the fill qty", plan.Changes)
 	}
@@ -1001,7 +1001,7 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsAmbiguousFill(t *testing.T) 
 		"101": {Coin: "ETH", LastTimeMS: base.UnixMilli(), Fee: 0.5, ClosedPnLGross: 9, Qty: 1, Px: 1989},
 	}
 
-	plan := planTradeLedgerForStrategy("hl-eth", trades, fills, 1000, 1009)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-eth", trades, fills, 1000, 1009, nil)
 	if len(plan.Changes) != 0 {
 		t.Fatalf("changes = %+v, want none for ambiguous no-OID repair", plan.Changes)
 	}
@@ -1060,7 +1060,7 @@ func TestPlanTradeLedgerForStrategy_Idempotent(t *testing.T) {
 		"100": {Fee: 1.95, Qty: 0.1, Px: 60010},
 		"200": {Fee: 2.05, ClosedPnLGross: 99, Qty: 0.1, Px: 60990},
 	}
-	first := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, 0)
+	first := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, 0, nil)
 
 	// Apply the plan to the rows (what ApplyTradeLedgerPlan writes to disk).
 	byRow := map[int64]TradeLedgerChange{}
@@ -1080,7 +1080,7 @@ func TestPlanTradeLedgerForStrategy_Idempotent(t *testing.T) {
 			applied[i].FeeSource = c.NewFeeSource
 		}
 	}
-	second := planTradeLedgerForStrategy("hl-x", applied, fills, 1000, first.NewCash)
+	second := planTradeLedgerForStrategyWithOIDTotals("hl-x", applied, fills, 1000, first.NewCash, nil)
 	if len(second.Changes) != 0 {
 		t.Fatalf("second run not idempotent: %d changes (%+v)", len(second.Changes), second.Changes)
 	}
@@ -1103,7 +1103,7 @@ func TestPlanTradeLedgerForStrategy_SharedOIDApportionsByQty(t *testing.T) {
 	fills := map[string]HLFillSummary{
 		"500": {Fee: 4, ClosedPnLGross: 100, Qty: 0.4, Px: 61000},
 	}
-	plan := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, 0)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, 0, nil)
 	byRow := map[int64]TradeLedgerChange{}
 	for _, c := range plan.Changes {
 		byRow[c.RowID] = c
@@ -1177,7 +1177,7 @@ func TestPlanTradeLedgerForStrategy_FlipOIDFeeAcrossLegsPnLOnClose(t *testing.T)
 	fills := map[string]HLFillSummary{
 		"900": {Fee: 0.42, ClosedPnLGross: 55, Qty: 0.8, Px: 2000},
 	}
-	plan := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, 0)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, 0, nil)
 	byRow := map[int64]TradeLedgerChange{}
 	for _, c := range plan.Changes {
 		byRow[c.RowID] = c
@@ -1244,7 +1244,7 @@ func TestApplyTradeLedgerPlan_RoundTrip(t *testing.T) {
 		t.Fatal("seed row must be legacy")
 	}
 	fills := map[string]HLFillSummary{"200": {Fee: 2.05, ClosedPnLGross: 99, Qty: 0.1, Px: 60990}}
-	plan := planTradeLedgerForStrategy("hl-x", rows, fills, 1000, 1095)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-x", rows, fills, 1000, 1095, nil)
 	if err := db.ApplyTradeLedgerPlan(plan); err != nil {
 		t.Fatalf("ApplyTradeLedgerPlan: %v", err)
 	}
@@ -1284,7 +1284,7 @@ func TestPlanTradeLedgerForStrategy_StaleValueAloneTriggersRewrite(t *testing.T)
 			ExchangeFee: 1.95, PnLGross: true, FeeSource: FeeSourceUserFills, ExchangeOrderID: "100"},
 	}
 	fills := map[string]HLFillSummary{"100": {Fee: 1.95, Qty: 0.1, Px: 60010}}
-	plan := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, 0)
+	plan := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, 0, nil)
 	if len(plan.Changes) != 1 {
 		t.Fatalf("stale value alone must trigger a rewrite, got %d changes", len(plan.Changes))
 	}
@@ -1293,7 +1293,7 @@ func TestPlanTradeLedgerForStrategy_StaleValueAloneTriggersRewrite(t *testing.T)
 	}
 	// Idempotent after the repair; fully-correct rows stay untouched.
 	trades[0].Value = 6001
-	if second := planTradeLedgerForStrategy("hl-x", trades, fills, 1000, plan.NewCash); len(second.Changes) != 0 {
+	if second := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, plan.NewCash, nil); len(second.Changes) != 0 {
 		t.Errorf("corrected row re-flagged: %+v", second.Changes)
 	}
 }

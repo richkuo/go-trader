@@ -298,24 +298,6 @@ func regimeRequiredOhlcvLimit(rc *RegimeConfig) int {
 	return limit
 }
 
-func regimeLabelAtOpen(pos *Position, windowKey string, rc *RegimeConfig) string {
-	if pos == nil {
-		return ""
-	}
-	key := normalizeRegimeWindowKey(windowKey)
-	if key == "" || key == regimeWindowDefaultKey {
-		if regimeMultiWindowEnabled(rc) {
-			key = primaryRegimeWindowKey(rc)
-		}
-	}
-	if key != "" && key != regimeWindowDefaultKey && len(pos.RegimeWindows) > 0 {
-		if label, ok := pos.RegimeWindows[key]; ok && strings.TrimSpace(label) != "" {
-			return strings.TrimSpace(label)
-		}
-	}
-	return strings.TrimSpace(pos.Regime)
-}
-
 func regimeLabelFromWindows(windows map[string]string, windowKey string, rc *RegimeConfig) string {
 	if len(windows) == 0 {
 		return ""
@@ -434,11 +416,6 @@ func regimeWindowExists(rc *RegimeConfig, key string) bool {
 	return ok
 }
 
-// regimeWindowsJSON forwards to regimeWindowsSpecJSON (#795).
-func regimeWindowsJSON(rc *RegimeConfig) string {
-	return regimeWindowsSpecJSON(rc)
-}
-
 func syncStrategyRegimeState(stratState *StrategyState, payload RegimePayload, rc *RegimeConfig) {
 	if stratState == nil {
 		return
@@ -447,10 +424,6 @@ func syncStrategyRegimeState(stratState *StrategyState, payload RegimePayload, r
 	if labels := payload.WindowLabels(); len(labels) > 0 {
 		stratState.RegimeWindows = cloneStringMap(labels)
 	}
-}
-
-func positionRegimeForFeature(pos *Position, sc StrategyConfig, rc *RegimeConfig, feature string) string {
-	return regimeLabelAtOpen(pos, resolveStrategyRegimeWindow(sc, feature, rc), rc)
 }
 
 func strategyRegimeWindowField(sc StrategyConfig, field string) string {
@@ -561,7 +534,40 @@ func regimeDirectionalLabel(sc StrategyConfig, payload RegimePayload, rc *Regime
 
 func applyRegimeGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfig, posQty float64) (gateLabel string, blocked bool) {
 	gateLabel = regimeGateLabel(sc, payload, rc)
-	return gateLabel, regimeBlocksOpen(sc.AllowedRegimes, gateLabel, posQty)
+	failClosed := resolveRegimeGateOnFailure(sc, rc) == RegimeGateOnFailureClosed
+	return gateLabel, regimeBlocksOpen(sc.AllowedRegimes, gateLabel, posQty, failClosed)
+}
+
+// regimeGateFailClosedActive reports whether sc's entry gate is actively
+// failing closed RIGHT NOW (#1278): a gate is configured, the resolved failure
+// policy is "closed", the strategy is flat, and the cycle's regime store
+// cannot produce the gate-window label. Display-only consumer for the Phase 6
+// status log and /status surfaces — the authoritative per-dispatch decision
+// stays inside applyRegimeGate. Reads the live globalRegimeStore (not the
+// synced StrategyState labels) because a multi-window store failure retains
+// stale StrategyState.RegimeWindows entries, which would hide the marker
+// during exactly the outage it exists to surface. Call with mu (R)locked when
+// stratState belongs to the live AppState.
+func regimeGateFailClosedActive(sc StrategyConfig, stratState *StrategyState, rc *RegimeConfig) bool {
+	if len(sc.AllowedRegimes) == 0 || resolveRegimeGateOnFailure(sc, rc) != RegimeGateOnFailureClosed {
+		return false
+	}
+	if stratState != nil && (len(stratState.Positions) > 0 || len(stratState.OptionPositions) > 0) {
+		return false
+	}
+	payload := globalRegimeStore.PayloadForStrategy(sc, rc)
+	return strings.TrimSpace(regimeGateLabel(sc, payload, rc)) == ""
+}
+
+// decorateRegimeLabelGateClosed annotates an operator-facing regime label when
+// the fail-closed gate is actively suppressing opens (#1278): empty labels
+// become "? (gate closed)", a stale non-empty display label gets the marker
+// appended so the outage is visible either way.
+func decorateRegimeLabelGateClosed(label string) string {
+	if strings.TrimSpace(label) == "" {
+		return "? (gate closed)"
+	}
+	return label + " (gate closed)"
 }
 
 func stampPositionRegimeFromPayload(s *StrategyState, symbol string, payload RegimePayload, sc StrategyConfig, rc *RegimeConfig) {

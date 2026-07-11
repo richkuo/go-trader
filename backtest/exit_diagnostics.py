@@ -8,7 +8,7 @@ mechanism to try next (atr_stop / time_stop / zscore_target), instead of a
 blind close-param sweep.
 
 It runs the SAME audit-identical harness as the M1 scorer: it imports the
-versioned ``WINDOWS`` / ``DATASETS`` / ``PLATFORM`` from ``eval_windows.py`` so
+versioned ``WINDOWS`` / ``DATASETS`` / ``FEE_PLATFORM`` from ``eval_windows.py`` so
 diagnosis and scoring see byte-identical data slices, then reads the per-trade
 hold telemetry the backtester stamps (#997: ``bars_held``, ``mfe_pct`` /
 ``mae_pct`` excursions, ``entry_fee`` / ``exit_fee``, ``exit_reason``).
@@ -44,7 +44,7 @@ if _THIS_DIR not in sys.path:
 from eval_windows import (  # noqa: E402  (path bootstrap above)
     DATASETS,
     DEFAULT_CAPITAL,
-    PLATFORM,
+    FEE_PLATFORM,
     WINDOWS,
     dataset_key,
     parse_dataset_arg,
@@ -75,8 +75,8 @@ def trade_metrics(t: dict) -> dict:
     ``pnl_pct`` / ``mfe_pct`` / ``mae_pct`` are already percent (Trade.to_dict).
     Fees are absolute; convert to percent of this leg's notional using shares
     and prices so the result is independent of which run path booked the leg
-    (the plain path keeps Trade.pnl gross, the open/close path nets the exit
-    commission — but pnl_pct is gross on both, so we key off it).
+    (Trade.pnl is net of both fees at every close site since #1241, but pnl_pct
+    stays gross on all paths, so we key off pnl_pct and re-derive fees here).
     """
     gross_pct = float(t.get("pnl_pct", 0.0) or 0.0)
     shares = float(t.get("shares", 0.0) or 0.0)
@@ -330,7 +330,7 @@ def run_leg_trades(reg, name: str, params: Optional[dict], symbol: str,
     df_signals = ensure_atr_indicator(df_signals)
 
     bt = Backtester(
-        initial_capital=capital, platform=PLATFORM,
+        initial_capital=capital, platform=FEE_PLATFORM,
         open_strategy={"name": name, "params": dict(strat_params or {})},
         close_strategies=close_strategies,
         direction=direction, invert_signal=invert_signal,

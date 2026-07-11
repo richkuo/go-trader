@@ -389,7 +389,7 @@ func TestRegimeLabelsFromTierRaw(t *testing.T) {
 
 // TestLoadConfig_CompositeStopLossAtrRegime is the end-to-end #802 repro: a
 // composite window with an explicit 7-state stop_loss_atr_regime must load
-// through the full ValidateConfig pipeline (both validation passes).
+// through the full validateConfig pipeline (both validation passes).
 func TestLoadConfig_CompositeStopLossAtrRegime(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

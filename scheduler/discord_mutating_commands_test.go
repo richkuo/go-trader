@@ -422,3 +422,41 @@ func TestWriteValidatedConfigRootRejectsInvalid(t *testing.T) {
 		t.Errorf("original config was modified despite validation failure:\n%s", after)
 	}
 }
+
+// paperToLiveFlatChecks exercises the shared StatusServer seam the Discord
+// /paper-to-live handler delegates to (paperToLiveBlockedReason +
+// executePaperToLive) without a live discordgo session.
+func TestPaperToLiveFlatChecks(t *testing.T) {
+	openPos := &StrategyState{Positions: map[string]*Position{"ETH": {Quantity: 1, AvgCost: 2000}}}
+
+	// Open at pre-confirm → blocked before any write.
+	ss, path, _ := newStructuralTestServer(t)
+	ss.state.Strategies["hl-momentum-eth"] = openPos
+	if reason := ss.paperToLiveBlockedReason("hl-momentum-eth", false); reason == "" || !strings.Contains(reason, "OPEN position") {
+		t.Fatalf("pre-confirm blocked reason = %q, want OPEN-position refusal", reason)
+	}
+
+	// Flat → flips to live.
+	delete(ss.state.Strategies, "hl-momentum-eth")
+	msg, err := ss.executePaperToLive("hl-momentum-eth")
+	if err != nil {
+		t.Fatalf("flat executePaperToLive: %v", err)
+	}
+	if !strings.Contains(msg, "LIVE") {
+		t.Fatalf("success message = %q", msg)
+	}
+	if raw := string(mustReadFile(t, path)); !strings.Contains(raw, "--mode=live") {
+		t.Fatalf("config not flipped:\n%s", raw)
+	}
+
+	// Flat at execute start, opens before write → refused, args untouched.
+	ssOpen, pathOpen, _ := newStructuralTestServer(t)
+	ssOpen.state.Strategies["hl-momentum-eth"] = openPos
+	_, err = ssOpen.executePaperToLive("hl-momentum-eth")
+	if err == nil || !strings.Contains(err.Error(), "opened a position") {
+		t.Fatalf("execute while open err = %v, want opened-a-position refusal", err)
+	}
+	if raw := string(mustReadFile(t, pathOpen)); strings.Contains(raw, "--mode=live") {
+		t.Fatalf("refused execute must not flip args:\n%s", raw)
+	}
+}

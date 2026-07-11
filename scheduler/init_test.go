@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // init sets module-level strategy lists to defaults so tests don't depend on Python.
@@ -532,11 +533,18 @@ func TestMakePairs_TwoAssets(t *testing.T) {
 }
 
 func TestStratShortName(t *testing.T) {
-	if got := stratShortName(spotStrategies, "momentum"); got != "momentum" {
-		t.Errorf("expected momentum, got %s", got)
+	if got := stratShortName(spotStrategies, "chart_pattern"); got != "cpat" {
+		t.Errorf("expected cpat, got %s", got)
 	}
-	if got := stratShortName(spotStrategies, "sma_crossover"); got != "sma" {
-		t.Errorf("expected sma, got %s", got)
+	// tema_cross joined the quarantine roster in #1282, so it also falls
+	// back to the raw ID now.
+	if got := stratShortName(spotStrategies, "tema_cross"); got != "tema_cross" {
+		t.Errorf("expected tema_cross, got %s", got)
+	}
+	// Quarantined names (#1275) are pruned from the fallback lists, so an
+	// explicit legacy config falls back to the raw ID.
+	if got := stratShortName(spotStrategies, "sma_crossover"); got != "sma_crossover" {
+		t.Errorf("expected sma_crossover, got %s", got)
 	}
 	if got := stratShortName(optionsStrategies, "vol_mean_reversion"); got != "vol" {
 		t.Errorf("expected vol, got %s", got)
@@ -586,8 +594,8 @@ func TestRunInitFromJSON_EmptyUsesStarterSpotDefaults(t *testing.T) {
 		t.Fatalf("expected 1 starter strategy, got %d", len(cfg.Strategies))
 	}
 	s := cfg.Strategies[0]
-	if s.ID != "momentum-btc" {
-		t.Errorf("expected starter ID momentum-btc, got %s", s.ID)
+	if s.ID != "cpat-btc" {
+		t.Errorf("expected starter ID cpat-btc, got %s", s.ID)
 	}
 	if s.Type != "spot" || s.Platform != "binanceus" {
 		t.Errorf("expected starter spot strategy on binanceus, got %s/%s", s.Type, s.Platform)
@@ -612,8 +620,8 @@ func TestRunInitFromJSON_AssetsOnlyDefaultsToStarterSpot(t *testing.T) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "momentum-btc" {
-		t.Fatalf("expected starter momentum-btc config, got %+v", cfg.Strategies)
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "cpat-btc" {
+		t.Fatalf("expected starter cpat-btc config, got %+v", cfg.Strategies)
 	}
 }
 
@@ -632,8 +640,8 @@ func TestRunInitFromJSON_SpotEnabledNoStrategiesUsesStarterStrategy(t *testing.T
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "momentum-btc" {
-		t.Fatalf("expected starter momentum-btc config, got %+v", cfg.Strategies)
+	if len(cfg.Strategies) != 1 || cfg.Strategies[0].ID != "cpat-btc" {
+		t.Fatalf("expected starter cpat-btc config, got %+v", cfg.Strategies)
 	}
 }
 
@@ -751,7 +759,7 @@ func TestDeriveShortName(t *testing.T) {
 }
 
 // #328/#656 — triple_ema_bidir must generate Direction="both" in perps
-// configs so ExecutePerpsSignal opens shorts from flat. Long-only strategies
+// configs so ExecutePerpsSignalWithLeverage opens shorts from flat. Long-only strategies
 // must keep Direction="long" so they can't silently flip into short positions.
 func TestGenerateConfig_PerpsDirectionWiring(t *testing.T) {
 	opts := baseOpts()
@@ -980,7 +988,7 @@ func TestGenerateConfig_NoCapitalPct(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_CapitalPctValid(t *testing.T) {
+func TestConfigValidation_CapitalPctValid(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xTEST")
 	cfg := &Config{
 		IntervalSeconds: 600,
@@ -997,12 +1005,12 @@ func TestValidateConfig_CapitalPctValid(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err != nil {
+	if err := validateConfig(cfg, false); err != nil {
 		t.Errorf("expected valid config with capital_pct, got error: %v", err)
 	}
 }
 
-func TestValidateConfig_CapitalPctInvalid(t *testing.T) {
+func TestConfigValidation_CapitalPctInvalid(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
@@ -1018,12 +1026,12 @@ func TestValidateConfig_CapitalPctInvalid(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err == nil {
+	if err := validateConfig(cfg, false); err == nil {
 		t.Error("expected validation error for capital_pct > 1")
 	}
 }
 
-func TestValidateConfig_CapitalPctNegative(t *testing.T) {
+func TestConfigValidation_CapitalPctNegative(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
@@ -1039,12 +1047,12 @@ func TestValidateConfig_CapitalPctNegative(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err == nil {
+	if err := validateConfig(cfg, false); err == nil {
 		t.Error("expected validation error for negative capital_pct")
 	}
 }
 
-func TestValidateConfig_NoCapitalNoCapitalPct(t *testing.T) {
+func TestConfigValidation_NoCapitalNoCapitalPct(t *testing.T) {
 	cfg := &Config{
 		IntervalSeconds: 600,
 		Strategies: []StrategyConfig{
@@ -1060,7 +1068,7 @@ func TestValidateConfig_NoCapitalNoCapitalPct(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
 	}
-	if err := ValidateConfig(cfg); err == nil {
+	if err := validateConfig(cfg, false); err == nil {
 		t.Error("expected validation error when neither capital nor capital_pct is set")
 	}
 }
@@ -1668,5 +1676,55 @@ func TestGenerateConfig_DisableCircuitBreaker(t *testing.T) {
 	}
 	if !sawManual {
 		t.Fatal("expected the manual tracking strategy to be generated")
+	}
+}
+
+// #1273: the init --json cb_* overrides stamp every generated non-manual
+// strategy; 0/omitted leaves the fields nil (the historical defaults), and the
+// manual tracking strategy is always skipped (exempt from CheckRisk).
+func TestGenerateConfig_CBOverrides(t *testing.T) {
+	opts := InitOptions{
+		Assets:          []string{"ETH"},
+		EnablePerps:     true,
+		PerpsMode:       "paper",
+		PerpsStrategies: []string{"momentum"},
+		PerpsCapital:    1000,
+		PerpsDrawdown:   5,
+		EnableManual:    true,
+		ManualSymbol:    "ETH",
+		ManualTimeframe: "1h",
+		ManualCapital:   1000,
+		ManualDrawdown:  20,
+		ManualLeverage:  20,
+	}
+
+	// Default: no stamping — every strategy keeps nil fields.
+	def := generateConfig(opts)
+	for _, s := range def.Strategies {
+		if s.CBDrawdownCooldownMinutes != nil || s.CBLossStreakThreshold != nil || s.CBLossStreakCooldownMinutes != nil {
+			t.Fatalf("default generateConfig should leave cb_* overrides nil on %s", s.ID)
+		}
+	}
+
+	opts.CBDrawdownCooldownMinutes = 720
+	opts.CBLossStreakThreshold = 3
+	opts.CBLossStreakCooldownMinutes = 30
+	cfg := generateConfig(opts)
+	sawNonManual, sawManual := false, false
+	for _, s := range cfg.Strategies {
+		if s.Type == "manual" {
+			sawManual = true
+			if s.CBDrawdownCooldownMinutes != nil || s.CBLossStreakThreshold != nil || s.CBLossStreakCooldownMinutes != nil {
+				t.Fatalf("manual strategy %s should be skipped (CheckRisk-exempt)", s.ID)
+			}
+			continue
+		}
+		sawNonManual = true
+		if s.CircuitBreakerDrawdownCooldown() != 12*time.Hour || s.CircuitBreakerLossStreakThreshold() != 3 || s.CircuitBreakerLossStreakCooldown() != 30*time.Minute {
+			t.Fatalf("non-manual strategy %s missing stamped cb_* overrides", s.ID)
+		}
+	}
+	if !sawNonManual || !sawManual {
+		t.Fatal("expected both a non-manual and the manual tracking strategy")
 	}
 }

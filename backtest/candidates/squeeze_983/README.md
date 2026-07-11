@@ -192,3 +192,87 @@ flip sign on the stitched frame.
    sweep.
 
 A negative result is a valid M1 finding — documented, not deleted (#995 step 4).
+
+## Addendum 2026-07-05 — re-run under the corrected simulation geometry (#1243)
+
+Re-ran the headline drivers (`audit_headline.py` continuous-window;
+`validate_shortlist.py` M1 protocol, default shortlist + time-stop shortlist)
+on current `main` (the #1238 audit fixes plus #1250 fee-net-per-trade and #1251
+canonical Sortino / `None` profit-factor / half-open windows), identical cache
+snapshot. **Verdict holds: no close stack ships; keep the baseline stack.** The
+baseline (open-signal-as-close, no ATR geometry) is byte-identical; the
+ATR-geometry candidate (`tp_default` tiered-TP ladder) shifted slightly, all in
+the conservative direction, and stays a collapse.
+
+Step-5 continuous audit window (2025-06-10 → latest):
+
+| run | metric | documented | re-run | status |
+|---|---|---:|---:|---|
+| baseline | mean Sharpe / ret / vsB&H / worstDD / #T | +0.07 / +1.1% / +45.9 / -58.5% / 130 | +0.07 / +1.07% / +45.90 / -58.46% / 130 | identical |
+| `tp_default` | mean Sharpe / ret / vsB&H / worstDD / #T | -0.51 / -23.8% / +21.1 / -72.4% / 168 | **-0.532 / -24.07% / +20.76 / -72.38% / 158** | shifted, still collapses |
+
+`tp_default` runs 158 trades vs the documented 168 — the #1238 closed-bar
+EntryATR moved a handful of tiered-TP fills — and its stitched worst DD stays
+-72% with a negative return, so the step-5 conclusion ("do not deploy the
+ladder on this entry") is unchanged.
+
+M1 protocol PASS/FAIL table — **every verdict identical to the documented run**
+(baseline OOS PASS, held-out 1/3; `tp_default` OOS PASS, held-out 2/3;
+`sl_atr_1.5` / `trail_atr_3.0` / `tp_runner_trail3` FAIL 0/3;
+`time_stop_200/225/250` OOS FAIL, held-out 1/3). No PASS↔FAIL flipped despite
+the #1251 DDadj-floor and half-open-window changes. The keep-baseline verdict
+and the "-58.5% DD is regime exposure, not exit quality → M4" disposition stand.
+
+## Addendum 2026-07-10 — re-run under intra-bar stop resolution + corrected HL fees (#1294)
+
+Re-ran `audit_headline.py` (baseline + `tp_default`) and `validate_shortlist.py`
+(default shortlist) on current `main` — #1271 `ohlc_walk` intrabar default and
+the #1320 audit fee-model switch (binanceus → hyperliquid) — under BOTH
+`--intrabar-resolution` modes (the drivers now thread the flag, #1294),
+identical cache snapshot (last bars 2026-06-04 → 2026-06-12, zero drift).
+**Verdict holds: no close stack ships; keep the baseline stack.**
+
+**#1271 reach is split across the shortlist.** `baseline` and `tp_default`
+arm no engine-tracked stop (evaluator ladders/tiers only) and reproduce
+**byte-identically** across the mode pair — for those two rows all movement
+vs the 2026-07-05 addendum is the #1320 fee model alone. The other three
+shortlist candidates (`sl_atr_1.5`, `trail_atr_3.0`, `tp_runner_trail3`) DO
+arm engine-tracked `stop_loss_atr_mult`/`trailing_stop_atr_mult`, so #1271
+moves their per-window numbers (table below); none of their M1 verdicts
+changes with the mode.
+
+| run | metric | documented (2026-07-05) | re-run (both modes) | status |
+|---|---|---:|---:|---|
+| baseline | Sharpe / ret / vsB&H / worstDD / #T | +0.07 / +1.07% / +45.90 / -58.46% / 130 | +0.136 / +3.84% / +48.67 / -57.58% / 130 | fee model only (same 130 entries; byte-identical across modes) |
+| `tp_default` | " | -0.532 / -24.07% / +20.76 / -72.38% / 158 | -0.506 / -23.55% / +21.27 / -72.38% / **94** | fee model only; still collapses (byte-identical across modes) |
+
+`tp_default`'s trade count drops 158 → 94 with the entry set frozen — the
+cheaper hyperliquid fees change the equity path enough to move which ladder
+tiers fill — but the stitched frame stays a -72% worst-DD, negative-return
+collapse, so the step-5 conclusion is unchanged.
+
+The engine-stop candidates' pooled M1 windows under each mode (Sharpe / DDadj,
+audit bar in the full run artifacts):
+
+| run | window | `bar_close` | `ohlc_walk` (#1271 delta) | verdict (both modes) |
+|---|---|---:|---:|---|
+| `sl_atr_1.5` | is | -0.52 / -0.06 | -0.23 / -0.02 | FAIL |
+| `sl_atr_1.5` | oos | -1.38 / -0.48 | -1.18 / -0.42 | FAIL |
+| `trail_atr_3.0` | is | -0.19 / -0.06 | -0.18 / -0.09 | FAIL |
+| `trail_atr_3.0` | oos | -1.12 / -0.47 | -0.94 / -0.30 | FAIL |
+| `tp_runner_trail3` | is | -0.21 / -0.13 | -0.24 / -0.25 | FAIL |
+| `tp_runner_trail3` | oos | -0.67 / -0.34 | -0.50 / -0.18 | PASS |
+
+M1 protocol verdicts: baseline judged-OOS PASS (held-out 1/3), `tp_default`
+PASS (2/3), `sl_atr_1.5` / `trail_atr_3.0` FAIL (0/3) — identical to the
+documented table under both modes. One label moved vs documented:
+**`tp_runner_trail3` judged-OOS FAIL → PASS** (held-out still 0/3). The flip
+is already present under the `bar_close` control, so the *label* change is
+fee-model-driven; #1271 additionally shifts that candidate's numbers (its
+trailing stop is engine-tracked) without moving any verdict. With 0/3
+held-out windows it remains a non-shipper, so the keep-baseline verdict is
+unaffected.
+
+---
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code
+Updated with LLM: Fable 5 | high | Harness: Claude Code

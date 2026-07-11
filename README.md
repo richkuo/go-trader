@@ -85,7 +85,7 @@ Python provides quant libraries (pandas, numpy, scipy, CCXT); Go provides memory
 
 ## Strategies & Platforms
 
-Strategies are auto-discovered from `shared_strategies/` at `go-trader init` time. Common picks: spot entries include `sma_crossover`, `ema_crossover`, `momentum`, `rsi`, `bollinger_bands`, `macd`, `mean_reversion`, `triple_ema`, `tema_cross`, `pairs_spread`, `chart_pattern`, `anchored_vwap`, `anchored_vwap_channel`, `anchored_vwap_reversion`, `liquidity_sweeps`; futures/perps also include `triple_ema_bidir`, `bear_pullback_st`, `vwap_rejection_st`, `delta_neutral_funding`, `funding_skew`, `momentum_pro`, `mean_reversion_pro`, `consolidation_range`, `atr_band_revert`, `mtf_confluence`, `regime_adaptive`, `regime_adaptive_htf`. Options use `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls` (plus `wheel` and `butterfly` on Robinhood); new trades are scored vs. existing positions (strike distance, expiry spread, Greek balance). Max 4 positions per options strategy; min score 0.3 to execute.
+Strategies are auto-discovered from `shared_strategies/` at `go-trader init` time. Common picks: spot entries include `chart_pattern` (the starter default), `anchored_vwap`, `anchored_vwap_channel`, `anchored_vwap_reversion`, `liquidity_sweeps`, `atr_band_revert`, `momentum_pro`, `mean_reversion_pro`, `regime_adaptive_htf`; futures/perps also include `bear_pullback_st`, `vwap_rejection_st`, `delta_neutral_funding`, `breakout`. Options use `vol_mean_reversion`, `momentum_options`, `protective_puts`, `covered_calls` (plus `wheel` and `butterfly` on Robinhood); new trades are scored vs. existing positions (strike distance, expiry spread, Greek balance). Max 4 positions per options strategy; min score 0.3 to execute. (Older strategies like `sma_crossover`, `rsi`, `macd`, `mean_reversion`, `momentum`, `bollinger_bands`, `triple_ema`, `tema_cross` etc. are flagged edge-deprecated after a fee-audit re-screen — #1275 — and hidden from discovery, but still load for existing configs/backtests.)
 
 | Platform | Type | Assets | Live env vars | Paper data |
 |---|---|---|---|---|
@@ -113,7 +113,7 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 
 ```json
 {
-  "config_version": 16,
+  "config_version": 17,
   "interval_seconds": 3600,
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
@@ -145,7 +145,7 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 }
 ```
 
-`config_version` migrates on startup (current **15**: single `close_strategy` ref, canonical close params). Older versions upgrade automatically.
+`config_version` migrates on startup (current **17**: v17 adds the opt-in `atr_method` ATR-smoothing selector, stamp-only). Configs older than **13** are rejected at load — start the pre-upgrade binary once to migrate first.
 
 ### Portfolio Risk
 
@@ -154,6 +154,8 @@ Generate via `./go-trader init` or `--json`. Skeleton:
 | `portfolio_risk.max_drawdown_pct` | Kill switch — halt all trading if portfolio drops this % from peak | 25 |
 | `portfolio_risk.max_notional_usd` | Hard cap on total notional exposure (0 = disabled) | 0 |
 | `portfolio_risk.warn_threshold_pct` | Warning when drawdown reaches this % of `max_drawdown_pct` | 60 |
+| `portfolio_risk.daily_max_loss_usd` / `daily_max_loss_pct` | Hard daily loss limit — holds new entries (not closes) until UTC rollover; both may be set, lower resolved USD wins (0 = disabled) | 0 |
+| `portfolio_risk.max_same_direction_notional_usd` / `max_asset_concentration_pct` | Blocks new same-direction/single-asset opens once the cap would be exceeded (0 = disabled) | 0 |
 | `risk_free_rate` | Annualized rate for Sharpe calculations | 0.04 |
 | `status_port` | HTTP status port (+5 fallback on collision); override with `--status-port` | 8099 |
 | `default_stop_loss_atr_mult` | Fleet-wide HL perps fallback when all five `stop_loss_*` / `trailing_stop_*` fields omitted; `0` opts out | 1.0 |
@@ -364,7 +366,7 @@ Open `https://<node>.tailnet.ts.net:8443/dashboard`. `status_token` still applie
 ## Risk Management
 
 - **Portfolio kill switch** — halts at `portfolio_risk.max_drawdown_pct` (default 25); submits real closes on HL / OKX perps / Robinhood crypto / TopStep.
-- **Per-strategy circuit breakers** — max-drawdown or 5 consecutive losses (24h cooldown). HL/OKX perps, Robinhood crypto, TopStep auto-close; OKX spot and Robinhood options need manual flatten. Latched HL perps CB still permits trailing-SL management. `circuit_breaker: false` disables firing.
+- **Per-strategy circuit breakers** — max-drawdown (24h cooldown) or consecutive losses (default 5, 1h cooldown); threshold and both cooldowns tunable per strategy via `cb_drawdown_cooldown_minutes` / `cb_loss_streak_threshold` / `cb_loss_streak_cooldown_minutes`. HL/OKX perps, Robinhood crypto, TopStep auto-close; OKX spot and Robinhood options need manual flatten. Latched HL perps CB still permits trailing-SL management. `circuit_breaker: false` disables firing.
 - **Hyperliquid stop-loss** — one positive field among five scalar stop types; omitted → `default_stop_loss_atr_mult × entry_atr` (1.0); `0` opts out.
 - **On-chain N-tier TP/SL** — `tiered_tp_atr` / `tiered_tp_atr_live` (default tiers `[{1.5×, 0.4}, {3×, 0.8}, {5×, 1.0}]`).
 - **Trailing-ratchet close** — `trailing_tp_ratchet` / `trailing_tp_ratchet_regime`: cleared tiers tighten a single trailing stop; no fixed on-chain TPs. HL perps + `manual`.
@@ -391,7 +393,7 @@ Built-in mappings cover known OKX/BinanceUS pairs; add `tradingview_export.symbo
 | Binance US Spot | 0.1% taker | ±0.05% |
 | Deribit Options | 0.03% of premium | — |
 | IBKR/CME Options | $0.25/contract | — |
-| Hyperliquid Perps | 0.035% taker | ±0.05% |
+| Hyperliquid Perps | 0.045% taker / 0.015% maker (base tier) | ±0.05% |
 | TopStep Futures | Per-contract (configurable) | ±0.05% |
 | Robinhood Crypto | No commission (spread embedded) | ±0.05% |
 | Robinhood Options | $0.03/contract (regulatory fee) | — |

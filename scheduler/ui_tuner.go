@@ -37,6 +37,8 @@ type UIStrategyConfigResponse struct {
 	AllowedRegimes       []string               `json:"allowed_regimes,omitempty"`
 	StopLossPct          *float64               `json:"stop_loss_pct,omitempty"`
 	StopLossATRMult      *float64               `json:"stop_loss_atr_mult,omitempty"`
+	Paused               bool                   `json:"paused"`
+	NotifyRatchet        *bool                  `json:"notify_ratchet_triggers"`
 	DefaultParams        map[string]interface{} `json:"default_params"`
 	EditableFields       []UIEditableField      `json:"editable_fields"`
 	HasOpenPosition      bool                   `json:"has_open_position"`
@@ -67,12 +69,22 @@ type UIApplyConfigResponse struct {
 	Message         string `json:"message"`
 }
 
-func (ss *StatusServer) SetConfigContext(configPath string, regime *RegimeConfig) {
-	if ss == nil {
+// SetConfigContext refreshes config-derived server context on startup and
+// after a SIGHUP hot reload. The #1231 ops fields (intervalSeconds,
+// userCloseDefaults) are guarded by strategiesMu — same lock discipline as
+// UpdateStrategies, since the reload path already holds the global state mu.
+func (ss *StatusServer) SetConfigContext(configPath string, cfg *Config) {
+	if ss == nil || cfg == nil {
 		return
 	}
 	ss.configPath = configPath
-	ss.regime = regime
+	ss.regime = cfg.Regime
+	ss.strategiesMu.Lock()
+	ss.uiCfg = cfg // #1257: live config snapshot for the trade-action cores
+	ss.intervalSeconds = cfg.IntervalSeconds
+	ss.userCloseDefaults = cfg.userDefaultsClose()
+	ss.globalNotifyRatchet = cfg.NotifyRatchetTriggers
+	ss.strategiesMu.Unlock()
 }
 
 func (ss *StatusServer) handleAPIStrategyConfig(w http.ResponseWriter, r *http.Request, id string) {
@@ -141,6 +153,13 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 
 	livePayload := simulateConfigPayload(liveCfg, ss.regime)
 	simPayload := simulateConfigPayload(simCfg, ss.regime)
+	// #1277: stamp the RESOLVED ATR smoothing method (per-strategy > global >
+	// simple) so the simulate preview's injected ATR matches the live cycle's
+	// --atr-method. Resolved Go-side because the Python payload has no view of
+	// the global config default.
+	uiCfg := ss.uiTradeConfig()
+	livePayload["atr_method"] = resolveATRMethod(liveCfg, uiCfg)
+	simPayload["atr_method"] = resolveATRMethod(simCfg, uiCfg)
 	markersByLabel, simErr := runStrategySimulate(candles, map[string]map[string]interface{}{
 		"live":      livePayload,
 		"simulated": simPayload,
@@ -262,11 +281,12 @@ func (ss *StatusServer) strategyHasOpenPosition(id string) bool {
 	return false
 }
 
+// requireMutatingAPIAuth guards mutating dashboard endpoints. Per the #1229
+// security model (#1256): the server binds loopback-only and the dashboard is
+// intentionally unauthenticated, so an unset status_token no longer blocks
+// mutations — token checks apply only when a token happens to be configured.
+// requireSameOrigin (CSRF defense) remains mandatory on every POST regardless.
 func (ss *StatusServer) requireMutatingAPIAuth(w http.ResponseWriter, r *http.Request) bool {
-	if strings.TrimSpace(ss.statusToken) == "" {
-		writeJSONError(w, http.StatusForbidden, "config apply requires status_token")
-		return false
-	}
 	return ss.requireAPIAuth(w, r)
 }
 
@@ -362,6 +382,8 @@ func buildUIStrategyConfig(sc StrategyConfig, defaults map[string]interface{}, _
 		AllowedRegimes:       append([]string(nil), sc.AllowedRegimes...),
 		StopLossPct:          sc.StopLossPct,
 		StopLossATRMult:      sc.StopLossATRMult,
+		Paused:               sc.Paused,
+		NotifyRatchet:        sc.NotifyRatchetTriggers,
 		DefaultParams:        defaults,
 		EditableFields:       fields,
 		HasOpenPosition:      hasOpen,
@@ -508,6 +530,20 @@ func mergeStrategyTunerOverrides(base StrategyConfig, overrides map[string]json.
 			out.StopLossPct = nil
 		}
 	}
+	if raw, ok := overrides["paused"]; ok {
+		var v bool
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return out, fmt.Errorf("paused: %w", err)
+		}
+		out.Paused = v
+	}
+	if raw, ok := overrides["notify_ratchet_triggers"]; ok {
+		v, err := decodeOptionalBool(raw)
+		if err != nil {
+			return out, fmt.Errorf("notify_ratchet_triggers: %w", err)
+		}
+		out.NotifyRatchetTriggers = v
+	}
 	if raw, ok := overrides["open_strategy"]; ok {
 		var ref StrategyRef
 		if err := json.Unmarshal(raw, &ref); err != nil {
@@ -543,6 +579,19 @@ func mergeStrategyTunerOverrides(base StrategyConfig, overrides map[string]json.
 		out.OpenStrategy.Params[paramKey] = v
 	}
 	return out, nil
+}
+
+// decodeOptionalBool parses a JSON bool or null ("null" → nil, meaning
+// "clear the override / inherit").
+func decodeOptionalBool(raw json.RawMessage) (*bool, error) {
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 func decodeOptionalFloat(raw json.RawMessage) (*float64, error) {
@@ -799,6 +848,28 @@ func patchStrategyJSON(item map[string]json.RawMessage, merged StrategyConfig, o
 		}
 		if _, keep := overrides["stop_loss_pct"]; !keep {
 			deleteKey("stop_loss_pct")
+		}
+	}
+	// #1256: paused and notify_ratchet_triggers are hot-reloadable always
+	// (including while a position is open — #1150/#1118), so they never flip
+	// restartRequired. paused=false and a nil notify override delete the key
+	// (both fields are omitempty; absence is the canonical default).
+	if _, ok := overrides["paused"]; ok {
+		if merged.Paused {
+			if err := set("paused", true); err != nil {
+				return item, err
+			}
+		} else {
+			deleteKey("paused")
+		}
+	}
+	if _, ok := overrides["notify_ratchet_triggers"]; ok {
+		if merged.NotifyRatchetTriggers != nil {
+			if err := set("notify_ratchet_triggers", *merged.NotifyRatchetTriggers); err != nil {
+				return item, err
+			}
+		} else {
+			deleteKey("notify_ratchet_triggers")
 		}
 	}
 

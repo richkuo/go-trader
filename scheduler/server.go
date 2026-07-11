@@ -36,6 +36,39 @@ type StatusServer struct {
 	regime        *RegimeConfig    // global regime settings for simulate preview
 	configWriteMu sync.Mutex       // serializes dashboard config Apply writes
 
+	// #1231 config-derived context for the read-only ops endpoints, refreshed
+	// via SetConfigContext on startup and SIGHUP. Guarded by strategiesMu
+	// (SetConfigContext runs from the reload path which already holds mu).
+	intervalSeconds   int              // global check interval for leaderboard entries
+	userCloseDefaults CloseDefaultsMap // user_defaults.close for /api/closing-strategies override marking
+
+	// #1256 mutation surface. globalNotifyRatchet mirrors the top-level
+	// notify_ratchet_triggers (#1110) for GET /api/config/notifications
+	// (guarded by strategiesMu, refreshed via SetConfigContext).
+	// reloadConfig signals the process to hot-reload after a UI config write
+	// (requestSIGHUPReload in production; injectable for tests).
+	globalNotifyRatchet *bool
+	reloadConfig        func() error
+
+	// #1257 trade-action surface (ui_confirm.go / ui_trade_actions.go).
+	// uiCfg is the live *Config snapshot (guarded by strategiesMu, refreshed
+	// via SetConfigContext); uiNotifier is the daemon notifier (SetNotifier).
+	// confirmNonces holds the short-lived single-use confirm nonces.
+	uiCfg         *Config
+	uiNotifier    *MultiNotifier
+	confirmMu     sync.Mutex
+	confirmNonces map[string]confirmNonceEntry
+	// tradeActionMu serializes dashboard trade-action submits so the
+	// double-fire guard's check-then-submit is atomic (#1260 review).
+	tradeActionMu sync.Mutex
+	// tradeDepsHook lets tests stub the on-chain exec seams of the manual
+	// cores (nil in production).
+	tradeDepsHook func(*manualCoreDeps)
+	// #1258 structural mutations (ui_structural.go): restartFn is the restart
+	// trigger fired when a confirmed structural write asked for
+	// apply-via-restart (nil → restartSelf; injectable for tests).
+	restartFn func() error
+
 	// Throttled logging for repeated mark-fetch failures on the /status
 	// rail. /status can be polled frequently (oncall dashboard, monitoring),
 	// so we don't want to spam logs on every hit — but silently discarding
@@ -78,6 +111,7 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 		stateDB:        stateDB,
 		candleFetcher:  FetchUICandles,
 		candleCache:    NewUICandleCache(30 * time.Second),
+		reloadConfig:   requestSIGHUPReload,
 	}
 }
 
@@ -198,6 +232,23 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
 	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
+	mux.HandleFunc("/api/regime/transitions", ss.handleAPIRegimeTransitions)
+	// #1231 read-only ops endpoints (ui_ops.go). "/api/strategies/dead" is an
+	// exact pattern, so it wins over the "/api/strategies/" prefix handler.
+	mux.HandleFunc("/api/leaderboard", ss.handleAPILeaderboard)
+	mux.HandleFunc("/api/diagnostics", ss.handleAPIDiagnostics)
+	mux.HandleFunc("/api/cashflow", ss.handleAPICashflow)
+	mux.HandleFunc("/api/strategies/dead", ss.handleAPIDeadStrategies)
+	mux.HandleFunc("/api/closing-strategies", ss.handleAPIClosingStrategies)
+	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
+	// #1256 low-risk mutation surface (ui_mutations.go): global notification
+	// toggle; per-strategy pause + notification toggles route through the
+	// "/api/strategies/" prefix handler below.
+	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
+	// #1257 trade-action confirm nonce; the trade-action endpoints route
+	// through the "/api/strategies/" prefix handler below.
+	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
+	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
@@ -219,6 +270,11 @@ func (ss *StatusServer) Start(port int) {
 	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
 	if ss.statusToken != "" {
 		fmt.Printf("[server] Dashboard API requires the configured status token\n")
+	} else {
+		// #1229/#1256: mutations (incl. leverage/direction/stop-loss via the
+		// tuner) are open to any loopback client when no token is set. Fine on
+		// a single-user host; on a shared host, set status_token.
+		fmt.Printf("[server] NOTE: status_token unset — dashboard mutations are open to any local (loopback) client; set status_token if other users can reach this host\n")
 	}
 	go func() {
 		if err := http.Serve(listener, mux); err != nil {
@@ -298,6 +354,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PnLPct                         float64                    `json:"pnl_pct"`
 		RiskState                      RiskState                  `json:"risk_state"`
 		Regime                         string                     `json:"regime,omitempty"`
+		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`          // #1278: entry gate is actively failing closed — allowed_regimes configured, policy "closed", strategy flat, and the cycle store has no gate label; fresh opens are held
 		BaseDirection                  string                     `json:"base_direction,omitempty"`                   // #779: base direction from config (pre-policy resolution)
 		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`               // #779: base invert from config (pre-policy resolution)
 		EffectiveDirection             string                     `json:"effective_direction,omitempty"`              // #779: resolved direction for the active regime (policy override or base)
@@ -361,35 +418,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		// verify why the bot is in long vs. short mode. Effective values are
 		// what the next signal will be evaluated under — pulled by replaying
 		// the resolver against the strategy's first open position (or flat).
-		baseDir := EffectiveDirection(sc)
-		baseInvert := sc.InvertSignal
-		effDir := baseDir
-		effInvert := baseInvert
-		var effRegimeKey string
-		var certStatusStr, certCell string
-		policyConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
-		if policyConfigured {
-			posQty := 0.0
-			posRegime := ""
-			var certStates map[string]string
-			for _, p := range s.Positions {
-				if p != nil && p.Quantity > 0 {
-					posQty = p.Quantity
-					posRegime = positionDirectionalRegimeLabel(p, sc)
-					certStates = p.DirectionCertifiedStatesAtOpen
-					break
-				}
-			}
-			currentDirRegime := strategyCurrentDirectionalRegime(s, sc)
-			effRegimeKey = effectiveRegimeForPolicy(currentDirRegime, posRegime, posQty)
-			if posQty <= 0 {
-				certStates, _ = strategyDirectionalCertified(sc, ss.regime, time.Now().UTC())
-			}
-			effDir = EffectiveDirectionForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
-			effInvert = EffectiveInvertSignalForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
-			certStatusStr = strategyDirectionalCertStatus(sc, ss.regime, time.Now().UTC()).String()
-			_, certCell = directionalCertInspectStatus(sc, &Config{Regime: ss.regime})
-		}
+		dirView := directionalStatusForStrategy(sc, s, ss.regime, time.Now().UTC())
 
 		resp.Strategies[id] = StratStatus{
 			ID:                             s.ID,
@@ -404,14 +433,15 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PnLPct:                         pnlPct,
 			RiskState:                      s.RiskState,
 			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
-			BaseDirection:                  baseDir,
-			BaseInvertSignal:               baseInvert,
-			EffectiveDirection:             effDir,
-			EffectiveInvertSignal:          effInvert,
-			RegimeDirectionalPolicy:        policyConfigured,
-			EffectivePolicyRegime:          effRegimeKey,
-			DirectionalCertificationStatus: certStatusStr,
-			DirectionalCertificationCell:   certCell,
+			RegimeGateFailClosed:           regimeGateFailClosedActive(sc, s, ss.regime),
+			BaseDirection:                  dirView.BaseDirection,
+			BaseInvertSignal:               dirView.BaseInvertSignal,
+			EffectiveDirection:             dirView.EffectiveDirection,
+			EffectiveInvertSignal:          dirView.EffectiveInvertSignal,
+			RegimeDirectionalPolicy:        dirView.PolicyConfigured,
+			EffectivePolicyRegime:          dirView.EffectivePolicyRegime,
+			DirectionalCertificationStatus: dirView.CertStatus,
+			DirectionalCertificationCell:   dirView.CertCell,
 			RegimeDivergence:               s.RegimeDivergence,
 			RegimeProfile:                  s.RegimeProfile,
 			Paused:                         sc.Paused,
@@ -475,6 +505,57 @@ func (ss *StatusServer) fetchLiveMarkPrices() map[string]float64 {
 		}
 	}
 	return prices
+}
+
+// directionalStatusView bundles the #779/#1157 directional-policy display
+// fields shared by /status and the dashboard per-strategy status endpoint.
+type directionalStatusView struct {
+	BaseDirection         string
+	BaseInvertSignal      bool
+	EffectiveDirection    string
+	EffectiveInvertSignal bool
+	PolicyConfigured      bool
+	EffectivePolicyRegime string
+	CertStatus            string
+	CertCell              string
+}
+
+// directionalStatusForStrategy replays the directional-policy resolver
+// (cert-gated per #1085/#1157) against the strategy's first open position, or
+// the live regime when flat. Read-only; caller supplies a consistent snapshot
+// of the strategy state (call under ss.mu.RLock, or on a cloned snapshot).
+func directionalStatusForStrategy(sc StrategyConfig, s *StrategyState, rc *RegimeConfig, now time.Time) directionalStatusView {
+	view := directionalStatusView{
+		BaseDirection:    EffectiveDirection(sc),
+		BaseInvertSignal: sc.InvertSignal,
+	}
+	view.EffectiveDirection = view.BaseDirection
+	view.EffectiveInvertSignal = view.BaseInvertSignal
+	view.PolicyConfigured = sc.RegimeDirectionalPolicy.IsConfigured()
+	if !view.PolicyConfigured {
+		return view
+	}
+	posQty := 0.0
+	posRegime := ""
+	var certStates map[string]string
+	for _, p := range s.Positions {
+		if p != nil && p.Quantity > 0 {
+			posQty = p.Quantity
+			posRegime = positionDirectionalRegimeLabel(p, sc)
+			certStates = p.DirectionCertifiedStatesAtOpen
+			break
+		}
+	}
+	currentDirRegime := strategyCurrentDirectionalRegime(s, sc)
+	view.EffectivePolicyRegime = effectiveRegimeForPolicy(currentDirRegime, posRegime, posQty)
+	if posQty <= 0 {
+		certStates, _ = strategyDirectionalCertified(sc, rc, now)
+	}
+	view.EffectiveDirection = EffectiveDirectionForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+	view.EffectiveInvertSignal = EffectiveInvertSignalForPositionGated(sc, currentDirRegime, posRegime, posQty, certStates)
+	view.CertStatus = strategyDirectionalCertStatus(sc, rc, now).String()
+	_, view.CertCell = directionalCertInspectStatus(sc, &Config{Regime: rc})
+	return view
 }
 
 func (ss *StatusServer) handleHistory(w http.ResponseWriter, r *http.Request) {

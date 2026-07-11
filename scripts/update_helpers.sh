@@ -138,6 +138,24 @@ discover_deployment_dirs_from_systemd() {
     done | normalize_systemd_deployment_dirs
 }
 
+# Extract the `--config <path>` argument from a `systemctl show -p ExecStart
+# --value` string (#1285 fleet config_version audit). Handles both
+# `--config /path` and `--config=/path`; echoes the path, or nothing when the
+# flag is absent (callers fall back to <WorkingDirectory>/scheduler/config.json,
+# the #1056 transition symlink). Pure — unit-testable without systemd.
+update_execstart_config_path() {
+    local execstart="$1"
+    if [[ "$execstart" =~ --config=([^[:space:]\;]+) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    if [[ "$execstart" =~ --config[[:space:]]+([^[:space:]\;]+) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    printf ''
+}
+
 # Canonicalize a discovered deployment dir to its PHYSICAL path (resolving symlinks,
 # /./ and // segments) with a single trailing slash, so two different spellings of
 # the same directory — a systemd WorkingDirectory taken verbatim from the unit file

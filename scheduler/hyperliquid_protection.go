@@ -312,15 +312,10 @@ func firstPresent(m map[string]interface{}, keys ...string) interface{} {
 	return nil
 }
 
-func floatFromAny(v interface{}) float64 {
-	f, _ := floatFromAnyChecked(v)
-	return f
-}
-
-// floatFromAnyChecked is the error-aware variant of floatFromAny. It accepts
-// numeric JSON values plus encoding/json.Number-shaped types and returns an
-// error for anything else (string, nil, bool, …) so the caller can surface
-// a config-author mistake instead of silently coercing to 0 (#604 review #6).
+// floatFromAnyChecked accepts numeric JSON values plus encoding/json.Number-
+// shaped types and returns an error for anything else (string, nil, bool, …)
+// so the caller can surface a config-author mistake instead of silently
+// coercing to 0 (#604 review #6).
 func floatFromAnyChecked(v interface{}) (float64, error) {
 	switch x := v.(type) {
 	case nil:

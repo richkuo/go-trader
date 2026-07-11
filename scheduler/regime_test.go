@@ -9,94 +9,94 @@ import (
 	"testing"
 )
 
-// ─── ValidateConfig — AllowedRegimes ─────────────────────────────────────────
+// ─── validateConfig — AllowedRegimes ─────────────────────────────────────────
 
-func TestValidateConfig_AllowedRegimes_AcceptsEmpty(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_AcceptsEmpty(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Strategies[0].AllowedRegimes = []string{}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("empty AllowedRegimes should be valid, got: %v", err)
 	}
 }
 
-func TestValidateConfig_AllowedRegimes_AcceptsNil(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_AcceptsNil(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Strategies[0].AllowedRegimes = nil
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("nil AllowedRegimes should be valid, got: %v", err)
 	}
 }
 
-func TestValidateConfig_AllowedRegimes_AcceptsValidLabels(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_AcceptsValidLabels(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up", "trending_down"}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("valid labels should pass, got: %v", err)
 	}
 }
 
-func TestValidateConfig_AllowedRegimes_RejectsUnknownLabel(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_RejectsUnknownLabel(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up", "bullish_breakout"}
-	if err := ValidateConfig(&cfg); err == nil {
+	if err := validateConfig(&cfg, false); err == nil {
 		t.Fatal("unknown regime label should fail validation")
 	}
 }
 
-func TestValidateConfig_AllowedRegimes_AcceptsAllThreeLabels(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_AcceptsAllThreeLabels(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up", "trending_down", "ranging"}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("all three valid labels should pass, got: %v", err)
 	}
 }
 
 // ─── RegimeConfig validation ──────────────────────────────────────────────────
 
-func TestValidateConfig_RegimeConfig_NilIsValid(t *testing.T) {
+func TestConfigValidation_RegimeConfig_NilIsValid(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = nil
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("nil Regime should be valid, got: %v", err)
 	}
 }
 
-func TestValidateConfig_RegimeConfig_ValidEnabled(t *testing.T) {
+func TestConfigValidation_RegimeConfig_ValidEnabled(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("valid RegimeConfig should pass, got: %v", err)
 	}
 }
 
-func TestValidateConfig_RegimeConfig_ZeroPeriodInvalid(t *testing.T) {
+func TestConfigValidation_RegimeConfig_ZeroPeriodInvalid(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = &RegimeConfig{Enabled: true, Period: 0, ADXThreshold: 20.0}
-	if err := ValidateConfig(&cfg); err == nil {
+	if err := validateConfig(&cfg, false); err == nil {
 		t.Fatal("Period=0 should fail validation")
 	}
 }
 
-func TestValidateConfig_RegimeConfig_NegativePeriodInvalid(t *testing.T) {
+func TestConfigValidation_RegimeConfig_NegativePeriodInvalid(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = &RegimeConfig{Enabled: true, Period: -1, ADXThreshold: 20.0}
-	if err := ValidateConfig(&cfg); err == nil {
+	if err := validateConfig(&cfg, false); err == nil {
 		t.Fatal("negative Period should fail validation")
 	}
 }
 
-func TestValidateConfig_RegimeConfig_ZeroThresholdInvalid(t *testing.T) {
+func TestConfigValidation_RegimeConfig_ZeroThresholdInvalid(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 0}
-	if err := ValidateConfig(&cfg); err == nil {
+	if err := validateConfig(&cfg, false); err == nil {
 		t.Fatal("ADXThreshold=0 should fail validation")
 	}
 }
 
-func TestValidateConfig_RegimeConfig_ThresholdOver100Invalid(t *testing.T) {
+func TestConfigValidation_RegimeConfig_ThresholdOver100Invalid(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 101}
-	if err := ValidateConfig(&cfg); err == nil {
+	if err := validateConfig(&cfg, false); err == nil {
 		t.Fatal("ADXThreshold>100 should fail validation")
 	}
 }
@@ -174,14 +174,14 @@ func TestRegimeAllowsEntry_EmptyCurrentAllowsWhenListNonEmpty(t *testing.T) {
 
 func TestRegimeBlocksOpen_BlocksOpenWhenNoPosition(t *testing.T) {
 	allowed := []string{"trending_up"}
-	if !regimeBlocksOpen(allowed, "ranging", 0) {
+	if !regimeBlocksOpen(allowed, "ranging", 0, false) {
 		t.Error("regime mismatch with posQty=0 should block the open")
 	}
 }
 
 func TestRegimeBlocksOpen_AllowsOpenWhenRegimeMatches(t *testing.T) {
 	allowed := []string{"trending_up"}
-	if regimeBlocksOpen(allowed, "trending_up", 0) {
+	if regimeBlocksOpen(allowed, "trending_up", 0, false) {
 		t.Error("matching regime should not block")
 	}
 }
@@ -193,13 +193,13 @@ func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
 	// signal, contradicting "existing positions are always managed by close
 	// paths regardless".
 	allowed := []string{"trending_up"}
-	if regimeBlocksOpen(allowed, "ranging", 1.0) {
+	if regimeBlocksOpen(allowed, "ranging", 1.0, false) {
 		t.Error("close leg (posQty>0) must never be blocked by regime gate")
 	}
-	if regimeBlocksOpen(allowed, "trending_down", 0.5) {
+	if regimeBlocksOpen(allowed, "trending_down", 0.5, false) {
 		t.Error("close leg (posQty>0) must never be blocked even on opposite regime")
 	}
-	if regimeBlocksOpen(allowed, "", 1.0) {
+	if regimeBlocksOpen(allowed, "", 1.0, false) {
 		// Empty current regime is also "allow"; combined with posQty>0 this is
 		// doubly safe but we still assert it.
 		t.Error("close leg (posQty>0) must never be blocked when regime is empty")
@@ -207,10 +207,10 @@ func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
 }
 
 func TestRegimeBlocksOpen_EmptyAllowedNeverBlocks(t *testing.T) {
-	if regimeBlocksOpen(nil, "ranging", 0) {
+	if regimeBlocksOpen(nil, "ranging", 0, false) {
 		t.Error("nil allowed list (no gate configured) must never block")
 	}
-	if regimeBlocksOpen([]string{}, "ranging", 0) {
+	if regimeBlocksOpen([]string{}, "ranging", 0, false) {
 		t.Error("empty allowed list (no gate configured) must never block")
 	}
 }
@@ -249,35 +249,35 @@ func TestStrategyDecisionFields_RegimeOmitEmpty(t *testing.T) {
 
 // ─── Config version bump ──────────────────────────────────────────────────────
 
-func TestCurrentConfigVersion_IsSixteen(t *testing.T) {
-	if CurrentConfigVersion != 16 {
-		t.Errorf("expected CurrentConfigVersion=16, got %d", CurrentConfigVersion)
+func TestCurrentConfigVersion_IsSeventeen(t *testing.T) {
+	if CurrentConfigVersion != 17 {
+		t.Errorf("expected CurrentConfigVersion=17, got %d", CurrentConfigVersion)
 	}
 }
 
-// ─── ValidateConfig — AllowedRegimes on options strategies ───────────────────
+// ─── validateConfig — AllowedRegimes on options strategies ───────────────────
 
-func TestValidateConfig_AllowedRegimes_RejectsOnOptions(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_RejectsOnOptions(t *testing.T) {
 	cfg := minimalOptionsConfig()
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
-	if err := ValidateConfig(&cfg); err == nil {
+	if err := validateConfig(&cfg, false); err == nil {
 		t.Fatal("allowed_regimes on options strategy should fail validation (gate not wired)")
 	}
 }
 
-func TestValidateConfig_AllowedRegimes_AcceptsEmptyOnOptions(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_AcceptsEmptyOnOptions(t *testing.T) {
 	cfg := minimalOptionsConfig()
 	cfg.Strategies[0].AllowedRegimes = nil
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("nil allowed_regimes on options strategy should be valid, got: %v", err)
 	}
 }
 
-func TestValidateConfig_AllowedRegimes_AcceptsOnSpotWithRegimeEnabled(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_AcceptsOnSpotWithRegimeEnabled(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
-	if err := ValidateConfig(&cfg); err != nil {
+	if err := validateConfig(&cfg, false); err != nil {
 		t.Fatalf("allowed_regimes on spot with regime enabled should pass, got: %v", err)
 	}
 }
@@ -295,25 +295,25 @@ func captureStdout(fn func()) string {
 	return buf.String()
 }
 
-func TestValidateConfig_AllowedRegimes_WarnsWhenRegimeDisabled(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_WarnsWhenRegimeDisabled(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = nil // disabled
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
 	var out string
 	out = captureStdout(func() {
-		_ = ValidateConfig(&cfg)
+		_ = validateConfig(&cfg, false)
 	})
 	if !strings.Contains(out, "[WARN]") || !strings.Contains(out, "regime.enabled=false") {
 		t.Fatalf("expected [WARN] about regime.enabled=false, got: %q", out)
 	}
 }
 
-func TestValidateConfig_AllowedRegimes_NoWarnWhenRegimeEnabled(t *testing.T) {
+func TestConfigValidation_AllowedRegimes_NoWarnWhenRegimeEnabled(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Regime = &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20.0}
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
 	out := captureStdout(func() {
-		_ = ValidateConfig(&cfg)
+		_ = validateConfig(&cfg, false)
 	})
 	if strings.Contains(out, "regime.enabled=false") {
 		t.Fatalf("unexpected [WARN] about regime.enabled=false when regime is enabled, got: %q", out)

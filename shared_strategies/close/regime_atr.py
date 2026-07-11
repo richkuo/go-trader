@@ -64,7 +64,16 @@ def unified_regime_scalar_params(params: dict, regime: str):
     trend = params.get(REGIME_CLASSIFIER_KEY)
     if not isinstance(trend, dict):
         return None, 0.0
-    label = trend.get((regime or "").strip())
+    r = (regime or "").strip()
+    label = trend.get(r)
+    if not isinstance(label, dict):
+        # #1124: a ranging_directional_up/_down stamp falls back to the bare
+        # ranging_directional entry (exact match wins first). The unified close
+        # is the sole SL owner, so without this fallback a bare-only block
+        # yields no SL *and* no TPs for a sub-label stamp. Mirrors
+        # unifiedRegimeScalarParams in scheduler/regime_unified.go.
+        if r in ("ranging_directional_up", "ranging_directional_down"):
+            label = trend.get("ranging_directional")
     if not isinstance(label, dict) or "tp_tiers" not in label:
         return None, 0.0
     scalar = {"tp_tiers": label["tp_tiers"]}
@@ -78,6 +87,148 @@ def unified_regime_scalar_params(params: dict, regime: str):
     return scalar, sl
 
 REGIME_CLASSIFIER_KEY = "trend_regime"
+
+# Mirrors canonicalTrendRegimeLabels in scheduler/regime_atr.go.
+CANONICAL_TREND_REGIME_LABELS = ("trending_up", "trending_down", "ranging")
+
+_RANGING_DIRECTIONAL_BARE = "ranging_directional"
+_RANGING_DIRECTIONAL_SUBS = ("ranging_directional_up", "ranging_directional_down")
+
+
+def validate_unified_regime_close(params: dict, labels=None) -> List[str]:
+    """Validate a #841 unified per-regime close block. Mirrors Go's
+    validateUnifiedRegimeClose (scheduler/regime_unified.go): the label set
+    must be exhaustive against the vocabulary (bare ``ranging_directional``
+    covers its ``_up``/``_down`` subs, #1124), every label must be an object
+    carrying ``tp_tiers`` (>=2 valid tiers) AND a positive ``stop_loss_atr``
+    — the unified close owns the SL, so a label omitting it would simulate
+    (or run) that regime with no stop loss at all. Returns a list of error
+    strings (#1228 review round 3: the backtester must reject what live
+    rejects at load, never simulate a stopless regime silently)."""
+    errs: List[str] = []
+    for k in params or {}:
+        if k not in (REGIME_CLASSIFIER_KEY, "atr_source"):
+            errs.append(
+                f"unified close: unknown param {k!r} (allowed: trend_regime, atr_source)"
+            )
+    trend = (params or {}).get(REGIME_CLASSIFIER_KEY)
+    if not isinstance(trend, dict):
+        errs.append(f"unified close.{REGIME_CLASSIFIER_KEY}: must be an object")
+        return errs
+    label_vocab = list(labels) if labels else list(CANONICAL_TREND_REGIME_LABELS)
+    valid = set(label_vocab)
+    for l in sorted(set(trend) - valid):
+        errs.append(
+            f"unified close.{REGIME_CLASSIFIER_KEY}: unknown regime label {l!r} "
+            f"(expected one of: {', '.join(label_vocab)})"
+        )
+    bare_directional = trend.get(_RANGING_DIRECTIONAL_BARE) is not None
+    for l in label_vocab:
+        if l not in trend:
+            # #1124 family rule: a present bare ranging_directional covers the
+            # _up/_down sub-labels (runtime resolves via the bare fallback in
+            # unified_regime_scalar_params).
+            if bare_directional and l in _RANGING_DIRECTIONAL_SUBS:
+                continue
+            errs.append(
+                f"unified close.{REGIME_CLASSIFIER_KEY}: missing required regime "
+                f"label {l!r} (must be exhaustive — no silent fallback)"
+            )
+            continue
+        lm = trend[l]
+        if not isinstance(lm, dict):
+            errs.append(
+                f"unified close.{REGIME_CLASSIFIER_KEY}.{l}: must be an object"
+            )
+            continue
+        for k in lm:
+            if k not in ("stop_loss_atr", "tp_tiers"):
+                errs.append(
+                    f"unified close.{REGIME_CLASSIFIER_KEY}.{l}: unknown key {k!r} "
+                    "(allowed: stop_loss_atr, tp_tiers)"
+                )
+        # stop_loss_atr is required per label: the unified close owns the SL
+        # (sole-owner rejects strategy-level stops), so a regime omitting it
+        # would run/simulate a position with no stop loss at all. #841 review.
+        if "stop_loss_atr" not in lm:
+            errs.append(
+                f"unified close.{REGIME_CLASSIFIER_KEY}.{l}: missing required "
+                "'stop_loss_atr' (the unified close owns the per-regime SL)"
+            )
+        else:
+            try:
+                sl = float(lm["stop_loss_atr"])
+            except (TypeError, ValueError):
+                sl = -1.0
+            if not sl > 0:
+                errs.append(
+                    f"unified close.{REGIME_CLASSIFIER_KEY}.{l}.stop_loss_atr: "
+                    "must be > 0"
+                )
+        if "tp_tiers" not in lm:
+            errs.append(
+                f"unified close.{REGIME_CLASSIFIER_KEY}.{l}: missing required 'tp_tiers'"
+            )
+            continue
+        errs.extend(
+            _validate_unified_tier_list(
+                lm["tp_tiers"], f"unified close.{REGIME_CLASSIFIER_KEY}.{l}"
+            )
+        )
+    return errs
+
+
+def _validate_unified_tier_list(raw, ctx_label: str) -> List[str]:
+    """Mirrors validateUnifiedTierList in scheduler/regime_unified.go."""
+    if not isinstance(raw, list):
+        return [f"{ctx_label}.tp_tiers: must be a list, got {type(raw).__name__}"]
+    # >=2 tiers matches the on-chain resolver (strategyTPTiersForRegime returns
+    # nil for <2) — on HL-live a single-tier regime would emit no TP exit.
+    if len(raw) < 2:
+        return [f"{ctx_label}.tp_tiers: must have at least 2 tiers, got {len(raw)}"]
+    errs: List[str] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            errs.append(
+                f"{ctx_label}.tp_tiers[{i}]: must be an object, got {type(item).__name__}"
+            )
+            continue
+        try:
+            mult = float(item.get("atr_multiple"))
+        except (TypeError, ValueError):
+            mult = -1.0
+        if not mult > 0:
+            errs.append(f"{ctx_label}.tp_tiers[{i}].atr_multiple: must be > 0")
+        try:
+            frac = float(item.get("close_fraction"))
+        except (TypeError, ValueError):
+            frac = -1.0
+        if not (0 < frac <= 1):
+            errs.append(f"{ctx_label}.tp_tiers[{i}].close_fraction: must be in (0, 1]")
+        if "sl_after" in item:
+            try:
+                from post_tp_sl import parse_sl_after_rule, validate_sl_after_rule
+            except ImportError:  # direct-module import contexts
+                from .post_tp_sl import parse_sl_after_rule, validate_sl_after_rule
+            try:
+                rule = parse_sl_after_rule(item["sl_after"])
+                validate_sl_after_rule(rule)
+            except ValueError as e:
+                errs.append(f"{ctx_label}.tp_tiers[{i}].sl_after: {e}")
+            else:
+                if rule.has_regime():
+                    errs.append(
+                        f"{ctx_label}.tp_tiers[{i}].sl_after: must be scalar in a "
+                        "unified per-regime block (the regime is resolved at the "
+                        "top level; drop the trend_regime sub-block)"
+                    )
+        for k in item:
+            if k not in ("atr_multiple", "close_fraction", "sl_after"):
+                errs.append(
+                    f"{ctx_label}.tp_tiers[{i}]: unknown key {k!r} "
+                    "(allowed: atr_multiple, close_fraction, sl_after)"
+                )
+    return errs
 
 # regimeATRSurface equivalents — kept as string constants so the parser's
 # error messages match Go's surface-specific allowlists.
@@ -498,8 +649,14 @@ def parse_regime_tp_tiers(
         )
         # Strip non-classifier keys we recognize at the tier level before
         # parsing so the inner allowlist check focuses on the trend_regime
-        # block shape.
-        tier_subset = {k: v for k, v in item.items() if k != "close_fraction"}
+        # block shape. Mirrors Go (scheduler/regime_atr.go): close_fraction is
+        # handled by the tier-fraction logic below and sl_after by
+        # parse_strategy_tp_sl_after_rules — without stripping sl_after, a
+        # per-tier sl_after on a regime close failed the parse AND silently
+        # never armed at fire time, since the fire path re-parses through here.
+        tier_subset = {
+            k: v for k, v in item.items() if k not in ("close_fraction", "sl_after")
+        }
         sub_label = f"{ctx_label}.tiers[{idx}]"
         block, sub_errs = parse_regime_atr_block(
             tier_subset,

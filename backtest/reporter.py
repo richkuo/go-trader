@@ -4,6 +4,7 @@ Supports single-strategy reports, comparisons, and multi-asset analysis.
 """
 
 import sys
+import re
 import os
 import json
 from typing import List, Dict, Optional
@@ -15,6 +16,17 @@ import numpy as np
 import pandas as pd
 
 from storage import get_backtest_results
+
+
+def _fmt_opt(value, spec: str = ".3f", none_text: str = "n/a") -> str:
+    """Format an optional numeric metric. None (an undefined metric such as a
+    zero-downside Sortino or an all-win profit factor) renders as text instead
+    of raising on a numeric-only format spec; when the spec carries a field
+    width the placeholder is right-justified to keep table columns aligned."""
+    if value is None:
+        m = re.match(r">?(\d+)", spec)
+        return none_text.rjust(int(m.group(1))) if m else none_text
+    return format(value, spec)
 
 
 def format_single_report(results: dict) -> str:
@@ -37,14 +49,14 @@ def format_single_report(results: dict) -> str:
         f"{'─'*70}",
         f"  RISK METRICS",
         f"    Sharpe Ratio:    {results.get('sharpe_ratio', 0):.3f}",
-        f"    Sortino Ratio:   {results.get('sortino_ratio', 0):.3f}",
+        f"    Sortino Ratio:   {_fmt_opt(results.get('sortino_ratio', 0))}",
         f"    Max Drawdown:    {results.get('max_drawdown_pct', 0):.2f}%",
         f"    Calmar Ratio:    {results.get('calmar_ratio', 0):.3f}",
         f"{'─'*70}",
         f"  TRADE STATS",
         f"    Total Trades:    {results.get('total_trades', 0)}",
         f"    Win Rate:        {results.get('win_rate', 0):.1f}%",
-        f"    Profit Factor:   {results.get('profit_factor', 0):.3f}",
+        f"    Profit Factor:   {_fmt_opt(results.get('profit_factor', 0))}",
         f"    Avg Win:         {results.get('avg_win_pct', 0):+.2f}%",
         f"    Avg Loss:        {results.get('avg_loss_pct', 0):+.2f}%",
     ]
@@ -92,10 +104,10 @@ def format_comparison_report(results_list: List[dict], title: str = "STRATEGY CO
             f"{r.get('symbol','?'):<10} "
             f"{r.get('total_return_pct',0):>+7.1f}% "
             f"{r.get('sharpe_ratio',0):>7.2f} "
-            f"{r.get('sortino_ratio',0):>7.2f} "
+            f"{_fmt_opt(r.get('sortino_ratio',0), '>7.2f'):} "
             f"{r.get('max_drawdown_pct',0):>+7.1f}% "
             f"{r.get('win_rate',0):>6.1f}% "
-            f"{r.get('profit_factor',0):>5.2f} "
+            f"{_fmt_opt(r.get('profit_factor',0), '>5.2f'):} "
             f"{r.get('total_trades',0):>6}"
         )
 

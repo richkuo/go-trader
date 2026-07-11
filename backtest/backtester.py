@@ -42,19 +42,63 @@ signal ``shift(1)`` is the only look-ahead guard on the signal path and is
 defeated by upstream peeking. ``backtest/tests/test_backtester_lookahead.py``
 regression-tests the shift's effectiveness.
 
-SL/TP intra-bar races
----------------------
-Bar-level granularity — when an SL hit and a TP fill could both occur within
-the same bar, the engine resolves them at bar close, not by intra-bar OHLC
-walking. Documented under ``Backtest`` in CLAUDE.md.
+SL/TP intra-bar races (#1271)
+-----------------------------
+The engine-tracked stop-loss trigger is resolved intra-bar by default
+(``intrabar_resolution="ohlc_walk"``): the fill bar is walked O -> H/L -> C,
+so a bar whose range touches the armed trigger stops the position out ON that
+bar — priced at the trigger, or at the bar's open when the bar gaps through
+the trigger. The walk is conservative by construction (adverse-move-first):
+an intra-bar SL pierce wins over any same-bar close-evaluator exit, because
+the engine cannot order a bar's high against its low and a real on-chain stop
+executes on touch. Close evaluators stay bar-close-marked black boxes (they
+expose no trigger level to walk): a TP is credited only when the bar's close
+confirms it and its fill keeps the N-close -> N+1-open contract — a bar that
+gaps beyond the TP level therefore fills at its open. Trailing/ratchet
+triggers seeded at open are close-anchored (see below) and become
+pierce-eligible from the bar after open; fixed (entry-geometry) triggers are
+pierce-eligible on the fill bar itself. ``intrabar_resolution="bar_close"``
+restores the pre-#1271 bar-level convention — SL hits detected on the close
+only and filled at the next bar's open — for reproducing documented
+baselines. Documented under ``Backtest`` in CLAUDE.md.
+
+Scale-in / pyramiding (#1276)
+-----------------------------
+Opt-in via ``allow_scale_in=True`` (+ optional ``scale_in`` caps/spacing dict),
+mirroring the live #873 semantics: a same-direction signal on an open position
+ADDS size instead of being skipped. The gate is a 1:1 port of
+``perpsScaleInDecision`` (scheduler/scale_in.go) evaluated against the
+DECISION bar's close (the signal bar, N); the add fills at bar N+1's open —
+the same N-close -> N+1-open contract as entries. The blend mirrors
+``applyScaleIn``: ``avg_cost`` becomes the qty-weighted blend (drives PnL),
+``initial_quantity`` grows (partial-close pro-rating baseline), and on the
+FIRST add the risk anchor freezes to the pre-blend ``avg_cost`` — every SL/TP
+geometry consumer (sl_after bumps, tiered-TP thresholds, ratchet watermarks)
+reads the frozen anchor, never the blend, mirroring live's
+``Position.riskAnchorPrice()`` on-chain protection geometry
+(hyperliquid_protection.go / post_tp_sl.go / trailing_tp_ratchet.go).
+``EntryATR``, the stamped regime, and cleared-tier watermarks stay frozen at
+first entry. Each add pays a taker commission on its notional; adds create no
+``Trade`` rows (parity with live's ``trade_type="scale_in"`` #T exclusion) —
+``results["scale_in_adds"]`` counts them. Sizing notes: the default per-add
+notional is the notional the position's FIRST leg committed (the backtest
+image of live's per-cycle ``PerpsOpenNotional`` — live margin cash is ≈
+stable across an open, frozen here for determinism);
+``scale_in.add_notional_usd`` is literal USD, so parity holds when
+``initial_capital`` ≈ the live account. A long add spends notional from
+``cash``, which may go NEGATIVE — the correct spot-model image of live's
+margin-based virtual notional (only the fee leaves live cash); equity =
+``cash + position×mark`` stays exact throughout. Adds bypass the regime
+entry gate (live ``regimeBlocksOpen`` passes posQty>0). Virtual close
+evaluators here read the frozen anchor as ``avg_cost`` — matching the live
+LIVE (on-chain) path; live PAPER's virtual evaluators see the blend, a known
+live paper-vs-live divergence this engine resolves toward the money path.
 
 Live parity limitations (#906 audit)
 ------------------------------------
 Surfaces intentionally **not** modeled here (use ``backtest/parity_diff.py`` for
 decision-layer parity checks; see ``backtest/AUDIT.md`` for the full matrix):
 
-  • **Scale-in / pyramiding** (#873) — HL perps + manual live-only; same-direction
-    adds are skipped in backtest.
   • **Resting manual limit orders** (#883) — maker fills / partial OID reconcile
     have no bar-level simulation.
   • **``tiered_tp_atr_live_regime_dynamic``** (#843) — rejected at
@@ -113,18 +157,26 @@ def _load_regime():
     return _ensure_regime_fn
 
 
-def _regime_allows_entry(allowed, bar_regime: str) -> bool:
+def _regime_allows_entry(allowed, bar_regime: str, on_failure: str = "open") -> bool:
     """#1124 entry-gate with the one-directional directional family rule.
 
     A bare ``ranging_directional`` in ``allowed`` matches its ``_up``/``_down``
     sub-labels, mirroring the Go ``regimeAllowsEntry`` gate for live/backtest
-    parity. Falls back to plain membership if the regime module isn't loaded.
+    parity. #1278: an empty ``bar_regime`` (warmup bar 0 after the #730 shift,
+    mid-series gaps) resolves per ``on_failure`` — ``"open"`` (default) admits
+    the entry, ``"closed"`` blocks it — mirroring the live
+    ``regime_gate_on_failure`` policy. Falls back to plain membership if the
+    regime module isn't loaded.
     """
     if _regime_allows_entry_fn is None:
         _load_regime()
     if _regime_allows_entry_fn is None:
-        return (not allowed) or (not bar_regime) or (bar_regime in allowed)
-    return _regime_allows_entry_fn(allowed, bar_regime)
+        if not allowed:
+            return True
+        if not bar_regime:
+            return on_failure != "closed"
+        return bar_regime in allowed
+    return _regime_allows_entry_fn(allowed, bar_regime, on_failure)
 
 
 def _regime_primary_labels(spec: Optional[dict]) -> Optional[tuple]:
@@ -230,6 +282,18 @@ def _gate_directional_policy_by_states(
       - dict  -> keep only the per-state-supported overrides."""
     if not policy:
         return policy
+    # #1124/#1228: live Resolve falls back from a sub-label stamp to the bare
+    # ranging_directional policy entry (exact match wins first). Mirror that by
+    # expanding a bare entry onto its uncovered subs before the per-state gate,
+    # so a cert for e.g. ranging_directional_up honors a bare-only policy the
+    # way live does.
+    from regime import RANGING_DIRECTIONAL_BARE, RANGING_DIRECTIONAL_SUBS
+    bare_entry = policy.get(RANGING_DIRECTIONAL_BARE)
+    if isinstance(bare_entry, dict):
+        expanded = dict(policy)
+        for sub in sorted(RANGING_DIRECTIONAL_SUBS):
+            expanded.setdefault(sub, bare_entry)
+        policy = expanded
     if cert_states is None:
         return policy
     gated = {}
@@ -256,6 +320,13 @@ def _resolve_regime_directional_entry(
     regime = str(current_regime or "").strip()
     if position_qty > 0 and str(position_regime or "").strip():
         regime = str(position_regime or "").strip()
+    # Exact match ONLY — deliberately no bare→sub fallback here. Runtime
+    # always resolves the ALREADY-GATED policy
+    # (_gate_directional_policy_by_states expands a bare ranging_directional
+    # entry onto its subs SUBJECT TO each sub's own per-state certification),
+    # so a bare-certified-but-sub-uncertified stamp must miss and fall back to
+    # base, mirroring live's fail-closed gatedDirectionalEntry (#1085/#1124
+    # exact-match cert, no family fallback).
     entry = policy.get(regime)
     return dict(entry) if isinstance(entry, dict) else None
 
@@ -411,12 +482,19 @@ LIQUIDATED_METRIC_FLOOR = 100.0
 # and related constants. test_platform_fees.py scrapes fees.go to enforce parity.
 PLATFORM_FEE_PCT = {
     "binanceus":   0.001,    # BinanceSpotFeePct
-    "hyperliquid": 0.00035,  # HyperliquidTakerFeePct
+    "hyperliquid": 0.00045,  # HyperliquidTakerFeePct (base tier, #1315)
     "robinhood":   0.0,      # RobinhoodCryptoFeePct (no commission)
     "luno":        0.01,     # LunoTakerFeePct
     "okx":         0.001,    # OKXSpotTakerFeePct
     "okx-perps":   0.0005,   # OKXPerpsTakerFeePct
 }
+
+# Hyperliquid base-tier maker rate — parity pair with
+# scheduler/fees.go:HyperliquidMakerFeePct (#1315). The bar-level simulator
+# has no maker-priced fills (all fills are market/trigger at next open;
+# resting manual limit orders are an unmodeled #906 parity limitation), so
+# this constant exists for parity and for future consumers, not the fill loop.
+HYPERLIQUID_MAKER_FEE_PCT = 0.00015
 
 
 def fee_pct_for_platform(platform: str) -> float:
@@ -575,6 +653,138 @@ def _validated_entry_fraction_series(df: pd.DataFrame) -> pd.Series:
     return vals
 
 
+class _ScaleInState:
+    """Per-position scale-in bookkeeping (#1276), mirroring the live
+    ``Position`` fields the #873 blend maintains (scheduler/scale_in.go).
+
+    ``risk_anchor_price`` is 0.0 until the first add; geometry consumers read
+    ``risk_anchor_price or avg_cost`` — the exact backtest analogue of live's
+    ``Position.riskAnchorPrice()`` (scheduler/portfolio.go). ``base_open_notional``
+    freezes the notional the position's FIRST leg committed, the backtest image
+    of live's per-cycle ``PerpsOpenNotional`` default per-add sizing (live
+    margin cash stays ≈ constant across an open; frozen here for determinism).
+    One ``reset()`` shared by every full-close site so the reset list can't
+    drift.
+    """
+
+    __slots__ = ("risk_anchor_price", "scale_in_count", "last_add_price",
+                 "added_notional_usd", "base_open_notional")
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self) -> None:
+        self.risk_anchor_price = 0.0
+        self.scale_in_count = 0
+        self.last_add_price = 0.0
+        self.added_notional_usd = 0.0
+        self.base_open_notional = 0.0
+
+    def geom_cost(self, avg_cost: float) -> float:
+        """SL/TP trigger geometry price: the frozen first entry once the
+        position has scaled in, else the (un-blended) avg_cost."""
+        if self.risk_anchor_price > 0:
+            return self.risk_anchor_price
+        return avg_cost
+
+
+_SCALE_IN_CFG_KEYS = (
+    "max_adds", "max_added_notional_usd", "add_spacing_atr", "add_notional_usd",
+)
+
+
+def _normalize_scale_in_cfg(scale_in: Optional[dict]) -> dict:
+    """Validate + normalize a live ``scale_in`` config block (#1276), mirroring
+    the live validateConfig bounds (scheduler/config.go). Unknown keys are
+    rejected loudly — a typo'd cap would otherwise silently not gate."""
+    cfg = {"max_adds": 0, "max_added_notional_usd": 0.0,
+           "add_spacing_atr": 0.0, "add_notional_usd": 0.0}
+    if not scale_in:
+        return cfg
+    if not isinstance(scale_in, dict):
+        raise ValueError(
+            f"scale_in must be a dict of {list(_SCALE_IN_CFG_KEYS)}, "
+            f"got {type(scale_in).__name__}"
+        )
+    unknown = sorted(set(scale_in) - set(_SCALE_IN_CFG_KEYS))
+    if unknown:
+        raise ValueError(
+            f"scale_in has unknown key(s) {unknown}; "
+            f"supported: {list(_SCALE_IN_CFG_KEYS)}"
+        )
+    max_adds = scale_in.get("max_adds", 0) or 0
+    if int(max_adds) != max_adds or int(max_adds) < 0:
+        raise ValueError(f"scale_in.max_adds must be an int >= 0, got {max_adds!r}")
+    cfg["max_adds"] = int(max_adds)
+    for key in ("max_added_notional_usd", "add_notional_usd"):
+        val = float(scale_in.get(key, 0) or 0)
+        if val < 0:
+            raise ValueError(f"scale_in.{key} must be >= 0, got {val}")
+        cfg[key] = val
+    cfg["add_spacing_atr"] = float(scale_in.get("add_spacing_atr", 0) or 0)
+    return cfg
+
+
+def _scale_in_decision(scale_cfg: dict, side: str, quantity: float,
+                       avg_cost: float, entry_atr: float, scale_in_count: int,
+                       added_notional_usd: float, last_add_price: float,
+                       signal: int, price: float,
+                       default_open_notional: float) -> Tuple[float, bool, str]:
+    """Pure gate for a same-direction add — a line-for-line port of the live
+    ``perpsScaleInDecision`` (scheduler/scale_in.go #873), including the 1e-9
+    tolerances, the ``last_add_price -> avg_cost`` fallback, and the
+    positive-EntryATR spacing requirement. ``price`` is the DECISION-time
+    price (live: cycle mark ≈ signal bar's close). Returns
+    ``(add_qty, ok, reason)``; the opt-in (``allow_scale_in``) check lives at
+    the call site, matching the caller-gated live dispatch.
+    """
+    if price <= 0:
+        return 0.0, False, "no price for scale-in"
+    # Direction match: a buy adds to a long, a sell adds to a short. Anything
+    # else is a close/cover/flip/fresh-open handled by the existing paths.
+    if not ((signal == 1 and side == "long" and quantity > 0)
+            or (signal == -1 and side == "short" and quantity > 0)):
+        return 0.0, False, "not a same-direction add"
+
+    max_adds = int(scale_cfg.get("max_adds", 0) or 0)
+    if max_adds > 0 and scale_in_count >= max_adds:
+        return 0.0, False, "scale-in max_adds reached"
+
+    add_notional = default_open_notional
+    if (scale_cfg.get("add_notional_usd", 0) or 0) > 0:
+        add_notional = float(scale_cfg["add_notional_usd"])
+    if add_notional <= 0:
+        return 0.0, False, "scale-in add notional resolves to zero"
+    # Cumulative ACTUAL added notional + this add's REQUESTED notional — an
+    # approximate guardrail, not an exact ceiling (live #873 review).
+    max_added = float(scale_cfg.get("max_added_notional_usd", 0) or 0)
+    if max_added > 0 and added_notional_usd + add_notional > max_added + 1e-9:
+        return 0.0, False, "scale-in max_added_notional_usd reached"
+
+    spacing = float(scale_cfg.get("add_spacing_atr", 0) or 0)
+    if spacing != 0:
+        if entry_atr <= 0:
+            return 0.0, False, "scale-in spacing requires a positive EntryATR"
+        last_add = last_add_price
+        if last_add <= 0:
+            last_add = avg_cost
+        direction = -1.0 if side == "short" else 1.0
+        # favorable_move > 0 when price has moved in the position's favor
+        # since the last entry leg (up for a long, down for a short).
+        favorable_move = (price - last_add) * direction
+        needed = spacing * entry_atr
+        if spacing > 0:
+            # add-to-winners: require an in-favor move of at least `needed`.
+            if favorable_move + 1e-9 < needed:
+                return 0.0, False, "scale-in spacing (add-to-winners) not reached"
+        else:
+            # average-down: require an adverse move of at least |needed|.
+            if -favorable_move + 1e-9 < -needed:
+                return 0.0, False, "scale-in spacing (average-down) not reached"
+
+    return add_notional / price, True, ""
+
+
 class Trade:
     """Represents a single round-trip trade."""
     def __init__(self, entry_date, entry_price, side="long"):
@@ -602,6 +812,9 @@ class Trade:
         self.entry_fee = 0.0
         self.exit_fee = 0.0
         self.exit_reason = ""
+        # #1276: add legs blended into the position this leg closes out of
+        # (0 for never-scaled positions; additive telemetry like #997).
+        self.scale_in_adds = 0
 
     def close(self, exit_date, exit_price):
         self.exit_date = exit_date
@@ -632,6 +845,8 @@ class Trade:
             "entry_fee": round(self.entry_fee, 6),
             "exit_fee": round(self.exit_fee, 6),
             "exit_reason": self.exit_reason,
+            # #1276: additive; existing consumers ignore it.
+            "scale_in_adds": self.scale_in_adds,
         }
 
 
@@ -647,7 +862,7 @@ class _HoldTracker:
     """
 
     __slots__ = ("bars", "high", "low", "high_bar", "low_bar",
-                 "entry_fee", "entry_price", "side")
+                 "entry_fee", "entry_fee_netted", "entry_price", "side")
 
     def __init__(self):
         self.open(0.0, "long", 0.0)
@@ -659,6 +874,9 @@ class _HoldTracker:
         self.high_bar = 0
         self.low_bar = 0
         self.entry_fee = entry_fee
+        # #1276: entry fees already netted onto earlier close legs of this
+        # position — drives the final-leg true-up for scaled-in positions.
+        self.entry_fee_netted = 0.0
         self.entry_price = entry_price
         self.side = side
 
@@ -682,11 +900,27 @@ class _HoldTracker:
 
 
 def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
-                exit_fee: float, reason: str, qty_frac: float = 1.0) -> None:
+                exit_fee: float, reason: str, qty_frac: float = 1.0,
+                true_up_entry_fee: bool = False) -> None:
     """Stamp #997 hold telemetry onto a closing trade leg.
 
     ``qty_frac`` pro-rates the entry commission for a partial-close leg (each
     leg gets its share of the single entry fee; the legs' fractions sum to 1).
+
+    This is the single fee-netting chokepoint for every close site (#1241):
+    ``Trade.close()`` sets a gross ``pnl``; here we net BOTH the pro-rated
+    entry fee and the exit fee out of it so every leg reports PnL net of fees,
+    matching live's net-PnL convention (``tradeNetPnL``). Callers must NOT
+    deduct the exit fee from ``pnl`` themselves — doing so double-counts it.
+
+    ``true_up_entry_fee`` (#1276): when a scale-in add follows a partial
+    close, the ``pool × leg/IQ`` identity stops conserving (earlier legs were
+    netted against a smaller pool and a smaller ``initial_quantity``), so the
+    POSITION'S FINAL leg must instead net exactly the un-netted remainder —
+    ``hold.entry_fee - hold.entry_fee_netted`` — restoring
+    Σ(netted entry fees) == open commission + Σ(add commissions). Callers set
+    it only on the final close leg of a position that scaled in; non-scaled
+    positions keep the pre-#1276 formula bit-for-bit.
     """
     mfe, mae, b_mfe, b_mae = hold.metrics()
     trade.bars_held = hold.bars
@@ -695,9 +929,18 @@ def _stamp_hold(trade, hold: "_HoldTracker", *, entry_atr: float,
     trade.bars_to_mfe = b_mfe
     trade.bars_to_mae = b_mae
     trade.entry_atr = entry_atr
-    trade.entry_fee = hold.entry_fee * qty_frac
+    if true_up_entry_fee:
+        # Final leg of a scaled-in position: net the exact un-netted
+        # remainder (never negative — intermediate legs net against a pool
+        # no larger than the final pool with fractions summing below 1).
+        trade.entry_fee = max(0.0, hold.entry_fee - hold.entry_fee_netted)
+    else:
+        trade.entry_fee = hold.entry_fee * qty_frac
+    hold.entry_fee_netted += trade.entry_fee
     trade.exit_fee = exit_fee
     trade.exit_reason = reason
+    # Net both fees out of the gross pnl set by Trade.close() (#1241).
+    trade.pnl -= trade.entry_fee + trade.exit_fee
 
 
 class Backtester:
@@ -720,6 +963,7 @@ class Backtester:
                  regime_adx_threshold: float = 20.0,
                  regime_windows_spec: Optional[dict] = None,
                  allowed_regimes: Optional[list[str]] = None,
+                 regime_gate_on_failure: str = "open",
                  stop_loss_atr_mult: Optional[float] = None,
                  stop_loss_pct: Optional[float] = None,
                  stop_loss_margin_pct: Optional[float] = None,
@@ -734,7 +978,12 @@ class Backtester:
                  regime_directional_certified: bool = False,
                  regime_directional_certified_states: Optional[dict] = None,
                  regime_timeframe: Optional[str] = None,
-                 profile_allocation: Optional[dict] = None):
+                 profile_allocation: Optional[dict] = None,
+                 intrabar_resolution: str = "ohlc_walk",
+                 risk_per_trade_pct: Optional[float] = None,
+                 allow_scale_in: bool = False,
+                 scale_in: Optional[dict] = None,
+                 atr_method: str = "simple"):
         """
         Args:
             initial_capital: Starting portfolio value.
@@ -763,9 +1012,56 @@ class Backtester:
             regime_timeframe: Accepted for ``load_strategy_config`` spread
                 compatibility. The runner applies this before constructing the
                 engine by aligning regime columns onto the trading DataFrame.
+            intrabar_resolution: How the engine-tracked SL trigger resolves
+                against the fill bar (#1271). ``"ohlc_walk"`` (default) walks
+                O -> H/L -> C: a range touch stops out ON that bar at the
+                trigger price (or at the open on a gap-through), winning
+                adverse-move-first over any same-bar close-evaluator exit.
+                ``"bar_close"`` restores the legacy pre-#1271 convention
+                (hit detected on the close only, filled at the next bar's
+                open) for reproducing documented baselines. See the module
+                docstring, "SL/TP intra-bar races".
+            risk_per_trade_pct: Opt-in risk-per-trade sizing (#1268),
+                mirroring the live ``risk_per_trade_pct`` config field: each
+                open commits ``shares = (cash × pct/100) / stop_distance``
+                (invest = ``cash × (pct/100) × price/stop_distance``, capped
+                at 1.0 × cash — the backtester models no leverage, so the
+                live ``cash × exchange_leverage`` cap tightens to 1× here; a
+                one-time warning prints when the cap binds). Stop distance
+                comes from the configured stop owner: ``*_atr_mult × entry
+                ATR`` (the signal bar's closed ATR, same value the SL
+                geometry uses), or ``price × *_pct`` (this engine's pct
+                fields are FRACTIONS, matching the SL trigger math). An
+                unresolvable distance (no usable ATR at the signal bar)
+                SKIPS the entry — fail-closed, matching live. Requires one
+                of the four scalar stop owners; regime-resolved owners, a
+                margin-pct-only stop, and a strategy-emitted
+                ``entry_fraction`` column are rejected loudly. None keeps
+                the legacy full-notional sizing byte-identical.
+            allow_scale_in: Opt-in scale-in / pyramiding (#1276), mirroring
+                the live ``allow_scale_in`` field (#873): a same-direction
+                signal on an open position ADDS size instead of being
+                skipped. Default False keeps every existing run
+                byte-identical. See the module docstring, "Scale-in /
+                pyramiding".
+            scale_in: Optional caps/spacing dict (live ``scale_in`` block):
+                ``max_adds`` (int, 0 = unlimited), ``max_added_notional_usd``
+                (0 = unlimited), ``add_spacing_atr`` (signed EntryATR
+                multiples; >0 add-to-winners, <0 average-down, 0 = no gate),
+                ``add_notional_usd`` (0 = the position's first-leg notional).
+                Rejected when set without ``allow_scale_in`` (mirrors the
+                live validator).
         """
         self.initial_capital = initial_capital
         self.platform = platform
+        # #1271: intra-bar SL race resolution mode. Validated eagerly so a
+        # typo'd mode fails at construction, not as a silent legacy fallback.
+        self.intrabar_resolution = str(intrabar_resolution or "").strip().lower()
+        if self.intrabar_resolution not in ("ohlc_walk", "bar_close"):
+            raise ValueError(
+                f"intrabar_resolution must be 'ohlc_walk' or 'bar_close', "
+                f"got {intrabar_resolution!r}"
+            )
         self.commission_pct = (
             commission_pct if commission_pct is not None
             else fee_pct_for_platform(platform)
@@ -818,6 +1114,32 @@ class Backtester:
         # silently falling back to the default stop. None = legacy ADX (canonical).
         self._regime_primary_labels = _regime_primary_labels(self.regime_windows_spec)
         self.allowed_regimes = list(allowed_regimes or [])
+        # #1278: entry-gate failure policy for empty/unavailable regime labels
+        # (warmup bar 0 after the #730 shift, mid-series NaN gaps), mirroring
+        # the live regime_gate_on_failure field. "open" (default) admits the
+        # entry — byte-identical to the pre-#1278 baselines; "closed" blocks
+        # fresh entries on empty-label bars when a gate is configured. Closes
+        # are never gated either way. Unknown values raise at construction.
+        _norm_gate = str(regime_gate_on_failure or "").strip().lower() or "open"
+        if _norm_gate not in ("open", "closed"):
+            raise ValueError(
+                f"regime_gate_on_failure must be 'open' or 'closed', "
+                f"got {regime_gate_on_failure!r}"
+            )
+        self.regime_gate_on_failure = _norm_gate
+        # #1277: ATR smoothing method for the injected standard-ATR series,
+        # mirroring the live atr_method config. "simple" (default) is the
+        # frozen legacy rolling mean — byte-identical to pre-#1277 baselines;
+        # "wilder" is the published RMA (never integer-rounded). Applies only
+        # to the standard_atr injection below — a strategy-emitted `atr`
+        # column always wins (same as live ensure_atr_indicator semantics).
+        # Regime classification stays pinned to simple inside regime.py.
+        _norm_atr_method = str(atr_method or "").strip().lower() or "simple"
+        if _norm_atr_method not in ("simple", "wilder"):
+            raise ValueError(
+                f"atr_method must be 'simple' or 'wilder', got {atr_method!r}"
+            )
+        self.atr_method = _norm_atr_method
         self.stop_loss_atr_mult = stop_loss_atr_mult
         self.stop_loss_pct = stop_loss_pct
         self.stop_loss_margin_pct = stop_loss_margin_pct
@@ -884,6 +1206,11 @@ class Backtester:
         self._uses_regime_tiered_close = _close_refs_use_regime_tiered_tp(
             self._close_refs,
         )
+        # #841 unified per-regime close SL ownership; populated below when the
+        # regime-ATR helpers are imported (unified requires a regime tiered
+        # close, which forces that import path).
+        self._unified_close_params: Optional[dict] = None
+        self._unified_scalar_params = None
         self._uses_trailing_ratchet_close = any(
             (r.get("name") or "").strip().lower()
             in ("trailing_tp_ratchet", "trailing_tp_ratchet_regime")
@@ -954,9 +1281,65 @@ class Backtester:
             from regime_atr import (  # type: ignore
                 SURFACE_STOP_LOSS,
                 SURFACE_TRAILING,
+                close_params_are_unified_regime,
                 parse_regime_atr_block,
                 resolve_regime_atr,
+                unified_regime_scalar_params,
+                validate_unified_regime_close,
             )
+
+            # #841 unified per-regime close block: the close ref owns the
+            # per-regime stop loss (stop_loss_atr inside each label entry).
+            # Mirrors Go: unifiedCloseStopLossATR arms the SL, and
+            # validateUnifiedCloseSoleOwner forbids any strategy-level stop
+            # owner alongside the block. Without this, a unified close with
+            # stop_loss_atr backtested with no stop at all (#1228 audit).
+            self._unified_close_params = None
+            self._unified_scalar_params = unified_regime_scalar_params
+            for _ref in self._close_refs:
+                _n = (_ref.get("name") or "").strip().lower()
+                if _n not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime"):
+                    continue
+                _params = _ref.get("params") or {}
+                if close_params_are_unified_regime(_params):
+                    self._unified_close_params = dict(_params)
+                break
+            if self._unified_close_params is not None:
+                # #1228 review round 3: mirror live's validateUnifiedRegimeClose
+                # — every stampable label must carry a positive stop_loss_atr
+                # (and >=2 valid tp_tiers). Live rejects such a config at load;
+                # simulating it would run a regime with no stop at all.
+                _unified_errs = validate_unified_regime_close(
+                    self._unified_close_params,
+                    labels=self._regime_primary_labels,
+                )
+                if _unified_errs:
+                    raise ValueError(
+                        "Invalid unified per-regime close block: "
+                        + "; ".join(_unified_errs)
+                    )
+                _sole_owner_conflicts = [
+                    ("stop_loss_atr_mult", self.stop_loss_atr_mult),
+                    ("stop_loss_pct", self.stop_loss_pct),
+                    ("stop_loss_margin_pct", self.stop_loss_margin_pct),
+                    ("trailing_stop_atr_mult", self.trailing_stop_atr_mult),
+                    ("trailing_stop_pct", self.trailing_stop_pct),
+                ]
+                for _field, _val in _sole_owner_conflicts:
+                    if _val is not None and _val > 0:
+                        raise ValueError(
+                            f"{_field} is not allowed alongside a unified "
+                            "per-regime close — the close owns the SL via "
+                            "per-regime stop_loss_atr"
+                        )
+                if self.stop_loss_atr_regime is not None or (
+                    self.trailing_stop_atr_regime is not None
+                ):
+                    raise ValueError(
+                        "stop_loss_atr_regime/trailing_stop_atr_regime are not "
+                        "allowed alongside a unified per-regime close — the "
+                        "close owns the SL via per-regime stop_loss_atr"
+                    )
 
             regime_errs: list[str] = []
             if self.stop_loss_atr_regime is not None:
@@ -1206,6 +1589,83 @@ class Backtester:
                         "the post-TP bump would diverge from live. Use "
                         "stop_loss_atr_mult or stop_loss_pct."
                     )
+
+        # #1268: risk-per-trade sizing — mirror the live validateRiskPerTradePct
+        # gate: bounds (0, 10] and a stop owner whose distance is resolvable at
+        # sizing time. Regime-resolved owners and the unified close resolve
+        # their SL after the open, and a margin-pct-only stop needs leverage
+        # context this engine doesn't carry — all rejected loudly, exactly the
+        # configs the live daemon refuses to load with this field.
+        self.risk_per_trade_pct: Optional[float] = None
+        if risk_per_trade_pct is not None:
+            pct = float(risk_per_trade_pct)
+            if not (0 < pct <= 10):
+                raise ValueError(
+                    f"risk_per_trade_pct must be in (0, 10], got {pct}"
+                )
+            if self._unified_close_params is not None:
+                raise ValueError(
+                    "risk_per_trade_pct cannot size from the unified "
+                    "per-regime close block — its SL resolves per-regime "
+                    "after open, so the stop distance is unknowable at "
+                    "sizing time (#1268; live rejects this at config load)"
+                )
+            if self.stop_loss_atr_regime or self.trailing_stop_atr_regime:
+                raise ValueError(
+                    "risk_per_trade_pct cannot size from a regime-resolved "
+                    "stop owner (stop_loss_atr_regime / "
+                    "trailing_stop_atr_regime) — the SL resolves from the "
+                    "regime stamped after open (#1268; live rejects this at "
+                    "config load)"
+                )
+            has_atr_owner = (
+                (self.trailing_stop_atr_mult or 0) > 0
+                or (self.stop_loss_atr_mult or 0) > 0
+            )
+            has_pct_owner = (
+                (self.trailing_stop_pct or 0) > 0
+                or (self.stop_loss_pct or 0) > 0
+            )
+            if not (has_atr_owner or has_pct_owner):
+                if (self.stop_loss_margin_pct or 0) > 0:
+                    raise ValueError(
+                        "risk_per_trade_pct cannot size from a "
+                        "stop_loss_margin_pct-only stop in backtests — the "
+                        "backtester does not model leverage, so the price "
+                        "distance cannot be derived. Use stop_loss_atr_mult, "
+                        "trailing_stop_atr_mult, stop_loss_pct, or "
+                        "trailing_stop_pct."
+                    )
+                raise ValueError(
+                    "risk_per_trade_pct requires an explicit stop owner "
+                    "(stop_loss_atr_mult, trailing_stop_atr_mult, "
+                    "stop_loss_pct, or trailing_stop_pct) to derive the "
+                    "stop distance from (#1268)"
+                )
+            self.risk_per_trade_pct = pct
+        # One-time-warning latches for the risk-sizing run diagnostics.
+        self._risk_cap_warned = False
+        self._risk_skip_warned = False
+
+        # #1276: opt-in scale-in / pyramiding, mirroring the live #873
+        # semantics. Validated eagerly — a scale_in block without the flag,
+        # bad bounds, or the #1268 risk-sizing combo fail at construction,
+        # exactly the configs the live daemon refuses to load.
+        self.allow_scale_in = bool(allow_scale_in)
+        if scale_in and not self.allow_scale_in:
+            raise ValueError(
+                "scale_in block is set but allow_scale_in is false — enable "
+                "allow_scale_in or remove the block (the live daemon rejects "
+                "this config at startup)"
+            )
+        self._scale_in_cfg = _normalize_scale_in_cfg(scale_in)
+        if self.allow_scale_in and self.risk_per_trade_pct is not None:
+            raise ValueError(
+                "allow_scale_in is mutually exclusive with risk_per_trade_pct "
+                "(#1268: add legs re-size off the frozen SL geometry, breaking "
+                "the constant-dollar-risk invariant; the live daemon rejects "
+                "this config at startup)"
+            )
 
     def _apply_direction_invert(self, sig_int: pd.Series,
                                 uses_open_close: bool) -> pd.Series:
@@ -1473,10 +1933,13 @@ class Backtester:
         # is look-ahead bias (#730).
         #
         # Empty/missing regime (e.g. row 0 after shift, or mid-series NaN
-        # rows from upstream gaps) → empty string after fillna, which fails
-        # the ``in allowed_regimes`` check and blocks the entry. That matches
-        # live behavior: no regime data, no entry. Intentional — do not
-        # "fix" the fillna to forward-fill or interpolate.
+        # rows from upstream gaps) → empty string after fillna. The entry
+        # gate resolves that empty label per ``regime_gate_on_failure``
+        # (#1278): the default ``"open"`` admits the entry (matching the
+        # live #879 fail-open gate); ``"closed"`` blocks it. Intentional —
+        # do not "fix" the fillna to forward-fill or interpolate: the empty
+        # label is the honest "no regime data at decision time" signal the
+        # policy keys off.
         if self.regime_enabled and "regime" in df.columns:
             df["regime"] = df["regime"].shift(1).fillna("")
 
@@ -1509,6 +1972,10 @@ class Backtester:
         pending_close_reason = ""
         # #997 hold telemetry accumulator (intra-hold excursions + bars held).
         hold = _HoldTracker()
+        # #1276 scale-in state (anchor/counters/first-leg notional) + totals.
+        scale = _ScaleInState()
+        scale_in_adds_total = 0
+        scale_in_added_notional_total = 0.0
 
         # Post-TP SL adjustment state (#709). Only meaningful when sl_after is
         # configured; otherwise the per-bar machinery short-circuits and these
@@ -1525,6 +1992,21 @@ class Backtester:
         # hit is detected at bar close and fills at the next bar's open, matching
         # the engine's N→N+1 fill convention.
         pending_signal_sl_close = False
+        # #1271: intra-bar OHLC-walk SL resolution (default mode). The pierce
+        # check reads the fill bar's full range, so it must only ever run
+        # against a trigger that was actually ARMED during the bar:
+        #   - a trigger carried from a prior bar (or bumped at this bar's
+        #     open by sl_after — suppressed that bar via #715, live next bar),
+        #   - a fixed (entry-geometry) trigger seeded at this bar's open.
+        # A trailing seed is anchored at the bar's CLOSE (the engine's
+        # bar-after-open arming convention — see the module docstring), so it
+        # is NOT an armed level during its entry bar; pierce-checking it there
+        # would stop out at a level derived from data the bar hadn't produced
+        # yet. ``sl_pierce_armed`` tracks that: set per-seed at the open
+        # blocks, promoted to True at the end of every bar a position
+        # survives (by then any trigger is a real carried level).
+        walk_mode = self.intrabar_resolution == "ohlc_walk"
+        sl_pierce_armed = False
         self._active_sl_after_rules = self._sl_after_rules_static
         self._run_tp_tier_thresholds = list(self._tp_tier_thresholds_static)
         self._run_stop_loss_atr_mult: Optional[float] = None
@@ -1573,7 +2055,7 @@ class Backtester:
             (self.stop_loss_atr_mult is not None and self.stop_loss_atr_mult > 0)
             or (self.trailing_stop_atr_mult is not None and self.trailing_stop_atr_mult > 0)
         ):
-            atr_series = standard_atr(df)
+            atr_series = standard_atr(df, method=self.atr_method)
 
         def _initial_trail_trigger(side: str, mark: float, entry_atr: float,
                                     trail_mult: float) -> float:
@@ -1636,6 +2118,20 @@ class Backtester:
                     self._run_trailing_stop_atr_mult = self._resolve_regime_atr(
                         self._trailing_stop_regime_block, lab,
                     )
+            # #841 unified per-regime close: the block owns the SL — resolve
+            # the stamped regime's stop_loss_atr as the run's fixed-SL mult
+            # (mirrors unifiedCloseStopLossATR in scheduler/regime_unified.go).
+            if (
+                self._run_stop_loss_atr_mult is None
+                and self._unified_close_params is not None
+                and self._unified_scalar_params is not None
+                and lab
+            ):
+                _, _usl = self._unified_scalar_params(
+                    self._unified_close_params, lab
+                )
+                if _usl and _usl > 0:
+                    self._run_stop_loss_atr_mult = float(_usl)
             if self._run_stop_loss_atr_mult is None:
                 if (
                     self.stop_loss_atr_mult is not None
@@ -1662,6 +2158,10 @@ class Backtester:
             current_trade.shares = position
             avg_cost = effective_entry
             initial_quantity = position
+            # #1276: a seeded position starts un-scaled; its first-leg
+            # notional is the seeded commitment.
+            scale.reset()
+            scale.base_open_notional = position * effective_entry
             # #997: seed hold telemetry for the walk-forward-seeded position.
             # bars_held starts at 0 (its true warmup hold length is unknown).
             hold.open(effective_entry, "long", entry_commission)
@@ -1717,6 +2217,10 @@ class Backtester:
                 sl_high_water_px = hwm_anchor
             sl_tiers_processed = 0
             post_tp_trail_mult = None
+            # #1271: every seeded-position trigger above is entry/warmup-
+            # derived (avg_cost geometry or the carried high-water anchor) —
+            # a real level as of bar 0's open, so it's pierce-eligible.
+            sl_pierce_armed = True
 
         profile_switcher = (
             _ProfileSwitcher(self._profile_alloc) if has_profile_alloc else None
@@ -1733,6 +2237,104 @@ class Backtester:
 
         has_entry_fraction = "_entry_fraction" in df.columns
 
+        # #1268: risk-per-trade sizing. Mutually exclusive with a
+        # strategy-emitted entry_fraction column — live sizing has no
+        # entry_fraction input, so composing the two would diverge from the
+        # live formula the mode exists to reproduce.
+        risk_mode = (self.risk_per_trade_pct or 0) > 0
+        if risk_mode and has_entry_fraction:
+            raise ValueError(
+                "risk_per_trade_pct is mutually exclusive with a "
+                "strategy-emitted entry_fraction column (#1268) — the live "
+                "sizer has no entry_fraction input, so composing them would "
+                "diverge from the live sizing formula"
+            )
+        risk_skipped_entries = 0
+
+        # #1276: scale-in state + per-run totals. The entry_fraction column is
+        # a fresh-entry research hook with no live counterpart — composing it
+        # with the live add-sizing rule would make the default per-add
+        # notional (the first leg's committed notional) depend on a
+        # backtest-only input; reject loudly like the #1268 combo above.
+        if self.allow_scale_in and has_entry_fraction:
+            raise ValueError(
+                "allow_scale_in is mutually exclusive with a strategy-emitted "
+                "entry_fraction column (#1276) — the live per-add sizing "
+                "(the fresh-open notional) has no entry_fraction input, so "
+                "composing them would diverge from the live add-sizing rule"
+            )
+        # Decision-time price for the add gate: the signal bar's close (bar
+        # N; live evaluates spacing at cycle time ≈ that close). The signal
+        # is already shift(1)'d, so on the fill row (N+1) the decision price
+        # is the PREVIOUS row's close.
+        prev_close_arr = (
+            df["close"].shift(1).to_numpy(dtype=float)
+            if self.allow_scale_in else None
+        )
+
+        def _try_scale_in_add(i: int, side: str, fill_price: float) -> bool:
+            """Attempt a same-direction add on the fill row (#1276). Gate
+            evaluated against bar N's close; fill at this row's open with
+            slippage + commission. Mutates position/cash/avg_cost/
+            initial_quantity/current_trade/hold + the scale state — the
+            Python image of live's perpsScaleInDecision + applyScaleIn.
+            Returns True when an add was applied."""
+            nonlocal position, cash, avg_cost, initial_quantity
+            nonlocal scale_in_adds_total, scale_in_added_notional_total
+            decision_price = float(prev_close_arr[i])
+            if not (decision_price > 0):  # NaN on row 0
+                return False
+            default_notional = scale.base_open_notional
+            add_qty, ok, _reason = _scale_in_decision(
+                self._scale_in_cfg, side, abs(position), avg_cost,
+                entry_atr_value, scale.scale_in_count,
+                scale.added_notional_usd, scale.last_add_price,
+                1 if side == "long" else -1, decision_price, default_notional,
+            )
+            if not ok or add_qty <= 0:
+                return False
+            if side == "long":
+                eff = fill_price * (1 + self.slippage_pct)
+            else:
+                eff = fill_price * (1 - self.slippage_pct)
+            notional = add_qty * eff
+            commission = notional * self.commission_pct
+            if side == "long":
+                # Notional leaves cash (may go negative — the spot-model
+                # image of live's margin-based virtual notional; equity =
+                # cash + position×mark stays exact). See module docstring.
+                cash -= notional + commission
+                position += add_qty
+            else:
+                # Net-proceeds form of the existing short-open math.
+                cash += notional - commission
+                position -= add_qty
+            # The blend — exactly applyScaleIn (scheduler/scale_in.go):
+            # freeze the anchor to the pre-blend avg_cost on the FIRST add,
+            # blend avg_cost, grow InitialQuantity; EntryATR / the stamped
+            # regime / tier watermarks stay untouched (frozen entry).
+            if scale.risk_anchor_price <= 0:
+                scale.risk_anchor_price = avg_cost
+            old_qty = abs(position) - add_qty
+            new_qty = old_qty + add_qty
+            avg_cost = (old_qty * avg_cost + add_qty * eff) / new_qty
+            initial_quantity += add_qty
+            scale.scale_in_count += 1
+            scale.last_add_price = eff
+            scale.added_notional_usd += notional
+            scale_in_adds_total += 1
+            scale_in_added_notional_total += notional
+            if current_trade is not None:
+                # PnL uses the blend: the leg's entry price IS the blended
+                # avg_cost (Trade.close computes pnl from entry_price).
+                current_trade.entry_price = avg_cost
+                current_trade.shares += add_qty
+                current_trade.scale_in_adds = scale.scale_in_count
+            # The add's commission joins the single entry-fee pool that
+            # _stamp_hold pro-rates across close legs (#1241).
+            hold.entry_fee += commission
+            return True
+
         for i, (idx, row) in enumerate(df.iterrows()):
             fill_price = row["open"] if has_open else row["close"]
             mark_price = row["close"]
@@ -1743,6 +2345,35 @@ class Backtester:
             entry_fraction = (
                 float(row["_entry_fraction"]) if has_entry_fraction else 1.0
             )
+            # #1268: in risk mode the committed fraction is derived per open
+            # from the stop distance; an unresolvable distance (no usable ATR
+            # at the signal bar) blocks the entry — fail-closed like live,
+            # never a full-notional fallback. Closes are never blocked.
+            risk_entry_blocked = False
+            if risk_mode:
+                risk_fraction = self._risk_entry_fraction(
+                    atr_series, idx, fill_price,
+                )
+                if risk_fraction is None:
+                    risk_entry_blocked = True
+                    entry_wanted = (
+                        str(row.get("_open_action", "none")) in ("long", "short")
+                        if uses_open_close
+                        else int(signal) != 0
+                    )
+                    if position == 0 and entry_wanted:
+                        risk_skipped_entries += 1
+                        if not self._risk_skip_warned:
+                            self._risk_skip_warned = True
+                            print(
+                                f"[#1268] risk_per_trade_pct: entry skipped at "
+                                f"{idx} — stop distance unresolvable (no usable "
+                                f"ATR at the signal bar); fail-closed, matching "
+                                f"live. Further skips counted silently.",
+                                file=sys.stderr,
+                            )
+                else:
+                    entry_fraction = risk_fraction
             # #998: regime-profile allocation — advance the flat-only, confirm_bars
             # hysteresis switch and read the active profile's signal for this bar.
             # ``flat`` is the position carried into the bar (= the position state at
@@ -1809,13 +2440,16 @@ class Backtester:
             # isn't in the allowed set. Existing positions are always managed
             # by close paths. ``compute_regime`` initializes every row to
             # ``"ranging"`` (warmup bars included). After the post-injection
-            # shift (#730) row 0 is empty — that empty label fails the
-            # ``in allowed_regimes`` check and blocks the bar-0 entry, which
-            # is correct (no prior-bar data, no decision).
+            # shift (#730) row 0 is empty — an empty label resolves per
+            # ``regime_gate_on_failure`` (#1278): the default ``"open"``
+            # ADMITS the bar-0 entry (matching the live #879 fail-open gate);
+            # ``"closed"`` blocks it (matching live fail-closed).
             regime_blocked = (
                 self.regime_enabled
                 and bool(self.allowed_regimes)
-                and not _regime_allows_entry(self.allowed_regimes, bar_regime)
+                and not _regime_allows_entry(
+                    self.allowed_regimes, bar_regime, self.regime_gate_on_failure
+                )
             )
 
             if uses_open_close:
@@ -1865,7 +2499,8 @@ class Backtester:
                         closed = Trade(current_trade.entry_date, current_trade.entry_price, current_trade.side)
                         closed.shares = qty_to_close
                         closed.close(idx, effective_price)
-                        closed.pnl -= commission
+                        # Exit fee (and pro-rated entry fee) is netted inside
+                        # _stamp_hold below — do NOT deduct it here too (#1241).
                         # #997: stamp hold telemetry. This leg exits at THIS
                         # bar's open, so hold reflects bars through the prior
                         # bar (step() for this bar runs after the open-fill
@@ -1875,7 +2510,16 @@ class Backtester:
                         _stamp_hold(closed, hold, entry_atr=entry_atr_value,
                                     exit_fee=commission,
                                     reason=close_reason or "close_strategy",
-                                    qty_frac=qty_frac)
+                                    qty_frac=qty_frac,
+                                    # #1276: a scaled position's FINAL leg
+                                    # nets the un-netted fee remainder so
+                                    # the pool conserves across add/partial
+                                    # interleavings.
+                                    true_up_entry_fee=(
+                                        scale.scale_in_count > 0
+                                        and abs(position) <= 1e-12
+                                    ))
+                        closed.scale_in_adds = scale.scale_in_count
                         trades.append(closed)
                         current_trade.shares -= qty_to_close
                         if current_trade.shares <= 1e-12:
@@ -1886,6 +2530,7 @@ class Backtester:
                         avg_cost = 0.0
                         initial_quantity = 0.0
                         entry_atr_value = 0.0
+                        scale.reset()
                         # Reset post-TP SL state on full close so the next
                         # open starts clean.
                         sl_trigger_px = 0.0
@@ -1915,7 +2560,10 @@ class Backtester:
                         sl_trigger_px, sl_tiers_processed, post_tp_trail_mult, \
                             sl_high_water_px = self._maybe_apply_sl_after(
                                 side=side_now,
-                                avg_cost=avg_cost,
+                                # #1276: bump geometry pins to the frozen
+                                # first-entry anchor across scale-in adds
+                                # (mirrors post_tp_sl.go riskAnchorPrice()).
+                                avg_cost=scale.geom_cost(avg_cost),
                                 entry_atr=entry_atr_value,
                                 position_qty=abs(position),
                                 initial_qty=initial_quantity,
@@ -1971,7 +2619,7 @@ class Backtester:
                 # booked trade side and inverting all subsequent PnL. The
                 # account is economically bust — skip the entry. cash == 0 is
                 # included: it would book a zero-share phantom trade.
-                if open_action == "long" and position == 0 and cash > 0 and not regime_blocked:
+                if open_action == "long" and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                     effective_price = fill_price * (1 + self.slippage_pct)
                     # #980: commit entry_fraction of flat-state cash; the
                     # remainder stays as a reserve (fraction 1.0 = full
@@ -1989,6 +2637,11 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     hold.open(effective_price, "long", commission)
+                    # #1276: fresh open — clean scale-in state; freeze the
+                    # first leg's committed notional as the default per-add
+                    # size (the backtest image of live's PerpsOpenNotional).
+                    scale.reset()
+                    scale.base_open_notional = shares * effective_price
                     stamp_open_from_label(_entry_stamp(row))
                     # Seed the SL trigger at open. sl_after configs seed only
                     # when usable tier thresholds exist (#716 item 3 — without
@@ -2003,6 +2656,9 @@ class Backtester:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
                         )
+                        # #1271: entry-geometry (fixed) trigger — armed at the
+                        # open, pierce-eligible on the fill bar itself.
+                        sl_pierce_armed = sl_trigger_px > 0
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
@@ -2011,6 +2667,9 @@ class Backtester:
                             "long", mark_price, entry_atr_value,
                             self._run_trailing_stop_atr_mult,
                         )
+                        # #1271: close-anchored trailing seed — not an armed
+                        # level during this bar; pierce-eligible next bar.
+                        sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -2018,15 +2677,17 @@ class Backtester:
                         sl_trigger_px = self._initial_sl_trigger(
                             "long", avg_cost, entry_atr_value,
                         )
+                        sl_pierce_armed = sl_trigger_px > 0
                         if sl_trigger_px <= 0 and self._run_trailing_stop_atr_mult:
                             sl_trigger_px = _initial_trail_trigger(
                                 "long", mark_price, entry_atr_value,
                                 self._run_trailing_stop_atr_mult,
                             )
+                            sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
-                elif open_action == "short" and position == 0 and cash > 0 and not regime_blocked:
+                elif open_action == "short" and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                     effective_price = fill_price * (1 - self.slippage_pct)
                     # #980: entry_fraction of flat-state cash is the committed
                     # margin; pay commission from it, receive the short-sale
@@ -2045,11 +2706,17 @@ class Backtester:
                     initial_quantity = shares
                     entry_atr_value = self._stamp_entry_atr(atr_series, idx, effective_price)
                     hold.open(effective_price, "short", commission)
+                    # #1276: fresh open — see the long-side comment.
+                    scale.reset()
+                    scale.base_open_notional = shares * effective_price
                     stamp_open_from_label(_entry_stamp(row))
                     if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
                         )
+                        # #1271: fixed trigger — pierce-eligible on the fill
+                        # bar; trailing seeds arm next bar (long-side comment).
+                        sl_pierce_armed = sl_trigger_px > 0
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = 0.0
@@ -2058,6 +2725,7 @@ class Backtester:
                             "short", mark_price, entry_atr_value,
                             self._run_trailing_stop_atr_mult,
                         )
+                        sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
@@ -2067,14 +2735,37 @@ class Backtester:
                         sl_trigger_px = self._initial_sl_trigger(
                             "short", avg_cost, entry_atr_value,
                         )
+                        sl_pierce_armed = sl_trigger_px > 0
                         if sl_trigger_px <= 0 and self._run_trailing_stop_atr_mult:
                             sl_trigger_px = _initial_trail_trigger(
                                 "short", mark_price, entry_atr_value,
                                 self._run_trailing_stop_atr_mult,
                             )
+                            sl_pierce_armed = False
                         sl_tiers_processed = 0
                         post_tp_trail_mult = None
                         sl_high_water_px = mark_price
+                # #1276: same-direction signal on an OPEN position — a
+                # scale-in add when opted in and the caps/spacing gate
+                # passes; otherwise the (unchanged) skip. Deliberately NOT
+                # gated on cash > 0 (margin semantics — see the module
+                # docstring), regime_blocked (live regimeBlocksOpen passes
+                # posQty>0), or risk_entry_blocked (#1268 mutual exclusion
+                # makes risk mode unreachable here). open_action was already
+                # re-resolved position-aware for #1025 directional policies
+                # above, so the add-intent honors the position-frozen regime.
+                elif (
+                    self.allow_scale_in
+                    and open_action == "long"
+                    and position > 0
+                ):
+                    _try_scale_in_add(i, "long", fill_price)
+                elif (
+                    self.allow_scale_in
+                    and open_action == "short"
+                    and position < 0
+                ):
+                    _try_scale_in_add(i, "short", fill_price)
 
                 # #997: advance hold telemetry for the position held through
                 # this bar. Runs AFTER the open-fill close/open block so a leg
@@ -2088,13 +2779,103 @@ class Backtester:
                         float(row.get("low", mark_price) or mark_price),
                     )
 
+                # #1271 intra-bar OHLC-walk SL resolution (default mode): a
+                # bar whose range touches the armed trigger stops the
+                # position out ON this bar — at the trigger price, or at the
+                # bar's open when the bar gapped through the trigger.
+                # Adverse-move-first by construction: the close evaluators
+                # below never see the stopped-out position, so a same-bar TP
+                # the bar-close mark would have credited loses the race.
+                # Suppressed on sl_after bump bars (#715 — live's fresh SL
+                # OID lands mid-cycle, active from the next bar) and while a
+                # close-anchored trailing seed is unarmed on its entry bar
+                # (see the open blocks above / module docstring).
+                if (
+                    walk_mode
+                    and position != 0
+                    and sl_pierce_armed
+                    and sl_trigger_px > 0
+                    and not sl_after_just_applied
+                    and avg_cost > 0
+                ):
+                    side_now = "long" if position > 0 else "short"
+                    raw_fill = self._intrabar_sl_fill(
+                        side_now,
+                        float(row["open"]) if has_open else mark_price,
+                        float(row.get("high", mark_price) or mark_price),
+                        float(row.get("low", mark_price) or mark_price),
+                        sl_trigger_px,
+                    )
+                    if raw_fill is not None:
+                        qty_to_close = abs(position)
+                        if position > 0:
+                            effective_price = raw_fill * (1 - self.slippage_pct)
+                            proceeds = qty_to_close * effective_price
+                            commission = proceeds * self.commission_pct
+                            cash += proceeds - commission
+                        else:
+                            effective_price = raw_fill * (1 + self.slippage_pct)
+                            cost = qty_to_close * effective_price
+                            commission = cost * self.commission_pct
+                            cash -= cost + commission
+                        position = 0.0
+                        if current_trade:
+                            closed = Trade(
+                                current_trade.entry_date,
+                                current_trade.entry_price,
+                                current_trade.side,
+                            )
+                            closed.shares = qty_to_close
+                            closed.close(idx, effective_price)
+                            # Entry fee pro-rated by this leg's share of the
+                            # original position (earlier partial-close legs
+                            # already netted theirs) — #1241 convention.
+                            qty_frac = (
+                                qty_to_close / initial_quantity
+                                if initial_quantity > 0 else 1.0
+                            )
+                            _stamp_hold(closed, hold,
+                                        entry_atr=entry_atr_value,
+                                        exit_fee=commission, reason="sl",
+                                        qty_frac=qty_frac,
+                                        # #1276: intra-bar SL is always the
+                                        # position's final leg.
+                                        true_up_entry_fee=(
+                                            scale.scale_in_count > 0
+                                        ))
+                            closed.scale_in_adds = scale.scale_in_count
+                            trades.append(closed)
+                            current_trade = None
+                        avg_cost = 0.0
+                        initial_quantity = 0.0
+                        entry_atr_value = 0.0
+                        scale.reset()
+                        sl_trigger_px = 0.0
+                        sl_tiers_processed = 0
+                        post_tp_trail_mult = None
+                        sl_high_water_px = 0.0
+                        sl_pierce_armed = False
+                        self._active_sl_after_rules = self._sl_after_rules_static
+                        self._run_tp_tier_thresholds = list(
+                            self._tp_tier_thresholds_static,
+                        )
+                        self._run_stop_loss_atr_mult = None
+                        self._run_trailing_stop_atr_mult = None
+                        self._run_position_regime = ""
+
                 # End-of-bar: evaluate close strategies against the now-current
                 # position using this bar's close as the mark. The result is
                 # applied at the NEXT bar's open (mirrors live: eval at end of
                 # bar, fill at next open).
                 if self.close_strategies and position != 0 and avg_cost > 0:
+                    # #1276: evaluator geometry (tiered-TP thresholds etc.)
+                    # reads the frozen anchor, never the blend — mirroring
+                    # the live ON-CHAIN protection path
+                    # (hyperliquid_protection.go / hyperliquid_balance.go
+                    # via riskAnchorPrice()); PnL stays on the blend.
                     pending_close_fraction, pending_close_reason = self._evaluate_close_strategies(
-                        position, avg_cost, initial_quantity, entry_atr_value,
+                        position, scale.geom_cost(avg_cost), initial_quantity,
+                        entry_atr_value,
                         mark_price, atr_series, idx,
                         position_regime=self._run_position_regime,
                         market_regime=_bar_close_regime(row),
@@ -2116,7 +2897,9 @@ class Backtester:
                                 self._ratchet_tiers_run,
                                 watermark=sl_tiers_processed,
                                 mark_price=mark_price,
-                                avg_cost=avg_cost,
+                                # #1276: ratchet tier geometry pins to the
+                                # frozen anchor (trailing_tp_ratchet.go).
+                                avg_cost=scale.geom_cost(avg_cost),
                                 entry_atr=entry_atr_value,
                                 side=side_now,
                                 post_tp_trail_mult=post_tp_trail_mult,
@@ -2162,11 +2945,22 @@ class Backtester:
                             sl_trigger_px=sl_trigger_px,
                             sl_high_water_px=sl_high_water_px,
                         )
-                    if sl_trigger_px > 0 and self._sl_hit(
+                    # #1271: the close-detected hit (filled at the next bar's
+                    # open) is the LEGACY resolution — under the default
+                    # OHLC walk it is strictly subsumed by the intra-bar
+                    # pierce check above (close <= trigger implies the low
+                    # touched it), which already booked the exit at the
+                    # trigger price on this bar.
+                    if not walk_mode and sl_trigger_px > 0 and self._sl_hit(
                         side_now, mark_price, sl_trigger_px,
                     ):
                         pending_close_fraction = 1.0
                         pending_close_reason = "sl"
+                # #1271: any trigger surviving to a bar's end (seeded,
+                # walked, or sl_after-bumped) is a real carried level for
+                # the next bar — pierce-eligible from here on.
+                if position != 0:
+                    sl_pierce_armed = True
                 continue
 
             # Standalone hard stop fires first: close at this bar's open before
@@ -2185,6 +2979,7 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal_sl")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 pending_signal_sl_close = False
@@ -2192,6 +2987,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
                 continue
 
@@ -2207,6 +3003,7 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal_sl")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 pending_signal_sl_close = False
@@ -2214,6 +3011,7 @@ class Backtester:
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
                 continue
 
@@ -2230,7 +3028,7 @@ class Backtester:
             # review). Bust account: entries skip until end of data. The
             # long/flat path can't reach negative cash today, but carries the
             # same guard so the invariant holds by construction.
-            if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked:
+            if plain_short_for_bar and signal == -1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                 # SELL — open short. Mirrors the engine path's short-open
                 # mechanics: pay commission from the committed margin, receive
                 # the short-sale proceeds (#980: entry_fraction scales the
@@ -2245,6 +3043,10 @@ class Backtester:
 
                 current_trade = Trade(idx, effective_price, "short")
                 current_trade.shares = shares
+                # #1276: fresh open — clean scale-in state; freeze the first
+                # leg's committed notional as the default per-add size.
+                scale.reset()
+                scale.base_open_notional = shares * effective_price
 
                 # Standalone stop seeding — mirror of the long block below
                 # (fixed ATR mult > trailing ATR mult > fixed pct), triggers
@@ -2255,12 +3057,17 @@ class Backtester:
                 stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
+                # #1271: fixed (avg_cost-geometry) seeds are pierce-eligible
+                # on the fill bar; the close-anchored trailing seed arms on
+                # the next bar (see the open/close-path open blocks).
+                sl_pierce_armed = False
                 if (
                     self.stop_loss_atr_mult is not None
                     and self.stop_loss_atr_mult > 0
                     and entry_atr_value > 0
                 ):
                     sl_trigger_px = avg_cost + self.stop_loss_atr_mult * entry_atr_value
+                    sl_pierce_armed = True
                 elif (
                     self.trailing_stop_atr_mult is not None
                     and self.trailing_stop_atr_mult > 0
@@ -2269,6 +3076,7 @@ class Backtester:
                     sl_trigger_px = mark_price + self.trailing_stop_atr_mult * entry_atr_value
                 elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
                     sl_trigger_px = avg_cost * (1 + self.stop_loss_pct)
+                    sl_pierce_armed = True
 
             elif plain_short_for_bar and signal == 1 and position < 0:
                 # BUY — close short (buy back)
@@ -2282,15 +3090,17 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 sl_trigger_px = 0.0
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
 
-            elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked:
+            elif not plain_short_for_bar and signal == 1 and position == 0 and cash > 0 and not regime_blocked and not risk_entry_blocked:
                 # BUY — go long (#980: entry_fraction of flat-state cash;
                 # 1.0 = all available cash, today's math exactly)
                 effective_price = fill_price * (1 + self.slippage_pct)
@@ -2303,6 +3113,9 @@ class Backtester:
 
                 current_trade = Trade(idx, effective_price, "long")
                 current_trade.shares = shares
+                # #1276: fresh open — see the short-side comment above.
+                scale.reset()
+                scale.base_open_notional = shares * effective_price
 
                 # Seed a standalone stop for the plain signal path (fixed ATR
                 # mult > trailing ATR mult > fixed pct). entry_atr is the
@@ -2314,12 +3127,15 @@ class Backtester:
                 stamp_open_from_label(_entry_stamp(row))
                 sl_trigger_px = 0.0
                 sl_high_water_px = mark_price
+                # #1271: same arming rule as the short block above.
+                sl_pierce_armed = False
                 if (
                     self.stop_loss_atr_mult is not None
                     and self.stop_loss_atr_mult > 0
                     and entry_atr_value > 0
                 ):
                     sl_trigger_px = avg_cost - self.stop_loss_atr_mult * entry_atr_value
+                    sl_pierce_armed = True
                 elif (
                     self.trailing_stop_atr_mult is not None
                     and self.trailing_stop_atr_mult > 0
@@ -2328,6 +3144,7 @@ class Backtester:
                     sl_trigger_px = mark_price - self.trailing_stop_atr_mult * entry_atr_value
                 elif self.stop_loss_pct is not None and self.stop_loss_pct > 0:
                     sl_trigger_px = avg_cost * (1 - self.stop_loss_pct)
+                    sl_pierce_armed = True
 
             elif signal == -1 and position > 0:
                 # SELL — close long position
@@ -2343,13 +3160,34 @@ class Backtester:
                     current_trade.close(idx, effective_price)
                     _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
                                 exit_fee=commission, reason="signal")
+                    current_trade.scale_in_adds = scale.scale_in_count
                     trades.append(current_trade)
                     current_trade = None
                 sl_trigger_px = 0.0
                 avg_cost = 0.0
                 entry_atr_value = 0.0
                 sl_high_water_px = 0.0
+                scale.reset()
                 self._run_position_regime = ""
+
+            # #1276: plain-path same-direction signal on an OPEN position —
+            # a scale-in add when opted in and the gate passes; otherwise the
+            # (unchanged) skip. Same guards rationale as the open/close-path
+            # add branch (no cash>0 / regime gate — adds bypass both).
+            elif (
+                self.allow_scale_in
+                and not plain_short_for_bar
+                and signal == 1
+                and position > 0
+            ):
+                _try_scale_in_add(i, "long", fill_price)
+            elif (
+                self.allow_scale_in
+                and plain_short_for_bar
+                and signal == -1
+                and position < 0
+            ):
+                _try_scale_in_add(i, "short", fill_price)
 
             # #997: advance hold telemetry for a position held through this bar
             # (plain long/flat path). Same rationale as the open/close path:
@@ -2359,6 +3197,53 @@ class Backtester:
                     float(row.get("high", mark_price) or mark_price),
                     float(row.get("low", mark_price) or mark_price),
                 )
+
+            # #1271 intra-bar OHLC-walk SL resolution — plain-path mirror of
+            # the open/close-path block above: a range touch on the armed
+            # trigger books the exit ON this bar at the trigger price (or at
+            # the open on a gap-through), replacing the legacy close-detect /
+            # next-open-fill pending mechanism.
+            if (
+                walk_mode
+                and position != 0
+                and sl_pierce_armed
+                and sl_trigger_px > 0
+            ):
+                side_now = "long" if position > 0 else "short"
+                raw_fill = self._intrabar_sl_fill(
+                    side_now,
+                    float(row["open"]) if has_open else mark_price,
+                    float(row.get("high", mark_price) or mark_price),
+                    float(row.get("low", mark_price) or mark_price),
+                    sl_trigger_px,
+                )
+                if raw_fill is not None:
+                    if position > 0:
+                        effective_price = raw_fill * (1 - self.slippage_pct)
+                        proceeds = position * effective_price
+                        commission = proceeds * self.commission_pct
+                        cash += proceeds - commission
+                    else:
+                        effective_price = raw_fill * (1 + self.slippage_pct)
+                        cost = abs(position) * effective_price
+                        commission = cost * self.commission_pct
+                        cash -= cost + commission
+                    position = 0.0
+                    if current_trade:
+                        current_trade.close(idx, effective_price)
+                        _stamp_hold(current_trade, hold,
+                                    entry_atr=entry_atr_value,
+                                    exit_fee=commission, reason="signal_sl")
+                        current_trade.scale_in_adds = scale.scale_in_count
+                        trades.append(current_trade)
+                        current_trade = None
+                    sl_trigger_px = 0.0
+                    avg_cost = 0.0
+                    entry_atr_value = 0.0
+                    sl_high_water_px = 0.0
+                    sl_pierce_armed = False
+                    scale.reset()
+                    self._run_position_regime = ""
 
             # End-of-bar: for a trailing ATR stop, ratchet the trigger up on new
             # highs; then check whether this bar's close breached the trigger.
@@ -2374,7 +3259,10 @@ class Backtester:
                     candidate = sl_high_water_px - self.trailing_stop_atr_mult * entry_atr_value
                     if candidate > sl_trigger_px:
                         sl_trigger_px = candidate
-                if self._sl_hit("long", mark_price, sl_trigger_px):
+                # #1271: close-detect/next-open-fill is legacy-only — the
+                # walk's pierce check above subsumes it (see the open/close
+                # path's end-of-bar comment).
+                if not walk_mode and self._sl_hit("long", mark_price, sl_trigger_px):
                     pending_signal_sl_close = True
             elif position < 0 and sl_trigger_px > 0:
                 # Short mirror (#989): the trail anchors on a LOW-water mark
@@ -2391,8 +3279,14 @@ class Backtester:
                     candidate = sl_high_water_px + self.trailing_stop_atr_mult * entry_atr_value
                     if candidate < sl_trigger_px:
                         sl_trigger_px = candidate
-                if self._sl_hit("short", mark_price, sl_trigger_px):
+                if not walk_mode and self._sl_hit("short", mark_price, sl_trigger_px):
                     pending_signal_sl_close = True
+
+            # #1271: promote any surviving trigger to a carried, pierce-
+            # eligible level for the next bar (plain-path mirror of the
+            # open/close path's pre-continue arming).
+            if position != 0:
+                sl_pierce_armed = True
 
         # Close any open position at the end
         if position != 0:
@@ -2410,8 +3304,22 @@ class Backtester:
 
             if current_trade:
                 current_trade.close(df.index[-1], final_price)
+                # This leg carries whatever shares remain after any earlier
+                # engine partial-close legs (each of which already netted its
+                # pro-rated share of the single entry commission). hold.entry_fee
+                # is still the FULL entry fee, so pro-rate by the remaining
+                # fraction here too — else the entry fee is netted more than
+                # once across the position's legs (#1241).
+                eod_qty_frac = (
+                    current_trade.shares / initial_quantity
+                    if initial_quantity > 0 else 1.0
+                )
                 _stamp_hold(current_trade, hold, entry_atr=entry_atr_value,
-                            exit_fee=commission, reason="end_of_data")
+                            exit_fee=commission, reason="end_of_data",
+                            qty_frac=eod_qty_frac,
+                            # #1276: end-of-data is the final leg.
+                            true_up_entry_fee=scale.scale_in_count > 0)
+                current_trade.scale_in_adds = scale.scale_in_count
                 trades.append(current_trade)
 
         final_equity = cash
@@ -2441,27 +3349,106 @@ class Backtester:
             "close_strategies": [dict(r) for r in self._close_refs],
             "trades": [t.to_dict() for t in trades],
         })
+        if risk_mode:
+            # #1268: surface the fail-closed skips so a run that took fewer
+            # entries than the signal produced is auditable.
+            metrics["risk_per_trade_pct"] = self.risk_per_trade_pct
+            metrics["risk_sizing_skipped_entries"] = risk_skipped_entries
+        if self.allow_scale_in:
+            # #1276: add-leg telemetry — adds create no Trade rows (live #T
+            # parity), so surface them here for auditability.
+            metrics["scale_in_adds"] = scale_in_adds_total
+            metrics["scale_in_added_notional_usd"] = round(
+                scale_in_added_notional_total, 6,
+            )
 
         if save:
             store_backtest_result(metrics)
 
         return metrics
 
+    def _risk_entry_fraction(self, atr_series: Optional[pd.Series], idx,
+                             price: float) -> Optional[float]:
+        """Per-open committed-cash fraction under risk-per-trade sizing (#1268).
+
+        Mirrors the live formula in this engine's fraction-of-cash terms:
+        ``shares = (cash × pct/100) / stop_distance`` ⇒ ``invest = cash ×
+        (pct/100) × price/stop_distance`` ⇒ fraction = ``(pct/100) ×
+        price/stop_distance``. Stop distance comes from the configured owner:
+        ``trailing_stop_atr_mult``/``stop_loss_atr_mult`` × the signal bar's
+        closed ATR (``_stamp_entry_atr`` — the same value the SL geometry
+        stamps, so a stop-out realizes exactly the risked dollars), else
+        ``price × trailing_stop_pct``/``stop_loss_pct`` (fractions in this
+        engine, matching the SL trigger math). Returns None when the distance
+        is unresolvable — the caller SKIPS the entry (fail-closed, matching
+        live). The fraction is capped at 1.0: the backtester models no
+        leverage, so the live ``cash × exchange_leverage`` notional cap
+        tightens to 1× cash here (warned once per run when it binds).
+        """
+        pct = float(self.risk_per_trade_pct or 0)
+        if pct <= 0 or price <= 0:
+            return None
+        dist = None
+        atr_mult = 0.0
+        if (self.trailing_stop_atr_mult or 0) > 0:
+            atr_mult = float(self.trailing_stop_atr_mult)
+        elif (self.stop_loss_atr_mult or 0) > 0:
+            atr_mult = float(self.stop_loss_atr_mult)
+        if atr_mult > 0:
+            atr = self._stamp_entry_atr(atr_series, idx, price)
+            if atr <= 0:
+                return None
+            dist = atr_mult * atr
+        elif (self.trailing_stop_pct or 0) > 0:
+            dist = price * float(self.trailing_stop_pct)
+        elif (self.stop_loss_pct or 0) > 0:
+            dist = price * float(self.stop_loss_pct)
+        if dist is None or dist <= 0:
+            return None
+        fraction = (pct / 100.0) * price / dist
+        if fraction > 1.0:
+            if not self._risk_cap_warned:
+                self._risk_cap_warned = True
+                print(
+                    f"[#1268] risk_per_trade_pct: risk-derived notional "
+                    f"exceeds available cash at {idx} (fraction "
+                    f"{fraction:.2f} capped at 1.0) — the backtester models "
+                    f"no leverage, so live would size up to cash × "
+                    f"exchange_leverage here. Further caps applied silently.",
+                    file=sys.stderr,
+                )
+            fraction = 1.0
+        return fraction
+
     def _stamp_entry_atr(self, atr_series: Optional[pd.Series], idx,
                          entry_price: float) -> float:
-        """Return the ATR at ``idx`` for stamping ``Position.EntryATR``.
+        """Return the ATR to stamp as ``Position.EntryATR`` for a fill at
+        ``idx``.
 
-        Mirrors ``stampEntryATRIfOpened`` in scheduler/main.go: rejects NaN
-        and any value greater than 50% of the entry price as a plausibility
-        guard. Returns 0.0 when no usable ATR is available — close evaluators
-        that require ATR (``tiered_tp_atr``) then fall through with a no-op
-        until a position with a valid ATR is opened.
+        Reads the bar BEFORE ``idx``: the fill happens at ``idx``'s open, when
+        that bar's own high/low/close (and hence its ATR) are still unknown.
+        Live stamps the last closed bar's ATR at order time (signal bar N; the
+        fill bar is N+1), so the closed-bar value is bar N's — reading the
+        fill bar's ATR leaked that bar's own range into the stop/TP geometry
+        (#1228 audit). Mirrors ``stampEntryATRIfOpened`` in scheduler/main.go:
+        rejects NaN and any value greater than 50% of the entry price as a
+        plausibility guard. Returns 0.0 when no usable ATR is available —
+        close evaluators that require ATR (``tiered_tp_atr``) then fall
+        through with a no-op until a position with a valid ATR is opened.
         """
         if atr_series is None or entry_price <= 0:
             return 0.0
         try:
-            value = float(atr_series.loc[idx])
+            pos = int(atr_series.index.get_loc(idx))
         except (KeyError, TypeError, ValueError):
+            # Missing label, or a non-unique index where get_loc returns a
+            # slice/mask — no unambiguous prior bar; treat as no usable ATR.
+            return 0.0
+        if pos < 1:
+            return 0.0
+        try:
+            value = float(atr_series.iloc[pos - 1])
+        except (TypeError, ValueError):
             return 0.0
         if not (value > 0):  # rejects NaN, 0, negative
             return 0.0
@@ -2597,11 +3584,44 @@ class Backtester:
         return 0.0
 
     @staticmethod
+    def _intrabar_sl_fill(side: str, open_px: float, high_px: float,
+                          low_px: float, trigger_px: float) -> Optional[float]:
+        """Intra-bar OHLC-walk SL resolution (#1271): return the raw fill
+        price for a bar whose range touched the armed trigger, or ``None``
+        when the trigger survived the bar.
+
+        Walks O first: a bar that OPENS beyond the trigger (gap-through)
+        fills at the open — the trigger price no longer exists in the market.
+        Otherwise a range touch (long: ``low <= trigger``; short: ``high >=
+        trigger``) fills at the trigger price, mirroring an on-chain stop
+        executing on touch. The caller applies slippage/commission on top,
+        same as every other exit path. Frames without open/high/low columns
+        pass the close for all three, degrading to the legacy close-touch
+        detection rule — the open==close touch then routes through the
+        gap-through branch and fills at the close (the only price the frame
+        carries), one bar earlier than the legacy next-bar fill.
+        """
+        if trigger_px <= 0:
+            return None
+        if side == "long":
+            if open_px > 0 and open_px <= trigger_px:
+                return open_px
+            if low_px > 0 and low_px <= trigger_px:
+                return trigger_px
+        elif side == "short":
+            if open_px >= trigger_px:
+                return open_px
+            if high_px >= trigger_px:
+                return trigger_px
+        return None
+
+    @staticmethod
     def _sl_hit(side: str, mark_price: float, trigger_px: float) -> bool:
-        """Bar-level SL hit detection. For a long, fires when ``mark_price <=
-        trigger_px``; for a short, fires when ``mark_price >= trigger_px``.
-        Intra-bar trigger races (high/low piercing without close confirming)
-        are not simulated — same caveat as elsewhere in the bar-level engine.
+        """Bar-close SL hit detection — the LEGACY (``bar_close``) resolution.
+        For a long, fires when ``mark_price <= trigger_px``; for a short, when
+        ``mark_price >= trigger_px``. Under the default ``ohlc_walk`` mode the
+        run loop uses ``_intrabar_sl_fill`` instead (which strictly subsumes
+        this check); this remains for the legacy flag and direct unit tests.
         """
         if trigger_px <= 0 or mark_price <= 0:
             return False
@@ -2751,12 +3771,23 @@ class Backtester:
         else:
             sharpe = 0.0
 
-        # Sortino Ratio (only downside deviation)
-        downside = daily_returns[daily_returns < 0]
-        if len(downside) > 1 and downside.std() > 0:
-            sortino = (daily_returns.mean() / downside.std()) * ann_factor
+        # Sortino Ratio — canonical downside deviation: the root-mean-square of
+        # min(r, 0) about a MAR of 0 (NOT the sample std of negatives about their
+        # own mean), annualized by the same factor as Sharpe. The RMS is taken
+        # over ALL return observations, so a single losing bar still yields a
+        # finite, well-defined denominator. Zero downside (no losing bars, or a
+        # downside deviation that rounds to 0) means Sortino is mathematically
+        # undefined — report None, never a neutral 0.0 that would rank a
+        # flawless leg below a mediocre one.
+        if len(daily_returns) > 0:
+            neg = daily_returns.clip(upper=0.0)
+            downside_dev = float(np.sqrt((neg**2).mean()))
         else:
-            sortino = 0.0
+            downside_dev = 0.0
+        if downside_dev > 0:
+            sortino = (daily_returns.mean() / downside_dev) * ann_factor
+        else:
+            sortino = None
 
         # Max Drawdown — floor the running peak at initial_capital so the
         # baseline is always the true starting balance, not a seeded
@@ -2775,10 +3806,21 @@ class Backtester:
 
             gross_profit = sum(t.pnl for t in winning) if winning else 0
             gross_loss = abs(sum(t.pnl for t in losing)) if losing else 0
-            profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+            # All-win legs (no losing trades → gross_loss == 0) have an
+            # undefined profit factor. Report None, never float("inf"): a NaN/inf
+            # would serialize as the nonstandard JSON `Infinity` token that strict
+            # parsers (incl. Go json.Unmarshal) reject.
+            profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
-            avg_win = np.mean([t.pnl_pct for t in winning]) if winning else 0
-            avg_loss = np.mean([t.pnl_pct for t in losing]) if losing else 0
+            # Net return fraction per leg (net t.pnl over entry notional), so
+            # avg_win/avg_loss share the net convention with the win/loss
+            # buckets above — t.pnl_pct is GROSS and would misreport a
+            # gross-winner/net-loser bucketed as a loss (#1241).
+            def _net_pnl_pct(t):
+                notional = t.shares * t.entry_price
+                return (t.pnl / notional) if notional > 0 else 0.0
+            avg_win = np.mean([_net_pnl_pct(t) for t in winning]) if winning else 0
+            avg_loss = np.mean([_net_pnl_pct(t) for t in losing]) if losing else 0
         else:
             win_rate = 0
             profit_factor = 0
@@ -2802,6 +3844,9 @@ class Backtester:
         # (not -ann_factor) so two equally-dead legs tie regardless of bust
         # timeframe, and not path-dependent so an earlier bust never out-ranks
         # a later one.
+        # Liquidation forces the sentinel floor regardless of the values above
+        # — a busted account is NOT "zero downside"; the None-Sortino convention
+        # never applies here (#1005 override wins).
         if liquidated:
             sharpe = sortino = -LIQUIDATED_METRIC_FLOOR
             volatility = LIQUIDATED_METRIC_FLOOR
@@ -2810,17 +3855,25 @@ class Backtester:
             "total_return_pct": round(total_return * 100, 2),
             "annual_return_pct": round(annual_return * 100, 2),
             "sharpe_ratio": round(sharpe, 3),
-            "sortino_ratio": round(sortino, 3),
+            "sortino_ratio": round(sortino, 3) if sortino is not None else None,
             "max_drawdown_pct": round(max_drawdown * 100, 2),
             "calmar_ratio": round(calmar, 3),
             "volatility_pct": round(volatility * 100, 2),
             "win_rate": round(win_rate * 100, 2),
-            "profit_factor": round(profit_factor, 3),
+            "profit_factor": round(profit_factor, 3) if profit_factor is not None else None,
             "total_trades": total_trades,
             "avg_win_pct": round(avg_win * 100, 2),
             "avg_loss_pct": round(avg_loss * 100, 2),
             "liquidated": liquidated,
         }
+
+
+def _fmt_opt(value, spec: str = ".3f", none_text: str = "n/a") -> str:
+    """Format an optional numeric metric, rendering None (undefined) as text
+    instead of raising on a format spec that only accepts numbers."""
+    if value is None:
+        return none_text
+    return format(value, spec)
 
 
 def format_results(results: dict) -> str:
@@ -2848,14 +3901,14 @@ def format_results(results: dict) -> str:
         f"{'─'*60}",
         f"  RISK METRICS",
         f"    Sharpe Ratio:    {results['sharpe_ratio']:.3f}",
-        f"    Sortino Ratio:   {results['sortino_ratio']:.3f}",
+        f"    Sortino Ratio:   {_fmt_opt(results['sortino_ratio'])}",
         f"    Max Drawdown:    {results['max_drawdown_pct']:.2f}%",
         f"    Calmar Ratio:    {results.get('calmar_ratio', 0):.3f}",
         f"{'─'*60}",
         f"  TRADE STATS",
         f"    Total Trades:    {results['total_trades']}",
         f"    Win Rate:        {results['win_rate']:.1f}%",
-        f"    Profit Factor:   {results['profit_factor']:.3f}",
+        f"    Profit Factor:   {_fmt_opt(results['profit_factor'])}",
         f"    Avg Win:         {results.get('avg_win_pct', 0):+.2f}%",
         f"    Avg Loss:        {results.get('avg_loss_pct', 0):+.2f}%",
         f"{'='*60}",

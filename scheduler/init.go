@@ -21,8 +21,14 @@ var supportedAssets = []asset{
 }
 
 const (
-	starterAssetName      = "BTC"
-	starterSpotStrategyID = "momentum"
+	starterAssetName = "BTC"
+	// chart_pattern: discovery-visible with the strongest adjudicated spot
+	// evidence (#1282: real wide-pool gross edge; the #982 default-off f4
+	// gate survived the BH family pass). Must never be a name in
+	// m5DeprecatedEdgeStrategies — the init wizard's own default would then
+	// generate a config the binary immediately warns against (#1275); pinned
+	// by TestConfigGenerationSurfacesExcludeQuarantinedStrategies.
+	starterSpotStrategyID = "chart_pattern"
 	starterSpotCapital    = 1000.0
 	starterSpotDrawdown   = 5.0
 )
@@ -88,7 +94,7 @@ var knownShortNames = map[string]string{
 
 // bidirectionalPerpsStrategies lists strategy IDs that emit signal=-1 as a
 // short-entry (not just a long-exit). Configs generated for these strategies
-// set AllowShorts=true so ExecutePerpsSignal opens shorts from flat instead
+// set AllowShorts=true so ExecutePerpsSignalWithLeverage opens shorts from flat instead
 // of skipping the signal (#328).
 var bidirectionalPerpsStrategies = map[string]bool{
 	"triple_ema_bidir":        true,
@@ -163,35 +169,20 @@ func deriveShortName(id string) string {
 }
 
 // defaultSpotStrategies is the fallback list when Python discovery fails.
+// It must mirror discovery's visibility rules: names quarantined by the M5
+// fee audit (#1275) or otherwise discovery-hidden in
+// shared_strategies/open/registry.py are excluded, so a discovery outage
+// never re-offers a strategy the registry hides (parity-tested in
+// TestConfigGenerationSurfacesExcludeQuarantinedStrategies).
 var defaultSpotStrategies = []stratDef{
-	{ID: "sma_crossover", ShortName: "sma"},
-	{ID: "ema_crossover", ShortName: "ema"},
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "rsi", ShortName: "rsi"},
-	{ID: "bollinger_bands", ShortName: "bb"},
-	{ID: "macd", ShortName: "macd"},
-	{ID: "mean_reversion", ShortName: "mr"},
-	{ID: "volume_weighted", ShortName: "vw"},
-	{ID: "triple_ema", ShortName: "tema"},
-	{ID: "rsi_macd_combo", ShortName: "rmc"},
-	{ID: "stoch_rsi", ShortName: "stochrsi"},
-	{ID: "ichimoku_cloud", ShortName: "ichi"},
-	{ID: "order_blocks", ShortName: "ob"},
-	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
-	{ID: "parabolic_sar", ShortName: "psar"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
-	{ID: "tema_cross", ShortName: "temac"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "mtf_confluence", ShortName: "mtfc"},
-	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
@@ -203,54 +194,29 @@ var defaultOptionsStrategies = []stratDef{
 }
 
 var defaultPerpsStrategies = []stratDef{
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "triple_ema_bidir", ShortName: "temab"},
-	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
-	{ID: "funding_skew", ShortName: "fskew"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "mtf_confluence", ShortName: "mtfc"},
-	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
 var defaultFuturesStrategies = []stratDef{
-	{ID: "momentum", ShortName: "momentum"},
-	{ID: "mean_reversion", ShortName: "mr"},
-	{ID: "rsi", ShortName: "rsi"},
-	{ID: "macd", ShortName: "macd"},
 	{ID: "breakout", ShortName: "bo"},
-	{ID: "triple_ema_bidir", ShortName: "temab"},
-	{ID: "stoch_rsi", ShortName: "stochrsi"},
-	{ID: "ichimoku_cloud", ShortName: "ichi"},
-	{ID: "order_blocks", ShortName: "ob"},
-	{ID: "vwap_reversion", ShortName: "vwap"},
 	{ID: "anchored_vwap", ShortName: "avwap"},
 	{ID: "anchored_vwap_channel", ShortName: "avwapch"},
 	{ID: "anchored_vwap_reversion", ShortName: "avwaprev"},
 	{ID: "chart_pattern", ShortName: "cpat"},
 	{ID: "liquidity_sweeps", ShortName: "liqsw"},
-	{ID: "parabolic_sar", ShortName: "psar"},
 	{ID: "delta_neutral_funding", ShortName: "dnf"},
-	{ID: "funding_skew", ShortName: "fskew"},
-	{ID: "sweep_squeeze_combo", ShortName: "ssc"},
-	{ID: "adx_trend", ShortName: "adxt"},
-	{ID: "tema_cross", ShortName: "temac"},
-	{ID: "tema_cross_bd", ShortName: "temacb"},
 	{ID: "momentum_pro", ShortName: "mompro"},
 	{ID: "mean_reversion_pro", ShortName: "mrpro"},
 	{ID: "atr_band_revert", ShortName: "abr"},
-	{ID: "mtf_confluence", ShortName: "mtfc"},
-	{ID: "regime_adaptive", ShortName: "regad"},
 	{ID: "regime_adaptive_htf", ShortName: "rahtf"},
 }
 
@@ -332,7 +298,8 @@ func hasAnyEnabledStrategyType(opts InitOptions) bool {
 }
 
 // applyMinimalStarterDefaults turns the empty/default init path into one safe,
-// easy-to-understand starter strategy: BTC spot momentum on BinanceUS.
+// easy-to-understand starter strategy: BTC spot starterSpotStrategyID
+// (currently chart_pattern) on BinanceUS.
 func applyMinimalStarterDefaults(opts *InitOptions) {
 	if !opts.EnableSpot && hasAnyEnabledStrategyType(*opts) {
 		return
@@ -392,6 +359,7 @@ type InitOptions struct {
 	PerpsCapital            float64
 	PerpsLeverage           float64  // perps exchange leverage (default 1 = no leverage) (#254/#497)
 	PerpsSizingLeverage     float64  // perps sizing multiplier; defaults to PerpsLeverage (#497)
+	PerpsRiskPerTradePct    float64  // HL perps only: opt-in risk-per-trade sizing % in (0, 10] (#1268); >0 emits risk_per_trade_pct and suppresses sizing_leverage (mutually exclusive). JSON-only surface like PerpsSizingLeverage; wizard users edit config post-init.
 	HLStopLossPct           *float64 // HL perps only: per-trade stop-loss % from entry. nil = auto-derive from MaxDrawdownPct (#484); explicit 0 = disabled; >0 = override (#412)
 	HLStopLossMarginPct     *float64 // HL perps only: per-trade stop-loss as % of deployed margin. nil = auto-derive; explicit 0 = disabled; mutually exclusive with HLStopLossPct (#487, #484)
 	HLTrailingStopPct       *float64 // HL perps only: synthetic trailing stop distance from high/low-water mark; mutually exclusive with fixed SL fields (#501)
@@ -424,6 +392,16 @@ type InitOptions struct {
 	CapitalPct              float64 `json:"capitalPct,omitempty"` // 0-1; global capital_pct applied to all strategies
 	HTFFilter               bool    // higher-timeframe trend filter for all strategies
 	DisableCircuitBreaker   bool    `json:"disableCircuitBreaker,omitempty"` // #1048 — when true, stamp circuit_breaker:false on every generated non-manual strategy (fleet-wide opt-out of the per-strategy circuit breaker). Default false keeps the safe default (CB on). Exposed for the JSON-driven `init --json` path; the interactive wizard leaves it false (disabling an auto-protective halt at setup is a footgun — operators opt out per-strategy via config edit + SIGHUP instead).
+	ATRMethod               string  `json:"atrMethod,omitempty"`             // #1277 — top-level atr_method emitted into the generated config ("simple"|"wilder"; empty omits the field = simple). Exposed for the JSON-driven `init --json` path only; the interactive wizard leaves it unset (switching live stop-geometry math at setup is a footgun — operators opt in via config edit + restart/SIGHUP after reading the cutover notes).
+	// #1273 — optional circuit-breaker timing/threshold overrides stamped on
+	// every generated non-manual strategy. 0/omitted leaves the field nil so the
+	// historical hardcoded defaults apply (24h drawdown cooldown, 5-loss streak,
+	// 1h loss-streak cooldown). Exposed for the JSON-driven `init --json` path
+	// only; the interactive wizard leaves them unset (per-strategy tuning is
+	// config-edit + SIGHUP territory, mirroring the #1048 stance).
+	CBDrawdownCooldownMinutes   int `json:"cbDrawdownCooldownMinutes,omitempty"`
+	CBLossStreakThreshold       int `json:"cbLossStreakThreshold,omitempty"`
+	CBLossStreakCooldownMinutes int `json:"cbLossStreakCooldownMinutes,omitempty"`
 	// Risk settings — prompted explicitly during live-mode setup (#85) so operators
 	// don't hit the post-launch migration DM for portfolio_risk fields.
 	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`   // kill switch threshold; 0 → default 25
@@ -479,6 +457,7 @@ func generateConfig(opts InitOptions) *Config {
 			Channels:    opts.TelegramChannelMap,
 		},
 		AutoUpdate: opts.AutoUpdate,
+		ATRMethod:  normalizeATRMethod(opts.ATRMethod), // #1277: "" omitted from JSON (= simple)
 	}
 
 	// Build asset name → exchange symbol map.
@@ -585,10 +564,21 @@ func generateConfig(opts InitOptions) *Config {
 		if perpsSizingLeverage <= 0 {
 			perpsSizingLeverage = perpsLeverage
 		}
+		// #1268: risk-per-trade sizing is mutually exclusive with
+		// sizing_leverage — suppress the notional field so the generated
+		// config passes validateRiskPerTradePct. The stop owner defaults via
+		// LoadConfig's default_stop_loss_atr_mult pass unless the operator
+		// picked an explicit SL framing.
+		var perpsRiskPerTradePct *float64
+		if opts.PerpsRiskPerTradePct > 0 {
+			v := opts.PerpsRiskPerTradePct
+			perpsRiskPerTradePct = &v
+			perpsSizingLeverage = 0
+		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
 			// Strategies that emit bidirectional signals must opt in to
-			// short-opening execution, otherwise ExecutePerpsSignal drops
+			// short-opening execution, otherwise ExecutePerpsSignalWithLeverage drops
 			// their signal=-1 from flat and the strategy becomes effectively
 			// long-only at the executor layer (#328 review feedback).
 			// #656: direction enum replaces allow_shorts. Bidirectional
@@ -613,6 +603,7 @@ func generateConfig(opts InitOptions) *Config {
 					IntervalSeconds:   3600,
 					Leverage:          perpsLeverage,
 					SizingLeverage:    perpsSizingLeverage,
+					RiskPerTradePct:   perpsRiskPerTradePct, // *float64 — nil keeps notional sizing; >0 opts into risk-per-trade (#1268)
 					Direction:         direction,
 					StopLossPct:       opts.HLStopLossPct,       // *float64 — nil falls through to MaxDrawdownPct (#484)
 					StopLossMarginPct: opts.HLStopLossMarginPct, // *float64 — nil falls through (#484/#487)
@@ -794,6 +785,27 @@ func generateConfig(opts InitOptions) *Config {
 		}
 	}
 
+	// #1273: fleet-wide circuit-breaker timing/threshold overrides. 0/omitted
+	// leaves each field nil → the historical hardcoded defaults. Manual is
+	// exempt from CheckRisk (and validateConfig rejects the fields there), so
+	// it is skipped like the #1048 opt-out above. Values are validated by
+	// validateConfig when the generated config is loaded.
+	stampCBOverride := func(v int, set func(sc *StrategyConfig, p *int)) {
+		if v <= 0 {
+			return
+		}
+		for i := range cfg.Strategies {
+			if cfg.Strategies[i].Type == "manual" {
+				continue
+			}
+			val := v
+			set(&cfg.Strategies[i], &val)
+		}
+	}
+	stampCBOverride(opts.CBDrawdownCooldownMinutes, func(sc *StrategyConfig, p *int) { sc.CBDrawdownCooldownMinutes = p })
+	stampCBOverride(opts.CBLossStreakThreshold, func(sc *StrategyConfig, p *int) { sc.CBLossStreakThreshold = p })
+	stampCBOverride(opts.CBLossStreakCooldownMinutes, func(sc *StrategyConfig, p *int) { sc.CBLossStreakCooldownMinutes = p })
+
 	// #87: Apply capital_pct to all strategies if set globally.
 	if opts.CapitalPct > 0 {
 		for i := range cfg.Strategies {
@@ -816,6 +828,10 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		if gate := defaultCompositeRangingGate(sc.Args[0]); gate != nil {
 			sc.AllowedRegimes = gate
+			// #1278: newly generated gated configs get the conservative
+			// entry-gate failure policy — hold fresh opens while the regime
+			// is unknown. Existing configs keep the fail-open default.
+			sc.RegimeGateOnFailure = RegimeGateOnFailureClosed
 			needsCompositeRangingRegime = true
 		}
 	}
@@ -902,7 +918,25 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
 		opts.PerpsLeverage = 1
 	}
-	if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
+	// #1277: validate the JSON-only atr_method surface before generateConfig
+	// stamps it — an invalid value must fail the init, not the first daemon load.
+	if !validATRMethodValue(opts.ATRMethod) {
+		fmt.Fprintf(os.Stderr, "Error: atrMethod must be %q or %q, got %q\n", ATRMethodSimple, ATRMethodWilder, opts.ATRMethod)
+		return 1
+	}
+	// #1268: risk-per-trade sizing is mutually exclusive with sizing_leverage;
+	// reject a contradictory --json payload here (mirrors validateRiskPerTradePct)
+	// and skip the sizing-leverage default so generateConfig emits neither.
+	if opts.EnablePerps && opts.PerpsRiskPerTradePct > 0 {
+		if opts.PerpsSizingLeverage > 0 {
+			fmt.Fprintln(os.Stderr, "Error: perpsRiskPerTradePct and perpsSizingLeverage are mutually exclusive — pick one sizing mode")
+			return 1
+		}
+		if opts.PerpsRiskPerTradePct > 10 {
+			fmt.Fprintf(os.Stderr, "Error: perpsRiskPerTradePct must be in (0, 10], got %g\n", opts.PerpsRiskPerTradePct)
+			return 1
+		}
+	} else if opts.EnablePerps && opts.PerpsSizingLeverage <= 0 {
 		opts.PerpsSizingLeverage = opts.PerpsLeverage
 	}
 

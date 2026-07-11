@@ -45,15 +45,25 @@ make_volatile = _conftest_mod.make_volatile
 class TestFuturesRegistry:
     def test_strategies_registered(self):
         names = list_strategies()
-        assert len(names) >= 22
-        for expected in ["sma_crossover", "ema_crossover", "bollinger_bands",
-                         "volume_weighted", "triple_ema", "triple_ema_bidir",
-                         "rsi_macd_combo",
-                         "momentum", "mean_reversion", "rsi", "macd", "breakout",
-                         "stoch_rsi", "supertrend", "squeeze_momentum",
-                         "ichimoku_cloud", "atr_breakout", "heikin_ashi_ema",
-                         "order_blocks", "parabolic_sar", "delta_neutral_funding"]:
+        assert len(names) >= 10
+        # Spot-check a few discovery-visible strategies
+        for expected in ["breakout", "delta_neutral_funding",
+                         "mean_reversion_pro", "momentum_pro",
+                         "anchored_vwap", "chart_pattern"]:
             assert expected in names, f"{expected} not registered"
+        # #1275: M5-deprecated names leave discovery but stay registered so
+        # explicit configs and backtests keep resolving them (#1282 added the
+        # futures names below the first row).
+        for quarantined in ["sma_crossover", "ema_crossover", "bollinger_bands",
+                            "volume_weighted", "triple_ema", "rsi_macd_combo",
+                            "momentum", "mean_reversion", "rsi", "macd",
+                            "stoch_rsi", "supertrend", "squeeze_momentum",
+                            "ichimoku_cloud", "atr_breakout", "heikin_ashi_ema",
+                            "order_blocks", "parabolic_sar",
+                            "triple_ema_bidir", "tema_cross_bd", "funding_skew",
+                            "consolidation_range", "regime_adaptive"]:
+            assert quarantined not in names, f"{quarantined} should be hidden"
+            assert quarantined in STRATEGY_REGISTRY, f"{quarantined} must stay loadable"
 
     def test_get_unknown_strategy_raises(self):
         with pytest.raises(ValueError, match="Unknown strategy"):

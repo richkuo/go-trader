@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -205,6 +206,14 @@ func TestComputeTrailingStopUpdate(t *testing.T) {
 		{"short ratchets down", "short", 90, 100, 3, 0.5, 103, 90, 92.7, true},
 		{"short never raises trigger", "short", 101, 100, 3, 0.5, 103, 100, 0, false},
 		{"missing current trigger places one", "long", 100, 100, 3, 0.5, 0, 100, 97, true},
+		// #1234 audit: movePct >= minMovePct — a move exactly AT the threshold
+		// must replace (regression guard for >= flipped to >). trailingPct=50
+		// makes the trigger factor an exact binary 0.5 (long) / 1.5 (short),
+		// so movePct computes to an exact 1.0 in float64 (0.5/50*100).
+		{"long replaces at exact min-move boundary", "long", 101, 100, 50, 1.0, 50, 101, 50.5, true},
+		{"short replaces at exact min-move boundary", "short", 33, 100, 50, 1.0, 50, 33, 49.5, true},
+		{"long holds just under min-move boundary", "long", 100.8, 100, 50, 1.0, 50, 100.8, 0, false},
+		{"short holds just under min-move boundary", "short", 33.2, 100, 50, 1.0, 50, 33.2, 0, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -454,7 +463,7 @@ func TestIsHLOpenOrderCapRejection(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_StopLossPctBounds(t *testing.T) {
+func TestConfigValidation_StopLossPctBounds(t *testing.T) {
 	// Issue 421 (review point 4): hand-edited configs with out-of-range
 	// stop_loss_pct must fail validation rather than silently break the
 	// safety feature. Pointer-aware (#484): explicit 0 is the operator
@@ -492,7 +501,7 @@ func TestValidateConfig_StopLossPctBounds(t *testing.T) {
 				},
 				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 			}
-			err := ValidateConfig(cfg)
+			err := validateConfig(cfg, false)
 			gotErr := err != nil && containsStopLossErr(err.Error())
 			if gotErr != c.wantError {
 				t.Errorf("got err=%v wantStopLossErr=%v (full err: %v)", gotErr, c.wantError, err)
@@ -544,7 +553,7 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_ReconcilesState(t *t
 
 	logger := silentStrategyLogger("hl-test-eth")
 	defer logger.Close()
-	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, nil, logger)
+	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, nil, nil, logger)
 
 	// Open + synthetic close = 2 trades.
 	if trades != 2 {
@@ -585,7 +594,7 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_NoTriggerPxIsNoOp(t 
 	}
 	logger := silentStrategyLogger("hl")
 	defer logger.Close()
-	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, nil, logger)
+	trades, _ := executeHyperliquidResult(sc, state, result, execResult, "BUY", 3200, nil, nil, logger)
 	if trades != 1 {
 		t.Errorf("trades=%d, want 1 (only open recorded; reconcile skipped)", trades)
 	}
@@ -870,6 +879,13 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		{"drawdown fallback at cap boundary", hlPerps(StrategyConfig{MaxDrawdownPct: 50, Leverage: 5}), 50},
 		{"drawdown fallback ignored when explicit set", hlPerps(StrategyConfig{StopLossPct: pf(2), MaxDrawdownPct: 10}), 2},
 		{"margin fallthrough beats drawdown", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), MaxDrawdownPct: 5, Leverage: 20}), 1.0},
+		// #1234 audit: a resolved regime-owned stop DEFERS (returns 0) and
+		// must never fall through to the max-drawdown fallback — the trigger
+		// is armed post-open once EntryATR and Regime are stamped (#733).
+		{"stop_loss_atr_regime defers, no drawdown fallback",
+			hlPerps(StrategyConfig{StopLossATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
+		{"trailing_stop_atr_regime defers, no drawdown fallback",
+			hlPerps(StrategyConfig{TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -882,9 +898,9 @@ func TestEffectiveStopLossPct(t *testing.T) {
 }
 
 // #487: stop_loss_margin_pct is mutually exclusive with stop_loss_pct, must be
-// in (0, 100], and is HL-perps-only. ValidateConfig must reject every other
+// in (0, 100], and is HL-perps-only. validateConfig must reject every other
 // shape so a hand-edited config can't silently disable the SL feature.
-func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
+func TestConfigValidation_StopLossMarginPctBounds(t *testing.T) {
 	cases := []struct {
 		name      string
 		marginPct float64
@@ -942,7 +958,7 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 				Strategies:      []StrategyConfig{sc},
 				PortfolioRisk:   &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 			}
-			err := ValidateConfig(cfg)
+			err := validateConfig(cfg, false)
 			gotErr := err != nil && strings.Contains(err.Error(), "stop_loss")
 			if gotErr != c.wantError {
 				t.Errorf("got err=%v wantStopLossErr=%v (full err: %v)", gotErr, c.wantError, err)
@@ -951,7 +967,7 @@ func TestValidateConfig_StopLossMarginPctBounds(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_TrailingStopPctBoundsAndExclusion(t *testing.T) {
+func TestConfigValidation_TrailingStopPctBoundsAndExclusion(t *testing.T) {
 	cases := []struct {
 		name      string
 		trailing  float64
@@ -1000,7 +1016,7 @@ func TestValidateConfig_TrailingStopPctBoundsAndExclusion(t *testing.T) {
 				Strategies:      []StrategyConfig{sc},
 				PortfolioRisk:   &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 			}
-			err := ValidateConfig(cfg)
+			err := validateConfig(cfg, false)
 			gotErr := err != nil && strings.Contains(err.Error(), "trailing_stop_pct")
 			if gotErr != c.wantError {
 				t.Errorf("got err=%v wantTrailingErr=%v (full err: %v)", gotErr, c.wantError, err)
@@ -1009,7 +1025,7 @@ func TestValidateConfig_TrailingStopPctBoundsAndExclusion(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_TrailingStopMinMovePct(t *testing.T) {
+func TestConfigValidation_TrailingStopMinMovePct(t *testing.T) {
 	cases := []struct {
 		name        string
 		minMove     float64
@@ -1046,7 +1062,7 @@ func TestValidateConfig_TrailingStopMinMovePct(t *testing.T) {
 				}},
 				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 			}
-			err := ValidateConfig(cfg)
+			err := validateConfig(cfg, false)
 			gotErr := err != nil && strings.Contains(err.Error(), "trailing_stop_min_move_pct")
 			if gotErr != c.wantError {
 				t.Errorf("got err=%v wantMinMoveErr=%v (full err: %v)", gotErr, c.wantError, err)
@@ -1055,7 +1071,7 @@ func TestValidateConfig_TrailingStopMinMovePct(t *testing.T) {
 	}
 }
 
-func TestValidateConfig_HLPeersTrailingAndFixedStopLossAllowed(t *testing.T) {
+func TestConfigValidation_HLPeersTrailingAndFixedStopLossAllowed(t *testing.T) {
 	trailing := 3.0
 	fixed := 2.0
 	cfg := &Config{
@@ -1088,9 +1104,9 @@ func TestValidateConfig_HLPeersTrailingAndFixedStopLossAllowed(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 	}
-	err := ValidateConfig(cfg)
+	err := validateConfig(cfg, false)
 	if err != nil {
-		t.Fatalf("ValidateConfig failed: %v", err)
+		t.Fatalf("validateConfig failed: %v", err)
 	}
 }
 
@@ -1217,7 +1233,7 @@ func TestEffectiveStopLossPct_TrailingATRMultDefersInitialTrigger(t *testing.T) 
 //     stop_loss_margin_pct (each conflict surfaces a trailing_stop_atr_mult
 //     error string).
 //   - negative values rejected; zero is a benign opt-out.
-func TestValidateConfig_TrailingStopATRMult(t *testing.T) {
+func TestConfigValidation_TrailingStopATRMult(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	cases := []struct {
 		name      string
@@ -1272,7 +1288,7 @@ func TestValidateConfig_TrailingStopATRMult(t *testing.T) {
 				Strategies:      []StrategyConfig{c.sc},
 				PortfolioRisk:   &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 			}
-			err := ValidateConfig(cfg)
+			err := validateConfig(cfg, false)
 			gotErr := err != nil && strings.Contains(err.Error(), "trailing_stop_atr_mult")
 			if gotErr != c.wantError {
 				t.Errorf("got err=%v wantATRMultErr=%v (full err: %v)", gotErr, c.wantError, err)
@@ -1283,7 +1299,7 @@ func TestValidateConfig_TrailingStopATRMult(t *testing.T) {
 
 // #601: peer stop ownership is allowed because protection orders are sized per
 // strategy.
-func TestValidateConfig_HLPeersATRTrailingAllowed(t *testing.T) {
+func TestConfigValidation_HLPeersATRTrailingAllowed(t *testing.T) {
 	mult := 1.5
 	fixed := 2.0
 	cfg := &Config{
@@ -1316,9 +1332,9 @@ func TestValidateConfig_HLPeersATRTrailingAllowed(t *testing.T) {
 		},
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
 	}
-	err := ValidateConfig(cfg)
+	err := validateConfig(cfg, false)
 	if err != nil {
-		t.Fatalf("ValidateConfig failed: %v", err)
+		t.Fatalf("validateConfig failed: %v", err)
 	}
 }
 
@@ -1533,7 +1549,7 @@ func TestNotifyATRMultMissingEntryATROnce_ThrottlesPerStrategySymbol(t *testing.
 
 // #505 review follow-up: clearATRMultMissingEntryATRWarningOnHLPerpsClose
 // is the production-path shortcut wired into HL perps close sites
-// (recordPerpsStopLossClose, ExecutePerpsSignal close-long/short,
+// (recordPerpsStopLossClose, ExecutePerpsSignalWithLeverage close-long/short,
 // forceCloseAllPositions, hyperliquid_balance circuit-breaker close). It
 // must clear the throttle for HL perps and no-op for any other state, so
 // non-HL strategy closes don't accidentally drop a peer's throttle key.
@@ -2019,7 +2035,7 @@ func TestFixedStopLossATRTriggerPx(t *testing.T) {
 
 // #562: validation rules for stop_loss_atr_mult — HL perps only, mutually
 // exclusive with the four other stop fields.
-func TestValidateConfig_StopLossATRMult(t *testing.T) {
+func TestConfigValidation_StopLossATRMult(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	cases := []struct {
 		name      string
@@ -2075,7 +2091,7 @@ func TestValidateConfig_StopLossATRMult(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := &Config{Strategies: []StrategyConfig{c.sc}}
-			err := ValidateConfig(cfg)
+			err := validateConfig(cfg, false)
 			if c.wantError && err == nil {
 				t.Errorf("expected validation error, got nil")
 			}
@@ -2647,5 +2663,66 @@ func TestATRMultMissingEntryATR_FixedATRMult(t *testing.T) {
 	posOK := &Position{AvgCost: 2000, EntryATR: 40}
 	if atrMultMissingEntryATR(sc, posOK) {
 		t.Error("expected atrMultMissingEntryATR=false when EntryATR is stamped")
+	}
+}
+
+// TestHyperliquidProtectionPositionSnapshot_CarriesFullSurface pins the #1015
+// invariant field-by-field: the lock-free protection walker's snapshot must
+// carry the FULL protection surface (regime label/windows/transition state,
+// the frozen #873 risk anchor, and post-TP/ratchet state). A field added to
+// the protection surface but not propagated here silently unarms paper regime
+// trailing SLs — the original #1015 bug class.
+func TestHyperliquidProtectionPositionSnapshot_CarriesFullSurface(t *testing.T) {
+	postTP := 1.25
+	src := &Position{
+		AvgCost:                         3100,
+		EntryATR:                        42,
+		RiskAnchorPrice:                 3000,
+		Regime:                          "trending",
+		RegimeWindows:                   map[string]string{"daily": "trending", "weekly": "ranging"},
+		RegimeAppliedLabel:              "trending",
+		RegimePendingLabel:              "ranging",
+		RegimePendingCount:              2,
+		SLAdjustedTiersProcessed:        3,
+		RatchetFallbackNormalizePending: true,
+		PostTPTrailingATRMult:           &postTP,
+	}
+	snap := hyperliquidProtectionPositionSnapshot(src)
+	if snap == nil {
+		t.Fatal("snapshot is nil for non-nil position")
+	}
+	if snap.AvgCost != 3100 || snap.EntryATR != 42 || snap.RiskAnchorPrice != 3000 {
+		t.Errorf("price surface = (AvgCost %v, EntryATR %v, RiskAnchorPrice %v); want (3100, 42, 3000)",
+			snap.AvgCost, snap.EntryATR, snap.RiskAnchorPrice)
+	}
+	if snap.Regime != "trending" || snap.RegimeAppliedLabel != "trending" ||
+		snap.RegimePendingLabel != "ranging" || snap.RegimePendingCount != 2 {
+		t.Errorf("regime surface = (%q, %q, %q, %d); want (trending, trending, ranging, 2)",
+			snap.Regime, snap.RegimeAppliedLabel, snap.RegimePendingLabel, snap.RegimePendingCount)
+	}
+	if !reflect.DeepEqual(snap.RegimeWindows, src.RegimeWindows) {
+		t.Errorf("RegimeWindows = %v; want %v", snap.RegimeWindows, src.RegimeWindows)
+	}
+	if snap.SLAdjustedTiersProcessed != 3 || !snap.RatchetFallbackNormalizePending {
+		t.Errorf("ratchet surface = (%d, %v); want (3, true)",
+			snap.SLAdjustedTiersProcessed, snap.RatchetFallbackNormalizePending)
+	}
+	if snap.PostTPTrailingATRMult == nil || *snap.PostTPTrailingATRMult != 1.25 {
+		t.Errorf("PostTPTrailingATRMult = %v; want 1.25", snap.PostTPTrailingATRMult)
+	}
+
+	// Deep-copy guarantees: the walker is lock-free, so mutating the source
+	// after snapshotting must not leak into the snapshot.
+	src.RegimeWindows["daily"] = "ranging"
+	if snap.RegimeWindows["daily"] != "trending" {
+		t.Error("RegimeWindows was shallow-copied; walker snapshot mutated by main loop")
+	}
+	*src.PostTPTrailingATRMult = 9.9
+	if *snap.PostTPTrailingATRMult != 1.25 {
+		t.Error("PostTPTrailingATRMult pointer was shared; walker snapshot mutated by main loop")
+	}
+
+	if hyperliquidProtectionPositionSnapshot(nil) != nil {
+		t.Error("snapshot of nil position must be nil")
 	}
 }

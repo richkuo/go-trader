@@ -390,3 +390,18 @@ def test_optimize_long_direction_with_no_close_ref_runs():
     sides = {t["side"] for w in result["window_results"]
              for t in w["test_result"]["trades"]}
     assert sides <= {"long"}, sides
+
+
+def test_result_metric_dd_adjusted_return_floors_liquidated():
+    # #1228: a blown-up combo's raw DDadj (−100/|−100| = −1.0) would outrank a
+    # surviving loser (−60%/30% DD = −2.0); the floor keeps dead combos last.
+    blown = _result_metric(
+        {"total_return_pct": -100.0, "max_drawdown_pct": -100.0,
+         "liquidated": True},
+        "dd_adjusted_return")
+    survivor = _result_metric(
+        {"total_return_pct": -60.0, "max_drawdown_pct": -30.0,
+         "liquidated": False},
+        "dd_adjusted_return")
+    assert blown == -100.0
+    assert survivor > blown

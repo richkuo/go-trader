@@ -122,7 +122,7 @@ func TestFetchHyperliquidStateNoPositions(t *testing.T) {
 	}
 }
 
-// --- reconcileHyperliquidPositions tests ---
+// --- reconcileHyperliquidPositionsWithResolver tests ---
 
 func newTestLogger(t *testing.T) *StrategyLogger {
 	t.Helper()
@@ -140,7 +140,7 @@ func TestReconcileUpdatesExistingOwnedPosition(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{{Coin: "BTC", Size: 0.334, EntryPrice: 42000}}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if !changed {
 		t.Error("expected changed=true")
@@ -168,7 +168,7 @@ func TestReconcileRemoveClosedPosition(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{} // No on-chain position
 
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if !changed {
 		t.Error("expected changed=true")
@@ -199,7 +199,7 @@ func TestReconcileNoChange(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000, Leverage: 2}}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if changed {
 		t.Error("expected changed=false when state matches on-chain")
@@ -217,7 +217,7 @@ func TestReconcileSkipsUnownedOnChainPosition(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{{Coin: "BTC", Size: 0.5, EntryPrice: 40000}}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if changed {
 		t.Error("expected changed=false — should not adopt unowned position")
@@ -248,7 +248,7 @@ func TestReconcilePreservesConfiguredLeverage(t *testing.T) {
 	// pos.Leverage and inflated the drawdown denominator 10x.
 	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 20}}
 
-	reconcileHyperliquidPositions(s, "ETH", positions, "", logger)
+	reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if s.Positions["ETH"].Leverage != 2 {
 		t.Errorf("Leverage = %v; want 2 (configured value must be preserved against on-chain 20)", s.Positions["ETH"].Leverage)
@@ -271,7 +271,7 @@ func TestReconcileSeedsZeroLeverageFromOnChain(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000, Leverage: 10}}
 
-	reconcileHyperliquidPositions(s, "ETH", positions, "", logger)
+	reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if s.Positions["ETH"].Leverage != 10 {
 		t.Errorf("Leverage = %v; want 10 (zero-value position seeded from on-chain)", s.Positions["ETH"].Leverage)
@@ -287,7 +287,7 @@ func TestReconcileNoPositionBothSides(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{}
 
-	changed := reconcileHyperliquidPositions(s, "BTC", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "BTC", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if changed {
 		t.Error("expected changed=false when no position on either side")
@@ -503,7 +503,7 @@ func TestReconcileMigratesLegacyMultiplierAndSyncsLeverage(t *testing.T) {
 	logger := newTestLogger(t)
 	positions := []HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}
 
-	changed := reconcileHyperliquidPositions(s, "ETH", positions, "", logger)
+	changed := reconcileHyperliquidPositionsWithResolver(s, "ETH", positions, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	if !changed {
 		t.Fatal("expected changed=true (migration)")
@@ -538,8 +538,8 @@ func TestReconcileLegacyPositionPortfolioValueAfterMigration(t *testing.T) {
 	}
 
 	logger := newTestLogger(t)
-	reconcileHyperliquidPositions(s, "ETH",
-		[]HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}, "", logger)
+	reconcileHyperliquidPositionsWithResolver(s, "ETH",
+		[]HLPosition{{Coin: "ETH", Size: 0.279, EntryPrice: 2210.71, Leverage: 20}}, noFillFeeResolver, logger, nil, nil, StrategyConfig{})
 
 	// Post-migration value: cash + qty*(price-entry) = 27.15 + 0.279*(2201.10-2210.71) = ~24.47
 	postFix := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
@@ -677,7 +677,7 @@ func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 
 // TestAccountSyncSharedCoinClosedWhenOnChainGone verifies #565: when one
 // strategy's virtual position is already cleared (rmc sold via
-// ExecutePerpsSignal) and on-chain is fully flat, the remaining peer's stale
+// ExecutePerpsSignalWithLeverage) and on-chain is fully flat, the remaining peer's stale
 // virtual position (tema) is reconciled away via hl_sync_external. This
 // supersedes the old #258 behavior that left virtual positions intact — that
 // protection is still in place for non-zero on-chain gaps (ambiguous cases).
@@ -695,7 +695,7 @@ func TestAccountSyncSharedCoinClosedWhenOnChainGone(t *testing.T) {
 		Strategies: map[string]*StrategyState{
 			"hl-rmc-eth-live": {
 				ID: "hl-rmc-eth-live", Cash: 1336,
-				Positions: map[string]*Position{}, // rmc already sold via ExecutePerpsSignal
+				Positions: map[string]*Position{}, // rmc already sold via ExecutePerpsSignalWithLeverage
 			},
 			"hl-tema-eth-live": {
 				ID: "hl-tema-eth-live", Cash: 27.79,

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(ROOT, "shared_tools"))
 sys.path.insert(0, os.path.join(ROOT, "backtest"))
 
 from atr import ensure_atr_indicator  # noqa: E402
+from regime import normalize_regime_gate_on_failure  # noqa: E402
 from backtester import Backtester  # noqa: E402
 from registry_loader import load_registry  # noqa: E402
 from run_backtest import _apply_htf_filter_to_df  # noqa: E402
@@ -37,6 +38,21 @@ def _fee_platform(platform: str, strategy_type: str) -> str:
     if platform in ("binanceus", "hyperliquid", "robinhood", "luno", "okx", "okx-perps"):
         return platform
     return "binanceus"
+
+
+def _resolve_gate_on_failure(cfg: Dict[str, Any], regime_cfg: Dict[str, Any]) -> str:
+    """#1278/#1300: resolve the entry-gate failure policy for the tuner path.
+
+    Per-strategy ``regime_gate_on_failure`` wins over the global
+    ``regime.gate_on_failure``, else the ``"open"`` default. Both surfaces are
+    validated independently via the shared ``normalize_regime_gate_on_failure``
+    SSoT so a garbage global value raises even when a valid per-strategy
+    override would otherwise short-circuit past it (mirroring Go validateConfig
+    rejecting unknown values on each surface).
+    """
+    per_raw = str(cfg.get("regime_gate_on_failure") or "").strip().lower()
+    glob_gate = normalize_regime_gate_on_failure(regime_cfg.get("gate_on_failure"))
+    return normalize_regime_gate_on_failure(per_raw) if per_raw else glob_gate
 
 
 def _candles_to_df(candles: List[dict]) -> pd.DataFrame:
@@ -187,7 +203,13 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
             )
         close_refs = [dict(r) for r in legacy]
     if close_refs:
-        df_signals = ensure_atr_indicator(df_signals)
+        # #1277: Go stamps the RESOLVED atr_method (per-strategy > global >
+        # simple) into each simulate payload so the preview's injected ATR
+        # matches the live cycle's --atr-method. ensure_atr_indicator
+        # validates the vocabulary (fails loud on an unknown value).
+        df_signals = ensure_atr_indicator(
+            df_signals, method=str(cfg.get("atr_method") or "simple")
+        )
 
     if cfg.get("htf_filter"):
         df_signals = _apply_htf_filter_to_df(df_signals, symbol, timeframe)
@@ -195,6 +217,9 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     regime_cfg = dict(cfg.get("regime") or {})
     regime_enabled = bool(regime_cfg.get("enabled"))
     allowed = list(cfg.get("allowed_regimes") or [])
+    # #1278: entry-gate failure policy — per-strategy field over the global
+    # regime.gate_on_failure default, mirroring the live resolution order.
+    gate_on_failure = _resolve_gate_on_failure(cfg, regime_cfg)
 
     bt = Backtester(
         initial_capital=float(cfg.get("initial_capital") or 1000),
@@ -205,6 +230,7 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
         regime_period=int(regime_cfg.get("period") or 14),
         regime_adx_threshold=float(regime_cfg.get("adx_threshold") or 20),
         allowed_regimes=allowed,
+        regime_gate_on_failure=gate_on_failure,
         stop_loss_atr_mult=cfg.get("stop_loss_atr_mult"),
         stop_loss_pct=cfg.get("stop_loss_pct"),
         stop_loss_margin_pct=cfg.get("stop_loss_margin_pct"),
