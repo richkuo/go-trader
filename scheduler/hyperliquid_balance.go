@@ -2228,7 +2228,11 @@ func applyHedgeKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fills ma
 	if fillSz <= 1e-15 {
 		return false
 	}
-	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "circuit_breaker")
+	// Same closeReason as the primary kill-switch path above ("" → defaults
+	// to circuit_breaker inside applyHyperliquidCircuitCloseFill). Keep the
+	// args identical so paired legs of one flatten never diverge if the
+	// defaulting rule changes (#1159 review optional).
+	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
 	return true
 }
 

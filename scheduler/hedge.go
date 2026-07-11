@@ -21,21 +21,72 @@ type hedgeOrder struct {
 	FullClose bool
 }
 
-// hedgeLifecycleDueInterval returns the due-check interval for a hedge-enabled
-// strategy. With open primary/hedge exposure it caps at the global cadence so
-// reconcile+sync bound the naked-hedge window after an on-chain primary SL/TP
-// fill (#1159 review). Flat / non-hedge strategies keep their strategy interval.
-func hedgeLifecycleDueInterval(sc StrategyConfig, ss *StrategyState, strategyInterval, globalInterval int) int {
+// hedgeNeedsLifecycleSync reports whether a hedge-enabled strategy currently
+// holds open primary and/or hedge exposure and therefore needs reconcile+
+// syncStrategyHedge at the global cadence — WITHOUT accelerating the primary's
+// signal-evaluation due interval (#1159 review).
+func hedgeNeedsLifecycleSync(sc StrategyConfig, ss *StrategyState) bool {
 	if !hedgeEnabled(sc) {
-		return strategyInterval
+		return false
 	}
-	primarySym := hyperliquidConfiguredCoin(sc)
-	if strategyHasOpenHedgeLeg(ss) || findPrimaryPosition(ss, primarySym) != nil {
-		if globalInterval > 0 && (strategyInterval <= 0 || globalInterval < strategyInterval) {
-			return globalInterval
+	if strategyHasOpenHedgeLeg(ss) {
+		return true
+	}
+	return findPrimaryPosition(ss, hyperliquidConfiguredCoin(sc)) != nil
+}
+
+// collectHedgeLifecycleCandidates returns hedge-enabled strategies with open
+// primary/hedge exposure. Caller must hold mu (RLock or Lock) while reading state.
+func collectHedgeLifecycleCandidates(strategies []StrategyConfig, state map[string]*StrategyState) []StrategyConfig {
+	out := make([]StrategyConfig, 0)
+	for _, sc := range strategies {
+		if hedgeNeedsLifecycleSync(sc, state[sc.ID]) {
+			out = append(out, sc)
 		}
 	}
-	return strategyInterval
+	return out
+}
+
+// mergeStrategyConfigsByID appends extra strategies whose IDs are not already
+// present in base, preserving base order then extra order.
+func mergeStrategyConfigsByID(base, extra []StrategyConfig) []StrategyConfig {
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]StrategyConfig, 0, len(base)+len(extra))
+	for _, sc := range base {
+		if _, ok := seen[sc.ID]; ok {
+			continue
+		}
+		seen[sc.ID] = struct{}{}
+		out = append(out, sc)
+	}
+	for _, sc := range extra {
+		if _, ok := seen[sc.ID]; ok {
+			continue
+		}
+		seen[sc.ID] = struct{}{}
+		out = append(out, sc)
+	}
+	return out
+}
+
+// capDelayForHedgeLifecycle caps the inter-cycle sleep at the global interval
+// while any hedge-enabled strategy still has open exposure, so naked-hedge
+// reconcile+sync stay bounded without collapsing primary dueStrategies.
+// Caller must hold mu (RLock or Lock) while reading state.
+func capDelayForHedgeLifecycle(delay time.Duration, strategies []StrategyConfig, state map[string]*StrategyState, globalIntervalSeconds int) time.Duration {
+	if globalIntervalSeconds <= 0 {
+		return delay
+	}
+	maxDelay := time.Duration(globalIntervalSeconds) * time.Second
+	for _, sc := range strategies {
+		if hedgeNeedsLifecycleSync(sc, state[sc.ID]) {
+			if delay > maxDelay {
+				return maxDelay
+			}
+			return delay
+		}
+	}
+	return delay
 }
 
 func hedgeEnabled(sc StrategyConfig) bool { return sc.Hedge != nil && sc.Hedge.Enabled }

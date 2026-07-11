@@ -796,8 +796,12 @@ func main() {
 		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
 
-		// Determine which strategies are due this tick
+		// Determine which strategies are due this tick. Hedge lifecycle
+		// (reconcile+sync) is collected separately — accelerating dueStrategies
+		// for open hedges would collapse primary signal/scale-in cadence to the
+		// global tick (#1159 review).
 		dueStrategies := make([]StrategyConfig, 0)
+		var hedgeLifecycleDue []StrategyConfig
 		mu.RLock()
 		for _, sc := range cfg.Strategies {
 			// #100: Skip strategies where capital_pct is set but capital resolved to $0
@@ -807,19 +811,15 @@ func main() {
 				continue
 			}
 			interval := intervals[sc.ID]
-			// #1159 review: a hedge-enabled strategy with open primary/hedge
-			// exposure must reconcile+sync at the global cadence, not wait for
-			// a multi-hour strategy interval — otherwise an on-chain primary
-			// SL/TP fill leaves the hedge naked until the next due cycle.
-			interval = hedgeLifecycleDueInterval(sc, state.Strategies[sc.ID], interval, cfg.IntervalSeconds)
 			last, exists := lastRun[sc.ID]
 			if !exists || cycleStart.Sub(last) >= time.Duration(interval)*time.Second {
 				dueStrategies = append(dueStrategies, sc)
 			}
 		}
+		hedgeLifecycleDue = collectHedgeLifecycleCandidates(cfg.Strategies, state.Strategies)
 		mu.RUnlock()
 
-		if len(dueStrategies) == 0 {
+		if len(dueStrategies) == 0 && len(hedgeLifecycleDue) == 0 {
 			// Nothing due, wait for next tick
 			delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
 			timer := time.NewTimer(delay)
@@ -838,9 +838,13 @@ func main() {
 			}
 		}
 
-		fmt.Printf("\n=== Cycle %d starting at %s (%d/%d strategies due) ===\n",
+		fmt.Printf("\n=== Cycle %d starting at %s (%d/%d strategies due",
 			cycle, cycleStart.UTC().Format("2006-01-02 15:04:05 UTC"),
 			len(dueStrategies), len(cfg.Strategies))
+		if len(hedgeLifecycleDue) > 0 {
+			fmt.Printf(", %d hedge-lifecycle", len(hedgeLifecycleDue))
+		}
+		fmt.Printf(") ===\n")
 
 		// Collect symbols that need prices. Spot strategies use the
 		// BinanceUS-formatted symbol directly (e.g. "BTC/USDT").
@@ -1024,6 +1028,17 @@ func main() {
 					hlReconcileDue = append(hlReconcileDue, sc)
 				}
 			}
+			// #1159 review: hedge-enabled strategies with open exposure must
+			// reconcile (and later sync) at the global cadence even when their
+			// primary signal interval has not elapsed — otherwise an on-chain
+			// primary SL/TP leaves the hedge naked until the next due cycle.
+			var hedgeReconcile []StrategyConfig
+			for _, sc := range hedgeLifecycleDue {
+				if isHLLiveReconcilable(sc) {
+					hedgeReconcile = append(hedgeReconcile, sc)
+				}
+			}
+			hlReconcileDue = mergeStrategyConfigsByID(hlReconcileDue, hedgeReconcile)
 
 			// #345: Partition live OKX strategies for the kill-switch close
 			// path. Perps and spot are separated because only perps support
@@ -2853,6 +2868,33 @@ func main() {
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
 				}
+				// #1159 review: dedicated hedge reconcile already ran via
+				// hlReconcileDue above. Sync here for every open-hedge strategy
+				// — including ones whose primary signal interval has not
+				// elapsed — so an on-chain primary SL/TP flatten is mirrored
+				// onto the hedge within one global cadence. Does NOT touch
+				// lastRun / check scripts / scale-in.
+				for _, sc := range hedgeLifecycleDue {
+					if !hedgeEnabled(sc) {
+						continue
+					}
+					stratState := state.Strategies[sc.ID]
+					if stratState == nil {
+						continue
+					}
+					logger, err := logMgr.GetStrategyLogger(sc.ID)
+					if err != nil {
+						fmt.Printf("[ERROR] Logger for %s: %v\n", sc.ID, err)
+						continue
+					}
+					primarySym := hyperliquidConfiguredCoin(sc)
+					if hedgeDetail, _, hedgeErr := syncStrategyHedge(sc, stratState, primarySym, prices, hlPositions, nil, notifier, logger, &mu); hedgeErr != nil {
+						fmt.Printf("[ERROR] %s hedge lifecycle sync: %v\n", sc.ID, hedgeErr)
+					} else if hedgeDetail != "" {
+						fmt.Printf("[hedge] %s lifecycle: %s\n", sc.ID, hedgeDetail)
+					}
+					logger.Close()
+				}
 			} // end if !killSwitchFired
 		}
 
@@ -3059,8 +3101,9 @@ func main() {
 		// the warning band gets the fast (or slow) cadence immediately.
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
-		mu.RUnlock()
 		delay := schedulerDelay(cfg.Strategies, endIntervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
+		delay = capDelayForHedgeLifecycle(delay, cfg.Strategies, state.Strategies, cfg.IntervalSeconds)
+		mu.RUnlock()
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:

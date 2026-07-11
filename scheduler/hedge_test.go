@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func hedgeTestConfig(id, symbol, hedgeSymbol string) StrategyConfig {
@@ -403,21 +404,79 @@ func TestHyperliquidKillSwitchTradedCoinsSnapshotsUnderCaller(t *testing.T) {
 	}
 }
 
-func TestHedgeLifecycleDueIntervalCapsOpenExposure(t *testing.T) {
+func TestHedgeNeedsLifecycleSyncAndDelayCap(t *testing.T) {
 	sc := hedgeTestConfig("a", "ETH", "BTC")
 	open := &StrategyState{Positions: map[string]*Position{
 		"ETH": {Symbol: "ETH", Quantity: 1, Side: "long"},
 		"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "short", IsHedge: true},
 	}}
-	if got := hedgeLifecycleDueInterval(sc, open, 14400, 60); got != 60 {
-		t.Fatalf("open hedged pair interval = %d, want global 60", got)
+	if !hedgeNeedsLifecycleSync(sc, open) {
+		t.Fatal("expected open hedged pair to need lifecycle sync")
 	}
 	flat := &StrategyState{Positions: map[string]*Position{}}
-	if got := hedgeLifecycleDueInterval(sc, flat, 14400, 60); got != 14400 {
-		t.Fatalf("flat hedge strategy interval = %d, want strategy 14400", got)
+	if hedgeNeedsLifecycleSync(sc, flat) {
+		t.Fatal("flat hedge strategy must not need lifecycle sync")
 	}
-	sc.Hedge = nil
-	if got := hedgeLifecycleDueInterval(sc, open, 14400, 60); got != 14400 {
-		t.Fatalf("non-hedge strategy interval = %d, want unchanged", got)
+	scNoHedge := hedgeTestConfig("b", "ETH", "BTC")
+	scNoHedge.Hedge = nil
+	if hedgeNeedsLifecycleSync(scNoHedge, open) {
+		t.Fatal("non-hedge strategy must not need lifecycle sync")
+	}
+
+	candidates := collectHedgeLifecycleCandidates(
+		[]StrategyConfig{sc, scNoHedge},
+		map[string]*StrategyState{"a": open, "b": open},
+	)
+	if len(candidates) != 1 || candidates[0].ID != "a" {
+		t.Fatalf("candidates = %+v, want only strategy a", candidates)
+	}
+
+	merged := mergeStrategyConfigsByID([]StrategyConfig{sc}, []StrategyConfig{sc, scNoHedge})
+	if len(merged) != 2 || merged[0].ID != "a" || merged[1].ID != "b" {
+		t.Fatalf("merge = %+v", merged)
+	}
+
+	got := capDelayForHedgeLifecycle(4*time.Hour, []StrategyConfig{sc}, map[string]*StrategyState{"a": open}, 60)
+	if got != time.Minute {
+		t.Fatalf("open-hedge delay cap = %v, want 1m", got)
+	}
+	got = capDelayForHedgeLifecycle(4*time.Hour, []StrategyConfig{sc}, map[string]*StrategyState{"a": flat}, 60)
+	if got != 4*time.Hour {
+		t.Fatalf("flat delay = %v, want unchanged 4h", got)
+	}
+}
+
+func TestApplyHedgeKillSwitchCloseFillMatchesPrimaryCloseReason(t *testing.T) {
+	sc := hedgeTestConfig("a", "ETH", "BTC")
+	s := &StrategyState{
+		Cash: 10000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 2000, OpenedAt: time.Now().UTC()},
+			"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "short", AvgCost: 50000, IsHedge: true, OpenedAt: time.Now().UTC()},
+		},
+	}
+	fills := map[string]HyperliquidCloseFill{
+		"ETH": {AvgPx: 2100, TotalSz: 1, Fee: 1, OID: 11},
+		"BTC": {AvgPx: 51000, TotalSz: 0.02, Fee: 0.5, OID: 12},
+	}
+	virtual := snapshotHyperliquidVirtualQuantities(map[string]*StrategyState{"a": s}, []StrategyConfig{sc})
+	if !applyHyperliquidKillSwitchCloseFill(s, sc, fills, []StrategyConfig{sc}, virtual) {
+		t.Fatal("expected kill-switch fill apply")
+	}
+	if len(s.Positions) != 0 {
+		t.Fatalf("expected both legs flat, still have %v", s.Positions)
+	}
+	if len(s.ClosedPositions) < 2 {
+		t.Fatalf("expected 2 closed positions, got %d", len(s.ClosedPositions))
+	}
+	reasons := map[string]string{}
+	for _, cp := range s.ClosedPositions {
+		reasons[cp.Symbol] = cp.CloseReason
+	}
+	if reasons["ETH"] != reasons["BTC"] {
+		t.Fatalf("paired kill-switch legs must share close_reason; got %v", reasons)
+	}
+	if reasons["ETH"] != "circuit_breaker" {
+		t.Fatalf("expected defaulted circuit_breaker reason, got %v", reasons)
 	}
 }
