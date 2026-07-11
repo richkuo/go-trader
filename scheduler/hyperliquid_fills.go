@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -536,6 +537,32 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		}
 		if _, closeQty, ok := hyperliquidSharedPartialCloseDrift(coinVirtualQty[coin], onChainQty); ok {
 			addCandidate(coin, 0, closeQty)
+		}
+	}
+	// #1159: hedge legs are owned by persisted position metadata rather than
+	// hyperliquidSymbol(sc.Args). Prefetch their exact coin+size close/add
+	// candidates so restart reconciliation can book real fills and fees instead
+	// of falling back to a guessed mark/modelled fee.
+	for _, sc := range allStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		hedgePos := findHedgePosition(ss, sc)
+		if hedgePos == nil {
+			continue
+		}
+		coin := strings.ToUpper(strings.TrimSpace(hedgePos.Symbol))
+		onChainSize, present := onChainByCoin[coin]
+		if !present {
+			addCandidate(coin, 0, hedgePos.Quantity)
+			continue
+		}
+		onChainAbs := math.Abs(onChainSize)
+		if onChainAbs+1e-9 < hedgePos.Quantity {
+			addCandidate(coin, 0, hedgePos.Quantity-onChainAbs)
+		} else if onChainAbs > hedgePos.Quantity+1e-9 {
+			addCandidate(coin, 0, onChainAbs-hedgePos.Quantity)
 		}
 	}
 	mu.RUnlock()
