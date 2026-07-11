@@ -152,7 +152,13 @@ const v17ATRMethodNotice = "**Note:** ATR smoothing is now configurable (#1277).
 	"(entry-ATR stamping, live close-evaluator ATR, manual fetch-atr) from the legacy simple " +
 	"rolling mean to the published Wilder RMA and drops the >=100 integer rounding. " +
 	"Default (\"simple\") is byte-identical to previous behavior. " +
-	"Switching is blocked while the strategy holds an open position — flatten first. " +
+	"SIGHUP hot-reload refuses an effective-method switch while the strategy holds an open " +
+	"position — flatten first, or wait until flat before restarting with the change: a full " +
+	"process restart has no prior config to diff against, so it still adopts a changed " +
+	"atr_method for a position that stayed open, re-basing any live-recomputed close evaluator " +
+	"(tiered_tp_atr_live, atr_stop/avwap_stop with atr_source=live) mid-flight even though " +
+	"frozen entry-ATR and on-chain protection are unaffected. A startup check DMs the owner if " +
+	"this happens. " +
 	"Backtest baselines were established under simple; re-validate before promoting Wilder-based results."
 
 // NewFieldsSince returns all ConfigFields added after the given version number.

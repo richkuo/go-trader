@@ -105,6 +105,20 @@ type Position struct {
 	// disabled, failed, or not finished before the close.
 	LLMAnalysisRequested bool   `json:"llm_analysis_requested,omitempty"`
 	LLMVerdict           string `json:"llm_verdict,omitempty"`
+	// ATRMethodAtOpen freezes the resolved atr_method (#1277) the moment this
+	// position opened (stampATRMethodAtOpenIfOpened; never re-stamped on a
+	// scale-in add — mirrors RiskAnchorPrice/EntryATR freeze-at-entry
+	// semantics). EntryATR and on-chain reduce-only protection are sized once
+	// from the frozen EntryATR and therefore immune to a later atr_method
+	// change, but a live-recomputed close evaluator (tiered_tp_atr_live,
+	// atr_stop/avwap_stop with atr_source=live) reads market_ctx["atr"] fresh
+	// every cycle under whatever method the CURRENT config resolves — the
+	// SIGHUP hot-reload guard (config_reload.go) blocks an effective-method
+	// flip while open, but a config edit + process restart bypasses it (no
+	// "old" resolved value to diff against). checkATRMethodDriftAtStartup
+	// compares this stamp to the live resolution once per boot to catch that
+	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
+	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are

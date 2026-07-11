@@ -318,6 +318,150 @@ func TestGenerateConfigEmitsATRMethod(t *testing.T) {
 	}
 }
 
+// --- stamp-at-open / restart-drift hardening (#1277 optional) --------------
+
+// stampATRMethodAtOpenIfOpened freezes the resolved method on a FRESH open
+// only — mirrors RiskAnchorPrice/EntryATR/DirectionCertifiedAtOpen
+// freeze-at-entry semantics so a later config change never silently re-bases
+// what an already-open position was sized under.
+func TestStampATRMethodAtOpenIfOpenedFreshOpen(t *testing.T) {
+	cases := []struct {
+		name     string
+		strategy string
+		global   string
+		want     string
+	}{
+		{"default simple", "", "", ATRMethodSimple},
+		{"global wilder", "", "wilder", ATRMethodWilder},
+		{"per-strategy wins", "simple", "wilder", ATRMethodSimple},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{ID: "s", Positions: map[string]*Position{
+				"BTC": {Symbol: "BTC", Quantity: 1},
+			}}
+			sc := StrategyConfig{ID: "s", ATRMethod: tc.strategy}
+			cfg := &Config{ATRMethod: tc.global}
+			stampATRMethodAtOpenIfOpened(s, "BTC", true, sc, cfg)
+			if got := s.Positions["BTC"].ATRMethodAtOpen; got != tc.want {
+				t.Fatalf("ATRMethodAtOpen = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A scale-in add (opened=false) must never re-stamp — the frozen value must
+// keep reflecting what the ORIGINAL entry was sized under, exactly like
+// RiskAnchorPrice is not updated on adds.
+func TestStampATRMethodAtOpenIfOpenedSkipsAdds(t *testing.T) {
+	s := &StrategyState{ID: "s", Positions: map[string]*Position{
+		"BTC": {Symbol: "BTC", Quantity: 2, ATRMethodAtOpen: ATRMethodSimple},
+	}}
+	sc := StrategyConfig{ID: "s", ATRMethod: "wilder"}
+	cfg := &Config{}
+	stampATRMethodAtOpenIfOpened(s, "BTC", false, sc, cfg)
+	if got := s.Positions["BTC"].ATRMethodAtOpen; got != ATRMethodSimple {
+		t.Fatalf("scale-in add must not re-stamp: got %q, want simple", got)
+	}
+}
+
+// Defensive: nil state, missing symbol, and a nil position must never panic.
+func TestStampATRMethodAtOpenIfOpenedNoOp(t *testing.T) {
+	stampATRMethodAtOpenIfOpened(nil, "BTC", true, StrategyConfig{}, &Config{})
+	s := &StrategyState{ID: "s", Positions: map[string]*Position{}}
+	stampATRMethodAtOpenIfOpened(s, "BTC", true, StrategyConfig{}, &Config{})
+	if _, ok := s.Positions["BTC"]; ok {
+		t.Fatal("must not fabricate a position that ExecuteXxxSignal didn't open")
+	}
+}
+
+// checkATRMethodDriftAtStartup is the only place that catches a config edit +
+// process restart (not SIGHUP) that changed a strategy's effective atr_method
+// while a position stayed open — validateHotReloadStateCompatible only runs
+// on the SIGHUP path and has no "old" resolved value to diff against a fresh
+// process's config load.
+func TestCheckATRMethodDriftAtStartup(t *testing.T) {
+	mkState := func(atrMethodAtOpen string, qty float64) *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: qty, ATRMethodAtOpen: atrMethodAtOpen},
+			}},
+		}}
+	}
+	mkCfg := func(atrMethod string) *Config {
+		return minimalReloadConfig([]StrategyConfig{{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+			Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+			ATRMethod: atrMethod,
+		}})
+	}
+
+	t.Run("drift detected: opened simple, now resolves wilder", func(t *testing.T) {
+		warnings := checkATRMethodDriftAtStartup(mkState(ATRMethodSimple, 1), mkCfg("wilder"))
+		if len(warnings) != 1 {
+			t.Fatalf("warnings = %v, want exactly 1", warnings)
+		}
+		for _, want := range []string{"hl-eth", "ETH", `"simple"`, `"wilder"`} {
+			if !strings.Contains(warnings[0], want) {
+				t.Errorf("warning missing %q: %s", want, warnings[0])
+			}
+		}
+	})
+
+	t.Run("global flip caught for an inheriting strategy", func(t *testing.T) {
+		state := mkState(ATRMethodSimple, 1)
+		cfg := mkCfg("") // per-strategy empty, inherits global
+		cfg.ATRMethod = "wilder"
+		warnings := checkATRMethodDriftAtStartup(state, cfg)
+		if len(warnings) != 1 {
+			t.Fatalf("warnings = %v, want exactly 1 (global flip must be caught via resolveATRMethod)", warnings)
+		}
+	})
+
+	t.Run("no drift when resolved method unchanged", func(t *testing.T) {
+		if warnings := checkATRMethodDriftAtStartup(mkState(ATRMethodWilder, 1), mkCfg("wilder")); len(warnings) != 0 {
+			t.Fatalf("unexpected warnings for unchanged method: %v", warnings)
+		}
+	})
+
+	t.Run("never-stamped pre-#1277 position is skipped", func(t *testing.T) {
+		if warnings := checkATRMethodDriftAtStartup(mkState("", 1), mkCfg("wilder")); len(warnings) != 0 {
+			t.Fatalf("pre-#1277 position (never stamped) must not warn: %v", warnings)
+		}
+	})
+
+	t.Run("flat position is skipped", func(t *testing.T) {
+		if warnings := checkATRMethodDriftAtStartup(mkState(ATRMethodSimple, 0), mkCfg("wilder")); len(warnings) != 0 {
+			t.Fatalf("flat (qty<=0) position must not warn: %v", warnings)
+		}
+	})
+
+	t.Run("options strategy is skipped even with a global flip", func(t *testing.T) {
+		state := &AppState{Strategies: map[string]*StrategyState{
+			"opt-btc": {ID: "opt-btc", Positions: map[string]*Position{
+				"BTC-CALL": {Symbol: "BTC-CALL", Quantity: 1, ATRMethodAtOpen: ATRMethodSimple},
+			}},
+		}}
+		cfg := minimalReloadConfig([]StrategyConfig{{
+			ID: "opt-btc", Type: "options", Platform: "deribit", Script: "check_options.py",
+			Args: []string{"strangle", "BTC"}, Capital: 1000, MaxDrawdownPct: 10,
+		}})
+		cfg.ATRMethod = "wilder"
+		if warnings := checkATRMethodDriftAtStartup(state, cfg); len(warnings) != 0 {
+			t.Fatalf("options strategy must never warn (no ATR surface): %v", warnings)
+		}
+	})
+
+	t.Run("nil state and nil cfg do not panic", func(t *testing.T) {
+		if warnings := checkATRMethodDriftAtStartup(nil, mkCfg("wilder")); warnings != nil {
+			t.Fatalf("nil state: want nil, got %v", warnings)
+		}
+		if warnings := checkATRMethodDriftAtStartup(mkState(ATRMethodSimple, 1), nil); warnings != nil {
+			t.Fatalf("nil cfg: want nil, got %v", warnings)
+		}
+	})
+}
+
 // --- summary line -------------------------------------------------------------
 
 func TestSummaryLineSurfacesNonDefaultATRMethod(t *testing.T) {
