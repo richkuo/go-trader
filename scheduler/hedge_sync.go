@@ -239,10 +239,35 @@ func syncHedgeLegForStrategy(sc StrategyConfig, ss *StrategyState, mu *sync.RWMu
 			}
 			mu.Unlock()
 			trades++
-			if !order.FullClose && fill.TotalSz < order.Quantity*0.99 {
+			if !order.FullClose && fill.TotalSz < order.Quantity*(1-hedgeFillShortfallTolerance) {
 				hedgeAlert(deps, logger, fmt.Sprintf("[WARN] hedge-sync %s: hedge reduce on %s under-filled %.6f/%.6f — residual over-hedge remains until the leg closes", sc.ID, hcoin, fill.TotalSz, order.Quantity))
 			}
 			if order.FullClose {
+				if fill.TotalSz < order.Quantity*(1-hedgeFillShortfallTolerance) {
+					// The "full" close left a residual leg in virtual state
+					// (applyHyperliquidCircuitCloseFill decrements, it doesn't
+					// delete). Proceeding to a same-coin re-open would
+					// overwrite that residual — silently discarding its
+					// quantity — so never continue past a partial full close
+					// (review on #1333, round 3). Which way to fail depends on
+					// the residual's side:
+					//  - flip (residual SAME side as the flipped primary):
+					//    2x directional exposure with no hedge stop — de-risk
+					//    the primary reduce-only, matching the flip-close
+					//    FAILURE path; next cycle the planner closes the
+					//    residual against the now-flat primary.
+					//  - no flip (primary flat, or a deep reduction whose
+					//    proportional close consumed the leg): the residual is
+					//    inverse or unopposed — the safe direction — alert and
+					//    retry the close next cycle.
+					residual := order.Quantity - fill.TotalSz
+					if prim != nil && hedge != nil && hedge.Side == prim.Side {
+						return trades + hedgeFailClosePrimary(sc, ss, mu, prim, 0, deps, logger,
+							fmt.Sprintf("stale hedge leg %s only partially closed during a primary flip (%.6f of %.6f filled, residual %.6f) — the residual is the SAME side as the flipped primary and a same-coin reopen would overwrite it", hcoin, fill.TotalSz, order.Quantity, residual))
+					}
+					hedgeAlert(deps, logger, fmt.Sprintf("[WARN] hedge-sync %s: full close of hedge leg %s under-filled %.6f/%.6f — residual %.6f retries next cycle", sc.ID, hcoin, fill.TotalSz, order.Quantity, residual))
+					continue
+				}
 				hedgeOpenLegLive = false
 			}
 			continue
@@ -276,9 +301,12 @@ func syncHedgeLegForStrategy(sc StrategyConfig, ss *StrategyState, mu *sync.RWMu
 		// reconcile cannot repair (state qty == on-chain qty, no drift).
 		// Scale the watermark by the actual fill ratio so the shortfall
 		// re-triggers an add next cycle, and alert: under-hedged is the
-		// unsafe direction (review on #1333).
+		// unsafe direction (review on #1333). The tolerance must absorb the
+		// adapter's sz_decimals lot rounding — a fully-filled order reports
+		// up to half a lot under the unrounded request, and treating that as
+		// partial would churn dust re-adds every open (round 3).
 		coveredAfter := order.CoveredAfter
-		if fill.TotalSz < order.Quantity*(1-hedgeCoveredRelEpsilon) {
+		if fill.TotalSz < order.Quantity*(1-hedgeFillShortfallTolerance) {
 			coveredBefore := 0.0
 			if hedgeOpenLegLive && hedge != nil {
 				coveredBefore = hedge.Covered

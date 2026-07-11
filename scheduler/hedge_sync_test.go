@@ -517,3 +517,94 @@ func TestHedgeSyncPartialAddFillScalesCovered(t *testing.T) {
 		t.Fatalf("partial add fill must alert; got %v", f.alerts)
 	}
 }
+
+// Review on #1333 (round 3): the HL adapter rounds order sizes to the asset's
+// sz_decimals, so a FULLY-filled hedge order legitimately reports slightly
+// less than the planner's unrounded request. That benign lot rounding must
+// NOT be misread as a partial fill — else every open scales the watermark,
+// fires a spurious under-hedge alert, and re-adds dust next cycle (which can
+// round to zero and cascade into hedgeFailClosePrimary).
+func TestHedgeSyncLotRoundedFullFillIsNotPartial(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(4, false)
+	// Requested 0.1 BTC; the exchange reports the lot-rounded 0.09999.
+	f := &fakeHedgeDeps{execFill: &HyperliquidFill{AvgPx: 50000, TotalSz: 0.09999, OID: 1003, Fee: 0.5}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 4}}, true, f)
+	pos := state.Strategies["a"].Positions["BTC"]
+	if pos == nil || math.Abs(pos.HedgeCoveredPrimaryQty-4) > 1e-12 {
+		t.Fatalf("lot-rounded full fill must stamp full coverage; covered = %+v", pos)
+	}
+	if len(f.alerts) != 0 {
+		t.Fatalf("lot-rounded full fill must not alert: %v", f.alerts)
+	}
+	// Converged: the next cycle must not chase the sub-lot dust.
+	f2 := &fakeHedgeDeps{}
+	if n := runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: 4}, {Coin: "BTC", Size: -0.09999}}, true, f2); n != 0 {
+		t.Fatalf("dust re-add churn: exec=%v close=%v", f2.execCalls, f2.closeCalls)
+	}
+	// A fill that rounds UP is equally benign.
+	sc2, state2, prices2 := hedgeSyncFixture(4, false)
+	f3 := &fakeHedgeDeps{execFill: &HyperliquidFill{AvgPx: 50000, TotalSz: 0.1000001, OID: 1004, Fee: 0.5}}
+	runHedgeSyncTest(t, sc2, state2, prices2, []HLPosition{{Coin: "ETH", Size: 4}}, true, f3)
+	pos2 := state2.Strategies["a"].Positions["BTC"]
+	if pos2 == nil || math.Abs(pos2.HedgeCoveredPrimaryQty-4) > 1e-12 || len(f3.alerts) != 0 {
+		t.Fatalf("round-up full fill mishandled: pos=%+v alerts=%v", pos2, f3.alerts)
+	}
+}
+
+// Review on #1333 (round 3, optional): a flip whose stale-hedge full close
+// only PARTIALLY fills must not proceed to the re-open — the re-open would
+// overwrite the same-coin residual leg in virtual state, silently discarding
+// its quantity. The residual is the SAME side as the flipped primary, so the
+// engine de-risks the primary (constraint 4) and leaves the residual for the
+// next cycle's planner to close.
+func TestHedgeSyncFlipPartialCloseDeRisksPrimaryNotOverwrite(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(4, true)
+	ss := state.Strategies["a"]
+	ss.Positions["ETH"].Side = "short" // primary flipped; stale short hedge is now same-side
+	f := &fakeHedgeDeps{closeFill: map[string]*HyperliquidCloseFill{
+		"BTC": {AvgPx: 50000, TotalSz: 0.06, OID: 6006, Fee: 0.3}, // partial: 0.06 of 0.1
+		"ETH": {AvgPx: 2500, TotalSz: 4, OID: 6007, Fee: 0.8},
+	}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "ETH", Size: -4}, {Coin: "BTC", Size: -0.1}}, true, f)
+	if len(f.execCalls) != 0 {
+		t.Fatalf("re-open must not run after a partial flip close: %+v", f.execCalls)
+	}
+	hp := ss.Positions["BTC"]
+	if hp == nil || !hp.IsHedge || hp.Side != "short" || math.Abs(hp.Quantity-0.04) > 1e-9 {
+		t.Fatalf("residual hedge leg must survive (0.04 short), got %+v", hp)
+	}
+	if _, open := ss.Positions["ETH"]; open {
+		t.Fatal("primary must be fail-closed when the flip close under-fills")
+	}
+	joined := strings.Join(f.alerts, "\n")
+	if !strings.Contains(joined, "partially closed") {
+		t.Fatalf("alert must name the partial flip close: %v", f.alerts)
+	}
+	// Next cycle: primary flat → the planner just closes the residual.
+	f2 := &fakeHedgeDeps{closeFill: map[string]*HyperliquidCloseFill{
+		"BTC": {AvgPx: 50000, TotalSz: 0.04, OID: 6008, Fee: 0.2},
+	}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "BTC", Size: -0.04}}, true, f2)
+	if _, open := ss.Positions["BTC"]; open {
+		t.Fatal("residual hedge not closed on the follow-up cycle")
+	}
+}
+
+// A partial full-close WITHOUT a flip (primary already flat, or a deep
+// reduction) leaves an INVERSE/naked-but-primary-flat residual — the safe
+// direction — so it alerts and retries next cycle instead of de-risking.
+func TestHedgeSyncPartialFullCloseWithoutFlipRetries(t *testing.T) {
+	sc, state, prices := hedgeSyncFixture(0, true) // primary flat, hedge leg 0.1 short
+	f := &fakeHedgeDeps{closeFill: map[string]*HyperliquidCloseFill{
+		"BTC": {AvgPx: 50000, TotalSz: 0.06, OID: 7007, Fee: 0.3},
+	}}
+	runHedgeSyncTest(t, sc, state, prices, []HLPosition{{Coin: "BTC", Size: -0.1}}, true, f)
+	hp := state.Strategies["a"].Positions["BTC"]
+	if hp == nil || math.Abs(hp.Quantity-0.04) > 1e-9 {
+		t.Fatalf("residual hedge leg = %+v, want 0.04 remaining", hp)
+	}
+	joined := strings.Join(f.alerts, "\n")
+	if !strings.Contains(joined, "under-filled") {
+		t.Fatalf("partial full close must alert: %v", f.alerts)
+	}
+}

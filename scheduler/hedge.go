@@ -33,6 +33,15 @@ const (
 	// issues an order. Both values come from virtual state (not marks), so in
 	// practice they match exactly; the tolerance only absorbs float drift.
 	hedgeCoveredRelEpsilon = 1e-6
+	// hedgeFillShortfallTolerance is the relative shortfall between a hedge
+	// order's requested and filled size before the engine treats it as a
+	// genuine partial fill. It must absorb exchange lot-size rounding: the HL
+	// adapter rounds order sizes to the asset's sz_decimals (round-to-nearest,
+	// platforms/hyperliquid/adapter.py market_open), so a FULLY-filled order
+	// legitimately reports up to half a lot less than the planner's unrounded
+	// quantity — a tight epsilon here would misread every such fill as
+	// partial and churn dust orders (review on #1333, round 3).
+	hedgeFillShortfallTolerance = 0.01
 )
 
 func hedgeEnabled(sc StrategyConfig) bool { return sc.Hedge != nil && sc.Hedge.Enabled }
