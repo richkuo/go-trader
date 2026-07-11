@@ -533,6 +533,22 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: a hedge-enabled HL perps strategy also holds a leg on its hedge
+		// coin. Emit it so the hedge coin is not classified as an orphan coin by
+		// attributeSharedWalletUPnL (which would fire phantom drift alerts), and
+		// so hedge uPnL + wallet-ledger funding events on the hedge coin
+		// attribute to the owning strategy (requirement 6). Collision validation
+		// guarantees the hedge coin is sole-owned, so a single member maps to it.
+		if key.Platform == "hyperliquid" {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hp, hok := ss.Positions[hc]; hok && hp != nil && hp.Quantity > 0 && hp.HedgeFor != "" {
+					if virtualQty[hc] == nil {
+						virtualQty[hc] = make(map[string]float64)
+					}
+					virtualQty[hc][id] = hp.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

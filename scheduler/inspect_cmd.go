@@ -597,6 +597,15 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	if sc.Paused {
 		parts = append(parts, "paused")
 	}
+	// #1159: surface an active correlated hedge leg so the coupled exposure is
+	// visible in the audit line (e.g. hedge=BTC×1.0(inverse,cross,3x)).
+	if HedgeEnabled(sc) {
+		side := sc.Hedge.Side
+		if side == "" {
+			side = "inverse"
+		}
+		parts = append(parts, fmt.Sprintf("hedge=%s×%g(%s,%s,%gx)", hedgeCoin(sc), HedgeRatio(sc), side, hedgeMarginMode(sc), hedgeLeverage(sc)))
+	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
 	// (resolved, so a global wilder default tags every inheriting strategy).

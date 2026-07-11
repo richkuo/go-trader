@@ -498,6 +498,18 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 				}
 			}
 		}
+		// #1159: a hedge leg carries no OID (no SL/TP), so an external close of
+		// the hedge coin resolves its fee via the coin+size fallback only. Add a
+		// (hedgeCoin, 0, hedgeQty) candidate whenever the strategy holds a hedge
+		// leg whose on-chain size drifts from virtual.
+		if hc := hedgeCoin(sc); hc != "" {
+			if hp := ss.Positions[hc]; hp != nil && hp.Quantity > 0 && hp.HedgeFor != "" {
+				hOnChain, hPresent := onChainByCoin[hc]
+				if !hPresent || math.Abs(math.Abs(hOnChain)-hp.Quantity) > 1e-9 {
+					addCandidate(hc, 0, hp.Quantity)
+				}
+			}
+		}
 	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy

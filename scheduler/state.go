@@ -273,6 +273,14 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
+			// #1159: a correlated hedge leg is an inverse-side position on a
+			// different coin whose side is coupled to the primary, not to the
+			// strategy's configured direction — it would otherwise trip this
+			// "state-vs-config gap" warning every boot. Ownership + coupling are
+			// validated by validateHedgeStateConsistency instead.
+			if pos.HedgeFor != "" {
+				continue
+			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)
 			// #1085: gate by the open stamp. An uncertified/legacy directional
 			// position (certified=false) validates against BASE direction — this is
@@ -302,6 +310,65 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 				regimeNote = fmt.Sprintf("direction=%q", baseDirection)
 			}
 			msg := fmt.Sprintf("perps state-vs-config gap: strategy %s has %s %s qty=%g (%s). Position was likely seeded by migration, paper→live handoff, or a prior conflicting direction. Close manually before the next signal — the executor's fresh-open sizing will otherwise desync virtual state from the exchange.", sc.ID, conflictSide, sym, pos.Quantity, regimeNote)
+			fmt.Printf("[WARN] %s\n", msg)
+			warnings = append(warnings, msg)
+		}
+	}
+	return warnings
+}
+
+// validateHedgeStateConsistency (#1159) surfaces persisted correlated-hedge
+// legs that no longer line up with config — a gap the SIGHUP hot-reload guard
+// can't catch because a config edit + process restart bypasses it. Two cases,
+// both non-destructive (the leg is left frozen for the operator to resolve;
+// mirrors the shared-coin ambiguity convention — never auto-close a real
+// on-chain position off a config mismatch):
+//
+//   - a held hedge leg whose owning strategy no longer has an enabled hedge
+//     block (hedge removed/disabled while the leg was open), and
+//   - a held hedge leg whose coin no longer matches the configured hedge.symbol
+//     (hedge symbol changed while the leg was open).
+//
+// Returns operator-facing warning strings (also printed).
+func validateHedgeStateConsistency(state *AppState, cfg *Config) []string {
+	var warnings []string
+	if state == nil || cfg == nil {
+		return warnings
+	}
+	byID := make(map[string]*StrategyConfig, len(cfg.Strategies))
+	for i := range cfg.Strategies {
+		byID[cfg.Strategies[i].ID] = &cfg.Strategies[i]
+	}
+	ids := make([]string, 0, len(state.Strategies))
+	for id := range state.Strategies {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		s := state.Strategies[id]
+		if s == nil {
+			continue
+		}
+		syms := make([]string, 0, len(s.Positions))
+		for sym := range s.Positions {
+			syms = append(syms, sym)
+		}
+		sort.Strings(syms)
+		for _, sym := range syms {
+			pos := s.Positions[sym]
+			if pos == nil || pos.HedgeFor == "" || pos.Quantity <= 0 {
+				continue
+			}
+			sc := byID[id]
+			var msg string
+			switch {
+			case sc == nil || !HedgeEnabled(*sc):
+				msg = fmt.Sprintf("hedge state-vs-config gap: strategy %s holds a hedge leg %s (for primary %s) but no enabled hedge block is configured. The leg is left frozen (not auto-closed). Re-enable the hedge block or close the leg manually before the next signal (#1159).", id, sym, pos.HedgeFor)
+			case hedgeCoin(*sc) != sym:
+				msg = fmt.Sprintf("hedge state-vs-config gap: strategy %s holds a hedge leg on %s but hedge.symbol now resolves to %q. The held leg is left frozen (not auto-closed). Reconcile the config or close the leg manually (#1159).", id, sym, hedgeCoin(*sc))
+			default:
+				continue
+			}
 			fmt.Printf("[WARN] %s\n", msg)
 			warnings = append(warnings, msg)
 		}

@@ -650,6 +650,7 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
+	base += hedgeStrategiesNote(d.cfg.Strategies, d.ss.state.Strategies)
 	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
 	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
@@ -673,6 +674,31 @@ func pausedStrategiesNote(strategies []StrategyConfig) string {
 	}
 	sort.Strings(paused)
 	return fmt.Sprintf("\n⏸️ paused: %s", strings.Join(paused, ", "))
+}
+
+// hedgeStrategiesNote (#1159) surfaces active correlated hedge legs in /status:
+// which strategies carry a hedge, the hedge coin, and whether a leg is currently
+// open (so a hedge position is never mistaken for an unmanaged position).
+func hedgeStrategiesNote(strategies []StrategyConfig, states map[string]*StrategyState) string {
+	var lines []string
+	for _, sc := range strategies {
+		if !HedgeEnabled(sc) {
+			continue
+		}
+		hc := hedgeCoin(sc)
+		status := "flat"
+		if ss := states[sc.ID]; ss != nil {
+			if hp := ss.Positions[hc]; hp != nil && hp.Quantity > 0 && hp.HedgeFor != "" {
+				status = fmt.Sprintf("%s %.6f (for %s)", hp.Side, hp.Quantity, hp.HedgeFor)
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s→%s×%g: %s", sc.ID, hc, HedgeRatio(sc), status))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	sort.Strings(lines)
+	return "\n🛡️ hedge: " + strings.Join(lines, "; ")
 }
 
 func (d *DiscordNotifier) buildHealth() string {

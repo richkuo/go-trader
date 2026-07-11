@@ -276,6 +276,11 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: surface persisted correlated-hedge legs that no longer match config
+	// (hedge disabled/removed or symbol changed while a leg was open — a config
+	// edit + restart bypasses the SIGHUP hot-reload guard). Non-destructive.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -495,6 +500,13 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward startup hedge state-vs-config gaps to the owner DM.
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -2181,6 +2193,11 @@ func main() {
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							prices[result.Symbol] = price
+							// #1159: did the primary open from FLAT this cycle? A hedge-open
+							// failure on a fresh open escalates to a fail-closed primary
+							// unwind; a hedge failure on a later manage/add cycle only
+							// retries. Set below where the open trade is recorded.
+							primaryOpenedThisCycle := false
 							// #1046: circuit breaker latched — force hold so no entry/
 							// add/flip/close executes (every execution path below gates
 							// on Signal != 0, and executePerpsSignalWithLeverage returns
@@ -2484,6 +2501,12 @@ func main() {
 									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
 								}
+								// #1159: a FRESH primary open (flat→open, not a scale-in
+								// add) this cycle arms the fail-closed hedge-open→unwind
+								// escalation below.
+								if openTrade != nil && scaleInAddQty == 0 && hlPosQty == 0 {
+									primaryOpenedThisCycle = true
+								}
 							}
 							// #998: stamp the active profile on a freshly opened
 							// position (freezes it for the position's life) and commit
@@ -2495,6 +2518,18 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: converge the correlated hedge leg to the primary
+							// position, every cycle (open / scale-in add / partial close /
+							// full close / manage). Runs on the open path AND the Signal==0
+							// manage path — deliberately NOT gated by pause / daily-loss /
+							// exposure-cap: the hedge is a coupled risk-management leg, not
+							// a signal, and a held/paused primary can only shrink, so hedge
+							// sync can only reduce/close under those states anyway. HL perps
+							// only (hedge validation rejects everything else). Hedge coin
+							// mark comes from prices (collectPerpsMarkSymbols includes it).
+							if HedgeEnabled(sc) {
+								runHedgeSync(sc, stratState, &mu, notifier, logger, prices[hyperliquidConfiguredCoin(sc)], prices[hedgeCoin(sc)], primaryOpenedThisCycle)
 							}
 						}
 					case "futures":
