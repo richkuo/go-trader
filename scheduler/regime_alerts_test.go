@@ -303,7 +303,7 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	t.Run("hyperliquid_balance/applyHyperliquidCircuitCloseFill_normal", func(t *testing.T) {
 		s := newState("hyperliquid")
 		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5}
-		applyHyperliquidCircuitCloseFill(s, "BTC", 1.0, 49000, 1.5, 1.0, 0, "")
+		applyHyperliquidCircuitCloseFill(s, "BTC", 1.0, 49000, 1.5, 1.0, 0, false, "")
 		if got := lastRegime(s); got != want {
 			t.Errorf("Regime = %q; want %q", got, want)
 		}
@@ -312,7 +312,7 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	t.Run("hyperliquid_balance/applyHyperliquidCircuitCloseFill_noPosition", func(t *testing.T) {
 		s := newState("hyperliquid")
 		// Empty positions — exercises the defensive no-virtual-position branch.
-		applyHyperliquidCircuitCloseFill(s, "BTC", 1.0, 49000, 1.5, 1.0, 0, "")
+		applyHyperliquidCircuitCloseFill(s, "BTC", 1.0, 49000, 1.5, 1.0, 0, false, "")
 		if got := lastRegime(s); got != want {
 			t.Errorf("Regime = %q; want %q", got, want)
 		}

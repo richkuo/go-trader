@@ -3509,7 +3509,7 @@ func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) 
 			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0, 0, "")
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.3, 49000, 1.5, 1.0, 0, false, "")
 
 	pos, ok := s.Positions["BTC"]
 	if !ok {
@@ -3699,7 +3699,7 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionShortCloseRecordsBuy(t *test
 		Positions: map[string]*Position{},
 	}
 	// On-chain shows a short (negative size); closer reports a buy fill.
-	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, -0.5, 0, "")
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, -0.5, 0, false, "")
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))
@@ -3716,7 +3716,7 @@ func TestApplyHyperliquidCircuitCloseFill_NoPositionLongCloseRecordsSell(t *test
 		Positions: map[string]*Position{},
 	}
 	// On-chain shows a long (positive size); closer reports a sell fill.
-	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, 0.5, 0, "")
+	applyHyperliquidCircuitCloseFill(s, "ETH", 0.5, 3000, 0.5, 0.5, 0, false, "")
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 defensive trade, got %d", len(s.TradeHistory))

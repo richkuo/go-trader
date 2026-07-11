@@ -1286,9 +1286,14 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			StopLossTriggerPx: pos.StopLossTriggerPx,
 			StopLossATRMult:   pos.StopLossATRMult,
 			TPTiersJSON:       pos.TPTiersJSON,
+			IsHedge:           pos.IsHedge,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		if pos.IsHedge {
+			RecordHedgeTradeResult(&s.RiskState, pnl)
+		} else {
+			RecordTradeResult(&s.RiskState, pnl)
+		}
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1616,8 +1621,28 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 // RecordTradeResult updates risk state with realized PnL for daily limits and
 // consecutive-loss circuit breakers. Lifetime trade stats come from SQLite.
 func RecordTradeResult(r *RiskState, pnl float64) {
+	recordTradeResultForClose(r, pnl, false)
+}
+
+// RecordHedgeTradeResult is RecordTradeResult for a hedge-leg close (#1159/
+// #1337 review). The hedge's realized PnL still belongs in DailyPnL — it's
+// real money moving in the portfolio-wide daily-loss basis — but it must
+// NEVER move ConsecutiveLosses. Hedge legs are not alpha positions (the same
+// principle LifetimeTradeStats already applies via Trade.IsHedge), and
+// because a hedge is inverse-correlated to the primary, a winning hedge
+// close would otherwise silently reset the loss streak set by the losing
+// primary close it's paired with — defeating the consecutive-loss circuit
+// breaker for every hedge-enabled strategy.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	recordTradeResultForClose(r, pnl, true)
+}
+
+func recordTradeResultForClose(r *RiskState, pnl float64, isHedge bool) {
 	rolloverDailyPnL(r)
 	r.DailyPnL += pnl
+	if isHedge {
+		return
+	}
 	if pnl >= 0 {
 		r.ConsecutiveLosses = 0
 	} else {

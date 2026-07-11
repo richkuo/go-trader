@@ -475,6 +475,201 @@ func TestSnapshotHedgeCoherenceJobs_PriceMovementAloneNoJob(t *testing.T) {
 	}
 }
 
+// --- PR #1337 review round 4 fixes ---
+
+// RecordHedgeTradeResult must credit DailyPnL like a normal close but never
+// touch ConsecutiveLosses, in either direction.
+func TestRecordHedgeTradeResult_NeverMovesConsecutiveLosses(t *testing.T) {
+	r := &RiskState{ConsecutiveLosses: 3}
+	RecordHedgeTradeResult(r, -50) // a losing hedge close
+	if r.ConsecutiveLosses != 3 {
+		t.Errorf("ConsecutiveLosses = %d, want unchanged 3 (a losing hedge close must not increment)", r.ConsecutiveLosses)
+	}
+	if r.DailyPnL != -50 {
+		t.Errorf("DailyPnL = %g, want -50 (hedge PnL still belongs in the daily-loss basis)", r.DailyPnL)
+	}
+	RecordHedgeTradeResult(r, 80) // a winning hedge close
+	if r.ConsecutiveLosses != 3 {
+		t.Errorf("ConsecutiveLosses = %d, want unchanged 3 (a winning hedge close must not reset)", r.ConsecutiveLosses)
+	}
+	if r.DailyPnL != 30 {
+		t.Errorf("DailyPnL = %g, want 30 (-50+80)", r.DailyPnL)
+	}
+}
+
+// Sanity: the plain (non-hedge) RecordTradeResult path is unchanged.
+func TestRecordTradeResult_StillMovesConsecutiveLosses(t *testing.T) {
+	r := &RiskState{}
+	RecordTradeResult(r, -10)
+	if r.ConsecutiveLosses != 1 {
+		t.Errorf("ConsecutiveLosses = %d, want 1", r.ConsecutiveLosses)
+	}
+	RecordTradeResult(r, 5)
+	if r.ConsecutiveLosses != 0 {
+		t.Errorf("ConsecutiveLosses = %d, want 0 (reset by a win)", r.ConsecutiveLosses)
+	}
+}
+
+// #1337 review finding 1, "must survive" (a): a losing primary close
+// followed by its winning inverse-hedge close in the same cycle must leave
+// the loss streak reflecting the PRIMARY's loss — not reset by the hedge.
+func TestBookPerpsClose_LosingPrimaryThenWinningHedge_StreakNotReset(t *testing.T) {
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	// Primary closes at a loss (long, price dropped): streak -> 1.
+	if !bookPerpsCloseWithFillFee(s, "ETH", 1900, 0, false, "", "test_close", "test", "test", nil) {
+		t.Fatalf("primary close failed")
+	}
+	if s.RiskState.ConsecutiveLosses != 1 {
+		t.Fatalf("after losing primary close: ConsecutiveLosses = %d, want 1", s.RiskState.ConsecutiveLosses)
+	}
+	// Hedge closes at a win (short, price dropped too — inverse of primary):
+	// streak must STILL be 1, not reset to 0.
+	if !bookPerpsCloseWithFillFee(s, "BTC", 47000, 0, false, "", "test_close", "test", "test", nil) {
+		t.Fatalf("hedge close failed")
+	}
+	if s.RiskState.ConsecutiveLosses != 1 {
+		t.Errorf("after winning hedge close: ConsecutiveLosses = %d, want still 1 (hedge must not reset the streak)", s.RiskState.ConsecutiveLosses)
+	}
+}
+
+// #1337 review finding 1, "must survive" (b): a winning primary followed by
+// a losing hedge must leave the streak reset by the PRIMARY's win — not
+// incremented by the hedge's loss.
+func TestBookPerpsClose_WinningPrimaryThenLosingHedge_StreakNotIncremented(t *testing.T) {
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid",
+		RiskState: RiskState{ConsecutiveLosses: 2},
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	// Primary closes at a win (long, price rose): streak -> 0.
+	if !bookPerpsCloseWithFillFee(s, "ETH", 2100, 0, false, "", "test_close", "test", "test", nil) {
+		t.Fatalf("primary close failed")
+	}
+	if s.RiskState.ConsecutiveLosses != 0 {
+		t.Fatalf("after winning primary close: ConsecutiveLosses = %d, want 0", s.RiskState.ConsecutiveLosses)
+	}
+	// Hedge closes at a loss (short, price rose too): streak must STILL be
+	// 0, not incremented to 1.
+	if !bookPerpsCloseWithFillFee(s, "BTC", 52000, 0, false, "", "test_close", "test", "test", nil) {
+		t.Fatalf("hedge close failed")
+	}
+	if s.RiskState.ConsecutiveLosses != 0 {
+		t.Errorf("after losing hedge close: ConsecutiveLosses = %d, want still 0 (hedge must not increment the streak)", s.RiskState.ConsecutiveLosses)
+	}
+}
+
+// The same invariant on the partial-close path.
+func TestBookPerpsPartialClose_HedgeLegNeverMovesLossStreak(t *testing.T) {
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid",
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	// Hedge partial-closes at a loss (short, price rose): streak must stay 0.
+	if !bookPerpsPartialCloseWithFillFee(s, "BTC", 0.05, 52000, 0, false, "", "test_reduce", "test", "test", nil) {
+		t.Fatalf("hedge partial close failed")
+	}
+	if s.RiskState.ConsecutiveLosses != 0 {
+		t.Errorf("ConsecutiveLosses = %d, want 0 (hedge partial close must not move the streak)", s.RiskState.ConsecutiveLosses)
+	}
+}
+
+// #1337 review finding 2: forceCloseAllPositions must tag hedge-leg close
+// Trades IsHedge and exclude them from the loss streak.
+func TestForceCloseAllPositions_HedgeLegExcludedFromStreakAndTagged(t *testing.T) {
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long", Multiplier: 1},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 50000, Side: "short", Multiplier: 1, IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	// Primary loses (price dropped), hedge wins (price dropped, short profits).
+	prices := map[string]float64{"ETH": 1900, "BTC": 47000}
+	forceCloseAllPositions(s, prices, nil)
+	if s.RiskState.ConsecutiveLosses != 1 {
+		t.Errorf("ConsecutiveLosses = %d, want 1 (only the losing primary should count; the winning hedge must not reset it)", s.RiskState.ConsecutiveLosses)
+	}
+	var sawHedgeTrade, sawPrimaryTrade bool
+	for _, tr := range s.TradeHistory {
+		if tr.Symbol == "BTC" {
+			sawHedgeTrade = true
+			if !tr.IsHedge {
+				t.Errorf("BTC (hedge) trade IsHedge = false, want true")
+			}
+		}
+		if tr.Symbol == "ETH" {
+			sawPrimaryTrade = true
+			if tr.IsHedge {
+				t.Errorf("ETH (primary) trade IsHedge = true, want false")
+			}
+		}
+	}
+	if !sawHedgeTrade || !sawPrimaryTrade {
+		t.Fatalf("expected both a hedge and a primary close trade, got %d trades", len(s.TradeHistory))
+	}
+}
+
+// #1337 review finding 2: applyHyperliquidCircuitCloseFill's isHedge param
+// must tag Trade.IsHedge and gate the loss-streak update, on BOTH the
+// no-virtual-position branch (the crash-recovery shape, where isHedge is
+// the ONLY signal — there's no Position to derive it from) and the
+// has-position branch (where it's OR'd with pos.IsHedge).
+func TestApplyHyperliquidCircuitCloseFill_IsHedgeParam(t *testing.T) {
+	t.Run("no_position_isHedge_true_tags_trade_and_skips_streak", func(t *testing.T) {
+		s := &StrategyState{ID: "eth-long", Platform: "hyperliquid", RiskState: RiskState{ConsecutiveLosses: 5}}
+		applyHyperliquidCircuitCloseFill(s, "BTC", 0.05, 47000, 1.0, -0.05, 0, true, "hedge_crash_recovery_orphan_close")
+		if len(s.TradeHistory) != 1 || !s.TradeHistory[0].IsHedge {
+			t.Fatalf("want one IsHedge trade, got %+v", s.TradeHistory)
+		}
+		if s.RiskState.ConsecutiveLosses != 5 {
+			t.Errorf("ConsecutiveLosses = %d, want unchanged 5 (no-position hedge close, RealizedPnL=0, must not touch the streak)", s.RiskState.ConsecutiveLosses)
+		}
+	})
+	t.Run("has_position_pos_IsHedge_true_caller_false_still_tags_and_skips_streak", func(t *testing.T) {
+		s := &StrategyState{
+			ID: "eth-long", Platform: "hyperliquid", RiskState: RiskState{ConsecutiveLosses: 2},
+			Positions: map[string]*Position{
+				"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+			},
+		}
+		// Caller passes isHedge=false, but the function must still detect
+		// pos.IsHedge and treat it as a hedge close (the OR-derivation).
+		applyHyperliquidCircuitCloseFill(s, "BTC", 0.1, 52000, 1.0, -0.1, 0, false, "")
+		if len(s.TradeHistory) != 1 || !s.TradeHistory[0].IsHedge {
+			t.Fatalf("want one IsHedge trade (derived from pos.IsHedge), got %+v", s.TradeHistory)
+		}
+		if s.RiskState.ConsecutiveLosses != 2 {
+			t.Errorf("ConsecutiveLosses = %d, want unchanged 2 (a losing hedge close must not increment even when the caller under-reports isHedge)", s.RiskState.ConsecutiveLosses)
+		}
+	})
+	t.Run("has_position_not_hedge_moves_streak_normally", func(t *testing.T) {
+		s := &StrategyState{
+			ID: "eth-long", Platform: "hyperliquid",
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "long"},
+			},
+		}
+		applyHyperliquidCircuitCloseFill(s, "ETH", 1, 1900, 1.0, 1, 0, false, "")
+		if len(s.TradeHistory) != 1 || s.TradeHistory[0].IsHedge {
+			t.Fatalf("want one non-hedge trade, got %+v", s.TradeHistory)
+		}
+		if s.RiskState.ConsecutiveLosses != 1 {
+			t.Errorf("ConsecutiveLosses = %d, want 1 (a genuine losing primary close must still increment)", s.RiskState.ConsecutiveLosses)
+		}
+	})
+}
+
 // --- PR #1337 review fixes ---
 
 // unwindShouldBookPartial is the pure decision unwindPrimaryAfterHedgeOpenFailure

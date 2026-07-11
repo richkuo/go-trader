@@ -1519,7 +1519,7 @@ func runRegimeDirectionOrphanCloses(
 					clearHyperliquidProtectionOIDsMatching(pos, job.CancelOIDs)
 				}
 				if !alreadyFlat && fillSz > 1e-15 && fillPx > 0 {
-					applyHyperliquidCircuitCloseFill(ss, sym, fillSz, fillPx, fillFee, onChainSigned, fillOID, "regime_direction_flip")
+					applyHyperliquidCircuitCloseFill(ss, sym, fillSz, fillPx, fillFee, onChainSigned, fillOID, false, "regime_direction_flip")
 				}
 			}
 		}
@@ -2195,7 +2195,7 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 	if fillSz <= 1e-15 {
 		return false
 	}
-	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, false, "")
 	applied := true
 	// #1159: apply the hedge coin's kill-switch fill too — applyHyperliquidCircuitCloseFill
 	// is symbol-generic (keys purely on s.Positions[symbol]), and
@@ -2207,7 +2207,7 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 			if hFill, ok := fills[hc]; ok && hFill.TotalSz > 1e-15 && hFill.AvgPx > 0 {
 				hFillSz, hFillFee := hyperliquidKillSwitchFillShare(sc, hc, hFill.TotalSz, hFill.Fee, hlLiveAll, virtualQty)
 				if hFillSz > 1e-15 {
-					applyHyperliquidCircuitCloseFill(s, hc, hFillSz, hFill.AvgPx, hFillFee, 0, hFill.OID, "")
+					applyHyperliquidCircuitCloseFill(s, hc, hFillSz, hFill.AvgPx, hFillFee, 0, hFill.OID, true, "")
 					applied = true
 				}
 			}
@@ -2531,7 +2531,7 @@ func runPendingHyperliquidCircuitCloses(
 			if !alreadyFlat && fillSz > 1e-15 {
 				mu.Lock()
 				if ss := state.Strategies[j.stratID]; ss != nil {
-					applyHyperliquidCircuitCloseFill(ss, c.Symbol, fillSz, fillPx, fillFee, onChainSigned, fillOID, "")
+					applyHyperliquidCircuitCloseFill(ss, c.Symbol, fillSz, fillPx, fillFee, onChainSigned, fillOID, false, "")
 				}
 				mu.Unlock()
 			}
@@ -2663,7 +2663,18 @@ func hyperliquidOnChainCloseTradeLabel(closeReason string) string {
 
 // Caller must hold mu.Lock(). closeReason is stamped on Trade / ClosedPosition
 // rows (defaults to "circuit_breaker" when empty).
-func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, fillOID int64, closeReason string) {
+// isHedge (#1159/#1337 review) tells this call whether symbol is being
+// closed AS a hedge coin. It is OR'd with pos.IsHedge when a virtual
+// position exists (so a caller that forgets/can't know still gets the
+// correct answer whenever state already knows); it is the ONLY signal
+// available on the no-virtual-position branch, where state has no record to
+// derive it from (e.g. the #1159 crash-between-legs orphan-hedge recovery,
+// which calls this with isHedge=true precisely because no Position was ever
+// persisted). Gates both Trade.IsHedge (so LifetimeTradeStats excludes the
+// close from #T/W-L) and RecordTradeResult vs RecordHedgeTradeResult (so a
+// hedge close's PnL still lands in DailyPnL but never perturbs the
+// consecutive-loss streak).
+func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee, onChainSigned float64, fillOID int64, isHedge bool, closeReason string) {
 	if closeReason == "" {
 		closeReason = "circuit_breaker"
 	}
@@ -2715,6 +2726,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 			// this breakeven close counts as neither win nor loss.
 			IsClose: true,
 			Regime:  s.Regime,
+			IsHedge: isHedge,
 		})
 		return
 	}
@@ -2735,6 +2747,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	pnl -= fillFee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
+	effectiveIsHedge := isHedge || pos.IsHedge
 
 	RecordTrade(s, Trade{
 		Timestamp:         now,
@@ -2758,8 +2771,13 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		StopLossTriggerPx: pos.StopLossTriggerPx,
 		StopLossATRMult:   pos.StopLossATRMult,
 		TPTiersJSON:       pos.TPTiersJSON,
+		IsHedge:           effectiveIsHedge,
 	})
-	RecordTradeResult(&s.RiskState, pnl)
+	if effectiveIsHedge {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 
 	remaining := pos.Quantity - qtyClosed
 	if remaining <= 1e-9 {

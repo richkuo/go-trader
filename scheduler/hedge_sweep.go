@@ -304,7 +304,7 @@ func runHedgeSweepRecoverCrashOrphanHedge(sc StrategyConfig, state *AppState, mu
 	mu.Lock()
 	ss := state.Strategies[sc.ID]
 	if ss != nil {
-		applyHyperliquidCircuitCloseFill(ss, job.HedgeCoin, fill.TotalSz, fill.AvgPx, fill.Fee, onChainQty, closeOID, "hedge_crash_recovery_orphan_close")
+		applyHyperliquidCircuitCloseFill(ss, job.HedgeCoin, fill.TotalSz, fill.AvgPx, fill.Fee, onChainQty, closeOID, true, "hedge_crash_recovery_orphan_close")
 	}
 	mu.Unlock()
 	clearLiveExecThrottle(sc, "hedge-sweep-recover-orphan", job.HedgeCoin)
