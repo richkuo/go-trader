@@ -30,7 +30,7 @@ HERE = os.path.dirname(__file__)
 CLAUDE_YML = os.path.abspath(os.path.join(HERE, "..", "workflows", "claude.yml"))
 
 VERIFY_STEP = "Verify @claude is an actual invocation (not in a code block or example)"
-CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, or fix-pr-review)"
+CLASSIFY_MODE_STEP = "Classify invocation route (review, implement, or fix-pr)"
 
 # A PR issue_comment carries a non-empty pull_request.url; an issue comment does not.
 PR_URL = "https://api.github.com/repos/o/r/pulls/5"
@@ -117,13 +117,14 @@ def _run_block(script, env_overrides, output_key):
         return value
 
 
-def run_classify_mode(event_name, stripped, pr_url="", pr_author_assoc="", pr_author_login=""):
+def run_classify_mode(event_name, stripped, pr_url="", pr_author_assoc="", pr_author_login="", flow=""):
     script = extract_step_run_block(_read(CLAUDE_YML), CLASSIFY_MODE_STEP)
     return _run_block(
         script,
         {
             "EVENT_NAME": event_name,
             "PR_URL": pr_url,
+            "FLOW": flow,
             "STRIPPED": stripped,
             "PR_AUTHOR_ASSOC": pr_author_assoc,
             "PR_AUTHOR_LOGIN": pr_author_login,
@@ -147,27 +148,29 @@ def run_verify_invocation(event_name, body, trigger_actor="someuser"):
     )
 
 
-# --- classify_mode routing (2-way: review vs. push-capable implement) ---
+# --- classify_mode routing (review vs. push-capable implement/fix-pr) ---
 
-def test_trusted_member_pr_comment_no_review_word_is_implement():
+def test_trusted_member_pr_comment_no_review_word_is_fix_pr():
+    # Consolidated routing: any non-"review" @claude comment on a
+    # trusted-author PR runs the review-reconciliation playbook in place.
     assert run_classify_mode(
         "issue_comment", "@claude correct the lint error", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "implement"
+    ) == "fix-pr"
 
 
-def test_trusted_owner_pr_comment_is_implement():
+def test_trusted_owner_pr_comment_is_fix_pr():
     assert run_classify_mode(
         "issue_comment", "@claude address the feedback", pr_url=PR_URL, pr_author_assoc="OWNER"
-    ) == "implement"
+    ) == "fix-pr"
 
 
-def test_claude_bot_authored_pr_is_implement():
+def test_claude_bot_authored_pr_is_fix_pr():
     # work-on-issue PRs are authored by claude[bot] (association NONE) — the login
     # check, not the association, must admit them.
     assert run_classify_mode(
         "issue_comment", "@claude address the feedback", pr_url=PR_URL,
         pr_author_assoc="NONE", pr_author_login="claude[bot]"
-    ) == "implement"
+    ) == "fix-pr"
 
 
 def test_external_author_pr_comment_is_review_only():
@@ -204,30 +207,32 @@ def test_review_and_fix_loses_push_on_purpose():
 
 def test_review_word_later_in_sentence_no_longer_forces_review():
     # Keyword routing: only the FIRST word after @claude counts, so an
-    # instruction that merely mentions review keeps a push-capable route —
-    # here the fix keyword, so the review-fixing playbook.
+    # instruction that merely mentions review keeps the push-capable
+    # review-fixing route.
     assert run_classify_mode(
         "issue_comment", "@claude fix the review comments", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "fix-pr-review"
+    ) == "fix-pr"
 
 
-def test_fix_keyword_routes_to_fix_pr_review():
+def test_fix_keyword_routes_to_fix_pr():
+    # "fix" is no longer a special keyword — it lands on fix-pr like any
+    # other non-review trusted-PR comment.
     assert run_classify_mode(
         "issue_comment", "@claude fix", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "fix-pr-review"
+    ) == "fix-pr"
 
 
-def test_fix_keyword_after_model_shorthand_routes_to_fix_pr_review():
+def test_fix_keyword_after_model_shorthand_routes_to_fix_pr():
     assert run_classify_mode(
         "issue_comment", "@claude opus fix and be thorough", pr_url=PR_URL, pr_author_assoc="OWNER"
-    ) == "fix-pr-review"
+    ) == "fix-pr"
 
 
-def test_retired_fix_pr_keyword_is_no_longer_special():
-    # The old trigger spelling routes like any non-keyword ask now.
+def test_old_fix_pr_spelling_routes_to_fix_pr():
+    # The old trigger spelling routes like any non-review ask now.
     assert run_classify_mode(
         "issue_comment", "@claude fix-pr", pr_url=PR_URL, pr_author_assoc="MEMBER"
-    ) == "implement"
+    ) == "fix-pr"
 
 
 def test_fix_keyword_untrusted_pr_author_is_review_only():
@@ -267,6 +272,14 @@ def test_pull_request_review_comment_surface_is_review():
 def test_issues_event_is_implement():
     assert run_classify_mode(
         "issues", "@claude build this feature", pr_author_assoc="MEMBER"
+    ) == "implement"
+
+
+def test_docs_release_flow_routes_to_implement_even_on_pr():
+    # A resolved docs/release FLOW wins before PR routing.
+    assert run_classify_mode(
+        "issue_comment", "@claude sync-docs", pr_url=PR_URL,
+        pr_author_assoc="MEMBER", flow="sync-docs"
     ) == "implement"
 
 
