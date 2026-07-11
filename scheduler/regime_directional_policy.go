@@ -540,6 +540,11 @@ func perpsRegimeDirectionOrphanConflict(stratState *StrategyState, sc StrategyCo
 	if stratState == nil || pos == nil || pos.Quantity <= 0 {
 		return false, "", ""
 	}
+	// #1159: a hedge leg is deliberately inverse to the primary direction —
+	// it must never be queued for the #822 orphan auto-close.
+	if pos.IsHedge {
+		return false, "", ""
+	}
 	if sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return false, "", ""
 	}

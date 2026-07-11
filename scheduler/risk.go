@@ -81,6 +81,12 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			// #1159: hedge legs need marks too — unrealized PnL, margin
+			// drawdown, exposure deltas, and hedge_sync open sizing all read
+			// prices[hedgeCoin].
+			if hc := hedgeCoin(sc); hc != "" {
+				hlSet[hc] = true
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -953,8 +959,17 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	// #1159: the hedge leg is strictly coupled — a circuit-breaker flatten of
+	// the primary must flatten the hedge too. Captured here, BEFORE
+	// forceCloseAllPositions deletes the virtual positions; the drain clamps
+	// to the on-chain size anyway. Structurally sole-owned (validateHedgeConfigs),
+	// so no shared-coin guard applies to the hedge coin.
+	if hedge := findHedgePosition(s, *sc); hedge != nil {
+		symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedge.Symbol, Size: hedge.Quantity})
+	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1149,6 +1164,10 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 	// generic pass below remains the cleanup path for non-HL strategies,
 	// missing-fill fallbacks, options, and any residual virtual positions.
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
+	// #1159: book the hedge leg's real fill too (sole-owned coin, full fill)
+	// so its Trade/ClosedPosition rows carry exchange price/fee instead of
+	// the model-only cleanup below.
+	applyHedgeKillSwitchCloseFill(s, sc, hlFills)
 	forceCloseAllPositions(s, prices, logger)
 }
 
@@ -1262,7 +1281,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		recordCloseTradeResult(s, pos, pnl)
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1352,7 +1371,15 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 		if notional <= 0 {
 			continue
 		}
-		margin += notional / configLeverage
+		// #1159: a hedge leg's margin is deployed at the hedge block's own
+		// leverage (stamped on the position at open), not the primary's
+		// config leverage — using the primary's would mis-scale the drawdown
+		// denominator whenever the two differ.
+		legLeverage := configLeverage
+		if pos.IsHedge && pos.Leverage > 0 {
+			legLeverage = pos.Leverage
+		}
+		margin += notional / legLeverage
 
 		var pnl float64
 		if pos.Side == "long" {

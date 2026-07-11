@@ -1116,6 +1116,20 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		if !pos.OpenedAt.IsZero() {
 			dateStr = fmt.Sprintf(" [%s]", pos.OpenedAt.Format("Jan 02 15:04"))
 		}
+		// #1159: a hedge leg is auto-managed coupling, not an independent
+		// position — mark it explicitly (so it's never mistaken for an
+		// unmanaged/foreign position) and skip the close/SL/TP extras, which
+		// describe the PRIMARY strategy's geometry, not the hedge's (it has
+		// no protection or close evaluator of its own).
+		if pos.IsHedge {
+			hedgeExtras := fmt.Sprintf(" | ⚖️ hedge for %s (auto-managed)", pos.HedgePrimarySymbol)
+			if pos.Leverage > 1 {
+				margin := positionMargin(pos.Quantity, pos.AvgCost, pos.Leverage)
+				hedgeExtras += fmt.Sprintf(" | %gx ($%s margin)", pos.Leverage, fmtComma(math.Round(margin)))
+			}
+			lines = append(lines, fmt.Sprintf("%s %s %s x%.3f @ $%s (%s$%s)%s%s", sc.ID, strings.ToUpper(pos.Side), sym, pos.Quantity, fmtComma2(pos.AvgCost), sign, fmtComma2(absPnl), hedgeExtras, dateStr))
+			continue
+		}
 		extras := ""
 		if name := closeStrategySummaryName(sc); name != "" {
 			extras += fmt.Sprintf(" | close: %s", name)

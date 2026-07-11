@@ -8,21 +8,35 @@ import (
 
 // Position represents a spot, futures, or perps position.
 type Position struct {
-	Symbol              string    `json:"symbol"`
-	TradePositionID     string    `json:"position_id,omitempty"`
-	Quantity            float64   `json:"quantity"`
-	InitialQuantity     float64   `json:"initial_quantity,omitempty"` // original open size; partial closes must not rewrite it (#496)
-	AvgCost             float64   `json:"avg_cost"`
-	EntryATR            float64   `json:"entry_atr,omitempty"`               // ATR value from the entry strategy's open candle when available (#496)
-	Side                string    `json:"side"`                              // "long" or "short"
-	Multiplier          float64   `json:"multiplier,omitempty"`              // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
-	Leverage            float64   `json:"leverage,omitempty"`                // perps exchange leverage (informational; PnL is not scaled by leverage) (#254/#497)
-	OwnerStrategyID     string    `json:"owner_strategy_id,omitempty"`       // strategy that opened this position
-	OpenedAt            time.Time `json:"opened_at,omitempty"`               // when the position was opened
-	StopLossOID         int64     `json:"stop_loss_oid,omitempty"`           // HL perps: resting trigger-order OID for the per-trade stop-loss (0 = none) (#412)
-	StopLossTriggerPx   float64   `json:"stop_loss_trigger_px,omitempty"`    // HL perps: trigger price for the resting stop-loss (0 = unknown) (#421)
-	StopLossHighWaterPx float64   `json:"stop_loss_high_water_px,omitempty"` // HL perps trailing SL: best mark seen while position open (high for long, low for short) (#501)
-	TPOIDs              []int64   `json:"tp_oids,omitempty"`                 // HL perps: resting reduce-only TP limit OIDs, one per configured tier (#601/#612)
+	Symbol          string    `json:"symbol"`
+	TradePositionID string    `json:"position_id,omitempty"`
+	Quantity        float64   `json:"quantity"`
+	InitialQuantity float64   `json:"initial_quantity,omitempty"` // original open size; partial closes must not rewrite it (#496)
+	AvgCost         float64   `json:"avg_cost"`
+	EntryATR        float64   `json:"entry_atr,omitempty"`         // ATR value from the entry strategy's open candle when available (#496)
+	Side            string    `json:"side"`                        // "long" or "short"
+	Multiplier      float64   `json:"multiplier,omitempty"`        // contract multiplier (0 = spot, >0 = futures/perps PnL branch; canonical perps value is 1 — do NOT set to leverage)
+	Leverage        float64   `json:"leverage,omitempty"`          // perps exchange leverage (informational; PnL is not scaled by leverage) (#254/#497)
+	OwnerStrategyID string    `json:"owner_strategy_id,omitempty"` // strategy that opened this position
+	OpenedAt        time.Time `json:"opened_at,omitempty"`         // when the position was opened
+	// #1159 hedge-leg metadata. IsHedge marks a strategy-owned correlated
+	// hedge leg (keyed by the hedge coin in the same Positions map): no check
+	// script, no close evaluator, no protection orders — managed exclusively
+	// by the hedge_sync convergence engine, and excluded from the
+	// consecutive-loss streak (recordHedgeTradeResult). HedgePrimarySymbol is
+	// the primary coin whose lifecycle owns this leg. HedgeCoveredPrimaryQty
+	// is the primary quantity the current hedge size covers — the convergence
+	// watermark that keeps reductions proportional (never re-priced from live
+	// marks, which would churn orders as marks move). All three persist to
+	// the positions table so startup reconcile recovers hedge ownership from
+	// state metadata, never from coin→configured-symbol inference.
+	IsHedge                bool    `json:"is_hedge,omitempty"`
+	HedgePrimarySymbol     string  `json:"hedge_primary_symbol,omitempty"`
+	HedgeCoveredPrimaryQty float64 `json:"hedge_covered_primary_qty,omitempty"`
+	StopLossOID            int64   `json:"stop_loss_oid,omitempty"`           // HL perps: resting trigger-order OID for the per-trade stop-loss (0 = none) (#412)
+	StopLossTriggerPx      float64 `json:"stop_loss_trigger_px,omitempty"`    // HL perps: trigger price for the resting stop-loss (0 = unknown) (#421)
+	StopLossHighWaterPx    float64 `json:"stop_loss_high_water_px,omitempty"` // HL perps trailing SL: best mark seen while position open (high for long, low for short) (#501)
+	TPOIDs                 []int64 `json:"tp_oids,omitempty"`                 // HL perps: resting reduce-only TP limit OIDs, one per configured tier (#601/#612)
 	// TPArmedTiers[i] = true once tier i has been observed with a positive OID
 	// (i.e. successfully placed by runHyperliquidProtectionSync at least once).
 	// findHighestClearedTier requires this so a tier whose first placement
@@ -302,7 +316,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, 0)
+		recordCloseTradeResult(s, pos, 0)
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -389,7 +403,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	recordCloseTradeResult(s, pos, pnl)
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
 	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -472,7 +486,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	recordCloseTradeResult(s, pos, pnl)
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {

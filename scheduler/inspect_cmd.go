@@ -842,6 +842,12 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 		sort.Strings(syms)
 		for _, sym := range syms {
 			pos := stratState.Positions[sym]
+			// #1159: hedge legs are deliberately inverse — direction analysis
+			// doesn't apply; mark them so they're not mistaken for orphans.
+			if pos.IsHedge {
+				fmt.Fprintf(b, "  position %s:         side=%s HEDGE LEG for %s (auto-managed, #1159)\n", sym, pos.Side, pos.HedgePrimarySymbol)
+				continue
+			}
 			currentDirRegime := stratState.Regime
 			if cfg != nil && cfg.Regime != nil {
 				currentDirRegime = regimeLabelFromWindows(stratState.RegimeWindows, sc.RegimeDirectionalWindow, cfg.Regime)
@@ -909,6 +915,16 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 		positions := make([]map[string]interface{}, 0)
 		for sym, pos := range stratState.Positions {
 			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			if pos.IsHedge {
+				positions = append(positions, map[string]interface{}{
+					"symbol":               sym,
+					"side":                 pos.Side,
+					"quantity":             pos.Quantity,
+					"is_hedge":             true,
+					"hedge_primary_symbol": pos.HedgePrimarySymbol,
+				})
 				continue
 			}
 			posDirRegime := positionDirectionalRegimeLabel(pos, sc)

@@ -276,6 +276,11 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: detect persisted hedge legs whose config hedge block was
+	// removed/disabled/re-pointed across a restart — nothing converges an
+	// orphaned leg, so surface it loudly at the one point that can see it.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -495,6 +500,17 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward orphaned-hedge-leg warnings — a live inverse leg with
+	// nothing managing it must never sit silent.
+	for _, msg := range hedgeStateWarnings {
+		fmt.Printf("[WARN] %s\n", msg)
+	}
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1424,6 +1440,20 @@ func main() {
 					}
 				}
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
+				// #1159: hedge coins claimed by persisted IsHedge positions —
+				// the kill switch must flatten a live hedge leg even when its
+				// config hedge block was removed across a restart.
+				var hlHedgeStateCoins []string
+				for _, ss := range state.Strategies {
+					if ss == nil {
+						continue
+					}
+					for hsym, hpos := range ss.Positions {
+						if hpos != nil && hpos.IsHedge && hpos.Quantity > 0 {
+							hlHedgeStateCoins = append(hlHedgeStateCoins, hsym)
+						}
+					}
+				}
 				mu.RUnlock()
 
 				inputs := KillSwitchCloseInputs{
@@ -1435,6 +1465,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLHedgeStateCoins: hlHedgeStateCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -2817,6 +2848,19 @@ func main() {
 
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
+				}
+
+				// #1159: converge hedge legs AFTER the dispatch loop so any
+				// primary lifecycle event that landed this cycle — open,
+				// scale-in add, partial/full close, SL fill booked by
+				// reconcile, CB force-close — is mirrored onto the hedge leg
+				// within the same cycle. Runs every cycle (not just for due
+				// strategies): a no-op when primary and hedge already agree.
+				// Deliberately inside the !killSwitchFired branch — the
+				// kill-switch close path owns flattening (its traded-coin
+				// roster includes hedge coins). Subprocesses outside mu.
+				if len(hlLiveAll) > 0 {
+					totalTrades += runHedgeLegSync(shutdownSideEffectCtx, cfg.Strategies, state, &mu, prices, hlPositions, hlStateFetched, defaultHedgeSyncDeps(notifier), logMgr)
 				}
 			} // end if !killSwitchFired
 		}

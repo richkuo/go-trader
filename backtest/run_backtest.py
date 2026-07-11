@@ -756,6 +756,19 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
+        # #1159 phase 1: correlated hedge legs are HL-live-only. Silently
+        # backtesting only the primary would misstate PnL/fees vs live, so
+        # reject loudly (same pattern as regime_window_divergence above);
+        # parity modeling is a tracked follow-up. A disabled/empty hedge
+        # block is tolerated.
+        hedge_block = sc.get("hedge") or {}
+        if isinstance(hedge_block, dict) and hedge_block.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} has an enabled "
+                f"hedge block, which is HL-live-only in this release "
+                f"(backtester hedge PnL/fee parity deferred — see #1159). "
+                f"Disable the hedge block to backtest the primary alone."
+            )
         # #842: a strategy has a single close_strategy ref. Still accept the
         # legacy close_strategies array (length <=1 after the collapse) so old
         # configs keep backtesting; the backtester's close_strategies= list

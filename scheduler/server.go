@@ -539,7 +539,9 @@ func directionalStatusForStrategy(sc StrategyConfig, s *StrategyState, rc *Regim
 	posRegime := ""
 	var certStates map[string]string
 	for _, p := range s.Positions {
-		if p != nil && p.Quantity > 0 {
+		// #1159: skip hedge legs — map iteration could pick the (inverse)
+		// hedge first and misreport the directional view.
+		if p != nil && p.Quantity > 0 && !p.IsHedge {
 			posQty = p.Quantity
 			posRegime = positionDirectionalRegimeLabel(p, sc)
 			certStates = p.DirectionCertifiedStatesAtOpen
