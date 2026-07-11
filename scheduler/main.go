@@ -1728,7 +1728,7 @@ func main() {
 					hedgeJobs := snapshotHedgeCoherenceJobs(state, cfg.Strategies, hlReconcileAll, prices)
 					mu.RUnlock()
 					if len(hedgeJobs) > 0 {
-						runHedgeCoherenceSweep(shutdownSideEffectCtx, state, cfg.Strategies, hedgeJobs, &mu, notifier, logMgr)
+						runHedgeCoherenceSweep(shutdownSideEffectCtx, state, cfg.Strategies, hedgeJobs, hlPositions, &mu, notifier, logMgr)
 					}
 				}
 

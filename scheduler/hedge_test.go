@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -441,6 +442,165 @@ func TestSnapshotHedgeCoherenceJobs_ConsistentPairNoJob(t *testing.T) {
 	prices := map[string]float64{"ETH": 2000, "BTC": 50000}
 	if jobs := snapshotHedgeCoherenceJobs(state, []StrategyConfig{sc}, []StrategyConfig{sc}, prices); len(jobs) != 0 {
 		t.Fatalf("want no jobs for a consistent pair, got: %+v", jobs)
+	}
+}
+
+// --- PR #1337 review fixes ---
+
+// applyHedgeOpenFill must never blend a new-side fill into an existing
+// opposite-side hedge Position (a flip whose close leg failed must not
+// corrupt the surviving hedge into a wrong-side/wrong-qty Position).
+func TestApplyHedgeOpenFill_RefusesOppositeSideBlend(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	// New fill is "buy" (long) against an existing SHORT hedge Position.
+	got := applyHedgeOpenFill(s, sc, "ETH", "posid-1", "buy", 0.05, 51000, 1.0, 0, "", false)
+	if got != nil {
+		t.Fatalf("want nil (refused), got %+v", got)
+	}
+	pos := s.Positions["BTC"]
+	if pos.Quantity != 0.1 || pos.AvgCost != 50000 || pos.Side != "short" {
+		t.Fatalf("existing opposite-side position must be untouched, got %+v", pos)
+	}
+	if len(s.TradeHistory) != 0 {
+		t.Fatalf("want no trade recorded on refusal, got %d", len(s.TradeHistory))
+	}
+}
+
+// Same-side blend (the ordinary scale-in-shaped add) must still work.
+func TestApplyHedgeOpenFill_BlendsSameSide(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	got := applyHedgeOpenFill(s, sc, "ETH", "posid-1", "sell", 0.1, 52000, 1.0, 0, "", false)
+	if got == nil {
+		t.Fatalf("want a blended position, got nil")
+	}
+	if got.Quantity != 0.2 {
+		t.Errorf("Quantity = %g, want 0.2", got.Quantity)
+	}
+	wantAvg := (50000*0.1 + 52000*0.1) / 0.2
+	if got.AvgCost != wantAvg {
+		t.Errorf("AvgCost = %g, want %g", got.AvgCost, wantAvg)
+	}
+	if got.Side != "short" {
+		t.Errorf("Side = %q, want short", got.Side)
+	}
+}
+
+// Fresh open (no existing hedge position) must still work.
+func TestApplyHedgeOpenFill_CreatesFreshWhenNoneExists(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long"},
+		},
+	}
+	got := applyHedgeOpenFill(s, sc, "ETH", "posid-1", "sell", 0.06, 50000, 1.0, 0, "", false)
+	if got == nil {
+		t.Fatalf("want a fresh hedge position, got nil")
+	}
+	if got.Quantity != 0.06 || got.Side != "short" || !got.IsHedge || got.HedgeForSymbol != "ETH" {
+		t.Errorf("got %+v", got)
+	}
+	if primary := s.Positions["ETH"]; primary.HedgeSymbol != "BTC" {
+		t.Errorf("primary.HedgeSymbol = %q, want BTC", primary.HedgeSymbol)
+	}
+}
+
+// mirrorHedgeReduce must report success (true) on the two no-op paths that
+// never place a live order, so a flip caller doesn't wrongly skip the
+// reopen when there was nothing to close in the first place.
+func TestMirrorHedgeReduce_NoHedgePositionReturnsTrue(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	sc.Args = []string{"sma_crossover", "ETH", "1h", "--mode=live"}
+	s := &StrategyState{ID: "eth-long", Platform: "hyperliquid", Positions: map[string]*Position{}}
+	var mu sync.RWMutex
+	if ok := mirrorHedgeReduce(sc, s, &mu, "ETH", 1, 1, "", 0, false, true, nil, nil); !ok {
+		t.Fatalf("want true when there is no hedge position to reduce")
+	}
+}
+
+// Paper-mode full reduce (closedQty == qtyBefore) must fully close the
+// hedge position, report success, and never attempt a live order.
+func TestMirrorHedgeReduce_PaperFullClose(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	var mu sync.RWMutex
+	ok := mirrorHedgeReduce(sc, s, &mu, "ETH", 1, 1, "", 0, false, false, nil, nil)
+	if !ok {
+		t.Fatalf("want true (paper path never fails)")
+	}
+	if _, exists := s.Positions["BTC"]; exists {
+		t.Errorf("want hedge position fully closed and removed")
+	}
+	if primary := s.Positions["ETH"]; primary.HedgeSymbol != "" {
+		t.Errorf("want HedgeSymbol cleared on the primary after a full hedge close, got %q", primary.HedgeSymbol)
+	}
+}
+
+// Paper-mode partial reduce must shrink (not remove) the hedge position.
+func TestMirrorHedgeReduce_PaperPartialReduce(t *testing.T) {
+	sc := hedgeTestStrategy("eth-long", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	s := &StrategyState{
+		ID: "eth-long", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "short", IsHedge: true, HedgeForSymbol: "ETH"},
+		},
+	}
+	var mu sync.RWMutex
+	// Primary closes 25% (0.25 of 1.0) -> hedge (0.1) reduces by 25% (0.025).
+	ok := mirrorHedgeReduce(sc, s, &mu, "ETH", 1, 0.25, "", 0, false, false, nil, nil)
+	if !ok {
+		t.Fatalf("want true (paper path never fails)")
+	}
+	pos, exists := s.Positions["BTC"]
+	if !exists {
+		t.Fatalf("want hedge position to survive a partial reduce")
+	}
+	wantQty := 0.075
+	if diff := pos.Quantity - wantQty; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("Quantity = %g, want %g", pos.Quantity, wantQty)
+	}
+}
+
+// onChainCoinQty (hedge_sweep.go) is the pure detector the crash-orphan
+// recovery path uses to decide whether a real on-chain hedge position
+// exists before fail-closing the primary.
+func TestOnChainCoinQty(t *testing.T) {
+	positions := []HLPosition{
+		{Coin: "BTC", Size: -0.1},
+		{Coin: "ETH", Size: 0},
+		{Coin: "SOL", Size: 5},
+	}
+	if qty, found := onChainCoinQty(positions, "BTC"); !found || qty != 0.1 {
+		t.Errorf("BTC: qty=%g found=%v, want 0.1/true (unsigned)", qty, found)
+	}
+	if _, found := onChainCoinQty(positions, "ETH"); found {
+		t.Errorf("ETH: want not found (zero size)")
+	}
+	if _, found := onChainCoinQty(positions, "DOGE"); found {
+		t.Errorf("DOGE: want not found (no entry)")
+	}
+	if qty, found := onChainCoinQty(positions, "SOL"); !found || qty != 5 {
+		t.Errorf("SOL: qty=%g found=%v, want 5/true", qty, found)
 	}
 }
 

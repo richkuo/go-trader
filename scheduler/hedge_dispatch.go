@@ -54,7 +54,16 @@ func mirrorHedgeAfterPrimaryFill(sc StrategyConfig, s *StrategyState, mu *sync.R
 		fillFee = fill.Fee
 		useFillFee = true
 	}
-	live := execResult != nil
+	// #1337 review: live/paper booking mode must track the STRATEGY's mode,
+	// never a per-cycle proxy. execResult is nil not only for genuine paper
+	// strategies but also for a LIVE strategy's Signal==0 manage-cycle
+	// branches that can close the primary in-state without ever populating
+	// execResult (e.g. the immediate fixed-ATR-SL fill at main.go's
+	// hyperliquidArmFixedATRStopLossLive branch, recordPerpsStopLossClose) —
+	// execResult != nil was previously read as "live", which silently routed
+	// a real on-chain-close event through the no-order paper booking path
+	// and stranded the actual on-chain hedge leg.
+	live := hyperliquidIsLive(sc.Args)
 
 	switch {
 	case preQty <= 0 && postQty > 0:
@@ -80,8 +89,20 @@ func mirrorHedgeAfterPrimaryFill(sc StrategyConfig, s *StrategyState, mu *sync.R
 		// inverse side sized to the new primary qty. A reopen failure fails
 		// closed on the NEW primary side (the old side is already closed
 		// on-chain and cannot be un-closed).
-		mirrorHedgeReduce(sc, s, mu, primaryCoin, preQty, preQty, fillOID, fillFee, useFillFee, live, notifier, logger)
-		mirrorHedgeOpen(sc, s, mu, primaryCoin, primaryPositionID, postQty, postSide, fillPrice, fillOID, fillFee, useFillFee, live, hedgeMid, notifier, logger)
+		//
+		// #1337 review: the reopen must NOT run if the reduce failed — a
+		// failed close leaves the OLD-side hedge Position intact, and
+		// applyHedgeOpenFill's blend branch would otherwise sum the new
+		// fill into it while keeping the stale Side, corrupting the
+		// Position (wrong side, wrong qty, no on-chain counterpart). On a
+		// failed reduce we leave the (still-open, wrong-side-for-the-new-
+		// primary) hedge for the coherence sweep/operator rather than risk
+		// a blended, un-recoverable Position.
+		if mirrorHedgeReduce(sc, s, mu, primaryCoin, preQty, preQty, fillOID, fillFee, useFillFee, live, notifier, logger) {
+			mirrorHedgeOpen(sc, s, mu, primaryCoin, primaryPositionID, postQty, postSide, fillPrice, fillOID, fillFee, useFillFee, live, hedgeMid, notifier, logger)
+		} else if logger != nil {
+			logger.Error("hedge flip: old-side hedge close failed for primary %s — skipping the new-side hedge reopen to avoid blending opposite sides into one Position; the old hedge leg is left in place for manual review/the coherence sweep", primaryCoin)
+		}
 	}
 }
 
@@ -107,8 +128,12 @@ func mirrorHedgeOpen(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, prim
 	if !live {
 		// Paper: book directly at the hedge mid, no order, no failure path.
 		mu.Lock()
-		applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, qty, hedgeMid, CalculatePlatformSpotFee(s.Platform, qty*hedgeMid), 0, "", false)
+		pos := applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, qty, hedgeMid, CalculatePlatformSpotFee(s.Platform, qty*hedgeMid), 0, "", false)
 		mu.Unlock()
+		if pos == nil {
+			alertHedgeOpenRefusedOppositeSide(sc, primaryCoin, hedgeCoin(sc), qty, hedgeMid, false, notifier, logger)
+			return
+		}
 		if logger != nil {
 			logger.Info("PAPER hedge open %s %.6f @ $%.2f (for primary %s)", side, qty, hedgeMid, primaryCoin)
 		}
@@ -134,11 +159,40 @@ func mirrorHedgeOpen(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, prim
 		hFillOID = fmt.Sprintf("%d", fill.OID)
 	}
 	mu.Lock()
-	applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, fill.TotalSz, fill.AvgPx, CalculatePlatformSpotFee(s.Platform, fill.TotalSz*fill.AvgPx), fill.Fee, hFillOID, true)
+	pos := applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, fill.TotalSz, fill.AvgPx, CalculatePlatformSpotFee(s.Platform, fill.TotalSz*fill.AvgPx), fill.Fee, hFillOID, true)
 	mu.Unlock()
+	if pos == nil {
+		alertHedgeOpenRefusedOppositeSide(sc, primaryCoin, hedgeCoin(sc), fill.TotalSz, fill.AvgPx, true, notifier, logger)
+		return
+	}
 	clearLiveExecThrottle(sc, "hedge-open", hedgeCoin(sc))
 	if logger != nil {
 		logger.Info("LIVE hedge open %s %.6f @ $%.2f oid=%d (for primary %s)", side, fill.TotalSz, fill.AvgPx, fill.OID, primaryCoin)
+	}
+}
+
+// alertHedgeOpenRefusedOppositeSide reports the CRITICAL condition where a
+// hedge open/add fill occurred (live: a real confirmed on-chain fill; paper:
+// a virtual fill) but applyHedgeOpenFill refused to record it because an
+// opposite-side hedge Position was still present (its guard against
+// corrupting a blend across sides, #1337 review). Live is the severe case: a
+// real order filled on the exchange and is now UNTRACKED by state until an
+// operator manually reconciles it — this must never be silent.
+func alertHedgeOpenRefusedOppositeSide(sc StrategyConfig, primaryCoin, hedgeSym string, qty, px float64, live bool, notifier *MultiNotifier, logger *StrategyLogger) {
+	mode := "PAPER"
+	tail := "no real order was placed — this is a state inconsistency to review, not untracked exposure."
+	if live {
+		mode = "LIVE"
+		tail = "a REAL on-chain fill occurred and is now UNTRACKED by state — manually verify and reconcile the position on Hyperliquid."
+	}
+	msg := fmt.Sprintf("strategy %s: %s hedge open/add fill (%.6f %s @ $%.2f, for primary %s) was REFUSED because an opposite-side hedge Position was already present (a prior hedge close on this coin likely failed) — %s",
+		sc.ID, mode, qty, hedgeSym, px, primaryCoin, tail)
+	if notifier != nil {
+		notifier.SendOwnerDM(msg)
+		notifier.SendToAllChannels(msg)
+	}
+	if logger != nil {
+		logger.Error("%s", msg)
 	}
 }
 
@@ -213,8 +267,11 @@ func mirrorHedgeAdd(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, prima
 
 	if !live {
 		mu.Lock()
-		applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, qty, hedgeMid, CalculatePlatformSpotFee(s.Platform, qty*hedgeMid), 0, "", false)
+		pos := applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, qty, hedgeMid, CalculatePlatformSpotFee(s.Platform, qty*hedgeMid), 0, "", false)
 		mu.Unlock()
+		if pos == nil {
+			alertHedgeOpenRefusedOppositeSide(sc, primaryCoin, hedgeCoin(sc), qty, hedgeMid, false, notifier, logger)
+		}
 		return
 	}
 
@@ -236,8 +293,12 @@ func mirrorHedgeAdd(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, prima
 		hFillOID = fmt.Sprintf("%d", fill.OID)
 	}
 	mu.Lock()
-	applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, fill.TotalSz, fill.AvgPx, CalculatePlatformSpotFee(s.Platform, fill.TotalSz*fill.AvgPx), fill.Fee, hFillOID, true)
+	pos := applyHedgeOpenFill(s, sc, primaryCoin, primaryPositionID, side, fill.TotalSz, fill.AvgPx, CalculatePlatformSpotFee(s.Platform, fill.TotalSz*fill.AvgPx), fill.Fee, hFillOID, true)
 	mu.Unlock()
+	if pos == nil {
+		alertHedgeOpenRefusedOppositeSide(sc, primaryCoin, hedgeCoin(sc), fill.TotalSz, fill.AvgPx, true, notifier, logger)
+		return
+	}
 	clearLiveExecThrottle(sc, "hedge-add", hedgeCoin(sc))
 }
 
@@ -246,7 +307,16 @@ func mirrorHedgeAdd(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, prima
 // close. No unwind on failure — the primary leg is already closed on-chain
 // and cannot be un-closed; the hedge Position is left untouched and the
 // coherence sweep retries the reduce-only close every cycle.
-func mirrorHedgeReduce(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, primaryCoin string, primaryQtyBefore, primaryQtyClosed float64, fillOID string, fillFee float64, useFillFee, live bool, notifier *MultiNotifier, logger *StrategyLogger) {
+//
+// Returns true when the hedge ends this call with no MORE than the intended
+// residual — i.e. there is nothing left blocking a subsequent hedge open on
+// a NEW side (no hedge existed, nothing needed reducing, or the reduce/close
+// order confirmed). Returns false only when a live order was required and
+// failed, leaving the pre-existing hedge Position (wrong side, for a flip
+// caller) still in place — callers (the flip path) must not open a new-side
+// hedge when this is false, or applyHedgeOpenFill's blend branch will merge
+// opposite sides into one corrupt Position (#1337 review).
+func mirrorHedgeReduce(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, primaryCoin string, primaryQtyBefore, primaryQtyClosed float64, fillOID string, fillFee float64, useFillFee, live bool, notifier *MultiNotifier, logger *StrategyLogger) bool {
 	hedgeSym := hedgeCoin(sc)
 	mu.RLock()
 	hedgePos, exists := s.Positions[hedgeSym]
@@ -256,11 +326,11 @@ func mirrorHedgeReduce(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, pr
 	}
 	mu.RUnlock()
 	if !exists || hedgeQty <= 0 {
-		return
+		return true
 	}
 	reduceQty := hedgeReduceQty(hedgeQty, primaryQtyBefore, primaryQtyClosed)
 	if reduceQty <= 0 {
-		return
+		return true
 	}
 	full := reduceQty >= hedgeQty-1e-9
 
@@ -272,7 +342,7 @@ func mirrorHedgeReduce(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, pr
 			applyHedgeReduceFill(s, hedgeSym, reduceQty, hedgePos.AvgCost, 0, false, "", "hedge_partial_close_paper", logger)
 		}
 		mu.Unlock()
-		return
+		return true
 	}
 
 	var partialSz *float64
@@ -291,7 +361,7 @@ func mirrorHedgeReduce(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, pr
 		if logger != nil {
 			logger.Error("hedge reduce failed for %s (%s) — hedge leg left as-is; the coherence sweep will retry", hedgeSym, errMsg)
 		}
-		return
+		return false
 	}
 	fill := closeResult.Close.Fill
 	var closeOID string
@@ -306,6 +376,7 @@ func mirrorHedgeReduce(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, pr
 	}
 	mu.Unlock()
 	clearLiveExecThrottle(sc, "hedge-reduce", hedgeSym)
+	return true
 }
 
 // mirrorHedgeFullClose mirrors a terminal primary full close onto the hedge

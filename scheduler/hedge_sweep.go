@@ -124,11 +124,16 @@ func snapshotHedgeCoherenceJobs(state *AppState, strategies []StrategyConfig, hl
 // on-chain close orders outside any lock, apply under Lock — the same shape
 // as runRegimeDirectionOrphanCloses. Runs every cycle after reconcile and
 // drainPendingManualActions, before per-strategy dispatch.
+//
+// hlPositions is the cycle's already-fetched on-chain snapshot, threaded
+// through so runHedgeSweepClosePrimary can check for a crash-between-legs
+// orphan hedge before giving up and fail-closing the primary (#1337 review).
 func runHedgeCoherenceSweep(
 	ctx context.Context,
 	state *AppState,
 	strategies []StrategyConfig,
 	jobs []hedgeCoherenceJob,
+	hlPositions []HLPosition,
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logMgr *LogManager,
@@ -160,7 +165,7 @@ func runHedgeCoherenceSweep(
 
 		switch job.Action {
 		case hedgeSweepClosePrimary:
-			runHedgeSweepClosePrimary(sc, state, mu, job, notifier, logger)
+			runHedgeSweepClosePrimary(sc, state, mu, job, hlPositions, notifier, logger)
 		case hedgeSweepCloseHedge:
 			runHedgeSweepCloseHedge(sc, state, mu, job, notifier, logger)
 		case hedgeSweepReduceHedge:
@@ -169,10 +174,51 @@ func runHedgeCoherenceSweep(
 	}
 }
 
-// runHedgeSweepClosePrimary fail-closes an unhedged primary. Always sized
-// (never sz=None) — the primary coin is not guaranteed sole-owned like the
+// onChainCoinQty returns the unsigned on-chain size for coin from the
+// cycle's HL positions snapshot, or (0, false) if the coin has no non-zero
+// entry.
+func onChainCoinQty(hlPositions []HLPosition, coin string) (float64, bool) {
+	for i := range hlPositions {
+		if hlPositions[i].Coin != coin {
+			continue
+		}
+		sz := hlPositions[i].Size
+		if sz < 0 {
+			sz = -sz
+		}
+		if sz <= 1e-15 {
+			return 0, false
+		}
+		return sz, true
+	}
+	return 0, false
+}
+
+// runHedgeSweepClosePrimary handles a P-without-H divergence. Before
+// abandoning the hedge and fail-closing the primary, it checks the cycle's
+// on-chain snapshot for a REAL position on the hedge coin (#1337 review,
+// Requires Human Review: the crash-between-legs window where
+// mirrorHedgeOpen's on-chain order confirmed but applyHedgeOpenFill's state
+// write never committed). Collision rejection guarantees the hedge coin is
+// exclusively reserved for this strategy — no other strategy can ever be
+// configured to trade it — so a non-zero position found there is
+// unambiguously this strategy's, not a guess or coin->config inference
+// (constraint 5 is about not attributing ownership from static config
+// matching; this is a positive on-chain observation on a coin only this
+// strategy could have placed an order on). When found, the orphan hedge is
+// recovered (closed, booked defensively with no persisted-position basis —
+// same primitive the CB/kill-switch paths already use for exactly this
+// shape) and the primary is LEFT ALONE, since real hedge coverage existed.
+// Only when no on-chain position exists on the hedge coin does this fall
+// through to the original fail-closed primary unwind — sized (never
+// sz=None), since the primary coin is not guaranteed sole-owned like the
 // hedge coin is.
-func runHedgeSweepClosePrimary(sc StrategyConfig, state *AppState, mu *sync.RWMutex, job hedgeCoherenceJob, notifier *MultiNotifier, logger *StrategyLogger) {
+func runHedgeSweepClosePrimary(sc StrategyConfig, state *AppState, mu *sync.RWMutex, job hedgeCoherenceJob, hlPositions []HLPosition, notifier *MultiNotifier, logger *StrategyLogger) {
+	if onChainQty, found := onChainCoinQty(hlPositions, job.HedgeCoin); found {
+		runHedgeSweepRecoverCrashOrphanHedge(sc, state, mu, job, onChainQty, notifier, logger)
+		return
+	}
+
 	qty := job.Qty
 	closeResult, _, err := RunHyperliquidClose(sc.Script, job.PrimaryCoin, &qty, nil)
 	if err != nil || closeResult == nil || closeResult.Close == nil || closeResult.Close.Fill == nil {
@@ -184,7 +230,7 @@ func runHedgeSweepClosePrimary(sc StrategyConfig, state *AppState, mu *sync.RWMu
 		}
 		notifyLiveExecFailure(notifier, sc, "hedge-sweep-close-primary", job.PrimaryCoin, errMsg)
 		if logger != nil {
-			logger.Error("hedge-sweep: strategy %s is running an UNHEDGED primary on %s (hedge %s absent) and the fail-closed unwind failed (%s) — will retry next cycle", sc.ID, job.PrimaryCoin, job.HedgeCoin, errMsg)
+			logger.Error("hedge-sweep: strategy %s is running an UNHEDGED primary on %s (hedge %s absent, no on-chain hedge position found) and the fail-closed unwind failed (%s) — will retry next cycle", sc.ID, job.PrimaryCoin, job.HedgeCoin, errMsg)
 		}
 		return
 	}
@@ -200,7 +246,55 @@ func runHedgeSweepClosePrimary(sc StrategyConfig, state *AppState, mu *sync.RWMu
 	}
 	mu.Unlock()
 	clearLiveExecThrottle(sc, "hedge-sweep-close-primary", job.PrimaryCoin)
-	msg := fmt.Sprintf("strategy %s: hedge-sweep closed an unhedged primary position on %s (hedge %s was absent — crash between legs, a retried unwind, or an externally-closed hedge leg).", sc.ID, job.PrimaryCoin, job.HedgeCoin)
+	msg := fmt.Sprintf("strategy %s: hedge-sweep closed an unhedged primary position on %s (hedge %s was absent, and no on-chain hedge position was found either — crash between legs, a retried unwind, or an externally-closed hedge leg).", sc.ID, job.PrimaryCoin, job.HedgeCoin)
+	if notifier != nil {
+		notifier.SendOwnerDM(msg)
+		notifier.SendToAllChannels(msg)
+	}
+}
+
+// runHedgeSweepRecoverCrashOrphanHedge closes a REAL on-chain hedge position
+// that has no persisted IsHedge Position row — the crash-between-legs
+// window described on runHedgeSweepClosePrimary. Full close (sz=None) is
+// safe: collision rejection guarantees sole ownership of the hedge coin.
+// Booked via applyHyperliquidCircuitCloseFill, the same primitive the CB/
+// kill-switch paths use, which already handles "real fill, no persisted
+// position to decrement" by recording a defensive Trade with no PnL
+// accounting (no AvgCost basis exists to compute PnL against) rather than
+// inventing one.
+func runHedgeSweepRecoverCrashOrphanHedge(sc StrategyConfig, state *AppState, mu *sync.RWMutex, job hedgeCoherenceJob, onChainQty float64, notifier *MultiNotifier, logger *StrategyLogger) {
+	closeResult, _, err := runHyperliquidHedgeCloseOrder(sc, nil)
+	if err != nil || closeResult == nil || closeResult.Close == nil || closeResult.Close.Fill == nil {
+		errMsg := "sweep: crash-orphan hedge recovery close failed"
+		if err != nil {
+			errMsg = err.Error()
+		} else if closeResult != nil && closeResult.Error != "" {
+			errMsg = closeResult.Error
+		}
+		notifyLiveExecFailure(notifier, sc, "hedge-sweep-recover-orphan", job.HedgeCoin, errMsg)
+		if logger != nil {
+			logger.Error("hedge-sweep: strategy %s has a real on-chain hedge position on %s (qty=%.6f) with NO persisted pairing state (crash between legs) — the recovery close failed (%s); primary on %s left untouched since real hedge coverage exists — will retry next cycle", sc.ID, job.HedgeCoin, onChainQty, errMsg, job.PrimaryCoin)
+		}
+		msg := fmt.Sprintf("strategy %s: found an untracked on-chain hedge position on %s (qty=%.6f, no persisted state — crash between legs) but the recovery close FAILED — manual reconciliation required on Hyperliquid.", sc.ID, job.HedgeCoin, onChainQty)
+		if notifier != nil {
+			notifier.SendOwnerDM(msg)
+			notifier.SendToAllChannels(msg)
+		}
+		return
+	}
+	fill := closeResult.Close.Fill
+	var closeOID int64
+	if fill.OID != 0 {
+		closeOID = fill.OID
+	}
+	mu.Lock()
+	ss := state.Strategies[sc.ID]
+	if ss != nil {
+		applyHyperliquidCircuitCloseFill(ss, job.HedgeCoin, fill.TotalSz, fill.AvgPx, fill.Fee, onChainQty, closeOID, "hedge_crash_recovery_orphan_close")
+	}
+	mu.Unlock()
+	clearLiveExecThrottle(sc, "hedge-sweep-recover-orphan", job.HedgeCoin)
+	msg := fmt.Sprintf("strategy %s: recovered and closed an untracked on-chain hedge position on %s (qty=%.6f, no persisted pairing state — crash between the hedge-open order confirming and its state write committing). Primary on %s left untouched since real hedge coverage existed. No PnL basis was available for this leg (no persisted entry) — review trade_diagnostics for the defensive close row.", sc.ID, job.HedgeCoin, onChainQty, job.PrimaryCoin)
 	if notifier != nil {
 		notifier.SendOwnerDM(msg)
 		notifier.SendToAllChannels(msg)

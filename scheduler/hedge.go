@@ -97,20 +97,33 @@ func runHyperliquidHedgeCloseOrder(sc StrategyConfig, partialSz *float64) (*Hype
 // the caller's mu.Lock. Stamps hedge pairing metadata on both legs (the hedge
 // Position's IsHedge/HedgeForSymbol/HedgeForPositionID and the primary
 // Position's HedgeSymbol) and records an open Trade tagged IsHedge. Returns
-// the resulting hedge Position, or nil if qty/execPx are non-positive.
+// the resulting hedge Position, or nil if qty/execPx are non-positive OR
+// (#1337 review) an existing hedge Position is on the OPPOSITE side of this
+// fill's side — blending would silently sum opposite-direction quantities
+// while keeping the stale Side, producing a Position that matches neither
+// leg's real exposure. This can only legitimately happen if a caller failed
+// to serialize a flip's close-before-reopen (mirrorHedgeAfterPrimaryFill
+// already gates that); refusing here is defense-in-depth so a caller bug
+// can never silently corrupt the hedge Position — callers MUST treat a nil
+// return with a real fill (qty/execPx positive) as a failure requiring the
+// same fail-closed handling as an order failure, since real money moved
+// on-chain but was refused a home in state.
 func applyHedgeOpenFill(s *StrategyState, sc StrategyConfig, primaryCoin, primaryPositionID, side string, qty, execPx, modeledFee, fillFee float64, fillOID string, useFillFee bool) *Position {
 	if qty <= 0 || execPx <= 0 {
 		return nil
 	}
 	hedgeSym := hedgeCoin(sc)
-	fee := executionFee(modeledFee, fillFee, useFillFee)
-	s.Cash -= fee
-	now := time.Now().UTC()
 	posSide := "long"
 	if side == "sell" {
 		posSide = "short"
 	}
 	pos, exists := s.Positions[hedgeSym]
+	if exists && pos != nil && pos.Side != posSide && pos.Quantity > 0 {
+		return nil
+	}
+	fee := executionFee(modeledFee, fillFee, useFillFee)
+	s.Cash -= fee
+	now := time.Now().UTC()
 	if !exists || pos == nil {
 		positionID := newTradePositionID(s.ID, hedgeSym, now)
 		pos = &Position{
@@ -130,7 +143,8 @@ func applyHedgeOpenFill(s *StrategyState, sc StrategyConfig, primaryCoin, primar
 		}
 		s.Positions[hedgeSym] = pos
 	} else {
-		// Scale-in-shaped add: blend price/size. The hedge leg has no on-chain
+		// Scale-in-shaped add: blend price/size (same side, guaranteed by
+		// the opposite-side guard above). The hedge leg has no on-chain
 		// protection geometry to freeze (phase 1: no hedge SL/TP), so a plain
 		// qty/AvgCost blend is sufficient — unlike the primary's #873
 		// RiskAnchorPrice freeze.
