@@ -84,6 +84,15 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		case "okx":
 			okxSet[coin] = true
 		}
+		// #1159: a strategy's hedge leg needs a mark too — portfolio valuation,
+		// forceCloseAllPositions pricing, and exposure-cap deltas all read
+		// PortfolioValue's prices map, which comes from this coin set. Hedge is
+		// HL perps only in phase 1.
+		if sc.HedgeEnabled() && sc.Platform == "hyperliquid" {
+			if hc := hedgeCoin(sc); hc != "" {
+				hlSet[hc] = true
+			}
+		}
 	}
 	hlCoins = make([]string, 0, len(hlSet))
 	for c := range hlSet {
@@ -943,18 +952,35 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
-	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		return
+	var symbols []PendingCircuitCloseSymbol
+	// #1159: when the primary coin is shared with a peer, the primary leg is
+	// skipped below (no safe sole-owner close primitive on a shared coin —
+	// forceCloseAllPositions handles the virtual side instead), but a
+	// hedge-enabled strategy's hedge coin is, by collision-rejection
+	// construction, ALWAYS sole-owned — it must still be enqueued so the CB
+	// drain doesn't orphan a real on-chain hedge leg while only the virtual
+	// primary gets cleaned up.
+	if !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		if _, ok := s.Positions[sym]; ok {
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+			}
+		}
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(*sc); hc != "" {
+			if _, ok := s.Positions[hc]; ok {
+				if qty, ok := computeHyperliquidCircuitCloseQty(hc, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hc, Size: qty})
+				}
+			}
+		}
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
+	if len(symbols) == 0 {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 

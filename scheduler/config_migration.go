@@ -10,7 +10,12 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 17
+//
+// v18 introduces the per-strategy hedge surface (#1159, phase 1). Purely
+// stamp-only/additive like v17 (#1277) — an absent `hedge` block means "no
+// hedge, unchanged behavior", so no on-disk rewrite or migration handler is
+// needed; only the version stamp advances.
+const CurrentConfigVersion = 18
 
 // MinSupportedConfigVersion is the oldest stamped config_version the migration
 // ladder can still bring forward (#1285). The v6–v12 rewrite handlers (channel

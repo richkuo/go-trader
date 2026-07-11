@@ -1397,6 +1397,14 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 
 	res.outf("Force-closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
 		filledQty, sym, fillAvgPx, realizedPnL, fillFee)
+	// #1159: the daemon owns the hedge leg exclusively — force-close never
+	// places a hedge order itself. Tell the operator so a lagging hedge
+	// close/reduce on the next scheduler cycle isn't mistaken for a bug.
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(sc); hc != "" {
+			res.outf("Note: strategy %s is hedge-enabled — the hedge leg on %s will be reduced/closed by the scheduler's coherence sweep on its next cycle, not by this command.", strategyID, hc)
+		}
+	}
 
 	action := PendingManualAction{
 		StrategyID:      strategyID,
