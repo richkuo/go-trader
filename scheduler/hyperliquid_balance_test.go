@@ -3528,6 +3528,53 @@ func TestApplyHyperliquidCircuitCloseFill_PartialPreservesAvgCost(t *testing.T) 
 	}
 }
 
+func TestApplyHyperliquidCircuitCloseFill_HedgeNeverClassifiesPrimaryOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		primaryPx  float64
+		hedgePx    float64
+		wantLosses int
+	}{
+		{name: "net winning force close", primaryPx: 110, hedgePx: 110, wantLosses: 0},
+		{name: "net losing force close", primaryPx: 90, hedgePx: 90, wantLosses: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{
+				ID: "hl-hedged", Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long"},
+					"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"},
+				},
+			}
+			applyHyperliquidCircuitCloseFill(s, "ETH", 1, tc.primaryPx, 0, 0, 1, "circuit_breaker")
+			applyHyperliquidCircuitCloseFill(s, "BTC", 1, tc.hedgePx, 0, 0, 2, "circuit_breaker")
+			if s.RiskState.ConsecutiveLosses != tc.wantLosses {
+				t.Fatalf("ConsecutiveLosses=%d want %d", s.RiskState.ConsecutiveLosses, tc.wantLosses)
+			}
+			if math.Abs(s.RiskState.DailyPnL) > 1e-9 {
+				t.Fatalf("DailyPnL=%g, want both force-closed legs represented and net zero", s.RiskState.DailyPnL)
+			}
+		})
+	}
+}
+
+func TestApplyHyperliquidCircuitCloseFill_NonHedgeStillClassifiesOutcome(t *testing.T) {
+	s := &StrategyState{
+		ID: "hl-primary", Cash: 1000,
+		RiskState: RiskState{ConsecutiveLosses: 2},
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long"},
+		},
+	}
+	applyHyperliquidCircuitCloseFill(s, "ETH", 1, 90, 0, 0, 3, "circuit_breaker")
+	if s.RiskState.ConsecutiveLosses != 3 {
+		t.Fatalf("ConsecutiveLosses=%d want 3 for non-hedge loss", s.RiskState.ConsecutiveLosses)
+	}
+	if s.RiskState.DailyPnL != -10 {
+		t.Fatalf("DailyPnL=%g want -10", s.RiskState.DailyPnL)
+	}
+}
+
 // #418 review observation 1: a closer that returns success with a nil/zero
 // fill (eventual consistency, future adapter tweak) must not silently clear
 // pending. Pre-fix the `fillSz > 0` clause inside `underFill` would make a

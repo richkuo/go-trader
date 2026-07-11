@@ -2862,7 +2862,14 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		StopLossATRMult:   pos.StopLossATRMult,
 		TPTiersJSON:       pos.TPTiersJSON,
 	})
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.IsHedge {
+		// CB/kill-switch drains share this booker. A coupled inverse hedge fill
+		// is real settled PnL for the daily ledger, but never an independent
+		// directional outcome for the primary strategy's loss-streak CB.
+		RecordRealizedPnL(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 
 	remaining := pos.Quantity - qtyClosed
 	if remaining <= 1e-9 {
