@@ -94,7 +94,7 @@ SKIP_STRATEGIES = {"hold"}
 LIVE_BIDIRECTIONAL_STRATEGIES = frozenset({
     "triple_ema_bidir", "tema_cross_bd", "session_breakout", "donchian_breakout",
     "chart_pattern", "liquidity_sweeps", "bear_pullback_st", "vwap_rejection_st",
-    "momentum_pro", "mean_reversion_pro", "consolidation_range", "mtf_confluence",
+    "momentum_pro", "mean_reversion_pro", "rsi_bb_combo", "consolidation_range", "mtf_confluence",
     "vol_momentum", "funding_skew", "regime_adaptive", "anchored_vwap",
     "anchored_vwap_channel", "anchored_vwap_reversion", "atr_band_revert",
 })

@@ -38,7 +38,6 @@ for _p in (
         sys.path.insert(0, _p)
 
 from indicators import sma, ema
-from rsi_bb_combo import rsi_bb_combo_core
 from indicators_core import atr_from_true_range, atr_sma, true_range, wilder_rsi
 from amd_ifvg import amd_ifvg_core
 from chart_patterns import chart_pattern_core
@@ -53,6 +52,7 @@ from donchian_breakout import donchian_breakout_core
 from funding_skew import funding_skew_core
 from momentum_pro import momentum_pro_core
 from mean_reversion_pro import mean_reversion_pro_core
+from rsi_bb_combo import rsi_bb_combo_core
 from mtf_confluence import mtf_confluence_core
 from regime_adaptive import regime_adaptive_core
 from regime_adaptive_htf import regime_adaptive_htf_core
@@ -359,15 +359,6 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
 # ─────────────────────────────────────────────
 # Strategy implementations
 # ─────────────────────────────────────────────
-
-
-@register(
-    "rsi_bb_combo",
-    "RSI+BB Combo — Bollinger Band mean reversion confirmed by RSI extremes",
-    {"bb_period": 20, "bb_std": 2.0, "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0, "confirm_window": 3},
-)
-def rsi_bb_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
-    return rsi_bb_combo_core(df, **params)
 
 
 @register(
@@ -1541,6 +1532,25 @@ def mean_reversion_pro_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
 
 
 @register(
+    "rsi_bb_combo",
+    "RSI+BB Combo — Bollinger Band mean reversion confirmed by RSI extremes. No inline trend filter BY DESIGN — run behind the composite ranging regime gate (init wires it by default) or it fades trends. NOTE: default params LOSE on BTC 1h (-47% gated w/ tiered TP + 2xATR SL); BTC 4h gated is the shape that showed edge (+27%, PF 1.42, MaxDD -16%, see PR 1330) — needs M1 + gross_edge_noise validation before promotion (#1329)",
+    {
+        "bb_period": 20, "bb_std": 2.0,
+        "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0,
+        "confirm_window": 3,
+    },
+    constraints=[
+        "bb_period > 0",
+        "rsi_period > 0",
+        "confirm_window > 0",
+        "rsi_oversold < rsi_overbought",
+    ],
+)
+def rsi_bb_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return rsi_bb_combo_core(df, **params)
+
+
+@register(
     "consolidation_range",
     "Consolidation Range — enters at the edges of a consolidation box (long near the bottom, short near the top); exit via a trailing ATR stop. NOTE: default params LOSE in run_backtest.py (~-40% to -47% on BTC 4h, see docs/research/consolidation-findings.md) — ship as a tunable baseline, adjust box width / stop / trail per market before live use",
     {"box_width_pct": 0.05, "min_bars": 16, "edge_entry_frac": 0.2},
@@ -1709,7 +1719,7 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
 
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
-        "rsi_bb_combo", "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
+        "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "supertrend", "ichimoku_cloud",
         "pairs_spread", "squeeze_momentum", "atr_breakout", "amd_ifvg",
@@ -1717,14 +1727,14 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "anchored_vwap_channel", "anchored_vwap_reversion", "chart_pattern",
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "donchian_breakout", "tema_cross",
-        "momentum_pro", "mean_reversion_pro", "atr_band_revert", "mtf_confluence",
+        "momentum_pro", "mean_reversion_pro", "rsi_bb_combo", "atr_band_revert", "mtf_confluence",
         "vol_momentum", "regime_adaptive", "regime_adaptive_htf",
         "analog_retrieval",
         "hold",
     ],
     "futures": [
         "sma_crossover", "ema_crossover", "bollinger_bands", "volume_weighted",
-        "rsi_bb_combo", "triple_ema", "triple_ema_bidir", "tema_cross", "tema_cross_bd", "rsi_macd_combo", "momentum",
+        "triple_ema", "triple_ema_bidir", "tema_cross", "tema_cross_bd", "rsi_macd_combo", "momentum",
         "mean_reversion", "rsi", "macd", "breakout", "stoch_rsi", "supertrend",
         "squeeze_momentum", "ichimoku_cloud", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "anchored_vwap",
@@ -1732,7 +1742,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
         "liquidity_sweeps", "parabolic_sar", "range_scalper",
         "sweep_squeeze_combo", "adx_trend", "delta_neutral_funding",
         "funding_skew", "donchian_breakout", "session_breakout", "bear_pullback_st",
-        "vwap_rejection_st", "momentum_pro", "mean_reversion_pro",
+        "vwap_rejection_st", "momentum_pro", "mean_reversion_pro", "rsi_bb_combo",
         "consolidation_range", "atr_band_revert", "mtf_confluence", "vol_momentum",
         "regime_adaptive", "regime_adaptive_htf", "analog_retrieval", "hold",
     ],
