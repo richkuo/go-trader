@@ -35,6 +35,7 @@ for _p in (
         sys.path.insert(0, _p)
 
 from indicators import sma, ema
+from rsi_bb_combo import rsi_bb_combo_core
 from amd_ifvg import amd_ifvg_core
 from chart_patterns import chart_pattern_core
 from liquidity_sweeps import liquidity_sweep_core
@@ -174,6 +175,15 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
 # ─────────────────────────────────────────────
 # Strategy implementations
 # ─────────────────────────────────────────────
+
+
+@register(
+    "rsi_bb_combo",
+    "RSI+BB Combo — Bollinger Band mean reversion confirmed by RSI extremes",
+    {"bb_period": 20, "bb_std": 2.0, "rsi_period": 14, "rsi_oversold": 30.0, "rsi_overbought": 70.0, "confirm_window": 3},
+)
+def rsi_bb_combo_strategy(df: pd.DataFrame, **params) -> pd.DataFrame:
+    return rsi_bb_combo_core(df, **params)
 
 
 @register(
@@ -1375,7 +1385,7 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
 
 PLATFORM_ORDER: Dict[str, List[str]] = {
     "spot": [
-        "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
+        "rsi_bb_combo", "sma_crossover", "ema_crossover", "rsi", "bollinger_bands", "macd",
         "mean_reversion", "momentum", "volume_weighted", "triple_ema",
         "rsi_macd_combo", "stoch_rsi", "supertrend", "ichimoku_cloud",
         "pairs_spread", "squeeze_momentum", "atr_breakout", "amd_ifvg",
@@ -1390,7 +1400,7 @@ PLATFORM_ORDER: Dict[str, List[str]] = {
     ],
     "futures": [
         "sma_crossover", "ema_crossover", "bollinger_bands", "volume_weighted",
-        "triple_ema", "triple_ema_bidir", "tema_cross", "tema_cross_bd", "rsi_macd_combo", "momentum",
+        "rsi_bb_combo", "triple_ema", "triple_ema_bidir", "tema_cross", "tema_cross_bd", "rsi_macd_combo", "momentum",
         "mean_reversion", "rsi", "macd", "breakout", "stoch_rsi", "supertrend",
         "squeeze_momentum", "ichimoku_cloud", "atr_breakout", "amd_ifvg",
         "heikin_ashi_ema", "order_blocks", "vwap_reversion", "anchored_vwap",
