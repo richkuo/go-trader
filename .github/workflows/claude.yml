@@ -10,20 +10,23 @@ on:
   pull_request_review:
     types: [submitted]
 
-# Serialize runs per issue/PR: both comment-patch steps rewrite "the latest
-# bot comment", so overlapping runs would stamp each other's comments. The
-# group is per workflow RUN, so the classify→review/implement jobs of one run
-# never overlap a second run on the same issue/PR.
+# Serialize runs per issue/PR: the footer/failure comment-patch steps rewrite
+# "the latest bot comment", so overlapping runs would stamp each other's
+# comments. The group is per workflow RUN, so the classify -> review/implement
+# jobs of one run never overlap a second run on the same issue/PR.
 concurrency:
   group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
 
-# Least-privilege split (#1178): classification and the two runner jobs.
-# The runner body is shared via claude-run.yml; only the permissions (and
-# mode) differ at the call sites below. The review job must never carry
-# contents: write or id-token: write — a review run reads untrusted,
-# potentially prompt-injected PR content, and id-token: write would let
-# injected code mint the Claude App installation token (which has push
+# Least-privilege split (#1178): a zero-permission classify job plus the two
+# runner jobs. The runner body is the reusable claude-run.yml workflow
+# published from richkuo/rk-skills — it fetches its prompts and scripts from
+# rk-skills at run time, so this file is the ONLY piece a consumer repo
+# vendors (plus optional .github/prompts/<route>-local.md tailoring); only the
+# permissions (and route) differ at the call sites below. The review job must
+# never carry contents: write or id-token: write — a review run reads
+# untrusted, potentially prompt-injected PR content, and id-token: write would
+# let injected code mint the Claude App installation token (which has push
 # rights) itself via the OIDC exchange, bypassing the job permissions.
 jobs:
   classify:
@@ -50,6 +53,7 @@ jobs:
     outputs:
       invoked: ${{ steps.verify_invocation.outputs.invoked }}
       mode: ${{ steps.classify_mode.outputs.mode }}
+      flow: ${{ steps.resolve_model.outputs.flow }}
       model_id: ${{ steps.resolve_model.outputs.model_id }}
       effort: ${{ steps.resolve_model.outputs.effort }}
     steps:
@@ -79,13 +83,13 @@ jobs:
           # shellcheck disable=SC2016  # single quotes are intentional — Perl regex has no shell vars
           STRIPPED=$(printf '%s' "$BODY" | perl -0777 -pe 's/```.*?```//gs' | sed 's/`[^`]*`//g')
 
-          # Single source of truth for the stripped body: classify_mode (the
-          # token-split security gate) and resolve_model consume this output,
-          # so the text that gates "is @claude invoked" and the text that
-          # gates "does this run earn push access" can never diverge. The
-          # heredoc delimiter is random because the body is attacker-
-          # influenced — a fixed delimiter inside the body could inject
-          # additional outputs.
+          # Publish the code-stripped body as a single source of truth: both
+          # classify_mode (which decides review vs. push-capable fix-pr from the
+          # word "review") and resolve_model consume THIS text, so the body that
+          # gates "is @claude invoked" and the body that gates "does this run earn
+          # push access" can never diverge. The heredoc delimiter is randomized
+          # because the body is attacker-influenced — a fixed delimiter appearing
+          # inside the body could inject additional step outputs.
           DELIM="STRIPPED_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
           {
             printf 'stripped<<%s\n' "$DELIM"
@@ -94,12 +98,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           if [ "$TRIGGER_ACTOR" = "claude[bot]" ]; then
-            # Bot self-trigger loop prevention: the author gate above lets
-            # claude[bot] invoke (so work-on-issue can post an @claude review on
-            # its own PR), but a claude[bot] comment is a valid invocation ONLY
-            # when its stripped body is exactly a one-line review trigger (optional
-            # model shorthand + effort token). Review output that merely quotes
-            # @claude at a line start must never chain another run.
+            # Bot self-trigger loop prevention: a claude[bot]-authored comment is a
+            # valid invocation ONLY when its stripped body is exactly a one-line
+            # review trigger (optional model shorthand + effort token). Review
+            # output that merely quotes @claude at a line start must never chain
+            # another run.
             # Normalize CRLF, trim each line, and DROP blank lines so whitespace
             # padding (leading/trailing spaces, blank lines, or a stray CR) around
             # an otherwise exact one-line "@claude review" trigger cannot defeat
@@ -123,97 +126,20 @@ jobs:
             echo "::notice::@claude found but only inside code blocks or examples — skipping."
           fi
 
-      - name: Classify invocation route (review, implement, or fix-pr-review)
-        if: steps.verify_invocation.outputs.invoked == 'true'
-        id: classify_mode
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
-          # On an issue_comment for a PR, github.event.issue IS the PR, so these
-          # describe the PULL REQUEST's author. They gate the push-capable path so
-          # a fix never writes over an untrusted contributor's diff (this repo is
-          # PUBLIC — outside contributors can open fork PRs).
-          PR_URL: ${{ github.event.issue.pull_request.url }}
-          PR_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
-          PR_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
-        run: |
-          # Fail-closed routing (#1178), keyed on the FIRST word after @claude
-          # (an optional model shorthand — opus/sonnet/fable — is skipped):
-          # when in doubt, classify as review — the review job cannot push, so
-          # a misrouted implementation ask fails with a 403 instead of a
-          # misrouted review ask running with contents: write while reading
-          # untrusted PR content.
-          #   - PR-review surfaces (pull_request_review, and inline
-          #     pull_request_review_comment) are always review-scoped, even
-          #     for inline "@claude fix X" asks.
-          #   - Route keyword "review" ("@claude review ...") routes to review
-          #     on any surface. NOTE: only the keyword position counts;
-          #     "review" later in the sentence ("@claude fix the review
-          #     comments") no longer forces read-only.
-          #   - Route keyword "fix" on a trusted-author PR comment routes to
-          #     fix-pr-review — the review-fixing playbook (validate all review
-          #     feedback against the code, fix what survives, disposition
-          #     comment, re-review trigger).
-          #   - Any other issue_comment ON A PR earns the write-capable
-          #     implement path ONLY when the PR author is trusted
-          #     (owner/member/collaborator, or claude[bot]'s own work-on-issue
-          #     PR); an external/fork-authored PR stays review-only, so the
-          #     agent never writes while reading an untrusted author's diff.
-          #     Issues and issue_comments on issues stay implement — the author
-          #     gate already restricts them to a trusted human.
-          # $STRIPPED is verify_invocation's code-fence-stripped body — the
-          # exact text the invocation gate saw, by construction.
-          case "$EVENT_NAME" in
-            pull_request_review|pull_request_review_comment)
-              echo "mode=review" >> "$GITHUB_OUTPUT"
-              echo "::notice::Mode: review (PR-review surface)"
-              exit 0
-              ;;
-          esac
-
-          # Route keyword = first token after @claude on its invocation line,
-          # skipping an optional model shorthand.
-          KEYWORD=$(printf '%s' "$STRIPPED" | tr -d '\r' \
-            | sed -n 's/^[[:space:]]*@claude[[:space:]]\{1,\}//p' | head -n 1 \
-            | awk '{ if ($1 == "opus" || $1 == "sonnet" || $1 == "fable") { print $2 } else { print $1 } }' \
-            | tr '[:upper:]' '[:lower:]')
-
-          if [ "$KEYWORD" = "review" ]; then
-            echo "mode=review" >> "$GITHUB_OUTPUT"
-            echo "::notice::Mode: review (review keyword)"
-            exit 0
-          fi
-
-          if [ "$EVENT_NAME" = "issue_comment" ] && [ -n "$PR_URL" ]; then
-            PR_AUTHOR_TRUSTED=false
-            case "$PR_AUTHOR_ASSOC" in
-              OWNER|MEMBER|COLLABORATOR) PR_AUTHOR_TRUSTED=true ;;
-            esac
-            if [ "$PR_AUTHOR_LOGIN" = "claude[bot]" ]; then
-              PR_AUTHOR_TRUSTED=true
-            fi
-            if [ "$PR_AUTHOR_TRUSTED" != "true" ]; then
-              MODE=review
-            elif [ "$KEYWORD" = "fix" ]; then
-              MODE=fix-pr-review
-            else
-              MODE=implement
-            fi
-          else
-            MODE=implement
-          fi
-          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
-          echo "::notice::Mode: $MODE"
-
       - name: Resolve model from @claude invocation
         if: steps.verify_invocation.outputs.invoked == 'true'
         id: resolve_model
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          # The code-stripped body from verify_invocation — the exact text the
+          # invocation gate saw, by construction (single source of truth).
           STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
+          # Repo variable feature-flag (issue #223): the docs-sync / create-release
+          # comment flows stay OFF until this is set to 'true', so merging this
+          # workflow to main does not immediately arm the trigger in production.
+          # Empty when unset.
+          DOCS_RELEASE_ENABLED: ${{ vars.DOCS_RELEASE_ENABLED }}
         run: |
-          # $STRIPPED is verify_invocation's code-fence-stripped body — the
-          # exact text the invocation gate saw, by construction.
-
           # Extract optional model shorthand after @claude on a line boundary
           # e.g. "@claude sonnet fix this" → "sonnet"
           MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -oE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+' | head -1 | awk '{print $NF}' || true)
@@ -234,18 +160,137 @@ jobs:
           echo "effort=$EFFORT" >> "$GITHUB_OUTPUT"
           echo "::notice::Using effort: $EFFORT"
 
+          # Detect a docs-sync / release trigger phrase (issue #223). These flows
+          # ONLY run on issue_comment events and ONLY when the DOCS_RELEASE_ENABLED
+          # repo variable is 'true' (feature-flagged rollout). The phrase is matched
+          # against the same code-stripped body as verify_invocation, so a mention
+          # inside a fenced/inline code block never triggers. Precedence when a
+          # comment names more than one: create-release > sync-docs. An empty flow
+          # falls through to the existing issue-workflow / PR-review paths in
+          # claude-run.yml, so the read-only PR-review contract and today's behavior
+          # are untouched for every non-trigger comment. sync-release is
+          # intentionally omitted from this template: it requires a repo-side
+          # merge-triggered release workflow that parses the docs-release/*
+          # branch name. The run body supports flow=sync-release — a repo that
+          # has such a workflow adds sync-release to the candidate list below,
+          # between create-release and sync-docs.
+          #
+          # Note: the model-shorthand parser above reads the flow word after @claude
+          # (e.g. 'sync' in '@claude sync-docs') as an unknown model token and falls
+          # through to the default model — intended and harmless; '@claude opus
+          # create-release' still selects opus via the optional model group below.
+          FLOW=""
+          if [ "$EVENT_NAME" = "issue_comment" ] && [ "$DOCS_RELEASE_ENABLED" = "true" ]; then
+            for cand in create-release sync-docs; do
+              if printf '%s' "$STRIPPED" | grep -qiE "(^|(\r?\n))[[:space:]]*@claude([[:space:]]+(opus|sonnet|fable))?[[:space:]]+${cand}([[:space:]]|\$)"; then
+                FLOW="$cand"
+                break
+              fi
+            done
+          fi
+          echo "flow=$FLOW" >> "$GITHUB_OUTPUT"
+          if [ -n "$FLOW" ]; then
+            echo "::notice::Docs/release flow: $FLOW"
+          fi
+
+      - name: Classify invocation route (review, implement, or fix-pr)
+        if: steps.verify_invocation.outputs.invoked == 'true'
+        id: classify_mode
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_URL: ${{ github.event.issue.pull_request.url }}
+          FLOW: ${{ steps.resolve_model.outputs.flow }}
+          # Same code-stripped body the invocation gate saw — the route keyword
+          # (first word after @claude) is parsed from THIS text, so the body that
+          # gates "is @claude invoked" and the body that gates "does this run earn
+          # push access" can never diverge.
+          STRIPPED: ${{ steps.verify_invocation.outputs.stripped }}
+          # On an issue_comment for a PR, these describe the PULL REQUEST's author
+          # (github.event.issue is the PR). They gate the push-capable fix-pr path:
+          # only a trusted-author PR earns an in-place fix, so the agent never
+          # writes while reading an untrusted contributor's diff (this repo is
+          # PUBLIC — outside contributors can open fork PRs).
+          PR_AUTHOR_ASSOC: ${{ github.event.issue.author_association }}
+          PR_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
+        run: |
+          # Fail-closed routing keyed on the FIRST word after @claude (an
+          # optional model shorthand — opus/sonnet/fable — is skipped). Four
+          # outcomes:
+          #   - implement: a docs-sync/release FLOW, or a plain issue (an `issues`
+          #     event, or an issue_comment whose issue is NOT a PR) — the
+          #     issue-workflow that opens its OWN pull request.
+          #   - review (always): PR-review surfaces (pull_request_review and inline
+          #     pull_request_review_comment) — reading untrusted diff content never
+          #     earns push there, even for an inline "fix X" ask.
+          #   - review: a PR issue_comment whose route keyword is "review"
+          #     ("@claude review ..."), or whose PR author is untrusted
+          #     (external/fork) — read-only. NOTE: only the keyword position
+          #     counts; "review" later in the sentence ("@claude fix the review
+          #     comments") no longer forces read-only.
+          #   - fix-pr: any other issue_comment on a trusted-author PR — the
+          #     review-fixing playbook (validate all review feedback against the
+          #     code, fix what survives, disposition comment, re-review trigger),
+          #     with any text in the triggering comment folded in as additional
+          #     scope on top of that standard work.
+          # Anything not positively identified as write-safe degrades to
+          # read-only review (the review job holds no push capability, so a
+          # misroute 403s on write rather than running write-capable over
+          # untrusted PR content).
+          IS_ISSUE=false
+          case "$EVENT_NAME" in
+            issues) IS_ISSUE=true ;;
+            issue_comment) if [ -z "$PR_URL" ]; then IS_ISSUE=true; fi ;;
+          esac
+
+          if [ -n "$FLOW" ] || [ "$IS_ISSUE" = "true" ]; then
+            MODE=implement
+          else
+            case "$EVENT_NAME" in
+              pull_request_review|pull_request_review_comment)
+                MODE=review
+                ;;
+              *)
+                # issue_comment on a PR conversation. Route keyword = first
+                # token after @claude on its invocation line, skipping an
+                # optional model shorthand.
+                KEYWORD=$(printf '%s' "$STRIPPED" | tr -d '\r' \
+                  | sed -n 's/^[[:space:]]*@claude[[:space:]]\{1,\}//p' | head -n 1 \
+                  | awk '{ if ($1 == "opus" || $1 == "sonnet" || $1 == "fable") { print $2 } else { print $1 } }' \
+                  | tr '[:upper:]' '[:lower:]')
+
+                PR_AUTHOR_TRUSTED=false
+                case "$PR_AUTHOR_ASSOC" in
+                  OWNER|MEMBER|COLLABORATOR) PR_AUTHOR_TRUSTED=true ;;
+                esac
+                if [ "$PR_AUTHOR_LOGIN" = "claude[bot]" ]; then
+                  PR_AUTHOR_TRUSTED=true
+                fi
+
+                if [ "$KEYWORD" = "review" ]; then
+                  MODE=review
+                elif [ "$PR_AUTHOR_TRUSTED" != "true" ]; then
+                  MODE=review
+                else
+                  MODE=fix-pr
+                fi
+                ;;
+            esac
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "::notice::Route: $MODE"
+
   # Review runs read untrusted PR content: the job token is the hard boundary
-  # (the Bash allowlist is bypassable through allowed interpreters), so it
-  # gets contents: read only, and claude-run.yml binds the agent to this
-  # token via github_token. No id-token: write — see the note above.
+  # (the Bash allowlist is bypassable through allowed interpreters), so it gets
+  # contents: read only, and claude-run.yml binds the agent to this token via
+  # github_token. No id-token: write — see the note above.
   review:
     needs: classify
     if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'review'
     permissions:
       # Untrusted-content path (this repo is PUBLIC, so external fork-PR reviews
-      # run here): read-only on CODE — contents: read blocks push/merge, so a
-      # prompt-injected diff can never ship. pull-requests: write is REQUIRED, not
-      # optional: a review comment targets a PR, and GitHub authorizes
+      # run here): read-only on CODE (contents: read blocks push/merge — a
+      # prompt-injected diff can never ship). pull-requests: write is REQUIRED,
+      # not optional: a review comment targets a PR, and GitHub authorizes
       # POST /issues/{n}/comments by the target's type — for a pull request that
       # is pull-requests: write, NOT issues: write (which only covers real
       # issues). The residual power it grants (close/edit/retitle a PR via an
@@ -257,6 +302,7 @@ jobs:
     uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
     with:
       mode: review
+      flow: ''
       model_id: ${{ needs.classify.outputs.model_id }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
@@ -264,25 +310,13 @@ jobs:
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets: inherit
 
-  # Implementation runs legitimately commit and push, so they keep Claude App
-  # auth (id-token: write mints the app installation token) and contents:
-  # write for the checkout-side git operations. The `if` RE-ASSERTS the
-  # trusted-PR-author check from classify_mode, independently: classify runs
-  # with zero permissions and this job holds contents: write, so on a PR comment
-  # the write path must never run over an untrusted-author diff even if classify
-  # misroutes. Non-PR invocations (issues / issue_comment on an issue, where
-  # github.event.issue.pull_request is null) are unaffected — the author gate
-  # already restricts those to a trusted human.
+  # Implementation runs legitimately commit and push (issue workflow opens a PR;
+  # docs-sync opens a PR; create-release publishes), so they keep Claude App
+  # auth (id-token: write mints the app installation token) and contents: write
+  # for the checkout-side git operations.
   implement:
     needs: classify
-    if: >
-      needs.classify.outputs.invoked == 'true' &&
-      needs.classify.outputs.mode == 'implement' &&
-      (
-        github.event.issue.pull_request == null ||
-        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) ||
-        github.event.issue.user.login == 'claude[bot]'
-      )
+    if: needs.classify.outputs.invoked == 'true' && needs.classify.outputs.mode == 'implement'
     permissions:
       contents: write
       pull-requests: write
@@ -291,6 +325,7 @@ jobs:
     uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
     with:
       mode: implement
+      flow: ${{ needs.classify.outputs.flow }}
       model_id: ${{ needs.classify.outputs.model_id }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
@@ -298,19 +333,27 @@ jobs:
       extra_allowed_tools: 'Bash(gofmt *),Bash(cd scheduler && gofmt *)'
     secrets: inherit
 
-  # The "@claude fix" keyword route: same push capability and the same
-  # independent trusted-PR-author re-assertion as implement (see above), but
-  # runs the review-fixing playbook prompt — fetch all review feedback,
-  # validate each finding against the code, fix what survives, post a
-  # per-finding disposition comment, and trigger a fresh @claude review.
-  # Unlike implement's `if` there is no pull_request == null escape: this
-  # mode is only ever set for a PR comment, so trust must be positively
-  # asserted from the PR author.
-  fix-pr-review:
+  # A fix-pr run edits the pull request's own branch in place and pushes to it:
+  # fetch all unaddressed review feedback, validate each finding against the
+  # code, fix what survives, fold in any additional instructions carried by the
+  # triggering comment, post a disposition comment, and trigger a fresh
+  # @claude review. It needs contents: write + Claude App auth like implement.
+  # Unlike a review run it does NOT read an untrusted author's diff: classify
+  # routes here ONLY for an issue_comment on a PR whose author is trusted
+  # (owner/member/collaborator, or claude[bot]). The `if` below RE-ASSERTS that
+  # trust from the event payload, independent of classify's output — classify
+  # runs with zero permissions and this job holds contents: write, so this
+  # second, independent gate ensures a classify bug can never grant push over
+  # an untrusted-author PR (the trust check is the sole security boundary
+  # here, since contents: write makes the allowlist bypassable through allowed
+  # interpreters). Trust is anchored on the PR author, not the commenter: the
+  # job-level trigger already requires an OWNER/MEMBER/COLLABORATOR commenter,
+  # so both the human asking and the diff being edited are trusted.
+  fix-pr:
     needs: classify
     if: >
       needs.classify.outputs.invoked == 'true' &&
-      needs.classify.outputs.mode == 'fix-pr-review' &&
+      needs.classify.outputs.mode == 'fix-pr' &&
       (
         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) ||
         github.event.issue.user.login == 'claude[bot]'
@@ -322,7 +365,8 @@ jobs:
       id-token: write
     uses: richkuo/rk-skills/.github/workflows/claude-run.yml@main
     with:
-      mode: fix-pr-review
+      mode: fix-pr
+      flow: ''
       model_id: ${{ needs.classify.outputs.model_id }}
       effort: ${{ needs.classify.outputs.effort }}
       timeout_minutes: 90
