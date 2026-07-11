@@ -193,6 +193,25 @@ func TestApplyHedgeOpenStampsOwnershipMetadata(t *testing.T) {
 	if !strings.Contains(trade.Details, "[hedge]") || trade.StrategyID != sc.ID {
 		t.Fatalf("hedge trade = %+v", trade)
 	}
+	if len(s.TradeHistory) != 1 || !s.TradeHistory[0].IsHedge {
+		t.Fatalf("persisted hedge trade marker missing: %+v", s.TradeHistory)
+	}
+}
+
+func TestBookPerpsCorruptHedgeCloseLeavesLossStreakUntouched(t *testing.T) {
+	sc := hedgeTestConfig("corrupt-hedge", "ETH", "BTC")
+	s := NewStrategyState(sc)
+	s.RiskState.ConsecutiveLosses = 4
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.02, AvgCost: 0, Side: "short", IsHedge: true, HedgePrimarySymbol: "ETH"}
+	if !bookPerpsCloseWithFillFee(s, "BTC", 50000, 0, true, "7", "kill_switch", "hedge close", "hedge close", nil) {
+		t.Fatal("corrupt hedge close failed")
+	}
+	if s.RiskState.ConsecutiveLosses != 4 {
+		t.Fatalf("ConsecutiveLosses=%d want 4", s.RiskState.ConsecutiveLosses)
+	}
+	if len(s.TradeHistory) != 1 || !s.TradeHistory[0].IsHedge || s.TradeHistory[0].RealizedPnL != 0 {
+		t.Fatalf("corrupt hedge trade=%+v", s.TradeHistory)
+	}
 }
 
 func TestApplyHedgePartialAndFullCloseClearsResidual(t *testing.T) {

@@ -2286,6 +2286,51 @@ func TestLifetimeTradeStatsAll_FreshInsert(t *testing.T) {
 	}
 }
 
+func TestLifetimeTradeStatsExcludeExplicitHedgeLegsWithoutSuffixGuessing(t *testing.T) {
+	sdb := openTestDB(t)
+	now := time.Now().UTC()
+	trades := []Trade{
+		{StrategyID: "s1", Timestamp: now, Symbol: "ETH", PositionID: "primary-1", Side: "buy", Quantity: 1, Price: 100, Value: 100, TradeType: "perps"},
+		{StrategyID: "s1", Timestamp: now.Add(time.Second), Symbol: "BTC", PositionID: "primary-1:hedge", Side: "sell", Quantity: 1, Price: 100, Value: 100, TradeType: "perps", IsHedge: true},
+		{StrategyID: "s1", Timestamp: now.Add(2 * time.Second), Symbol: "ETH", PositionID: "primary-1", Side: "sell", Quantity: 1, Price: 110, Value: 110, TradeType: "perps", IsClose: true, RealizedPnL: 10},
+		{StrategyID: "s1", Timestamp: now.Add(3 * time.Second), Symbol: "BTC", PositionID: "primary-1:hedge", Side: "buy", Quantity: 1, Price: 110, Value: 110, TradeType: "perps", IsClose: true, IsHedge: true, RealizedPnL: -10},
+		// A non-hedge ID that legitimately ends in :hedge must remain visible.
+		{StrategyID: "s1", Timestamp: now.Add(4 * time.Second), Symbol: "SOL", PositionID: "custom:hedge", Side: "buy", Quantity: 1, Price: 50, Value: 50, TradeType: "perps"},
+		{StrategyID: "s1", Timestamp: now.Add(5 * time.Second), Symbol: "SOL", PositionID: "custom:hedge", Side: "sell", Quantity: 1, Price: 55, Value: 55, TradeType: "perps", IsClose: true, RealizedPnL: 5},
+	}
+	for _, tr := range trades {
+		if err := sdb.InsertTrade(tr.StrategyID, tr); err != nil {
+			t.Fatalf("InsertTrade: %v", err)
+		}
+	}
+	want := LifetimeTradeStats{PositionsOpened: 2, Wins: 2, Losses: 0}
+	stats, err := sdb.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	if got := stats["s1"]; got != want {
+		t.Fatalf("all stats=%+v want %+v", got, want)
+	}
+	if got, err := sdb.LifetimeTradeStatsForStrategy("s1"); err != nil {
+		t.Fatalf("LifetimeTradeStatsForStrategy: %v", err)
+	} else if got != want {
+		t.Fatalf("single stats=%+v want %+v", got, want)
+	}
+	recent, err := sdb.RecentTradesForStrategy("s1", 10)
+	if err != nil {
+		t.Fatalf("RecentTradesForStrategy: %v", err)
+	}
+	hedgeRows := 0
+	for _, tr := range recent {
+		if tr.IsHedge {
+			hedgeRows++
+		}
+	}
+	if hedgeRows != 2 {
+		t.Fatalf("persisted hedge rows=%d want 2", hedgeRows)
+	}
+}
+
 func TestLifetimeTradeStatsAll_PartialClosesNetByPositionID(t *testing.T) {
 	sdb := openTestDB(t)
 	now := time.Now().UTC()

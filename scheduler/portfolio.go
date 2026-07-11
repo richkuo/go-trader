@@ -305,7 +305,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, 0)
+		RecordPositionCloseResult(&s.RiskState, pos, 0)
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -392,14 +392,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	if pos.IsHedge {
-		// Hedge PnL is real settled PnL and therefore belongs in the
-		// portfolio-wide daily ledger, but the coupled inverse leg is not an
-		// independent directional outcome for the loss-streak CB.
-		RecordRealizedPnL(&s.RiskState, pnl)
-	} else {
-		RecordTradeResult(&s.RiskState, pnl)
-	}
+	RecordPositionCloseResult(&s.RiskState, pos, pnl)
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
 	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -482,11 +475,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	if pos.IsHedge {
-		RecordRealizedPnL(&s.RiskState, pnl)
-	} else {
-		RecordTradeResult(&s.RiskState, pnl)
-	}
+	RecordPositionCloseResult(&s.RiskState, pos, pnl)
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {
@@ -601,6 +590,7 @@ type Trade struct {
 	// PnL on close legs (0 on opens). Both columns are append-only metadata: once
 	// inserted on a close, they identify the round-trip in the trades table.
 	IsClose     bool    `json:"is_close,omitempty"`
+	IsHedge     bool    `json:"is_hedge,omitempty"` // coupled hedge leg; excluded from primary round-trip stats
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 
 	// PnLGross marks rows written under the #954 gross convention: RealizedPnL

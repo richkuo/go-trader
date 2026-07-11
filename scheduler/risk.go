@@ -1269,7 +1269,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		RecordPositionCloseResult(&s.RiskState, pos, pnl)
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1618,4 +1618,16 @@ func RecordTradeOutcome(r *RiskState, pnl float64) {
 func RecordTradeResult(r *RiskState, pnl float64) {
 	RecordRealizedPnL(r, pnl)
 	RecordTradeOutcome(r, pnl)
+}
+
+// RecordPositionCloseResult applies realized PnL for any position close while
+// classifying a consecutive-loss outcome only for independent directional
+// positions. A coupled hedge leg belongs in the daily ledger but must never
+// advance or reset its primary strategy's loss streak.
+func RecordPositionCloseResult(r *RiskState, pos *Position, pnl float64) {
+	if pos != nil && pos.IsHedge {
+		RecordRealizedPnL(r, pnl)
+		return
+	}
+	RecordTradeResult(r, pnl)
 }
