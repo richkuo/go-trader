@@ -63,8 +63,12 @@ def _open_hold(n: int) -> list[int]:
 # ---------------------------------------------------------------------------
 
 def test_funding_booked_on_perp_leg_only() -> None:
-    """Flat prices, constant accrual a/bar, held ~k bars on $1000 notional →
-    funding ≈ 1000 × a × k, and it comes entirely from the perp leg."""
+    """Flat prices, constant accrual a/bar → funding booked EXACTLY over the
+    held interval [entry_bar+1, last_bar], and entirely from the perp leg.
+
+    Opens at bar 1 (fill), holds to the end_of_data close at bar n-1, so the
+    funded bars are [2, n-1] = n-2 bars (the entry bar itself is a pre-hold
+    interval and is not funded)."""
     n = 50
     a = 0.0001
     df = _make_df([100.0] * n, _open_hold(n), accrual=[a] * n)
@@ -72,14 +76,56 @@ def test_funding_booked_on_perp_leg_only() -> None:
                              perp_fee_pct=0.0, spot_fee_pct=0.0, bar_hours=1.0)
     res = bt.run(df)
     assert res.pairs_opened == 1
-    # Held from bar 1 (fill) through the end_of_data close at bar n-1.
-    bars_held = n - 1
-    lo = 1000.0 * a * (bars_held - 1)
-    hi = 1000.0 * a * (bars_held + 1)
-    assert lo <= res.funding_pnl <= hi, res.funding_pnl
+    funded_bars = n - 2  # [entry_bar+1 .. n-1] = [2 .. 49]
+    assert res.bars_funded == funded_bars
+    assert res.funding_pnl == pytest.approx(1000.0 * a * funded_bars)
     # No accrual column would mean zero funding — the spot leg never contributes.
     df_no_fund = _make_df([100.0] * n, _open_hold(n))
     assert bt.run(df_no_fund).funding_pnl == 0.0
+
+
+def test_funding_booked_exactly_over_held_interval_nonconstant() -> None:
+    """Non-constant accrual pins the exact booked bars (no ±1 tolerance): a
+    pair opened at bar 1 and closed (signal) at bar 6 funds ONLY bars [2, 6].
+    Sentinel −999 accruals on the pre-entry bar (entry_bar) and the post-exit
+    bar must be excluded — a one-bar window shift would book the wrong sign."""
+    n = 10
+    prices = [100.0] * n
+    # signal: open at bar 1 (sig[0]=-1), hold, close at bar 6 (sig[5]=1).
+    sig = [-1, -1, -1, -1, -1, 1, 0, 0, 0, 0]
+    accrual = [0.0] * n
+    accrual[1] = -999.0                 # entry_bar (pre-hold) — must be excluded
+    for j in range(2, 7):               # held bars [2..6] — must be included
+        accrual[j] = j * 0.0001
+    accrual[7] = -999.0                 # first post-exit bar — must be excluded
+    df = _make_df(prices, sig, accrual=accrual)
+    bt = CarryPairBacktester(base_notional=750.0, leverage=3.0,
+                             perp_fee_pct=0.0, spot_fee_pct=0.0)
+    res = bt.run(df)
+    assert res.pairs_opened == 1
+    assert res.episodes[0].exit_reason == "exit_signal"
+    assert res.episodes[0].exit_bar == 6
+    # qty_perp × mark (flat 100) = base notional 750 on every held bar.
+    expected = 750.0 * sum(j * 0.0001 for j in range(2, 7))
+    assert res.funding_pnl == pytest.approx(expected)
+    assert res.bars_funded == 5  # bars 2,3,4,5,6 — never the −999 sentinels
+
+
+def test_funding_roundtrip_books_each_held_interval() -> None:
+    """Two open→close cycles fund only their own held intervals; the flat gaps
+    between them (position closed) accrue nothing to the strategy."""
+    n = 16
+    # Cycle 1: open bar 1, close bar 4. Cycle 2: open bar 9, close bar 12.
+    sig = [-1, 0, 0, 1, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0]
+    accrual = [0.001] * n  # constant, so the answer is just (held-bar count)
+    df = _make_df([100.0] * n, sig, accrual=accrual)
+    bt = CarryPairBacktester(base_notional=750.0, leverage=3.0,
+                             perp_fee_pct=0.0, spot_fee_pct=0.0)
+    res = bt.run(df)
+    assert res.pairs_opened == 2
+    # Cycle 1 funds [2,4] = 3 bars; cycle 2 funds [10,12] = 3 bars → 6 total.
+    assert res.bars_funded == 6
+    assert res.funding_pnl == pytest.approx(750.0 * 0.001 * 6)
 
 
 def test_hedge_cancels_price_pnl() -> None:

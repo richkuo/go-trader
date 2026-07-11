@@ -365,10 +365,15 @@ class CarryPairBacktester:
                                  + pos.qty_spot * (mark_spot - pos.entry_spot))
                 # Funding booked on the perp (short) leg only: receive when
                 # accrual > 0 (longs pay shorts). Timeframe-correct via #988.
-                acc = accrual[i]
-                if not math.isnan(acc) and acc != 0.0:
-                    pos.funding += pos.qty_perp * mark_perp * acc
-                    bars_funded += 1
+                # accrual[j] covers (T_{j-1}, T_j]; the pair filled at open[j] =
+                # T_{entry_bar}, so a newly-opened position first accrues over
+                # the NEXT full bar (i > entry_bar), never the pre-entry interval
+                # accrual[entry_bar] — matching backtester.py:2425. The exit
+                # bar's funding is booked at the close site (signal exit) or is
+                # already covered here (liquidation/end-of-data both mark the
+                # exit bar in this loop).
+                if i > pos.entry_bar:
+                    bars_funded += self._book_funding_bar(pos, i, mark_perp, accrual)
 
                 # Isolated-margin liquidation on the perp leg only. The spot
                 # leg is fully funded and cannot be liquidated.
@@ -401,8 +406,15 @@ class CarryPairBacktester:
                     pos = self._open_pair(i + 1, perp_open, spot_open, df.index)
             else:
                 if sig == 1:
-                    self._close_pair(pos, i + 1, perp_open, spot_open, df.index,
-                                     "exit_signal")
+                    # Signal exit fills at bar i+1, which this loop never marks
+                    # (pos is cleared here), so book that bar's funding — the
+                    # final held interval (T_{exit_bar-1}, T_{exit_bar}] — now.
+                    exit_bar = i + 1
+                    if exit_bar > pos.entry_bar:
+                        bars_funded += self._book_funding_bar(
+                            pos, exit_bar, perp_open[exit_bar], accrual)
+                    self._close_pair(pos, exit_bar, perp_open, spot_open,
+                                     df.index, "exit_signal")
                     equity += pos.net_pnl
                     episodes.append(pos)
                     pos = None
@@ -419,6 +431,16 @@ class CarryPairBacktester:
 
         return self._summarize(episodes, equity_curve, df.index,
                                perp_liquidations, bars_funded)
+
+    def _book_funding_bar(self, ep: CarryEpisode, bar_idx: int, mark_perp: float,
+                          accrual) -> int:
+        """Book one bar's perp-leg funding at ``mark_perp``; return 1 if a
+        nonzero, non-NaN accrual was booked (for the bars_funded counter)."""
+        acc = accrual[bar_idx]
+        if math.isnan(acc) or acc == 0.0:
+            return 0
+        ep.funding += ep.qty_perp * mark_perp * acc
+        return 1
 
     def _open_pair(self, fill_bar: int, perp_open, spot_open,
                    index: pd.Index) -> CarryEpisode:
