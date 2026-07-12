@@ -666,18 +666,39 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     default_row = dict(DEFAULT_PARAM_RANGES.get(open_name) or {})
     grid = build_search_grid(eff, default_row, override_grids, frozen,
                              args.step_frac, args.neighborhood_steps, _value_ok)
+    # #1343 re-review (optional): drop cross-parameter-constraint-invalid
+    # combos (e.g. fast_period >= slow_period) up front, mirroring what the
+    # stage-1 walk-forward retains — it skips them per-fold via
+    # _EXPECTED_FOLD_ERRORS, so they can never survive to stage 2 on the run
+    # path. Filtering BEFORE n_searched keeps the BH family equal to the
+    # hypotheses actually testable on BOTH paths, and keeps guaranteed-invalid
+    # combos from consuming --max-candidates or spawning run_failed stage-2
+    # legs on the stage-1-skip path.
+    grid_combos = []
+    n_invalid = 0
+    for sp in generate_param_grid(grid):
+        try:
+            reg_mod.validate_params(open_name, {**eff, **sp}, default_params)
+            grid_combos.append(sp)
+        except ValueError:
+            n_invalid += 1
+    if n_invalid:
+        result["notes"].append(
+            f"{n_invalid} constraint-invalid grid combination(s) dropped "
+            f"before search")
     # #1338 review finding 2: the BH family must cover EVERY stage-2 candidate,
     # including the always-present baseline (candidate zero). The baseline is a
-    # searched grid point iff each of its live values sits on its grid axis —
-    # true for auto-neighborhoods (build_search_grid always keeps the live value)
-    # but NOT when an operator override REPLACES a param's grid with a list that
-    # excludes the live value. When the baseline is an extra hypothesis, N must
-    # be grid_size + 1, else stage 2 produces grid_size+1 p-values against
-    # family_size=grid_size and trips auto_suggest's `family_size >= len(tests)`
-    # guard (deterministic on any stage-1-skipped strategy). No blanket inflation
-    # in the normal case — the +1 fires only when the baseline is truly extra.
-    baseline_in_grid = all(eff.get(p) in grid.get(p, []) for p in grid)
-    n_searched = grid_size(grid) + (0 if baseline_in_grid else 1)
+    # searched grid point iff its grid-restricted projection is one of the
+    # (valid) combos — true for auto-neighborhoods (build_search_grid always
+    # keeps the live value) but NOT when an operator override REPLACES a
+    # param's grid with a list that excludes the live value. When the baseline
+    # is an extra hypothesis, N must be len(combos) + 1, else stage 2 produces
+    # one more p-value than family_size and trips auto_suggest's
+    # `family_size >= len(tests)` guard (deterministic on any stage-1-skipped
+    # strategy). No blanket inflation in the normal case — the +1 fires only
+    # when the baseline is truly extra.
+    baseline_in_grid = {p: eff.get(p) for p in grid} in grid_combos
+    n_searched = len(grid_combos) + (0 if baseline_in_grid else 1)
     result["searched_family_size"] = n_searched
     result["neighborhood"] = {p: v for p, v in grid.items() if len(v) > 1}
     if not default_row and not override_grids:
@@ -688,7 +709,7 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     # 3. Stage 1 — walk-forward search. Skipped when it cannot faithfully model
     #    the live entry universe (short direction / composite regime gate) or in
     #    --dry-run: the FULL neighborhood then becomes the stage-2 candidate set
-    #    (generate_param_grid already returns full param dicts).
+    #    (grid_combos holds the constraint-valid full param dicts).
     stage2_start = earliest_stage2_start(args.windows, M1_WINDOWS)
     skip_reason = "dry_run" if args.dry_run else stage1_skip_reason(resolution)
     if skip_reason:
@@ -696,7 +717,7 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         if skip_reason != "dry_run":
             result["notes"].append(f"stage-1 skipped ({skip_reason}); full "
                                    f"neighborhood sent to stage 2")
-        survivor_params = generate_param_grid(grid)
+        survivor_params = grid_combos
     else:
         try:
             s1 = run_stage1(open_name, grid, resolution, symbol, timeframe,

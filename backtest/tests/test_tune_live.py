@@ -469,6 +469,70 @@ def test_short_direction_skips_stage1(tmp_path, monkeypatch):
     assert res["stage1"]["skipped_reason"] == "short_direction_long_only_seeder"
     # full neighborhood became the candidate set
     assert res["n_candidates"] == res["searched_family_size"]
+    # no cross-param-invalid combos in this grid → nothing dropped, no note
+    assert not any("constraint-invalid" in n for n in res["notes"])
+
+
+def test_constraint_invalid_combos_dropped_on_skip_path(tmp_path, monkeypatch):
+    # #1343 re-review optional: an operator --param grid sweeping BOTH operands
+    # of fast_period < slow_period on a stage-1-skipped (short) strategy must
+    # not send guaranteed-invalid combos to stage 2, count them in the BH N,
+    # or let them consume --max-candidates.
+    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
+    monkeypatch.setattr(tl, "load_cached_data",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("short skips stage 1 — no data fetch")))
+    cfg = {"config_version": 15, "strategies": [{
+        "id": "hl-sma-short", "type": "perps", "platform": "hyperliquid",
+        "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "short",
+        "open_strategy": {"name": "sma_crossover",
+                          "params": {"fast_period": 18, "slow_period": 50}},
+    }]}
+    path = _write_config(tmp_path, cfg)
+    args = _make_args(param=["fast_period=30,45,60", "slow_period=40,50"])
+    res = tl.tune_strategy(path, "hl-sma-short", "BTC/USDT", "1d", "spot",
+                           load_registry("spot"), args, {}, str(tmp_path))
+    assert res["status"] == "ranked"
+    # 3 of the 6 cartesian combos violate fast_period < slow_period
+    assert any("3 constraint-invalid" in n for n in res["notes"])
+    # baseline (18/50) is off the overridden fast axis → +1 extra hypothesis;
+    # N counts only the 3 valid combos, not the cartesian 6
+    assert res["searched_family_size"] == 4
+    assert res["n_candidates"] == 4
+    spec = json.loads((tmp_path / "suggest.hl-sma-short.json").read_text())
+    for c in spec["candidates"]:
+        p = c["candidate"]["params"]
+        assert p["fast_period"] < p["slow_period"]
+
+
+def test_constraint_invalid_combos_dropped_from_auto_neighborhood(tmp_path, monkeypatch):
+    # Auto-neighborhood variant: a live baseline whose fast/slow sweeps overlap
+    # (fast up-steps reach the slow down-steps) produces cross-invalid combos;
+    # none may reach stage 2 and the BH N must count only the valid ones.
+    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
+    monkeypatch.setattr(tl, "load_cached_data",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("short skips stage 1 — no data fetch")))
+    cfg = {"config_version": 15, "strategies": [{
+        "id": "hl-sma-short", "type": "perps", "platform": "hyperliquid",
+        "args": ["sma_crossover", "BTC/USDT", "1d"], "direction": "short",
+        "open_strategy": {"name": "sma_crossover",
+                          "params": {"fast_period": 40, "slow_period": 50}},
+    }]}
+    path = _write_config(tmp_path, cfg)
+    res = tl.tune_strategy(path, "hl-sma-short", "BTC/USDT", "1d", "spot",
+                           load_registry("spot"),
+                           _make_args(neighborhood_steps=1, step_frac=0.25),
+                           {}, str(tmp_path))
+    assert res["status"] == "ranked"
+    assert any("constraint-invalid" in n for n in res["notes"])
+    # baseline is always on an auto-neighborhood grid and live-valid → no +1,
+    # and every candidate (baseline + valid combos) satisfies the constraint
+    assert res["n_candidates"] == res["searched_family_size"]
+    spec = json.loads((tmp_path / "suggest.hl-sma-short.json").read_text())
+    for c in spec["candidates"]:
+        p = c["candidate"]["params"]
+        assert p["fast_period"] < p["slow_period"]
 
 
 def test_bidirectional_runs_stage1_with_direction_both(tmp_path, monkeypatch):
