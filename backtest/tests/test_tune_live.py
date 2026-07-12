@@ -248,7 +248,12 @@ def test_build_candidate_carries_close_direction_stops():
     ({"invert_signal": True}, "unsupported_invert_signal"),
     ({"risk_per_trade_pct": 1.0}, "unsupported_risk_per_trade_pct"),
     ({"allow_scale_in": True}, "unsupported_allow_scale_in"),
+    ({"atr_method": "wilder"}, "unsupported_atr_method:wilder"),
+    ({"regime_gate_on_failure": "closed"}, "unsupported_regime_gate_on_failure_closed"),
     ({"stop_loss_atr_mult": 2.0}, None),
+    ({"atr_method": "simple"}, None),
+    ({"regime_gate_on_failure": "open"}, None),
+    ({}, None),
 ])
 def test_unsupported_reason(resolution, expected):
     assert tl.unsupported_reason(resolution) == expected
@@ -453,6 +458,119 @@ def test_pre_v15_config_error_status(tmp_path):
     assert "config_version" in res["error"] or "v15" in res["error"]
 
 
+def test_config_strategy_entries_uses_trade_timeframe_not_regime(tmp_path):
+    # #1338 review finding 1: the strategy trades on args[2] (4h); a global
+    # regime.timeframe (1d) must NOT become the trade interval.
+    cfg = {"config_version": 15, "regime": {"enabled": True, "timeframe": "1d"},
+           "strategies": [{"id": "s", "type": "spot",
+                           "args": ["sma_crossover", "BTC/USDT", "4h"],
+                           "open_strategy": {"name": "sma_crossover", "params": {}}}]}
+    path = _write_config(tmp_path, cfg)
+    entries = tl.config_strategy_entries(path, None)
+    assert entries == [("s", "BTC/USDT", "4h")]
+
+
+def test_regime_timeframe_mismatch_skipped_unsupported(tmp_path):
+    # regime enabled with regime.timeframe (1d) != trade tf (4h) → neither stage
+    # can thread a separate regime interval → unsupported, never a tf swap.
+    cfg = {"config_version": 15,
+           "regime": {"enabled": True, "timeframe": "1d", "period": 14},
+           "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+                           "args": ["sma_crossover", "BTC/USDT", "4h"],
+                           "allowed_regimes": ["trending"],
+                           "open_strategy": {"name": "sma_crossover", "params": {}}}]}
+    path = _write_config(tmp_path, cfg)
+    res = tl.tune_strategy(path, "hl-sma", "BTC/USDT", "4h", "spot",
+                           load_registry("spot"), _make_args(dry_run=True), {},
+                           str(tmp_path))
+    assert res["status"] == "unsupported"
+    assert res["reason"].startswith("unsupported_regime_timeframe_mismatch")
+
+
+def test_regime_disabled_stale_timeframe_still_supported(tmp_path):
+    # regime.enabled=false with a stale regime.timeframe present must NOT skip —
+    # the trade tf (args[2]) governs and there is no active regime interval.
+    cfg = {"config_version": 15,
+           "regime": {"enabled": False, "timeframe": "1d"},
+           "strategies": [{"id": "s", "type": "spot",
+                           "args": ["sma_crossover", "BTC/USDT", "4h"],
+                           "open_strategy": {"name": "sma_crossover", "params": {}}}]}
+    path = _write_config(tmp_path, cfg)
+    res = tl.tune_strategy(path, "s", "BTC/USDT", "4h", "spot",
+                           load_registry("spot"), _make_args(dry_run=True), {},
+                           str(tmp_path))
+    assert res["status"] == "dry_run"       # not skipped
+
+
+@pytest.mark.parametrize("atr_key,atr_val", [("atr_method", "wilder")])
+def test_wilder_atr_method_skipped_unsupported(tmp_path, atr_key, atr_val):
+    # #1338 review finding 3: a wilder-ATR strategy can't be replayed under the
+    # simple-ATR engines — skip rather than tune on the wrong geometry. Set it
+    # globally so no per-strategy override is needed.
+    cfg = {"config_version": 15, atr_key: atr_val,
+           "strategies": [{"id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+                           "args": ["sma_crossover", "BTC/USDT", "1d"],
+                           "open_strategy": {"name": "sma_crossover", "params": {}}}]}
+    path = _write_config(tmp_path, cfg)
+    res = tl.tune_strategy(path, "hl-sma", "BTC/USDT", "1d", "spot",
+                           load_registry("spot"), _make_args(dry_run=True), {},
+                           str(tmp_path))
+    assert res["status"] == "unsupported"
+    assert res["reason"] == "unsupported_atr_method:wilder"
+
+
+def test_all_failed_fleet_returns_nonzero(tmp_path):
+    # #1338 review (judgment call): a fleet where EVERY strategy fails must exit
+    # non-zero so a scheduler/CI consumer catches a total wipeout.
+    cfg = {"config_version": 13,   # pre-v15 → config_error for both
+           "strategies": [
+               {"id": "a", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
+                "open_strategy": {"name": "sma_crossover", "params": {}}},
+               {"id": "b", "type": "spot", "args": ["ema_crossover", "BTC/USDT", "1d"],
+                "open_strategy": {"name": "ema_crossover", "params": {}}},
+           ]}
+    path = _write_config(tmp_path, cfg)
+    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
+                  "--json", str(tmp_path / "art.json"), "--dry-run"])
+    assert rc == 1
+    art = json.loads((tmp_path / "art.json").read_text())
+    assert all(s["status"] == "config_error" for s in art["strategies"])
+
+
+def test_mixed_fleet_with_one_success_returns_zero(tmp_path, monkeypatch):
+    # One good strategy + one failing one → exit 0 (partial success; the artifact
+    # carries the per-strategy statuses).
+    monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
+    monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
+    cfg = {"config_version": 15, "strategies": [
+        {"id": "good", "type": "spot", "args": ["sma_crossover", "BTC/USDT", "1d"],
+         "open_strategy": {"name": "sma_crossover", "params": {"fast_period": 18, "slow_period": 50}}},
+        {"id": "bad-stop", "type": "perps", "platform": "hyperliquid",
+         "args": ["sma_crossover", "ETH/USDT", "1d"], "stop_loss_pct": 0.05,
+         "open_strategy": {"name": "sma_crossover", "params": {}}},
+    ]}
+    path = _write_config(tmp_path, cfg)
+    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
+                  "--json", str(tmp_path / "art.json"), "--jobs", "1"])
+    assert rc == 0
+    art = json.loads((tmp_path / "art.json").read_text())
+    by_id = {s["strategy_id"]: s["status"] for s in art["strategies"]}
+    assert by_id["good"] == "ranked" and by_id["bad-stop"] == "unsupported"
+
+
+def test_all_benign_skip_fleet_returns_zero(tmp_path):
+    # A fleet of only benignly-declined (unsupported) strategies is not a
+    # failure — nothing went wrong, there was just nothing to tune.
+    cfg = {"config_version": 15, "strategies": [{
+        "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
+        "args": ["sma_crossover", "BTC/USDT", "1d"], "stop_loss_pct": 0.05,
+        "open_strategy": {"name": "sma_crossover", "params": {}}}]}
+    path = _write_config(tmp_path, cfg)
+    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
+                  "--json", str(tmp_path / "art.json"), "--dry-run"])
+    assert rc == 0
+
+
 def test_unsupported_stop_owner_skipped(tmp_path):
     cfg = {"config_version": 15, "strategies": [{
         "id": "hl-sma", "type": "perps", "platform": "hyperliquid",
@@ -479,7 +597,10 @@ def test_overrides_unknown_strategy_id_refused(tmp_path):
 
 def test_override_grid_counts_toward_searched_family(tmp_path, monkeypatch):
     # An operator override REPLACES the param's neighborhood and its values are
-    # counted in the searched family N exactly like auto-derived ones.
+    # counted in the searched family N exactly like auto-derived ones. Because
+    # this override EXCLUDES the live value (fast=18, slow=50), the baseline is
+    # an extra candidate not on the grid, so N = grid (6) + 1 baseline = 7
+    # (#1338 review finding 2).
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
     path = _write_config(tmp_path, _sma_config())
@@ -487,9 +608,43 @@ def test_override_grid_counts_toward_searched_family(tmp_path, monkeypatch):
     res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
                            load_registry("spot"), args, {}, str(tmp_path))
     assert res["status"] == "ranked"
-    # override grids: fast {10,12,14} x slow {40,60} = 6 → family size 6
-    assert res["searched_family_size"] == 6
+    # override grids: fast {10,12,14} x slow {40,60} = 6, + baseline = 7
+    assert res["searched_family_size"] == 7
     assert res["neighborhood"]["fast_period"] == [10, 12, 14]
+
+
+def test_family_size_covers_baseline_against_real_bh_guard(tmp_path, monkeypatch):
+    # #1338 review finding 2 regression: a live-EXCLUDING override on a
+    # stage-1-skipped (short) strategy makes the baseline an extra stage-2
+    # candidate. The emitted family_size must cover every candidate so the REAL
+    # auto_suggest BH guard (family_size >= len(pvals)) does not trip. Stage 2 is
+    # stubbed to actually invoke that guard with one p-value per candidate.
+    def stage2_with_real_guard(spec_path, out_json, out_dir, jobs):
+        spec = json.loads(open(spec_path).read())
+        fam = spec["correction"]["family_size"]
+        n_cand = len(spec["candidates"])
+        assert fam >= n_cand, f"family_size {fam} < candidate count {n_cand}"
+        # one primary p-value per candidate — the worst case; must NOT raise
+        auto_suggest.apply_family_correction(
+            [{"p": 0.5} for _ in range(n_cand)], 0.05, family_size=fam)
+        ranked = [{"key": c["key"], "verdict": "incumbent_stands",
+                   "candidate": c["candidate"], "evidence": {}, "limitations": []}
+                  for c in spec["candidates"]]
+        return {"correction": {"m": fam, "tests_run": n_cand, "n_survivors": 0},
+                "ranked": ranked, "_exit_code": 0}
+    monkeypatch.setattr(tl, "run_stage2", stage2_with_real_guard)
+    cfg = {"config_version": 15, "strategies": [{
+        "id": "hl-rsi-short", "type": "perps", "platform": "hyperliquid",
+        "args": ["rsi", "BTC/USDT", "1d"], "direction": "short",
+        "open_strategy": {"name": "rsi", "params": {"period": 14}},
+    }]}
+    path = _write_config(tmp_path, cfg)
+    # override EXCLUDES the live period=14 → baseline is an extra candidate
+    args = _make_args(param=["period=10,20,28"])
+    res = tl.tune_strategy(path, "hl-rsi-short", "BTC/USDT", "1d", "spot",
+                           load_registry("spot"), args, {}, str(tmp_path))
+    assert res["status"] == "ranked"        # did not die on the BH guard
+    assert res["searched_family_size"] >= res["n_candidates"]
 
 
 def test_too_many_candidates_refused(tmp_path):

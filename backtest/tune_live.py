@@ -92,6 +92,17 @@ STAGE2_HARNESSES = ["m1_noise", "m1", "m3", "m5"]  # "mc" opt-in only (#1316), a
 FOOTER = ("Suggest-only. tune_live never wrote a config, a live default, or a "
           "PR — every ranked patch is a proposal a human must promote.")
 
+# #1338 review (judgment call): the artifact is ALWAYS written and is the
+# authoritative per-strategy result — a poller parses it regardless of exit code.
+# The exit code is only a coarse signal for a scheduler/CI consumer (#1339-#1341):
+# 0 when the run produced at least one usable result OR only benignly declined
+# strategies; non-zero when the fleet ran but EVERY strategy failed. So a naive
+# `if rc: alert` catches a total wipeout without tripping on a partial-success
+# fleet. A benign skip (a strategy the tuner correctly declined as unsupported)
+# is NOT a failure.
+_PRODUCTIVE_STATUSES = frozenset({"ranked", "dry_run"})
+_BENIGN_SKIP_STATUSES = frozenset({"unsupported"})
+
 # Live resolution fields the backtest candidate / walk-forward shapes cannot
 # express faithfully. A strategy carrying any of these is skipped with the
 # reason surfaced — never backtested against a DIFFERENT close/sizing than live.
@@ -367,6 +378,19 @@ def unsupported_reason(resolution: dict) -> str | None:
         return "unsupported_risk_per_trade_pct"
     if resolution.get("allow_scale_in"):
         return "unsupported_allow_scale_in"
+    # #1338 review finding 3: atr_method changes EntryATR + stop-loss geometry,
+    # but neither walk_forward_optimize nor eval_windows threads it — both replay
+    # under simple ATR. A wilder-ATR strategy tuned here would be measured under
+    # the wrong ATR math (the exact silent divergence this gate prevents). Skip
+    # rather than tune against a different geometry than live.
+    if str(resolution.get("atr_method") or "simple").strip().lower() not in ("", "simple"):
+        return f"unsupported_atr_method:{resolution.get('atr_method')}"
+    # regime_gate_on_failure="closed" holds fresh opens on an EMPTY regime label
+    # (warmup / store failure); the backtest engines default it to "open" and it
+    # is not threaded through either stage, so a "closed" live strategy would be
+    # tuned under a fail-open entry gate. Protective mechanism — skip.
+    if str(resolution.get("regime_gate_on_failure") or "open").strip().lower() == "closed":
+        return "unsupported_regime_gate_on_failure_closed"
     return None
 
 
@@ -406,8 +430,14 @@ def config_strategy_entries(config_path: str, only_id: str | None) -> list:
             continue
         args = sc.get("args") or []
         symbol = str(args[1]) if len(args) > 1 else None
-        regime_tf = str((cfg.get("regime") or {}).get("timeframe") or "").strip()
-        timeframe = regime_tf or (str(args[2]) if len(args) > 2 else None)
+        # The strategy TRADES on args[2]; regime.timeframe is a SEPARATE
+        # classification axis that load_strategy_config threads independently
+        # (#1338 review). Substituting it for the trade interval would fetch and
+        # replay stage 1 + every stage-2 dataset on the wrong candle interval —
+        # the open-strategy indicators and tuned params would be computed on the
+        # regime interval, not the one the strategy trades. Always use args[2];
+        # a regime-timeframe mismatch is handled downstream as unsupported.
+        timeframe = str(args[2]) if len(args) > 2 else None
         out.append((sid, symbol, timeframe))
     if only_id is not None and not out:
         available = [s.get("id") for s in strategies]
@@ -571,6 +601,19 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
         result["reason"] = reason
         return result
 
+    # #1338 review finding 1: when regime is enabled and its classification
+    # timeframe differs from the trade interval (args[2]), neither stage can
+    # thread a separate regime timeframe — the regime column would be classified
+    # on the trade candles instead of the live regime interval. Skip rather than
+    # gate/replay on the wrong regime interval (mirrors the composite-regime
+    # skip). regime-disabled or matching-timeframe strategies are unaffected.
+    regime_tf = str(resolution.get("regime_timeframe") or "").strip().lower()
+    if (resolution.get("regime_enabled") and regime_tf
+            and regime_tf != str(timeframe).strip().lower()):
+        result["status"] = "unsupported"
+        result["reason"] = f"unsupported_regime_timeframe_mismatch:{regime_tf}!={timeframe}"
+        return result
+
     # 2. Effective params + candidate neighborhood.
     if open_name not in reg_mod.STRATEGY_REGISTRY:
         result["status"] = "unknown_open_strategy"
@@ -603,7 +646,18 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     default_row = dict(DEFAULT_PARAM_RANGES.get(open_name) or {})
     grid = build_search_grid(eff, default_row, override_grids, frozen,
                              args.step_frac, args.neighborhood_steps, _value_ok)
-    n_searched = grid_size(grid)
+    # #1338 review finding 2: the BH family must cover EVERY stage-2 candidate,
+    # including the always-present baseline (candidate zero). The baseline is a
+    # searched grid point iff each of its live values sits on its grid axis —
+    # true for auto-neighborhoods (build_search_grid always keeps the live value)
+    # but NOT when an operator override REPLACES a param's grid with a list that
+    # excludes the live value. When the baseline is an extra hypothesis, N must
+    # be grid_size + 1, else stage 2 produces grid_size+1 p-values against
+    # family_size=grid_size and trips auto_suggest's `family_size >= len(tests)`
+    # guard (deterministic on any stage-1-skipped strategy). No blanket inflation
+    # in the normal case — the +1 fires only when the baseline is truly extra.
+    baseline_in_grid = all(eff.get(p) in grid.get(p, []) for p in grid)
+    n_searched = grid_size(grid) + (0 if baseline_in_grid else 1)
     result["searched_family_size"] = n_searched
     result["neighborhood"] = {p: v for p, v in grid.items() if len(v) > 1}
     if not default_row and not override_grids:
@@ -829,10 +883,16 @@ def main(argv=None) -> int:
         json.dump(artifact, fh, indent=2, default=str)
     print(f"\nwrote {json_out}")
     print(FOOTER)
-    # Non-zero only on a hard usage/config failure; per-strategy statuses are
-    # data in the artifact, not a process failure (a fleet run surfaces every
-    # strategy's outcome regardless).
-    return 0
+    # Exit-code contract (see _PRODUCTIVE_STATUSES): the artifact always carries
+    # every per-strategy status; the code is non-zero only on a total wipeout —
+    # the fleet ran but no strategy produced a usable result and at least one
+    # failed. A partially-successful fleet (any ranked strategy) or an all-benign
+    # one (only unsupported skips) stays 0. Hard usage errors already raised a
+    # non-zero SystemExit above, before the artifact was written.
+    productive = sum(1 for r in results if r.get("status") in _PRODUCTIVE_STATUSES)
+    benign = sum(1 for r in results if r.get("status") in _BENIGN_SKIP_STATUSES)
+    failed = len(results) - productive - benign
+    return 1 if (results and productive == 0 and failed > 0) else 0
 
 
 def format_summary(artifact: dict) -> str:
