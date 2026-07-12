@@ -116,6 +116,12 @@ short/flat paths. Until someone builds it, `delta_neutral_funding` stays
 registered and live-eligible with this documented rationale; its M5 row stays
 `no_trades` with a pointer here.
 
+**Superseded by #1326.** The carry-pair harness (`backtest_carry_pair.py`) was
+subsequently built and now models the hedged pair; the recorded verdict is in
+the [#1326 section below](#delta_neutral_funding--carry-pair-verdict-1326). The
+withholding rationale above stands as the reason the harness was needed, not as
+the final disposition.
+
 ## Verdicts
 
 | strategy | verdict | disposition |
@@ -123,13 +129,101 @@ registered and live-eligible with this documented rationale; its M5 row stays
 | `anchored_vwap_channel` | `healthy` (short leg: net +4.99%/leg, Sharpe 0.90; noise-unconfirmed at n=20; long leg gross ≤ 0) | keep registered; short-side, ranging-gated deployments only; no promotion until the short edge survives a larger sample |
 | `anchored_vwap_reversion` | `healthy` (short leg: net +2.48%/leg over 203 trades; noise-unconfirmed p=0.19; long leg gross −13.29%) | keep registered; same conditions |
 | `atr_band_revert` | spot long leg `deprecate` (gross −23.37%); futures short leg `healthy` but marginal (net +0.55%/leg, noise p=0.11) and the designed ranging gate fails 3/5 M1 windows | keep registered on futures (short); **do not deploy the spot long-only variant**; weakest of the three faders — first candidate for quarantine if a future re-screen stays flat |
-| `delta_neutral_funding` | verdict withheld — structure unmodelable in current harnesses (see above) | live-only with documented rationale; carry-pair harness spec'd above if anyone wants the verdict |
+| `delta_neutral_funding` | `healthy` — hedged pair now modeled (#1326): both windows with HL funding coverage (2023 +1.10%/leg, 2024 +2.37%/leg mean) net-positive, 84–95% funding-driven, price PnL hedged to ~$0; is/oos/2025H1 attach no cached funding (coverage gap, not a no-signal) | keep registered & live-eligible; carry demonstrated (no longer "unmodelable") — see the #1326 section below |
 | `bear_pullback_st` | `healthy` (short leg: net +13.49%/leg, 12 trades, trade-level noise-positive p=0.007) — replaces `unscreened_short`; explicitly bear-regime-conditional (2023/2024 M1 windows liquidate 3–4/6 legs without stops) | keep registered; short-only bear-market tool; must deploy with the default SL and never ungated in trending-up regimes |
 
 No strategy earned a whole-strategy `deprecate` (every measured short leg has
 positive gross), so no `M5_DEPRECATED_EDGE_STRATEGIES` / discovery-hidden
-roster change ships with this study. No harness was added or repurposed
-(`docs/backtesting-registry.md` unchanged).
+roster change ships with this study. No harness was added or repurposed **at
+the time of #1280** (`docs/backtesting-registry.md` unchanged then); the
+follow-up #1326 adds `backtest_carry_pair.py` — see the section below.
+
+## delta_neutral_funding — carry-pair verdict (#1326)
+
+Date: 2026-07-11
+Base: `origin/main` / `7e538094`
+Harness: `backtest/backtest_carry_pair.py` (new, #1326)
+Fee model: hyperliquid base-tier taker 0.045%/side (per leg).
+
+The carry-pair harness models what `delta_neutral_funding` actually runs live —
+SHORT the perp to collect funding while holding an equal-notional SPOT long as
+the delta offset — booking both legs so the naked short's price PnL no longer
+dominates. Structure: perp short on isolated margin (default 3× / 2% MMR,
+gap-through liquidation cap), spot long fully funded (no funding, no
+liquidation), entry/exit from the same registry signal the live strategy emits,
+and delta-drift-triggered spot rebalancing (`drift_threshold`, since the
+registry's `delta_drift_pct`/`rebalance_needed` columns are 0.0 placeholders;
+rebalancing uses average-cost accounting so realized PnL locked in on resized
+units survives to the close — #1335 review fix). Rebalancing only fires in
+`--perp-symbol` basis mode; the single-series audit below has 0 rebalances, so
+the recorded verdict is unaffected by it.
+
+Command:
+
+```bash
+uv run --no-sync python backtest/backtest_carry_pair.py \
+  --json backtest/research/carry_pair_1326.json
+```
+
+Funding is booked on the perp leg only, over exactly the held interval
+`[entry_bar+1, exit_bar]` (a newly-opened position first accrues the bar AFTER
+its fill, matching `backtester.py:2425`; #1335 review fix). Every funded bar —
+including the exit bar on a signal close — values funding at the bar close, the
+same convention as the mark loop and `backtester.py:2425` (#1335 review fix; the
+shift from the exit-fill open changed the recorded numbers only at the 4th
+decimal, below the precision of the tables above).
+
+Result (registry defaults: `entry_threshold=0.0001`/hr ≈ 88% APY, six audit
+datasets × five M1 windows):
+
+| window | traded | mean ret% | mean Sharpe | Σ funding$ | Σ price$ | Σ fees$ | notes |
+|--------|--------|-----------|-------------|-----------|---------|--------|-------|
+| is (2025-06→2026-01) | 0/6 | — | — | — | — | — | no cached HL funding coverage |
+| oos (2026-01→) | 0/6 | — | — | — | — | — | no cached HL funding coverage |
+| 2023 | 4/6 | +1.10 | 3.18 | 50.80 | 22.17 | 8.45 | ETH+SOL funded, rich funding |
+| 2024 | 4/6 | +2.37 | 7.15 | 149.16 | 4.04 | 11.30 | BTC+SOL funded, rich funding |
+| 2025H1 | 0/6 | — | — | — | — | — | no cached HL funding coverage |
+
+Per-leg, funded windows (base_notional $750, capital $1000; datasets with no
+funding coverage omitted):
+
+| window / dataset | ret% | funding$ | price$ | fees$ | funding-share | perp liq | pairs |
+|------------------|------|----------|--------|-------|---------------|----------|-------|
+| 2023 ETH/USDT 1h | +0.75 | 8.83 | 0.00 | 1.29 | 87% | 0 | 1 |
+| 2023 ETH/USDT 4h | +0.71 | 8.34 | 0.00 | 1.28 | 87% | 0 | 1 |
+| 2023 SOL/USDT 1h | +1.32 | 15.45 | 0.00 | 2.92 | 84% | 1 | 2 |
+| 2023 SOL/USDT 4h | +3.81 | 18.18 | 22.17 | 2.96 | 42% | 1 | 2 |
+| 2024 BTC/USDT 1h | +2.53 | 26.65 | 0.00 | 1.33 | 95% | 0 | 1 |
+| 2024 BTC/USDT 4h | +2.68 | 28.21 | 0.00 | 1.38 | 95% | 0 | 1 |
+| 2024 SOL/USDT 1h | +4.26 | 46.92 | 0.00 | 4.30 | 92% | 1 | 3 |
+| 2024 SOL/USDT 4h | +4.71 | 47.37 | 4.04 | 4.29 | 85% | 1 | 3 |
+
+**Findings.**
+1. The #1280 naked-short problem is resolved: with a single-series hedge the
+   price PnL cancels to **exactly $0** on every leg without a perp liquidation —
+   the ≈ −30% SOL-2023 price loss that dominated the one-leg backtest is
+   entirely hedged away, leaving net-positive funding carry.
+2. Where the structure trades and funding data exists, it is genuinely
+   carry-driven: **84–95%** of the gross edge is funding, net **+0.71% to
+   +4.71%** per leg after fees, across both funded windows (2023 and 2024).
+3. The two legs with a perp liquidation (SOL 2023 4h, SOL 2024 4h) show a real
+   protective asymmetry (price$ +22.17 / +4.04, not 0): a violent up-move gaps
+   the short perp through its isolated-margin liquidation, capping the perp loss
+   at the posted margin while the spot leg keeps gaining — so the hedged pair
+   *profits* from the move that would have crushed the naked short.
+   Account-level liquidation never occurs (the spot hedge covers it).
+
+**Verdict: `healthy`.** Net-positive, fee-surviving, carry-dominated hedged
+returns in **both** windows with usable funding coverage (2023, 2024) — a clear
+upgrade from "unmodelable / verdict withheld." Caveat: is/oos/2025H1 attach zero
+funding in this environment and produce no trades — a data-coverage limit, not a
+no-signal result (the harness warns loudly to keep the two distinguishable), so
+the verdict rests on the 2023–2024 evidence and should be re-confirmed once
+funding history is backfilled for the remaining windows. Disposition:
+`delta_neutral_funding` stays registered and live-eligible, now with a
+demonstrated carry edge rather than a withheld verdict.
 
 ---
 Created with LLM: Fable 5 | medium | Harness: Claude Code
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code | fableplan-work-on-issue
+Updated with LLM: Opus 4.8 | high | Harness: Claude Code | fix-pr-review

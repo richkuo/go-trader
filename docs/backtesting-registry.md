@@ -32,6 +32,7 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 | `backtest_options.py` | Options-strategy backtester (e.g. `vol_mean_reversion`) against historical spot. | active | core |
 | `backtest_theta.py` | Theta-harvesting A/B (conservative vs aggressive vs hold-to-expiry). | active | core |
 | `backtest_pairs.py` | Two-leg beta-hedged pairs (z-score) simulator; no live path. | active | core |
+| `backtest_carry_pair.py` | Hedged funding-carry pair simulator (SHORT perp + LONG spot): books #988 per-bar funding on the perp leg, per-leg fees, `drift_threshold` spot rebalancing, isolated-margin perp liquidation (gap-through cap). Single-series hedge cancels price PnL, so net = carry − costs; `--perp-symbol` adds a basis series. Runs the six audit datasets × M1 windows; no live path. Gives `delta_neutral_funding` a real edge verdict (#1280 could not model the hedge). | active | #1326 |
 | `parity_diff.py` | Backtest-vs-live parity diff — enforces the simulator↔scheduler contract. | active | #906 |
 
 ## M-series validators (M1–M6)
