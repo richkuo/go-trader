@@ -348,10 +348,27 @@ def build_candidate(open_name: str, params: dict, resolution: dict) -> dict:
         cand["stop_loss_atr_mult"] = resolution["stop_loss_atr_mult"]
     if resolution.get("trailing_stop_atr_mult") is not None:
         cand["trailing_stop_atr_mult"] = resolution["trailing_stop_atr_mult"]
-    if resolution.get("allowed_regimes"):
-        cand["allowed_regimes"] = list(resolution["allowed_regimes"])
-    if resolution.get("regime_windows_spec"):
-        cand["regime_windows_spec"] = copy.deepcopy(resolution["regime_windows_spec"])
+    # #1343 re-review: the regime surface is copied only when the gate is
+    # ACTIVE live (regime.enabled). A dormant gate — allowed_regimes with
+    # regime.enabled=false, the exact state /apply-regime-gate reactivates —
+    # is UNGATED live and in stage 1 (the Backtester gates only when
+    # regime_enabled AND allowed_regimes), so stage 2 must not force-activate
+    # it (eval_windows turns the gate on whenever allowed_regimes is present).
+    if resolution.get("regime_enabled"):
+        if resolution.get("allowed_regimes"):
+            cand["allowed_regimes"] = list(resolution["allowed_regimes"])
+            if not resolution.get("regime_windows_spec"):
+                # Thread the live ADX lookback so stage 2 gates on the exact
+                # regime state the strategy runs, not the harness 14/20
+                # defaults. A windows spec owns its own classifier/lookback,
+                # so the legacy fields are emitted only on the legacy path.
+                cand["regime_period"] = int(
+                    resolution.get("regime_period") or 14)
+                cand["regime_adx_threshold"] = float(
+                    resolution.get("regime_adx_threshold") or 20.0)
+        if resolution.get("regime_windows_spec"):
+            cand["regime_windows_spec"] = copy.deepcopy(
+                resolution["regime_windows_spec"])
     return cand
 
 
@@ -400,13 +417,16 @@ def stage1_skip_reason(resolution: dict) -> str | None:
 
     - ``direction='short'``: the walk-forward warmup seeder is long-only and
       would carry a phantom long into the short run (optimizer rejects it too).
-    - a composite regime gate (``regime_windows_spec``): walk-forward models only
-      the legacy single-lookback ADX regime, so it cannot reproduce the
-      composite entry gate — eval_windows (stage 2) can.
+    - an ACTIVE composite regime gate (``regime.enabled`` +
+      ``regime_windows_spec``): walk-forward models only the legacy
+      single-lookback ADX regime, so it cannot reproduce the composite entry
+      gate — eval_windows (stage 2) can. A dormant spec (enabled=false) gates
+      nothing live, so walk-forward's ungated replay is faithful.
     """
     if (resolution.get("direction") or "long") == "short":
         return "short_direction_long_only_seeder"
-    if resolution.get("regime_windows_spec"):
+    if (resolution.get("regime_enabled")
+            and resolution.get("regime_windows_spec")):
         return "composite_regime_gate_unmodelable_in_walk_forward"
     return None
 

@@ -230,7 +230,8 @@ def test_build_candidate_carries_close_direction_stops():
     resolution = {
         "strategy_type": "perps", "direction": "both",
         "close_strategies": [{"name": "tiered_tp_atr", "params": {}}],
-        "stop_loss_atr_mult": 2.0, "allowed_regimes": ["trending_up"],
+        "stop_loss_atr_mult": 2.0, "regime_enabled": True,
+        "allowed_regimes": ["trending_up"],
     }
     cand = tl.build_candidate("tema_cross_bd", {"short_period": 5}, resolution)
     assert cand["direction"] == "both"
@@ -238,6 +239,67 @@ def test_build_candidate_carries_close_direction_stops():
     assert cand["close_strategies"][0]["name"] == "tiered_tp_atr"
     assert cand["stop_loss_atr_mult"] == 2.0
     assert cand["allowed_regimes"] == ["trending_up"]
+    # Live lookback defaults are made explicit so stage 2 can never drift.
+    assert cand["regime_period"] == 14
+    assert cand["regime_adx_threshold"] == 20.0
+
+
+def test_build_candidate_dormant_gate_not_copied():
+    # #1343 re-review: allowed_regimes with regime.enabled=false (the state
+    # /apply-regime-gate reactivates) is UNGATED live and in stage 1 —
+    # stage 2 must not force-activate it via a bare allowed_regimes copy.
+    resolution = {
+        "strategy_type": "perps", "direction": "long",
+        "allowed_regimes": ["trending_up"], "regime_enabled": False,
+        "regime_windows_spec": {"primary": {"classifier": "adx", "period": 14}},
+    }
+    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+    assert "allowed_regimes" not in cand
+    assert "regime_windows_spec" not in cand
+    assert "regime_period" not in cand
+    assert "regime_adx_threshold" not in cand
+
+
+def test_build_candidate_threads_live_adx_lookback():
+    # #1343 re-review: a non-default regime.period / adx_threshold must reach
+    # stage 2, else eval_windows gates on ADX(14, 20) while live and stage 1
+    # gate on the configured lookback.
+    resolution = {
+        "regime_enabled": True, "allowed_regimes": ["trending_up"],
+        "regime_period": 21, "regime_adx_threshold": 25.0,
+    }
+    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+    assert cand["allowed_regimes"] == ["trending_up"]
+    assert cand["regime_period"] == 21
+    assert cand["regime_adx_threshold"] == 25.0
+    # The emitted candidate must pass the stage-2 schema it feeds.
+    import eval_windows as ew
+    assert ew.validate_candidate(dict(cand))
+
+
+def test_build_candidate_composite_gate_owns_lookback():
+    # An active composite gate carries its windows spec; the legacy lookback
+    # fields must NOT ride along (validate_candidate rejects the mix).
+    spec = {"primary": {"classifier": "composite", "period": 14}}
+    resolution = {
+        "regime_enabled": True, "allowed_regimes": ["trending_up"],
+        "regime_period": 21, "regime_adx_threshold": 25.0,
+        "regime_windows_spec": spec,
+    }
+    cand = tl.build_candidate("sma_crossover", {"fast_period": 9}, resolution)
+    assert cand["allowed_regimes"] == ["trending_up"]
+    assert cand["regime_windows_spec"] == spec
+    assert "regime_period" not in cand
+    assert "regime_adx_threshold" not in cand
+
+
+def test_stage1_skip_composite_only_when_gate_active():
+    spec = {"primary": {"classifier": "composite", "period": 14}}
+    active = {"regime_enabled": True, "regime_windows_spec": spec}
+    dormant = {"regime_enabled": False, "regime_windows_spec": spec}
+    assert tl.stage1_skip_reason(active) == (
+        "composite_regime_gate_unmodelable_in_walk_forward")
+    assert tl.stage1_skip_reason(dormant) is None
 
 
 @pytest.mark.parametrize("resolution,expected", [
@@ -261,7 +323,8 @@ def test_unsupported_reason(resolution, expected):
 
 @pytest.mark.parametrize("resolution,expected", [
     ({"direction": "short"}, "short_direction_long_only_seeder"),
-    ({"direction": "long", "regime_windows_spec": {"d": {"classifier": "adx", "period": 14}}},
+    ({"direction": "long", "regime_enabled": True,
+      "regime_windows_spec": {"d": {"classifier": "adx", "period": 14}}},
      "composite_regime_gate_unmodelable_in_walk_forward"),
     ({"direction": "long"}, None),
     ({"direction": "both"}, None),
