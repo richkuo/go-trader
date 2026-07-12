@@ -62,6 +62,23 @@ def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -
     return strat["fn"](df, **p)
 
 
+def validate_params(name: str, params: Optional[dict] = None,
+                    default_params: Optional[dict] = None) -> None:
+    """Validate ``params`` against ``name``'s declared constraints WITHOUT
+    running it, raising ``ValueError`` on violation (#1338). ``default_params``
+    defaults to this platform's merged defaults so cross-parameter constraints
+    resolve any omitted operand to the value the spot strategy would see."""
+    if default_params is None:
+        default_params = get_strategy(name)["default_params"]
+    _registry.validate_params(name, params or {}, default_params)
+
+
+def validate_param_value(name: str, param: str, value) -> None:
+    """Loudly validate one override ``value`` for ``param`` against the
+    single-parameter constraints declared on ``name`` (#1338)."""
+    _registry.validate_param_value(name, param, value)
+
+
 if __name__ == "__main__":
     if "--list-json" in sys.argv:
         print(json.dumps([{"id": name, "description": DISCOVERY_STRATEGY_REGISTRY[name]["description"]} for name in list_strategies()]))

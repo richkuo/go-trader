@@ -315,6 +315,66 @@ def test_apply_strategy_shim_path_validates():
     assert "signal" in out.columns
 
 
+# --- #1338 standalone param validation (no strategy run) --------------------
+
+
+def test_validate_params_checks_without_running_and_matches_wrapper():
+    reg = _load_registry()
+    # Valid overlay passes silently.
+    reg.validate_params("sma_crossover", {"fast_period": 10, "slow_period": 40})
+    # Single-param violation raises the SAME message shape the wrapper produces.
+    with pytest.raises(ValueError) as exc:
+        reg.validate_params("sma_crossover", {"fast_period": -1})
+    assert "sma_crossover" in str(exc.value) and "constraint" in str(exc.value)
+
+
+def test_validate_params_catches_cross_param_against_defaults():
+    reg = _load_registry()
+    # fast_period=100 with the default slow_period=50 violates fast < slow, even
+    # though slow was not supplied — the omitted operand resolves to its default.
+    with pytest.raises(ValueError, match="fast_period < slow_period"):
+        reg.validate_params("sma_crossover", {"fast_period": 100})
+
+
+def test_validate_params_unknown_strategy_raises():
+    reg = _load_registry()
+    with pytest.raises(ValueError, match="unknown strategy"):
+        reg.validate_params("not_a_strategy", {"x": 1})
+
+
+def test_validate_param_value_single_param_only():
+    reg = _load_registry()
+    # A single-param literal constraint (fast_period > 0) is enforced...
+    with pytest.raises(ValueError, match="constraint"):
+        reg.validate_param_value("sma_crossover", "fast_period", -1)
+    # ...but a cross-param constraint (fast < slow) is deliberately NOT enforced
+    # here, so a large value that only violates fast<slow passes (the sweep's
+    # per-combo wrapper enforces the cross-param rule).
+    reg.validate_param_value("sma_crossover", "fast_period", 100)
+
+
+def test_validate_param_value_unknown_strategy_raises():
+    reg = _load_registry()
+    with pytest.raises(ValueError, match="unknown strategy"):
+        reg.validate_param_value("not_a_strategy", "x", 1)
+
+
+def test_build_registry_entries_carry_constraints():
+    reg = _load_registry()
+    built = reg.build_registry("spot", include_hidden=True)
+    assert built["sma_crossover"]["constraints"] == (
+        "fast_period > 0", "fast_period < slow_period")
+
+
+def test_shim_reexports_validate_params_and_value():
+    strategies = _load_by_path(
+        "_t_spot_shim_1338", os.path.join(_OPEN_DIR, "spot", "strategies.py")
+    )
+    strategies.validate_params("sma_crossover", {"fast_period": 10, "slow_period": 40})
+    with pytest.raises(ValueError, match="constraint"):
+        strategies.validate_param_value("sma_crossover", "fast_period", 0)
+
+
 def test_wrapper_signature_stays_transparent():
     reg = _load_registry()
     fn = reg.STRATEGIES["mean_reversion"]["fn"]
