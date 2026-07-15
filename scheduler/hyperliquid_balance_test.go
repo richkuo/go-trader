@@ -2728,6 +2728,13 @@ func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
 // fakeCloser builds a HyperliquidLiveCloser test double that records every
 // invocation and returns either a canned success or an error per coin.
 func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
+	return fakeCloserWithTotalSz(errs, 1.0)
+}
+
+// fakeCloserWithTotalSz is fakeCloser with an explicit confirmed fill size.
+// Keep the reported fill aligned with the on-chain position in tests that
+// exercise the full-fill requirement of the kill-switch closer.
+func fakeCloserWithTotalSz(errs map[string]error, totalSz float64) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
 	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		if partialSz != nil {
@@ -2739,7 +2746,7 @@ func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 			return nil, err
 		}
 		return &HyperliquidCloseResult{
-			Close:                   &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 1.0, AvgPx: 100}},
+			Close:                   &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: totalSz, AvgPx: 100}},
 			Platform:                "hyperliquid",
 			CancelStopLossSucceeded: firstPositiveStopLossOID(cancelStopLossOIDs) > 0,
 		}, nil
@@ -2852,7 +2859,7 @@ func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 		{Coin: "ETH", Size: -1.234, EntryPrice: 3000},
 	}
 
-	closer, calls := fakeCloser(nil)
+	closer, calls := fakeCloserWithTotalSz(nil, 1.234)
 	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
 
 	if len(report.Errors) != 0 {
