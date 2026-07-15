@@ -176,8 +176,12 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 			if _, ok := lines[plat]; !ok {
 				platforms = append(platforms, plat)
 			}
+			suffix := ""
+			if p.IsHedge {
+				suffix = fmt.Sprintf(" ⚖️ AUTO-HEDGE for %s", p.HedgeForSymbol)
+			}
 			lines[plat] = append(lines[plat], fmt.Sprintf(
-				"  %s %s %.4f @ $%.2f (mv $%.2f) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mv, id))
+				"  %s %s %.4f @ $%.2f (mv $%.2f) [%s]%s", sym, p.Side, p.Quantity, p.AvgCost, mv, id, suffix))
 		}
 	}
 	if len(platforms) == 0 {

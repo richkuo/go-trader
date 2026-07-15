@@ -1419,6 +1419,9 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 
 	res.queued = true
 	res.outf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.")
+	if HedgeEnabled(sc) {
+		res.outf("Auto-hedge %s will be reduced/closed by the scheduler on that cycle.", hedgeCoin(sc))
+	}
 	return res, nil
 }
 

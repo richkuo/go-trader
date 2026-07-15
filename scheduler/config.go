@@ -595,6 +595,21 @@ type FuturesConfig struct {
 	MaxContracts   int     `json:"max_contracts,omitempty"`
 }
 
+// HedgeConfig declares the single scheduler-owned correlated hedge leg for a
+// Hyperliquid perps strategy. Phase 1 deliberately supports only an inverse,
+// static-notional hedge on a coin that no configured strategy or other hedge
+// owns. The leg has its own explicit margin assignment and no SL/TP evaluator.
+type HedgeConfig struct {
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
+}
+
 // StrategyRef pairs a strategy name with its evaluator params. Used for both
 // the open strategy and each close strategy on a StrategyConfig so per-strategy
 // params don't leak across roles (#640). Empty Params means "use registry
@@ -653,6 +668,7 @@ type StrategyConfig struct {
 	TrailingStopATRRegime       *RegimeATRBlock          `json:"trailing_stop_atr_regime,omitempty"`        // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
 	TrailingStopMinMovePct      *float64                 `json:"trailing_stop_min_move_pct,omitempty"`      // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
 	MarginMode                  string                   `json:"margin_mode,omitempty"`                     // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                           // #1159 — scheduler-owned inverse correlated leg; HL perps only. Read through HedgeEnabled/hedge* accessors.
 	ThetaHarvest                *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
 	FuturesConfig               *FuturesConfig           `json:"futures,omitempty"`
 	RegimeDirectionalPolicy     *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
@@ -2220,6 +2236,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+	for _, msg := range validateHedgeConfigs(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 

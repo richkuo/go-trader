@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -81,6 +82,9 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			if HedgeEnabled(sc) {
+				hlSet[hedgeCoin(sc)] = true
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -943,19 +947,30 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
-	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		return
+	var symbols []PendingCircuitCloseSymbol
+	if !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		if _, held := s.Positions[sym]; held {
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+			}
+		}
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
+	// The hedge coin is sole-owned by config validation, so it must still
+	// drain even when the primary coin is shared and therefore untouchable.
+	if HedgeEnabled(*sc) {
+		hc := hedgeCoin(*sc)
+		if hp := s.Positions[hc]; hp != nil && hp.IsHedge && hp.Quantity > 0 {
+			for _, p := range assist.HLPositions {
+				if p.Coin == hc && math.Abs(p.Size) > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hc, Size: math.Abs(p.Size)})
+					break
+				}
+			}
+		}
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
-		return
+	if len(symbols) > 0 {
+		s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: symbols})
 	}
-	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
-	})
 }
 
 func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
@@ -1597,4 +1612,28 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult includes real hedge PnL in the portfolio daily-loss
+// accounting but deliberately leaves the alpha loss streak untouched. An
+// inverse hedge normally loses when its primary wins; counting both legs as
+// independent theses would spuriously trip the circuit breaker.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
+}
+
+func hedgeTradeType(pos *Position) string {
+	if pos != nil && pos.IsHedge {
+		return "hedge"
+	}
+	return "perps"
+}
+
+func recordPositionRiskResult(r *RiskState, pos *Position, pnl float64) {
+	if pos != nil && pos.IsHedge {
+		RecordHedgeTradeResult(r, pnl)
+		return
+	}
+	RecordTradeResult(r, pnl)
 }
