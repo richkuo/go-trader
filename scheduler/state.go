@@ -134,6 +134,10 @@ type StrategyState struct {
 	// strategy is not a shared-wallet member) makes display fall back to the
 	// modeled PortfolioValue.
 	SharedWalletValueSet bool `json:"-"`
+	// HedgeHoldAlerted suppresses duplicate owner DMs during one contiguous
+	// missing-mark episode. It is deliberately in-memory only: a restart starts
+	// a fresh alert episode, while a recovered mark clears it in the hedge sync.
+	HedgeHoldAlerted bool `json:"-"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
@@ -270,7 +274,7 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 		sort.Strings(syms)
 		for _, sym := range syms {
 			pos := s.Positions[sym]
-			if pos == nil || pos.Quantity <= 0 {
+			if pos == nil || pos.Quantity <= 0 || pos.HedgeFor != "" {
 				continue
 			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)

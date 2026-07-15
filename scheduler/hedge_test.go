@@ -104,6 +104,27 @@ func TestSyncHedgeDoesNotMutateOnMissingMark(t *testing.T) {
 	}
 }
 
+func TestHedgeHoldAlertThrottleIsPerStrategy(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"first":  {ID: "first"},
+		"second": {ID: "second"},
+	}}
+	var mu sync.RWMutex
+	if !claimHedgeHoldAlert(state, &mu, "first") {
+		t.Fatal("first hold should claim its alert")
+	}
+	if claimHedgeHoldAlert(state, &mu, "first") {
+		t.Fatal("repeated first hold should be throttled")
+	}
+	if !claimHedgeHoldAlert(state, &mu, "second") {
+		t.Fatal("second strategy should have an independent alert latch")
+	}
+	clearHedgeHoldAlert(state, &mu, "first")
+	if !claimHedgeHoldAlert(state, &mu, "first") {
+		t.Fatal("recovered first strategy should start a fresh alert episode")
+	}
+}
+
 func TestHedgeBasisAfterReductionTracksConfirmedFill(t *testing.T) {
 	cases := []struct {
 		name                                       string

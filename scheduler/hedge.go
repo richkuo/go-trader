@@ -390,12 +390,17 @@ func syncHedgeForStrategy(sc StrategyConfig, state *AppState, mu *sync.RWMutex, 
 	primaryPx := hedgePrice(prices, primaryCoin)
 	hedgePx := hedgePrice(prices, hCoin)
 	decision := decideHedge(primary, hedge, primaryPx, hedgePx, hedgeRatio(sc), primaryFreshOpen)
+	if decision.Action != hedgeActionHold {
+		clearHedgeHoldAlert(state, mu, sc.ID)
+	}
 	if decision.Action == hedgeActionNone {
 		return
 	}
 	if decision.Action == hedgeActionHold {
-		holdAlert := fmt.Sprintf("**HEDGE HOLD** [%s] %s; retrying without changing the primary or hedge.", sc.ID, decision.Reason)
-		hedgeOwnerAlert(notifier, holdAlert)
+		if claimHedgeHoldAlert(state, mu, sc.ID) {
+			holdAlert := fmt.Sprintf("**HEDGE HOLD** [%s] %s; retrying without changing the primary or hedge.", sc.ID, decision.Reason)
+			hedgeOwnerAlert(notifier, holdAlert)
+		}
 		if logger != nil {
 			logger.Warn("hedge hold: %s", decision.Reason)
 		}
@@ -451,6 +456,34 @@ func syncHedgeForStrategy(sc StrategyConfig, state *AppState, mu *sync.RWMutex, 
 func hedgeOwnerAlert(notifier *MultiNotifier, msg string) {
 	if notifier != nil {
 		notifier.SendOwnerDM(msg)
+	}
+}
+
+// claimHedgeHoldAlert emits at most one owner DM per contiguous missing-mark
+// episode for each strategy. The flag lives on StrategyState so strategies do
+// not suppress one another and a restart naturally starts a new episode.
+func claimHedgeHoldAlert(state *AppState, mu *sync.RWMutex, strategyID string) bool {
+	if state == nil || mu == nil {
+		return false
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	ss := state.Strategies[strategyID]
+	if ss == nil || ss.HedgeHoldAlerted {
+		return false
+	}
+	ss.HedgeHoldAlerted = true
+	return true
+}
+
+func clearHedgeHoldAlert(state *AppState, mu *sync.RWMutex, strategyID string) {
+	if state == nil || mu == nil {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if ss := state.Strategies[strategyID]; ss != nil {
+		ss.HedgeHoldAlerted = false
 	}
 }
 
