@@ -155,6 +155,26 @@ func TestPlanKillSwitchClose_HappyPath(t *testing.T) {
 	}
 }
 
+func TestPlanKillSwitchClose_ClosesPersistedHedgeCoinOnlyWhenHeld(t *testing.T) {
+	hlLive := []StrategyConfig{{
+		ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"hold", "ETH", "1h", "--mode=live"},
+	}}
+	// Deliberately reverse clearinghouse order: the close plan must still
+	// submit primary ETH before its persisted BTC hedge.
+	positions := []HLPosition{{Coin: "BTC", Size: -0.02, EntryPrice: 100000}, {Coin: "ETH", Size: 1, EntryPrice: 3000}}
+	closer, calls := stubHLLiveCloser(nil)
+	inputs := defaultHLInputs("0xaddr", true, positions, hlLive, "portfolio drawdown", time.Second, closer, nil)
+	inputs.HLHedgeCoins = map[string]bool{"BTC": true}
+	plan := planKillSwitchClose(inputs)
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected confirmed flat plan, got %+v", plan)
+	}
+	if len(*calls) != 2 || (*calls)[0] != "ETH" || (*calls)[1] != "BTC" {
+		t.Fatalf("close calls = %v, want [ETH BTC]", *calls)
+	}
+}
+
 func TestHyperliquidKillSwitchClose_UsesRealFillBeforeMark(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Leverage: 5,

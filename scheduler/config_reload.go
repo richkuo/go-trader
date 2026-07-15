@@ -244,6 +244,12 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].margin_mode: %q -> %q", sc.ID, sc.MarginMode, ns.MarginMode)
 			sc.MarginMode = ns.MarginMode
 		}
+		// #1159: hedge configuration only changes the next flat position; while
+		// either leg is open validateHotReloadStateCompatible rejects it.
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: %s -> %s", sc.ID, formatHedgeConfig(sc.Hedge), formatHedgeConfig(ns.Hedge))
+			sc.Hedge = cloneHedgeConfig(ns.Hedge)
+		}
 		// #1277: per-strategy ATR smoothing method. Same stance as margin_mode:
 		// the state-compat check blocks the effective flip while open, so a
 		// change landing here applies to the next flat-state check cycle.
@@ -544,6 +550,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
 		errs = append(errs, msg)
 	}
+	for _, msg := range validateHedgeConfigs(next.Strategies) {
+		errs = append(errs, msg)
+	}
 
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -636,6 +645,9 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] margin_mode changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, sc.MarginMode, ns.MarginMode))
+		}
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge changed with open positions (flatten primary and hedge legs first or restart after close)", sc.ID))
 		}
 		if hyperliquidManagedStopReloadGuard(sc) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldTrailing := sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0
@@ -822,6 +834,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowedRegimes = nil
 	sc.RegimeGateOnFailure = ""      // #1278: hot-reloadable always, including while open — flat-only open gating, never state-shifting. Applied in applyHotReloadConfig.
 	sc.MarginMode = ""               // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks a lifecycle change while either leg is open.
 	sc.TrailingStopPct = nil         // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopATRMult = nil     // #505: hot-reloadable; same state-compat treatment as TrailingStopPct
 	sc.StopLossATRMult = nil         // #562: hot-reloadable; mode toggle blocked while open
@@ -851,6 +864,41 @@ func scaleInConfigEqual(a, b *ScaleInConfig) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func cloneHedgeConfig(in *HedgeConfig) *HedgeConfig {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func hedgeConfigEqual(a, b *HedgeConfig) bool {
+	return reflect.DeepEqual(a, b)
+}
+
+func formatHedgeConfig(h *HedgeConfig) string {
+	if h == nil {
+		return "off"
+	}
+	if !h.Enabled {
+		return "disabled"
+	}
+	coin := strings.ToUpper(strings.TrimSpace(h.Symbol))
+	ratio := h.Ratio
+	if ratio == 0 {
+		ratio = 1
+	}
+	mode := h.MarginMode
+	if mode == "" {
+		mode = "isolated"
+	}
+	lev := h.Leverage
+	if lev == 0 {
+		lev = 1
+	}
+	return fmt.Sprintf("%s×%g inverse %s@%gx", coin, ratio, mode, lev)
 }
 
 func floatPtrEqual(a, b *float64) bool {

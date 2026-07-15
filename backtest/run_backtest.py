@@ -707,6 +707,19 @@ def load_strategy_config(config_path: str, strategy_id: str,
     for sc in cfg.get("strategies", []) or []:
         if sc.get("id") != strategy_id:
             continue
+        # #1159: correlated hedge legs are a live HL-perps execution feature.
+        # A single-asset Backtester cannot model the second instrument's bars,
+        # fills, margin, or fail-closed unwind atomically, so accepting this
+        # config would report primary-only results while live trades a pair.
+        hedge = sc.get("hedge")
+        if isinstance(hedge, dict) and hedge.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} enables a correlated "
+                "hedge leg, which is live-only in this release. Backtesting a "
+                "primary-only series would diverge from its hedge fills, margin, "
+                "and fail-closed unwind behavior. Disable hedge.enabled or use "
+                "a pair-aware backtester."
+            )
         open_ref = sc.get("open_strategy")
         if not isinstance(open_ref, dict):
             open_ref = {}

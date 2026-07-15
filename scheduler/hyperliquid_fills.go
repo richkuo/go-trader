@@ -499,6 +499,40 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			}
 		}
 	}
+	// #1159: hedge coins are not primary config coins, so include persisted
+	// hedge legs explicitly. There are no hedge SL/TP OIDs; the generic fill
+	// lookup is enough for external closes and partial reductions.
+	for _, sc := range allStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		coins := make([]string, 0)
+		for coin, pos := range ss.Positions {
+			if pos != nil && pos.HedgeFor != "" && pos.Quantity > 0 {
+				coins = append(coins, coin)
+			}
+		}
+		sort.Strings(coins)
+		for _, coin := range coins {
+			pos := ss.Positions[coin]
+			onChainSize, present := onChainByCoin[coin]
+			mismatched := !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9
+			if !mismatched {
+				continue
+			}
+			addCandidate(coin, 0, pos.Quantity)
+			if present && onChainSize != 0 {
+				signedVirtual := pos.Quantity
+				if pos.Side == "short" {
+					signedVirtual = -pos.Quantity
+				}
+				if ((signedVirtual > 0 && onChainSize > 0) || (signedVirtual < 0 && onChainSize < 0)) && math.Abs(onChainSize)+1e-9 < pos.Quantity {
+					addCandidate(coin, 0, pos.Quantity-math.Abs(onChainSize))
+				}
+			}
+		}
+	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy
 	// prefetch above uses each strategy's own qty, but these detectors book

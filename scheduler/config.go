@@ -605,6 +605,20 @@ type StrategyRef struct {
 	Params map[string]interface{} `json:"params,omitempty"`
 }
 
+// HedgeConfig describes the single, scheduler-owned correlated hedge leg for
+// a Hyperliquid perps strategy. A hedge never runs a signal/close evaluator or
+// owns protection; it exists solely to offset its primary position.
+type HedgeConfig struct {
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
+}
+
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
 	ID                          string                   `json:"id"`
@@ -653,6 +667,7 @@ type StrategyConfig struct {
 	TrailingStopATRRegime       *RegimeATRBlock          `json:"trailing_stop_atr_regime,omitempty"`        // HL perps only: regime-aware sibling of trailing_stop_atr_mult — trailing distance frozen at open via pos.Regime. Mutually exclusive with the scalar siblings. Requires regime detection. (#733)
 	TrailingStopMinMovePct      *float64                 `json:"trailing_stop_min_move_pct,omitempty"`      // HL perps trailing SL only: minimum trigger-price move before cancel/replace; nil defaults to 0.5% (#501)
 	MarginMode                  string                   `json:"margin_mode,omitempty"`                     // HL perps only: "isolated" (default) or "cross"; sent via update_leverage on fresh opens to enforce per-position liq isolation (#486)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                           // #1159: optional correlated HL-perps hedge, lifecycle-owned by the primary strategy; no independent evaluator/protection.
 	ThetaHarvest                *ThetaHarvestConfig      `json:"theta_harvest,omitempty"`
 	FuturesConfig               *FuturesConfig           `json:"futures,omitempty"`
 	RegimeDirectionalPolicy     *RegimeDirectionalPolicy `json:"regime_directional_policy,omitempty"` // HL perps only: regime-aware override for Direction + InvertSignal. When set, runHyperliquidCheck resolves the effective pair per-cycle from the current regime (when flat) or pos.Regime (when an open position is held — "hold until natural exit" semantics). Static Direction/InvertSignal are the base; the policy overrides per regime. Requires regime detection enabled at top-level cfg.Regime. (#779)
@@ -762,6 +777,50 @@ func EffectiveExchangeLeverage(sc StrategyConfig) float64 {
 		return 1
 	}
 	return sc.Leverage
+}
+
+// HedgeEnabled is the only predicate consumers should use for the optional
+// hedge block. Disabled blocks remain inert so operators can stage a config
+// before enabling it.
+func HedgeEnabled(sc StrategyConfig) bool {
+	return sc.Hedge != nil && sc.Hedge.Enabled
+}
+
+// hedgeCoin normalizes the accepted plain HL ticker and ccxt perpetual symbol
+// forms (for example BTC and BTC/USDC:USDC) to the HL coin ticker.
+func hedgeCoin(sc StrategyConfig) string {
+	if !HedgeEnabled(sc) {
+		return ""
+	}
+	raw := strings.ToUpper(strings.TrimSpace(sc.Hedge.Symbol))
+	if i := strings.IndexByte(raw, '/'); i >= 0 {
+		raw = raw[:i]
+	}
+	if i := strings.IndexByte(raw, ':'); i >= 0 {
+		raw = raw[:i]
+	}
+	return strings.TrimSpace(raw)
+}
+
+func HedgeRatio(sc StrategyConfig) float64 {
+	if !HedgeEnabled(sc) || sc.Hedge.Ratio == 0 {
+		return 1
+	}
+	return sc.Hedge.Ratio
+}
+
+func hedgeLeverage(sc StrategyConfig) float64 {
+	if !HedgeEnabled(sc) || sc.Hedge.Leverage == 0 {
+		return 1
+	}
+	return sc.Hedge.Leverage
+}
+
+func hedgeMarginMode(sc StrategyConfig) string {
+	if !HedgeEnabled(sc) || sc.Hedge.MarginMode == "" {
+		return "isolated"
+	}
+	return sc.Hedge.MarginMode
 }
 
 // EffectiveMarginPerTradeUSD returns the configured margin-per-trade in USD,
@@ -1047,6 +1106,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// otherwise produce a struct indistinguishable from "no protection configured".
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
+	unknownErrs = append(unknownErrs, validateHedgeJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}
@@ -1498,6 +1558,87 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 			}
 		}
 	}
+	return errs
+}
+
+// validateHedgeConfigs rejects every configuration that could turn a hedge
+// coin into an ambiguous shared-wallet position. Unlike ordinary peer coins,
+// a hedge is never inferred from config during reconciliation; persisted
+// Position.HedgeFor metadata is the sole ownership record after it opens.
+func validateHedgeConfigs(strategies []StrategyConfig) []string {
+	primaryOwners := make(map[string][]string)
+	for _, sc := range strategies {
+		// Collision safety is broader than hedge eligibility: a hedge must not
+		// share a coin with *any* configured HL strategy, including a future
+		// non-perps adapter that reuses the same wallet coin namespace.
+		if sc.Platform != "hyperliquid" {
+			continue
+		}
+		if coin := hyperliquidConfiguredCoin(sc); coin != "" {
+			primaryOwners[coin] = append(primaryOwners[coin], sc.ID)
+		}
+	}
+	for coin := range primaryOwners {
+		sort.Strings(primaryOwners[coin])
+	}
+
+	hedgeOwners := make(map[string][]string)
+	var errs []string
+	for _, sc := range strategies {
+		if !HedgeEnabled(sc) {
+			continue
+		}
+		prefix := fmt.Sprintf("strategy[%s].hedge", sc.ID)
+		if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+			errs = append(errs, fmt.Sprintf("%s is only supported for hyperliquid perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
+		}
+		if sc.Hedge.Platform != "" && sc.Hedge.Platform != "hyperliquid" {
+			errs = append(errs, fmt.Sprintf("%s.platform must be \"hyperliquid\" when set, got %q", prefix, sc.Hedge.Platform))
+		}
+		if sc.Hedge.Type != "" && sc.Hedge.Type != "perps" {
+			errs = append(errs, fmt.Sprintf("%s.type must be \"perps\" when set, got %q", prefix, sc.Hedge.Type))
+		}
+		if sc.Hedge.Side != "" && sc.Hedge.Side != "inverse" {
+			errs = append(errs, fmt.Sprintf("%s.side must be \"inverse\" when set, got %q", prefix, sc.Hedge.Side))
+		}
+		if sc.Hedge.Ratio < 0 || sc.Hedge.Ratio > 10 {
+			errs = append(errs, fmt.Sprintf("%s.ratio must be in (0, 10] when set, got %g", prefix, sc.Hedge.Ratio))
+		}
+		if sc.Hedge.Leverage < 0 || sc.Hedge.Leverage > 100 {
+			errs = append(errs, fmt.Sprintf("%s.leverage must be in (0, 100] when set, got %g", prefix, sc.Hedge.Leverage))
+		}
+		if mode := hedgeMarginMode(sc); mode != "isolated" && mode != "cross" {
+			errs = append(errs, fmt.Sprintf("%s.margin_mode must be \"isolated\" or \"cross\", got %q", prefix, sc.Hedge.MarginMode))
+		}
+		coin := hedgeCoin(sc)
+		if coin == "" {
+			errs = append(errs, fmt.Sprintf("%s.symbol must name a Hyperliquid coin", prefix))
+			continue
+		}
+		if coin == hyperliquidConfiguredCoin(sc) {
+			errs = append(errs, fmt.Sprintf("%s.symbol %q equals the strategy primary coin; an on-chain inverse hedge would net the primary", prefix, coin))
+		}
+		if owners := primaryOwners[coin]; len(owners) > 0 {
+			errs = append(errs, fmt.Sprintf("%s.symbol %q collides with configured strategy coin(s): %s", prefix, coin, strings.Join(owners, ", ")))
+		}
+		if EffectiveDirection(sc) == DirectionBoth {
+			errs = append(errs, fmt.Sprintf("%s is unsupported with direction=%q; hedge flips are not safe in phase 1", prefix, DirectionBoth))
+		}
+		hedgeOwners[coin] = append(hedgeOwners[coin], sc.ID)
+	}
+	coins := make([]string, 0, len(hedgeOwners))
+	for coin := range hedgeOwners {
+		coins = append(coins, coin)
+	}
+	sort.Strings(coins)
+	for _, coin := range coins {
+		owners := hedgeOwners[coin]
+		sort.Strings(owners)
+		if len(owners) > 1 {
+			errs = append(errs, fmt.Sprintf("hedge coin %q is shared by strategies %s; phase-1 hedges require sole ownership", coin, strings.Join(owners, ", ")))
+		}
+	}
+	sort.Strings(errs)
 	return errs
 }
 
@@ -2220,6 +2361,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+	for _, msg := range validateHedgeConfigs(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 

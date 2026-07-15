@@ -155,6 +155,18 @@ func TestFormatPositionsResponse(t *testing.T) {
 	}
 }
 
+func TestFormatPositionsResponseLabelsHedgeLeg(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Platform: "hyperliquid", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.02, AvgCost: 100000, Side: "short", HedgeFor: "ETH", HedgePrimaryQtyBasis: 1.5},
+		}},
+	}}
+	got := formatPositionsResponse(state, map[string]float64{"BTC": 100000})
+	if !strings.Contains(got, "hedge for ETH") || !strings.Contains(got, "primary basis 1.5000") {
+		t.Fatalf("hedge label missing from positions response: %s", got)
+	}
+}
+
 func TestFormatPnLResponse(t *testing.T) {
 	// hl-a: pv = 1*60 = 60, cap 50 -> +10 (+20%). hl-b: pv = 50, cap 50 -> 0.
 	got := formatPnLResponse(testPnLState(), map[string]float64{"BTC": 60})

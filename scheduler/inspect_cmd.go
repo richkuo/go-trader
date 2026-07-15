@@ -474,6 +474,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 			fmt.Fprintf(&b, "  margin_mode:         %s%s\n", sc.MarginMode, markIfDefault(explicit, "margin_mode"))
 		}
 	}
+	if HedgeEnabled(sc) {
+		fmt.Fprintf(&b, "  hedge:               inverse %s ratio=%g margin_mode=%s leverage=%gx\n", hedgeCoin(sc), HedgeRatio(sc), hedgeMarginMode(sc), hedgeLeverage(sc))
+	}
 
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
@@ -691,6 +694,16 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["sizing_leverage"] = EffectiveSizingLeverage(sc)
 		out["margin_mode"] = sc.MarginMode
 	}
+	if HedgeEnabled(sc) {
+		out["hedge"] = map[string]interface{}{
+			"enabled":     true,
+			"symbol":      hedgeCoin(sc),
+			"side":        "inverse",
+			"ratio":       HedgeRatio(sc),
+			"margin_mode": hedgeMarginMode(sc),
+			"leverage":    hedgeLeverage(sc),
+		}
+	}
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
 		slMap := map[string]interface{}{
@@ -862,7 +875,11 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 			if pos.DirectionCertifiedAtOpen {
 				certSrc = "certified at open → policy"
 			}
-			fmt.Fprintf(b, "  position %s:         side=%s effective_direction=%s (regime=%s, %s; %s)\n", sym, pos.Side, effDir, effRegime, regimeSrc, certSrc)
+			leg := ""
+			if pos.HedgeFor != "" {
+				leg = fmt.Sprintf(" hedge_for=%s primary_qty_basis=%.6f", pos.HedgeFor, pos.HedgePrimaryQtyBasis)
+			}
+			fmt.Fprintf(b, "  position %s:         side=%s%s effective_direction=%s (regime=%s, %s; %s)\n", sym, pos.Side, leg, effDir, effRegime, regimeSrc, certSrc)
 			if len(pos.RegimeWindows) > 0 {
 				fmt.Fprintf(b, "    regime_windows:    %v\n", pos.RegimeWindows)
 			}
@@ -921,6 +938,8 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 				"effective_direction":         EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen),
 				"effective_policy_regime":     effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity),
 				"direction_certified_at_open": pos.DirectionCertifiedAtOpen,
+				"hedge_for":                   pos.HedgeFor,
+				"hedge_primary_qty_basis":     pos.HedgePrimaryQtyBasis,
 			})
 		}
 		if len(positions) > 0 {

@@ -24,12 +24,39 @@ func TestKnownStrategyConfigKeysCoversCoreFields(t *testing.T) {
 		"stop_loss_pct", "stop_loss_margin_pct",
 		"trailing_stop_pct", "trailing_stop_atr_mult", "stop_loss_atr_mult",
 		"trailing_stop_min_move_pct", "margin_mode",
-		"theta_harvest", "futures",
+		"theta_harvest", "futures", "hedge",
 	}
 	for _, k := range mustHave {
 		if !known[k] {
 			t.Errorf("knownStrategyConfigKeys missing %q — did a StrategyConfig json tag get renamed?", k)
 		}
+	}
+}
+
+func TestValidateHedgeJSONKeysRejectsTypoAndAcceptsCanonicalShape(t *testing.T) {
+	valid := []byte(`{
+		"strategies": [{
+			"id": "hl-eth",
+			"hedge": {
+				"enabled": true,
+				"symbol": "BTC/USDC:USDC",
+				"side": "inverse",
+				"ratio": 0.5,
+				"platform": "hyperliquid",
+				"type": "perps",
+				"margin_mode": "isolated",
+				"leverage": 3
+			}
+		}]
+	}`)
+	if errs := validateHedgeJSONKeys(valid); len(errs) != 0 {
+		t.Fatalf("canonical hedge shape rejected: %v", errs)
+	}
+
+	typo := []byte(`{"strategies":[{"id":"hl-eth","hedge":{"enabled":true,"ration":0.5}}]}`)
+	errs := validateHedgeJSONKeys(typo)
+	if len(errs) != 1 || !strings.Contains(errs[0], `strategy[hl-eth].hedge: unknown field "ration"`) {
+		t.Fatalf("unknown hedge field errors = %v", errs)
 	}
 }
 

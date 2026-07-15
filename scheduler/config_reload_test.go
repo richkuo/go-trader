@@ -2185,3 +2185,30 @@ func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateHotReloadStateCompatible_BlocksHedgeChangeWhileAnyLegOpen(t *testing.T) {
+	old := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"hold", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 0.5},
+	}})
+	next := minimalReloadConfig([]StrategyConfig{{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args: []string{"hold", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10,
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1},
+	}})
+	openState := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.02, AvgCost: 100000, Side: "short", HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+		}},
+	}}
+	if err := validateHotReloadStateCompatible(old, next, openState); err == nil || !strings.Contains(err.Error(), "hedge changed with open positions") {
+		t.Fatalf("open hedge leg: want hedge compatibility error, got %v", err)
+	}
+	flatState := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{}},
+	}}
+	if err := validateHotReloadStateCompatible(old, next, flatState); err != nil {
+		t.Fatalf("flat hedge change should be accepted: %v", err)
+	}
+}

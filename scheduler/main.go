@@ -268,6 +268,9 @@ func main() {
 	// the exchange but flips virtually. Collect here, forward to owner DM
 	// once the notifier is wired below.
 	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
+	// #1159: a config edit followed by restart bypasses SIGHUP's flat-only
+	// hedge gate. Keep any mismatched persisted hedge visible but frozen.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
 	// #1277 optional hardening: detect a config edit + restart (not SIGHUP)
 	// that changed a strategy's effective atr_method while it still holds a
@@ -486,6 +489,11 @@ func main() {
 	// so the desync is surfaced even when the operator isn't tailing stderr.
 	if len(directionConfigWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range directionConfigWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1400,6 +1408,7 @@ func main() {
 			// early-returns false while KillSwitchActive is true) and retries.
 			var plan KillSwitchClosePlan
 			var hlVirtualQty hlVirtualQuantitySnapshot
+			var hlHeldHedgeCoins map[string]bool
 			if killSwitchFired {
 				// Snapshot per-coin StopLossOIDs so the kill-switch close
 				// path can cancel resting SLs before flattening, freeing
@@ -1408,6 +1417,7 @@ func main() {
 				// coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
 				hlSLOIDs := map[string][]int64{}
+				hlHeldHedgeCoins = map[string]bool{}
 				mu.RLock()
 				for _, sc := range hlLiveAll {
 					sym := hyperliquidSymbol(sc.Args)
@@ -1419,6 +1429,11 @@ func main() {
 							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.StopLossOID)
 							for _, tpOID := range pos.TPOIDs {
 								hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], tpOID)
+							}
+						}
+						for hedgeCoin, pos := range ss.Positions {
+							if pos != nil && pos.HedgeFor != "" && pos.Quantity > 0 {
+								hlHeldHedgeCoins[hedgeCoin] = true
 							}
 						}
 					}
@@ -1435,6 +1450,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLHedgeCoins:      hlHeldHedgeCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -1715,6 +1731,14 @@ func main() {
 					if sz > 1e-9 {
 						hlOnChainAbsQty[p.Coin] = sz
 					}
+				}
+
+				// #1159: converge persisted hedge legs after circuit-breaker
+				// drains and account reconciliation, independent of entry-check
+				// cadence. Never open or resize a hedge while the portfolio kill
+				// switch is latched; its dedicated close plan owns that lifecycle.
+				if !killSwitchFired {
+					runHedgeCoherenceSweep(state, cfg.Strategies, prices, hlPositions, &mu, notifier, logMgr)
 				}
 
 				// #879: the dispatch loop below is the first regime-store
@@ -2495,6 +2519,22 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: one state-derived hedge reconciliation after every
+							// successful HL dispatch. It observes the final primary
+							// quantity after opens/adds/closes/protection management, so
+							// only lifecycle quantity events create hedge orders; ordinary
+							// mark drift does not. Coupled risk-management actions are not
+							// paused or daily-loss gated.
+							if !liveExecFailed && HedgeEnabled(sc) {
+								hedge := hedgeCoin(sc)
+								hs := runHedgeSync(sc, stratState, result.Symbol, price, prices[hedge], hyperliquidIsLive(sc.Args), hlExecuteSnapshotForCoin(hlPositions, hedge), &mu, notifier, logger, hlPosQty <= hedgeQtyEpsilon && trades > 0)
+								if hs.Trades > 0 {
+									trades += hs.Trades
+									if hs.Detail != "" {
+										detail = hs.Detail
+									}
+								}
 							}
 						}
 					case "futures":
