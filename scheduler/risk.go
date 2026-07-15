@@ -81,6 +81,11 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			if hedgeEnabled(sc) {
+				if hedge := hedgeCoin(sc); hedge != "" {
+					hlSet[hedge] = true
+				}
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -943,19 +948,27 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
-	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		return
+	var symbols []PendingCircuitCloseSymbol
+	if !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		if _, exists := s.Positions[sym]; exists {
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+			}
+		}
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
+	// Hedge coins are unique owners by configuration, so the hedge close stays
+	// safe even when a shared primary coin is intentionally left untouched.
+	if hedgeEnabled(*sc) {
+		hCoin := hedgeCoin(*sc)
+		if _, hPos := hedgePositionFor(s, hCoin); hPos != nil && hPos.Quantity > 0 {
+			if qty, ok := computeHyperliquidCircuitCloseQty(hCoin, sc.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: qty})
+			}
+		}
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
-		return
+	if len(symbols) > 0 {
+		s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: symbols})
 	}
-	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
-	})
 }
 
 func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
@@ -1167,6 +1180,9 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
+	if pos.HedgeFor != "" {
+		return TradeTypeHedge
+	}
 	if pos.Multiplier > 0 {
 		if s != nil {
 			switch {
@@ -1262,7 +1278,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		recordPositionTradeResult(s, pos, pnl)
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1597,4 +1613,12 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult records hedge PnL in the daily portfolio accounting
+// while deliberately leaving the primary strategy's loss streak untouched.
+// A hedge is risk mitigation, not an independent signal round-trip (#1159).
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }

@@ -276,6 +276,12 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: persisted hedge legs are warning-only at startup. The first
+	// coherence sweep below will either repair a valid mismatch from state or
+	// fail closed; this warning makes an unmanaged legacy leg visible before
+	// any order is submitted.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -496,6 +502,12 @@ func main() {
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
+			notifier.SendOwnerDM(msg)
 		}
 	}
 
@@ -1725,6 +1737,15 @@ func main() {
 				// alert on cross-window reversals. Sequential main loop,
 				// outside mu; fail-open — never blocks the dispatch below.
 				processRegimeTransitionAlerts(stateDB, globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
+				// #1159: state-derived hedge coherence runs once per cycle before
+				// signals. Hedge legs never run a strategy check; this sweep catches
+				// restart drift, manual/CLI closes, TP/SL fills, CB drains, and
+				// reconciliation changes that occurred outside the primary dispatch.
+				for _, hedgeSC := range cfg.Strategies {
+					if hedgeEnabled(hedgeSC) && hedgeSC.Platform == "hyperliquid" && hedgeSC.Type == "perps" {
+						syncHedgeForStrategy(hedgeSC, state, &mu, prices, hlPositions, false, notifier, nil)
+					}
+				}
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -1776,6 +1797,7 @@ func main() {
 					var hlScaleInCash float64
 					var hlScaleInResizePending bool
 					var hlProfileState *RegimeProfileState
+					var hedgePrimaryBeforeQty float64
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
@@ -1809,6 +1831,11 @@ func main() {
 								hlLastAddPrice = pos.LastAddPrice
 								hlAddedNotionalUSD = pos.AddedNotionalUSD
 								hlScaleInResizePending = pos.ScaleInResizePending
+							}
+						}
+						if hedgeEnabled(sc) {
+							if _, pos := hedgePositionFor(stratState, hyperliquidConfiguredCoin(sc)); pos != nil {
+								hedgePrimaryBeforeQty = pos.Quantity
 							}
 						}
 					}
@@ -2769,6 +2796,13 @@ func main() {
 						}
 					default:
 						logger.Error("Unknown strategy type: %s", sc.Type)
+					}
+					if hedgeEnabled(sc) && sc.Platform == "hyperliquid" && sc.Type == "perps" {
+						mu.RLock()
+						_, currentPrimary := hedgePositionFor(stratState, hyperliquidConfiguredCoin(sc))
+						freshPrimaryOpen := hedgePrimaryBeforeQty <= hedgeQuantityEpsilon && currentPrimary != nil && currentPrimary.Quantity > hedgeQuantityEpsilon
+						mu.RUnlock()
+						syncHedgeForStrategy(sc, state, &mu, prices, hlPositions, freshPrimaryOpen, notifier, logger)
 					}
 					if trades > 0 && detail != "" {
 						if chKey := notifier.resolveChannelKey(sc.Platform, sc.Type); chKey != "" {

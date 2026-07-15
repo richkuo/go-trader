@@ -162,6 +162,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
 			sc.Paused = ns.Paused
 		}
+		// #1159: the hedge block is lifecycle state, not strategy shape. It is
+		// reloadable while flat; validateHotReloadStateCompatible blocks edits
+		// while the strategy carries a position so a new companion cannot be
+		// introduced or abandoned mid-lifecycle.
+		if !reflect.DeepEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: %s -> %s", sc.ID, formatHedgeConfig(sc.Hedge), formatHedgeConfig(ns.Hedge))
+			sc.Hedge = cloneHedgeConfig(ns.Hedge)
+		}
 		// #1275: allow_deprecated is hot-reloadable always, including while a
 		// position is open — an acknowledgment flag only, never gates loading,
 		// probing, or trading. reloadConfig re-evaluates the deprecated-edge
@@ -544,6 +552,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
 		errs = append(errs, msg)
 	}
+	for _, msg := range validateHedgeConfigs(next) {
+		errs = append(errs, msg)
+	}
 
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -571,6 +582,9 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 		if sc.Type == "perps" && sc.Leverage != ns.Leverage && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed with open positions (%.2fx -> %.2fx; flatten first or restart after close)",
 				sc.ID, sc.Leverage, ns.Leverage))
+		}
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && !reflect.DeepEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge block changed with open positions (flatten primary and hedge first)", sc.ID))
 		}
 		// #656: direction change with open positions risks orphaning the
 		// existing side or flipping it on the next signal. Block until flat;
@@ -838,6 +852,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
 	return sc
 }
@@ -851,6 +866,14 @@ func scaleInConfigEqual(a, b *ScaleInConfig) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+func formatHedgeConfig(h *HedgeConfig) string {
+	if h == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("enabled=%t symbol=%s side=%s ratio=%g platform=%s type=%s margin=%s leverage=%g",
+		h.Enabled, h.Symbol, h.Side, h.Ratio, h.Platform, h.Type, h.MarginMode, h.Leverage)
 }
 
 func floatPtrEqual(a, b *float64) bool {

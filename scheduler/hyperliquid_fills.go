@@ -444,6 +444,23 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		// (full external close, on-chain ≈ 0) and Detector 2 (partial close
 		// where on-chain residual ≠ virtual).
 		mismatched := !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9
+		// #1159: hedge legs have no protection OIDs, so prefetch their
+		// coin+size lookup whenever the virtual hedge and on-chain hedge
+		// quantities diverge. This must run even when the primary itself is
+		// unchanged; the companion reconciler is an independent state path.
+		if hedgeEnabled(sc) && sc.Platform == "hyperliquid" && sc.Type == "perps" {
+			hCoin := hedgeCoin(sc)
+			if hCoin != "" {
+				hPos := ss.Positions[hCoin]
+				hOnChain, hPresent := onChainByCoin[hCoin]
+				if hPos != nil && hPos.Quantity > 0 && (!hPresent || math.Abs(math.Abs(hOnChain)-hPos.Quantity) > 1e-9) {
+					addCandidate(hCoin, 0, hPos.Quantity)
+					if hPresent && math.Abs(hOnChain) > 0 && math.Abs(hOnChain) < hPos.Quantity-1e-9 {
+						addCandidate(hCoin, 0, hPos.Quantity-math.Abs(hOnChain))
+					}
+				}
+			}
+		}
 		if !mismatched {
 			continue
 		}

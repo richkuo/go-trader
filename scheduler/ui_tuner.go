@@ -37,6 +37,7 @@ type UIStrategyConfigResponse struct {
 	AllowedRegimes       []string               `json:"allowed_regimes,omitempty"`
 	StopLossPct          *float64               `json:"stop_loss_pct,omitempty"`
 	StopLossATRMult      *float64               `json:"stop_loss_atr_mult,omitempty"`
+	Hedge                *HedgeConfig           `json:"hedge,omitempty"`
 	Paused               bool                   `json:"paused"`
 	NotifyRatchet        *bool                  `json:"notify_ratchet_triggers"`
 	DefaultParams        map[string]interface{} `json:"default_params"`
@@ -382,6 +383,7 @@ func buildUIStrategyConfig(sc StrategyConfig, defaults map[string]interface{}, _
 		AllowedRegimes:       append([]string(nil), sc.AllowedRegimes...),
 		StopLossPct:          sc.StopLossPct,
 		StopLossATRMult:      sc.StopLossATRMult,
+		Hedge:                cloneHedgeConfig(sc.Hedge),
 		Paused:               sc.Paused,
 		NotifyRatchet:        sc.NotifyRatchetTriggers,
 		DefaultParams:        defaults,
