@@ -533,6 +533,20 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: also index the correlated hedge leg so its on-chain uPnL and
+		// funding events attribute to the owning strategy instead of being
+		// classified as an orphan coin (which would raise phantom drift alerts).
+		// Hedge coins are HL-only; the switch above already scoped posKey.
+		if key.Platform == "hyperliquid" && sc.HedgeEnabled() {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hp, hok := ss.Positions[hc]; hok && hp != nil && hp.HedgeFor != "" && hp.Quantity > 0 {
+					if virtualQty[hc] == nil {
+						virtualQty[hc] = make(map[string]float64)
+					}
+					virtualQty[hc][id] = hp.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

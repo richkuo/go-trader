@@ -350,6 +350,18 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
+		// #1159: hedge block is hot-reloadable when flat (the state-compat gate
+		// blocks any change while a hedge leg is open). A struct copy is safe —
+		// HedgeConfig has only value fields.
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: shape updated", sc.ID)
+			if ns.Hedge != nil {
+				clone := *ns.Hedge
+				sc.Hedge = &clone
+			} else {
+				sc.Hedge = nil
+			}
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -545,6 +557,11 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		errs = append(errs, msg)
 	}
 
+	// #1159: re-run hedge validation + collision matrix on the new config.
+	for _, msg := range hyperliquidHedgeConfigErrors(next.Strategies) {
+		errs = append(errs, msg)
+	}
+
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))
@@ -617,6 +634,16 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+		}
+		// #1159: the hedge block is a state-shifting config surface. Changing it
+		// while a hedge leg is open (or while the primary is open and would mint
+		// one) could strand or double-manage an on-chain hedge — block it, exactly
+		// like the stop-owner fields. strategyHasOpenPositions counts the hedge leg
+		// too (same Positions map), so a residual hedge with the primary already
+		// flat still blocks the edit until it clears.
+		if sc.Type == "perps" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) && !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge shape changed with open positions (flatten first or restart after close)",
+				sc.ID))
 		}
 		// #1268: switching between risk-per-trade and notional sizing while a
 		// position is open changes what the NEXT flip/re-entry sizing means
@@ -838,6 +865,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks change while a hedge leg is open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
 	return sc
 }
@@ -847,6 +875,17 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 // only by pointer presence so a bare allow_scale_in toggle is caught by the
 // AllowScaleIn comparison, not here.
 func scaleInConfigEqual(a, b *ScaleInConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// hedgeConfigEqual reports whether two hedge blocks are identical for hot-reload
+// purposes (#1159). Pointer presence is significant (nil vs a zero-value block
+// differ), mirroring scaleInConfigEqual. Safe with *a == *b because HedgeConfig
+// is all value fields.
+func hedgeConfigEqual(a, b *HedgeConfig) bool {
 	if a == nil || b == nil {
 		return a == b
 	}

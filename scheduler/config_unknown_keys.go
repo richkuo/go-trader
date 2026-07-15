@@ -13,6 +13,12 @@ import (
 // (e.g. `take_profit_atr_mult`) instead of silently dropping invented fields
 // that would otherwise produce a config that looks correct but is missing the
 // requested protection (#704).
+// knownHedgeConfigKeys returns the accepted JSON keys of the nested hedge block
+// (#1159), derived reflectively so the set stays in sync with HedgeConfig.
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownStrategyConfigKeys() map[string]bool {
 	known := knownJSONKeys(reflect.TypeOf(StrategyConfig{}))
 	// #842: close_strategies (array) was collapsed to the single close_strategy
@@ -107,6 +113,25 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+		// #1159: the hedge sub-block is a nested object; a typo'd leaf key
+		// (e.g. "ration") would otherwise be silently dropped and default. Fail
+		// it loudly like the user_defaults tree does.
+		if rawHedge, ok := s["hedge"]; ok {
+			var hedge map[string]json.RawMessage
+			if err := json.Unmarshal(rawHedge, &hedge); err == nil && hedge != nil {
+				hedgeKnown := knownHedgeConfigKeys()
+				hkeys := make([]string, 0, len(hedge))
+				for k := range hedge {
+					if !hedgeKnown[k] {
+						hkeys = append(hkeys, k)
+					}
+				}
+				sort.Strings(hkeys)
+				for _, k := range hkeys {
+					errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
+				}
+			}
 		}
 	}
 	return errs
