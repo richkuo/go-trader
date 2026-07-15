@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -165,13 +166,108 @@ func TestPlanKillSwitchClose_ClosesPersistedHedgeCoinOnlyWhenHeld(t *testing.T) 
 	positions := []HLPosition{{Coin: "BTC", Size: -0.02, EntryPrice: 100000}, {Coin: "ETH", Size: 1, EntryPrice: 3000}}
 	closer, calls := stubHLLiveCloser(nil)
 	inputs := defaultHLInputs("0xaddr", true, positions, hlLive, "portfolio drawdown", time.Second, closer, nil)
-	inputs.HLHedgeCoins = map[string]bool{"BTC": true}
+	inputs.HLHedgePrimaryCoins = map[string]string{"BTC": "ETH"}
 	plan := planKillSwitchClose(inputs)
 	if !plan.OnChainConfirmedFlat {
 		t.Fatalf("expected confirmed flat plan, got %+v", plan)
 	}
 	if len(*calls) != 2 || (*calls)[0] != "ETH" || (*calls)[1] != "BTC" {
 		t.Fatalf("close calls = %v, want [ETH BTC]", *calls)
+	}
+}
+
+func TestPlanKillSwitchClose_DefersHedgeWhenPrimaryCloseFails(t *testing.T) {
+	hlLive := []StrategyConfig{{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "ETH", "1h", "--mode=live"}}}
+	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000}, {Coin: "BTC", Size: -0.02, EntryPrice: 100000}}
+	closer, calls := stubHLLiveCloser(map[string]error{"ETH": errors.New("rate limited")})
+	inputs := defaultHLInputs("0xaddr", true, positions, hlLive, "portfolio drawdown", time.Second, closer, nil)
+	inputs.HLHedgePrimaryCoins = map[string]string{"BTC": "ETH"}
+
+	plan := planKillSwitchClose(inputs)
+	if plan.OnChainConfirmedFlat {
+		t.Fatalf("primary close error must keep kill switch latched: %+v", plan)
+	}
+	if got := strings.Join(*calls, ","); got != "ETH" {
+		t.Fatalf("hedge must not close after primary error; calls=%s", got)
+	}
+	if _, ok := plan.CloseReport.Errors["ETH"]; !ok {
+		t.Fatalf("primary error missing from report: %+v", plan.CloseReport)
+	}
+	if _, ok := plan.CloseReport.Errors["BTC"]; !ok {
+		t.Fatalf("deferred hedge missing from report: %+v", plan.CloseReport)
+	}
+}
+
+func TestPlanKillSwitchClose_DefersHedgeAfterPartialPrimaryFill(t *testing.T) {
+	hlLive := []StrategyConfig{{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "ETH", "1h", "--mode=live"}}}
+	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000}, {Coin: "BTC", Size: -0.02, EntryPrice: 100000}}
+	var calls []string
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, symbol)
+		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: symbol, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000}}, Platform: "hyperliquid"}, nil
+	}
+	inputs := defaultHLInputs("0xaddr", true, positions, hlLive, "portfolio drawdown", time.Second, closer, nil)
+	inputs.HLHedgePrimaryCoins = map[string]string{"BTC": "ETH"}
+
+	plan := planKillSwitchClose(inputs)
+	if plan.OnChainConfirmedFlat {
+		t.Fatalf("partial primary fill must keep kill switch latched: %+v", plan)
+	}
+	if got := strings.Join(calls, ","); got != "ETH" {
+		t.Fatalf("hedge must not close after primary partial fill; calls=%s", got)
+	}
+	if _, ok := plan.CloseReport.Errors["ETH"]; !ok {
+		t.Fatalf("partial primary missing from report: %+v", plan.CloseReport)
+	}
+	if _, ok := plan.CloseReport.Errors["BTC"]; !ok {
+		t.Fatalf("deferred hedge missing from report: %+v", plan.CloseReport)
+	}
+}
+
+func TestPlanKillSwitchClose_RetriesFailedHedgeAfterPrimaryConfirmedFlat(t *testing.T) {
+	hlLive := []StrategyConfig{{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "ETH", "1h", "--mode=live"}}}
+	positions := []HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000}, {Coin: "BTC", Size: -0.02, EntryPrice: 100000}}
+	closer, calls := stubHLLiveCloser(map[string]error{"BTC": errors.New("rate limited")})
+	inputs := defaultHLInputs("0xaddr", true, positions, hlLive, "portfolio drawdown", time.Second, closer, nil)
+	inputs.HLHedgePrimaryCoins = map[string]string{"BTC": "ETH"}
+
+	plan := planKillSwitchClose(inputs)
+	if plan.OnChainConfirmedFlat {
+		t.Fatalf("hedge close error must keep kill switch latched: %+v", plan)
+	}
+	if got := strings.Join(*calls, ","); got != "ETH,BTC" {
+		t.Fatalf("confirmed primary must permit its hedge close; calls=%s", got)
+	}
+	if got := plan.CloseReport.ClosedCoins; len(got) != 1 || got[0] != "ETH" {
+		t.Fatalf("primary must remain confirmed closed while hedge retries: %v", got)
+	}
+}
+
+func TestPlanKillSwitchClose_CouplesEachHedgeToItsOwnPrimary(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-sol", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "SOL", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 1, EntryPrice: 3000}, {Coin: "BTC", Size: -0.02, EntryPrice: 100000},
+		{Coin: "SOL", Size: 1, EntryPrice: 100}, {Coin: "AVAX", Size: -0.5, EntryPrice: 20},
+	}
+	closer, calls := stubHLLiveCloser(map[string]error{"ETH": errors.New("rate limited")})
+	inputs := defaultHLInputs("0xaddr", true, positions, hlLive, "portfolio drawdown", time.Second, closer, nil)
+	inputs.HLHedgePrimaryCoins = map[string]string{"BTC": "ETH", "AVAX": "SOL"}
+
+	plan := planKillSwitchClose(inputs)
+	if plan.OnChainConfirmedFlat {
+		t.Fatalf("one primary failure must keep the plan latched: %+v", plan)
+	}
+	if got := strings.Join(*calls, ","); got != "ETH,SOL,AVAX" {
+		t.Fatalf("only the successful pair may close; calls=%s", got)
+	}
+	if _, ok := plan.CloseReport.Errors["BTC"]; !ok {
+		t.Fatalf("failed primary's hedge must remain deferred: %+v", plan.CloseReport)
+	}
+	if got := strings.Join(plan.CloseReport.ClosedCoins, ","); got != "SOL,AVAX" {
+		t.Fatalf("successful primary/hedge pair should close together; closed=%s", got)
 	}
 }
 

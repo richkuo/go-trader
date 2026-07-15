@@ -140,6 +140,59 @@ func TestRunHedgeSyncFreezesRestartMismatchedPersistedHedge(t *testing.T) {
 	}
 }
 
+func TestRunHedgeCoherenceSweep_DisabledPersistedLegClosesAfterPrimaryFlat(t *testing.T) {
+	sc := StrategyConfig{ID: "eth-alpha", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h"}, Hedge: &HedgeConfig{Enabled: false, Symbol: "BTC"}}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		sc.ID: {ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 1000, Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.02, InitialQuantity: 0.02, AvgCost: 100000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+		}},
+	}}
+	var mu sync.RWMutex
+	runHedgeCoherenceSweep(state, []StrategyConfig{sc}, map[string]float64{"BTC": 100000}, nil, &mu, nil, nil)
+	if got := state.Strategies[sc.ID].Positions["BTC"]; got != nil {
+		t.Fatalf("disabled persisted hedge remained after primary flat: %#v", got)
+	}
+	if got := state.Strategies[sc.ID].TradeHistory; len(got) != 1 || got[0].TradeType != "hedge" {
+		t.Fatalf("close must be recorded as a hedge trade: %#v", got)
+	}
+}
+
+func TestRunHedgeCoherenceSweep_DisabledPersistedLegStaysWithOpenPrimary(t *testing.T) {
+	sc := StrategyConfig{ID: "eth-alpha", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h"}, Hedge: &HedgeConfig{Enabled: false, Symbol: "BTC"}}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		sc.ID: {ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 1000, Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1},
+			"BTC": {Symbol: "BTC", Quantity: 0.02, AvgCost: 100000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+		}},
+	}}
+	var mu sync.RWMutex
+	runHedgeCoherenceSweep(state, []StrategyConfig{sc}, map[string]float64{"ETH": 3000, "BTC": 100000}, nil, &mu, nil, nil)
+	if got := state.Strategies[sc.ID].Positions["BTC"]; got == nil || got.Quantity != 0.02 {
+		t.Fatalf("disabled persisted hedge must remain while primary is open: %#v", got)
+	}
+	if got := state.Strategies[sc.ID].TradeHistory; len(got) != 0 {
+		t.Fatalf("frozen hedge must not generate close/open churn: %#v", got)
+	}
+}
+
+func TestRunHedgeCoherenceSweep_ReenabledPersistedLegDoesNotDuplicate(t *testing.T) {
+	sc := StrategyConfig{ID: "eth-alpha", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h"}, Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1}}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		sc.ID: {ID: sc.ID, Type: sc.Type, Platform: sc.Platform, Cash: 1000, Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1},
+			"BTC": {Symbol: "BTC", Quantity: 0.03, AvgCost: 100000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+		}},
+	}}
+	var mu sync.RWMutex
+	runHedgeCoherenceSweep(state, []StrategyConfig{sc}, map[string]float64{"ETH": 3000, "BTC": 100000}, nil, &mu, nil, nil)
+	if got := state.Strategies[sc.ID].Positions["BTC"]; got == nil || got.Quantity != 0.03 {
+		t.Fatalf("re-enabled hedge state changed unexpectedly: %#v", got)
+	}
+	if got := state.Strategies[sc.ID].TradeHistory; len(got) != 0 {
+		t.Fatalf("re-enabled matching hedge must not duplicate: %#v", got)
+	}
+}
+
 func TestValidateHedgeConfigsRejectsAmbiguousCoinOwnership(t *testing.T) {
 	strategies := []StrategyConfig{
 		{ID: "eth", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH"}, Hedge: &HedgeConfig{Enabled: true, Symbol: "btc/usdc:usdc"}},

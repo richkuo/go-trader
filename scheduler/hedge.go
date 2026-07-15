@@ -197,9 +197,9 @@ func hedgeOrderSkipReason(action hedgeAction, snap hedgeSnapshot) string {
 
 // validateHedgeStateConsistency catches config edits followed by a process
 // restart, which bypass the SIGHUP state-compatibility gate. It is deliberately
-// non-destructive: the persisted leg remains visible for reconciliation, but
-// hedge sync will not place a new order until the operator restores a matching
-// configuration or flattens the pair.
+// non-destructive: the persisted leg remains visible for reconciliation and is
+// frozen from resizing, but its exit lifecycle remains coupled so it closes
+// after a confirmed-flat primary.
 func validateHedgeStateConsistency(state *AppState, cfg *Config) []string {
 	if state == nil || cfg == nil {
 		return nil
@@ -228,11 +228,11 @@ func validateHedgeStateConsistency(state *AppState, cfg *Config) []string {
 			pos := ss.Positions[coin]
 			switch {
 			case !configured || !HedgeEnabled(sc):
-				warnings = append(warnings, fmt.Sprintf("hedge state mismatch: strategy %s holds hedge %s for %s but no enabled matching hedge config exists; leaving the leg frozen", id, coin, pos.HedgeFor))
+				warnings = append(warnings, fmt.Sprintf("hedge state mismatch: strategy %s holds hedge %s for %s but no enabled matching hedge config exists; freezing rebalancing while retaining the leg's exit lifecycle", id, coin, pos.HedgeFor))
 			case pos.HedgeFor != hyperliquidConfiguredCoin(sc):
-				warnings = append(warnings, fmt.Sprintf("hedge state mismatch: strategy %s hedge %s belongs to primary %s, config primary is %s; leaving the leg frozen", id, coin, pos.HedgeFor, hyperliquidConfiguredCoin(sc)))
+				warnings = append(warnings, fmt.Sprintf("hedge state mismatch: strategy %s hedge %s belongs to primary %s, config primary is %s; freezing rebalancing while retaining the leg's exit lifecycle", id, coin, pos.HedgeFor, hyperliquidConfiguredCoin(sc)))
 			case coin != hedgeCoin(sc):
-				warnings = append(warnings, fmt.Sprintf("hedge state mismatch: strategy %s holds hedge %s but config declares %s; leaving the leg frozen", id, coin, hedgeCoin(sc)))
+				warnings = append(warnings, fmt.Sprintf("hedge state mismatch: strategy %s holds hedge %s but config declares %s; freezing rebalancing while retaining the leg's exit lifecycle", id, coin, hedgeCoin(sc)))
 			}
 		}
 	}
@@ -243,6 +243,38 @@ type hedgeSyncResult struct {
 	Trades  int
 	Detail  string
 	Changed bool
+}
+
+type frozenPersistedHedgeLeg struct {
+	Coin    string
+	Primary string
+}
+
+// frozenPersistedHedgeLegs returns held hedge legs that do not match the
+// currently enabled hedge block. A restart can bypass the flat-only SIGHUP
+// guard, so these legs are frozen from rebalancing but must remain coupled to
+// their persisted primary until both are flat.
+func frozenPersistedHedgeLegs(s *StrategyState, sc StrategyConfig, primary, configuredHedge string) []frozenPersistedHedgeLeg {
+	if s == nil {
+		return nil
+	}
+	var legs []frozenPersistedHedgeLeg
+	for coin, pos := range s.Positions {
+		if pos == nil || pos.HedgeFor == "" || pos.Quantity <= hedgeQtyEpsilon {
+			continue
+		}
+		if HedgeEnabled(sc) && pos.HedgeFor == primary && coin == configuredHedge {
+			continue // normal hedge sync owns the matching configured leg
+		}
+		legs = append(legs, frozenPersistedHedgeLeg{Coin: coin, Primary: pos.HedgeFor})
+	}
+	sort.Slice(legs, func(i, j int) bool {
+		if legs[i].Primary != legs[j].Primary {
+			return legs[i].Primary < legs[j].Primary
+		}
+		return legs[i].Coin < legs[j].Coin
+	})
+	return legs
 }
 
 // runHedgeCoherenceSweep is the post-reconcile safety pass. It runs even for
@@ -257,32 +289,98 @@ func runHedgeCoherenceSweep(state *AppState, strategies []StrategyConfig, prices
 	}
 	ordered := make([]StrategyConfig, 0)
 	for _, sc := range strategies {
-		if sc.Type == "perps" && sc.Platform == "hyperliquid" && HedgeEnabled(sc) {
+		// Include disabled/mismatched configurations too. Their persisted
+		// hedge legs are frozen from resizing, but must still close after the
+		// primary is flat rather than becoming unmanaged forever.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 			ordered = append(ordered, sc)
 		}
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	for _, sc := range ordered {
 		primary, hedge := hyperliquidConfiguredCoin(sc), hedgeCoin(sc)
-		if primary == "" || hedge == "" {
-			continue
-		}
 		mu.RLock()
 		ss := state.Strategies[sc.ID]
-		hasLeg := ss != nil && (ss.Positions[primary] != nil || ss.Positions[hedge] != nil)
+		hasConfiguredLeg := HedgeEnabled(sc) && primary != "" && hedge != "" && ss != nil && (ss.Positions[primary] != nil || ss.Positions[hedge] != nil)
+		frozen := frozenPersistedHedgeLegs(ss, sc, primary, hedge)
 		mu.RUnlock()
-		if !hasLeg {
+		if !hasConfiguredLeg && len(frozen) == 0 {
 			continue
 		}
 		var logger *StrategyLogger
 		if logMgr != nil {
 			logger, _ = logMgr.GetStrategyLogger(sc.ID)
 		}
-		result := runHedgeSync(sc, ss, primary, prices[primary], prices[hedge], hyperliquidIsLive(sc.Args), hlExecuteSnapshotForCoin(hlPositions, hedge), mu, notifier, logger, false)
-		if result.Detail != "" {
-			fmt.Println(result.Detail)
+		if hasConfiguredLeg {
+			result := runHedgeSync(sc, ss, primary, prices[primary], prices[hedge], hyperliquidIsLive(sc.Args), hlExecuteSnapshotForCoin(hlPositions, hedge), mu, notifier, logger, false)
+			if result.Detail != "" {
+				fmt.Println(result.Detail)
+			}
+		}
+		for _, leg := range frozen {
+			result := runFrozenPersistedHedgeLeg(sc, ss, leg, prices[leg.Coin], hyperliquidIsLive(sc.Args), hlExecuteSnapshotForCoin(hlPositions, leg.Coin), mu, notifier, logger)
+			if result.Detail != "" {
+				fmt.Println(result.Detail)
+			}
 		}
 	}
+}
+
+// runFrozenPersistedHedgeLeg preserves a restart-mismatched hedge's exit
+// lifecycle. It never opens, adds, or rebalances a frozen leg. If its primary
+// is still open it emits a recurring CRITICAL alert; if the configured primary
+// is flat it closes the persisted hedge using the ordinary confirmed-fill
+// path. A changed primary identity is not safe to infer from state, so it is
+// surfaced rather than closed speculatively.
+func runFrozenPersistedHedgeLeg(sc StrategyConfig, s *StrategyState, leg frozenPersistedHedgeLeg, hedgePx float64, live bool, walletSnapshot hlExecuteSnapshot, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) hedgeSyncResult {
+	configuredPrimary := hyperliquidConfiguredCoin(sc)
+	if configuredPrimary == "" || leg.Primary != configuredPrimary {
+		hedgeSyncCritical(notifier, logger, sc.ID, fmt.Sprintf("persisted hedge %s belongs to primary %s but config primary is %s; preserving the frozen leg because its primary cannot be safely proven flat", leg.Coin, leg.Primary, configuredPrimary))
+		return hedgeSyncResult{}
+	}
+
+	mu.RLock()
+	primary := s.Positions[leg.Primary]
+	primaryOpen := primary != nil && primary.HedgeFor == "" && primary.Quantity > hedgeQtyEpsilon
+	ambiguousPrimary := primary != nil && primary.HedgeFor != "" && primary.Quantity > hedgeQtyEpsilon
+	mu.RUnlock()
+	if primaryOpen {
+		hedgeSyncCritical(notifier, logger, sc.ID, fmt.Sprintf("persisted hedge %s for %s has no enabled matching hedge config; keeping it frozen while the primary remains open", leg.Coin, leg.Primary))
+		return hedgeSyncResult{}
+	}
+	if ambiguousPrimary {
+		hedgeSyncCritical(notifier, logger, sc.ID, fmt.Sprintf("persisted hedge %s for %s cannot close: primary symbol is itself marked as a hedge", leg.Coin, leg.Primary))
+		return hedgeSyncResult{}
+	}
+	return closePersistedHedgeWhenPrimaryFlat(sc, s, leg.Primary, leg.Coin, hedgePx, live, walletSnapshot, mu, notifier, logger)
+}
+
+// closePersistedHedgeWhenPrimaryFlat closes an otherwise-frozen hedge only
+// after the current state confirms its primary is flat. The live action
+// rechecks that same predicate immediately before submitting the order.
+func closePersistedHedgeWhenPrimaryFlat(sc StrategyConfig, s *StrategyState, primarySymbol, coin string, hedgePx float64, live bool, walletSnapshot hlExecuteSnapshot, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) hedgeSyncResult {
+	if s == nil || mu == nil {
+		return hedgeSyncResult{}
+	}
+	mu.RLock()
+	primary := s.Positions[primarySymbol]
+	hedge := s.Positions[coin]
+	if (primary != nil && primary.Quantity > hedgeQtyEpsilon) || hedge == nil || hedge.HedgeFor != primarySymbol || hedge.Quantity <= hedgeQtyEpsilon {
+		mu.RUnlock()
+		return hedgeSyncResult{}
+	}
+	snap := hedgeSnapshot{HedgeQty: hedge.Quantity, HedgeSide: hedge.Side, HedgeCost: hedge.AvgCost, HedgeBasis: hedge.HedgePrimaryQtyBasis}
+	mu.RUnlock()
+
+	action := hedgeAction{Kind: hedgeActionCloseFull, Qty: snap.HedgeQty, Side: snap.HedgeSide, Reason: "persisted primary is flat"}
+	if reason := hedgeOrderSkipReason(action, snap); reason != "" {
+		hedgeSyncCritical(notifier, logger, sc.ID, fmt.Sprintf("persisted hedge %s close skipped: %s", coin, reason))
+		return hedgeSyncResult{}
+	}
+	if live {
+		return runLiveHedgeAction(sc, s, primarySymbol, coin, action, snap, walletSnapshot, mu, notifier, logger, false, true)
+	}
+	return applyPaperHedgeAction(sc, s, primarySymbol, coin, action, snap, hedgePx, mu, notifier, logger, false)
 }
 
 // runHedgeSync converges one persisted primary/hedge pair. It follows the
@@ -381,7 +479,7 @@ func runHedgeSync(
 	}
 
 	if live {
-		return runLiveHedgeAction(sc, s, primarySymbol, coin, action, snap, walletSnapshot, mu, notifier, logger, freshPrimaryOpen)
+		return runLiveHedgeAction(sc, s, primarySymbol, coin, action, snap, walletSnapshot, mu, notifier, logger, freshPrimaryOpen, false)
 	}
 	return applyPaperHedgeAction(sc, s, primarySymbol, coin, action, snap, hedgePx, mu, notifier, logger, freshPrimaryOpen)
 }
@@ -410,7 +508,7 @@ func hedgeSyncCritical(notifier *MultiNotifier, logger *StrategyLogger, strategy
 	}
 }
 
-func runLiveHedgeAction(sc StrategyConfig, s *StrategyState, primarySymbol, coin string, action hedgeAction, snap hedgeSnapshot, walletSnapshot hlExecuteSnapshot, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger, freshPrimaryOpen bool) hedgeSyncResult {
+func runLiveHedgeAction(sc StrategyConfig, s *StrategyState, primarySymbol, coin string, action hedgeAction, snap hedgeSnapshot, walletSnapshot hlExecuteSnapshot, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger, freshPrimaryOpen, requirePrimaryFlat bool) hedgeSyncResult {
 	// Re-check the exact state used to size the order immediately before the
 	// subprocess. A signal, reconciliation, or manual action can update the
 	// pair between runHedgeSync's initial snapshot and this point.
@@ -429,6 +527,10 @@ func runLiveHedgeAction(sc StrategyConfig, s *StrategyState, primarySymbol, coin
 			reason = "primary or hedge state changed after sizing"
 		}
 		hedgeSyncCritical(notifier, logger, sc.ID, fmt.Sprintf("hedge %s %s skipped: %s", action.Kind, coin, reason))
+		return hedgeSyncResult{}
+	}
+	if requirePrimaryFlat && current.PrimaryQty > hedgeQtyEpsilon {
+		hedgeSyncCritical(notifier, logger, sc.ID, fmt.Sprintf("persisted hedge %s close skipped: primary %s reopened before submit", coin, primarySymbol))
 		return hedgeSyncResult{}
 	}
 

@@ -862,14 +862,12 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
 			changed = true
 		}
-		// #1159: the hedge coin is owned only by the persisted hedge Position;
-		// never infer/adopt it from config. When present, reconcile it through
-		// the same fee/VWAP path as a sole-owner primary leg.
-		if hedge := hedgeCoin(sc); hedge != "" {
-			if hedgePos := ss.Positions[hedge]; hedgePos != nil && hedgePos.HedgeFor != "" {
-				if reconcileHyperliquidPositionsForStrategy(sc, ss, hedge, positions, resolveFee, logger, nil, nil) {
-					changed = true
-				}
+		// #1159: hedge ownership is persisted state, not today's config. A
+		// disabled/restarted config may freeze rebalancing, but reconciliation
+		// must still observe its leg so an external flat is not left stale.
+		for _, hedge := range persistedHedgeSymbolsForPrimary(ss, sym) {
+			if reconcileHyperliquidPositionsForStrategy(sc, ss, hedge, positions, resolveFee, logger, nil, nil) {
+				changed = true
 			}
 		}
 	}
@@ -1886,10 +1884,10 @@ func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, reso
 // partition via mutually-exclusive control flow.
 //
 // Errors is the load-bearing kill-switch correctness signal: only when it's
-// empty does the caller mutate virtual state. Any error keeps the kill
-// switch latched so the next cycle re-fetches on-chain state and retries
-// (#341). Use ConfirmedFlat() rather than `len(Errors) == 0` at call sites
-// so future readers see the predicate spelled out.
+// empty does the caller mutate virtual state. Any close error or partial fill
+// keeps the kill switch latched so the next cycle re-fetches on-chain state
+// and retries (#341). Use ConfirmedFlat() rather than `len(Errors) == 0` at
+// call sites so future readers see the predicate spelled out.
 type HyperliquidLiveCloseReport struct {
 	ClosedCoins []string
 	// Fills carries the real exchange fill for coins in ClosedCoins when the
@@ -1929,6 +1927,62 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 	return coins
 }
 
+// closeHyperliquidKillSwitchCoin submits one reduce-only close and records a
+// terminal outcome. A successful subprocess is insufficient: the reported
+// fill must cover the on-chain position that this cycle observed. That
+// confirmation is what lets a coupled hedge close without creating a naked
+// primary during a kill-switch event.
+func closeHyperliquidKillSwitchCoin(ctx context.Context, report *HyperliquidLiveCloseReport, p HLPosition, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) bool {
+	if p.Size == 0 {
+		report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
+		return true
+	}
+	if err := ctx.Err(); err != nil {
+		report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
+		return false
+	}
+	var slOIDs []int64
+	if stopLossOIDsByCoin != nil {
+		slOIDs = stopLossOIDsByCoin[p.Coin]
+	}
+	result, err := closer(p.Coin, nil, slOIDs)
+	if err != nil {
+		report.Errors[p.Coin] = err
+		return false
+	}
+	if result == nil {
+		report.Errors[p.Coin] = fmt.Errorf("close returned no result")
+		return false
+	}
+	if result.Error != "" {
+		report.Errors[p.Coin] = fmt.Errorf("close returned error: %s", result.Error)
+		return false
+	}
+	if result.Close == nil {
+		report.Errors[p.Coin] = fmt.Errorf("close returned no close result")
+		return false
+	}
+	// Adapter-side AlreadyFlat is terminal: its own pre-submit position check
+	// found no exposure despite the earlier Go-side snapshot.
+	if result.Close.AlreadyFlat {
+		report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
+		return true
+	}
+	fill := result.Close.Fill
+	if fill == nil || math.Abs(fill.TotalSz) <= hedgeQtyEpsilon {
+		report.Errors[p.Coin] = fmt.Errorf("close lacked a confirmed fill")
+		return false
+	}
+	want := math.Abs(p.Size)
+	if math.Abs(fill.TotalSz) < want*0.99 {
+		report.Errors[p.Coin] = fmt.Errorf("partial close %.6f/%.6f", math.Abs(fill.TotalSz), want)
+		return false
+	}
+	report.Fills[p.Coin] = *fill
+	report.ClosedCoins = append(report.ClosedCoins, p.Coin)
+	return true
+}
+
 // forceCloseHyperliquidLive submits reduce-only market closes for every
 // non-zero on-chain HL position belonging to a coin a configured live HL
 // strategy trades on this account. Closes the on-chain quantity directly,
@@ -1959,7 +2013,7 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 // should be cancelled before the close fires, so kill-switch flattening
 // doesn't leave orphan triggers consuming HL's open-order cap (#421, #479).
 // nil/empty disables the cancel; the closer is otherwise unchanged.
-func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64, heldHedgeCoins ...map[string]bool) HyperliquidLiveCloseReport {
+func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64, hedgePrimaryByCoin ...map[string]string) HyperliquidLiveCloseReport {
 	report := HyperliquidLiveCloseReport{
 		Fills:  make(map[string]HyperliquidCloseFill),
 		Errors: make(map[string]error),
@@ -1975,62 +2029,54 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 		}
 	}
 	hedgeOrder := make([]string, 0)
-	if len(heldHedgeCoins) > 0 {
-		for coin, held := range heldHedgeCoins[0] {
-			if held && !tradedCoins[coin] {
+	hedgePrimary := make(map[string]string)
+	if len(hedgePrimaryByCoin) > 0 {
+		for coin, primary := range hedgePrimaryByCoin[0] {
+			if coin != "" && !tradedCoins[coin] {
 				tradedCoins[coin] = true
 				hedgeOrder = append(hedgeOrder, coin)
+				hedgePrimary[coin] = primary
 			}
 		}
 	}
 	sort.Strings(hedgeOrder)
-	// A coupled hedge is closed only after every primary close has been
-	// submitted. The exchange may return its clearinghouse positions in an
-	// arbitrary order, so never use that response order for this sequence.
-	tradedOrder := append(primaryOrder, hedgeOrder...)
 	positionsByCoin := make(map[string]HLPosition, len(positions))
 	for _, p := range positions {
 		positionsByCoin[p.Coin] = p
 	}
 
-	for _, coin := range tradedOrder {
+	// Close every primary before considering a hedge. A hedge becomes eligible
+	// only when its exact persisted primary has a terminal result from this
+	// cycle (or was absent from the on-chain snapshot already).
+	primaryConfirmed := make(map[string]bool, len(primaryOrder))
+	for _, coin := range primaryOrder {
 		p, ok := positionsByCoin[coin]
 		if !ok {
+			primaryConfirmed[coin] = true
 			continue
 		}
-		if p.Size == 0 {
-			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
+		primaryConfirmed[coin] = closeHyperliquidKillSwitchCoin(ctx, &report, p, closer, stopLossOIDsByCoin)
+	}
+	for _, coin := range hedgeOrder {
+		p, ok := positionsByCoin[coin]
+		if !ok {
+			continue // persisted hedge was already flat on-chain
+		}
+		primary := hedgePrimary[coin]
+		if primary == "" {
+			report.Errors[coin] = fmt.Errorf("deferred hedge close: persisted primary ownership is ambiguous")
 			continue
 		}
-		// Bail out before submitting if the overall budget expired so we
-		// don't queue another N×30s of subprocess time on top of a deadline
-		// the scheduler has already missed.
-		if err := ctx.Err(); err != nil {
-			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
+		confirmed, known := primaryConfirmed[primary]
+		if !known {
+			primaryPos, exists := positionsByCoin[primary]
+			confirmed = !exists || primaryPos.Size == 0
+		}
+		if !confirmed {
+			report.Errors[coin] = fmt.Errorf("deferred coupled hedge close until primary %s is confirmed flat", primary)
 			continue
 		}
-		var slOIDs []int64
-		if stopLossOIDsByCoin != nil {
-			slOIDs = stopLossOIDsByCoin[p.Coin]
-		}
-		result, err := closer(p.Coin, nil, slOIDs)
-		if err != nil {
-			report.Errors[p.Coin] = err
-			continue
-		}
-		// Adapter may report already_flat when its own pre-submit position
-		// check finds nothing to close (eventual-consistency window between
-		// the Go-side fetch and the close submit). Route through AlreadyFlat
-		// so operator messaging accurately distinguishes "we sent a close
-		// order" from "nothing to close" (#350).
-		if result != nil && result.Close != nil && result.Close.AlreadyFlat {
-			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
-			continue
-		}
-		if result != nil && result.Close != nil && result.Close.Fill != nil {
-			report.Fills[p.Coin] = *result.Close.Fill
-		}
-		report.ClosedCoins = append(report.ClosedCoins, p.Coin)
+		closeHyperliquidKillSwitchCoin(ctx, &report, p, closer, stopLossOIDsByCoin)
 	}
 
 	return report
@@ -2316,8 +2362,11 @@ func runPendingHyperliquidCircuitCloses(
 		}
 		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil && ss.RiskState.CircuitBreaker {
 			primary := hyperliquidConfiguredCoin(sc)
-			primaryPos := ss.Positions[primary]
-			primaryRecoverable := primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1 && primaryPos != nil && primaryPos.Quantity > hedgeQtyEpsilon
+			// Whether recovery is needed depends on the configured sole-owner
+			// primary. The authoritative non-zero quantity is checked after the
+			// clearinghouse snapshot has been fetched below; virtual state can be
+			// stale or absent precisely when this recovery path is needed.
+			primaryRecoverable := primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1
 			// A correlated hedge is never independently recoverable: if this
 			// primary shares a wallet coin, its hedge must remain in place too.
 			if primaryRecoverable {
@@ -2365,7 +2414,7 @@ func runPendingHyperliquidCircuitCloses(
 			}
 			var symbols []PendingCircuitCloseSymbol
 			primary := hyperliquidConfiguredCoin(sc)
-			if primaryPos := ss.Positions[primary]; primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1 && primaryPos != nil && primaryPos.Quantity > hedgeQtyEpsilon {
+			if primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1 {
 				if qty, ok := computeHyperliquidCircuitCloseQty(primary, sc.ID, positions, hlCircuitPeerAll); ok && qty > 0 {
 					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: primary, Size: qty})
 				}

@@ -1408,7 +1408,7 @@ func main() {
 			// early-returns false while KillSwitchActive is true) and retries.
 			var plan KillSwitchClosePlan
 			var hlVirtualQty hlVirtualQuantitySnapshot
-			var hlHeldHedgeCoins map[string]bool
+			var hlHedgePrimaryCoins map[string]string
 			if killSwitchFired {
 				// Snapshot per-coin StopLossOIDs so the kill-switch close
 				// path can cancel resting SLs before flattening, freeing
@@ -1417,7 +1417,7 @@ func main() {
 				// coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
 				hlSLOIDs := map[string][]int64{}
-				hlHeldHedgeCoins = map[string]bool{}
+				hlHedgePrimaryCoins = map[string]string{}
 				mu.RLock()
 				for _, sc := range hlLiveAll {
 					sym := hyperliquidSymbol(sc.Args)
@@ -1432,8 +1432,17 @@ func main() {
 							}
 						}
 						for hedgeCoin, pos := range ss.Positions {
-							if pos != nil && pos.HedgeFor != "" && pos.Quantity > 0 {
-								hlHeldHedgeCoins[hedgeCoin] = true
+							if pos == nil || pos.HedgeFor == "" || pos.Quantity <= hedgeQtyEpsilon {
+								continue
+							}
+							primary := strings.ToUpper(strings.TrimSpace(pos.HedgeFor))
+							if prior, exists := hlHedgePrimaryCoins[hedgeCoin]; !exists {
+								hlHedgePrimaryCoins[hedgeCoin] = primary
+							} else if prior != primary {
+								// A hedge coin with conflicting persisted owners is
+								// ambiguous. Preserve that ambiguity for the close plan,
+								// which safely defers it rather than unhedging either leg.
+								hlHedgePrimaryCoins[hedgeCoin] = ""
 							}
 						}
 					}
@@ -1442,28 +1451,28 @@ func main() {
 				mu.RUnlock()
 
 				inputs := KillSwitchCloseInputs{
-					HLAddr:            hlAddr,
-					HLStateFetched:    hlStateFetched,
-					HLPositions:       hlPositions,
-					HLLiveAll:         hlLiveAll,
-					HLCloser:          defaultHyperliquidLiveCloser,
-					HLFetcher:         defaultHLStateFetcher,
-					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
-					HLStopLossOIDs:    hlSLOIDs,
-					HLHedgeCoins:      hlHeldHedgeCoins,
-					OKXLiveAllPerps:   okxLivePerps,
-					OKXLiveAllSpot:    okxLiveSpot,
-					OKXCloser:         defaultOKXLiveCloser,
-					OKXFetcher:        defaultOKXPositionsFetcher,
-					RHLiveCrypto:      rhLiveCrypto,
-					RHLiveOptions:     rhLiveOptions,
-					RHCloser:          defaultRobinhoodLiveCloser,
-					RHFetcher:         defaultRobinhoodPositionsFetcher,
-					TSLiveAll:         tsLiveAll,
-					TSCloser:          defaultTopStepLiveCloser,
-					TSFetcher:         defaultTopStepPositionsFetcher,
-					PortfolioReason:   portfolioReason,
-					CloseTimeout:      90 * time.Second,
+					HLAddr:              hlAddr,
+					HLStateFetched:      hlStateFetched,
+					HLPositions:         hlPositions,
+					HLLiveAll:           hlLiveAll,
+					HLCloser:            defaultHyperliquidLiveCloser,
+					HLFetcher:           defaultHLStateFetcher,
+					HLNoFillRecoverer:   defaultHLKillSwitchNoFillRecoverer,
+					HLStopLossOIDs:      hlSLOIDs,
+					HLHedgePrimaryCoins: hlHedgePrimaryCoins,
+					OKXLiveAllPerps:     okxLivePerps,
+					OKXLiveAllSpot:      okxLiveSpot,
+					OKXCloser:           defaultOKXLiveCloser,
+					OKXFetcher:          defaultOKXPositionsFetcher,
+					RHLiveCrypto:        rhLiveCrypto,
+					RHLiveOptions:       rhLiveOptions,
+					RHCloser:            defaultRobinhoodLiveCloser,
+					RHFetcher:           defaultRobinhoodPositionsFetcher,
+					TSLiveAll:           tsLiveAll,
+					TSCloser:            defaultTopStepLiveCloser,
+					TSFetcher:           defaultTopStepPositionsFetcher,
+					PortfolioReason:     portfolioReason,
+					CloseTimeout:        90 * time.Second,
 					// Per-platform overrides: each platform gets its own
 					// independent context.WithTimeout so a slow platform
 					// cannot starve the others. Robinhood adds TOTP login
