@@ -184,6 +184,10 @@ func main() {
 		os.Exit(1)
 	}
 	ValidateState(state)
+	if err := validatePersistedHedgeDeclarations(state, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Refusing startup: %v\n", err)
+		os.Exit(1)
+	}
 
 	// #87: Resolve capital_pct at startup so initial state gets the right capital.
 	resolveCapitalPct(cfg.Strategies)
@@ -275,6 +279,7 @@ func main() {
 	// guard (config_reload.go validateHotReloadStateCompatible) can't see.
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
+	hedgeStateDriftWarnings := checkHedgeStateDriftAtStartup(state, cfg)
 
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
@@ -495,6 +500,11 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+	if len(hedgeStateDriftWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateDriftWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1400,6 +1410,7 @@ func main() {
 			// early-returns false while KillSwitchActive is true) and retries.
 			var plan KillSwitchClosePlan
 			var hlVirtualQty hlVirtualQuantitySnapshot
+			var hlOwnedExtraCoins map[string]bool
 			if killSwitchFired {
 				// Snapshot per-coin StopLossOIDs so the kill-switch close
 				// path can cancel resting SLs before flattening, freeing
@@ -1408,14 +1419,18 @@ func main() {
 				// coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
 				hlSLOIDs := map[string][]int64{}
+				hlOwnedExtraCoins = map[string]bool{}
 				mu.RLock()
 				for _, sc := range hlLiveAll {
-					sym := hyperliquidSymbol(sc.Args)
-					if sym == "" {
-						continue
-					}
 					if ss, ok := state.Strategies[sc.ID]; ok && ss != nil {
-						if pos, pok := ss.Positions[sym]; pok && pos != nil {
+						for _, sym := range hyperliquidManagedCoins(sc) {
+							pos, pok := ss.Positions[sym]
+							if !pok || pos == nil {
+								continue
+							}
+							if pos.IsHedge && pos.HedgeForSymbol == hyperliquidPrimaryCoin(sc) && pos.HedgeForPositionID != "" {
+								hlOwnedExtraCoins[sym] = true
+							}
 							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.StopLossOID)
 							for _, tpOID := range pos.TPOIDs {
 								hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], tpOID)
@@ -1435,6 +1450,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLOwnedExtraCoins: hlOwnedExtraCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -1716,6 +1732,11 @@ func main() {
 						hlOnChainAbsQty[p.Coin] = sz
 					}
 				}
+				// #1159: converge already-open hedge pairs before strategy
+				// checks. This repair walk is deliberately close-only: a missing
+				// or under-covered hedge fails the primary closed instead of
+				// guessing that an earlier position-increasing order landed.
+				runHedgeCoherenceSweep(cfg.Strategies, state, prices, hlPositions, &mu, notifier, logMgr)
 
 				// #879: the dispatch loop below is the first regime-store
 				// consumer — wait (bounded by regimeStorePhaseBudget) for the
@@ -1762,6 +1783,7 @@ func main() {
 					var hlCash float64
 					var hlPosQty float64
 					var hlPosSide string
+					var hlTradePositionID string
 					var hlAvgCost float64
 					var hlEntryATR float64
 					var hlPosCtx PositionCtx
@@ -1798,6 +1820,7 @@ func main() {
 								hlPosCtx = positionCtxForCheck(sc, pos, cfg.Regime)
 								hlPosSide = hlPosCtx.Side
 								hlPosQty = hlPosCtx.Quantity
+								hlTradePositionID = pos.TradePositionID
 								hlAvgCost = hlPosCtx.AvgCost
 								hlEntryATR = pos.EntryATR
 								hlStopLossOID = pos.StopLossOID
@@ -2220,6 +2243,14 @@ func main() {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
+							// #1159: a fresh/open-increasing primary order is not safe
+							// without the cycle's clearinghouse snapshot — the scheduler
+							// cannot prove the declared hedge coin is flat/sole-owned.
+							// Reductions still pass so an existing pair can fail closed.
+							if sc.HedgeEnabled() && hyperliquidIsLive(sc.Args) && !hlStateFetched && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Error("Hedge entry blocked: Hyperliquid clearinghouse snapshot unavailable; sole ownership of %s cannot be proven", hedgeCoin(sc))
+								result.Signal = 0
+							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							// #907: update per-strategy divergence state after regime sync.
@@ -2433,6 +2464,11 @@ func main() {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 								}
 								mu.Unlock()
+								mu.RLock()
+								postPrimary := hedgeSnapshotFromState(sc, stratState)
+								mu.RUnlock()
+								primaryEvent := trades > 0 && (postPrimary.PrimaryQty > 0 || hlPosQty > 0) &&
+									(!hedgeQtyNearlyEqual(postPrimary.PrimaryQty, hlPosQty) || postPrimary.PrimarySide != hlPosSide || postPrimary.PrimaryPositionID != hlTradePositionID)
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
 								// for the scale-in branch and when no tier tightened.
@@ -2483,6 +2519,14 @@ func main() {
 									}
 									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
+								}
+								if sc.HedgeEnabled() {
+									if hedgeTrades, hedgeDetail := runHedgeSync(sc, stratState, prices, hlPositions, &mu, notifier, logger, primaryEvent); hedgeTrades > 0 {
+										trades += hedgeTrades
+										if hedgeDetail != "" {
+											detail = hedgeDetail
+										}
+									}
 								}
 							}
 							// #998: stamp the active profile on a freshly opened

@@ -81,6 +81,9 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			if sc.HedgeEnabled() {
+				hlSet[hedgeCoin(sc)] = true
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -939,23 +942,41 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return
 	}
-	sym := hyperliquidSymbol(sc.Args)
-	if sym == "" {
-		return
-	}
-	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		return
-	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
-	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
+	symbols := hyperliquidCircuitCloseSymbols(sc, s, assist)
+	if len(symbols) == 0 {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
+}
+
+func hyperliquidCircuitCloseSymbols(sc *StrategyConfig, s *StrategyState, assist *PlatformRiskAssist) []PendingCircuitCloseSymbol {
+	if sc == nil || s == nil || assist == nil {
+		return nil
+	}
+	var symbols []PendingCircuitCloseSymbol
+	primary := hyperliquidPrimaryCoin(*sc)
+	// A stuck CB can legitimately have no virtual primary left (legacy
+	// forceCloseAllPositions cleared it before the exchange fetch failed).
+	// Preserve the recovery path from the on-chain snapshot; only refuse when
+	// the configured primary key is explicitly occupied by a hedge leg.
+	primaryPos := s.Positions[primary]
+	if (primaryPos == nil || !primaryPos.IsHedge) && !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		if qty, ok := computeHyperliquidCircuitCloseQty(primary, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: primary, Size: qty})
+		}
+	}
+	if sc.HedgeEnabled() {
+		coin := hedgeCoin(*sc)
+		if h := s.Positions[coin]; h != nil && h.IsHedge && h.HedgeForSymbol == primary && h.HedgeForPositionID != "" {
+			if qty, ok := computeHyperliquidCircuitCloseQty(coin, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: coin, Size: qty})
+			}
+		}
+	}
+	sort.Slice(symbols, func(i, j int) bool { return symbols[i].Symbol < symbols[j].Symbol })
+	return symbols
 }
 
 func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
@@ -970,6 +991,13 @@ func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *Platform
 }
 
 func shouldForceCloseAllPositionsOnCircuitBreaker(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
+	// #1159 hedge pairs keep their virtual state until both reduce-only
+	// exchange fills are confirmed by the pending-close drain. Clearing either
+	// leg here would destroy the persisted ownership link before the drain can
+	// attribute its fill and would violate fill-confirmed state mutation.
+	if sc != nil && sc.HedgeEnabled() && sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
+		return false
+	}
 	return !hyperliquidCircuitBreakerHasSharedCoin(sc, assist)
 }
 
@@ -1260,9 +1288,10 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			StopLossTriggerPx: pos.StopLossTriggerPx,
 			StopLossATRMult:   pos.StopLossATRMult,
 			TPTiersJSON:       pos.TPTiersJSON,
+			IsHedge:           pos.IsHedge,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		recordPositionTradeResult(&s.RiskState, pos, pnl)
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1352,7 +1381,11 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 		if notional <= 0 {
 			continue
 		}
-		margin += notional / configLeverage
+		leverage := configLeverage
+		if pos.IsHedge && pos.Leverage > 0 {
+			leverage = pos.Leverage
+		}
+		margin += notional / leverage
 
 		var pnl float64
 		if pos.Side == "long" {
@@ -1597,4 +1630,20 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult includes hedge economics in portfolio daily PnL but
+// deliberately leaves the alpha consecutive-loss streak untouched. An inverse
+// hedge losing when the primary wins is one thesis, not a second failed trade.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
+}
+
+func recordPositionTradeResult(r *RiskState, pos *Position, pnl float64) {
+	if pos != nil && pos.IsHedge {
+		RecordHedgeTradeResult(r, pnl)
+		return
+	}
+	RecordTradeResult(r, pnl)
 }

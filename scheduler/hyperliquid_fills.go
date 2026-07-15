@@ -424,19 +424,10 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		candidates = append(candidates, candidate{coin: coin, oid: oid, qty: qty})
 	}
 
-	mu.RLock()
-	for _, sc := range allStrategies {
-		ss := state.Strategies[sc.ID]
-		if ss == nil {
-			continue
-		}
-		sym := hyperliquidSymbol(sc.Args)
-		if sym == "" {
-			continue
-		}
+	collectPositionCandidates := func(sc StrategyConfig, ss *StrategyState, sym string) {
 		pos := ss.Positions[sym]
 		if pos == nil || pos.Quantity <= 0 {
-			continue
+			return
 		}
 		onChainSize, present := onChainByCoin[sym]
 		// Trigger lookup when on-chain is absent OR signed-qty differs from
@@ -445,7 +436,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		// where on-chain residual ≠ virtual).
 		mismatched := !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9
 		if !mismatched {
-			continue
+			return
 		}
 		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
 			addCandidate(sym, pos.StopLossOID, pos.Quantity)
@@ -497,6 +488,17 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 					addCandidate(sym, 0, tierQty)
 				}
 			}
+		}
+	}
+
+	mu.RLock()
+	for _, sc := range allStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		for _, sym := range hyperliquidManagedCoins(sc) {
+			collectPositionCandidates(sc, ss, sym)
 		}
 	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
