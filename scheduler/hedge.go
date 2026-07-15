@@ -281,11 +281,15 @@ func runHedgeSync(sc StrategyConfig, stratState *StrategyState, primarySym strin
 	decision := hedgeTargetDecision(sc, snap, primaryPx, hedgePx)
 	if decision.Kind == hedgeNone {
 		if decision.FailClosed {
-			if freshOpen {
-				unwindPrimaryAfterHedgeOpenFailure(sc, stratState, primarySym, snap.PrimaryQty, mu, notifier, logger, decision.Reason)
-			} else {
-				hedgeAlert(notifier, logger, fmt.Sprintf("[%s] hedge %s sync could not size the hedge (%s) — will retry next cycle", sc.ID, hCoin, decision.Reason))
-			}
+			// FailClosed here means the hedge could not be SIZED — a missing/stale
+			// hedge mark (prices[hCoin] absent for a cycle), which is a RETRYABLE
+			// data gap, not an order rejection. Never unwind the primary on a data
+			// gap: doing so churns open+close fees on a live mark hiccup and books
+			// phantom instant round-trips in paper. Defer and retry next cycle when
+			// the mark returns. A genuine order REJECTION is handled below, after an
+			// order was actually attempted (the !ok branch), and only that path
+			// fail-closed unwinds a fresh primary.
+			hedgeAlert(notifier, logger, fmt.Sprintf("[%s] hedge %s sync could not size the hedge (%s — likely a missing mark) — deferring, primary left intact, retrying next cycle", sc.ID, hCoin, decision.Reason))
 		} else if decision.Reason == "add_dust_deferred" || decision.Reason == "reduce_dust_deferred" {
 			if logger != nil {
 				logger.Warn("hedge %s: %s (below $%.0f min order) — deferring, watermark not advanced", hCoin, decision.Reason, hedgeMinOrderNotionalUSD)
@@ -305,7 +309,8 @@ func runHedgeSync(sc StrategyConfig, stratState *StrategyState, primarySym strin
 			return
 		}
 		mu.Lock()
-		applyHedgeFillLocked(sc, stratState, primarySym, hCoin, decision, hedgePx, 0, 0, true, logger)
+		// Paper "fills" the full requested size at the mark.
+		applyHedgeFillLocked(sc, stratState, primarySym, hCoin, decision, hedgePx, 0, 0, decision.RequestedQty, true, logger)
 		mu.Unlock()
 		return
 	}
@@ -331,7 +336,9 @@ func runHedgeSync(sc StrategyConfig, stratState *StrategyState, primarySym strin
 	}
 
 	mu.Lock()
-	applyHedgeFillLocked(sc, stratState, primarySym, hCoin, decision, execFill.AvgPx, execFill.Fee, execFill.OID, false, logger)
+	// Book the ACTUAL on-chain filled size (execFill.TotalSz), never the
+	// requested size — a partial fill must not record phantom virtual qty.
+	applyHedgeFillLocked(sc, stratState, primarySym, hCoin, decision, execFill.AvgPx, execFill.Fee, execFill.OID, execFill.TotalSz, false, logger)
 	mu.Unlock()
 }
 
@@ -423,15 +430,26 @@ func runHedgeOrder(sc StrategyConfig, hCoin string, action hedgeAction, notifier
 // "hedge" leg (which routes PnL/fees into the owning strategy's ledger via
 // tradeLedgerDeltaSQL while staying out of #T/W-L). paper=true books at the mark
 // with a modeled fee.
-func applyHedgeFillLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin string, action hedgeAction, fillPx, fillFee float64, fillOID int64, paper bool, logger *StrategyLogger) {
+// filledQty is the ACTUAL on-chain filled size (execFill.TotalSz live; the
+// requested size for a paper book, which always "fills" fully at the mark). The
+// booked hedge quantity and the advanced HedgePrimaryQtyBasis watermark are
+// derived from filledQty, never action.RequestedQty, so a partial fill records
+// exactly what hedged on-chain and interpolates the watermark by the fill
+// fraction — matching the primary path (main.go books execResult...Fill.TotalSz).
+func applyHedgeFillLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin string, action hedgeAction, fillPx, fillFee float64, fillOID int64, filledQty float64, paper bool, logger *StrategyLogger) {
+	if filledQty <= 0 {
+		return
+	}
 	switch action.Kind {
 	case hedgeOpen:
-		applyHedgeOpenLocked(sc, s, primarySym, hCoin, action, fillPx, action.RequestedQty, fillFee, fillOID, paper, logger)
+		applyHedgeOpenLocked(sc, s, primarySym, hCoin, action, fillPx, filledQty, fillFee, fillOID, paper, logger)
 	case hedgeAdd:
-		applyHedgeAddLocked(sc, s, primarySym, hCoin, action, fillPx, action.RequestedQty, fillFee, fillOID, paper, logger)
+		applyHedgeAddLocked(sc, s, primarySym, hCoin, action, fillPx, filledQty, fillFee, fillOID, paper, logger)
 	case hedgeReduce:
-		applyHedgeReduceLocked(s, hCoin, action, fillPx, action.RequestedQty, fillFee, fillOID, paper, logger)
+		applyHedgeReduceLocked(s, hCoin, action, fillPx, filledQty, fillFee, fillOID, paper, logger)
 	case hedgeCloseFull:
+		// A full close maps to a full market_close (or AlreadyFlat) — flatten the
+		// whole virtual position regardless of the exact reported fill size.
 		applyHedgeCloseLocked(s, hCoin, action, fillPx, fillFee, fillOID, paper, logger)
 	}
 }
@@ -450,12 +468,9 @@ func hedgeCloseFillPx(fillPx, fallbackPx float64) float64 {
 	return fallbackPx
 }
 
-func applyHedgeOpenLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin string, action hedgeAction, fillPx, requestedQty, fillFee float64, fillOID int64, paper bool, logger *StrategyLogger) {
-	qty := requestedQty
+func applyHedgeOpenLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin string, action hedgeAction, fillPx, filledQty, fillFee float64, fillOID int64, paper bool, logger *StrategyLogger) {
+	qty := filledQty
 	px := fillPx
-	if paper {
-		px = fillPx // hedge mark
-	}
 	if px <= 0 || qty <= 0 {
 		return
 	}
@@ -466,7 +481,9 @@ func applyHedgeOpenLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin
 		fee = hedgeModeledFee(s, qty*px)
 		feeSource = FeeSourceModeled
 	}
-	basis := hedgeAppliedBasis(0, action.PrimaryQtyTarget, requestedQty, qty)
+	// Advance the watermark only by the fill fraction (filled/requested), so a
+	// partial open advances the primary-qty basis proportionally.
+	basis := hedgeAppliedBasis(0, action.PrimaryQtyTarget, action.RequestedQty, filledQty)
 	pos := &Position{
 		Symbol:               hCoin,
 		Quantity:             qty,
@@ -511,15 +528,16 @@ func applyHedgeOpenLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin
 	}
 }
 
-func applyHedgeAddLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin string, action hedgeAction, fillPx, requestedQty, fillFee float64, fillOID int64, paper bool, logger *StrategyLogger) {
+func applyHedgeAddLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin string, action hedgeAction, fillPx, filledQty, fillFee float64, fillOID int64, paper bool, logger *StrategyLogger) {
 	pos, ok := s.Positions[hCoin]
 	if !ok || pos == nil || pos.HedgeFor == "" {
 		// Hedge leg vanished between snapshot and apply — treat the add as an
-		// open so we never drop a confirmed fill on the floor.
-		applyHedgeOpenLocked(sc, s, primarySym, hCoin, hedgeAction{Kind: hedgeOpen, Side: action.Side, RequestedQty: requestedQty, PrimaryQtyTarget: action.PrimaryQtyTarget, BasisBefore: 0}, fillPx, requestedQty, fillFee, fillOID, paper, logger)
+		// open so we never drop a confirmed fill on the floor. Preserve the
+		// requested size so the open's watermark fill-fraction stays correct.
+		applyHedgeOpenLocked(sc, s, primarySym, hCoin, hedgeAction{Kind: hedgeOpen, Side: action.Side, RequestedQty: action.RequestedQty, PrimaryQtyTarget: action.PrimaryQtyTarget, BasisBefore: 0}, fillPx, filledQty, fillFee, fillOID, paper, logger)
 		return
 	}
-	qty := requestedQty
+	qty := filledQty
 	px := fillPx
 	if px <= 0 || qty <= 0 {
 		return
@@ -537,7 +555,8 @@ func applyHedgeAddLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin 
 		pos.AvgCost = (pos.AvgCost*pos.Quantity + px*qty) / newQty
 	}
 	pos.Quantity = newQty
-	pos.HedgePrimaryQtyBasis = hedgeAppliedBasis(action.BasisBefore, action.PrimaryQtyTarget, requestedQty, qty)
+	// Advance the watermark by the fill fraction (filled/requested delta).
+	pos.HedgePrimaryQtyBasis = hedgeAppliedBasis(action.BasisBefore, action.PrimaryQtyTarget, action.RequestedQty, filledQty)
 
 	var oidStr string
 	if fillOID > 0 {
@@ -567,7 +586,7 @@ func applyHedgeAddLocked(sc StrategyConfig, s *StrategyState, primarySym, hCoin 
 	}
 }
 
-func applyHedgeReduceLocked(s *StrategyState, hCoin string, action hedgeAction, fillPx, requestedQty, fillFee float64, fillOID int64, paper bool, logger *StrategyLogger) {
+func applyHedgeReduceLocked(s *StrategyState, hCoin string, action hedgeAction, fillPx, filledQty, fillFee float64, fillOID int64, paper bool, logger *StrategyLogger) {
 	pos, ok := s.Positions[hCoin]
 	if !ok || pos == nil || pos.HedgeFor == "" {
 		return
@@ -581,11 +600,14 @@ func applyHedgeReduceLocked(s *StrategyState, hCoin string, action hedgeAction, 
 		oidStr = strconv.FormatInt(fillOID, 10)
 	}
 	useFillFee := !paper
-	// bookPerpsPartialCloseWithFillFee routes trade_type="hedge" +
-	// RecordHedgeTradeResult (pos.HedgeFor != "") for free.
-	if bookPerpsPartialCloseWithFillFee(s, hCoin, requestedQty, px, fillFee, useFillFee, oidStr, "hedge_reduce", fmt.Sprintf("hedge(%s) reduce", pos.HedgeFor), fmt.Sprintf("hedge(%s) reduce", pos.HedgeFor), logger) {
+	// Book only the ACTUAL filled reduce size — a partial reduce fill must leave
+	// virtual qty >= on-chain remaining. bookPerpsPartialCloseWithFillFee routes
+	// trade_type="hedge" + RecordHedgeTradeResult (pos.HedgeFor != "") for free.
+	if bookPerpsPartialCloseWithFillFee(s, hCoin, filledQty, px, fillFee, useFillFee, oidStr, "hedge_reduce", fmt.Sprintf("hedge(%s) reduce", pos.HedgeFor), fmt.Sprintf("hedge(%s) reduce", pos.HedgeFor), logger) {
 		if p := s.Positions[hCoin]; p != nil {
-			p.HedgePrimaryQtyBasis = action.PrimaryQtyTarget
+			// Interpolate the watermark by the fill fraction — a partial reduce
+			// must not jump the basis all the way to PrimaryQtyTarget.
+			p.HedgePrimaryQtyBasis = hedgeAppliedBasis(action.BasisBefore, action.PrimaryQtyTarget, action.RequestedQty, filledQty)
 		}
 	}
 }

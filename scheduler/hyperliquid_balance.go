@@ -2209,32 +2209,36 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 	if coin == "" {
 		return false
 	}
-	fill, ok := fills[coin]
-	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
-		return false
+	booked := false
+	// Primary coin fill — may be absent if the primary was externally flat at
+	// kill-switch time.
+	if fill, ok := fills[coin]; ok && fill.TotalSz > 1e-15 && fill.AvgPx > 0 {
+		if fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty); fillSz > 1e-15 {
+			applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+			booked = true
+		}
 	}
-	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
-	if fillSz <= 1e-15 {
-		return false
-	}
-	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
-	// #1159: book the hedge coin's fill for the owning strategy (sole owner →
-	// full share; hyperliquidKillSwitchFillShare returns the full fill for a
-	// peer-less coin). The #954 dup-OID guard inside applyHyperliquidCircuitCloseFill
-	// prevents double-booking against the forceCloseAllPositions cleanup pass.
+	// #1159: book the hedge coin's fill INDEPENDENTLY of the primary — a held
+	// hedge leg whose primary was externally flat at kill-switch time must still
+	// have its real on-chain fill attributed at fill price/fee, not later closed
+	// at mark by forceCloseAllPositions (a fill-accounting gap under the safety
+	// carve-out). Sole owner → full share (hyperliquidKillSwitchFillShare returns
+	// the full fill for a peer-less coin). The #954 dup-OID guard inside
+	// applyHyperliquidCircuitCloseFill prevents double-booking against the
+	// forceCloseAllPositions cleanup pass.
 	if sc.HedgeEnabled() {
 		if hc := hedgeCoin(sc); hc != "" {
 			if hpos := s.Positions[hc]; hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
 				if hfill, hok := fills[hc]; hok && hfill.TotalSz > 1e-15 && hfill.AvgPx > 0 {
-					hSz, hFee := hyperliquidKillSwitchFillShare(sc, hc, hfill.TotalSz, hfill.Fee, hlLiveAll, virtualQty)
-					if hSz > 1e-15 {
+					if hSz, hFee := hyperliquidKillSwitchFillShare(sc, hc, hfill.TotalSz, hfill.Fee, hlLiveAll, virtualQty); hSz > 1e-15 {
 						applyHyperliquidCircuitCloseFill(s, hc, hSz, hfill.AvgPx, hFee, 0, hfill.OID, "hedge_kill_switch")
+						booked = true
 					}
 				}
 			}
 		}
 	}
-	return true
+	return booked
 }
 
 func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfig {

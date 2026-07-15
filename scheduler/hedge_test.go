@@ -204,7 +204,7 @@ func TestApplyHedgeOpen_CreatesPositionAndTrade(t *testing.T) {
 	sc := hedgedStrategy("ETH", "BTC", 1.0, 3)
 	s := newHedgeTestState()
 	act := hedgeAction{Kind: hedgeOpen, Side: "short", RequestedQty: 0.1, PrimaryQtyTarget: 2}
-	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, true /*paper*/, nil)
+	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, 0.1 /*filledQty*/, true /*paper*/, nil)
 
 	pos := s.Positions["BTC"]
 	if pos == nil {
@@ -234,7 +234,7 @@ func TestApplyHedgeClose_BooksHedgeTradeType(t *testing.T) {
 	// Seed an open hedge leg.
 	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 2}
 	act := hedgeAction{Kind: hedgeCloseFull, RequestedQty: 0.1, Reason: "primary_flat"}
-	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, true, nil)
+	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, 0.1, true, nil)
 
 	if _, ok := s.Positions["BTC"]; ok {
 		t.Fatalf("hedge position should be deleted after full close")
@@ -295,12 +295,56 @@ func TestHedgePositionDBRoundTrip(t *testing.T) {
 	}
 }
 
+func TestApplyHedgeOpen_PartialFillBooksActualSize(t *testing.T) {
+	// Reviewer #1159 must-survive (a): a hedge open filling 60% of requested must
+	// book the ACTUAL filled qty and scale the watermark by the fill fraction.
+	sc := hedgedStrategy("ETH", "BTC", 1.0, 3)
+	s := newHedgeTestState()
+	act := hedgeAction{Kind: hedgeOpen, Side: "short", RequestedQty: 0.1, PrimaryQtyTarget: 2}
+	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, 0.06 /*only 60% filled*/, false /*live*/, nil)
+
+	pos := s.Positions["BTC"]
+	if pos == nil {
+		t.Fatalf("hedge position not created")
+	}
+	if math.Abs(pos.Quantity-0.06) > 1e-9 {
+		t.Fatalf("booked qty=%v, want 0.06 (actual fill, not requested 0.1)", pos.Quantity)
+	}
+	// basis = 0 + (2-0) × 0.06/0.1 = 1.2
+	if math.Abs(pos.HedgePrimaryQtyBasis-1.2) > 1e-9 {
+		t.Fatalf("basis=%v, want 1.2 (scaled to fill fraction, not full target 2)", pos.HedgePrimaryQtyBasis)
+	}
+}
+
+func TestApplyHedgeReduce_PartialFillInterpolatesBasis(t *testing.T) {
+	// Reviewer #1159 must-survive (b): a partial reduce fill must leave virtual
+	// qty >= on-chain remaining and interpolate the watermark, not jump to target.
+	sc := hedgedStrategy("ETH", "BTC", 1.0, 3)
+	s := newHedgeTestState()
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 2}
+	// wanted to reduce 0.05 (target primary 1), but only 0.02 filled.
+	act := hedgeAction{Kind: hedgeReduce, RequestedQty: 0.05, PrimaryQtyTarget: 1, BasisBefore: 2}
+	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, 0.02, false, nil)
+
+	pos := s.Positions["BTC"]
+	if pos == nil {
+		t.Fatalf("hedge position should remain")
+	}
+	if math.Abs(pos.Quantity-0.08) > 1e-9 {
+		t.Fatalf("remaining qty=%v, want 0.08 (only 0.02 reduced, not 0.05)", pos.Quantity)
+	}
+	// basis = 2 + (1-2) × 0.02/0.05 = 1.6
+	if math.Abs(pos.HedgePrimaryQtyBasis-1.6) > 1e-9 {
+		t.Fatalf("basis=%v, want 1.6 (interpolated, not jumped to target 1)", pos.HedgePrimaryQtyBasis)
+	}
+}
+
 func TestApplyHedgeReduce_AdvancesBasis(t *testing.T) {
 	sc := hedgedStrategy("ETH", "BTC", 1.0, 3)
 	s := newHedgeTestState()
 	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 2}
-	act := hedgeAction{Kind: hedgeReduce, RequestedQty: 0.05, PrimaryQtyTarget: 1}
-	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, true, nil)
+	act := hedgeAction{Kind: hedgeReduce, RequestedQty: 0.05, PrimaryQtyTarget: 1, BasisBefore: 2}
+	applyHedgeFillLocked(sc, s, "ETH", "BTC", act, 60000, 0, 0, 0.05, true, nil)
 
 	pos := s.Positions["BTC"]
 	if pos == nil {
