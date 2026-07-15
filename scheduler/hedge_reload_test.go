@@ -104,6 +104,7 @@ func TestHedgePositionDBRoundTrip(t *testing.T) {
 						Symbol: "BTC", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 40000,
 						Side: "short", Multiplier: 1, OwnerStrategyID: "hl-eth",
 						TradePositionID: "hp-1", HedgeFor: "ETH", HedgePrimaryQtyBasis: 12.5,
+						HedgeRatioAtOpen: 1.5, HedgeMarginModeAtOpen: "cross",
 					},
 				},
 				OptionPositions: map[string]*OptionPosition{},
@@ -126,5 +127,11 @@ func TestHedgePositionDBRoundTrip(t *testing.T) {
 	}
 	if pos.HedgePrimaryQtyBasis != 12.5 {
 		t.Errorf("HedgePrimaryQtyBasis round-trip: want 12.5, got %g", pos.HedgePrimaryQtyBasis)
+	}
+	if pos.HedgeRatioAtOpen != 1.5 {
+		t.Errorf("HedgeRatioAtOpen round-trip: want 1.5, got %g", pos.HedgeRatioAtOpen)
+	}
+	if pos.HedgeMarginModeAtOpen != "cross" {
+		t.Errorf("HedgeMarginModeAtOpen round-trip: want cross, got %q", pos.HedgeMarginModeAtOpen)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,10 @@ func TestApplyHedgeOpenFillCreatesLeg(t *testing.T) {
 	}
 	if pos.Multiplier != 1 {
 		t.Errorf("hedge Multiplier: want 1, got %g", pos.Multiplier)
+	}
+	// The resolved hedge sizing config is frozen at open for the drift check.
+	if pos.HedgeRatioAtOpen != 1.0 || pos.HedgeMarginModeAtOpen != "isolated" {
+		t.Errorf("frozen hedge shape at open: want ratio=1 margin=isolated, got ratio=%g margin=%q", pos.HedgeRatioAtOpen, pos.HedgeMarginModeAtOpen)
 	}
 	if s.Cash >= cashBefore {
 		t.Errorf("open fee should reduce cash; before=%g after=%g", cashBefore, s.Cash)
@@ -216,6 +221,46 @@ func TestValidateHedgeStateConsistencyDetectsOrphan(t *testing.T) {
 	cfg.Strategies[0].Hedge.Symbol = "BTC"
 	if w := validateHedgeStateConsistency(state, cfg); len(w) != 0 {
 		t.Errorf("matching hedge config should produce no warning, got %v", w)
+	}
+}
+
+func TestValidateHedgeStateConsistencyDetectsSizingDrift(t *testing.T) {
+	// A hedge leg opened under ratio=1/cross/3x; config-edit-plus-restart
+	// changed all three. Each drift dimension must be surfaced; a matching
+	// restart must produce no false positive.
+	mkState := func() *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-eth": {
+				ID: "hl-eth",
+				Positions: map[string]*Position{"BTC": {
+					Symbol: "BTC", Quantity: 0.5, Side: "short", HedgeFor: "ETH",
+					HedgeRatioAtOpen: 1.0, HedgeMarginModeAtOpen: "cross", Leverage: 3,
+				}},
+			},
+		}}
+	}
+	base := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+		Args: []string{"check_hyperliquid.py", "ETH", "live"}}
+
+	// ratio drift
+	cfg := &Config{Strategies: []StrategyConfig{base}}
+	cfg.Strategies[0].Hedge = &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 2.0, MarginMode: "cross", Leverage: 3}
+	w := validateHedgeStateConsistency(mkState(), cfg)
+	if len(w) != 1 || !strings.Contains(w[0], "ratio 1→2") {
+		t.Errorf("expected ratio-drift warning, got %v", w)
+	}
+
+	// margin_mode + leverage drift
+	cfg.Strategies[0].Hedge = &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1.0, MarginMode: "isolated", Leverage: 5}
+	w = validateHedgeStateConsistency(mkState(), cfg)
+	if len(w) != 1 || !strings.Contains(w[0], "margin_mode") || !strings.Contains(w[0], "leverage 3→5") {
+		t.Errorf("expected margin_mode+leverage drift warning, got %v", w)
+	}
+
+	// no change → no warning
+	cfg.Strategies[0].Hedge = &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1.0, MarginMode: "cross", Leverage: 3}
+	if w := validateHedgeStateConsistency(mkState(), cfg); len(w) != 0 {
+		t.Errorf("matching restart must produce no drift warning, got %v", w)
 	}
 }
 

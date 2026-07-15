@@ -131,6 +131,18 @@ type Position struct {
 	// qty event (add/reduce). Only quantity/side changes re-trade the hedge; mark
 	// drift never does. 0 on a non-hedge position.
 	HedgePrimaryQtyBasis float64 `json:"hedge_primary_qty_basis,omitempty"`
+	// HedgeRatioAtOpen / HedgeMarginModeAtOpen freeze the resolved hedge sizing
+	// config the moment this hedge leg was first opened (never re-stamped on an
+	// add — mirrors the RiskAnchorPrice/ATRMethodAtOpen freeze-at-entry
+	// semantics). The SIGHUP hot-reload guard blocks a hedge-shape change while a
+	// hedge leg is open, but a config edit + process restart bypasses it (no
+	// "old" value in memory to diff against). validateHedgeStateConsistency
+	// compares these stamps (plus Leverage) to the live config once per boot to
+	// surface that gap. 0/"" = pre-stamp / non-hedge position (drift check skips
+	// the missing dimension). Side is fixed to "inverse" in phase 1, so it is
+	// implicitly frozen and needs no stamp.
+	HedgeRatioAtOpen      float64 `json:"hedge_ratio_at_open,omitempty"`
+	HedgeMarginModeAtOpen string  `json:"hedge_margin_mode_at_open,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are

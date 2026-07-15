@@ -948,21 +948,29 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return
 	}
+	// A shared primary coin's on-chain position must be left untouched (peers
+	// own part of it), so the CB enqueues nothing — the position rides on its
+	// peers' management. #1159: this MUST also gate the hedge leg. Flattening a
+	// sole-owned hedge while its shared primary stays open would (a) leave the
+	// strategy unhedged during the exact drawdown that tripped the CB and (b)
+	// churn fees, because the latched-CB manage-only cycle's runHedgeSync would
+	// immediately re-open the hedge to mirror the still-open primary. The hedge
+	// is closed by the CB ONLY when the primary is also closed (sole-owned).
+	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		return
+	}
 	var symbols []PendingCircuitCloseSymbol
-	// Primary leg: enqueued only when it is NOT shared with peers (a shared
-	// on-chain position must be left untouched — the drain's guard also enforces
-	// this).
-	if sym := hyperliquidSymbol(sc.Args); sym != "" && !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+	if sym := hyperliquidSymbol(sc.Args); sym != "" {
 		if _, ok := s.Positions[sym]; ok {
 			if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
 				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
 			}
 		}
 	}
-	// #1159: hedge leg — sole-owned by construction, so it must be closed
-	// on-chain even when the PRIMARY coin is shared (else the CB flattens the
-	// virtual position but strands the real hedge). The drain's shared-coin
-	// guard strips only the primary symbol, preserving this hedge entry.
+	// #1159: the hedge leg (sole-owned by construction) is enqueued alongside a
+	// closeable primary so the on-chain hedge is flattened too (forceCloseAll
+	// only closes the virtual leg). Reached only when the primary is NOT shared
+	// (guarded above), so the hedge and primary always share the same fate.
 	if sc.HedgeEnabled() {
 		if hc := hedgeCoin(*sc); hc != "" {
 			if hp, ok := s.Positions[hc]; ok && hp != nil && hp.HedgeFor != "" && hp.Quantity > 0 {

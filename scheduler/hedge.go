@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -469,18 +470,20 @@ func applyHedgeOpenOrAddFill(sc StrategyConfig, s *StrategyState, hc, primaryCoi
 		// Create a fresh hedge leg.
 		basis := hedgeBasisAfterFill(0, decision.TargetBasis, decision.Qty, filledQty)
 		s.Positions[hc] = &Position{
-			Symbol:               hc,
-			Quantity:             filledQty,
-			InitialQuantity:      filledQty,
-			AvgCost:              fillPx,
-			Side:                 positionSide,
-			Multiplier:           1,
-			Leverage:             hedgeLeverage(sc),
-			OwnerStrategyID:      s.ID,
-			OpenedAt:             now,
-			TradePositionID:      newTradePositionID(s.ID, hc, now),
-			HedgeFor:             primaryCoin,
-			HedgePrimaryQtyBasis: basis,
+			Symbol:                hc,
+			Quantity:              filledQty,
+			InitialQuantity:       filledQty,
+			AvgCost:               fillPx,
+			Side:                  positionSide,
+			Multiplier:            1,
+			Leverage:              hedgeLeverage(sc),
+			OwnerStrategyID:       s.ID,
+			OpenedAt:              now,
+			TradePositionID:       newTradePositionID(s.ID, hc, now),
+			HedgeFor:              primaryCoin,
+			HedgePrimaryQtyBasis:  basis,
+			HedgeRatioAtOpen:      hedgeRatio(sc),
+			HedgeMarginModeAtOpen: hedgeMarginMode(sc),
 		}
 	} else {
 		// Blend into the existing hedge leg (scale-in add).
@@ -642,6 +645,29 @@ func validateHedgeStateConsistency(state *AppState, cfg *Config) []string {
 			}
 			if hc := hedgeCoin(sc); hc != sym {
 				msg := fmt.Sprintf("hedge state gap: strategy %s holds a hedge leg on %s but config now hedges %s — leaving the old leg frozen; flatten it or restore the previous hedge symbol", id, sym, hc)
+				fmt.Printf("[WARN] %s\n", msg)
+				warnings = append(warnings, msg)
+				continue
+			}
+			// Coin still matches — surface a config-edit-plus-restart change to
+			// any hedge SIZING dimension the SIGHUP hot-reload guard would have
+			// blocked while the leg is open (ratio/margin_mode/leverage; side is
+			// fixed to "inverse"). The open leg keeps its frozen sizing; the
+			// change applies to the next add (ratio) or re-open (margin/leverage)
+			// only. A dimension whose stamp is missing (leg opened before the
+			// freeze columns existed) is skipped to avoid false positives.
+			var drift []string
+			if pos.HedgeRatioAtOpen > 0 && pos.HedgeRatioAtOpen != hedgeRatio(sc) {
+				drift = append(drift, fmt.Sprintf("ratio %g→%g", pos.HedgeRatioAtOpen, hedgeRatio(sc)))
+			}
+			if pos.HedgeMarginModeAtOpen != "" && pos.HedgeMarginModeAtOpen != hedgeMarginMode(sc) {
+				drift = append(drift, fmt.Sprintf("margin_mode %q→%q", pos.HedgeMarginModeAtOpen, hedgeMarginMode(sc)))
+			}
+			if pos.Leverage > 0 && pos.Leverage != hedgeLeverage(sc) {
+				drift = append(drift, fmt.Sprintf("leverage %g→%g", pos.Leverage, hedgeLeverage(sc)))
+			}
+			if len(drift) > 0 {
+				msg := fmt.Sprintf("hedge state gap: strategy %s hedge %s config changed while a hedge leg is open (%s) — the open leg keeps its original sizing; the change applies to the next add/re-open only", id, sym, strings.Join(drift, ", "))
 				fmt.Printf("[WARN] %s\n", msg)
 				warnings = append(warnings, msg)
 			}

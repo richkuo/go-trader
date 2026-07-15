@@ -2347,15 +2347,23 @@ func runPendingHyperliquidCircuitCloses(
 			if !ss.RiskState.CircuitBreaker {
 				continue
 			}
+			// A shared/uncloseable primary coin is left untouched (matches the
+			// Phase-1 stuck-CB gate and the fire-time enqueue rule). #1159: this
+			// also skips the hedge leg — flattening a sole-owned hedge while its
+			// shared primary stays open would leave the strategy unhedged and
+			// churn against the next-cycle runHedgeSync re-open. The hedge is
+			// reconstructed for CB close ONLY alongside a closeable primary.
+			sym := hyperliquidConfiguredCoin(sc)
+			if sym == "" || len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
+				continue
+			}
 			var symbols []PendingCircuitCloseSymbol
-			if sym := hyperliquidConfiguredCoin(sc); sym != "" {
-				if qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll); ok && qty > 0 {
-					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
-				}
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
 			}
 			// #1159: reconstruct the hedge leg too (sole-owned), from persisted
-			// position metadata, so a stuck CB on a hedge-enabled strategy still
-			// flattens the on-chain hedge.
+			// position metadata, so a stuck CB on a sole-owned-primary hedger
+			// still flattens the on-chain hedge.
 			if sc.HedgeEnabled() {
 				if hc := hedgeCoin(sc); hc != "" {
 					if hp := ss.Positions[hc]; hp != nil && hp.HedgeFor != "" && hp.Quantity > 0 {
@@ -2438,31 +2446,23 @@ func runPendingHyperliquidCircuitCloses(
 		}
 		if sym := hyperliquidConfiguredCoin(*sc); sym != "" && len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
 			// The shared PRIMARY coin must be left untouched (peers own part of
-			// the on-chain position). #1159: but a sole-owned hedge symbol in the
-			// same pending must still drain — strip only the primary symbol and
-			// keep the rest, rather than clearing the whole pending.
-			var remaining []PendingCircuitCloseSymbol
-			for _, c := range j.pending.Symbols {
-				if c.Symbol != sym {
-					remaining = append(remaining, c)
-				}
-			}
-			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — leaving that exchange position untouched (%d other close(s) remain)\n",
-				j.stratID, sym, len(remaining))
+			// the on-chain position) — clear the whole pending and leave the
+			// exchange position for the peers to manage. #1159: the hedge is
+			// enqueued ONLY alongside a closeable primary (see
+			// setHyperliquidCircuitBreakerPending + the stuck-CB reconstruction),
+			// so a pending never legitimately pairs a hedge with a shared primary.
+			// The only way one arrives here is a peer added between fire and
+			// drain — in which case clearing the whole pending is correct: the
+			// primary can no longer be closed, so the hedge that offsets it must
+			// stay open too (the next-cycle runHedgeSync keeps them coherent).
+			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — clearing pending close and leaving exchange position untouched\n",
+				j.stratID, sym)
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
-				if len(remaining) == 0 {
-					ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
-				} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
-					// Trim in place to preserve failure-counter / operator fields.
-					p.Symbols = remaining
-				}
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
 			}
 			mu.Unlock()
-			if len(remaining) == 0 {
-				continue
-			}
-			j.pending.Symbols = remaining
+			continue
 		}
 
 		allOK := true
