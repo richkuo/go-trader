@@ -268,6 +268,7 @@ func main() {
 	// the exchange but flips virtually. Collect here, forward to owner DM
 	// once the notifier is wired below.
 	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
 	// #1277 optional hardening: detect a config edit + restart (not SIGHUP)
 	// that changed a strategy's effective atr_method while it still holds a
@@ -486,6 +487,11 @@ func main() {
 	// so the desync is surfaced even when the operator isn't tailing stderr.
 	if len(directionConfigWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range directionConfigWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}

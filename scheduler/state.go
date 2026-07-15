@@ -270,7 +270,9 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 		sort.Strings(syms)
 		for _, sym := range syms {
 			pos := s.Positions[sym]
-			if pos == nil || pos.Quantity <= 0 {
+			// A #1159 hedge is deliberately inverse to its primary and therefore
+			// must not be compared to the strategy's alpha direction on boot.
+			if pos == nil || pos.Quantity <= 0 || pos.HedgeFor != "" {
 				continue
 			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)

@@ -81,6 +81,9 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			if hedge := hedgeCoin(sc); hedge != "" {
+				hlSet[hedge] = true
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -1262,7 +1265,11 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		if pos.HedgeFor != "" {
+			RecordHedgeTradeResult(&s.RiskState, pnl)
+		} else {
+			RecordTradeResult(&s.RiskState, pnl)
+		}
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1597,4 +1604,12 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult preserves realized-PnL accounting without teaching a
+// loss-streak circuit breaker that a deliberately inverse risk leg is an
+// independent failed thesis. Hedge losses offset primary gains by design.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }

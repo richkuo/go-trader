@@ -31,6 +31,10 @@ func knownManualDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(ManualDefaultsConfig{}))
 }
 
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownJSONKeys(t reflect.Type) map[string]bool {
 	known := make(map[string]bool)
 	for i := 0; i < t.NumField(); i++ {
@@ -107,6 +111,25 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+		// Nested strategy blocks need their own guard: JSON unmarshalling would
+		// otherwise accept a typo such as hedge.ration and silently use the
+		// default ratio, which is unsafe on a money path.
+		if raw, ok := s["hedge"]; ok {
+			var hedge map[string]json.RawMessage
+			if json.Unmarshal(raw, &hedge) == nil && hedge != nil {
+				knownHedge := knownHedgeConfigKeys()
+				hedgeKeys := make([]string, 0, len(hedge))
+				for k := range hedge {
+					if !knownHedge[k] {
+						hedgeKeys = append(hedgeKeys, k)
+					}
+				}
+				sort.Strings(hedgeKeys)
+				for _, k := range hedgeKeys {
+					errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
+				}
+			}
 		}
 	}
 	return errs

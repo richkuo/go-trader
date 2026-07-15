@@ -119,6 +119,14 @@ type Position struct {
 	// compares this stamp to the live resolution once per boot to catch that
 	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
 	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
+	// HedgeFor is non-empty only for an auto-managed #1159 hedge position.
+	// The ownership marker, rather than a coin lookup, survives restarts and
+	// prevents any foreign on-chain position from being adopted as a hedge.
+	HedgeFor string `json:"hedge_for,omitempty"`
+	// HedgePrimaryQtyBasis is the primary quantity against which this hedge was
+	// last successfully sized. It is a quantity-event watermark, not a target
+	// recalculated from marks, so price movement cannot create hedge churn.
+	HedgePrimaryQtyBasis float64 `json:"hedge_primary_qty_basis,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are
@@ -302,7 +310,11 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, 0)
+		if pos.HedgeFor != "" {
+			RecordHedgeTradeResult(&s.RiskState, 0)
+		} else {
+			RecordTradeResult(&s.RiskState, 0)
+		}
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -389,7 +401,11 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.HedgeFor != "" {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
 	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -472,7 +488,11 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.HedgeFor != "" {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {

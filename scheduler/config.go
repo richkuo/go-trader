@@ -595,6 +595,60 @@ type FuturesConfig struct {
 	MaxContracts   int     `json:"max_contracts,omitempty"`
 }
 
+// HedgeConfig describes an automatically managed, inverse Hyperliquid perps
+// leg.  It belongs to its primary strategy: it is never a separately signalled
+// strategy and it never receives protection or a close evaluator of its own.
+// The hedge is deliberately constrained to a sole-owned coin so an automated
+// close can never flatten somebody else's virtual position.
+type HedgeConfig struct {
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
+}
+
+const HedgeSideInverse = "inverse"
+
+func (sc StrategyConfig) HedgeEnabled() bool { return sc.Hedge != nil && sc.Hedge.Enabled }
+
+func hedgeCoin(sc StrategyConfig) string {
+	if !sc.HedgeEnabled() {
+		return ""
+	}
+	raw := strings.TrimSpace(sc.Hedge.Symbol)
+	// Accept the ccxt perpetual spelling (BTC/USDC:USDC) while retaining the
+	// ticker representation used by Hyperliquid state and mids.
+	if slash := strings.IndexByte(raw, '/'); slash >= 0 {
+		raw = raw[:slash]
+	}
+	return strings.ToUpper(strings.TrimSpace(raw))
+}
+
+func (sc StrategyConfig) HedgeRatio() float64 {
+	if sc.Hedge == nil || sc.Hedge.Ratio == 0 {
+		return 1
+	}
+	return sc.Hedge.Ratio
+}
+
+func (sc StrategyConfig) HedgeLeverage() float64 {
+	if sc.Hedge == nil || sc.Hedge.Leverage == 0 {
+		return 1
+	}
+	return sc.Hedge.Leverage
+}
+
+func (sc StrategyConfig) HedgeMarginMode() string {
+	if sc.Hedge == nil || sc.Hedge.MarginMode == "" {
+		return "isolated"
+	}
+	return sc.Hedge.MarginMode
+}
+
 // StrategyRef pairs a strategy name with its evaluator params. Used for both
 // the open strategy and each close strategy on a StrategyConfig so per-strategy
 // params don't leak across roles (#640). Empty Params means "use registry
@@ -660,6 +714,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159: sole-owned inverse HL perps leg, reconciled from the primary position's quantity watermark.
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -2220,6 +2275,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+	for _, msg := range validateHedgeConfigs(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 
