@@ -1419,6 +1419,12 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 
 	res.queued = true
 	res.outf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.")
+	// #1159: the scheduler owns the hedge exclusively — once the primary close
+	// applies, the state-derived hedge sync converges (reduces/closes) the hedge
+	// leg on the next cycle. No CLI-side hedge order is placed here.
+	if sc.HedgeEnabled() {
+		res.outf("Note: hedge leg %s will be reduced/closed automatically by the scheduler on the next cycle.", hedgeCoin(sc))
+	}
 	return res, nil
 }
 
