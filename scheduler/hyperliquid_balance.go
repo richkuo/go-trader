@@ -864,6 +864,46 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		}
 	}
 
+	// #1159: reconcile each due hedge-enabled strategy's HEDGE coin (a distinct,
+	// collision-validated sole-owned coin). Ownership is the persisted HedgeFor
+	// marker — never coin→symbol inference (acceptance 3). This gives, with the
+	// existing safety semantics: qty/side drift resync, external-close booking at
+	// userFills VWAP (hl_sync_external), and NO adoption of foreign positions. We
+	// only reconcile when a virtual hedge leg is held; a position on a declared
+	// hedge coin with NO virtual leg is foreign and left untouched (fail-closed).
+	for _, sc := range dueStrategies {
+		if !sc.HedgeEnabled() {
+			continue
+		}
+		hc := hedgeCoin(sc)
+		if hc == "" || sharedCoins[hc] {
+			continue // collision validation prevents sharing; stay defensive
+		}
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		hpos := ss.Positions[hc]
+		if hpos == nil || hpos.HedgeFor == "" {
+			// No virtual hedge leg → any on-chain position on this coin is
+			// foreign; surface it but never adopt or book it (fail-closed).
+			for i := range positions {
+				if positions[i].Coin == hc && positions[i].Size != 0 {
+					fmt.Printf("[hl-sync] %s: on-chain position on declared hedge coin %s (%.6f) with no virtual hedge leg — NOT adopting (foreign) (#1159)\n", sc.ID, hc, positions[i].Size)
+					break
+				}
+			}
+			continue
+		}
+		logger, err := logMgr.GetStrategyLogger(sc.ID)
+		if err != nil {
+			continue
+		}
+		if reconcileHyperliquidPositionsForStrategy(sc, ss, hc, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+			changed = true
+		}
+	}
+
 	if len(pendingOrphanCloses) > 0 {
 		sort.Slice(pendingOrphanCloses, func(i, j int) bool {
 			if pendingOrphanCloses[i].StrategyID != pendingOrphanCloses[j].StrategyID {
@@ -1949,7 +1989,7 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 // should be cancelled before the close fires, so kill-switch flattening
 // doesn't leave orphan triggers consuming HL's open-order cap (#421, #479).
 // nil/empty disables the cancel; the closer is otherwise unchanged.
-func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) HyperliquidLiveCloseReport {
+func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64, hedgeCoins map[string]bool) HyperliquidLiveCloseReport {
 	report := HyperliquidLiveCloseReport{
 		Fills:  make(map[string]HyperliquidCloseFill),
 		Errors: make(map[string]error),
@@ -1960,6 +2000,15 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 		sym := hyperliquidSymbol(sc.Args)
 		if sym != "" {
 			tradedCoins[sym] = true
+		}
+	}
+	// #1159: also flatten HELD hedge legs (a distinct, sole-owned coin). Gated on
+	// hedgeCoins (coins with a live virtual hedge leg, computed by the caller
+	// under lock) — NOT config alone — so the kill switch never liquidates a
+	// genuinely foreign position on a declared-but-flat hedge coin.
+	for hc := range hedgeCoins {
+		if hc != "" {
+			tradedCoins[hc] = true
 		}
 	}
 
@@ -2064,6 +2113,18 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 			out[coin] = make(map[string]float64)
 		}
 		out[coin][sc.ID] = pos.Quantity
+		// #1159: also snapshot the held hedge leg (a distinct coin) so the
+		// kill-switch fill share attributes it to the owning strategy.
+		if sc.HedgeEnabled() {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hpos := ss.Positions[hc]; hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+					if out[hc] == nil {
+						out[hc] = make(map[string]float64)
+					}
+					out[hc][sc.ID] = hpos.Quantity
+				}
+			}
+		}
 	}
 	if len(out) == 0 {
 		return nil
@@ -2157,6 +2218,22 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 		return false
 	}
 	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+	// #1159: book the hedge coin's fill for the owning strategy (sole owner →
+	// full share; hyperliquidKillSwitchFillShare returns the full fill for a
+	// peer-less coin). The #954 dup-OID guard inside applyHyperliquidCircuitCloseFill
+	// prevents double-booking against the forceCloseAllPositions cleanup pass.
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(sc); hc != "" {
+			if hpos := s.Positions[hc]; hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+				if hfill, hok := fills[hc]; hok && hfill.TotalSz > 1e-15 && hfill.AvgPx > 0 {
+					hSz, hFee := hyperliquidKillSwitchFillShare(sc, hc, hfill.TotalSz, hfill.Fee, hlLiveAll, virtualQty)
+					if hSz > 1e-15 {
+						applyHyperliquidCircuitCloseFill(s, hc, hSz, hfill.AvgPx, hFee, 0, hfill.OID, "hedge_kill_switch")
+					}
+				}
+			}
+		}
+	}
 	return true
 }
 
@@ -2643,6 +2720,12 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	pnl -= fillFee
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
+	// #1159: a hedge leg force-closed by CB/kill-switch is labeled "hedge"
+	// (excluded from #T/W-L) and updates daily-PnL without the CB loss streak.
+	closeTradeType := "perps"
+	if pos.HedgeFor != "" {
+		closeTradeType = "hedge"
+	}
 
 	RecordTrade(s, Trade{
 		Timestamp:         now,
@@ -2653,7 +2736,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		Quantity:          qtyClosed,
 		Price:             fillPx,
 		Value:             qtyClosed * fillPx,
-		TradeType:         "perps",
+		TradeType:         closeTradeType,
 		Details:           fmt.Sprintf("%s, PnL: $%.2f (fee $%.4f)", closeLabel, pnl, fillFee),
 		ExchangeOrderID:   oidStr,
 		ExchangeFee:       fillFee,
@@ -2667,7 +2750,11 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		StopLossATRMult:   pos.StopLossATRMult,
 		TPTiersJSON:       pos.TPTiersJSON,
 	})
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.HedgeFor != "" {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 
 	remaining := pos.Quantity - qtyClosed
 	if remaining <= 1e-9 {

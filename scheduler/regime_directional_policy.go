@@ -540,6 +540,12 @@ func perpsRegimeDirectionOrphanConflict(stratState *StrategyState, sc StrategyCo
 	if stratState == nil || pos == nil || pos.Quantity <= 0 {
 		return false, "", ""
 	}
+	// #1159: a correlated hedge leg is intentionally opposite the strategy's
+	// directional bias — it must never be queued for regime-direction orphan
+	// auto-close.
+	if pos.HedgeFor != "" {
+		return false, "", ""
+	}
 	if sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return false, "", ""
 	}
