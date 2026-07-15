@@ -110,6 +110,29 @@ func TestComputeCorrelation_MixedDirections(t *testing.T) {
 	}
 }
 
+func TestComputeCorrelation_CorrelatedHedgeUsesItsOwnAsset(t *testing.T) {
+	strategies := map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Type: "perps",
+			Positions: map[string]*Position{
+				"ETH":           {Symbol: "ETH", Quantity: 2, Side: "long", Multiplier: 1},
+				"BTC/USDC:USDC": {Symbol: "BTC/USDC:USDC", Quantity: 0.1, Side: "short", Multiplier: 1, HedgeFor: "ETH"},
+			},
+		},
+	}
+	cfgStrategies := []StrategyConfig{{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h"}}}
+	snap := ComputeCorrelation(strategies, cfgStrategies, map[string]float64{"ETH": 3000, "BTC": 50000}, nil)
+	if eth := snap.Assets["ETH"]; eth == nil || eth.NetDeltaUSD != 6000 || len(eth.Strategies) != 1 {
+		t.Fatalf("ETH exposure = %#v, want one +$6000 primary leg", eth)
+	}
+	if btc := snap.Assets["BTC"]; btc == nil || btc.NetDeltaUSD != -5000 || len(btc.Strategies) != 1 {
+		t.Fatalf("BTC exposure = %#v, want one -$5000 hedge leg", btc)
+	}
+	if snap.PortfolioGrossUSD != 11000 {
+		t.Fatalf("portfolio gross = $%.2f, want both primary and hedge notionals", snap.PortfolioGrossUSD)
+	}
+}
+
 func TestComputeCorrelation_OptionsGreeks(t *testing.T) {
 	strategies := map[string]*StrategyState{
 		"deribit-strat": {

@@ -60,6 +60,25 @@ func independentAlphaTradeCount(trades []Trade) int {
 	return count
 }
 
+// persistedHedgeSymbolsForPrimary returns the sole source of truth for the
+// hedge legs coupled to primary. Config can change across a restart, but a
+// persisted HedgeFor record must continue to drive protective lifecycle work
+// until the pair is flat. The output is sorted because callers use it to
+// submit/log multi-leg close work.
+func persistedHedgeSymbolsForPrimary(s *StrategyState, primary string) []string {
+	if s == nil || primary == "" {
+		return nil
+	}
+	var symbols []string
+	for symbol, pos := range s.Positions {
+		if pos != nil && pos.HedgeFor == primary && pos.Quantity > hedgeQtyEpsilon {
+			symbols = append(symbols, symbol)
+		}
+	}
+	sort.Strings(symbols)
+	return symbols
+}
+
 func inverseHedgeSide(primarySide string) string {
 	switch primarySide {
 	case "long":

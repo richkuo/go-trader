@@ -174,6 +174,26 @@ func TestHedgeCircuitBreakerQueuesPrimaryAndPersistedHedge(t *testing.T) {
 	}
 }
 
+func TestHedgeCircuitBreakerDoesNotQueueHedgeWhenPrimaryIsShared(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+		Args:  []string{"hold", "ETH", "1h", "--mode=live"},
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 0.5},
+	}
+	state := &StrategyState{ID: sc.ID, Positions: map[string]*Position{
+		"ETH": {Symbol: "ETH", Quantity: 1, Side: "long"},
+		"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "short", HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+	}}
+	peer := StrategyConfig{ID: "hl-eth-peer", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h", "--mode=live"}}
+	setHyperliquidCircuitBreakerPending(&sc, state, &PlatformRiskAssist{
+		HLPositions: []HLPosition{{Coin: "ETH", Size: 1}, {Coin: "BTC", Size: -0.02}},
+		HLLiveAll:   []StrategyConfig{sc, peer},
+	})
+	if pending := state.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); pending != nil {
+		t.Fatalf("shared primary must not queue an independently-closing hedge: %#v", pending)
+	}
+}
+
 func TestForceCloseAllPositionsClosesPrimaryBeforeHedge(t *testing.T) {
 	s := &StrategyState{ID: "eth-alpha", Type: "perps", Positions: map[string]*Position{
 		"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long", Multiplier: 1},

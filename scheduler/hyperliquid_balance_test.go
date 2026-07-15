@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -3496,6 +3497,111 @@ func TestRunPendingHyperliquidCircuitCloses_SharedCoinLeavesVirtualPosition(t *t
 	}
 	if p := state.Strategies["hl-tema"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
 		t.Fatalf("expected shared-coin pending close cleared; got %+v", p)
+	}
+}
+
+func TestRunPendingHyperliquidCircuitCloses_SharedPrimaryKeepsCoupledHedge(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Type: "perps", Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1},
+				"BTC": {Symbol: "BTC", Quantity: 0.02, AvgCost: 100000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+			},
+			RiskState: RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+				PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.02}, {Symbol: "ETH", Size: 1}}},
+			}},
+		},
+	}}
+	cfg := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-eth-peer", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, sym)
+		return nil, errors.New("closer must not run for shared primary or its hedge")
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 2, EntryPrice: 3000}, {Coin: "BTC", Size: -0.02, EntryPrice: 100000}}, true,
+		nil, closer, 30*time.Second, &mu, nil,
+	)
+	if len(calls) != 0 {
+		t.Fatalf("shared primary/hedge must not submit a close: %v", calls)
+	}
+	if state.Strategies["hl-eth"].Positions["ETH"] == nil || state.Strategies["hl-eth"].Positions["BTC"] == nil {
+		t.Fatalf("shared primary and coupled hedge must both remain: %#v", state.Strategies["hl-eth"].Positions)
+	}
+	if pending := state.Strategies["hl-eth"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); pending != nil {
+		t.Fatalf("stale coupled pending work should be cleared, got %#v", pending)
+	}
+}
+
+func TestRunPendingHyperliquidCircuitCloses_DefersHedgeAfterPartialPrimary(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Type: "perps", Cash: 1000, Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1},
+				"BTC": {Symbol: "BTC", Quantity: 0.02, AvgCost: 100000, Side: "short", Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+			},
+			RiskState: RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
+				PlatformPendingCloseHyperliquid: {Symbols: []PendingCircuitCloseSymbol{{Symbol: "BTC", Size: 0.02}, {Symbol: "ETH", Size: 1}}},
+			}},
+		},
+	}}
+	cfg := []StrategyConfig{{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"hold", "ETH", "1h", "--mode=live"}}}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, sym)
+		if sym != "ETH" {
+			return nil, errors.New("hedge must not close after a partial primary fill")
+		}
+		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000}}, Platform: "hyperliquid"}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 1, EntryPrice: 3000}, {Coin: "BTC", Size: -0.02, EntryPrice: 100000}}, true,
+		nil, closer, 30*time.Second, &mu, nil,
+	)
+	if got := strings.Join(calls, ","); got != "ETH" {
+		t.Fatalf("close order = %v, want only the partially-filled primary", calls)
+	}
+	if hedge := state.Strategies["hl-eth"].Positions["BTC"]; hedge == nil || hedge.Quantity != 0.02 {
+		t.Fatalf("hedge changed after partial primary fill: %#v", hedge)
+	}
+	if pending := state.Strategies["hl-eth"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); pending == nil {
+		t.Fatal("partial primary close must retain both coupled pending legs")
+	}
+
+	// The retry closes the residual primary first, then its hedge. This guards
+	// both the ordering invariant and the no-close/reopen churn path.
+	calls = nil
+	fullCloser := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, sym)
+		switch sym {
+		case "ETH":
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.5, AvgPx: 3000}}, Platform: "hyperliquid"}, nil
+		case "BTC":
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 0.02, AvgPx: 100000}}, Platform: "hyperliquid"}, nil
+		default:
+			return nil, errors.New("unexpected close symbol")
+		}
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 0.5, EntryPrice: 3000}, {Coin: "BTC", Size: -0.02, EntryPrice: 100000}}, true,
+		nil, fullCloser, 30*time.Second, &mu, nil,
+	)
+	if got := strings.Join(calls, ","); got != "ETH,BTC" {
+		t.Fatalf("retry close order = %v, want primary ETH then hedge BTC", calls)
+	}
+	if state.Strategies["hl-eth"].Positions["ETH"] != nil || state.Strategies["hl-eth"].Positions["BTC"] != nil {
+		t.Fatalf("full coupled close left virtual positions: %#v", state.Strategies["hl-eth"].Positions)
+	}
+	if pending := state.Strategies["hl-eth"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); pending != nil {
+		t.Fatalf("full coupled close must clear pending work: %#v", pending)
 	}
 }
 

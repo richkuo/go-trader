@@ -2216,6 +2216,41 @@ func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfi
 	return nil
 }
 
+// orderHLCircuitPendingSymbols preserves the coupled-close invariant even for
+// a pending record persisted by an older process: primary first, unrelated
+// legs next, and hedge legs last. A hedge is then submitted only after the
+// drain has confirmed the primary's virtual state is flat.
+func orderHLCircuitPendingSymbols(symbols []PendingCircuitCloseSymbol, primary string, hedgeSymbols map[string]bool) {
+	rank := func(symbol string) int {
+		if symbol == primary {
+			return 0
+		}
+		if hedgeSymbols[symbol] {
+			return 2
+		}
+		return 1
+	}
+	sort.SliceStable(symbols, func(i, j int) bool {
+		ri, rj := rank(symbols[i].Symbol), rank(symbols[j].Symbol)
+		if ri != rj {
+			return ri < rj
+		}
+		return symbols[i].Symbol < symbols[j].Symbol
+	})
+}
+
+func hlPositionOpen(positions []HLPosition, coin string) bool {
+	if coin == "" {
+		return false
+	}
+	for _, pos := range positions {
+		if pos.Coin == coin && math.Abs(pos.Size) > hedgeQtyEpsilon {
+			return true
+		}
+	}
+	return false
+}
+
 // runPendingHyperliquidCircuitCloses drains the hyperliquid entry of
 // RiskState.PendingCircuitCloses for every strategy, submitting reduce-only HL
 // closes outside the state mutex. Retries next scheduler cycle on failure
@@ -2281,11 +2316,11 @@ func runPendingHyperliquidCircuitCloses(
 		}
 		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil && ss.RiskState.CircuitBreaker {
 			primary := hyperliquidConfiguredCoin(sc)
-			primaryRecoverable := primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1 && ss.Positions[primary] != nil
-			hedge := hedgeCoin(sc)
-			hedgePos := ss.Positions[hedge]
-			hedgeRecoverable := hedge != "" && hedgePos != nil && hedgePos.HedgeFor != "" && hedgePos.Quantity > hedgeQtyEpsilon
-			if primaryRecoverable || hedgeRecoverable {
+			primaryPos := ss.Positions[primary]
+			primaryRecoverable := primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1 && primaryPos != nil && primaryPos.Quantity > hedgeQtyEpsilon
+			// A correlated hedge is never independently recoverable: if this
+			// primary shares a wallet coin, its hedge must remain in place too.
+			if primaryRecoverable {
 				hasStuckCB = true
 				break
 			}
@@ -2329,13 +2364,16 @@ func runPendingHyperliquidCircuitCloses(
 				continue
 			}
 			var symbols []PendingCircuitCloseSymbol
-			if primary := hyperliquidConfiguredCoin(sc); primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1 && ss.Positions[primary] != nil {
+			primary := hyperliquidConfiguredCoin(sc)
+			if primaryPos := ss.Positions[primary]; primary != "" && len(hlLiveStrategiesForCoin(primary, hlCircuitPeerAll)) <= 1 && primaryPos != nil && primaryPos.Quantity > hedgeQtyEpsilon {
 				if qty, ok := computeHyperliquidCircuitCloseQty(primary, sc.ID, positions, hlCircuitPeerAll); ok && qty > 0 {
 					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: primary, Size: qty})
 				}
 			}
-			if hedge := hedgeCoin(sc); hedge != "" {
-				if pos := ss.Positions[hedge]; pos != nil && pos.HedgeFor != "" && pos.Quantity > hedgeQtyEpsilon {
+			// Reconstruct hedge work only after its primary was safely queued;
+			// never close a sole-owned hedge to a shared primary on its own.
+			if len(symbols) > 0 {
+				for _, hedge := range persistedHedgeSymbolsForPrimary(ss, primary) {
 					if qty, ok := computeHyperliquidCircuitCloseQty(hedge, sc.ID, positions, hlCircuitPeerAll); ok && qty > 0 {
 						symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedge, Size: qty})
 					}
@@ -2360,9 +2398,12 @@ func runPendingHyperliquidCircuitCloses(
 	// degrade the safety feature for every other strategy on the same
 	// wallet (#421 review point 1, #479).
 	type job struct {
-		stratID string
-		pending PendingCircuitClose
-		slOIDs  map[string][]int64
+		stratID            string
+		pending            PendingCircuitClose
+		slOIDs             map[string][]int64
+		primary            string
+		hedgeSymbols       map[string]bool
+		primaryVirtualFlat bool
 	}
 	var jobs []job
 	mu.RLock()
@@ -2374,6 +2415,14 @@ func runPendingHyperliquidCircuitCloses(
 		if p == nil || len(p.Symbols) == 0 {
 			continue
 		}
+		primary := ""
+		if sc := lookupStrategyConfig(strategies, id); sc != nil {
+			primary = hyperliquidConfiguredCoin(*sc)
+		}
+		hedgeSymbols := make(map[string]bool)
+		for _, symbol := range persistedHedgeSymbolsForPrimary(ss, primary) {
+			hedgeSymbols[symbol] = true
+		}
 		slOIDs := make(map[string][]int64, len(p.Symbols))
 		for _, c := range p.Symbols {
 			if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil {
@@ -2383,7 +2432,15 @@ func runPendingHyperliquidCircuitCloses(
 				}
 			}
 		}
-		jobs = append(jobs, job{id, *p, slOIDs})
+		primaryVirtualFlat := primary == "" || ss.Positions[primary] == nil || ss.Positions[primary].Quantity <= hedgeQtyEpsilon
+		jobs = append(jobs, job{
+			stratID:            id,
+			pending:            *p,
+			slOIDs:             slOIDs,
+			primary:            primary,
+			hedgeSymbols:       hedgeSymbols,
+			primaryVirtualFlat: primaryVirtualFlat,
+		})
 	}
 	mu.RUnlock()
 
@@ -2413,39 +2470,56 @@ func runPendingHyperliquidCircuitCloses(
 			continue
 		}
 		if sym := hyperliquidConfiguredCoin(*sc); sym != "" && len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
-			// A primary can share an on-chain wallet position with another
-			// strategy, but an enabled hedge may still be safely sole-owned.
-			// Remove only the shared primary leg; clearing the whole job would
-			// strand that hedge after a circuit-breaker fire.
+			// A hedge must never be removed while its primary remains live. A
+			// stale job created before that invariant existed can contain both
+			// legs, so clear it as a unit rather than draining the sole-owned
+			// hedge after excluding the shared primary.
+			fmt.Printf("[INFO] hl-circuit-close: strategy %s primary %s shares the wallet position with peers — clearing coupled primary/hedge pending work without submitting either leg\n",
+				j.stratID, sym)
+			mu.Lock()
+			if ss := state.Strategies[j.stratID]; ss != nil {
+				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+			}
+			mu.Unlock()
+			continue
+		}
+
+		hasPrimaryPending := false
+		for _, pending := range j.pending.Symbols {
+			if pending.Symbol == j.primary {
+				hasPrimaryPending = true
+				break
+			}
+		}
+		if len(j.hedgeSymbols) > 0 && !hasPrimaryPending {
+			// Never drain a hedge-only stale job. Drop its pending record and
+			// let the normal state-derived reconciler handle a true orphan once
+			// it can prove the primary is flat.
 			remaining := make([]PendingCircuitCloseSymbol, 0, len(j.pending.Symbols))
 			for _, pending := range j.pending.Symbols {
-				if pending.Symbol != sym {
+				if !j.hedgeSymbols[pending.Symbol] {
 					remaining = append(remaining, pending)
 				}
 			}
-			if len(remaining) == 0 {
-				fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — clearing the shared primary pending leg\n",
-					j.stratID, sym)
-				mu.Lock()
-				if ss := state.Strategies[j.stratID]; ss != nil {
-					ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
-				}
-				mu.Unlock()
-				continue
-			}
-			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — leaving that primary untouched and draining %d sole-owned hedge leg(s)\n",
-				j.stratID, sym, len(remaining))
-			j.pending.Symbols = remaining
+			fmt.Printf("[INFO] hl-circuit-close: strategy %s has hedge-only pending work without primary %s — dropping the coupled hedge request\n", j.stratID, j.primary)
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
-				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+				if len(remaining) == 0 {
+					ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+				} else if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
 					p.Symbols = remaining
 				}
 			}
 			mu.Unlock()
+			if len(remaining) == 0 {
+				continue
+			}
+			j.pending.Symbols = remaining
 		}
+		orderHLCircuitPendingSymbols(j.pending.Symbols, j.primary, j.hedgeSymbols)
 
 		allOK := true
+		primaryCloseConfirmed := j.primaryVirtualFlat && !hlPositionOpen(positions, j.primary)
 		drainError := false // set on closer() error; not set for under-fills (partial progress)
 		var drainErrSym string
 		var drainErrSz float64
@@ -2454,6 +2528,14 @@ func runPendingHyperliquidCircuitCloses(
 			if err := ctxOverall.Err(); err != nil {
 				allOK = false
 				break
+			}
+			if j.hedgeSymbols[c.Symbol] && !primaryCloseConfirmed {
+				// A primary under-fill / failure leaves it on-chain. Do not pay a
+				// second fee to remove the hedge and create a naked residual;
+				// retain both pending legs for the next coupled attempt.
+				fmt.Printf("[CRITICAL] hl-circuit-close: strategy %s deferring hedge %s until primary %s is confirmed flat\n", j.stratID, c.Symbol, j.primary)
+				allOK = false
+				continue
 			}
 			sz := c.Size
 			var onChainSigned float64
@@ -2566,6 +2648,16 @@ func runPendingHyperliquidCircuitCloses(
 					}
 				}
 				mu.Unlock()
+			}
+			if c.Symbol == j.primary && !underFill {
+				// A reported full fill is necessary but not sufficient: round-off
+				// or an already-flat response can leave virtual primary state for
+				// reconciliation. Only unlock the hedge after the persisted leg is
+				// also flat, preventing a same-cycle close/re-open churn.
+				mu.RLock()
+				ss := state.Strategies[j.stratID]
+				primaryCloseConfirmed = ss == nil || ss.Positions[j.primary] == nil || ss.Positions[j.primary].Quantity <= hedgeQtyEpsilon
+				mu.RUnlock()
 			}
 
 			// Other symbols in this strategy's pending list are independent

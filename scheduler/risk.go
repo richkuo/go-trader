@@ -944,18 +944,22 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	}
 	var symbols []PendingCircuitCloseSymbol
 	primary := hyperliquidSymbol(sc.Args)
+	primaryQueued := false
 	if primary != "" && !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		if _, held := s.Positions[primary]; held {
+		if pos := s.Positions[primary]; pos != nil && pos.Quantity > hedgeQtyEpsilon {
 			if qty, ok := computeHyperliquidCircuitCloseQty(primary, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
 				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: primary, Size: qty})
+				primaryQueued = true
 			}
 		}
 	}
-	// Hedge collisions are forbidden at config load, so its coin is always a
-	// sole owner even when the primary itself is shared and cannot be safely
-	// reduced at strategy granularity.
-	if hedge := hedgeCoin(*sc); hedge != "" {
-		if pos := s.Positions[hedge]; pos != nil && pos.HedgeFor != "" && pos.Quantity > 0 {
+	// A hedge is coupled to its persisted primary, not merely sole-owned. If a
+	// shared primary cannot be closed safely at strategy granularity, leave the
+	// hedge untouched too: flattening it alone creates a naked leveraged leg.
+	// Persisted ownership (rather than today's config) also protects a
+	// restart/config-mismatch pair until it is flat.
+	if primaryQueued {
+		for _, hedge := range persistedHedgeSymbolsForPrimary(s, primary) {
 			if qty, ok := computeHyperliquidCircuitCloseQty(hedge, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
 				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedge, Size: qty})
 			}
