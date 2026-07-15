@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ const (
 	hedgeActionClose          = "close"
 	hedgeActionMismatch       = "mismatch"
 	hedgeActionPrimaryFailure = "primary_failure"
+	hedgeActionHold           = "hold"
 	hedgeQuantityEpsilon      = 1e-9
 )
 
@@ -29,11 +31,12 @@ type hedgePositionSnapshot struct {
 }
 
 type hedgeDecision struct {
-	Action          string
-	Side            string
-	Quantity        float64
-	PrimaryQtyBasis float64
-	Reason          string
+	Action                  string
+	Side                    string
+	Quantity                float64
+	PrimaryQtyBasis         float64
+	PreviousPrimaryQtyBasis float64
+	Reason                  string
 }
 
 func normalizeHedgeCoin(symbol string) string {
@@ -112,13 +115,17 @@ func hedgeTargetQuantity(primaryQty, primaryPrice, hedgePrice, ratio float64) (f
 	if primaryQty <= hedgeQuantityEpsilon {
 		return 0, nil
 	}
-	if primaryPrice <= hedgeQuantityEpsilon || hedgePrice <= hedgeQuantityEpsilon {
+	if !usableHedgeMark(primaryPrice) || !usableHedgeMark(hedgePrice) {
 		return 0, fmt.Errorf("unusable hedge price (primary=%.12g hedge=%.12g)", primaryPrice, hedgePrice)
 	}
 	if ratio <= hedgeQuantityEpsilon {
 		return 0, fmt.Errorf("hedge ratio must be positive, got %.12g", ratio)
 	}
 	return primaryQty * primaryPrice * ratio / hedgePrice, nil
+}
+
+func usableHedgeMark(price float64) bool {
+	return price > hedgeQuantityEpsilon && !math.IsNaN(price) && !math.IsInf(price, 0)
 }
 
 func decideHedge(primary, hedge hedgePositionSnapshot, primaryPrice, hedgePrice, ratio float64, freshPrimaryOpen bool) hedgeDecision {
@@ -135,6 +142,9 @@ func decideHedge(primary, hedge hedgePositionSnapshot, primaryPrice, hedgePrice,
 	}
 	if hedge.Quantity > hedgeQuantityEpsilon && hedge.Side != desiredSide {
 		return hedgeDecision{Action: hedgeActionMismatch, Side: hedge.Side, Quantity: hedge.Quantity, Reason: "hedge side does not oppose primary"}
+	}
+	if !usableHedgeMark(primaryPrice) || !usableHedgeMark(hedgePrice) {
+		return hedgeDecision{Action: hedgeActionHold, Reason: fmt.Sprintf("missing usable mark (primary=%.12g hedge=%.12g)", primaryPrice, hedgePrice)}
 	}
 
 	targetQty, err := hedgeTargetQuantity(primary.Quantity, primaryPrice, hedgePrice, ratio)
@@ -178,7 +188,7 @@ func decideHedge(primary, hedge hedgePositionSnapshot, primaryPrice, hedgePrice,
 		if closeQty <= hedgeQuantityEpsilon {
 			return hedgeDecision{Action: hedgeActionNone}
 		}
-		return hedgeDecision{Action: hedgeActionReduce, Side: hedge.Side, Quantity: closeQty, PrimaryQtyBasis: primary.Quantity, Reason: "primary quantity decreased"}
+		return hedgeDecision{Action: hedgeActionReduce, Side: hedge.Side, Quantity: closeQty, PrimaryQtyBasis: primary.Quantity, PreviousPrimaryQtyBasis: basis, Reason: "primary quantity decreased"}
 	}
 	return hedgeDecision{Action: hedgeActionNone}
 }
@@ -383,6 +393,14 @@ func syncHedgeForStrategy(sc StrategyConfig, state *AppState, mu *sync.RWMutex, 
 	if decision.Action == hedgeActionNone {
 		return
 	}
+	if decision.Action == hedgeActionHold {
+		holdAlert := fmt.Sprintf("**HEDGE HOLD** [%s] %s; retrying without changing the primary or hedge.", sc.ID, decision.Reason)
+		hedgeOwnerAlert(notifier, holdAlert)
+		if logger != nil {
+			logger.Warn("hedge hold: %s", decision.Reason)
+		}
+		return
+	}
 	if decision.Action == hedgeActionPrimaryFailure || decision.Action == hedgeActionMismatch {
 		if decision.Action == hedgeActionMismatch && hedgePos != nil {
 			if !closeHedgeLeg(sc, state, mu, hedgeSymbol, hedgePos, hlPositions, notifier, logger) {
@@ -427,7 +445,7 @@ func syncHedgeForStrategy(sc StrategyConfig, state *AppState, mu *sync.RWMutex, 
 		openHedgeLeg(sc, state, mu, primaryCoin, hCoin, hedgeSymbol, hedge, decision, primaryPx, hedgePx, hlPositions, notifier, logger)
 		return
 	}
-	closeHedgeLegSized(sc, state, mu, hedgeSymbol, hedgePos, decision.Quantity, decision.Action == hedgeActionClose, hlPositions, notifier, logger)
+	closeHedgeLegSized(sc, state, mu, hedgeSymbol, hedgePos, decision.Quantity, decision.Action == hedgeActionClose, decision.PreviousPrimaryQtyBasis, hlPositions, notifier, logger)
 }
 
 func hedgeOwnerAlert(notifier *MultiNotifier, msg string) {
@@ -437,7 +455,7 @@ func hedgeOwnerAlert(notifier *MultiNotifier, msg string) {
 }
 
 func openHedgeLeg(sc StrategyConfig, state *AppState, mu *sync.RWMutex, primaryCoin, hedgeCoinName, hedgeSymbol string, hedge hedgePositionSnapshot, decision hedgeDecision, primaryPx, hedgePx float64, hlPositions []HLPosition, notifier *MultiNotifier, logger *StrategyLogger) {
-	if primaryPx <= 0 || hedgePx <= 0 {
+	if !usableHedgeMark(primaryPx) || !usableHedgeMark(hedgePx) {
 		hedgeOwnerAlert(notifier, fmt.Sprintf("**HEDGE BLOCKED** [%s] missing usable mark for primary %s or hedge %s; no hedge order submitted.", sc.ID, primaryCoin, hedgeCoinName))
 		return
 	}
@@ -577,15 +595,19 @@ func closeHedgeLeg(sc StrategyConfig, state *AppState, mu *sync.RWMutex, symbol 
 	if pos == nil {
 		return true
 	}
-	return closeHedgeLegSized(sc, state, mu, symbol, pos, pos.Quantity, true, hlPositions, notifier, logger)
+	return closeHedgeLegSized(sc, state, mu, symbol, pos, pos.Quantity, true, 0, hlPositions, notifier, logger)
 }
 
-func closeHedgeLegSized(sc StrategyConfig, state *AppState, mu *sync.RWMutex, symbol string, pos *Position, qty float64, full bool, hlPositions []HLPosition, notifier *MultiNotifier, logger *StrategyLogger) bool {
+func closeHedgeLegSized(sc StrategyConfig, state *AppState, mu *sync.RWMutex, symbol string, pos *Position, qty float64, full bool, previousBasis float64, hlPositions []HLPosition, notifier *MultiNotifier, logger *StrategyLogger) bool {
 	if pos == nil || qty <= hedgeQuantityEpsilon {
 		return true
 	}
 	if qty > pos.Quantity {
 		qty = pos.Quantity
+	}
+	requestedQty := qty
+	if previousBasis <= hedgeQuantityEpsilon {
+		previousBasis = pos.HedgePrimaryQtyBasis
 	}
 	isLive := hyperliquidIsLive(sc.Args)
 	fillPx := pos.AvgCost
@@ -620,7 +642,11 @@ func closeHedgeLegSized(sc StrategyConfig, state *AppState, mu *sync.RWMutex, sy
 		mu.Unlock()
 		return true
 	}
-	if full || qty >= current.Quantity-hedgeQuantityEpsilon {
+	bookedFull := qty >= current.Quantity-hedgeQuantityEpsilon
+	if full && !bookedFull && logger != nil {
+		logger.Warn("hedge full close underfilled: requested %.6f, confirmed %.6f; preserving the residual hedge for retry", requestedQty, qty)
+	}
+	if bookedFull {
 		bookPerpsCloseWithFillFee(ss, symbol, fillPx, fillFee, isLive, fillOID, "hedge_sync", "Hedge close", "Hedge close", logger)
 	} else {
 		bookPerpsPartialCloseWithFillFee(ss, symbol, qty, fillPx, fillFee, isLive, fillOID, "hedge_sync", "Hedge reduce", "Hedge reduce", logger)
@@ -633,10 +659,41 @@ func closeHedgeLegSized(sc StrategyConfig, state *AppState, mu *sync.RWMutex, sy
 				primaryQty = primary.Quantity
 			}
 			remaining.HedgePrimaryQtyBasis = primaryQty
+			if !bookedFull {
+				remaining.HedgePrimaryQtyBasis = hedgeBasisAfterReduction(previousBasis, primaryQty, requestedQty, qty)
+			}
 		}
 	}
 	mu.Unlock()
 	return true
+}
+
+func hedgeBasisAfterReduction(previousBasis, currentPrimaryQty, requestedHedgeQty, filledHedgeQty float64) float64 {
+	if filledHedgeQty <= hedgeQuantityEpsilon {
+		return previousBasis
+	}
+	if currentPrimaryQty <= hedgeQuantityEpsilon {
+		return 0
+	}
+	if previousBasis <= hedgeQuantityEpsilon || requestedHedgeQty <= hedgeQuantityEpsilon {
+		return currentPrimaryQty
+	}
+	primaryReduction := previousBasis - currentPrimaryQty
+	if primaryReduction <= hedgeQuantityEpsilon {
+		return currentPrimaryQty
+	}
+	fillFraction := filledHedgeQty / requestedHedgeQty
+	if fillFraction < 0 {
+		fillFraction = 0
+	}
+	if fillFraction > 1 {
+		fillFraction = 1
+	}
+	basis := previousBasis - primaryReduction*fillFraction
+	if basis < currentPrimaryQty {
+		basis = currentPrimaryQty
+	}
+	return basis
 }
 
 func failClosedPrimary(sc StrategyConfig, state *AppState, mu *sync.RWMutex, symbol string, pos *Position, mark float64, hlPositions []HLPosition, notifier *MultiNotifier, logger *StrategyLogger, reason string) {

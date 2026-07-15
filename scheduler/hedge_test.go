@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -62,6 +63,63 @@ func TestDecideHedgeFailsClosedWhenPrimaryOpenedWithoutHedge(t *testing.T) {
 	decision := decideHedge(hedgePositionSnapshot{Quantity: 1, Side: "long"}, hedgePositionSnapshot{}, 100, 50, 1, false)
 	if decision.Action != hedgeActionPrimaryFailure {
 		t.Fatalf("decision = %+v, want primary failure", decision)
+	}
+}
+
+func TestDecideHedgeHoldsWhenEitherMarkIsMissing(t *testing.T) {
+	primary := hedgePositionSnapshot{Quantity: 1, Side: "long"}
+	hedge := hedgePositionSnapshot{Quantity: 2, Side: "short", HedgePrimaryQtyBasis: 1}
+	for name, prices := range map[string][2]float64{
+		"missing primary": {0, 100},
+		"missing hedge":   {100, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			decision := decideHedge(primary, hedge, prices[0], prices[1], 1, false)
+			if decision.Action != hedgeActionHold {
+				t.Fatalf("decision = %+v, want hold", decision)
+			}
+		})
+	}
+}
+
+func TestSyncHedgeDoesNotMutateOnMissingMark(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+		Args:  []string{"sma", "ETH", "1h"},
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC", Side: "inverse", Ratio: 1, Platform: "hyperliquid", Type: "perps", MarginMode: "isolated", Leverage: 1},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		sc.ID: {ID: sc.ID, Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 2, AvgCost: 50, Side: "short", HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+		}},
+	}}
+	var mu sync.RWMutex
+	syncHedgeForStrategy(sc, state, &mu, map[string]float64{"ETH": 100}, nil, false, nil, nil)
+	if got := state.Strategies[sc.ID].Positions["ETH"].Quantity; got != 1 {
+		t.Fatalf("primary quantity = %v, want unchanged 1", got)
+	}
+	if got := state.Strategies[sc.ID].Positions["BTC"].Quantity; got != 2 {
+		t.Fatalf("hedge quantity = %v, want unchanged 2", got)
+	}
+}
+
+func TestHedgeBasisAfterReductionTracksConfirmedFill(t *testing.T) {
+	cases := []struct {
+		name                                       string
+		previous, current, requested, filled, want float64
+	}{
+		{"full fill", 2, 1, 0.5, 0.5, 1},
+		{"partial fill", 2, 1, 0.5, 0.25, 1.5},
+		{"no confirmed fill", 2, 1, 0.5, 0, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hedgeBasisAfterReduction(tc.previous, tc.current, tc.requested, tc.filled)
+			if math.Abs(got-tc.want) > 1e-12 {
+				t.Fatalf("basis = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
