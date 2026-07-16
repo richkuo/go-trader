@@ -81,6 +81,12 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			// #1159: a hedge-enabled strategy needs a mark for its hedge coin
+			// every cycle too — feeds hedge sizing, coherence, reconcile close
+			// px, and PnL display.
+			if hedgeCoin := hedgeCoinForStrategy(sc); hedgeCoin != "" {
+				hlSet[hedgeCoin] = true
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -953,8 +959,23 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	// #1159: drain the hedge leg alongside the primary — a CB close that
+	// only flattened the primary would strand the hedge running "hedged"
+	// against a position that no longer exists. The hedge coin is always
+	// sole-owned (hyperliquidHedgeConfigErrors), so
+	// computeHyperliquidCircuitCloseQty naturally returns the full on-chain
+	// size for it (zero configured-coin peers -> not the len(peers)>1
+	// shared-coin bailout).
+	if strategyHedgeEnabled(*sc) {
+		if hedgeCoin := hedgeCoinForStrategy(*sc); hedgeCoin != "" {
+			if hedgeQty, hedgeOK := computeHyperliquidCircuitCloseQty(hedgeCoin, s.ID, assist.HLPositions, assist.HLLiveAll); hedgeOK && hedgeQty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedgeCoin, Size: hedgeQty})
+			}
+		}
+	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 

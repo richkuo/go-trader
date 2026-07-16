@@ -1782,6 +1782,8 @@ func main() {
 					var hlScaleInCash float64
 					var hlScaleInResizePending bool
 					var hlProfileState *RegimeProfileState
+					var hlHedgeCoin string
+					var hlHedgePos *Position
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
 							hlCash = stratState.Cash
@@ -1815,6 +1817,18 @@ func main() {
 								hlLastAddPrice = pos.LastAddPrice
 								hlAddedNotionalUSD = pos.AddedNotionalUSD
 								hlScaleInResizePending = pos.ScaleInResizePending
+							}
+						}
+						// #1159: snapshot the hedge leg (if any) under the same
+						// Phase-1 RLock so the pre-open gate and open/close
+						// mirrors below read a stable copy.
+						if strategyHedgeEnabled(sc) {
+							hlHedgeCoin = hedgeCoinForStrategy(sc)
+							if hlHedgeCoin != "" {
+								if hp, ok := stratState.Positions[hlHedgeCoin]; ok && hp != nil {
+									cp := *hp
+									hlHedgePos = &cp
+								}
 							}
 						}
 					}
@@ -2389,7 +2403,26 @@ func main() {
 									logger.Info("Scale-in not taken for %s: %s", result.Symbol, reason)
 								}
 							}
-							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
+							// #1159: hedge pre-open gate — evaluated BEFORE the
+							// primary order is spawned so a doomed hedge never
+							// lets an unhedgeable primary fill land first
+							// (mirrors the skip-reason-before-spawning
+							// discipline PerpsOrderSkipReason already uses for
+							// ordinary skips). Scoped to a FRESH open from flat
+							// only — scale-in adds and closes are mirrored
+							// separately below without a pre-gate: an add
+							// failure unwinds just the add, a close-mirror
+							// failure is risk-reducing, neither creates new
+							// unhedged exposure the way an ungated fresh open
+							// would.
+							hedgeGateBlocked := false
+							if hyperliquidIsLive(sc.Args) && result.Signal != 0 && scaleInAddQty == 0 && hlPosQty == 0 && strategyHedgeEnabled(sc) {
+								if gateOK, gateReason := hedgePreOpenGate(sc, hlHedgeCoin, prices[hlHedgeCoin], hlPositions, hlHedgePos); !gateOK {
+									hedgeGateBlocked = true
+									logger.Info("Skipping live order for %s: hedge pre-open gate refused — %s", result.Symbol, gateReason)
+								}
+							}
+							if hyperliquidIsLive(sc.Args) && result.Signal != 0 && !hedgeGateBlocked {
 								// #768 fix #4: Forward Go's clearinghouseState
 								// snapshot for this coin so Python can skip its
 								// duplicate get_position_leverage /info call.
@@ -2429,14 +2462,84 @@ func main() {
 									}
 								}
 							}
+							// #1159: hedge mirror for a CONFIRMED fresh primary
+							// open. Must run here (Phase 3, no lock) — before
+							// state is booked — so a hedge-open failure can
+							// unwind the primary before any state exists for
+							// it (constraint 4: never book a naked open).
+							var hedgeOpenFill *HyperliquidFill
+							var hedgeOpenCoin, hedgeOpenSide string
+							if hyperliquidIsLive(sc.Args) && !liveExecFailed && !hedgeGateBlocked && strategyHedgeEnabled(sc) && scaleInAddQty == 0 && hlPosQty == 0 && result.Signal != 0 &&
+								execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && !execResult.StopLossFilledImmediately {
+								primarySide := "long"
+								if result.Signal == -1 {
+									primarySide = "short"
+								}
+								coin, side, fill, hedgeOK, hedgeFailReason := runHedgeOpenMirror(sc, primarySide, execResult.Execution.Fill, hlPositions, hlHedgePos, prices[hlHedgeCoin], notifier, logger)
+								hedgeOpenCoin, hedgeOpenSide = coin, side
+								if hedgeOK {
+									hedgeOpenFill = fill
+								} else {
+									trades, detail = unwindPrimaryAfterHedgeOpenFailure(sc, stratState, result, execResult, signalStr, price, cfg, hedgeFailReason, &mu, notifier, logger)
+									// Both legs (open + unwind close) are already
+									// booked by the unwind — skip the normal
+									// booking path below entirely.
+									liveExecFailed = true
+								}
+							}
+							// #1159: hedge mirror for a CONFIRMED scale-in add.
+							// Unlike the fresh-open case, a failed hedge add does
+							// NOT unwind the whole position — only the just-added
+							// increment is reduced back off, restoring the
+							// pre-add primary/hedge relationship.
+							var hedgeAddFill *HyperliquidFill
+							hedgeAddUnwindTrades := 0
+							hedgeAddUnwindDetail := ""
+							if hyperliquidIsLive(sc.Args) && !liveExecFailed && strategyHedgeEnabled(sc) && scaleInAddQty > 0 &&
+								execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
+								addFill := execResult.Execution.Fill
+								existingHedgeSide := ""
+								if hlHedgePos != nil {
+									existingHedgeSide = hlHedgePos.Side
+								}
+								fill, hedgeOK, hedgeFailReason := runHedgeScaleInMirror(sc, hlHedgeCoin, existingHedgeSide, addFill.TotalSz, addFill.AvgPx, prices[hlHedgeCoin], hlPositions, notifier, logger)
+								if hedgeOK {
+									hedgeAddFill = fill
+								} else {
+									// The add itself still gets booked below (it DID
+									// fill on-chain) — the unwind reduces it back off
+									// afterward so the ledger shows both legs, matching
+									// the fresh-open unwind's "history matches chain"
+									// principle. Counts merged into the cycle's trade
+									// total synchronously once the normal booking path
+									// (below) also runs — NOT via defer: this executes
+									// once per due strategy inside the dispatch loop, and
+									// a deferred closure here would only fire when the
+									// whole scheduler cycle function returns, long after
+									// trades/detail are read for this strategy.
+									hedgeAddUnwindTrades, hedgeAddUnwindDetail = unwindPrimaryAddAfterHedgeAddFailure(sc, stratState, result.Symbol, addFill.TotalSz, hedgeFailReason, &mu, notifier, logger)
+								}
+							}
 							if !liveExecFailed {
 								mu.Lock()
 								var openTrade *Trade
 								var ratchetAlert *RatchetTriggerAlert
 								if scaleInAddQty > 0 {
 									trades, detail, openTrade = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
+									if hedgeAddFill != nil {
+										if ht := applyHedgeScaleIn(stratState, hlHedgeCoin, hedgeAddFill); ht != nil {
+											trades++
+											detail = fmt.Sprintf("[%s] HEDGE add %s @ $%.2f", sc.ID, hlHedgeCoin, hedgeAddFill.AvgPx)
+										}
+									}
 								} else {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									if hedgeOpenFill != nil {
+										if ht := applyHedgeOpen(stratState, sc, result.Symbol, hedgeOpenCoin, hedgeOpenSide, hedgeOpenFill); ht != nil {
+											trades++
+											detail = fmt.Sprintf("[%s] HEDGE opened %s @ $%.2f", sc.ID, hedgeOpenCoin, hedgeOpenFill.AvgPx)
+										}
+									}
 								}
 								mu.Unlock()
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
@@ -2501,6 +2604,35 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: merge in the hedge-add-unwind trade/detail computed
+							// above (synchronous — NOT a defer; see the comment at the
+							// computation site for why a defer here would be wrong).
+							if hedgeAddUnwindTrades > 0 {
+								trades += hedgeAddUnwindTrades
+								if hedgeAddUnwindDetail != "" {
+									detail = hedgeAddUnwindDetail
+								}
+							}
+							// #1159: mirror a confirmed signal-based close/partial-close
+							// onto the hedge leg. result.CloseFraction > 0 only on a
+							// close action — mutually exclusive with the open/scale-in
+							// paths above, which never set it — so this is safe to run
+							// unconditionally after them. Skipped when the primary order
+							// itself failed (nothing closed) or the primary was just
+							// unwound above (already flat, no hedge to mirror against).
+							if hyperliquidIsLive(sc.Args) && !liveExecFailed && result.CloseFraction > 0 {
+								runHedgeCloseMirror(sc, stratState, result.Symbol, result.CloseFraction, &mu, logger)
+							}
+							// #1159: per-cycle coherence safety net. Runs every cycle for
+							// every hedge-enabled strategy regardless of what happened
+							// above (cheap no-op when nothing is open) — catches drift
+							// the synchronous mirrors above can't see: on-chain SL/TP/
+							// trailing fills on the primary (booked by the reconciler,
+							// not this dispatch), crashes mid-mirror, external hedge
+							// closes/liquidations.
+							if strategyHedgeEnabled(sc) {
+								syncHedgeCoherence(sc, stratState, result.Symbol, prices, &mu, notifier, logger)
 							}
 						}
 					case "futures":

@@ -498,6 +498,32 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 				}
 			}
 		}
+		// #1159: prefetch the hedge coin's fee lookup too, on the same
+		// mismatch trigger as the primary above. Hedge legs carry no
+		// SL/TP OID (phase 1: no independent protection), so only the
+		// (coin, 0, qty) fallback form is meaningful here.
+		if strategyHedgeEnabled(sc) {
+			hedgeCoin := hedgeCoinForStrategy(sc)
+			hedgePos := ss.Positions[hedgeCoin]
+			if hedgeCoin != "" && hedgePos != nil && hedgePos.Quantity > 0 {
+				hedgeOnChainSize, hedgePresent := onChainByCoin[hedgeCoin]
+				hedgeMismatched := !hedgePresent || math.Abs(math.Abs(hedgeOnChainSize)-hedgePos.Quantity) > 1e-9
+				if hedgeMismatched {
+					addCandidate(hedgeCoin, 0, hedgePos.Quantity)
+					if hedgePresent && hedgeOnChainSize != 0 {
+						signedVirtual := hedgePos.Quantity
+						if hedgePos.Side == "short" {
+							signedVirtual = -hedgePos.Quantity
+						}
+						sameDirection := (signedVirtual > 0 && hedgeOnChainSize > 0) || (signedVirtual < 0 && hedgeOnChainSize < 0)
+						onChainAbs := math.Abs(hedgeOnChainSize)
+						if sameDirection && onChainAbs+1e-9 < hedgePos.Quantity {
+							addCandidate(hedgeCoin, 0, hedgePos.Quantity-onChainAbs)
+						}
+					}
+				}
+			}
+		}
 	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy

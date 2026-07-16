@@ -119,6 +119,17 @@ type Position struct {
 	// compares this stamp to the live resolution once per boot to catch that
 	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
 	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
+	// #1159 hedge legs. IsHedge marks a scheduler-managed hedge position —
+	// never signal-driven, invisible to check scripts/close evaluators (they
+	// look up positions by the strategy's configured primary symbol only).
+	// HedgeFor names the primary symbol this hedge mirrors (set only when
+	// IsHedge). HedgeSymbol is the mirror-image field stamped on the PRIMARY
+	// position: the hedge coin opened alongside it, "" when no hedge is open.
+	// Persisted (db.go) so restart/reconcile recovers ownership from state,
+	// never from coin->configured-symbol inference (constraint 5).
+	IsHedge     bool   `json:"is_hedge,omitempty"`
+	HedgeFor    string `json:"hedge_for,omitempty"`
+	HedgeSymbol string `json:"hedge_symbol,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are

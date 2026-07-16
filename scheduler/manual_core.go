@@ -1256,6 +1256,14 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 	if !manualPositionOwnedByStrategy(pos, strategyID) {
 		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sym, pos.OwnerStrategyID, strategyID)
 	}
+	// #1159: hedge legs are scheduler-managed — no independent SL/TP, no
+	// check script, mirrored automatically off the primary's lifecycle. A
+	// force-close addressed directly at the hedge symbol would strand that
+	// mirroring; act on the primary instead (its own force-close leaves the
+	// hedge to syncHedgeCoherence's "primary gone" reduce-only close).
+	if pos.IsHedge {
+		return res, manualFailf("error: %s/%s is a scheduler-managed hedge leg (for %s) — force-close the primary position instead", strategyID, sym, pos.HedgeFor)
+	}
 
 	closeQty := pos.Quantity
 	intentFullClose := true
@@ -1464,6 +1472,11 @@ func resolveManualSLTargetCore(d manualCoreDeps, sc StrategyConfig, cmdName, str
 	}
 	if !manualPositionOwnedByStrategy(pos, strategyID) {
 		return nil, "", manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, symbol, pos.OwnerStrategyID, strategyID)
+	}
+	// #1159: hedge legs carry no independent SL/TP by design (phase 1) —
+	// reject an operator attempt to attach protection to one directly.
+	if pos.IsHedge {
+		return nil, "", manualFailf("error: %s/%s is a scheduler-managed hedge leg (for %s) — it carries no independent stop-loss", strategyID, symbol, pos.HedgeFor)
 	}
 
 	// Block when the strategy's automated protection would revert the edit on
