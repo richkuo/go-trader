@@ -1935,9 +1935,15 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	// position id, not new positions — exclude them so #T stays the count of
 	// distinct round-trips opened. W/L below is unaffected (it groups close
 	// legs, which a scale-in never is).
+	// #1159 review: hedge legs are a second, automatically-managed Position
+	// under the same strategy, not independent alpha — exclude is_hedge=1
+	// rows from both #T and W/L so a hedge round-trip never inflates the
+	// strategy's reported trade count or win/loss record. Hedge PnL/fees
+	// still book to the strategy's cash/ledger (tradeNetPnL is unaffected);
+	// only these count-based stats are filtered.
 	openRows, err := sdb.db.Query(`SELECT strategy_id, COUNT(*)
 		FROM trades
-		WHERE is_close = 0 AND trade_type NOT IN ('scale_in', 'funding')
+		WHERE is_close = 0 AND trade_type NOT IN ('scale_in', 'funding') AND is_hedge = 0
 		GROUP BY strategy_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query lifetime open counts: %w", err)
@@ -1971,7 +1977,7 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 				END AS pkey,
 				SUM` + tradeNetPnLSQL + ` AS net_pnl
 			FROM trades
-			WHERE is_close = 1
+			WHERE is_close = 1 AND is_hedge = 0
 			GROUP BY strategy_id, pkey
 		)
 		GROUP BY strategy_id`)
@@ -2010,9 +2016,10 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	var opens sql.NullInt64
 	// #873: exclude scale-in add legs — they are open-side legs on an existing
 	// position, not new round-trips (mirrors LifetimeTradeStatsAll).
+	// #1159 review: exclude hedge legs too — see LifetimeTradeStatsAll.
 	if err := sdb.db.QueryRow(`SELECT COUNT(*)
 		FROM trades
-		WHERE strategy_id = ? AND is_close = 0 AND trade_type NOT IN ('scale_in', 'funding')`, strategyID).Scan(&opens); err != nil {
+		WHERE strategy_id = ? AND is_close = 0 AND trade_type NOT IN ('scale_in', 'funding') AND is_hedge = 0`, strategyID).Scan(&opens); err != nil {
 		return LifetimeTradeStats{}, fmt.Errorf("query lifetime open count for %s: %w", strategyID, err)
 	}
 	out.PositionsOpened = int(opens.Int64)
@@ -2030,7 +2037,7 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 				END AS pkey,
 				SUM`+tradeNetPnLSQL+` AS net_pnl
 			FROM trades
-			WHERE strategy_id = ? AND is_close = 1
+			WHERE strategy_id = ? AND is_close = 1 AND is_hedge = 0
 			GROUP BY pkey
 		)`, strategyID).Scan(&wins, &losses); err != nil {
 		return LifetimeTradeStats{}, fmt.Errorf("query lifetime trade stats for %s: %w", strategyID, err)

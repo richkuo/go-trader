@@ -507,12 +507,21 @@ func runHedgeReduceOrder(sc StrategyConfig, hedgeSym string, partialSz *float64,
 //
 // Constraint 4 (fail closed): when this is a fresh open (prevQty==0) and the
 // hedge order fails, the primary leg is immediately unwound (reduce-only,
-// full close) and the operator is alerted — the strategy must never run
-// unhedged silently. A scale-in add failure unwinds only the added delta.
-// Signal-close/partial-close hedge-reduce failures are NOT unwound (the
-// primary already de-risked); they alert and rely on the per-cycle
+// sized to the exact fill) and the operator is alerted — the strategy must
+// never run unhedged silently. A scale-in add failure unwinds only the added
+// delta. Signal-close/partial-close hedge-reduce failures are NOT unwound
+// (the primary already de-risked); they alert and rely on the per-cycle
 // runHedgeCoherenceSync backstop to retry.
-func syncHedgeAfterPrimaryFill(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, hlPositions []HLPosition, prevQty float64, prevSide string, notifier *MultiNotifier, logger *StrategyLogger) {
+//
+// primaryFillPx is the ACTUAL fill price of the order that just ran
+// (execResult.Execution.Fill.AvgPx), never Position.AvgCost: on a scale-in
+// add, AvgCost is the BLENDED cost across the whole position (old + new
+// legs), not the incremental add's own fill price, so sizing the hedge
+// notional off it would over/under-hedge after any price move since entry.
+// Fresh-open and flip fills happen to have AvgCost == fill price (nothing to
+// blend with), but using the real fill price uniformly removes that
+// coincidental coupling.
+func syncHedgeAfterPrimaryFill(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, hlPositions []HLPosition, prevQty float64, prevSide string, primaryFillPx float64, notifier *MultiNotifier, logger *StrategyLogger) {
 	if !hedgeEnabled(sc) || !hyperliquidIsLive(sc.Args) {
 		return
 	}
@@ -523,12 +532,11 @@ func syncHedgeAfterPrimaryFill(sc StrategyConfig, s *StrategyState, mu *sync.RWM
 	}
 
 	mu.RLock()
-	var newQty, newAvgCost float64
+	var newQty float64
 	var newSide string
 	if p, ok := s.Positions[primarySym]; ok && p != nil {
 		newQty = p.Quantity
 		newSide = p.Side
-		newAvgCost = p.AvgCost
 	}
 	var hedgeQty float64
 	if hp, ok := s.Positions[hedgeSym]; ok && hp != nil {
@@ -543,18 +551,18 @@ func syncHedgeAfterPrimaryFill(sc StrategyConfig, s *StrategyState, mu *sync.RWM
 		if hedgeQty > eps {
 			reduceHedgeAndBook(sc, s, mu, hedgeSym, nil, "hedge_mirror_flip", notifier, logger)
 		}
-		openHedgeForPrimaryDelta(sc, s, mu, hlPositions, primarySym, hedgeSym, newSide, newQty, newAvgCost, newQty, notifier, logger, true)
+		openHedgeForPrimaryDelta(sc, s, mu, hlPositions, primarySym, hedgeSym, newSide, newQty, primaryFillPx, newQty, notifier, logger, true)
 		return
 	}
 	if prevQty <= eps && newQty > eps {
 		// Fresh open.
-		openHedgeForPrimaryDelta(sc, s, mu, hlPositions, primarySym, hedgeSym, newSide, newQty, newAvgCost, newQty, notifier, logger, true)
+		openHedgeForPrimaryDelta(sc, s, mu, hlPositions, primarySym, hedgeSym, newSide, newQty, primaryFillPx, newQty, notifier, logger, true)
 		return
 	}
 	if newQty > prevQty+eps {
 		// Scale-in add.
 		delta := newQty - prevQty
-		openHedgeForPrimaryDelta(sc, s, mu, hlPositions, primarySym, hedgeSym, newSide, delta, newAvgCost, newQty, notifier, logger, false)
+		openHedgeForPrimaryDelta(sc, s, mu, hlPositions, primarySym, hedgeSym, newSide, delta, primaryFillPx, newQty, notifier, logger, false)
 		return
 	}
 	if newQty < prevQty-eps {
@@ -612,16 +620,17 @@ func openHedgeForPrimaryDelta(sc StrategyConfig, s *StrategyState, mu *sync.RWMu
 }
 
 // failHedgeOpenClosed implements #1159 constraint 4: when the hedge open
-// fails on a fresh open, the primary is unwound in full (reduce-only) so the
-// strategy never runs unhedged silently. On a scale-in add failure, only the
-// added delta is unwound — the pre-existing (already hedged) portion is left
-// alone.
+// fails, the primary is unwound reduce-only, sized to EXACTLY the just-filled
+// delta (deltaQty — the full open qty on a fresh open, or just the added
+// delta on a scale-in add) so the strategy never runs unhedged silently.
+// This must NEVER be a nil-sized market_close: #491 permits two HL perps
+// strategies to share a primary coin (the hedge collision rules only
+// restrict the hedge coin, never the primary), and a nil-sized close flattens
+// the ENTIRE on-chain net for the coin — including a peer's share. Sizing to
+// deltaQty is peer-safe on a shared coin and equivalent to a full close on a
+// sole-owned one.
 func failHedgeOpenClosed(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, primarySym string, deltaQty float64, notifier *MultiNotifier, logger *StrategyLogger, isFreshOpen bool) {
-	var partialSz *float64
-	if !isFreshOpen {
-		partialSz = &deltaQty
-	}
-	closeResult, stderr, err := RunHyperliquidClose(sc.Script, primarySym, partialSz, nil)
+	closeResult, stderr, err := RunHyperliquidClose(sc.Script, primarySym, &deltaQty, nil)
 	if stderr != "" {
 		fmt.Printf("[hedge] %s: unwind stderr: %s\n", sc.ID, stderr)
 	}
@@ -643,13 +652,16 @@ func failHedgeOpenClosed(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, 
 		return
 	}
 	fill := closeResult.Close.Fill
-	mu.Lock()
-	var booked bool
-	if isFreshOpen {
-		booked = bookPerpsCloseWithFillFee(s, primarySym, fill.AvgPx, fill.Fee, true, strconv.FormatInt(fill.OID, 10), "hedge_open_failed_unwind", "Hedge open failed — unwinding primary", "Hedge-unwind close", logger)
-	} else {
-		booked = bookPerpsPartialCloseWithFillFee(s, primarySym, fill.TotalSz, fill.AvgPx, fill.Fee, true, strconv.FormatInt(fill.OID, 10), "hedge_add_failed_unwind", "Hedge add failed — unwinding added delta", "Hedge-unwind partial close", logger)
+	reason, detailsPrefix, logPrefix := "hedge_open_failed_unwind", "Hedge open failed — unwinding primary", "Hedge-unwind close"
+	if !isFreshOpen {
+		reason, detailsPrefix, logPrefix = "hedge_add_failed_unwind", "Hedge add failed — unwinding added delta", "Hedge-unwind partial close"
 	}
+	mu.Lock()
+	// Always the partial/sized booking path — deltaQty equals the position's
+	// full quantity on a fresh open (sole owner), so this still deletes the
+	// position when remaining <= 1e-9; on a shared coin it correctly leaves
+	// the peer's share untouched.
+	booked := bookPerpsPartialCloseWithFillFee(s, primarySym, fill.TotalSz, fill.AvgPx, fill.Fee, true, strconv.FormatInt(fill.OID, 10), reason, detailsPrefix, logPrefix, logger)
 	mu.Unlock()
 	if !booked && logger != nil {
 		logger.Error("CRITICAL: hedge-open-failed unwind fill for %s could not be booked (no matching virtual position)", primarySym)
@@ -723,6 +735,11 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 		fullClose  bool
 	}
 	var jobs []hedgeJob
+	// checkedKeys covers every live hedge-enabled strategy evaluated this
+	// cycle (regardless of whether it currently holds a hedge position) so a
+	// throttled under-hedge alert can be recovered even if the hedge leg
+	// later closes entirely rather than catching back up to the ratio.
+	var checkedKeys []string
 
 	mu.RLock()
 	ids := make([]string, 0, len(strategies))
@@ -746,6 +763,7 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 		if primarySym == "" || hedgeSym == "" {
 			continue
 		}
+		checkedKeys = append(checkedKeys, hedgeUnderHedgeKey(id, hedgeSym))
 		var primaryQty float64
 		if p, ok := s.Positions[primarySym]; ok && p != nil {
 			primaryQty = p.Quantity
@@ -766,6 +784,8 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 	}
 	mu.RUnlock()
 
+	now := time.Now().UTC()
+	underHedgeThisCycle := make(map[string]bool, len(jobs))
 	for _, j := range jobs {
 		var logger *StrategyLogger
 		if logMgr != nil {
@@ -774,8 +794,18 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 			}
 		}
 		if j.underHedge {
-			if notifier != nil && notifier.HasBackends() {
-				msg := fmt.Sprintf("**HEDGE UNDER TARGET** [%s] %s hedge leg is under the ratio target — never auto-grown by the coherence sync. Investigate (a scale-in-add hedge mirror may have failed).", j.sc.ID, j.hedgeSym)
+			key := hedgeUnderHedgeKey(j.sc.ID, j.hedgeSym)
+			underHedgeThisCycle[key] = true
+			// #1159 review: an under-hedge is never auto-grown, so it can
+			// persist indefinitely — throttle to the standard 1st/10th/hourly
+			// cadence (same as live-exec failure alerts) instead of a DM
+			// every cycle.
+			if shouldNotify, count := hedgeUnderHedgeThrottle.Record(key, "under_hedge", now); shouldNotify && notifier != nil && notifier.HasBackends() {
+				countNote := ""
+				if count > 1 {
+					countNote = fmt.Sprintf(" (persisting, cycle #%d)", count)
+				}
+				msg := fmt.Sprintf("**HEDGE UNDER TARGET**%s [%s] %s hedge leg is under the ratio target — never auto-grown by the coherence sync. Investigate (a scale-in-add hedge mirror may have failed).", countNote, j.sc.ID, j.hedgeSym)
 				notifier.SendToAllChannels(msg)
 				notifier.SendOwnerDM(msg)
 			}
@@ -788,7 +818,35 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 		qty := j.reduceBy
 		reduceHedgeAndBook(j.sc, state.Strategies[j.sc.ID], mu, j.hedgeSym, &qty, "hedge_coherence", notifier, logger)
 	}
+
+	// Recovery: any previously-alerted key that was checked this cycle but is
+	// no longer under-hedged (ratio caught up, or the hedge leg closed
+	// entirely) gets an explicit recovered notice instead of just going quiet.
+	for _, key := range checkedKeys {
+		if underHedgeThisCycle[key] || !hedgeUnderHedgeThrottle.Had(key) {
+			continue
+		}
+		hedgeUnderHedgeThrottle.Clear(key)
+		if notifier != nil && notifier.HasBackends() {
+			msg := fmt.Sprintf("**HEDGE UNDER TARGET RECOVERED** %s", key)
+			notifier.SendToAllChannels(msg)
+			notifier.SendOwnerDM(msg)
+		}
+	}
 }
+
+// hedgeUnderHedgeKey builds the throttle key for a strategy's under-hedge
+// condition, keyed by (strategy, hedge coin) so distinct strategies/hedges
+// never share a throttle slot.
+func hedgeUnderHedgeKey(strategyID, hedgeSym string) string {
+	return strategyID + "|" + hedgeSym
+}
+
+// hedgeUnderHedgeThrottle is the package-level singleton tracking the
+// coherence sync's under-hedge alert cadence (#1159 review). In-memory only;
+// resets on restart, so the first under-hedge cycle after a restart always
+// notifies — consistent with every other throttle in this package.
+var hedgeUnderHedgeThrottle = &LiveExecFailureThrottle{}
 
 // ---------------------------------------------------------------------------
 // Kill switch integration.

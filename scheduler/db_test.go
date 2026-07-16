@@ -2545,3 +2545,63 @@ func TestSaveAndLoadDB_HedgePositionRoundTrip(t *testing.T) {
 		t.Fatalf("expected one IsHedge trade to round-trip, got %+v", ls.TradeHistory)
 	}
 }
+
+// TestLifetimeTradeStatsAll_ExcludesHedgeLegs covers the #1159 review finding
+// that Trade.IsHedge was persisted but never consumed: a hedge leg's
+// open/close round trip must not count toward the strategy's #T or W/L —
+// only the primary leg's round trips should.
+func TestLifetimeTradeStatsAll_ExcludesHedgeLegs(t *testing.T) {
+	db := openTestDB(t)
+
+	// Primary round trip: one win.
+	if err := db.InsertTrade("eth-hedged", Trade{
+		Timestamp: time.Now(), Symbol: "ETH", Side: "buy", Quantity: 1, Price: 100,
+		Value: 100, TradeType: "perps", PositionID: "primary-1", PnLGross: true,
+	}); err != nil {
+		t.Fatalf("insert primary open: %v", err)
+	}
+	if err := db.InsertTrade("eth-hedged", Trade{
+		Timestamp: time.Now(), Symbol: "ETH", Side: "sell", Quantity: 1, Price: 110,
+		Value: 110, TradeType: "perps", PositionID: "primary-1", IsClose: true, RealizedPnL: 10, PnLGross: true,
+	}); err != nil {
+		t.Fatalf("insert primary close: %v", err)
+	}
+
+	// Hedge round trip on the SAME strategy: a loss, and it must be invisible
+	// to #T/W-L even though its PnL still books to the strategy's cash.
+	if err := db.InsertTrade("eth-hedged", Trade{
+		Timestamp: time.Now(), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 60000,
+		Value: 6000, TradeType: "perps", PositionID: "hedge-1", IsHedge: true, PnLGross: true,
+	}); err != nil {
+		t.Fatalf("insert hedge open: %v", err)
+	}
+	if err := db.InsertTrade("eth-hedged", Trade{
+		Timestamp: time.Now(), Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 61000,
+		Value: 6100, TradeType: "perps", PositionID: "hedge-1", IsClose: true, IsHedge: true, RealizedPnL: -10, PnLGross: true,
+	}); err != nil {
+		t.Fatalf("insert hedge close: %v", err)
+	}
+
+	stats, err := db.LifetimeTradeStatsAll()
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsAll: %v", err)
+	}
+	got := stats["eth-hedged"]
+	if got.PositionsOpened != 1 {
+		t.Errorf("PositionsOpened = %d, want 1 (hedge open must not count)", got.PositionsOpened)
+	}
+	if got.Wins != 1 {
+		t.Errorf("Wins = %d, want 1 (only the primary round trip)", got.Wins)
+	}
+	if got.Losses != 0 {
+		t.Errorf("Losses = %d, want 0 (the hedge loss must not count)", got.Losses)
+	}
+
+	single, err := db.LifetimeTradeStatsForStrategy("eth-hedged")
+	if err != nil {
+		t.Fatalf("LifetimeTradeStatsForStrategy: %v", err)
+	}
+	if single.PositionsOpened != 1 || single.Wins != 1 || single.Losses != 0 {
+		t.Errorf("LifetimeTradeStatsForStrategy = %+v, want {PositionsOpened:1 Wins:1 Losses:0}", single)
+	}
+}

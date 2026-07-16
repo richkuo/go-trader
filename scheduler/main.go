@@ -2463,7 +2463,11 @@ func main() {
 									// hedge failure unwinds the primary (constraint 4) and
 									// must happen before the sync re-sizes protection for a
 									// position that's about to be closed anyway.
-									syncHedgeAfterPrimaryFill(sc, stratState, &mu, hlPositions, hlPosQty, hlPosSide, notifier, logger)
+									var primaryFillPx float64
+									if execResult.Execution != nil && execResult.Execution.Fill != nil {
+										primaryFillPx = execResult.Execution.Fill.AvgPx
+									}
+									syncHedgeAfterPrimaryFill(sc, stratState, &mu, hlPositions, hlPosQty, hlPosSide, primaryFillPx, notifier, logger)
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									// #873/#882: for a trailing-SL owner the post-trade sync
