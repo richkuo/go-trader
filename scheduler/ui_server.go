@@ -26,6 +26,7 @@ type UIStrategy struct {
 	Timeframe string `json:"timeframe"`
 	Direction string `json:"direction,omitempty"`
 	Paused    bool   `json:"paused,omitempty"` // #1150: position-increasing signals held
+	HedgeCoin string `json:"hedge_coin,omitempty"`
 }
 
 type UIStrategyOverview struct {
@@ -42,6 +43,7 @@ type UIStrategyOverview struct {
 	InitialCapital       float64                `json:"initial_capital"`
 	RegimeDivergence     *RegimeDivergenceState `json:"regime_divergence,omitempty"`       // #907: active window-divergence state; nil when none
 	Paused               bool                   `json:"paused,omitempty"`                  // #1150
+	HedgeCoin            string                 `json:"hedge_coin,omitempty"`              // #1159
 	RegimeGateFailClosed bool                   `json:"regime_gate_fail_closed,omitempty"` // #1278: entry gate actively failing closed (opens held while regime unknown)
 }
 
@@ -70,6 +72,7 @@ type UIStrategyStatus struct {
 	SizingLeverage   float64                    `json:"sizing_leverage,omitempty"`
 	MarginMode       string                     `json:"margin_mode,omitempty"`
 	Paused           bool                       `json:"paused,omitempty"` // #1150
+	Hedge            *HedgeConfig               `json:"hedge,omitempty"`  // #1159
 
 	// #779/#1157: directional-policy display fields, mirroring /status.
 	EffectiveDirection             string              `json:"effective_direction,omitempty"`
@@ -308,6 +311,7 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 		Timeframe: strategyDisplayTimeframe(sc),
 		Direction: strategyDisplayDirection(sc),
 		Paused:    sc.Paused,
+		HedgeCoin: hedgeCoin(sc),
 	}
 }
 
@@ -491,6 +495,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		InitialCapital:       initCap,
 		RegimeDivergence:     snapshot.RegimeDivergence,
 		Paused:               sc.Paused,
+		HedgeCoin:            hedgeCoin(sc),
 		RegimeGateFailClosed: regimeGateFailClosedActive(sc, &snapshot, ss.regime),
 	}, lifetime, true
 }
@@ -548,6 +553,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		SizingLeverage:   EffectiveSizingLeverage(sc),
 		MarginMode:       sc.MarginMode,
 		Paused:           sc.Paused,
+		Hedge:            sc.Hedge,
 		RegimeProfile:    snapshot.RegimeProfile,
 	}
 	dirView := directionalStatusForStrategy(sc, &snapshot, ss.regime, time.Now().UTC())

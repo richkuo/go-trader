@@ -169,6 +169,15 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
 			sc.Paused = ns.Paused
 		}
+		if !reflect.DeepEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge changed while flat", sc.ID)
+			if ns.Hedge == nil {
+				sc.Hedge = nil
+			} else {
+				h := *ns.Hedge
+				sc.Hedge = &h
+			}
+		}
 		// #1275: allow_deprecated is hot-reloadable always, including while a
 		// position is open — an acknowledgment flag only, never gates loading,
 		// probing, or trading. reloadConfig re-evaluates the deprecated-edge
@@ -567,6 +576,9 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 		if !ok {
 			continue
 		}
+		if !reflect.DeepEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge changed with open positions (flatten both primary and hedge first)", sc.ID))
+		}
 		if cfg.Regime != nil && next.Regime != nil && sc.Type != "options" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			_, oldTF := strategyRegimeSymbolTimeframe(sc.Args, cfg.Regime)
 			_, newTF := strategyRegimeSymbolTimeframe(ns.Args, next.Regime)
@@ -817,6 +829,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Paused = false                    // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
 	sc.LLMEntryAnalysis = nil            // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
 	sc.AllowDeprecated = false           // #1275: hot-reloadable always, including while open — acknowledgment flag only, never gates loading, probing, or trading. Applied in applyHotReloadConfig; reloadConfig re-evaluates the deprecated-edge warning after apply, so flipping the ack off re-warns.
+	sc.Hedge = nil                       // #1159: explicit apply path; state-compatible guard blocks changes while either leg is open.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0

@@ -533,6 +533,15 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		if key.Platform == "hyperliquid" && HedgeEnabled(sc) {
+			hc := hedgeCoin(sc)
+			if hp := ss.Positions[hc]; hp != nil && hp.IsHedge && hp.Quantity > 0 {
+				if virtualQty[hc] == nil {
+					virtualQty[hc] = make(map[string]float64)
+				}
+				virtualQty[hc][id] = hp.Quantity
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

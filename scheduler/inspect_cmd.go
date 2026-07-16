@@ -473,6 +473,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		if sc.MarginMode != "" {
 			fmt.Fprintf(&b, "  margin_mode:         %s%s\n", sc.MarginMode, markIfDefault(explicit, "margin_mode"))
 		}
+		if HedgeEnabled(sc) {
+			fmt.Fprintf(&b, "  hedge:               %s inverse ratio=%g %s@%gx (scheduler-owned; no independent SL/TP)\n", hedgeCoin(sc), hedgeRatio(sc), hedgeMarginMode(sc), hedgeLeverage(sc))
+		}
 	}
 
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
@@ -597,6 +600,9 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	if sc.Paused {
 		parts = append(parts, "paused")
 	}
+	if HedgeEnabled(sc) {
+		parts = append(parts, fmt.Sprintf("hedge=%s×%g inverse %s@%gx", hedgeCoin(sc), hedgeRatio(sc), hedgeMarginMode(sc), hedgeLeverage(sc)))
+	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
 	// (resolved, so a global wilder default tags every inheriting strategy).
@@ -690,6 +696,9 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["leverage"] = EffectiveExchangeLeverage(sc)
 		out["sizing_leverage"] = EffectiveSizingLeverage(sc)
 		out["margin_mode"] = sc.MarginMode
+		if HedgeEnabled(sc) {
+			out["hedge"] = map[string]interface{}{"enabled": true, "symbol": hedgeCoin(sc), "side": "inverse", "ratio": hedgeRatio(sc), "margin_mode": hedgeMarginMode(sc), "leverage": hedgeLeverage(sc)}
+		}
 	}
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
@@ -842,6 +851,10 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 		sort.Strings(syms)
 		for _, sym := range syms {
 			pos := stratState.Positions[sym]
+			if pos.IsHedge {
+				fmt.Fprintf(b, "  position %s:         side=%s qty=%g [AUTO-HEDGE for %s position=%s basis_qty=%g]\n", sym, pos.Side, pos.Quantity, pos.HedgeForSymbol, pos.HedgeForPositionID, pos.HedgePrimaryQtyBasis)
+				continue
+			}
 			currentDirRegime := stratState.Regime
 			if cfg != nil && cfg.Regime != nil {
 				currentDirRegime = regimeLabelFromWindows(stratState.RegimeWindows, sc.RegimeDirectionalWindow, cfg.Regime)
@@ -912,7 +925,7 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 				continue
 			}
 			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
-			positions = append(positions, map[string]interface{}{
+			entry := map[string]interface{}{
 				"symbol":                      sym,
 				"side":                        pos.Side,
 				"quantity":                    pos.Quantity,
@@ -921,7 +934,14 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 				"effective_direction":         EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen),
 				"effective_policy_regime":     effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity),
 				"direction_certified_at_open": pos.DirectionCertifiedAtOpen,
-			})
+				"is_hedge":                    pos.IsHedge,
+			}
+			if pos.IsHedge {
+				entry["hedge_for_symbol"] = pos.HedgeForSymbol
+				entry["hedge_for_position_id"] = pos.HedgeForPositionID
+				entry["hedge_primary_qty_basis"] = pos.HedgePrimaryQtyBasis
+			}
+			positions = append(positions, entry)
 		}
 		if len(positions) > 0 {
 			sort.Slice(positions, func(i, j int) bool {

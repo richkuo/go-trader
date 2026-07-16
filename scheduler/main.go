@@ -272,6 +272,7 @@ func main() {
 	// the exchange but flips virtually. Collect here, forward to owner DM
 	// once the notifier is wired below.
 	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
 	// #1277 optional hardening: detect a config edit + restart (not SIGHUP)
 	// that changed a strategy's effective atr_method while it still holds a
@@ -491,6 +492,14 @@ func main() {
 	if len(directionConfigWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range directionConfigWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+	if len(hedgeStateWarnings) > 0 {
+		for _, msg := range hedgeStateWarnings {
+			fmt.Printf("[WARN] %s\n", msg)
+			if notifier.HasOwner() {
+				notifier.SendOwnerDM("[state] " + msg)
+			}
 		}
 	}
 
@@ -2501,6 +2510,16 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: one state-derived hedge sync owns the entire
+							// secondary leg. Running after the primary apply/protection
+							// makes opens, adds, evaluator reductions, reconciled closes,
+							// and ordinary manage cycles converge through the same path.
+							if hedgeTrades, hedgeDetail := runStrategyHedgeSync(sc, stratState, result.Symbol, prices, &mu, notifier, logger); hedgeTrades > 0 {
+								trades += hedgeTrades
+								if hedgeDetail != "" {
+									detail = hedgeDetail
+								}
 							}
 						}
 					case "futures":

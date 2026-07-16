@@ -780,6 +780,9 @@ func clearForceCloseCanceledProtectionOIDs(pos *Position, canceledSLOID int64, c
 }
 
 func validatePendingManualActionStrategy(sc StrategyConfig, a PendingManualAction) error {
+	if HedgeEnabled(sc) && normalizeHedgeCoin(a.Symbol) == hedgeCoin(sc) {
+		return fmt.Errorf("strategy %q pending action targets scheduler-owned hedge coin %s; close the primary and let hedge sync manage it", a.StrategyID, hedgeCoin(sc))
+	}
 	if sc.Type == "manual" {
 		return nil
 	}
