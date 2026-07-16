@@ -68,6 +68,14 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 	hlSet := make(map[string]bool)
 	okxSet := make(map[string]bool)
 	for _, sc := range strategies {
+		// #1159: a hedge-enabled strategy's hedge coin needs its own live mark
+		// every cycle (sizing, portfolio valuation, exposure math) even though
+		// it isn't the strategy's primary Args[1] coin. HL perps only.
+		if sc.HedgeEnabled() {
+			if coin := hedgeCoin(sc); coin != "" {
+				hlSet[coin] = true
+			}
+		}
 		if sc.Type != "perps" {
 			continue
 		}
@@ -943,18 +951,43 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
+	// A shared primary coin can never be unilaterally force-closed (it would
+	// close a peer's exposure too) — it is deliberately left open for the
+	// whole latch window, and circuitBreakerPermitsManagement (#1046) keeps
+	// its trailing-SL/TP-ratchet running normally throughout. The hedge leg
+	// exists purely to protect THAT SAME primary exposure, so its CB fate
+	// must track the primary's, not diverge from it: draining only the
+	// hedge while the shared primary stays open de-risks nothing (runHedgeSync
+	// is not gated on latched CB state, so it reopens the hedge the very next
+	// cycle against the still-open primary) while leaving a real gap in
+	// between where the primary sits naked — strictly worse than leaving
+	// both alone (review finding, #1159). So: both close together when the
+	// primary is sole-owned and force-closeable; neither closes when the
+	// primary is shared — the state-derived hedge sync then keeps tracking
+	// the still-open primary exactly as it does outside any CB window.
 	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
 		return
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
+	var symbols []PendingCircuitCloseSymbol
+	if _, ok := s.Positions[sym]; ok {
+		if qty, ok2 := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok2 && qty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+		}
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
+	if sc.HedgeEnabled() {
+		if hCoin := hedgeCoin(*sc); hCoin != "" {
+			if _, ok := s.Positions[hCoin]; ok {
+				if qty, ok2 := computeHyperliquidCircuitCloseQty(hCoin, s.ID, assist.HLPositions, assist.HLLiveAll); ok2 && qty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: qty})
+				}
+			}
+		}
+	}
+	if len(symbols) == 0 {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1597,4 +1630,16 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult is the hedge-leg sibling of RecordTradeResult
+// (#1159). A hedge leg's PnL still counts toward DailyPnL — real money moved
+// and the #1269 daily-loss limit must see it — but it never touches
+// ConsecutiveLosses: a correlated inverse hedge loses BY CONSTRUCTION exactly
+// when the primary thesis wins, so folding it into the loss-streak counter
+// would double-count one thesis and could mis-fire the #1273 loss-streak
+// circuit breaker on a strategy that is, net, performing exactly as designed.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }

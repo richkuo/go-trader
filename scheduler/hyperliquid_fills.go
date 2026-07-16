@@ -498,6 +498,21 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 				}
 			}
 		}
+		// #1159: hedge legs never carry SL/TP OIDs (constraint 1), so the
+		// only prefetch shape they need is the coin+size fallback form —
+		// mirrors the "Always include the (coin, 0, qty) form" candidate
+		// above so an external hedge close resolves its real fee/price
+		// instead of falling back to modeled/AvgCost.
+		if sc.HedgeEnabled() {
+			if hCoin := hedgeCoin(sc); hCoin != "" {
+				if hPos := ss.Positions[hCoin]; hPos != nil && hPos.Quantity > 0 {
+					onChainSize, present := onChainByCoin[hCoin]
+					if !present || math.Abs(math.Abs(onChainSize)-hPos.Quantity) > 1e-9 {
+						addCandidate(hCoin, 0, hPos.Quantity)
+					}
+				}
+			}
+		}
 	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy

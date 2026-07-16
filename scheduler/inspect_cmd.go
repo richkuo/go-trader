@@ -551,6 +551,10 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 			sc.ThetaHarvest.Enabled, sc.ThetaHarvest.ProfitTargetPct, sc.ThetaHarvest.StopLossPct, sc.ThetaHarvest.MinDTEClose,
 			markIfDefault(explicit, "theta_harvest"))
 	}
+	// #1159: opted-in correlated hedge leg.
+	if sc.HedgeEnabled() {
+		fmt.Fprintf(&b, "  hedge:               %s×%g(inverse,%s,%gx)\n", hedgeCoin(sc), hedgeRatio(sc), hedgeMarginMode(sc), hedgeExchangeLeverage(sc))
+	}
 	return b.String()
 }
 
@@ -610,6 +614,11 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	// when the operator acknowledged it via allow_deprecated.
 	if tag := edgeStatusSummaryTag(sc); tag != "" {
 		parts = append(parts, tag)
+	}
+	// #1159: surface an opted-in hedge leg so it's never mistaken for an
+	// unmanaged position in the startup audit line.
+	if sc.HedgeEnabled() {
+		parts = append(parts, fmt.Sprintf("hedge=%s×%.2g(inverse,%s,%gx)", hedgeCoin(sc), hedgeRatio(sc), hedgeMarginMode(sc), hedgeExchangeLeverage(sc)))
 	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
 }
@@ -729,6 +738,17 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	} else if cfg != nil {
 		out["interval_seconds"] = cfg.IntervalSeconds
 		out["interval_seconds_explicit"] = false
+	}
+	// #1159: surface the opted-in hedge leg so external tools/dashboards
+	// don't mistake it for an unmanaged position.
+	if sc.HedgeEnabled() {
+		out["hedge"] = map[string]interface{}{
+			"symbol":      hedgeCoin(sc),
+			"side":        "inverse",
+			"ratio":       hedgeRatio(sc),
+			"margin_mode": hedgeMarginMode(sc),
+			"leverage":    hedgeExchangeLeverage(sc),
+		}
 	}
 	return out
 }

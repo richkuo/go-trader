@@ -2502,6 +2502,25 @@ func main() {
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
 							}
+							// #1159: per-cycle state-derived hedge sync. Runs
+							// unconditionally whenever the check succeeded —
+							// on the fresh-open/trade path above AND the
+							// Signal==0 manage-only path (paused, latched CB,
+							// daily-loss hold, exposure cap all force
+							// Signal=0 but still reach here) — so a hedge
+							// leg converges to the primary every cycle
+							// regardless of why the primary didn't trade.
+							// hlPosQty is the Phase-1 (pre-cycle) snapshot:
+							// <=0 means the primary was flat before this
+							// cycle, so a hedgeActionOpen here is a genuine
+							// fresh-open and a failed hedge open escalates to
+							// the fail-closed primary unwind (constraint 4);
+							// otherwise (hedge just enabled on an
+							// already-open primary, or a boot-time
+							// mismatch) a failed open only alerts+retries.
+							if sc.HedgeEnabled() {
+								runHedgeSync(sc, stratState, prices, &mu, hlPosQty <= 0, notifier, logger)
+							}
 						}
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {

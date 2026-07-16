@@ -31,6 +31,10 @@ func knownManualDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(ManualDefaultsConfig{}))
 }
 
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownJSONKeys(t reflect.Type) map[string]bool {
 	known := make(map[string]bool)
 	for i := 0; i < t.NumField(); i++ {
@@ -157,5 +161,47 @@ func validateUserDefaultsJSONKeys(rawData []byte) []string {
 		}
 	}
 
+	return errs
+}
+
+// validateHedgeJSONKeys flags typos inside a strategy's nested `hedge` block
+// (#1159). A typo'd leaf key (e.g. "ration" instead of "ratio") must reject
+// at load, not silently default the strategy to an un-sized hedge.
+func validateHedgeJSONKeys(rawData []byte) []string {
+	var envelope struct {
+		Strategies []map[string]json.RawMessage `json:"strategies"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil {
+		return nil
+	}
+	known := knownHedgeConfigKeys()
+	var errs []string
+	for i, s := range envelope.Strategies {
+		prefix := fmt.Sprintf("strategy[%d]", i)
+		if idRaw, ok := s["id"]; ok {
+			var id string
+			if json.Unmarshal(idRaw, &id) == nil && id != "" {
+				prefix = fmt.Sprintf("strategy[%s]", id)
+			}
+		}
+		rawHedge, ok := s["hedge"]
+		if !ok {
+			continue
+		}
+		var hedge map[string]json.RawMessage
+		if err := json.Unmarshal(rawHedge, &hedge); err != nil || hedge == nil {
+			continue
+		}
+		keys := make([]string, 0, len(hedge))
+		for k := range hedge {
+			if !known[k] {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
+		}
+	}
 	return errs
 }

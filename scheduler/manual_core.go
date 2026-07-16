@@ -1232,6 +1232,12 @@ type forceCloseInputs struct {
 // forceCloseCore is the shared live-HL-perps close path behind
 // `go-trader force-close` (#1140) and POST /api/strategies/{id}/force-close.
 // sym comes from lookupForceCloseStrategy.
+//
+// #1159: when the closed strategy is hedge-enabled, no explicit hedge
+// follow-up is issued here — the state-derived runHedgeSync backstop
+// (hedge.go) sees the primary flatten on the NEXT scheduler cycle and
+// converges the hedge (closeFull) automatically, exactly like every other
+// asynchronous primary-close path (SL/TP fill, kill switch, CB).
 func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceCloseInputs) (*manualCoreResult, error) {
 	res := &manualCoreResult{}
 	strategyID := in.StrategyID
