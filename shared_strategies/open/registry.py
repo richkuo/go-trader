@@ -197,6 +197,36 @@ def _effective_params(fn, default_params: dict, args: tuple, kwargs: dict) -> di
     return effective
 
 
+def _enforce_parsed_constraints(name: str, effective: dict, parsed: list) -> None:
+    """Raise ``ValueError`` if ``effective`` violates any of the pre-parsed
+    constraints. Pure — the single source of truth for constraint semantics,
+    shared by the call-time wrapper (``_validated``) and the standalone
+    validator (``validate_params``, #1338) so both reject identically."""
+    for expr, (lhs, op, rhs) in parsed:
+        if lhs not in effective:
+            continue
+        a = effective[lhs]
+        b = rhs if isinstance(rhs, float) else effective.get(rhs)
+        if a is None or b is None:
+            continue
+        try:
+            ok = _CONSTRAINT_OPS[op](float(a), float(b))
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{name}: invalid parameters: constraint {expr!r} needs "
+                f"numeric values (got {lhs}={a!r}"
+                + ("" if isinstance(rhs, float) else f", {rhs}={b!r}")
+                + ")"
+            )
+        if not ok:
+            raise ValueError(
+                f"{name}: invalid parameters: constraint {expr!r} violated "
+                f"({lhs}={a!r}"
+                + ("" if isinstance(rhs, float) else f", {rhs}={b!r}")
+                + ")"
+            )
+
+
 def _validated(name: str, fn, default_params: dict, constraints: Tuple[str, ...]):
     """Wrap ``fn`` to enforce ``constraints`` on every call (functools.wraps
     keeps the signature transparent for ``strip_unsupported_position_context``)."""
@@ -205,32 +235,60 @@ def _validated(name: str, fn, default_params: dict, constraints: Tuple[str, ...]
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         effective = _effective_params(fn, default_params, args, kwargs)
-        for expr, (lhs, op, rhs) in parsed:
-            if lhs not in effective:
-                continue
-            a = effective[lhs]
-            b = rhs if isinstance(rhs, float) else effective.get(rhs)
-            if a is None or b is None:
-                continue
-            try:
-                ok = _CONSTRAINT_OPS[op](float(a), float(b))
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"{name}: invalid parameters: constraint {expr!r} needs "
-                    f"numeric values (got {lhs}={a!r}"
-                    + ("" if isinstance(rhs, float) else f", {rhs}={b!r}")
-                    + ")"
-                )
-            if not ok:
-                raise ValueError(
-                    f"{name}: invalid parameters: constraint {expr!r} violated "
-                    f"({lhs}={a!r}"
-                    + ("" if isinstance(rhs, float) else f", {rhs}={b!r}")
-                    + ")"
-                )
+        _enforce_parsed_constraints(name, effective, parsed)
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+def validate_params(name: str, params: dict,
+                    default_params: Optional[dict] = None) -> None:
+    """Validate ``params`` (overlaid on the strategy's defaults) against
+    ``name``'s declared constraints WITHOUT running the strategy — raising
+    ``ValueError`` with the same message the call-time wrapper produces.
+
+    ``default_params`` overrides the base defaults; pass the platform-merged
+    set from ``build_registry`` so cross-parameter constraints (e.g.
+    ``fast_period < slow_period``) resolve any omitted operand to the value the
+    live strategy would actually see. Added for #1338: the live tuner validates
+    every operator-supplied override value up front, so a constraint-violating
+    grid fails loudly at planning time rather than deep inside a walk-forward
+    fold. Reuses the same parser/ops/checker as the wrapper — no duplicate
+    constraint semantics."""
+    entry = STRATEGIES.get(name)
+    if entry is None:
+        raise ValueError(
+            f"validate_params: unknown strategy {name!r}; "
+            f"registered: {sorted(STRATEGIES)}")
+    base = entry["default_params"] if default_params is None else default_params
+    effective = {**base, **(params or {})}
+    parsed = [(expr, _parse_constraint(name, expr)) for expr in entry["constraints"]]
+    _enforce_parsed_constraints(name, effective, parsed)
+
+
+def validate_param_value(name: str, param: str, value) -> None:
+    """Validate a SINGLE override ``value`` for ``param`` against only the
+    constraints that reference ``param`` against a numeric literal (e.g.
+    ``period > 0``), raising ``ValueError`` on violation (#1338).
+
+    Cross-parameter constraints (``fast_period < slow_period``) are deliberately
+    NOT enforced here — they depend on the full parameter combination, which the
+    live tuner sweeps and the strategy wrapper (``_validated``) rejects per-combo
+    at fold time. This is the ``constraints for that param`` check the tuner runs
+    on every operator-supplied override value, so an out-of-range value is
+    refused loudly at planning time rather than silently skipped mid-sweep.
+    Reuses the same parser/checker as the wrapper — no duplicate semantics."""
+    entry = STRATEGIES.get(name)
+    if entry is None:
+        raise ValueError(
+            f"validate_param_value: unknown strategy {name!r}; "
+            f"registered: {sorted(STRATEGIES)}")
+    single = []
+    for expr in entry["constraints"]:
+        lhs, op, rhs = _parse_constraint(name, expr)
+        if lhs == param and isinstance(rhs, float):
+            single.append((expr, (lhs, op, rhs)))
+    _enforce_parsed_constraints(name, {param: value}, single)
 
 
 def register(
@@ -350,6 +408,11 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
                 **entry["default_params"],
                 **variant.get("default_params", {}),
             },
+            # #1338: expose the declared constraints on the platform view so the
+            # live tuner can validate neighborhood/override values against them
+            # (via validate_params) without reaching into the private STRATEGIES
+            # table. Additive — existing consumers ignore the extra key.
+            "constraints": entry["constraints"],
             "backtest_only": entry.get("backtest_only", False),
             "edge_status": entry.get("edge_status"),
         }

@@ -426,6 +426,75 @@ def test_correction_empty_family():
     assert corr["n_survivors"] == 0
 
 
+# --------------------------------------------------------------------------
+# 6b. #1338 selection-aware family-size override
+# --------------------------------------------------------------------------
+
+def _one_test(p):
+    return [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}]
+
+
+def test_bh_family_size_widens_denominator_and_is_stricter():
+    # Two p-values that both survive BH over m=2 fail once corrected as if 10
+    # candidates were searched — the selection-aware denominator is stricter.
+    pvals = [0.01, 0.04]
+    assert benjamini_hochberg(pvals, 0.05) == [True, True]
+    assert benjamini_hochberg(pvals, 0.05, family_size=10) == [False, False]
+    # family_size == len(pvals) is identical to the default.
+    assert (benjamini_hochberg(pvals, 0.05, family_size=2)
+            == benjamini_hochberg(pvals, 0.05))
+
+
+def test_bh_family_size_below_test_count_raises():
+    with pytest.raises(ValueError, match="family_size"):
+        benjamini_hochberg([0.01, 0.04], 0.05, family_size=1)
+
+
+def test_apply_correction_family_size_reports_m_and_tests_run():
+    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+             for p in [0.001, 0.02]]
+    corr = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                        family_size=8)
+    # m is the BH denominator (the searched family), tests_run the pooled count.
+    assert corr["m"] == 8
+    assert corr["tests_run"] == 2
+    assert corr["bonferroni_threshold"] == pytest.approx(0.05 / 8)
+    # Correcting against 8 is stricter than against 2: 0.02 no longer survives.
+    strict = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05,
+                                          family_size=8)
+    loose = asug.apply_family_correction(copy.deepcopy(tests), alpha=0.05)
+    assert strict["n_survivors"] <= loose["n_survivors"]
+
+
+def test_apply_correction_family_size_below_produced_count_raises():
+    tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
+             for p in [0.001, 0.02, 0.04]]
+    with pytest.raises(ValueError, match="family_size"):
+        asug.apply_family_correction(tests, alpha=0.05, family_size=2)
+
+
+def test_load_spec_accepts_positive_family_size():
+    spec = asug.load_spec(
+        _base_spec(correction={"method": "benjamini_hochberg", "alpha": 0.05,
+                               "family_size": 40}),
+        _STUDY_DIR)
+    assert spec["correction"]["family_size"] == 40
+
+
+def test_load_spec_defaults_family_size_none():
+    spec = asug.load_spec(_base_spec(), _STUDY_DIR)
+    assert spec["correction"]["family_size"] is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "8"])
+def test_load_spec_rejects_bad_family_size(bad):
+    with pytest.raises(ValueError, match="family_size"):
+        asug.load_spec(
+            _base_spec(correction={"method": "benjamini_hochberg",
+                                   "family_size": bad}),
+            _STUDY_DIR)
+
+
 def test_collect_family_pvalues_dedupes_noise_and_excludes_m3_m5():
     e1 = {"key": "a", "kind": "open", "noise_family_key": "K",
           "results": {"m1_noise": {"data": {"permutation_p": 0.01, "mean": 0.2}},
