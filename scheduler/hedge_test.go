@@ -3,6 +3,7 @@ package main
 import (
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -560,6 +561,148 @@ func TestHedgeUnknownKeyGuard(t *testing.T) {
 	}
 	if !knownStrategyConfigKeys()["hedge"] {
 		t.Fatalf("hedge missing from knownStrategyConfigKeys")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manual drain attribution (review finding: applyManualAction close branch)
+
+func TestApplyManualAction_HedgeCloseAttribution(t *testing.T) {
+	sc := hedgeTestStrategy("a", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	s := hedgeTestState()
+	s.Positions["BTC"] = &Position{
+		Symbol: "BTC", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 60000,
+		Side: "short", Multiplier: 1, OwnerStrategyID: "a", HedgeFor: "ETH",
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{"a": s}}
+	scByID := map[string]StrategyConfig{"a": sc}
+
+	// Losing hedge close (short closed higher) drained via the manual queue
+	// — e.g. forceCloseHedgeFollowUp after force-closing a WINNING primary.
+	a := PendingManualAction{
+		StrategyID: "a", Action: "close", Symbol: "BTC", Side: "buy",
+		Quantity: 0.1, FillPrice: 61000, FillFee: 1.0,
+		RealizedPnL: -101, IsFullClose: true,
+	}
+	if err := applyManualAction(state, nil, scByID, a); err != nil {
+		t.Fatalf("applyManualAction: %v", err)
+	}
+	last := s.TradeHistory[len(s.TradeHistory)-1]
+	if last.TradeType != "hedge" {
+		t.Fatalf("drained hedge close TradeType = %q, want hedge (would count in lifetime W/L)", last.TradeType)
+	}
+	if s.RiskState.ConsecutiveLosses != 0 {
+		t.Fatalf("drained hedge close bumped ConsecutiveLosses to %d", s.RiskState.ConsecutiveLosses)
+	}
+	if s.RiskState.DailyPnL != -101 {
+		t.Fatalf("DailyPnL = %v, want -101 (hedge PnL still books to daily accounting)", s.RiskState.DailyPnL)
+	}
+
+	// Inverse guard: a genuine PRIMARY close on the same strategy still
+	// bumps the streak and keeps the perps label.
+	s.Positions["ETH"] = &Position{
+		Symbol: "ETH", Quantity: 1, InitialQuantity: 1, AvgCost: 3000,
+		Side: "long", Multiplier: 1, OwnerStrategyID: "a",
+	}
+	p := PendingManualAction{
+		StrategyID: "a", Action: "close", Symbol: "ETH", Side: "sell",
+		Quantity: 1, FillPrice: 2900, FillFee: 1.0,
+		RealizedPnL: -101, IsFullClose: true,
+	}
+	if err := applyManualAction(state, nil, scByID, p); err != nil {
+		t.Fatalf("applyManualAction primary: %v", err)
+	}
+	last = s.TradeHistory[len(s.TradeHistory)-1]
+	if last.TradeType != "perps" {
+		t.Fatalf("primary close TradeType = %q, want perps", last.TradeType)
+	}
+	if s.RiskState.ConsecutiveLosses != 1 {
+		t.Fatalf("primary losing close must bump the streak, got %d", s.RiskState.ConsecutiveLosses)
+	}
+}
+
+func TestApplyManualAction_HedgePartialCloseAttribution(t *testing.T) {
+	sc := hedgeTestStrategy("a", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	s := hedgeTestState()
+	s.Positions["BTC"] = &Position{
+		Symbol: "BTC", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 60000,
+		Side: "short", Multiplier: 1, OwnerStrategyID: "a", HedgeFor: "ETH",
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{"a": s}}
+	a := PendingManualAction{
+		StrategyID: "a", Action: "close", Symbol: "BTC", Side: "buy",
+		Quantity: 0.05, FillPrice: 61000, FillFee: 0.5,
+		RealizedPnL: -50.5, IsFullClose: false,
+	}
+	if err := applyManualAction(state, nil, map[string]StrategyConfig{"a": sc}, a); err != nil {
+		t.Fatalf("applyManualAction: %v", err)
+	}
+	last := s.TradeHistory[len(s.TradeHistory)-1]
+	if last.TradeType != "hedge" || s.RiskState.ConsecutiveLosses != 0 {
+		t.Fatalf("partial hedge close attribution wrong: type=%q streak=%d", last.TradeType, s.RiskState.ConsecutiveLosses)
+	}
+	if s.Positions["BTC"] == nil || s.Positions["BTC"].Quantity != 0.05 {
+		t.Fatalf("partial close remainder wrong: %+v", s.Positions["BTC"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// On-demand hedge mid refetch (review optional finding)
+
+func TestRunHedgeSync_RefetchesMissingHedgeMid(t *testing.T) {
+	sc := hedgeTestStrategy("a", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	sc.Args = []string{"ema_crossover", "ETH", "1h", "--mode=paper"} // paper: no subprocess
+	s := hedgeTestState()
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 2, Side: "long", Multiplier: 1, OwnerStrategyID: "a"}
+	orig := hedgeMidRefetch
+	defer func() { hedgeMidRefetch = orig }()
+	refetched := false
+	hedgeMidRefetch = func(coins []string) (map[string]float64, error) {
+		refetched = true
+		if len(coins) != 1 || coins[0] != "BTC" {
+			t.Fatalf("refetch coins = %v, want [BTC]", coins)
+		}
+		return map[string]float64{"BTC": 60000}, nil
+	}
+
+	var mu sync.RWMutex
+	prices := map[string]float64{"ETH": 3000} // hedge mid missing from the batch
+	runHedgeSync(sc, s, "ETH", 3000, prices, true, &mu, nil, newTestLogger(t))
+
+	if !refetched {
+		t.Fatalf("missing hedge mid did not trigger the on-demand refetch")
+	}
+	// Paper hedge opened at the refetched mark instead of unwinding the primary.
+	if pos := s.Positions["BTC"]; pos == nil || pos.Side != "short" || pos.HedgeFor != "ETH" {
+		t.Fatalf("hedge not opened after refetch: %+v", s.Positions["BTC"])
+	}
+	if s.Positions["ETH"] == nil {
+		t.Fatalf("primary was unwound despite a recoverable price gap")
+	}
+	if prices["BTC"] != 60000 {
+		t.Fatalf("refetched mid not published to the cycle price map")
+	}
+}
+
+func TestRunHedgeSync_UnwindsWhenRefetchAlsoEmpty(t *testing.T) {
+	sc := hedgeTestStrategy("a", "ETH", &HedgeConfig{Enabled: true, Symbol: "BTC"})
+	sc.Args = []string{"ema_crossover", "ETH", "1h", "--mode=paper"}
+	s := hedgeTestState()
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 2, AvgCost: 2900, Side: "long", Multiplier: 1, OwnerStrategyID: "a"}
+
+	orig := hedgeMidRefetch
+	defer func() { hedgeMidRefetch = orig }()
+	hedgeMidRefetch = func(coins []string) (map[string]float64, error) {
+		return map[string]float64{}, nil // still no mark
+	}
+
+	var mu sync.RWMutex
+	prices := map[string]float64{"ETH": 3000}
+	runHedgeSync(sc, s, "ETH", 3000, prices, true, &mu, nil, newTestLogger(t))
+
+	// Fail-closed: fresh open with an unhedgeable target unwinds the primary.
+	if s.Positions["ETH"] != nil {
+		t.Fatalf("primary not unwound after refetch also came back empty")
 	}
 }
 

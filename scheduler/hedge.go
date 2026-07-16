@@ -312,6 +312,11 @@ func hedgeOrderSkipReason(sc StrategyConfig, action hedgeAction) string {
 // ---------------------------------------------------------------------------
 // Runtime sync
 
+// hedgeMidRefetch is the on-demand single-coin mark fetch used when the
+// cycle's batch fetch missed the hedge coin. Injectable so tests never make
+// HTTP calls.
+var hedgeMidRefetch = fetchHyperliquidMids
+
 // hedgeSyncSnapshot captures the decision inputs under an RLock.
 func hedgeSyncSnapshot(stratState *StrategyState, primarySym, hCoin string) hedgeSnapshot {
 	var snap hedgeSnapshot
@@ -354,6 +359,20 @@ func runHedgeSync(sc StrategyConfig, stratState *StrategyState, primarySym strin
 	mu.RUnlock()
 
 	hedgePx := prices[hCoin]
+	if hedgePx <= 0 && snap.PrimaryQty > 0 {
+		// The batch mark fetch is best-effort — a transient miss must not
+		// escalate a fresh open to the constraint-4 primary unwind. Refetch
+		// the single hedge mid on demand (Phase 3, no lock held) before
+		// deciding; only a still-missing mark proceeds to the fail-closed
+		// path. (#1159 review)
+		if marks, err := hedgeMidRefetch([]string{hCoin}); err != nil {
+			logger.Warn("hedge(%s): on-demand mid refetch failed: %v", hCoin, err)
+		} else if px := marks[hCoin]; px > 0 {
+			hedgePx = px
+			prices[hCoin] = px
+			logger.Info("hedge(%s): mid missing from batch fetch — refetched on demand @ $%.4f", hCoin, px)
+		}
+	}
 	action := hedgeTargetDecision(sc, snap, primaryPx, hedgePx)
 	if action.Kind == hedgeActionNone {
 		if action.Reason != "" {
