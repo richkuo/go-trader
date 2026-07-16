@@ -540,6 +540,12 @@ func perpsRegimeDirectionOrphanConflict(stratState *StrategyState, sc StrategyCo
 	if stratState == nil || pos == nil || pos.Quantity <= 0 {
 		return false, "", ""
 	}
+	// #1159: a correlated hedge leg's side is intentionally opposite the primary
+	// direction — the #822 orphan-close must never target it (it has no
+	// direction config; the hedge sync owns its lifecycle).
+	if pos.HedgeFor != "" {
+		return false, "", ""
+	}
 	if sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return false, "", ""
 	}
