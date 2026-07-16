@@ -2088,14 +2088,12 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 		if ss == nil {
 			continue
 		}
-		pos := ss.Positions[coin]
-		if pos == nil || pos.Quantity <= 0 {
-			continue
+		if pos := ss.Positions[coin]; pos != nil && pos.Quantity > 0 {
+			if out[coin] == nil {
+				out[coin] = make(map[string]float64)
+			}
+			out[coin][sc.ID] = pos.Quantity
 		}
-		if out[coin] == nil {
-			out[coin] = make(map[string]float64)
-		}
-		out[coin][sc.ID] = pos.Quantity
 
 		// #1159: also snapshot the hedge leg, keyed by its OWN coin. Consumers
 		// (forceCloseHyperliquidLive's held-hedge-coin gate,
@@ -2103,6 +2101,13 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 		// hedge coin as owned/held exactly like a configured coin — the hedge
 		// coin is never in tradedCoins otherwise since it's never any
 		// strategy's OWN hyperliquidSymbol(sc.Args).
+		//
+		// #1159 review: this must run regardless of whether the PRIMARY coin
+		// is currently held (no longer nested under a `continue` gated on the
+		// primary) — a held hedge leg with a flat primary (e.g. a prior
+		// closeFull attempt failed and left it dangling) must still be
+		// captured, or the kill switch's on-chain flatten roster silently
+		// omits it and strands a live, unmanaged position on the exchange.
 		if HedgeEnabled(sc) {
 			if hCoin := hedgeCoin(sc); hCoin != "" {
 				if hPos := ss.Positions[hCoin]; hPos != nil && hPos.Quantity > 0 && hPos.HedgeFor != "" {

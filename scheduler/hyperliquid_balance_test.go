@@ -2976,6 +2976,78 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 	}
 }
 
+// #1159 review: a hedge leg held while its primary is flat (e.g. a prior
+// closeFull attempt failed and left it dangling) must still be captured by
+// snapshotHyperliquidVirtualQuantities and closed on-chain by the kill
+// switch — not silently stranded because the hedge-capture block used to be
+// nested under the primary coin's `continue`.
+func TestForceCloseHyperliquidLive_StrandedHedgeWithFlatPrimaryIsClosed(t *testing.T) {
+	stratID := "hl-eth-long"
+	hlLiveAll := []StrategyConfig{
+		{ID: stratID, Platform: "hyperliquid", Type: "perps",
+			Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}},
+	}
+	strategies := map[string]*StrategyState{
+		stratID: {
+			ID: stratID, Type: "perps", Platform: "hyperliquid",
+			Positions: map[string]*Position{
+				// Primary is flat (no ETH entry at all — e.g. already closed).
+				"BTC": {Symbol: "BTC", Quantity: 1.5, AvgCost: 60000, Side: "short",
+					Multiplier: 1, OwnerStrategyID: stratID, HedgeFor: "ETH"},
+			},
+		},
+	}
+	hlVirtualQty := snapshotHyperliquidVirtualQuantities(strategies, hlLiveAll)
+	if got := hlVirtualQty["BTC"][stratID]; got != 1.5 {
+		t.Fatalf("hlVirtualQty[BTC][%s] = %v, want 1.5 (hedge leg must be captured despite flat primary)", stratID, got)
+	}
+
+	positions := []HLPosition{{Coin: "BTC", Size: -1.5, EntryPrice: 60000}}
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, hlVirtualQty)
+
+	if len(report.Errors) != 0 {
+		t.Errorf("expected no errors, got %v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "BTC" {
+		t.Errorf("ClosedCoins = %v, want [BTC] (stranded hedge must be closed on-chain)", report.ClosedCoins)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "BTC" {
+		t.Errorf("closer calls = %v, want [BTC]", *calls)
+	}
+}
+
+// A foreign position sitting on a strategy's declared hedge coin — never
+// tracked in this strategy's virtual state — must never be treated as held
+// just because the coin is configured as a hedge target.
+func TestForceCloseHyperliquidLive_ForeignPositionOnHedgeCoinNotTouched(t *testing.T) {
+	stratID := "hl-eth-long"
+	hlLiveAll := []StrategyConfig{
+		{ID: stratID, Platform: "hyperliquid", Type: "perps",
+			Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}},
+	}
+	strategies := map[string]*StrategyState{
+		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Positions: map[string]*Position{}},
+	}
+	hlVirtualQty := snapshotHyperliquidVirtualQuantities(strategies, hlLiveAll)
+	if hlVirtualQty != nil {
+		t.Fatalf("hlVirtualQty = %v, want nil (nothing held)", hlVirtualQty)
+	}
+
+	positions := []HLPosition{{Coin: "BTC", Size: 0.3, EntryPrice: 60000}}
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, hlVirtualQty)
+
+	if len(report.ClosedCoins) != 0 {
+		t.Errorf("ClosedCoins = %v, want none (foreign position on hedge coin must not be touched)", report.ClosedCoins)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("closer calls = %v, want none", *calls)
+	}
+}
+
 func TestComputeHyperliquidCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",

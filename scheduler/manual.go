@@ -597,6 +597,23 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			if sc.Type != "manual" {
 				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
 			}
+			// #1159 review: a partial force-close on a hedge leg (queued by
+			// forceCloseCore's best-effort mirror) reduces pos.Quantity here but
+			// must also advance the basis watermark to the primary's CURRENT
+			// qty — otherwise the next runHedgeSync cycle still sees the old
+			// (pre-close) basis, computes a fresh delta against it, and reduces
+			// the hedge a SECOND time on top of this mirror's reduce. The
+			// primary's own "close" drain always applies before this one (both
+			// were queued in the same forceCloseCore call, primary inserted
+			// first, and LoadPendingManualActions replays by ascending id), so
+			// ss.Positions[pos.HedgeFor] already reflects the post-close qty.
+			if pos.HedgeFor != "" {
+				if primaryPos, ok := ss.Positions[pos.HedgeFor]; ok && primaryPos != nil {
+					pos.HedgePrimaryQtyBasis = primaryPos.Quantity
+				} else {
+					pos.HedgePrimaryQtyBasis = 0
+				}
+			}
 		}
 		fmt.Printf("[manual] applied %s: %s %.6f %s @ $%.4f | PnL=$%.2f\n",
 			closeLabel, a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
