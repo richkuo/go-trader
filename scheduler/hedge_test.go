@@ -508,3 +508,104 @@ func TestApplyHedgeOpenToState_OppositeSideNetsInsteadOfBlending(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyHedgeOpenToState_DebitsCashForFee(t *testing.T) {
+	t.Run("fresh open debits the fill fee", func(t *testing.T) {
+		s := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000}
+
+		applyHedgeOpenToState(s, "ETH", "BTC", "short", 0.5, 60000, 5, 0, 1, 1)
+
+		if s.Cash != 995 {
+			t.Errorf("expected cash 1000-5=995 after the hedge open fee, got %v", s.Cash)
+		}
+	})
+
+	t.Run("scale-in add debits its own fee", func(t *testing.T) {
+		s := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 2, Side: "long", AvgCost: 3000}
+		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.5, Side: "short", AvgCost: 60000, IsHedge: true}
+
+		applyHedgeOpenToState(s, "ETH", "BTC", "short", 0.25, 62000, 2, 0, 1, 3)
+
+		if s.Cash != 998 {
+			t.Errorf("expected cash 1000-2=998 after the add's own fee, got %v", s.Cash)
+		}
+	})
+
+	t.Run("flip-net excess open debits only the excess-open fee, not the netted portion", func(t *testing.T) {
+		s := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000}
+		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.2, Side: "short", AvgCost: 60000, IsHedge: true}
+
+		// fillFee=3 on a 0.5 fill; 0.2 nets against the residual (net fee
+		// 3*0.2/0.5=1.2, applied via bookHedgeCloseFill's own PnL-fee
+		// deduction), the remaining 0.3 opens fresh and should debit its
+		// pro-rated share (3-1.2=1.8) from cash directly.
+		applyHedgeOpenToState(s, "ETH", "BTC", "long", 0.5, 61000, 3, 0, 1, 1)
+
+		// Close leg: pnl = 0.2*(60000-61000) - 1.2 = -201.2 -> cash += pnl.
+		// Open leg: cash -= 1.8.
+		wantCash := 1000 + (0.2*(60000-61000) - 1.2) - 1.8
+		if diff := s.Cash - wantCash; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("expected cash %v (net-close PnL/fee + excess-open fee), got %v", wantCash, s.Cash)
+		}
+	})
+}
+
+func TestBookHedgeCloseFill_DoesNotAffectConsecutiveLosses(t *testing.T) {
+	s := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+	s.RiskState.ConsecutiveLosses = 3
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1.0, Side: "short", AvgCost: 60000, IsHedge: true}
+
+	// Short closes at a loss (price rose): pnl = 1.0*(60000-61000) - 1 = -1001.
+	ok := bookHedgeCloseFill(s, "BTC", 1.0, 61000, 1, 0, "hedge_coherence")
+	if !ok {
+		t.Fatal("expected close to succeed")
+	}
+	if s.RiskState.ConsecutiveLosses != 3 {
+		t.Errorf("expected ConsecutiveLosses to stay untouched by a hedge close (was 3), got %d", s.RiskState.ConsecutiveLosses)
+	}
+	wantPnL := 1.0*(60000-61000) - 1
+	if s.RiskState.DailyPnL != wantPnL {
+		t.Errorf("expected DailyPnL to still reflect the real hedge PnL %v, got %v", wantPnL, s.RiskState.DailyPnL)
+	}
+	if s.Cash != 1000+wantPnL {
+		t.Errorf("expected cash to reflect the hedge close PnL, got %v want %v", s.Cash, 1000+wantPnL)
+	}
+
+	// A losing primary alongside a winning hedge must still accumulate the
+	// loss-streak counter via the PRIMARY's own RecordTradeResult call
+	// elsewhere — this test only asserts the hedge leg itself never resets
+	// or increments it.
+	s2 := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+	s2.RiskState.ConsecutiveLosses = 4
+	s2.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1.0, Side: "short", AvgCost: 60000, IsHedge: true}
+	// Short closes at a WIN this time (price dropped) — under the old
+	// RecordTradeResult wiring this would have reset ConsecutiveLosses to 0,
+	// masking a real losing streak on the primary.
+	bookHedgeCloseFill(s2, "BTC", 1.0, 59000, 1, 0, "hedge_coherence")
+	if s2.RiskState.ConsecutiveLosses != 4 {
+		t.Errorf("expected a winning hedge close to NOT reset ConsecutiveLosses (was 4), got %d", s2.RiskState.ConsecutiveLosses)
+	}
+}
+
+func TestHedgeLegSideMismatched(t *testing.T) {
+	cases := []struct {
+		name         string
+		hedgeSide    string
+		expectedSide string
+		want         bool
+	}{
+		{"correctly inverse", "short", "short", false}, // expectedSide is already hedgeSideForPrimary's output
+		{"same direction as primary (bug state)", "long", "short", true},
+		{"no resolvable primary side never mismatches", "long", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hedgeLegSideMismatched(tc.hedgeSide, tc.expectedSide); got != tc.want {
+				t.Errorf("hedgeLegSideMismatched(%q, %q) = %v, want %v", tc.hedgeSide, tc.expectedSide, got, tc.want)
+			}
+		})
+	}
+}

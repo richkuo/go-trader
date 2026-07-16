@@ -311,6 +311,17 @@ func hedgeAdjustDelta(currentHedgeQty, target float64) (reduceBy float64, underH
 	return 0, false
 }
 
+// hedgeLegSideMismatched reports whether a hedge position's side no longer
+// inverts its primary's current side (#1159 review) — e.g. a flip whose
+// old-hedge close under-filled or failed, leaving a stale same-direction
+// residual that would amplify the primary instead of hedging it.
+// expectedSide=="" means the primary side couldn't be resolved (e.g. no
+// primary position) — never counts as a mismatch, so a data gap never
+// flattens a legitimate hedge.
+func hedgeLegSideMismatched(hedgeSide, expectedSide string) bool {
+	return expectedSide != "" && hedgeSide != expectedSide
+}
+
 // ---------------------------------------------------------------------------
 // State booking helpers. Callers must hold mu.Lock().
 // ---------------------------------------------------------------------------
@@ -365,6 +376,15 @@ func applyHedgeOpenToState(s *StrategyState, primarySym, hedgeSym, side string, 
 		}
 		s.Positions[hedgeSym] = pos
 	}
+	// #1159 review: the on-chain wallet really paid this taker fee, same as a
+	// primary perps open (portfolio.go: `s.Cash -= fee`). Omitting it here
+	// overstates Go-side cash by every hedge open/add fee, drifting
+	// PortfolioValue/drawdown/leaderboard/daily-loss basis upward and
+	// eventually tripping the live HL total-drift journal / shared-wallet
+	// drift tracker's $0.01 tolerance. Covers the netting-excess open too:
+	// fillFee has already been reduced by netFee above, so this deducts only
+	// the fee actually attributable to the fresh-side notional.
+	s.Cash -= fillFee
 	totalCost := pos.AvgCost*pos.Quantity + fillPx*fillQty
 	pos.Quantity += fillQty
 	if pos.Quantity > 0 {
@@ -466,7 +486,7 @@ func bookHedgeCloseFill(s *StrategyState, hedgeSym string, closeQty, closePx, fi
 		IsHedge:         true,
 		Regime:          s.Regime,
 	})
-	RecordTradeResult(&s.RiskState, pnl)
+	recordHedgeDailyPnLOnly(&s.RiskState, pnl)
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {
@@ -476,6 +496,21 @@ func bookHedgeCloseFill(s *StrategyState, hedgeSym string, closeQty, closePx, fi
 		pos.Quantity = remaining
 	}
 	return true
+}
+
+// recordHedgeDailyPnLOnly applies a hedge close's realized PnL to the
+// strategy's daily-PnL accounting (portfolio_risk daily-loss limits still see
+// the real cash impact) WITHOUT touching RiskState.ConsecutiveLosses (#1159
+// review). A hedge leg's PnL is inverse-correlated to the primary's and books
+// AFTER it in the same cycle (main.go), so routing it through
+// RecordTradeResult would reset the loss-streak counter on every winning
+// hedge (i.e. every losing primary) — effectively disabling the loss-streak
+// circuit breaker on any hedge-enabled strategy. Same "hedge is not alpha"
+// reasoning that already excludes IsHedge legs from lifetime W/L stats
+// (db.go LifetimeTradeStats*).
+func recordHedgeDailyPnLOnly(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }
 
 // ---------------------------------------------------------------------------
@@ -767,11 +802,12 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 		return
 	}
 	type hedgeJob struct {
-		sc         StrategyConfig
-		hedgeSym   string
-		reduceBy   float64
-		underHedge bool
-		fullClose  bool
+		sc           StrategyConfig
+		hedgeSym     string
+		reduceBy     float64
+		underHedge   bool
+		fullClose    bool
+		sideMismatch bool
 	}
 	var jobs []hedgeJob
 	// checkedKeys covers every live hedge-enabled strategy evaluated this
@@ -804,8 +840,10 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 		}
 		checkedKeys = append(checkedKeys, hedgeUnderHedgeKey(id, hedgeSym))
 		var primaryQty float64
+		var primarySide string
 		if p, ok := s.Positions[primarySym]; ok && p != nil {
 			primaryQty = p.Quantity
+			primarySide = p.Side
 		}
 		hp, hasHedge := s.Positions[hedgeSym]
 		if !hasHedge || hp == nil || !hp.IsHedge {
@@ -813,6 +851,21 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 		}
 		if primaryQty <= 1e-12 {
 			jobs = append(jobs, hedgeJob{sc: sc, hedgeSym: hedgeSym, fullClose: true})
+			continue
+		}
+		// #1159 review: a leg flagged IsHedge must always sit on the inverse
+		// side of its primary. A flip whose old-hedge close order failed or
+		// underfilled while the new-side open only partially netted the
+		// residual (applyHedgeOpenToState's fillQty<=residual early return)
+		// can leave a SAME-direction leg still stamped IsHedge with a stale
+		// HedgeRatioQty — it now amplifies the primary instead of hedging it.
+		// hedgeAdjustDelta below is side-blind (quantities only) and would
+		// "correct" that leg toward a bogus ratio target rather than flatten
+		// it, so detect the direction mismatch first and flatten
+		// unconditionally — same reduce-only, collision-free path as a
+		// flat-primary full close.
+		if hedgeLegSideMismatched(hp.Side, hedgeSideForPrimary(primarySide)) {
+			jobs = append(jobs, hedgeJob{sc: sc, hedgeSym: hedgeSym, fullClose: true, sideMismatch: true})
 			continue
 		}
 		target := hedgeTargetQty(primaryQty, hp.HedgeRatioQty)
@@ -851,7 +904,19 @@ func runHedgeCoherenceSync(state *AppState, strategies []StrategyConfig, hlPosit
 			continue
 		}
 		if j.fullClose {
-			reduceHedgeAndBook(j.sc, state.Strategies[j.sc.ID], mu, j.hedgeSym, nil, "hedge_coherence", notifier, logger)
+			reason := "hedge_coherence"
+			if j.sideMismatch {
+				reason = "hedge_side_mismatch_flatten"
+				if logger != nil {
+					logger.Error("CRITICAL: %s hedge leg %s was on the SAME side as its primary (not inverse) — flattening immediately", j.sc.ID, j.hedgeSym)
+				}
+				if notifier != nil && notifier.HasBackends() {
+					alert := fmt.Sprintf("**HEDGE SIDE MISMATCH — FLATTENED** [%s] %s: hedge leg was on the same side as its primary (amplifying, not hedging) — likely a flip whose old-hedge close under-filled. Flattened reduce-only; investigate hedge-coin liquidity around the flip.", j.sc.ID, j.hedgeSym)
+					notifier.SendToAllChannels(alert)
+					notifier.SendOwnerDM(alert)
+				}
+			}
+			reduceHedgeAndBook(j.sc, state.Strategies[j.sc.ID], mu, j.hedgeSym, nil, reason, notifier, logger)
 			continue
 		}
 		qty := j.reduceBy
