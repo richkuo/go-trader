@@ -597,6 +597,9 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	if sc.Paused {
 		parts = append(parts, "paused")
 	}
+	if sc.HedgeEnabled() {
+		parts = append(parts, fmt.Sprintf("hedge=%s×%g(%s,%s,%.0fx)", hedgeCoin(sc), hedgeRatio(sc), hedgeSide(sc), hedgeMarginMode(sc), hedgeLeverage(sc)))
+	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
 	// (resolved, so a global wilder default tags every inheriting strategy).

@@ -533,6 +533,19 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: attribute a held hedge leg to the owning strategy so wallet
+		// uPnL/funding on the hedge coin is not classified as an orphan.
+		if key.Platform == "hyperliquid" && sc.HedgeEnabled() {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hpos, hok := ss.Positions[hc]; hok && hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+					hCoin := strings.ToUpper(strings.TrimSpace(hc))
+					if virtualQty[hCoin] == nil {
+						virtualQty[hCoin] = make(map[string]float64)
+					}
+					virtualQty[hCoin][id] = hpos.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

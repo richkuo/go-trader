@@ -105,6 +105,12 @@ type Position struct {
 	// disabled, failed, or not finished before the close.
 	LLMAnalysisRequested bool   `json:"llm_analysis_requested,omitempty"`
 	LLMVerdict           string `json:"llm_verdict,omitempty"`
+	// HedgeFor marks the auto-managed hedge leg and names its primary symbol.
+	// Empty means this is a normal primary position. HedgePrimaryQtyBasis is
+	// the primary quantity last mirrored by hedge sync; mark drift never moves
+	// this watermark.
+	HedgeFor             string  `json:"hedge_for,omitempty"`
+	HedgePrimaryQtyBasis float64 `json:"hedge_primary_qty_basis,omitempty"`
 	// ATRMethodAtOpen freezes the resolved atr_method (#1277) the moment this
 	// position opened (stampATRMethodAtOpenIfOpened; never re-stamped on a
 	// scale-in add — mirrors RiskAnchorPrice/EntryATR freeze-at-entry
@@ -219,7 +225,9 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 	// #1147: every full-close path funnels through here, so this is the
 	// diagnostics capture choke point. Eager identity insert only — the
 	// hold-window OHLCV fetch happens in the async worker, outside mu.
-	captureTradeDiagnostics(s, pos, closePrice, realizedPnL, reason, closedAt)
+	if pos.HedgeFor == "" {
+		captureTradeDiagnostics(s, pos, closePrice, realizedPnL, reason, closedAt)
+	}
 }
 
 // closePositionIsCorrupt reports whether a position's structural fields make a
@@ -283,6 +291,10 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 			logger.Warn("%s: refusing to book PnL for corrupt position %s (qty=%.6f avg_cost=%.4f); clearing with zero realized PnL (#1009)", logPrefix, symbol, pos.Quantity, pos.AvgCost)
 		}
 		positionID := ensurePositionTradeID(s.ID, symbol, pos)
+		tradeType := "perps"
+		if pos.HedgeFor != "" {
+			tradeType = "hedge"
+		}
 		trade := Trade{
 			Timestamp:       now,
 			StrategyID:      s.ID,
@@ -292,7 +304,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 			Quantity:        absQty(pos.Quantity),
 			Price:           closePx,
 			Value:           0,
-			TradeType:       "perps",
+			TradeType:       tradeType,
 			Details:         fmt.Sprintf("%s (corrupt position qty=%.6f avg_cost=%.4f) — zero PnL booked", detailsPrefix, pos.Quantity, pos.AvgCost),
 			IsClose:         true,
 			RealizedPnL:     0,
@@ -302,7 +314,11 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, 0)
+		if pos.HedgeFor != "" {
+			RecordHedgeTradeResult(&s.RiskState, 0)
+		} else {
+			RecordTradeResult(&s.RiskState, 0)
+		}
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -365,6 +381,10 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	// TP OIDs by piggy-backing on the existing --cancel-stop-loss-oid argv
 	// so we don't depend on auto-cancel timing for paths under our control.
 
+	tradeType := "perps"
+	if pos.HedgeFor != "" {
+		tradeType = "hedge"
+	}
 	trade := Trade{
 		Timestamp:       now,
 		StrategyID:      s.ID,
@@ -374,7 +394,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		Quantity:        qty,
 		Price:           closePx,
 		Value:           qty * closePx,
-		TradeType:       "perps",
+		TradeType:       tradeType,
 		Details:         fmt.Sprintf("%s, PnL: $%.2f (fee $%.2f)", detailsPrefix, pnl, fee),
 		IsClose:         true,
 		RealizedPnL:     grossPnL,
@@ -389,7 +409,11 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.HedgeFor != "" {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
 	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -448,6 +472,10 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	s.Cash += pnl
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
 
+	tradeType := "perps"
+	if pos.HedgeFor != "" {
+		tradeType = "hedge"
+	}
 	trade := Trade{
 		Timestamp:       now,
 		StrategyID:      s.ID,
@@ -457,7 +485,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		Quantity:        qty,
 		Price:           closePx,
 		Value:           qty * closePx,
-		TradeType:       "perps",
+		TradeType:       tradeType,
 		Details:         fmt.Sprintf("%s %.6f, PnL: $%.2f (fee $%.2f)", detailsPrefix, qty, pnl, fee),
 		IsClose:         true,
 		RealizedPnL:     grossPnL,
@@ -472,7 +500,11 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	if pos.HedgeFor != "" {
+		RecordHedgeTradeResult(&s.RiskState, pnl)
+	} else {
+		RecordTradeResult(&s.RiskState, pnl)
+	}
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {

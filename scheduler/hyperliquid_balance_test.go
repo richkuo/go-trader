@@ -2759,7 +2759,7 @@ func TestForceCloseHyperliquidLive_NonSharedCoin(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2788,7 +2788,7 @@ func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2819,7 +2819,7 @@ func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors for net-zero coin, got %v", report.Errors)
@@ -2852,7 +2852,7 @@ func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2884,7 +2884,7 @@ func TestForceCloseHyperliquidLive_ClosePartialFailure(t *testing.T) {
 	closeErr := fmt.Errorf("hl rate limited")
 	closer, _ := fakeCloser(map[string]error{"BTC": closeErr})
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -2913,7 +2913,7 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -2933,7 +2933,7 @@ func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
 	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
 		t.Fatalf("closer should not be called with empty inputs")
 		return nil, nil
-	}, nil)
+	}, nil, nil)
 	if len(report.ClosedCoins) != 0 || len(report.AlreadyFlat) != 0 || len(report.Errors) != 0 {
 		t.Errorf("expected empty report, got %+v", report)
 	}
@@ -2960,7 +2960,7 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 		}, nil
 	}
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)

@@ -357,6 +357,15 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: %s -> %s", sc.ID, formatHedgeConfig(sc.Hedge), formatHedgeConfig(ns.Hedge))
+			if ns.Hedge != nil {
+				clone := *ns.Hedge
+				sc.Hedge = &clone
+			} else {
+				sc.Hedge = nil
+			}
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -551,6 +560,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
 		errs = append(errs, msg)
 	}
+	for _, msg := range hyperliquidHedgeConfigErrors(next.Strategies) {
+		errs = append(errs, msg)
+	}
 
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -622,6 +634,13 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID, sc.AllowScaleIn, ns.AllowScaleIn))
 			} else if !scaleInConfigEqual(sc.ScaleIn, ns.ScaleIn) {
 				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
+					sc.ID))
+			}
+		}
+		// #1159: hedge block is state-shifting while a primary or hedge leg is open.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] hedge shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
 		}
@@ -845,6 +864,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.RegimeDirectionalWindow = ""  // #792: hot-reloadable when flat; state-compat blocks change while open
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
 	return sc
 }

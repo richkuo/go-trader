@@ -81,6 +81,11 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			if sc.HedgeEnabled() {
+				if hc := hedgeCoin(sc); hc != "" {
+					hlSet[hc] = true
+				}
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -953,8 +958,22 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	// #1159: enqueue the hedge ONLY alongside a closeable (sole-owned) primary.
+	// A shared primary returns early above; never flatten the hedge while its
+	// primary offset stays open.
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(*sc); hc != "" {
+			if hp := s.Positions[hc]; hp != nil && hp.HedgeFor != "" && hp.Quantity > 0 {
+				hQty, hOK := computeHyperliquidCircuitCloseQty(hc, s.ID, assist.HLPositions, assist.HLLiveAll)
+				if hOK && hQty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hc, Size: hQty})
+				}
+			}
+		}
+	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1167,6 +1186,9 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
+	if pos.HedgeFor != "" {
+		return "hedge"
+	}
 	if pos.Multiplier > 0 {
 		if s != nil {
 			switch {
@@ -1262,7 +1284,11 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		if pos.HedgeFor != "" {
+			RecordHedgeTradeResult(&s.RiskState, pnl)
+		} else {
+			RecordTradeResult(&s.RiskState, pnl)
+		}
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1597,4 +1623,13 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult includes hedge realized PnL in the portfolio daily
+// loss accounting but deliberately leaves the alpha strategy's consecutive
+// loss streak untouched. An inverse hedge is expected to lose when its primary
+// thesis wins, so counting it as a separate losing trade would mis-fire the CB.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }
