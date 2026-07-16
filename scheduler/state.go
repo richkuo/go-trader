@@ -270,7 +270,7 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 		sort.Strings(syms)
 		for _, sym := range syms {
 			pos := s.Positions[sym]
-			if pos == nil || pos.Quantity <= 0 {
+			if pos == nil || pos.Quantity <= 0 || pos.IsHedge {
 				continue
 			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)

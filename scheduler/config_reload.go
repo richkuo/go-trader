@@ -210,6 +210,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].risk_per_trade_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.RiskPerTradePct), formatFloatPtrPct(ns.RiskPerTradePct))
 			sc.RiskPerTradePct = ns.RiskPerTradePct
 		}
+		if !reflect.DeepEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: %s -> %s", sc.ID, formatHedgeConfig(sc.Hedge), formatHedgeConfig(ns.Hedge))
+			sc.Hedge = cloneHedgeConfig(ns.Hedge)
+		}
 		if sc.IntervalSeconds != ns.IntervalSeconds {
 			addChange("strategy[%s].interval_seconds: %d -> %d", sc.ID, sc.IntervalSeconds, ns.IntervalSeconds)
 			sc.IntervalSeconds = ns.IntervalSeconds
@@ -551,6 +555,9 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	for _, msg := range hyperliquidPeerStrategyErrors(next.Strategies) {
 		errs = append(errs, msg)
 	}
+	for _, msg := range validateHedgeConfigs(next.Strategies) {
+		errs = append(errs, msg)
+	}
 
 	if len(errs) > 0 {
 		sort.Strings(errs)
@@ -637,6 +644,12 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] risk_per_trade_pct sizing mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+		}
+		// #1159: the declared hedge coin, ratio, margin, leverage, and
+		// ownership policy define an in-flight pair. Changing any part while
+		// either leg is open can orphan or invert that pair; flatten first.
+		if !reflect.DeepEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge changed with open positions (flatten first or restart after close)", sc.ID))
 		}
 		// #486: HL rejects margin-mode changes on an open position; treat
 		// the same way as Leverage. Stays hot-reloadable when flat.
@@ -846,7 +859,16 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
+	sc.Hedge = nil                   // #1159: hot-reloadable only while flat; state-compat owns the guard
 	return sc
+}
+
+func formatHedgeConfig(h *HedgeConfig) string {
+	if h == nil || !h.Enabled {
+		return "off"
+	}
+	tmp := StrategyConfig{Platform: "hyperliquid", Hedge: h}
+	return fmt.Sprintf("%s inverse %.4gx %s %.2fx", hedgeCoin(tmp), hedgeRatio(tmp), hedgeMarginMode(tmp), hedgeExchangeLeverage(tmp))
 }
 
 // scaleInConfigEqual reports whether two scale_in blocks are identical for

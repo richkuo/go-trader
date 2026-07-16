@@ -512,26 +512,24 @@ func buildSharedWalletBooks(
 		if ss == nil {
 			continue
 		}
-		var posKey string
+		var posKeys []string
 		switch key.Platform {
 		case "hyperliquid":
-			if sc.Type == "manual" {
-				posKey = sc.Symbol
-			} else {
-				posKey = hyperliquidSymbol(sc.Args)
-			}
+			posKeys = hyperliquidManagedCoins(sc)
 		case "okx":
-			posKey = okxSymbol(sc.Args)
+			posKeys = []string{okxSymbol(sc.Args)}
 		}
-		if posKey == "" {
-			continue
-		}
-		coin := strings.ToUpper(strings.TrimSpace(posKey))
-		if pos, pok := ss.Positions[posKey]; pok && pos != nil && pos.Quantity > 0 {
-			if virtualQty[coin] == nil {
-				virtualQty[coin] = make(map[string]float64)
+		for _, posKey := range posKeys {
+			if posKey == "" {
+				continue
 			}
-			virtualQty[coin][id] = pos.Quantity
+			coin := strings.ToUpper(strings.TrimSpace(posKey))
+			if pos, pok := ss.Positions[posKey]; pok && pos != nil && pos.Quantity > 0 {
+				if virtualQty[coin] == nil {
+					virtualQty[coin] = make(map[string]float64)
+				}
+				virtualQty[coin][id] = pos.Quantity
+			}
 		}
 	}
 	return capitalByID, virtualQty

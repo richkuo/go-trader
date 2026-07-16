@@ -82,6 +82,7 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 		spotPrice := findSpotPrice(asset, prices)
 
 		var deltaUSD float64
+		extraDeltas := make(map[string]float64)
 
 		switch sc.Type {
 		case "spot", "perps", "manual":
@@ -97,7 +98,7 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 					continue
 				}
 				posAsset := strings.TrimSuffix(strings.ToUpper(pos.Symbol), "/USDT")
-				if posAsset != asset {
+				if posAsset != asset && !pos.IsHedge {
 					continue
 				}
 				if pos.Quantity <= 0 {
@@ -105,6 +106,9 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 					continue
 				}
 				px := spotPrice
+				if posAsset != asset {
+					px = findSpotPrice(posAsset, prices)
+				}
 				if px <= 0 {
 					px = pos.AvgCost
 				}
@@ -113,7 +117,13 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 					continue
 				}
 				legUSD := pos.Quantity * positionMultiplier(pos) * px
-				if pos.Side == "short" {
+				if posAsset != asset {
+					if pos.Side == "short" {
+						extraDeltas[posAsset] -= legUSD
+					} else {
+						extraDeltas[posAsset] += legUSD
+					}
+				} else if pos.Side == "short" {
 					deltaUSD -= legUSD
 				} else {
 					deltaUSD += legUSD
@@ -157,22 +167,28 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 			}
 		}
 
-		if deltaUSD == 0 {
-			continue
+		addDelta := func(deltaAsset string, delta float64) {
+			if delta == 0 {
+				return
+			}
+			ae, exists := assets[deltaAsset]
+			if !exists {
+				ae = &AssetExposure{Asset: deltaAsset}
+				assets[deltaAsset] = ae
+			}
+			ae.Strategies = append(ae.Strategies, StrategyExposure{StrategyID: id, DeltaUSD: delta, Type: sc.Type})
+			ae.NetDeltaUSD += delta
+			ae.GrossDeltaUSD += math.Abs(delta)
 		}
-
-		ae, exists := assets[asset]
-		if !exists {
-			ae = &AssetExposure{Asset: asset}
-			assets[asset] = ae
+		addDelta(asset, deltaUSD)
+		extraAssets := make([]string, 0, len(extraDeltas))
+		for extraAsset := range extraDeltas {
+			extraAssets = append(extraAssets, extraAsset)
 		}
-		ae.Strategies = append(ae.Strategies, StrategyExposure{
-			StrategyID: id,
-			DeltaUSD:   deltaUSD,
-			Type:       sc.Type,
-		})
-		ae.NetDeltaUSD += deltaUSD
-		ae.GrossDeltaUSD += math.Abs(deltaUSD)
+		sort.Strings(extraAssets)
+		for _, extraAsset := range extraAssets {
+			addDelta(extraAsset, extraDeltas[extraAsset])
+		}
 	}
 
 	sort.Strings(skipped)

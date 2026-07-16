@@ -756,6 +756,18 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
+        # #1159: correlated hedge legs are an execution/ownership subsystem,
+        # not an entry-strategy parameter. Until the backtester can model the
+        # second leg's independent fills, fees, margin, and fail-closed unwind,
+        # accepting this config would silently report primary-only results.
+        hedge_cfg = sc.get("hedge")
+        if isinstance(hedge_cfg, dict) and hedge_cfg.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} uses an enabled "
+                f"correlated hedge leg, which is not supported by the "
+                f"backtester in this release. Disable `hedge.enabled` or run "
+                f"the live/paper scheduler so both legs are accounted."
+            )
         # #842: a strategy has a single close_strategy ref. Still accept the
         # legacy close_strategies array (length <=1 after the collapse) so old
         # configs keep backtesting; the backtester's close_strategies= list

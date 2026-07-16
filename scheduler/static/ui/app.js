@@ -1254,20 +1254,20 @@
     const rows = [];
     Object.keys(positions).sort().forEach(function (symbol) {
       const pos = positions[symbol];
-      rows.push(positionRow(symbol, pos.side || "long", pos.quantity, pos.avg_cost, pos.stop_loss_trigger_px));
+      rows.push(positionRow(symbol, pos.side || "long", pos.quantity, pos.avg_cost, pos.stop_loss_trigger_px, pos.hedge_for_symbol || ""));
     });
     Object.keys(optionPositions).sort().forEach(function (symbol) {
       const pos = optionPositions[symbol];
-      rows.push(positionRow(symbol, pos.action || "", pos.quantity, pos.entry_premium_usd, 0));
+      rows.push(positionRow(symbol, pos.action || "", pos.quantity, pos.entry_premium_usd, 0, ""));
     });
     els.positions.innerHTML = rows.length ? rows.join("") : '<div class="position-row"><span>Flat</span><span>-</span></div>';
   }
 
-  function positionRow(symbol, side, qty, price, sl) {
+  function positionRow(symbol, side, qty, price, sl, hedgeFor) {
     const klass = side === "short" || side === "sell" ? "pos-short" : "pos-long";
-    const detail = "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
+    const detail = (hedgeFor ? "HEDGE for " + hedgeFor + " / " : "") + "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
     return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
-      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
+      escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + (hedgeFor ? "" : positionActionButtons()) + '</span></div>';
   }
 
   // positionActionButtons renders the #1257 per-row actions for eligible

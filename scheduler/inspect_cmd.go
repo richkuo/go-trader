@@ -474,6 +474,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 			fmt.Fprintf(&b, "  margin_mode:         %s%s\n", sc.MarginMode, markIfDefault(explicit, "margin_mode"))
 		}
 	}
+	if sc.HedgeEnabled() {
+		fmt.Fprintf(&b, "  hedge:               %s inverse %.4gx | margin_mode=%s leverage=%gx\n", hedgeCoin(sc), hedgeRatio(sc), hedgeMarginMode(sc), hedgeExchangeLeverage(sc))
+	}
 
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
@@ -597,6 +600,9 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	if sc.Paused {
 		parts = append(parts, "paused")
 	}
+	if sc.HedgeEnabled() {
+		parts = append(parts, fmt.Sprintf("hedge=%s:inverse@%gx/%s/%gx", hedgeCoin(sc), hedgeRatio(sc), hedgeMarginMode(sc), hedgeExchangeLeverage(sc)))
+	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
 	// (resolved, so a global wilder default tags every inheriting strategy).
@@ -677,6 +683,18 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	}
 	// #1150: pause state, always emitted so dashboards can key off it.
 	out["paused"] = sc.Paused
+	if sc.HedgeEnabled() {
+		out["hedge"] = map[string]interface{}{
+			"enabled":     true,
+			"symbol":      hedgeCoin(sc),
+			"side":        "inverse",
+			"ratio":       hedgeRatio(sc),
+			"platform":    "hyperliquid",
+			"type":        "perps",
+			"margin_mode": hedgeMarginMode(sc),
+			"leverage":    hedgeExchangeLeverage(sc),
+		}
+	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows
 		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)

@@ -773,6 +773,19 @@ def test_load_strategy_config_rejects_regime_window_divergence(tmp_path):
         run_backtest.load_strategy_config(path, "hl-d-btc")
 
 
+def test_load_strategy_config_rejects_enabled_correlated_hedge(tmp_path):
+    path = _write_config(tmp_path, version=17, strategies=[
+        _perps_strategy(hedge={
+            "enabled": True,
+            "symbol": "SOL",
+            "side": "inverse",
+            "ratio": 0.5,
+        }),
+    ])
+    with pytest.raises(ValueError, match="correlated hedge leg"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
 _REGIME_DIRECTIONAL_POLICY = {
     "trend_regime": {
         "trending_up": {"direction": "long", "invert_signal": False},
