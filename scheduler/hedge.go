@@ -136,6 +136,17 @@ func validateHedgeConfig(prefix string, sc StrategyConfig, skipLiveCredentialChe
 	if strings.TrimSpace(sc.Hedge.Symbol) == "" {
 		errs = append(errs, fmt.Sprintf("%s: hedge.symbol is required when hedge.enabled is true", prefix))
 	}
+	// #1159 review: syncHedgeAfterPrimaryFill and runHedgeCoherenceSync both
+	// early-return on !hyperliquidIsLive, so a paper strategy with
+	// hedge.enabled=true would otherwise book primary paper fills and never
+	// open/manage a hedge — silently presenting as hedged while actually
+	// running naked. Reject loudly at load rather than let that go
+	// undetected; this also blocks a SIGHUP reload from landing a
+	// live-hedge config back onto paper args (LoadConfig re-validates on
+	// every reload) instead of leaving it stuck inert.
+	if sc.Type == "perps" && sc.Platform == "hyperliquid" && !hyperliquidIsLive(sc.Args) {
+		errs = append(errs, fmt.Sprintf("%s: hedge is live-only in phase 1 (got paper args) — the hedge leg would never open or be managed, silently leaving the primary unhedged", prefix))
+	}
 	if !skipLiveCredentialChecks && sc.Type == "perps" && sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args) {
 		// Coherence sync and kill-switch hedge closes both need on-chain reads
 		// keyed by account address, same as the primary live-credential gate.
@@ -310,9 +321,37 @@ func hedgeAdjustDelta(currentHedgeQty, target float64) (reduceBy float64, underH
 // quantities (never the requested size), and records an IsHedge Trade against
 // the owning strategy's ledger (#1159 requirement 6: hedge PnL/fees book to
 // the owner, never a peer).
+//
+// #1159 review: a same-symbol fill can arrive with the OPPOSITE side of an
+// existing residual hedge position — a flip's close-old leg only partially
+// filled, or the primary went flat and re-opened the other direction while a
+// prior-direction hedge residual survived a failed/partial close. Blindly
+// adding fillQty and re-blending AvgCost across opposite sides would corrupt
+// Quantity/AvgCost/Side and invert every downstream PnL sign. Net it the way
+// an exchange would instead: close up to the residual's quantity first
+// (booking real realized PnL via bookHedgeCloseFill, fee pro-rated), then
+// open any excess fill on the new side. This makes the invariant hold
+// regardless of caller control flow — every caller of this function is safe
+// from side corruption, not just the flip path.
 func applyHedgeOpenToState(s *StrategyState, primarySym, hedgeSym, side string, fillQty, fillPx, fillFee float64, oid int64, hedgeLeverage float64, hedgePrimaryQtyAfter float64) {
 	if s == nil || fillQty <= 0 || fillPx <= 0 || side == "" {
 		return
+	}
+	if existing, ok := s.Positions[hedgeSym]; ok && existing != nil && existing.Quantity > 1e-9 && existing.Side != "" && existing.Side != side {
+		netQty := fillQty
+		if netQty > existing.Quantity {
+			netQty = existing.Quantity
+		}
+		netFee := fillFee * (netQty / fillQty)
+		bookHedgeCloseFill(s, hedgeSym, netQty, fillPx, netFee, oid, "hedge_mirror_flip_net")
+		fillQty -= netQty
+		fillFee -= netFee
+		if fillQty <= 1e-9 {
+			return
+		}
+		// Excess beyond the residual opens fresh on the new side — fall
+		// through with the remaining fillQty/fillFee and a guaranteed-clean
+		// (deleted-by-close, or never existed) map slot.
 	}
 	now := time.Now().UTC()
 	pos, existed := s.Positions[hedgeSym]

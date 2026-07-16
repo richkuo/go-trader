@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestHedgeSideForPrimary(t *testing.T) {
 	cases := []struct {
@@ -408,4 +411,100 @@ func TestApplyHedgeKillSwitchCloseFill_NotHedgeEnabled(t *testing.T) {
 	if ok := applyHedgeKillSwitchCloseFill(s, sc, fills); ok {
 		t.Error("expected no-op for a strategy without hedge enabled")
 	}
+}
+
+func TestValidateHedgeConfig_RejectsPaperMode(t *testing.T) {
+	sc := hedgeTestStrategy(func(sc *StrategyConfig) {
+		sc.Args = []string{"check_hyperliquid.py", "ETH", "--mode=paper"}
+	})
+	errs := validateHedgeConfig("p", sc, true)
+	if len(errs) == 0 {
+		t.Fatal("expected rejection for hedge.enabled=true on paper args")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "live-only") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a live-only rejection message, got %v", errs)
+	}
+}
+
+func TestApplyHedgeOpenToState_OppositeSideNetsInsteadOfBlending(t *testing.T) {
+	t.Run("excess after full net opens fresh on new side", func(t *testing.T) {
+		s := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+		s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1, Side: "long", AvgCost: 3000}
+		// Stale short residual (e.g. survived a partial flip-close).
+		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.2, Side: "short", AvgCost: 60000, IsHedge: true}
+
+		// A LONG fill of 0.5 arrives — nets 0.2 against the short residual
+		// (closing it), then opens 0.3 fresh long with the remainder.
+		applyHedgeOpenToState(s, "ETH", "BTC", "long", 0.5, 61000, 3, 0, 1, 1)
+
+		pos, ok := s.Positions["BTC"]
+		if !ok {
+			t.Fatal("expected a fresh BTC hedge position after netting")
+		}
+		if pos.Side != "long" {
+			t.Errorf("expected Side=long after netting past the residual, got %q", pos.Side)
+		}
+		if pos.Quantity != 0.3 {
+			t.Errorf("expected Quantity=0.3 (0.5 fill - 0.2 netted), got %v", pos.Quantity)
+		}
+		if pos.AvgCost != 61000 {
+			t.Errorf("expected fresh AvgCost=61000 (not blended with the closed short), got %v", pos.AvgCost)
+		}
+		// The netting close must have booked a real close trade (short residual
+		// bought back at 61000) in addition to the fresh-open trade.
+		closeTrades, openTrades := 0, 0
+		for _, tr := range s.TradeHistory {
+			if tr.IsClose {
+				closeTrades++
+			} else {
+				openTrades++
+			}
+		}
+		if closeTrades != 1 || openTrades != 1 {
+			t.Errorf("expected 1 close + 1 open trade, got close=%d open=%d", closeTrades, openTrades)
+		}
+	})
+
+	t.Run("fill smaller than residual only reduces, never flips or blends", func(t *testing.T) {
+		s := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1.0, Side: "short", AvgCost: 60000, IsHedge: true}
+
+		applyHedgeOpenToState(s, "ETH", "BTC", "long", 0.3, 61000, 1, 0, 1, 1)
+
+		pos, ok := s.Positions["BTC"]
+		if !ok {
+			t.Fatal("expected residual BTC hedge position to remain")
+		}
+		if pos.Side != "short" {
+			t.Errorf("expected Side to remain short (fill fully absorbed as a reduction), got %q", pos.Side)
+		}
+		if pos.Quantity != 0.7 {
+			t.Errorf("expected Quantity=0.7 (1.0 - 0.3 netted), got %v", pos.Quantity)
+		}
+		if pos.AvgCost != 60000 {
+			t.Errorf("expected AvgCost to remain 60000 (never blended with the opposite-side fill), got %v", pos.AvgCost)
+		}
+	})
+
+	t.Run("same-side add still blends normally (no regression)", func(t *testing.T) {
+		s := NewStrategyState(StrategyConfig{ID: "eth-hedged", Capital: 1000})
+		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.5, Side: "short", AvgCost: 60000, IsHedge: true}
+
+		applyHedgeOpenToState(s, "ETH", "BTC", "short", 0.5, 62000, 2, 0, 1, 2)
+
+		pos := s.Positions["BTC"]
+		if pos.Quantity != 1.0 {
+			t.Errorf("expected blended quantity 1.0, got %v", pos.Quantity)
+		}
+		wantAvg := (0.5*60000 + 0.5*62000) / 1.0
+		if pos.AvgCost != wantAvg {
+			t.Errorf("expected blended avg_cost %v, got %v", wantAvg, pos.AvgCost)
+		}
+	})
 }
