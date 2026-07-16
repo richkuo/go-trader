@@ -661,6 +661,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159 phase 1: opt-in automatically managed correlated hedge leg (HL perps only). Nil/missing or Enabled=false preserves legacy behavior. Lifecycle mirrors the primary position's realized fills (open/add/partial-close/full-close/flip); a per-cycle coherence-sync backstop (hedge.go) self-heals drift from CB/kill-switch/manual-close/external reductions. No independent hedge SL/TP or check-script surface. Config-validated for peer/self collisions (hyperliquidHedgeStrategyErrors); the hedge block is state-shifting and hot-reload-blocked while any position on the strategy is open, freely reloadable while flat.
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -2212,6 +2213,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: theta_harvest.min_dte_close must be >= 0", prefix))
 			}
 		}
+
+		// #1159 phase 1: hedge leg is opt-in, HL perps only, one fixed side
+		// policy. Peer/self-collision checks run once over the whole strategy
+		// list via hyperliquidHedgeStrategyErrors below, not per-strategy here.
+		errs = append(errs, validateHedgeConfig(prefix, sc, skipLiveCredentialChecks)...)
 	}
 
 	// #491: Two HL perps strategies on the same coin land on a single on-chain
@@ -2221,6 +2227,12 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+
+	// #1159 phase 1: hedge coin collision checks (self, peer-primary,
+	// hedge-vs-hedge) — see hyperliquidHedgeStrategyErrors doc comment.
+	for _, msg := range hyperliquidHedgeStrategyErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 

@@ -2185,3 +2185,54 @@ func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateHotReloadStateCompatible_HedgeBlock covers #1159 constraint 7:
+// the hedge block is state-shifting and must be blocked while a position is
+// open, but freely reloadable while flat.
+func TestValidateHotReloadStateCompatible_HedgeBlock(t *testing.T) {
+	mkCfg := func(hedge *HedgeConfig) *Config {
+		sc := StrategyConfig{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+			Args: []string{"a", "ETH", "--mode=live"}, Capital: 1000, MaxDrawdownPct: 10,
+			Leverage: 5, MarginMode: "isolated", Hedge: hedge,
+		}
+		return minimalReloadConfig([]StrategyConfig{sc})
+	}
+	openState := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long"},
+		}},
+	}}
+	flatState := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Positions: map[string]*Position{}},
+	}}
+	none := (*HedgeConfig)(nil)
+	btcHedge := &HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1.0, Leverage: 3}
+	solHedge := &HedgeConfig{Enabled: true, Symbol: "SOL", Ratio: 1.0, Leverage: 3}
+
+	cases := []struct {
+		name     string
+		old, new *HedgeConfig
+	}{
+		{"hedge enabled (nil -> configured)", none, btcHedge},
+		{"hedge disabled (configured -> nil)", btcHedge, none},
+		{"hedge symbol changed", btcHedge, solHedge},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateHotReloadStateCompatible(mkCfg(tc.old), mkCfg(tc.new), openState)
+			if err == nil || !strings.Contains(err.Error(), "hedge config changed") {
+				t.Fatalf("open position: want hedge-config-changed error, got: %v", err)
+			}
+			if err := validateHotReloadStateCompatible(mkCfg(tc.old), mkCfg(tc.new), flatState); err != nil {
+				t.Fatalf("flat: same hedge change must be accepted, got: %v", err)
+			}
+		})
+	}
+
+	t.Run("unchanged hedge block never blocks", func(t *testing.T) {
+		if err := validateHotReloadStateCompatible(mkCfg(btcHedge), mkCfg(btcHedge), openState); err != nil {
+			t.Fatalf("unchanged hedge block must not block reload: %v", err)
+		}
+	})
+}

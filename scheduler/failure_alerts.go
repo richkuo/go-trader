@@ -126,6 +126,17 @@ func (t *LiveExecFailureThrottle) Clear(key string) {
 	}
 }
 
+// Had reports whether key currently has a tracked entry — i.e. at least one
+// notification has fired for it and it has not since been Clear()ed. Callers
+// use this to emit an explicit "recovered" signal only when a prior alert
+// actually went out, rather than on every cycle a condition happens to be
+// absent.
+func (t *LiveExecFailureThrottle) Had(key string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.entries != nil && t.entries[key] != nil
+}
+
 // liveExecThrottle is the package-level singleton; resets on process restart.
 var liveExecThrottle = &LiveExecFailureThrottle{}
 

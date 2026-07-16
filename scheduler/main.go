@@ -1709,6 +1709,19 @@ func main() {
 					reportHLReconcileGaps(notifier, collectHLReconcileGapResults(state, &mu))
 				}
 
+				// #1159: per-cycle hedge coherence-sync backstop. Runs every
+				// cycle a fresh HL clearinghouse snapshot was fetched (not
+				// gated on hlReconcileDue — a hedge-enabled strategy's own
+				// due-cycle may not align with this fetch) so any hedge drift
+				// from CB drains, kill-switch closes, manual force-close, an
+				// on-chain TP/SL fill, or a restart mid-sequence self-heals
+				// within one cycle. See hedge.go doc comment for the full
+				// design rationale (deliberately replaces dedicated inline
+				// hooks in the CB/kill-switch/manual-close code paths).
+				if hlStateFetched {
+					runHedgeCoherenceSync(state, cfg.Strategies, hlPositions, hlStateFetched, &mu, notifier, logMgr)
+				}
+
 				// #621: Build a coin→|on-chain qty| map from the pre-fetched positions
 				// so SL placement can cap its size when virtual qty > on-chain qty
 				// (e.g. after a manual TP reduced the position without the bot's knowledge).
@@ -2444,6 +2457,17 @@ func main() {
 								// for the scale-in branch and when no tier tightened.
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
 								if execResult != nil && trades > 0 {
+									// #1159: mirror the just-booked primary fill onto the
+									// hedge leg BEFORE protection sync — the primary's SL/TP
+									// sizing doesn't depend on hedge state, but a fresh-open
+									// hedge failure unwinds the primary (constraint 4) and
+									// must happen before the sync re-sizes protection for a
+									// position that's about to be closed anyway.
+									var primaryFillPx float64
+									if execResult.Execution != nil && execResult.Execution.Fill != nil {
+										primaryFillPx = execResult.Execution.Fill.AvgPx
+									}
+									syncHedgeAfterPrimaryFill(sc, stratState, &mu, hlPositions, hlPosQty, hlPosSide, primaryFillPx, notifier, logger)
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									// #873/#882: for a trailing-SL owner the post-trade sync

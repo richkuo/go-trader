@@ -1962,6 +1962,14 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 			tradedCoins[sym] = true
 		}
 	}
+	// #1159: a live hedge leg is a real on-chain position the kill switch must
+	// also flatten in this SAME pass — without this it would be skipped as
+	// "unowned" (tradedCoins only tracks primary coins) and left open on-chain
+	// while the Go-side virtual bookkeeping is later zeroed by the generic
+	// forceCloseAllPositions fallback, a dangerous virtual/on-chain mismatch.
+	for coin := range hedgeCoinsForKillSwitch(hlLiveAll) {
+		tradedCoins[coin] = true
+	}
 
 	for _, p := range positions {
 		if !tradedCoins[p.Coin] {

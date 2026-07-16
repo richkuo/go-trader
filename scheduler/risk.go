@@ -84,6 +84,13 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		case "okx":
 			okxSet[coin] = true
 		}
+		// #1159: a hedge leg needs its own mark for PortfolioValue/drawdown and
+		// the dashboard, same as the primary coin.
+		if sc.Platform == "hyperliquid" {
+			if hc := hyperliquidHedgeCoin(sc); hc != "" {
+				hlSet[hc] = true
+			}
+		}
 	}
 	hlCoins = make([]string, 0, len(hlSet))
 	for c := range hlSet {
@@ -1149,6 +1156,11 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 	// generic pass below remains the cleanup path for non-HL strategies,
 	// missing-fill fallbacks, options, and any residual virtual positions.
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
+	// #1159: book the hedge leg's real on-chain fill (sole owner, full share —
+	// hedge coins are collision-free by validation, unlike the primary path
+	// above). forceCloseAllPositions below remains the safety-net cleanup for
+	// any residual (e.g. the hedge close order failed to reach hlFills).
+	applyHedgeKillSwitchCloseFill(s, sc, hlFills)
 	forceCloseAllPositions(s, prices, logger)
 }
 
