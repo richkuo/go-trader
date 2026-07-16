@@ -1233,6 +1233,10 @@
       }
       fields.push(["Profile", profile]);
     }
+    if (status.hedge && status.hedge.enabled) {
+      const ratio = status.hedge.ratio || 1;
+      fields.push(["Hedge", "Inverse " + (status.hedge.symbol || "-") + " × " + fmtNumber(ratio)]);
+    }
     els.statusGrid.innerHTML = fields.map(function (field) {
       const klass = field.length > 2 ? pnlClass(field[2], field[3]) : "";
       const dd = klass ? '<dd class="' + klass + '">' : "<dd>";
@@ -1254,18 +1258,21 @@
     const rows = [];
     Object.keys(positions).sort().forEach(function (symbol) {
       const pos = positions[symbol];
-      rows.push(positionRow(symbol, pos.side || "long", pos.quantity, pos.avg_cost, pos.stop_loss_trigger_px));
+      rows.push(positionRow(symbol, pos.side || "long", pos.quantity, pos.avg_cost, pos.stop_loss_trigger_px, pos));
     });
     Object.keys(optionPositions).sort().forEach(function (symbol) {
       const pos = optionPositions[symbol];
-      rows.push(positionRow(symbol, pos.action || "", pos.quantity, pos.entry_premium_usd, 0));
+      rows.push(positionRow(symbol, pos.action || "", pos.quantity, pos.entry_premium_usd, 0, null));
     });
     els.positions.innerHTML = rows.length ? rows.join("") : '<div class="position-row"><span>Flat</span><span>-</span></div>';
   }
 
-  function positionRow(symbol, side, qty, price, sl) {
+  function positionRow(symbol, side, qty, price, sl, pos) {
     const klass = side === "short" || side === "sell" ? "pos-short" : "pos-long";
-    const detail = "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
+    let detail = "Qty " + fmtNumber(qty) + " @ " + fmtMoney(price) + (sl ? " / SL " + fmtMoney(sl) : "");
+    if (pos && pos.hedge_for) {
+      detail += " / Hedge for " + pos.hedge_for + " (primary basis " + fmtNumber(pos.hedge_primary_qty_basis || 0) + ")";
+    }
     return '<div class="position-row"><strong>' + escapeHTML(symbol) + '</strong><span class="' + klass + '">' +
       escapeHTML(side || "-") + '</span><span>' + escapeHTML(detail) + '</span><span>' + positionActionButtons() + '</span></div>';
   }

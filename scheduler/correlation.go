@@ -38,8 +38,11 @@ type CorrelationSnapshot struct {
 // model. Semantics:
 //
 //   - spot, perps, AND manual positions contribute quantity x multiplier x
-//     price, signed by Side ("short" is negative; anything else — including
-//     long-only spot legs with an empty Side — counts long).
+//     price to the asset named by their persisted Position.Symbol, signed by
+//     Side ("short" is negative; anything else — including long-only spot
+//     legs with an empty Side — counts long). This deliberately includes a
+//     correlated hedge under its own asset: a short BTC hedge does not net an
+//     ETH primary, but it must be visible as BTC short exposure.
 //   - options contribute delta-weighted underlying exposure (emitted greeks
 //     when marked, coarse +-1 call/put fallback otherwise), signed by action.
 //   - positions with no live price fall back to AvgCost (mirrors
@@ -74,14 +77,7 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 		if !ok {
 			continue
 		}
-		asset := extractAsset(sc)
-		if asset == "" {
-			continue
-		}
-
-		spotPrice := findSpotPrice(asset, prices)
-
-		var deltaUSD float64
+		deltasByAsset := make(map[string]float64)
 
 		switch sc.Type {
 		case "spot", "perps", "manual":
@@ -96,15 +92,16 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 				if pos == nil {
 					continue
 				}
-				posAsset := strings.TrimSuffix(strings.ToUpper(pos.Symbol), "/USDT")
-				if posAsset != asset {
+				posAsset := positionExposureAsset(pos.Symbol)
+				if posAsset == "" {
+					skipped = append(skipped, fmt.Sprintf("%s/%s: no usable asset", id, pos.Symbol))
 					continue
 				}
 				if pos.Quantity <= 0 {
 					skipped = append(skipped, fmt.Sprintf("%s/%s: non-positive quantity", id, pos.Symbol))
 					continue
 				}
-				px := spotPrice
+				px := findSpotPrice(posAsset, prices)
 				if px <= 0 {
 					px = pos.AvgCost
 				}
@@ -114,12 +111,17 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 				}
 				legUSD := pos.Quantity * positionMultiplier(pos) * px
 				if pos.Side == "short" {
-					deltaUSD -= legUSD
+					deltasByAsset[posAsset] -= legUSD
 				} else {
-					deltaUSD += legUSD
+					deltasByAsset[posAsset] += legUSD
 				}
 			}
 		case "options":
+			asset := extractAsset(sc)
+			if asset == "" {
+				continue
+			}
+			spotPrice := findSpotPrice(asset, prices)
 			if spotPrice <= 0 {
 				if len(ss.OptionPositions) > 0 {
 					skipped = append(skipped, fmt.Sprintf("%s: no usable spot price for options delta", id))
@@ -145,38 +147,60 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 					sign = -1.0
 				}
 				if opt.Greeks.Delta != 0 {
-					deltaUSD += sign * opt.Greeks.Delta * opt.Quantity * spotPrice
+					deltasByAsset[asset] += sign * opt.Greeks.Delta * opt.Quantity * spotPrice
 				} else {
 					// Coarse estimate when greeks not yet marked.
 					coarseDelta := 1.0
 					if opt.OptionType == "put" {
 						coarseDelta = -1.0
 					}
-					deltaUSD += sign * coarseDelta * opt.Quantity * spotPrice
+					deltasByAsset[asset] += sign * coarseDelta * opt.Quantity * spotPrice
 				}
 			}
 		}
 
-		if deltaUSD == 0 {
-			continue
+		assetNames := make([]string, 0, len(deltasByAsset))
+		for asset := range deltasByAsset {
+			assetNames = append(assetNames, asset)
 		}
-
-		ae, exists := assets[asset]
-		if !exists {
-			ae = &AssetExposure{Asset: asset}
-			assets[asset] = ae
+		sort.Strings(assetNames)
+		for _, asset := range assetNames {
+			deltaUSD := deltasByAsset[asset]
+			if deltaUSD == 0 {
+				continue
+			}
+			ae, exists := assets[asset]
+			if !exists {
+				ae = &AssetExposure{Asset: asset}
+				assets[asset] = ae
+			}
+			ae.Strategies = append(ae.Strategies, StrategyExposure{
+				StrategyID: id,
+				DeltaUSD:   deltaUSD,
+				Type:       sc.Type,
+			})
+			ae.NetDeltaUSD += deltaUSD
+			ae.GrossDeltaUSD += math.Abs(deltaUSD)
 		}
-		ae.Strategies = append(ae.Strategies, StrategyExposure{
-			StrategyID: id,
-			DeltaUSD:   deltaUSD,
-			Type:       sc.Type,
-		})
-		ae.NetDeltaUSD += deltaUSD
-		ae.GrossDeltaUSD += math.Abs(deltaUSD)
 	}
 
 	sort.Strings(skipped)
 	return assets, skipped
+}
+
+// positionExposureAsset normalizes a persisted position symbol into its base
+// asset for the shared correlation/exposure-cap model. Positions are the
+// source of truth because a strategy can hold a scheduler-owned correlated
+// hedge whose symbol intentionally differs from its configured primary.
+func positionExposureAsset(symbol string) string {
+	asset := strings.ToUpper(strings.TrimSpace(symbol))
+	if slash := strings.IndexByte(asset, '/'); slash >= 0 {
+		asset = asset[:slash]
+	}
+	if colon := strings.IndexByte(asset, ':'); colon >= 0 {
+		asset = asset[:colon]
+	}
+	return strings.TrimSpace(asset)
 }
 
 // ComputeCorrelation computes per-asset directional exposure across all strategies.

@@ -925,6 +925,35 @@ func TestSaveLoadState_ATRMethodAtOpenRoundTrip(t *testing.T) {
 	}
 }
 
+// Hedge ownership is state, not an inferred relationship. Losing either
+// field across a restart would let reconciliation adopt an unrelated wallet
+// position or detach a real hedge from its primary.
+func TestSaveLoadState_HedgeOwnershipRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Cash: 1000, InitialCapital: 1000,
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 2, AvgCost: 3000, Side: "long", OwnerStrategyID: "hl-eth", OpenedAt: now},
+				"BTC": {Symbol: "BTC", Quantity: 0.03, AvgCost: 100000, Side: "short", OwnerStrategyID: "hl-eth", HedgeFor: "ETH", HedgePrimaryQtyBasis: 2, OpenedAt: now},
+			},
+			TradeHistory: []Trade{},
+		},
+	}}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	hedge := loaded.Strategies["hl-eth"].Positions["BTC"]
+	if hedge == nil || hedge.HedgeFor != "ETH" || hedge.HedgePrimaryQtyBasis != 2 {
+		t.Fatalf("hedge ownership did not round-trip: %#v", hedge)
+	}
+}
+
 func TestSaveStateFlushWritesTradePositionID(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Nanosecond)

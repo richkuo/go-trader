@@ -533,6 +533,22 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: the hedge coin is intentionally absent from the primary
+		// config-symbol roster. Persisted HedgeFor metadata is therefore the
+		// authoritative signal that this wallet position belongs to the member.
+		for hedgeCoin, pos := range ss.Positions {
+			if pos == nil || pos.HedgeFor == "" || pos.Quantity <= 0 {
+				continue
+			}
+			coin := strings.ToUpper(strings.TrimSpace(hedgeCoin))
+			if coin == "" {
+				continue
+			}
+			if virtualQty[coin] == nil {
+				virtualQty[coin] = make(map[string]float64)
+			}
+			virtualQty[coin][id] = pos.Quantity
+		}
 	}
 	return capitalByID, virtualQty
 }

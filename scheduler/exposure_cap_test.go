@@ -279,6 +279,49 @@ func TestEvaluateExposureCap_ManualPositionsCounted(t *testing.T) {
 	}
 }
 
+func TestEvaluateExposureCap_ManualMultiAssetPositionsCountExactlyOnce(t *testing.T) {
+	states := map[string]*StrategyState{
+		"hl-manual": {ID: "hl-manual", Type: "manual", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 2, Side: "long", AvgCost: 3000},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "short", AvgCost: 50000},
+		}},
+		"hl-btc": {ID: "hl-btc", Type: "perps", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.02, Side: "long", AvgCost: 50000},
+		}},
+	}
+	cfgs := []StrategyConfig{
+		{ID: "hl-manual", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Args: []string{"hold", "ETH"}},
+		{ID: "hl-btc", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "BTC", "1h"}},
+	}
+	st := evaluateExposureCap(&PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 5000}, states, cfgs, map[string]float64{"ETH": 3000, "BTC": 50000}, 20000)
+	if st.LongUSD != 6000 || st.ShortUSD != 4000 {
+		t.Fatalf("manual multi-asset buckets = long $%.2f short $%.2f, want $6000/$4000 net by asset", st.LongUSD, st.ShortUSD)
+	}
+	if !st.LongBlocked || st.ShortBlocked {
+		t.Fatalf("cap directionality = %#v, want long-only block", st)
+	}
+}
+
+func TestEvaluateExposureCap_CorrelatedHedgeCountsItsOwnAsset(t *testing.T) {
+	states := map[string]*StrategyState{
+		"hl-eth": {
+			ID: "hl-eth", Type: "perps",
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 2, Side: "long", AvgCost: 3000, Multiplier: 1},
+				"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "short", AvgCost: 50000, Multiplier: 1, HedgeFor: "ETH"},
+			},
+		},
+	}
+	cfgs := []StrategyConfig{{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"hold", "ETH", "1h"}}}
+	st := evaluateExposureCap(&PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 4000}, states, cfgs, map[string]float64{"ETH": 3000, "BTC": 50000}, 20000)
+	if st.LongUSD != 6000 || st.ShortUSD != 5000 {
+		t.Fatalf("same-direction buckets = long $%.2f short $%.2f, want $6000/$5000", st.LongUSD, st.ShortUSD)
+	}
+	if !st.LongBlocked || !st.ShortBlocked {
+		t.Fatalf("both independent hedge assets must be visible to the cap: %#v", st)
+	}
+}
+
 // --- concentration arm ---------------------------------------------------------
 
 func TestEvaluateExposureCap_Concentration(t *testing.T) {

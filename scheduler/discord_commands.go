@@ -143,7 +143,7 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 		cash += s.Cash
 		value += displayStrategyValue(s, prices)
 		posCount += len(s.Positions) + len(s.OptionPositions)
-		trades += len(s.TradeHistory)
+		trades += independentAlphaTradeCount(s.TradeHistory)
 		if regime == "" && s.Regime != "" {
 			regime = s.Regime
 		}
@@ -176,8 +176,12 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 			if _, ok := lines[plat]; !ok {
 				platforms = append(platforms, plat)
 			}
+			leg := ""
+			if p.HedgeFor != "" {
+				leg = fmt.Sprintf(" [hedge for %s, primary basis %.4f]", p.HedgeFor, p.HedgePrimaryQtyBasis)
+			}
 			lines[plat] = append(lines[plat], fmt.Sprintf(
-				"  %s %s %.4f @ $%.2f (mv $%.2f) [%s]", sym, p.Side, p.Quantity, p.AvgCost, mv, id))
+				"  %s %s %.4f @ $%.2f (mv $%.2f) [%s]%s", sym, p.Side, p.Quantity, p.AvgCost, mv, id, leg))
 		}
 	}
 	if len(platforms) == 0 {

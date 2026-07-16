@@ -548,7 +548,7 @@ func FormatCategorySummary(
 			pnlPct:         pnlPct,
 			maxDrawdownPct: sc.MaxDrawdownPct,
 			walletPct:      walletPct,
-			trades:         len(ss.TradeHistory),
+			trades:         independentAlphaTradeCount(ss.TradeHistory),
 			openPositions:  openPos,
 			closedTrades:   closedT,
 			winningTrades:  winT,

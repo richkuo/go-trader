@@ -69,6 +69,7 @@ type UIStrategyStatus struct {
 	Leverage         float64                    `json:"leverage,omitempty"`
 	SizingLeverage   float64                    `json:"sizing_leverage,omitempty"`
 	MarginMode       string                     `json:"margin_mode,omitempty"`
+	Hedge            *HedgeConfig               `json:"hedge,omitempty"`  // #1159: correlated-leg config, no secrets
 	Paused           bool                       `json:"paused,omitempty"` // #1150
 
 	// #779/#1157: directional-policy display fields, mirroring /status.
@@ -535,7 +536,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		PortfolioValue:   overview.PortfolioValue,
 		PnL:              overview.PnL,
 		PnLPct:           overview.PnLPct,
-		TradeCount:       len(snapshot.TradeHistory),
+		TradeCount:       independentAlphaTradeCount(snapshot.TradeHistory),
 		WinRate:          overview.WinRate,
 		LifetimeStats:    lifetime,
 		Sharpe:           overview.Sharpe,
@@ -547,6 +548,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		Leverage:         EffectiveExchangeLeverage(sc),
 		SizingLeverage:   EffectiveSizingLeverage(sc),
 		MarginMode:       sc.MarginMode,
+		Hedge:            cloneHedgeConfig(sc.Hedge),
 		Paused:           sc.Paused,
 		RegimeProfile:    snapshot.RegimeProfile,
 	}

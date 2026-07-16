@@ -31,6 +31,10 @@ func knownManualDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(ManualDefaultsConfig{}))
 }
 
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownJSONKeys(t reflect.Type) map[string]bool {
 	known := make(map[string]bool)
 	for i := 0; i < t.NumField(); i++ {
@@ -107,6 +111,48 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+	}
+	return errs
+}
+
+// validateHedgeJSONKeys applies the strategy unknown-key guarantee to the
+// nested hedge block. Without this pass, a typo such as "ration" silently
+// becomes the default ratio and can materially alter live exposure.
+func validateHedgeJSONKeys(rawData []byte) []string {
+	var envelope struct {
+		Strategies []map[string]json.RawMessage `json:"strategies"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil {
+		return nil
+	}
+	known := knownHedgeConfigKeys()
+	var errs []string
+	for i, strategy := range envelope.Strategies {
+		raw, ok := strategy["hedge"]
+		if !ok {
+			continue
+		}
+		var hedge map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &hedge); err != nil || hedge == nil {
+			continue // main config decoding reports an invalid shape
+		}
+		prefix := fmt.Sprintf("strategy[%d].hedge", i)
+		if idRaw, ok := strategy["id"]; ok {
+			var id string
+			if json.Unmarshal(idRaw, &id) == nil && id != "" {
+				prefix = fmt.Sprintf("strategy[%s].hedge", id)
+			}
+		}
+		keys := make([]string, 0, len(hedge))
+		for key := range hedge {
+			if !known[key] {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			errs = append(errs, fmt.Sprintf("%s: unknown field %q", prefix, key))
 		}
 	}
 	return errs

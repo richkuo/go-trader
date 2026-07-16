@@ -273,6 +273,12 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
+			if pos.HedgeFor != "" {
+				// An inverse hedge intentionally conflicts with the primary
+				// strategy's configured direction. Ownership is persisted on the
+				// leg and hedge sync, not the primary signal executor, manages it.
+				continue
+			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)
 			// #1085: gate by the open stamp. An uncertified/legacy directional
 			// position (certified=false) validates against BASE direction — this is
