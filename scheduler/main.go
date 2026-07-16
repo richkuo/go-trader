@@ -2419,6 +2419,17 @@ func main() {
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 && scaleInAddQty == 0 && hlPosQty == 0 && strategyHedgeEnabled(sc) {
 								if gateOK, gateReason := hedgePreOpenGate(sc, hlHedgeCoin, prices[hlHedgeCoin], hlPositions, hlHedgePos); !gateOK {
 									hedgeGateBlocked = true
+									// #1159 review round 2, finding 1: no
+									// primary order is submitted below when
+									// the gate blocks, so liveExecFailed must
+									// be set too — otherwise the booking
+									// guard further down still runs with
+									// execResult==nil, which
+									// executeHyperliquidResultDeferredOpen
+									// reads as fillQty==0 (the modeled/paper
+									// path) and books a phantom virtual
+									// position with no on-chain counterpart.
+									liveExecFailed = true
 									logger.Info("Skipping live order for %s: hedge pre-open gate refused — %s", result.Symbol, gateReason)
 								}
 							}

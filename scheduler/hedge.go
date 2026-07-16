@@ -679,8 +679,6 @@ func reconcileHedgeLegsForStrategy(sc StrategyConfig, ss *StrategyState, positio
 			break
 		}
 	}
-	primarySymbol := pos.HedgeFor
-
 	if onChainPos == nil {
 		// Fully closed externally.
 		lookup, useFillFee := resolveFee(hedgeCoin, 0, pos.Quantity)
@@ -695,13 +693,17 @@ func reconcileHedgeLegsForStrategy(sc StrategyConfig, ss *StrategyState, positio
 		if logger != nil {
 			logger.Warn("hl-sync: hedge %s externally closed (no matching on-chain position) — booking close", hedgeCoin)
 		}
-		ok := bookPerpsCloseWithFillFee(ss, hedgeCoin, closePx, lookup.Fee, useFillFee, oidStr, "hl_sync_external_hedge", "HEDGE external close", "HEDGE external close", logger)
-		if ok {
-			if primaryPos, exists := ss.Positions[primarySymbol]; exists && primaryPos != nil {
-				primaryPos.HedgeSymbol = ""
-			}
-		}
-		return ok
+		// Deliberately do NOT clear primaryPos.HedgeSymbol here (review round
+		// 2, finding 2): syncHedgeCoherence's "primary exists, hedge gone"
+		// reduce-only close is gated on HedgeSymbol != "" — clearing it the
+		// moment the hedge disappears would permanently disable that branch
+		// for exactly the case it exists to catch (an externally-lost hedge,
+		// e.g. an operator UI close or a liquidation), silently downgrading
+		// the primary to an ordinary unhedged position instead of driving it
+		// flat. Leaving it set lets coherence pick this up next cycle and
+		// close the primary reduce-only with a CRITICAL alert; HedgeSymbol
+		// only clears once that close actually removes the primary position.
+		return bookPerpsCloseWithFillFee(ss, hedgeCoin, closePx, lookup.Fee, useFillFee, oidStr, "hl_sync_external_hedge", "HEDGE external close", "HEDGE external close", logger)
 	}
 
 	onChainAbs := math.Abs(onChainPos.Size)
@@ -711,13 +713,14 @@ func reconcileHedgeLegsForStrategy(sc StrategyConfig, ss *StrategyState, positio
 		// hyperliquidHedgeConfigErrors guarantees is sole-owned and that only
 		// runHedgeOpenOrder/runReduceOnlyClose ever trade, but fail safe
 		// rather than book an economically meaningless "close" against a
-		// foreign-direction fill: clear the stale virtual row so
+		// foreign-direction fill: clear the stale virtual HEDGE row so
 		// syncHedgeCoherence's "hedge gone" branch closes the primary next
-		// cycle (never left silently believing it's still hedged).
+		// cycle (never left silently believing it's still hedged). Deliberately
+		// does NOT also clear primaryPos.HedgeSymbol (review round 2, finding
+		// 2) — that field is exactly what gates coherence's close branch;
+		// clearing it here would disable the very mechanism this comment
+		// describes.
 		delete(ss.Positions, hedgeCoin)
-		if primaryPos, exists := ss.Positions[primarySymbol]; exists && primaryPos != nil {
-			primaryPos.HedgeSymbol = ""
-		}
 		if logger != nil {
 			logger.Warn("hl-sync: hedge %s on-chain direction no longer matches virtual (side=%s, on-chain size=%.6f) — clearing stale virtual row", hedgeCoin, pos.Side, onChainPos.Size)
 		}

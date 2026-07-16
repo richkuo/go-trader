@@ -509,8 +509,14 @@ func TestReconcileHedgeLegsForStrategy(t *testing.T) {
 		if _, ok := s.Positions["BTC"]; ok {
 			t.Error("hedge position should have been removed after external close")
 		}
-		if s.Positions["ETH"].HedgeSymbol != "" {
-			t.Errorf("primary HedgeSymbol should be cleared, got %q", s.Positions["ETH"].HedgeSymbol)
+		// Regression for review round 2, finding 2: HedgeSymbol must stay
+		// set after the hedge disappears externally — it's exactly what
+		// gates syncHedgeCoherence's "primary exists, hedge gone" reduce-
+		// only close. Clearing it here would silently downgrade the primary
+		// to a permanently-unhedged ordinary position instead of letting
+		// coherence drive it flat next cycle.
+		if s.Positions["ETH"].HedgeSymbol != "BTC" {
+			t.Errorf("primary HedgeSymbol must remain set so coherence can close it, got %q", s.Positions["ETH"].HedgeSymbol)
 		}
 	})
 
@@ -568,6 +574,12 @@ func TestReconcileHedgeLegsForStrategy(t *testing.T) {
 		}
 		if _, ok := s.Positions["BTC"]; ok {
 			t.Error("stale hedge row should have been cleared")
+		}
+		// Same round-2 finding-2 regression as the external-close case:
+		// clearing the HEDGE row must not also clear the PRIMARY's
+		// HedgeSymbol, or coherence's close-primary branch can never fire.
+		if s.Positions["ETH"].HedgeSymbol != "BTC" {
+			t.Errorf("primary HedgeSymbol must remain set so coherence can close it, got %q", s.Positions["ETH"].HedgeSymbol)
 		}
 	})
 
