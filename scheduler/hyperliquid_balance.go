@@ -847,24 +847,27 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		if ss == nil {
 			continue
 		}
-		sym := hyperliquidSymbol(sc.Args)
-		if sym == "" {
-			continue
-		}
-		if sharedCoins[sym] {
-			continue // handled below
-		}
 		logger, err := logMgr.GetStrategyLogger(sc.ID)
 		if err != nil {
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
-			changed = true
+		sym := hyperliquidSymbol(sc.Args)
+		if sym != "" && !sharedCoins[sym] {
+			if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+				changed = true
+			}
 		}
-		// #1159: hedge coins are guaranteed sole-owned/non-shared by
-		// hyperliquidHedgeConfigErrors, so they reconcile in this same
-		// non-shared-coin lane. No-op when hedging isn't enabled.
+		// #1159 review round 4: hedge coins are guaranteed sole-owned by
+		// hyperliquidHedgeConfigErrors REGARDLESS of whether the strategy's
+		// PRIMARY coin is shared with a peer — #258's shared-coin lane below
+		// is keyed entirely on primary coins and never touches hedge coins,
+		// so a hedge-enabled strategy whose primary happens to be shared
+		// must still reconcile its hedge leg here, unconditionally, or an
+		// externally-closed/reduced hedge goes stale forever (virtual state
+		// never updates, so syncHedgeCoherence sees an unchanged pair and
+		// never notices the primary is actually unhedged). No-op when
+		// hedging isn't enabled and no orphaned hedge row exists.
 		if reconcileHedgeLegsForStrategy(sc, ss, positions, resolveFee, logger) {
 			changed = true
 		}
