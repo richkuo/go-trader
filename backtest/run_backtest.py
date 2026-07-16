@@ -756,6 +756,21 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
+        # #1159 phase 1: a correlated hedge leg is HL-perps-live-only — the
+        # scheduler manages it by mirroring realized on-chain fills and a
+        # per-cycle coherence sync, neither of which the bar-level backtester
+        # has a resolver hook to mirror. Reject loudly rather than silently
+        # backtesting the primary leg's PnL as if it were unhedged (or worse,
+        # as if hedge PnL/fee modeling existed and was included).
+        hedge_cfg = sc.get("hedge")
+        if isinstance(hedge_cfg, dict) and hedge_cfg.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} enables a "
+                f"correlated hedge leg (hedge.enabled=true), which is "
+                f"HL-live-only in this release (backtester PnL/fee/slippage "
+                f"parity deferred — see #1159). Remove the hedge block (or "
+                f"set hedge.enabled=false) to backtest the primary leg alone."
+            )
         # #842: a strategy has a single close_strategy ref. Still accept the
         # legacy close_strategies array (length <=1 after the collapse) so old
         # configs keep backtesting; the backtester's close_strategies= list

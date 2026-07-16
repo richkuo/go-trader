@@ -119,6 +119,17 @@ type Position struct {
 	// compares this stamp to the live resolution once per boot to catch that
 	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
 	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
+	// IsHedge marks this Position as a correlated hedge leg (#1159 phase 1)
+	// rather than an independent alpha position. HedgeForPositionID links it
+	// to the primary leg's TradePositionID (ensurePositionTradeID). HedgeRatioQty
+	// is the frozen hedge-quantity-per-primary-quantity ratio stamped at the
+	// hedge's most recent open/add from ACTUAL fills — the coherence-sync
+	// backstop (hedge.go) re-derives its reduce target from
+	// primaryQty*HedgeRatioQty every cycle, never from a live re-hedge
+	// computation, so a hedge is never silently re-sized off a stale ratio.
+	IsHedge            bool    `json:"is_hedge,omitempty"`
+	HedgeForPositionID string  `json:"hedge_for_position_id,omitempty"`
+	HedgeRatioQty      float64 `json:"hedge_ratio_qty,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are
@@ -632,6 +643,13 @@ type Trade struct {
 	// strategy doesn't use tiered_tp_atr*.
 	StopLossATRMult *float64 `json:"stop_loss_atr_mult,omitempty"`
 	TPTiersJSON     string   `json:"tp_tiers_json,omitempty"`
+
+	// IsHedge marks a trade against a correlated hedge leg (#1159 phase 1)
+	// rather than the strategy's primary alpha position. Hedge PnL/fees still
+	// book to the owning strategy's ledger (tradeNetPnL etc. are unaffected);
+	// this flag exists so lifetime round-trip / W-L stats and operator
+	// surfaces can distinguish a hedge round-trip from a primary trade.
+	IsHedge bool `json:"is_hedge,omitempty"`
 
 	// persisted tracks whether this Trade has been written to SQLite — set by
 	// RecordTrade on successful InsertTrade and by LoadState for DB-loaded

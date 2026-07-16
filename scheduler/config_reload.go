@@ -552,6 +552,12 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		errs = append(errs, msg)
 	}
 
+	// #1159: re-run hedge collision validation against the new config so a
+	// reload can't introduce a hedge-coin collision startup would reject.
+	for _, msg := range hyperliquidHedgeStrategyErrors(next.Strategies) {
+		errs = append(errs, msg)
+	}
+
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))
@@ -624,6 +630,13 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+		}
+		// #1159 constraint 7: the hedge block is state-shifting — a live hedge
+		// leg's identity (symbol/side/ratio/margin) must not change out from
+		// under an open position. Freely reloadable while flat.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) && !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge config changed with open positions (flatten first or restart after close)",
+				sc.ID))
 		}
 		// #1268: switching between risk-per-trade and notional sizing while a
 		// position is open changes what the NEXT flip/re-entry sizing means
@@ -846,6 +859,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks change while open
 	return sc
 }
 
