@@ -611,6 +611,11 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	if tag := edgeStatusSummaryTag(sc); tag != "" {
 		parts = append(parts, tag)
 	}
+	// #1159: surface an enabled hedge block so a hedge leg is never mistaken
+	// for an unmanaged position in the startup audit.
+	if HedgeEnabled(sc) {
+		parts = append(parts, fmt.Sprintf("hedge=%s×%g(%s,%s,%gx)", hedgeCoin(sc), HedgeRatio(sc), hedgeSide(sc), hedgeMarginMode(sc), hedgeLeverage(sc)))
+	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
 }
 
@@ -723,6 +728,16 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		}
 		out["take_profit"] = tpMap
 	}
+	// #1159: nested-map-with-configured-flag shape, mirroring stop_loss/take_profit.
+	hedgeMap := map[string]interface{}{"configured": HedgeEnabled(sc)}
+	if HedgeEnabled(sc) {
+		hedgeMap["symbol"] = hedgeCoin(sc)
+		hedgeMap["side"] = hedgeSide(sc)
+		hedgeMap["ratio"] = HedgeRatio(sc)
+		hedgeMap["margin_mode"] = hedgeMarginMode(sc)
+		hedgeMap["leverage"] = hedgeLeverage(sc)
+	}
+	out["hedge"] = hedgeMap
 	if sc.IntervalSeconds > 0 {
 		out["interval_seconds"] = sc.IntervalSeconds
 		out["interval_seconds_explicit"] = true

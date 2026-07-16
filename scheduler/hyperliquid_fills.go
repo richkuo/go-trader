@@ -499,6 +499,31 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			}
 		}
 	}
+	// #1159: prefetch the hedge coin's fill candidates too — an external close
+	// on the hedge coin (liquidation, manual exchange close) needs the same
+	// fee-lookup coverage as the primary. No SL/TP OIDs (hedge carries none);
+	// the coin+0+qty catch-all is enough for the reconciler to match a fill.
+	for _, sc := range allStrategies {
+		if !HedgeEnabled(sc) {
+			continue
+		}
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		hCoin := hedgeCoin(sc)
+		if hCoin == "" {
+			continue
+		}
+		pos := ss.Positions[hCoin]
+		if pos == nil || pos.Quantity <= 0 || pos.HedgeFor == "" {
+			continue
+		}
+		onChainSize, present := onChainByCoin[hCoin]
+		if !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9 {
+			addCandidate(hCoin, 0, pos.Quantity)
+		}
+	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy
 	// prefetch above uses each strategy's own qty, but these detectors book

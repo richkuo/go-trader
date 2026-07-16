@@ -273,6 +273,11 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
+			// #1159: an auto-managed hedge leg is deliberately opposite-side to
+			// the primary's direction — it is not a state-vs-config gap.
+			if pos.HedgeFor != "" {
+				continue
+			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)
 			// #1085: gate by the open stamp. An uncertified/legacy directional
 			// position (certified=false) validates against BASE direction — this is
@@ -304,6 +309,61 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			msg := fmt.Sprintf("perps state-vs-config gap: strategy %s has %s %s qty=%g (%s). Position was likely seeded by migration, paper→live handoff, or a prior conflicting direction. Close manually before the next signal — the executor's fresh-open sizing will otherwise desync virtual state from the exchange.", sc.ID, conflictSide, sym, pos.Quantity, regimeNote)
 			fmt.Printf("[WARN] %s\n", msg)
 			warnings = append(warnings, msg)
+		}
+	}
+	return warnings
+}
+
+// validateHedgeStateConsistency flags a persisted hedge leg (#1159) whose
+// owning strategy no longer has a matching enabled hedge block, or whose
+// coin no longer matches the configured hedge.symbol — a config edit +
+// restart bypasses the SIGHUP hot-reload guard (config_reload.go), which can
+// only diff old-vs-new config, not detect a gap from a cold load. Startup
+// reconcile still recovers ownership correctly from the persisted HedgeFor
+// (never inferred from coin->symbol mapping), so this is a WARN + owner DM
+// only — the position is left exactly as-is, non-destructive, mirroring the
+// shared-coin-ambiguity convention used elsewhere in this file.
+func validateHedgeStateConsistency(state *AppState, cfg *Config) []string {
+	var warnings []string
+	if state == nil || cfg == nil {
+		return warnings
+	}
+	byID := make(map[string]StrategyConfig, len(cfg.Strategies))
+	for _, sc := range cfg.Strategies {
+		byID[sc.ID] = sc
+	}
+	ids := make([]string, 0, len(state.Strategies))
+	for id := range state.Strategies {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		s := state.Strategies[id]
+		if s == nil {
+			continue
+		}
+		sc, known := byID[id]
+		syms := make([]string, 0, len(s.Positions))
+		for sym := range s.Positions {
+			syms = append(syms, sym)
+		}
+		sort.Strings(syms)
+		for _, sym := range syms {
+			pos := s.Positions[sym]
+			if pos == nil || pos.HedgeFor == "" {
+				continue
+			}
+			if !known || !HedgeEnabled(sc) {
+				msg := fmt.Sprintf("hedge state gap: strategy %s holds a persisted hedge leg on %s (for primary %s) but its config no longer has hedge.enabled=true — position left open/unmanaged; re-enable the hedge block or close it manually", id, sym, pos.HedgeFor)
+				fmt.Printf("[WARN] %s\n", msg)
+				warnings = append(warnings, msg)
+				continue
+			}
+			if coin := hedgeCoin(sc); coin != "" && coin != sym {
+				msg := fmt.Sprintf("hedge state gap: strategy %s holds a persisted hedge leg on %s but is now configured to hedge %s — position on %s left open/unmanaged; resolve the mismatch manually", id, sym, coin, sym)
+				fmt.Printf("[WARN] %s\n", msg)
+				warnings = append(warnings, msg)
+			}
 		}
 	}
 	return warnings

@@ -533,6 +533,23 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: a hedge leg lives under a SEPARATE coin key in the same
+		// member's Positions map — without this it has no virtualQty entry at
+		// all, so attributeSharedWalletUPnL/ingestFundingEvent would misread
+		// its coin as an orphan (uPnL/funding excluded from attribution,
+		// phantom drift alert) even though it's owned and accounted for.
+		// hedgeCollisionErrors guarantees this coin is never any member's own
+		// posKey, so it never collides with the block above.
+		if key.Platform == "hyperliquid" && HedgeEnabled(sc) {
+			if hCoin := hedgeCoin(sc); hCoin != "" {
+				if pos, pok := ss.Positions[hCoin]; pok && pos != nil && pos.Quantity > 0 && pos.HedgeFor != "" {
+					if virtualQty[hCoin] == nil {
+						virtualQty[hCoin] = make(map[string]float64)
+					}
+					virtualQty[hCoin][id] = pos.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }
