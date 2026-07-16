@@ -1674,16 +1674,13 @@ func validateHedgeConfigs(strategies []StrategyConfig) []string {
 		h := sc.Hedge
 		prefix := fmt.Sprintf("strategy[%s].hedge", sc.ID)
 
-		if !h.Enabled {
-			// A present-but-disabled block still gets vocabulary-checked below
-			// (an operator who mistypes a field while testing shouldn't have
-			// the typo hidden by enabled=false), but is exempt from every
-			// live-topology check (collision, type/platform gating): it can
-			// never place an order.
-		}
-
-		// Phase 1: hedge only supported on HL perps (live or paper).
-		if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+		// A present-but-disabled block still gets vocabulary-checked below (an
+		// operator who mistypes a field while testing shouldn't have the typo
+		// hidden by enabled=false), but is exempt from every live-topology
+		// check (collision, type/platform gating): it can never place an
+		// order, so it must not hard-fail config load on an otherwise-valid
+		// non-HL-perps strategy.
+		if h.Enabled && (sc.Type != "perps" || sc.Platform != "hyperliquid") {
 			errs = append(errs, fmt.Sprintf("%s: hedge is only supported on platform=hyperliquid type=perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 		}
 

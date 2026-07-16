@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -304,6 +305,105 @@ func TestHedgeTargetDecisionNoneWhenBasisMatches(t *testing.T) {
 	}
 }
 
+// --- runHedgeSync integration: HedgePrimaryQtyBasis must advance on reduce
+// (review finding: pre-fix, applyHedgeReduceFill never touched the basis, so
+// a stable primary after one partial close kept re-reducing the hedge every
+// cycle — geometric decay to dust instead of converging after one reduce) ---
+
+func TestRunHedgeSyncReduceAdvancesBasisThenConverges(t *testing.T) {
+	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1})
+	now := time.Now().UTC()
+	s := &StrategyState{
+		ID: "hl-eth-hedged", Type: "perps", Platform: "hyperliquid",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, OpenedAt: now},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1,
+				HedgeFor: "ETH", HedgePrimaryQtyBasis: 2, OpenedAt: now},
+		},
+	}
+	prices := map[string]float64{"ETH": 3000, "BTC": 60000}
+	var mu sync.RWMutex
+
+	// Cycle 1: primary already sitting at 1 against a basis of 2 (a partial
+	// close of the primary happened, e.g. tiered TP) -> one proportional
+	// reduce to 0.05, and the basis must advance to the new primary qty (1).
+	runHedgeSync(sc, s, prices, &mu, false, nil, nil)
+	hpos := s.Positions["BTC"]
+	if hpos == nil {
+		t.Fatal("hedge position closed unexpectedly on cycle 1")
+	}
+	if !approxEq(hpos.Quantity, 0.05) {
+		t.Errorf("cycle 1: hedge Quantity = %v, want 0.05", hpos.Quantity)
+	}
+	if !approxEq(hpos.HedgePrimaryQtyBasis, 1) {
+		t.Errorf("cycle 1: HedgePrimaryQtyBasis = %v, want 1 (advanced to the new primary qty)", hpos.HedgePrimaryQtyBasis)
+	}
+
+	// Must survive (a): primary held steady at 1 for a subsequent cycle -> no
+	// further action. Pre-fix, the stale basis of 2 would trigger another
+	// reduce here even though the primary hasn't moved since cycle 1.
+	runHedgeSync(sc, s, prices, &mu, false, nil, nil)
+	hpos = s.Positions["BTC"]
+	if hpos == nil {
+		t.Fatal("hedge position closed unexpectedly on cycle 2")
+	}
+	if !approxEq(hpos.Quantity, 0.05) {
+		t.Errorf("cycle 2 (primary unchanged): hedge Quantity = %v, want unchanged 0.05 (no compounding reduce)", hpos.Quantity)
+	}
+
+	// Must survive (b): a second, independent partial close (1 -> 0.6)
+	// reduces once more, proportional to the now-corrected basis of 1 (frac
+	// 0.4 -> reduce 0.02), not a compounded fraction of the already-halved
+	// hedge.
+	s.Positions["ETH"].Quantity = 0.6
+	runHedgeSync(sc, s, prices, &mu, false, nil, nil)
+	hpos = s.Positions["BTC"]
+	if hpos == nil {
+		t.Fatal("hedge position closed unexpectedly on cycle 3")
+	}
+	if !approxEq(hpos.Quantity, 0.03) {
+		t.Errorf("cycle 3: hedge Quantity = %v, want 0.03", hpos.Quantity)
+	}
+	if !approxEq(hpos.HedgePrimaryQtyBasis, 0.6) {
+		t.Errorf("cycle 3: HedgePrimaryQtyBasis = %v, want 0.6", hpos.HedgePrimaryQtyBasis)
+	}
+}
+
+// Must survive (c): a partial close followed by a scale-in add re-sizes the
+// add from the corrected (post-reduce) basis, not a stale pre-reduce one.
+// Pre-fix this manifests as the wrong action entirely: with the basis stuck
+// at 2, a primary increase to 1.5 computes delta = 1.5-2 = -0.5 (a spurious
+// REDUCE) instead of the correct +0.5 ADD.
+func TestRunHedgeSyncReduceThenAddUsesCorrectedBasis(t *testing.T) {
+	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1})
+	now := time.Now().UTC()
+	s := &StrategyState{
+		ID: "hl-eth-hedged", Type: "perps", Platform: "hyperliquid",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, OpenedAt: now},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1,
+				HedgeFor: "ETH", HedgePrimaryQtyBasis: 2, OpenedAt: now},
+		},
+	}
+	prices := map[string]float64{"ETH": 3000, "BTC": 60000}
+	var mu sync.RWMutex
+
+	runHedgeSync(sc, s, prices, &mu, false, nil, nil) // cycle 1: reduce to 0.05, basis -> 1
+
+	s.Positions["ETH"].Quantity = 1.5 // scale-in add
+	runHedgeSync(sc, s, prices, &mu, false, nil, nil)
+	hpos := s.Positions["BTC"]
+	if hpos == nil {
+		t.Fatal("hedge position closed unexpectedly")
+	}
+	if !approxEq(hpos.Quantity, 0.075) {
+		t.Errorf("after add: hedge Quantity = %v, want 0.075 (0.05 + 0.5*3000/60000)", hpos.Quantity)
+	}
+	if !approxEq(hpos.HedgePrimaryQtyBasis, 1.5) {
+		t.Errorf("after add: HedgePrimaryQtyBasis = %v, want 1.5", hpos.HedgePrimaryQtyBasis)
+	}
+}
+
 // --- config validation (collision matrix + vocabulary) ---
 
 func TestValidateHedgeConfigsCollisionOwnCoin(t *testing.T) {
@@ -399,6 +499,26 @@ func TestValidateHedgeConfigsDisabledBlockStillVocabularyChecked(t *testing.T) {
 	}
 }
 
+// Review finding: a disabled hedge block must be exempt from the live-topology
+// check (platform=hyperliquid type=perps) the same way it's exempt from the
+// collision matrix — it can never place an order, so it must not hard-fail
+// config load on an otherwise-valid non-HL/non-perps strategy.
+func TestValidateHedgeConfigsDisabledBlockExemptFromTopologyCheck(t *testing.T) {
+	sc := StrategyConfig{ID: "spot-strat", Type: "spot", Platform: "binanceus",
+		Hedge: &HedgeConfig{Enabled: false, Symbol: "BTC"}}
+	if errs := validateHedgeConfigs([]StrategyConfig{sc}); len(errs) != 0 {
+		t.Errorf("expected no errors for a disabled hedge block on a non-HL-perps strategy, got %v", errs)
+	}
+}
+
+func TestValidateHedgeConfigsEnabledBlockOnSpotStillRejected(t *testing.T) {
+	sc := StrategyConfig{ID: "spot-strat", Type: "spot", Platform: "binanceus",
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}}
+	if errs := validateHedgeConfigs([]StrategyConfig{sc}); len(errs) == 0 {
+		t.Fatal("expected an error for an ENABLED hedge block on a non-HL-perps strategy")
+	}
+}
+
 func TestValidateHedgeConfigsManualTypeRejected(t *testing.T) {
 	sc := StrategyConfig{ID: "s1", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
 		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}}
@@ -447,6 +567,63 @@ func TestBookPerpsCloseWithFillFeeRoutesHedgeTradeType(t *testing.T) {
 	}
 	if _, stillOpen := s.Positions["BTC"]; stillOpen {
 		t.Error("position should be closed")
+	}
+}
+
+// Review finding: the kill-switch/circuit-breaker close path
+// (applyHyperliquidCircuitCloseFill, shared by applyHyperliquidKillSwitchCloseFill
+// and the CB drain) hardcoded TradeType="perps" and called RecordTradeResult
+// unconditionally, bypassing the hedge-aware routing bookPerps*CloseWithFillFee
+// already had. A kill-switch/CB close of a sole-owned hedge leg must still tag
+// TradeType="hedge" and route PnL via RecordHedgeTradeResult (DailyPnL only,
+// never the loss streak) — otherwise a kill-switch flatten during a winning
+// primary books a hedge "loss" that can spuriously trip the #1273 loss-streak
+// circuit breaker after reset.
+func TestApplyHyperliquidCircuitCloseFillRoutesHedgeTradeType(t *testing.T) {
+	s := &StrategyState{
+		ID: "hl-eth-hedged", Type: "perps", Platform: "hyperliquid",
+		RiskState: RiskState{DailyPnLDate: time.Now().UTC().Format("2006-01-02")},
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 70000, Side: "short", Multiplier: 1,
+				HedgeFor: "ETH", HedgePrimaryQtyBasis: 2, OpenedAt: time.Now().UTC()},
+		},
+	}
+	// Hedge closes at a loss (short closed at a higher price than entry) —
+	// exactly the shape a kill-switch flatten produces while the primary is
+	// winning.
+	applyHyperliquidCircuitCloseFill(s, "BTC", 0.1, 71000, 5, 0, 999, "kill_switch")
+
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 trade, got %d", len(s.TradeHistory))
+	}
+	if s.TradeHistory[0].TradeType != "hedge" {
+		t.Errorf("TradeType = %q, want hedge", s.TradeHistory[0].TradeType)
+	}
+	if s.RiskState.ConsecutiveLosses != 0 {
+		t.Errorf("ConsecutiveLosses = %d, want 0 (hedge losses must never feed the streak)", s.RiskState.ConsecutiveLosses)
+	}
+	if s.RiskState.DailyPnL >= 0 {
+		t.Errorf("DailyPnL = %v, want negative (hedge PnL still feeds the daily loss limit)", s.RiskState.DailyPnL)
+	}
+}
+
+// Sanity counterpart: a non-hedge (primary) coin closed via the same path is
+// unaffected — still tags "perps" and still feeds the loss streak.
+func TestApplyHyperliquidCircuitCloseFillNonHedgeUnaffected(t *testing.T) {
+	s := &StrategyState{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+		RiskState: RiskState{DailyPnLDate: time.Now().UTC().Format("2006-01-02")},
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3100, Side: "long", Multiplier: 1, OpenedAt: time.Now().UTC()},
+		},
+	}
+	applyHyperliquidCircuitCloseFill(s, "ETH", 1, 3000, 5, 0, 1000, "circuit_breaker")
+
+	if s.TradeHistory[0].TradeType != "perps" {
+		t.Errorf("TradeType = %q, want perps", s.TradeHistory[0].TradeType)
+	}
+	if s.RiskState.ConsecutiveLosses != 1 {
+		t.Errorf("ConsecutiveLosses = %d, want 1 (non-hedge loss must still feed the streak)", s.RiskState.ConsecutiveLosses)
 	}
 }
 

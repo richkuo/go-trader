@@ -253,9 +253,20 @@ func applyHedgeOpenOrAddFill(s *StrategyState, sc StrategyConfig, hCoin, side st
 // applyHedgeReduceFill books a hedge partial reduce via the generalized
 // perps partial-close booker — pos.HedgeFor (stamped at open) routes
 // TradeType/RiskState/diagnostics correctly with no hedge-specific logic
-// needed there. Must be called under Lock.
-func applyHedgeReduceFill(s *StrategyState, hCoin string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
-	return bookPerpsPartialCloseWithFillFee(s, hCoin, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, "Hedge reduce", "Hedge reduce", logger)
+// needed there. Must be called under Lock. newBasis is the primary quantity
+// this reduce brought the hedge's watermark down to; it MUST be advanced
+// here (mirroring applyHedgeOpenOrAddFill) — otherwise the next cycle's
+// hedgeTargetDecision still sees the stale (larger) basis, computes another
+// positive reduce fraction against the now-smaller hedge, and the leg decays
+// geometrically every cycle instead of converging after one reduce.
+func applyHedgeReduceFill(s *StrategyState, hCoin string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, newBasis float64, logger *StrategyLogger) bool {
+	ok := bookPerpsPartialCloseWithFillFee(s, hCoin, closeQty, closePx, fillFee, useFillFee, exchangeOrderID, reason, "Hedge reduce", "Hedge reduce", logger)
+	if ok {
+		if pos, exists := s.Positions[hCoin]; exists && pos != nil {
+			pos.HedgePrimaryQtyBasis = newBasis
+		}
+	}
+	return ok
 }
 
 // applyHedgeCloseFill books a full hedge close via the generalized perps
@@ -449,7 +460,7 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, prices map[string]float64
 			if full {
 				applyHedgeCloseFill(s, hCoin, hedgePx, 0, false, "", "hedge_close", logger)
 			} else {
-				applyHedgeReduceFill(s, hCoin, action.Qty, hedgePx, 0, false, "", "hedge_reduce", logger)
+				applyHedgeReduceFill(s, hCoin, action.Qty, hedgePx, 0, false, "", "hedge_reduce", snap.PrimaryQty, logger)
 			}
 			mu.Unlock()
 			return
@@ -495,7 +506,7 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, prices map[string]float64
 		if full {
 			applyHedgeCloseFill(s, hCoin, fill.AvgPx, fill.Fee, true, fillOID, reason, logger)
 		} else {
-			applyHedgeReduceFill(s, hCoin, fill.TotalSz, fill.AvgPx, fill.Fee, true, fillOID, reason, logger)
+			applyHedgeReduceFill(s, hCoin, fill.TotalSz, fill.AvgPx, fill.Fee, true, fillOID, reason, snap.PrimaryQty, logger)
 		}
 		mu.Unlock()
 	}
