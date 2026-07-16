@@ -540,8 +540,13 @@ func buildSharedWalletBooks(
 		// phantom drift alert) even though it's owned and accounted for.
 		// hedgeCollisionErrors guarantees this coin is never any member's own
 		// posKey, so it never collides with the block above.
-		if key.Platform == "hyperliquid" && HedgeEnabled(sc) {
-			if hCoin := hedgeCoin(sc); hCoin != "" {
+		//
+		// hedgeCoinForProtection (not HedgeEnabled+hedgeCoin directly) so a
+		// leg orphaned by hedge.enabled being flipped off via config edit +
+		// cold restart still gets a virtualQty entry instead of misreading
+		// as an orphan/phantom-drift coin (round-3 Optional).
+		if key.Platform == "hyperliquid" {
+			if hCoin := hedgeCoinForProtection(sc, ss, posKey); hCoin != "" {
 				if pos, pok := ss.Positions[hCoin]; pok && pos != nil && pos.Quantity > 0 && pos.HedgeFor != "" {
 					if virtualQty[hCoin] == nil {
 						virtualQty[hCoin] = make(map[string]float64)

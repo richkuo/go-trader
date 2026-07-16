@@ -98,6 +98,39 @@ func hedgeSnapshotFor(s *StrategyState, primarySym, hedgeCoinKey string) hedgeSn
 	return snap
 }
 
+// hedgeCoinForProtection resolves the coin an auto-protective or truth-sync
+// path (kill switch, circuit breaker, reconcile, shared-wallet drift, fee
+// lookup) should treat as ss's hedge leg for primarySym. It is deliberately
+// NOT the same lookup as the ongoing mirror (hedgeTargetDecision/
+// runHedgeSync), which correctly stays gated on HedgeEnabled(sc) — turning
+// the feature off should stop new opens/adds/reduces. But a config edit
+// that disables (or removes) the hedge block via a COLD RESTART bypasses
+// the hot-reload state-compat guard (config_reload.go blocks that change
+// only while the process keeps running), so a leg can be left open with
+// HedgeFor still set while HedgeEnabled(sc)/hedgeCoin(sc) now report
+// nothing. Preferring the live config's coin when enabled covers the case
+// where a fill hasn't landed in state yet; falling back to a scan of ss's
+// own positions for the HedgeFor tag covers the disabled-but-still-held
+// case, so a stranded leg is never invisible to safety nets that must be
+// able to flatten or reconcile ANY position this strategy actually holds,
+// independent of live config (#1159 review round 3).
+func hedgeCoinForProtection(sc StrategyConfig, ss *StrategyState, primarySym string) string {
+	if HedgeEnabled(sc) {
+		if c := hedgeCoin(sc); c != "" {
+			return c
+		}
+	}
+	if ss == nil || primarySym == "" {
+		return ""
+	}
+	for coin, pos := range ss.Positions {
+		if pos != nil && pos.HedgeFor == primarySym {
+			return coin
+		}
+	}
+	return ""
+}
+
 // hedgeAction is the mirror decision for one cycle: what to do to converge
 // the hedge leg to the current primary state. Side is the resulting/target
 // hedge POSITION side ("long"/"short") — for open/add it's the side to

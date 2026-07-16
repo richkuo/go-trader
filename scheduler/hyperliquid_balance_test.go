@@ -3164,6 +3164,66 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 	}
 }
 
+// #1159 review round 3: the Phase-2 stuck-CB recovery must still reconstruct
+// and drain the hedge leg's pending close when the PRIMARY has no on-chain
+// position to recover (flat) but the hedge leg does — mirrors the
+// setHyperliquidCircuitBreakerPending fix for the first-fire path.
+func TestRunPendingHyperliquidCircuitCloses_RecoversStrandedHedgeWithFlatPrimary(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-eth-long": {
+				ID: "hl-eth-long",
+				RiskState: RiskState{
+					CircuitBreaker:       true,
+					CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
+					PendingCircuitCloses: nil,
+				},
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 1.5, AvgCost: 60000, Side: "short",
+						Multiplier: 1, OwnerStrategyID: "hl-eth-long", HedgeFor: "ETH"},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-eth-long", Platform: "hyperliquid", Type: "perps",
+			Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		if partialSz != nil {
+			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
+		} else {
+			calls = append(calls, sym)
+		}
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 1.5, AvgPx: 61000}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "BTC", Size: -1.5, EntryPrice: 60000}}, // no ETH entry: primary flat on-chain too
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		nil,
+	)
+	if len(calls) != 1 || calls[0] != "BTC:1.5" {
+		t.Errorf("closer calls=%v want [BTC:1.5] (stranded hedge leg must still be recovered and closed)", calls)
+	}
+	if state.Strategies["hl-eth-long"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Error("expected pending cleared after successful recovery close")
+	}
+}
+
 // If the stuck-CB strategy has no on-chain position (e.g. operator already
 // closed it manually), recovery must be a no-op rather than submitting a
 // zero-size order.

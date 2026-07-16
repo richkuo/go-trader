@@ -81,6 +81,52 @@ func TestHedgeAccessors_ExplicitOverrides(t *testing.T) {
 	}
 }
 
+// --- hedgeCoinForProtection (#1159 review round 3) ---
+
+func TestHedgeCoinForProtection_EnabledUsesConfig(t *testing.T) {
+	sc := hedgeTestStrategy(nil) // Hedge: {Enabled: true, Symbol: "BTC"}
+	ss := &StrategyState{Positions: map[string]*Position{}}
+	if got := hedgeCoinForProtection(sc, ss, "ETH"); got != "BTC" {
+		t.Errorf("hedgeCoinForProtection = %q, want BTC (from live config)", got)
+	}
+}
+
+// A hedge block disabled (or removed) by a config edit + cold restart while
+// the leg is still open must still be discovered from persisted state, so
+// safety nets (kill switch, CB, reconcile) don't treat it as invisible.
+func TestHedgeCoinForProtection_DisabledButHeldFallsBackToState(t *testing.T) {
+	sc := hedgeTestStrategy(func(hc *HedgeConfig) { hc.Enabled = false })
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1.5, Side: "short", HedgeFor: "ETH"},
+		},
+	}
+	if got := hedgeCoinForProtection(sc, ss, "ETH"); got != "BTC" {
+		t.Errorf("hedgeCoinForProtection = %q, want BTC (recovered from persisted HedgeFor tag)", got)
+	}
+}
+
+func TestHedgeCoinForProtection_DisabledAndNotHeldReturnsEmpty(t *testing.T) {
+	sc := hedgeTestStrategy(func(hc *HedgeConfig) { hc.Enabled = false })
+	ss := &StrategyState{Positions: map[string]*Position{}}
+	if got := hedgeCoinForProtection(sc, ss, "ETH"); got != "" {
+		t.Errorf("hedgeCoinForProtection = %q, want empty (disabled, nothing held)", got)
+	}
+}
+
+func TestHedgeCoinForProtection_NotEnabledAndNoHeldLegAcrossOtherStrategy(t *testing.T) {
+	sc := hedgeTestStrategy(func(hc *HedgeConfig) { hc.Enabled = false })
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			// Held BTC leg, but tagged for a DIFFERENT primary — must not match.
+			"BTC": {Symbol: "BTC", Quantity: 1.5, Side: "short", HedgeFor: "SOL"},
+		},
+	}
+	if got := hedgeCoinForProtection(sc, ss, "ETH"); got != "" {
+		t.Errorf("hedgeCoinForProtection = %q, want empty (HedgeFor tags a different primary)", got)
+	}
+}
+
 // --- Config validation (#1159) ---
 
 func TestValidateHedgeConfigs_RejectsBadShape(t *testing.T) {

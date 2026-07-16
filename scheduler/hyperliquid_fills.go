@@ -504,14 +504,14 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 	// fee-lookup coverage as the primary. No SL/TP OIDs (hedge carries none);
 	// the coin+0+qty catch-all is enough for the reconciler to match a fill.
 	for _, sc := range allStrategies {
-		if !HedgeEnabled(sc) {
-			continue
-		}
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
 			continue
 		}
-		hCoin := hedgeCoin(sc)
+		// hedgeCoinForProtection (not HedgeEnabled+hedgeCoin directly) so a
+		// leg orphaned by hedge.enabled being flipped off via config edit +
+		// cold restart still gets fee-lookup coverage (round-3 Optional).
+		hCoin := hedgeCoinForProtection(sc, ss, hyperliquidSymbol(sc.Args))
 		if hCoin == "" {
 			continue
 		}

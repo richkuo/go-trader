@@ -855,14 +855,17 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		// hedge coin is never shared (hedgeCollisionErrors guarantees that).
 		// Skipping this block on `sharedCoins[sym]` would silently stop
 		// reconciling the hedge leg for exactly that combination.
-		if HedgeEnabled(sc) {
-			if hCoin := hedgeCoin(sc); hCoin != "" {
-				logger, err := logMgr.GetStrategyLogger(sc.ID)
-				if err != nil {
-					fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
-				} else if reconcileHyperliquidPositionsForStrategy(sc, ss, hCoin, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
-					changed = true
-				}
+		//
+		// hedgeCoinForProtection (not HedgeEnabled+hedgeCoin directly) so a
+		// leg orphaned by hedge.enabled being flipped off via config edit +
+		// cold restart still reconciles against on-chain truth instead of
+		// silently drifting (round-3 Optional).
+		if hCoin := hedgeCoinForProtection(sc, ss, sym); hCoin != "" {
+			logger, err := logMgr.GetStrategyLogger(sc.ID)
+			if err != nil {
+				fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
+			} else if reconcileHyperliquidPositionsForStrategy(sc, ss, hCoin, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+				changed = true
 			}
 		}
 		if sym == "" {
@@ -1981,16 +1984,26 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 	}
 
 	tradedCoins := make(map[string]bool)
+	liveIDs := make(map[string]bool, len(hlLiveAll))
 	for _, sc := range hlLiveAll {
 		sym := hyperliquidSymbol(sc.Args)
 		if sym != "" {
 			tradedCoins[sym] = true
 		}
-		if HedgeEnabled(sc) {
-			if hCoin := hedgeCoin(sc); hCoin != "" {
-				if qty, ok := hlVirtualQty[hCoin][sc.ID]; ok && qty > 0 {
-					tradedCoins[hCoin] = true
-				}
+		liveIDs[sc.ID] = true
+	}
+	// #1159 review round 3: derive the hedge coin from whatever
+	// snapshotHyperliquidVirtualQuantities actually captured — which now
+	// finds a held leg from persisted state even when hedge.enabled was
+	// flipped off by a config edit + cold restart — rather than re-deriving
+	// it from live config here. hlVirtualQty is already scoped to exactly
+	// the coins this scheduler's HL-live strategies legitimately trade
+	// (primary + resolved hedge), so any coin+strategy pair present with a
+	// positive qty belongs in tradedCoins.
+	for coin, byStrategy := range hlVirtualQty {
+		for id, qty := range byStrategy {
+			if qty > 0 && liveIDs[id] {
+				tradedCoins[coin] = true
 			}
 		}
 	}
@@ -2108,14 +2121,16 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 		// closeFull attempt failed and left it dangling) must still be
 		// captured, or the kill switch's on-chain flatten roster silently
 		// omits it and strands a live, unmanaged position on the exchange.
-		if HedgeEnabled(sc) {
-			if hCoin := hedgeCoin(sc); hCoin != "" {
-				if hPos := ss.Positions[hCoin]; hPos != nil && hPos.Quantity > 0 && hPos.HedgeFor != "" {
-					if out[hCoin] == nil {
-						out[hCoin] = make(map[string]float64)
-					}
-					out[hCoin][sc.ID] = hPos.Quantity
+		//
+		// hedgeCoinForProtection (not HedgeEnabled+hedgeCoin directly) so a
+		// leg orphaned by hedge.enabled being flipped off via config edit +
+		// cold restart is still captured (round-3 Optional).
+		if hCoin := hedgeCoinForProtection(sc, ss, coin); hCoin != "" {
+			if hPos := ss.Positions[hCoin]; hPos != nil && hPos.Quantity > 0 && hPos.HedgeFor != "" {
+				if out[hCoin] == nil {
+					out[hCoin] = make(map[string]float64)
 				}
+				out[hCoin][sc.ID] = hPos.Quantity
 			}
 		}
 	}
@@ -2351,27 +2366,37 @@ func runPendingHyperliquidCircuitCloses(
 			if sym == "" {
 				continue
 			}
-			qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll)
-			if !ok || qty <= 0 {
-				continue
+			// #1159 review round 3: the primary returning !ok/qty<=0 must not
+			// skip recovering the hedge leg below — mirrors the same fix in
+			// setHyperliquidCircuitBreakerPending (risk.go).
+			var recoveredSymbols []PendingCircuitCloseSymbol
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll); ok && qty > 0 {
+				recoveredSymbols = append(recoveredSymbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
 			}
-			recoveredSymbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
 			// #1159: recover the hedge leg into the SAME reconstruction — a
 			// second setPendingCircuitClose call would replace, not append.
-			if HedgeEnabled(sc) {
-				if hCoin := hedgeCoin(sc); hCoin != "" {
-					if _, held := ss.Positions[hCoin]; held {
-						if hQty, hOk := computeHyperliquidCircuitCloseQty(hCoin, sc.ID, positions, hlCircuitPeerAll); hOk && hQty > 0 {
-							recoveredSymbols = append(recoveredSymbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
-						}
+			// hedgeCoinForProtection so a leg orphaned by hedge.enabled being
+			// flipped off via config edit + cold restart is still recovered
+			// (round-3 Optional).
+			if hCoin := hedgeCoinForProtection(sc, ss, sym); hCoin != "" {
+				if hPos, held := ss.Positions[hCoin]; held && hPos != nil && hPos.HedgeFor != "" {
+					if hQty, hOk := computeHyperliquidCircuitCloseQty(hCoin, sc.ID, positions, hlCircuitPeerAll); hOk && hQty > 0 {
+						recoveredSymbols = append(recoveredSymbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
 					}
 				}
+			}
+			if len(recoveredSymbols) == 0 {
+				continue
 			}
 			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
 				Symbols: recoveredSymbols,
 			})
-			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
-				sc.ID, sym, qty)
+			legDesc := make([]string, len(recoveredSymbols))
+			for i, leg := range recoveredSymbols {
+				legDesc[i] = fmt.Sprintf("%s sz=%.6f", leg.Symbol, leg.Size)
+			}
+			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s (%s) (CB latched, HL fetch had failed at fire time)\n",
+				sc.ID, strings.Join(legDesc, ", "))
 		}
 		mu.Unlock()
 	}

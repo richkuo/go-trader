@@ -958,14 +958,19 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
 		return
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
+	// #1159 review round 3: the primary being flat must not skip queuing the
+	// hedge leg below — a hedge dangling from a prior failed closeFull
+	// (primary flat, hedge still held) still needs an on-chain flatten, or
+	// forceCloseAllPositions (called unconditionally by both CB arms right
+	// after this function) closes it in-state only and strands it on the
+	// exchange. Build symbols conditionally per leg instead of returning
+	// early on the primary.
+	var symbols []PendingCircuitCloseSymbol
+	if _, ok := s.Positions[sym]; ok {
+		if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+		}
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
-		return
-	}
-	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
 	// #1159: append the hedge coin as a SECOND leg of the same pending close —
 	// setPendingCircuitClose REPLACES the whole entry per platform, so both
 	// legs must be built before the single call below, or a second call would
@@ -973,14 +978,18 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	// treats a coin with zero hlLiveStrategiesForCoin peers (true of every
 	// hedge coin, by hedgeCollisionErrors construction) as sole-owner, sizing
 	// off the full on-chain qty exactly like the primary above.
-	if HedgeEnabled(*sc) {
-		if hCoin := hedgeCoin(*sc); hCoin != "" {
-			if _, held := s.Positions[hCoin]; held {
-				if hQty, hOk := computeHyperliquidCircuitCloseQty(hCoin, s.ID, assist.HLPositions, assist.HLLiveAll); hOk && hQty > 0 {
-					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
-				}
+	// hedgeCoinForProtection (not HedgeEnabled+hedgeCoin directly) so a leg
+	// orphaned by hedge.enabled being flipped off via config edit + cold
+	// restart is still discovered from persisted state (round-3 Optional).
+	if hCoin := hedgeCoinForProtection(*sc, s, sym); hCoin != "" {
+		if hPos, held := s.Positions[hCoin]; held && hPos != nil && hPos.HedgeFor != "" {
+			if hQty, hOk := computeHyperliquidCircuitCloseQty(hCoin, s.ID, assist.HLPositions, assist.HLLiveAll); hOk && hQty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
 			}
 		}
+	}
+	if len(symbols) == 0 {
+		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
 		Symbols: symbols,
