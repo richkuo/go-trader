@@ -760,6 +760,25 @@ def test_load_strategy_config_spot_direction_is_long(tmp_path):
     assert kwargs["direction"] == "long"
 
 
+def test_load_strategy_config_rejects_enabled_hedge_block(tmp_path):
+    # #1159: correlated hedge legs are HL-live-only in phase 1 — the backtester
+    # models a single instrument and would silently drop the hedge PnL/fees.
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(hedge={"enabled": True, "symbol": "BTC", "ratio": 1.0}),
+    ])
+    with pytest.raises(ValueError, match="hedge"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
+def test_load_strategy_config_allows_disabled_hedge_block(tmp_path):
+    # An explicitly disabled hedge block changes nothing live — inert here too.
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(hedge={"enabled": False, "symbol": "BTC"}),
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs is not None
+
+
 def test_load_strategy_config_rejects_regime_window_divergence(tmp_path):
     # #942 (D2.5): regime_window_divergence (#907) is HL-live-only and was
     # silently ignored; the loader must reject it loudly like its siblings.

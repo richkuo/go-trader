@@ -108,8 +108,31 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 			}
 			errs = append(errs, msg)
 		}
+		// #1159: nested guard for the hedge block. A typo'd hedge key (e.g.
+		// "ration") must reject loudly — it silently loading as the default
+		// would change live hedge sizing under the operator's feet.
+		if rawHedge, ok := s["hedge"]; ok {
+			var hedge map[string]json.RawMessage
+			if err := json.Unmarshal(rawHedge, &hedge); err == nil && hedge != nil {
+				hedgeKnown := knownHedgeConfigKeys()
+				hkeys := make([]string, 0, len(hedge))
+				for k := range hedge {
+					if !hedgeKnown[k] {
+						hkeys = append(hkeys, k)
+					}
+				}
+				sort.Strings(hkeys)
+				for _, k := range hkeys {
+					errs = append(errs, fmt.Sprintf("%s: hedge: unknown field %q", prefix, k))
+				}
+			}
+		}
 	}
 	return errs
+}
+
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
 }
 
 // validateUserDefaultsJSONKeys flags typos inside the canonical #1135

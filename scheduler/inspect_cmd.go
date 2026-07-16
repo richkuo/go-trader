@@ -581,6 +581,15 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 			parts = append(parts, "tp=none")
 		}
 	}
+	// #1159: surface an enabled correlated hedge leg so an operator can see
+	// the coupled instrument, ratio, and margin assignment at a glance.
+	if HedgeEnabled(sc) {
+		mm := sc.Hedge.MarginMode
+		if mm == "" {
+			mm = "isolated"
+		}
+		parts = append(parts, fmt.Sprintf("hedge=%s×%.2f(inverse,%s,%gx)", hedgeCoin(sc), hedgeRatio(sc), mm, hedgeExchangeLeverage(sc)))
+	}
 	// #1048: surface an explicitly disabled circuit breaker so a strategy
 	// trading live without the auto-protective drawdown/loss-streak halt is not
 	// silently unprotected. Manual is exempt from CheckRisk, so the flag is a
