@@ -430,6 +430,21 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		if ss == nil {
 			continue
 		}
+		// #1159: pre-fetch the correlated hedge coin's fill so an external hedge
+		// close books at the real userFills VWAP/fee instead of the modeled
+		// fallback. Done before the primary-coin logic (whose own continues could
+		// skip it) since the hedge is an independent leg with no SL/TP OIDs — only
+		// the coin+size form is needed.
+		if sc.HedgeEnabled() {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hp := ss.Positions[hc]; hp != nil && hp.HedgeFor != "" && hp.Quantity > 0 {
+					onChainHedge, presentH := onChainByCoin[hc]
+					if !presentH || math.Abs(math.Abs(onChainHedge)-hp.Quantity) > 1e-9 {
+						addCandidate(hc, 0, hp.Quantity)
+					}
+				}
+			}
+		}
 		sym := hyperliquidSymbol(sc.Args)
 		if sym == "" {
 			continue

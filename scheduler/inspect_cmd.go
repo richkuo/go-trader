@@ -519,6 +519,11 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.Paused {
 		fmt.Fprintf(&b, "  paused:              true — position-increasing signals held; closes and SL/TP management still run\n")
 	}
+	// #1159: correlated hedge leg.
+	if sc.HedgeEnabled() {
+		fmt.Fprintf(&b, "  hedge:               %s ×%g %s (margin=%s, %gx) — coupled inverse leg, auto-managed by the scheduler\n",
+			hedgeCoin(sc), hedgeRatio(sc), hedgeSide(sc), hedgeMarginMode(sc), hedgeLeverage(sc))
+	}
 	if sc.IntervalSeconds > 0 {
 		fmt.Fprintf(&b, "  interval_seconds:    %d\n", sc.IntervalSeconds)
 	} else if cfg != nil {
@@ -596,6 +601,11 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	// #1150: surface a paused strategy in the startup summary line.
 	if sc.Paused {
 		parts = append(parts, "paused")
+	}
+	// #1159: surface an active correlated hedge leg so the audit line shows the
+	// coupled inverse position and its own margin/leverage.
+	if tag := hedgeSummaryTag(sc); tag != "" {
+		parts = append(parts, tag)
 	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
@@ -677,6 +687,16 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	}
 	// #1150: pause state, always emitted so dashboards can key off it.
 	out["paused"] = sc.Paused
+	// #1159: correlated hedge leg summary (only when enabled).
+	if sc.HedgeEnabled() {
+		out["hedge"] = map[string]interface{}{
+			"symbol":      hedgeCoin(sc),
+			"side":        hedgeSide(sc),
+			"ratio":       hedgeRatio(sc),
+			"margin_mode": hedgeMarginMode(sc),
+			"leverage":    hedgeLeverage(sc),
+		}
+	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows
 		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)

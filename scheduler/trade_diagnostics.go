@@ -89,6 +89,12 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 	if tradeDiagnosticsRecorder == nil || s == nil || pos == nil {
 		return
 	}
+	// #1159: hedge round-trips are a coupled risk leg, not independent alpha —
+	// keep them out of the per-strategy trade-quality aggregates (#1147). This
+	// is the single choke point every full-close path funnels through.
+	if pos.HedgeFor != "" {
+		return
+	}
 	row := TradeDiagnosticsRow{
 		StrategyID:      s.ID,
 		PositionID:      pos.TradePositionID,

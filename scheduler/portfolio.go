@@ -119,6 +119,30 @@ type Position struct {
 	// compares this stamp to the live resolution once per boot to catch that
 	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
 	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
+	// #1159 correlated hedge leg. HedgeFor marks THIS position as the auto-managed
+	// inverse hedge for the named primary coin ("" = not a hedge, the common case).
+	// It is the sole ownership marker — set once at hedge open, restored from
+	// SQLite on boot, never inferred from a coin->configured-symbol mapping. Every
+	// hedge-aware branch (booking risk-result routing, diagnostics skip, reconcile
+	// orphan-conflict skip, stats exclusion) keys on HedgeFor != "".
+	HedgeFor string `json:"hedge_for,omitempty"`
+	// HedgePrimaryQtyBasis is the primary-position quantity this hedge leg was last
+	// sized against — the watermark the state-derived hedge sync diffs to detect a
+	// qty event (add/reduce). Only quantity/side changes re-trade the hedge; mark
+	// drift never does. 0 on a non-hedge position.
+	HedgePrimaryQtyBasis float64 `json:"hedge_primary_qty_basis,omitempty"`
+	// HedgeRatioAtOpen / HedgeMarginModeAtOpen freeze the resolved hedge sizing
+	// config the moment this hedge leg was first opened (never re-stamped on an
+	// add — mirrors the RiskAnchorPrice/ATRMethodAtOpen freeze-at-entry
+	// semantics). The SIGHUP hot-reload guard blocks a hedge-shape change while a
+	// hedge leg is open, but a config edit + process restart bypasses it (no
+	// "old" value in memory to diff against). validateHedgeStateConsistency
+	// compares these stamps (plus Leverage) to the live config once per boot to
+	// surface that gap. 0/"" = pre-stamp / non-hedge position (drift check skips
+	// the missing dimension). Side is fixed to "inverse" in phase 1, so it is
+	// implicitly frozen and needs no stamp.
+	HedgeRatioAtOpen      float64 `json:"hedge_ratio_at_open,omitempty"`
+	HedgeMarginModeAtOpen string  `json:"hedge_margin_mode_at_open,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are
@@ -234,6 +258,17 @@ func closePositionIsCorrupt(pos *Position) bool {
 	return pos == nil || pos.Quantity <= 0 || pos.AvgCost <= 0
 }
 
+// perpsCloseTradeType returns the trade_type label for a perps close leg:
+// "hedge" for an auto-managed correlated hedge leg (#1159), else "perps". The
+// "hedge" label keeps the leg out of the lifetime #T / W-L aggregates and lets
+// operator surfaces distinguish it from independent alpha.
+func perpsCloseTradeType(pos *Position) string {
+	if pos != nil && pos.HedgeFor != "" {
+		return "hedge"
+	}
+	return "perps"
+}
+
 // absQty returns the magnitude of a (possibly corrupt, possibly negative)
 // position quantity for display on a reconciliation/close leg without pulling in
 // the math package at these hot call sites.
@@ -292,7 +327,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 			Quantity:        absQty(pos.Quantity),
 			Price:           closePx,
 			Value:           0,
-			TradeType:       "perps",
+			TradeType:       perpsCloseTradeType(pos),
 			Details:         fmt.Sprintf("%s (corrupt position qty=%.6f avg_cost=%.4f) — zero PnL booked", detailsPrefix, pos.Quantity, pos.AvgCost),
 			IsClose:         true,
 			RealizedPnL:     0,
@@ -302,7 +337,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, 0)
+		recordTradeResultForPosition(&s.RiskState, pos, 0)
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -374,7 +409,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		Quantity:        qty,
 		Price:           closePx,
 		Value:           qty * closePx,
-		TradeType:       "perps",
+		TradeType:       perpsCloseTradeType(pos),
 		Details:         fmt.Sprintf("%s, PnL: $%.2f (fee $%.2f)", detailsPrefix, pnl, fee),
 		IsClose:         true,
 		RealizedPnL:     grossPnL,
@@ -389,7 +424,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	recordTradeResultForPosition(&s.RiskState, pos, pnl)
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
 	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -457,7 +492,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		Quantity:        qty,
 		Price:           closePx,
 		Value:           qty * closePx,
-		TradeType:       "perps",
+		TradeType:       perpsCloseTradeType(pos),
 		Details:         fmt.Sprintf("%s %.6f, PnL: $%.2f (fee $%.2f)", detailsPrefix, qty, pnl, fee),
 		IsClose:         true,
 		RealizedPnL:     grossPnL,
@@ -472,7 +507,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	recordTradeResultForPosition(&s.RiskState, pos, pnl)
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {
