@@ -366,6 +366,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		RegimeDivergence               *RegimeDivergenceState     `json:"regime_divergence,omitempty"`                // #907: active window-divergence state; nil when none
 		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`                   // #998: active regime-profile allocation switch state; nil when none
 		Paused                         bool                       `json:"paused,omitempty"`                           // #1150: strategy is paused — position-increasing signals held; closes and SL/TP management still run
+		Hedge                          *HedgeConfig               `json:"hedge,omitempty"`                            // #1159: active correlated hedge block (coin/side/ratio/margin), nil when none — hedge position rows carry hedge_for on the Position itself
 	}
 
 	type StatusResp struct {
@@ -445,6 +446,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			RegimeDivergence:               s.RegimeDivergence,
 			RegimeProfile:                  s.RegimeProfile,
 			Paused:                         sc.Paused,
+			Hedge:                          sc.Hedge,
 		}
 	}
 
