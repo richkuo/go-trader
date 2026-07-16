@@ -273,6 +273,15 @@ func main() {
 	// once the notifier is wired below.
 	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
 
+	// #1159: surface persisted hedge legs whose config no longer matches
+	// (config edited + restart bypasses the hot-reload guard). Warn-only,
+	// non-destructive — the leg stays frozen until the operator reconciles.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+	for _, w := range hedgeStateWarnings {
+		fmt.Printf("[WARN] %s\n", w)
+	}
+	directionConfigWarnings = append(directionConfigWarnings, hedgeStateWarnings...)
+
 	// #1277 optional hardening: detect a config edit + restart (not SIGHUP)
 	// that changed a strategy's effective atr_method while it still holds a
 	// position opened under the old one — the only gap the SIGHUP hot-reload
@@ -1428,6 +1437,10 @@ func main() {
 					}
 				}
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
+				// #1159: hedge coins with a HELD virtual hedge leg join the
+				// kill-switch roster (and their SL-less legs need no OID
+				// snapshot — hedge legs carry no on-chain protection).
+				hlHedgeCoins := hedgeCoinsWithHeldLegs(state.Strategies, hlLiveAll)
 				mu.RUnlock()
 
 				inputs := KillSwitchCloseInputs{
@@ -1439,6 +1452,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLHedgeCoins:      hlHedgeCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -2235,6 +2249,10 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
+							// #1159: set when this cycle's apply produced a FRESH
+							// primary open (flat before) — escalates a hedge-open
+							// failure to the constraint-4 primary unwind.
+							hedgeFreshOpen := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
@@ -2438,6 +2456,7 @@ func main() {
 								} else {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 								}
+								hedgeFreshOpen = openTrade != nil && !openTrade.IsClose && hlPosQty == 0 && scaleInAddQty == 0
 								mu.Unlock()
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
@@ -2502,6 +2521,14 @@ func main() {
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
 							}
+							// #1159: state-derived hedge sync — converges the hedge
+							// leg to the primary's current qty/side every cycle.
+							// Runs on manage-only cycles too (paused / latched-CB /
+							// daily-loss can never grow the primary, so the sync can
+							// only reduce/close under them). Placed after the
+							// execute/apply block so a fresh open, scale-in add, or
+							// evaluator close is mirrored on the SAME cycle.
+							runHedgeSync(sc, stratState, result.Symbol, price, prices, hedgeFreshOpen, &mu, notifier, logger)
 						}
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {

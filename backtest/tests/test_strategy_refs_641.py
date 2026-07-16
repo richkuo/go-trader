@@ -773,6 +773,27 @@ def test_load_strategy_config_rejects_regime_window_divergence(tmp_path):
         run_backtest.load_strategy_config(path, "hl-d-btc")
 
 
+def test_load_strategy_config_rejects_enabled_hedge(tmp_path):
+    # #1159: correlated hedge legs are HL-live-only in phase 1 — the
+    # backtester models a single instrument and would silently drop the
+    # hedge leg's PnL/fees, so an enabled hedge block rejects loudly.
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(hedge={"enabled": True, "symbol": "BTC"}),
+    ])
+    with pytest.raises(ValueError, match="hedge"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
+def test_load_strategy_config_allows_disabled_hedge(tmp_path):
+    # An explicitly disabled hedge block changes nothing live, so the
+    # primary leg stays backtestable without editing the config.
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(hedge={"enabled": False, "symbol": "BTC"}),
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["direction"] == "long"
+
+
 _REGIME_DIRECTIONAL_POLICY = {
     "trend_regime": {
         "trending_up": {"direction": "long", "invert_signal": False},

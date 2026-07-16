@@ -357,6 +357,17 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
+		// #1159: hedge block hot-reloads when flat (the state-compat gate
+		// above blocks it while any position is open).
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: shape updated", sc.ID)
+			if ns.Hedge != nil {
+				clone := *ns.Hedge
+				sc.Hedge = &clone
+			} else {
+				sc.Hedge = nil
+			}
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -552,6 +563,10 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		errs = append(errs, msg)
 	}
 
+	// #1159: a reload must not introduce a hedge collision startup would have
+	// rejected.
+	errs = append(errs, validateHedgeConfigs(next)...)
+
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))
@@ -624,6 +639,16 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+		}
+		// #1159: the hedge block is state-shifting — enable/disable, symbol,
+		// side, ratio, and margin fields all change what the running hedge
+		// sync would do to an open leg. Blocked while ANY position is open
+		// (strategyHasOpenPositions covers a residual hedge leg with the
+		// primary flat, since both live in the same Positions map); freely
+		// reloadable when flat.
+		if sc.Type == "perps" && !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge block changed with open positions (flatten first or restart after close)",
+				sc.ID))
 		}
 		// #1268: switching between risk-per-trade and notional sizing while a
 		// position is open changes what the NEXT flip/re-entry sizing means
@@ -846,6 +871,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks any hedge-block change while ANY position (primary or residual hedge leg) is open
 	return sc
 }
 

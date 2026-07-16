@@ -108,6 +108,24 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 			}
 			errs = append(errs, msg)
 		}
+		// #1159: nested hedge-block keys. A typo'd "ration" would otherwise
+		// silently default and change live hedge sizing.
+		if raw, ok := s["hedge"]; ok {
+			var nested map[string]json.RawMessage
+			if json.Unmarshal(raw, &nested) == nil {
+				knownHedge := knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+				var bad []string
+				for k := range nested {
+					if !knownHedge[k] {
+						bad = append(bad, k)
+					}
+				}
+				sort.Strings(bad)
+				for _, k := range bad {
+					errs = append(errs, fmt.Sprintf("%s: unknown field %q in hedge block", prefix, k))
+				}
+			}
+		}
 	}
 	return errs
 }
