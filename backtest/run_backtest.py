@@ -801,6 +801,16 @@ def load_strategy_config(config_path: str, strategy_id: str,
         direction = _effective_direction(sc)
         invert_signal = bool(sc.get("invert_signal"))
         strategy_type = str(sc.get("type") or "perps")
+        # #1159: hedge legs are live Hyperliquid lifecycle state, not an
+        # independent backtest instrument. Refuse enabled hedges loudly rather
+        # than silently modeling only the primary and producing false parity.
+        hedge_cfg = sc.get("hedge")
+        if isinstance(hedge_cfg, dict) and hedge_cfg.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} enables a hedge "
+                f"block, which is HL-live-only in this release "
+                f"(backtester parity is intentionally rejected; see #1159)."
+            )
         # #942 review: invert_signal is HL-perps/manual-only. LoadConfig
         # (config.go) REJECTS the config at startup for any other type/platform
         # because runHyperliquidCheck (applySignalInversion) is its only

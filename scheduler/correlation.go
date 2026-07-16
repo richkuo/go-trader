@@ -82,6 +82,7 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 		spotPrice := findSpotPrice(asset, prices)
 
 		var deltaUSD float64
+		deltaByAsset := make(map[string]float64)
 
 		switch sc.Type {
 		case "spot", "perps", "manual":
@@ -97,6 +98,33 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 					continue
 				}
 				posAsset := strings.TrimSuffix(strings.ToUpper(pos.Symbol), "/USDT")
+				if pos.HedgeFor != "" {
+					posAsset = normalizeHedgeCoin(pos.Symbol)
+				}
+				if pos.HedgeFor != "" {
+					if posAsset == "" {
+						continue
+					}
+					if pos.Quantity <= 0 {
+						skipped = append(skipped, fmt.Sprintf("%s/%s: non-positive quantity", id, pos.Symbol))
+						continue
+					}
+					px := findSpotPrice(posAsset, prices)
+					if px <= 0 {
+						px = pos.AvgCost
+					}
+					if px <= 0 {
+						skipped = append(skipped, fmt.Sprintf("%s/%s: no usable price", id, pos.Symbol))
+						continue
+					}
+					legUSD := pos.Quantity * positionMultiplier(pos) * px
+					if pos.Side == "short" {
+						deltaByAsset[posAsset] -= legUSD
+					} else {
+						deltaByAsset[posAsset] += legUSD
+					}
+					continue
+				}
 				if posAsset != asset {
 					continue
 				}
@@ -157,22 +185,24 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 			}
 		}
 
-		if deltaUSD == 0 {
-			continue
+		deltaByAsset[asset] += deltaUSD
+		for assetName, assetDelta := range deltaByAsset {
+			if assetDelta == 0 {
+				continue
+			}
+			ae, exists := assets[assetName]
+			if !exists {
+				ae = &AssetExposure{Asset: assetName}
+				assets[assetName] = ae
+			}
+			ae.Strategies = append(ae.Strategies, StrategyExposure{
+				StrategyID: id,
+				DeltaUSD:   assetDelta,
+				Type:       sc.Type,
+			})
+			ae.NetDeltaUSD += assetDelta
+			ae.GrossDeltaUSD += math.Abs(assetDelta)
 		}
-
-		ae, exists := assets[asset]
-		if !exists {
-			ae = &AssetExposure{Asset: asset}
-			assets[asset] = ae
-		}
-		ae.Strategies = append(ae.Strategies, StrategyExposure{
-			StrategyID: id,
-			DeltaUSD:   deltaUSD,
-			Type:       sc.Type,
-		})
-		ae.NetDeltaUSD += deltaUSD
-		ae.GrossDeltaUSD += math.Abs(deltaUSD)
 	}
 
 	sort.Strings(skipped)

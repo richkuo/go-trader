@@ -18,14 +18,15 @@ import (
 var uiAssets embed.FS
 
 type UIStrategy struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Platform  string `json:"platform"`
-	Strategy  string `json:"strategy"`
-	Symbol    string `json:"symbol"`
-	Timeframe string `json:"timeframe"`
-	Direction string `json:"direction,omitempty"`
-	Paused    bool   `json:"paused,omitempty"` // #1150: position-increasing signals held
+	ID        string       `json:"id"`
+	Type      string       `json:"type"`
+	Platform  string       `json:"platform"`
+	Strategy  string       `json:"strategy"`
+	Symbol    string       `json:"symbol"`
+	Timeframe string       `json:"timeframe"`
+	Direction string       `json:"direction,omitempty"`
+	Hedge     *HedgeConfig `json:"hedge,omitempty"`
+	Paused    bool         `json:"paused,omitempty"` // #1150: position-increasing signals held
 }
 
 type UIStrategyOverview struct {
@@ -40,7 +41,8 @@ type UIStrategyOverview struct {
 	PnL                  float64                `json:"pnl"`
 	PortfolioValue       float64                `json:"portfolio_value"`
 	InitialCapital       float64                `json:"initial_capital"`
-	RegimeDivergence     *RegimeDivergenceState `json:"regime_divergence,omitempty"`       // #907: active window-divergence state; nil when none
+	RegimeDivergence     *RegimeDivergenceState `json:"regime_divergence,omitempty"` // #907: active window-divergence state; nil when none
+	Hedge                *HedgeConfig           `json:"hedge,omitempty"`
 	Paused               bool                   `json:"paused,omitempty"`                  // #1150
 	RegimeGateFailClosed bool                   `json:"regime_gate_fail_closed,omitempty"` // #1278: entry gate actively failing closed (opens held while regime unknown)
 }
@@ -69,6 +71,7 @@ type UIStrategyStatus struct {
 	Leverage         float64                    `json:"leverage,omitempty"`
 	SizingLeverage   float64                    `json:"sizing_leverage,omitempty"`
 	MarginMode       string                     `json:"margin_mode,omitempty"`
+	Hedge            *HedgeConfig               `json:"hedge,omitempty"`
 	Paused           bool                       `json:"paused,omitempty"` // #1150
 
 	// #779/#1157: directional-policy display fields, mirroring /status.
@@ -307,6 +310,7 @@ func uiStrategyFromConfig(sc StrategyConfig) UIStrategy {
 		Symbol:    strategyDisplaySymbol(sc),
 		Timeframe: strategyDisplayTimeframe(sc),
 		Direction: strategyDisplayDirection(sc),
+		Hedge:     cloneHedgeConfig(sc.Hedge),
 		Paused:    sc.Paused,
 	}
 }
@@ -490,6 +494,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		PortfolioValue:       pv,
 		InitialCapital:       initCap,
 		RegimeDivergence:     snapshot.RegimeDivergence,
+		Hedge:                cloneHedgeConfig(sc.Hedge),
 		Paused:               sc.Paused,
 		RegimeGateFailClosed: regimeGateFailClosedActive(sc, &snapshot, ss.regime),
 	}, lifetime, true
@@ -547,6 +552,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		Leverage:         EffectiveExchangeLeverage(sc),
 		SizingLeverage:   EffectiveSizingLeverage(sc),
 		MarginMode:       sc.MarginMode,
+		Hedge:            cloneHedgeConfig(sc.Hedge),
 		Paused:           sc.Paused,
 		RegimeProfile:    snapshot.RegimeProfile,
 	}

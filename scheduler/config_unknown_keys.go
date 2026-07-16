@@ -23,6 +23,10 @@ func knownStrategyConfigKeys() map[string]bool {
 	return known
 }
 
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownUserDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(UserDefaultsConfig{}))
 }
@@ -107,6 +111,48 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+	}
+	return errs
+}
+
+// validateHedgeJSONKeys applies the same strict nested-key guard as the
+// strategy root. Hedge is intentionally a small, closed schema because a
+// misspelled lifecycle field can otherwise leave the primary unhedged.
+func validateHedgeJSONKeys(rawData []byte) []string {
+	var envelope struct {
+		Strategies []map[string]json.RawMessage `json:"strategies"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil {
+		return nil
+	}
+	known := knownHedgeConfigKeys()
+	var errs []string
+	for i, s := range envelope.Strategies {
+		prefix := fmt.Sprintf("strategy[%d]", i)
+		if idRaw, ok := s["id"]; ok {
+			var id string
+			if json.Unmarshal(idRaw, &id) == nil && id != "" {
+				prefix = fmt.Sprintf("strategy[%s]", id)
+			}
+		}
+		hRaw, ok := s["hedge"]
+		if !ok {
+			continue
+		}
+		var h map[string]json.RawMessage
+		if err := json.Unmarshal(hRaw, &h); err != nil || h == nil {
+			continue
+		}
+		keys := make([]string, 0, len(h))
+		for k := range h {
+			if !known[k] {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
 		}
 	}
 	return errs

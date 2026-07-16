@@ -206,6 +206,39 @@ func TestValidatePerpsDirectionConfig_NoConflicts(t *testing.T) {
 	}
 }
 
+func TestValidatePerpsDirectionConfig_SkipsInverseHedgeLegs(t *testing.T) {
+	state := NewAppState()
+	state.Strategies["long-primary"] = &StrategyState{
+		ID: "long-primary", Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "short", HedgeFor: "ETH"},
+		},
+	}
+	state.Strategies["short-primary"] = &StrategyState{
+		ID: "short-primary", Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "short"},
+			"BTC": {Symbol: "BTC", Quantity: 0.1, Side: "long", HedgeFor: "ETH"},
+		},
+	}
+	state.Strategies["mis-sided-primary"] = &StrategyState{
+		ID: "mis-sided-primary", Type: "perps",
+		Positions: map[string]*Position{
+			"SOL": {Symbol: "SOL", Quantity: 1, Side: "short"},
+		},
+	}
+	cfg := &Config{Strategies: []StrategyConfig{
+		{ID: "long-primary", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
+		{ID: "short-primary", Type: "perps", Platform: "hyperliquid", Direction: DirectionShort},
+		{ID: "mis-sided-primary", Type: "perps", Platform: "hyperliquid", Direction: DirectionLong},
+	}}
+	warnings := ValidatePerpsDirectionConfig(state, cfg)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "mis-sided-primary") {
+		t.Fatalf("only the genuinely mis-sided primary should warn, got %v", warnings)
+	}
+}
+
 // TestValidatePerpsDirectionConfig_OrphanState verifies we don't crash when
 // state has a strategy that's been removed from config (pruning happens
 // separately in main.go but validators must tolerate the intermediate state).

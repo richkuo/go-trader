@@ -596,6 +596,20 @@ type FuturesConfig struct {
 	MaxContracts   int     `json:"max_contracts,omitempty"`
 }
 
+// HedgeConfig describes the optional correlated hedge leg for a Hyperliquid
+// perps strategy. The hedge is a state-derived companion position: it has no
+// independent signal or close evaluator and follows the primary quantity.
+type HedgeConfig struct {
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side"`                  // currently "inverse"
+	Ratio      float64 `json:"ratio"`                 // hedge notional / primary notional
+	Platform   string  `json:"platform"`              // currently "hyperliquid"
+	Type       string  `json:"type"`                  // currently "perps"
+	MarginMode string  `json:"margin_mode,omitempty"` // isolated (default) or cross
+	Leverage   float64 `json:"leverage,omitempty"`
+}
+
 // StrategyRef pairs a strategy name with its evaluator params. Used for both
 // the open strategy and each close strategy on a StrategyConfig so per-strategy
 // params don't leak across roles (#640). Empty Params means "use registry
@@ -661,6 +675,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159 — optional state-derived inverse HL perps hedge leg
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -1047,6 +1062,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// before applying defaults; json.Unmarshal silently drops them and would
 	// otherwise produce a struct indistinguishable from "no protection configured".
 	unknownErrs := validateStrategyJSONKeys(data)
+	unknownErrs = append(unknownErrs, validateHedgeJSONKeys(data)...)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
@@ -1217,6 +1233,9 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 		// go-trader's per-strategy risk model.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Platform == "hyperliquid" && cfg.Strategies[i].MarginMode == "" {
 			cfg.Strategies[i].MarginMode = "isolated"
+		}
+		if cfg.Strategies[i].Hedge != nil && cfg.Strategies[i].Hedge.Enabled {
+			normalizeHedgeConfig(cfg.Strategies[i].Hedge)
 		}
 
 		// #56: Default theta harvest for options strategies — sold options
@@ -2221,6 +2240,10 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+	// #1159: hedge ownership and coin collisions are account-wide invariants.
+	for _, msg := range validateHedgeConfigs(cfg) {
 		errs = append(errs, msg)
 	}
 

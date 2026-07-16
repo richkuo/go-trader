@@ -28,6 +28,11 @@ import (
 // PnL via tradeLedgerDeltaSQL.
 const TradeTypeFunding = "funding"
 
+// TradeTypeHedge marks the state-derived companion leg of a #1159 hedge.
+// Hedge legs contribute to the cash ledger but are excluded from lifetime
+// position counts and W/L round-trip statistics.
+const TradeTypeHedge = "hedge"
+
 // FeeSourceUserFills / FeeSourceModeled / FeeSourceReconcileAdjustment are the
 // Trade.FeeSource values.
 const (

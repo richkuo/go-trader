@@ -450,6 +450,10 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if len(sc.Args) > 0 {
 		fmt.Fprintf(&b, "  args:                %v\n", sc.Args)
 	}
+	if sc.Hedge != nil {
+		fmt.Fprintf(&b, "  hedge:               enabled=%t symbol=%s side=%s ratio=%g platform=%s type=%s margin_mode=%s leverage=%g\n",
+			sc.Hedge.Enabled, sc.Hedge.Symbol, sc.Hedge.Side, sc.Hedge.Ratio, sc.Hedge.Platform, sc.Hedge.Type, sc.Hedge.MarginMode, sc.Hedge.Leverage)
+	}
 
 	fmt.Fprintf(&b, "  open_strategy:       %s%s\n", strategyRefDisplayName(sc.OpenStrategy), markIfDefault(explicit, "open_strategy"))
 	if len(sc.OpenStrategy.Params) > 0 {
@@ -567,6 +571,9 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	} else {
 		parts = append(parts, "close=open-as-close")
 	}
+	if hedgeEnabled(sc) {
+		parts = append(parts, fmt.Sprintf("hedge=%s@%gx", hedgeCoin(sc), sc.Hedge.Ratio))
+	}
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
 		parts = append(parts, fmt.Sprintf("sl=%s%s", sl.Source, explicitTag(sl.Explicit)))
@@ -660,6 +667,13 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		"close_strategy_explicit":   explicit["close_strategy"],
 		"max_drawdown_pct":          sc.MaxDrawdownPct,
 		"max_drawdown_pct_explicit": explicit["max_drawdown_pct"],
+	}
+	if sc.Hedge != nil {
+		out["hedge"] = map[string]interface{}{
+			"enabled": sc.Hedge.Enabled, "symbol": sc.Hedge.Symbol, "side": sc.Hedge.Side,
+			"ratio": sc.Hedge.Ratio, "platform": sc.Hedge.Platform, "type": sc.Hedge.Type,
+			"margin_mode": sc.Hedge.MarginMode, "leverage": sc.Hedge.Leverage,
+		}
 	}
 	// #1048: circuit-breaker enable state. Manual is exempt from CheckRisk, so
 	// the flag is meaningless there and omitted. #1273: effective timing/

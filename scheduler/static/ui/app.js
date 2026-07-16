@@ -358,8 +358,11 @@
           button.title = "Paused — position-increasing signals held";
         }
         button.querySelector(".strategy-symbol").textContent = strategy.symbol || "-";
+        const hedgeMeta = strategy.hedge && strategy.hedge.enabled
+          ? "hedge " + (strategy.hedge.symbol || "-") + " @ " + (strategy.hedge.ratio || 1) + "x"
+          : "";
         button.querySelector(".strategy-meta").textContent =
-          [strategy.type, strategy.timeframe, strategy.direction].filter(Boolean).join(" / ");
+          [strategy.type, strategy.timeframe, strategy.direction, hedgeMeta].filter(Boolean).join(" / ");
         button.addEventListener("click", function () {
           selectStrategy(strategy.id).catch(handleRefreshError);
         });
@@ -1225,6 +1228,9 @@
     const dirCell = directionCell(status);
     if (dirCell) {
       fields.push(["Direction", dirCell]);
+    }
+    if (status.hedge && status.hedge.enabled) {
+      fields.push(["Hedge", (status.hedge.symbol || "-") + " @ " + (status.hedge.ratio || 1) + "x inverse"]);
     }
     if (status.regime_profile && status.regime_profile.active_profile) {
       let profile = status.regime_profile.active_profile;
