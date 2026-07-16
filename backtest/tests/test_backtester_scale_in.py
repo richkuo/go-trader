@@ -536,6 +536,21 @@ def test_loader_defaults_off(tmp_path):
     assert kwargs["scale_in"] is None
 
 
+def test_loader_rejects_enabled_hedge(tmp_path):
+    path = _config(tmp_path, _hl_strategy(
+        hedge={"enabled": True, "symbol": "ETH", "side": "inverse"},
+    ))
+    with pytest.raises(ValueError, match="HL-live-only.*#1159"):
+        run_backtest.load_strategy_config(path, "hl-test")
+
+
+def test_loader_allows_disabled_hedge(tmp_path):
+    path = _config(tmp_path, _hl_strategy(
+        hedge={"enabled": False, "symbol": "ETH", "side": "inverse"},
+    ))
+    assert run_backtest.load_strategy_config(path, "hl-test")["open_strategy"]["name"] == "tema_cross"
+
+
 def test_loader_rejects_block_without_flag(tmp_path):
     path = _config(tmp_path, _hl_strategy(scale_in={"max_adds": 3}))
     with pytest.raises(ValueError, match="allow_scale_in"):
