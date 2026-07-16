@@ -2504,8 +2504,9 @@ func main() {
 							// increment is reduced back off, restoring the
 							// pre-add primary/hedge relationship.
 							var hedgeAddFill *HyperliquidFill
-							hedgeAddUnwindTrades := 0
-							hedgeAddUnwindDetail := ""
+							hedgeAddFailed := false
+							hedgeAddFailReason := ""
+							hedgeAddFillQty := 0.0
 							if hyperliquidIsLive(sc.Args) && !liveExecFailed && strategyHedgeEnabled(sc) && scaleInAddQty > 0 &&
 								execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
 								addFill := execResult.Execution.Fill
@@ -2517,18 +2518,26 @@ func main() {
 								if hedgeOK {
 									hedgeAddFill = fill
 								} else {
-									// The add itself still gets booked below (it DID
-									// fill on-chain) — the unwind reduces it back off
-									// afterward so the ledger shows both legs, matching
-									// the fresh-open unwind's "history matches chain"
-									// principle. Counts merged into the cycle's trade
-									// total synchronously once the normal booking path
-									// (below) also runs — NOT via defer: this executes
-									// once per due strategy inside the dispatch loop, and
-									// a deferred closure here would only fire when the
-									// whole scheduler cycle function returns, long after
-									// trades/detail are read for this strategy.
-									hedgeAddUnwindTrades, hedgeAddUnwindDetail = unwindPrimaryAddAfterHedgeAddFailure(sc, stratState, result.Symbol, addFill.TotalSz, hedgeFailReason, &mu, notifier, logger)
+									// #1159 review round 3 finding 1: the add itself
+									// still gets booked below (it DID fill on-chain) —
+									// but the unwind must NOT run yet. Reducing the
+									// primary before the add is booked compares the
+									// reduce-only fill against the PRE-add virtual
+									// quantity, which clamps to a full close (deleting
+									// the position while the chain still holds the base
+									// position) whenever the add size >= the pre-add
+									// size, and mis-books realized PnL/the CB
+									// loss-streak tracker against the base cost basis
+									// even when it doesn't clamp. Deferred to right
+									// after the booking block below runs — NOT via
+									// defer(): this executes once per due strategy
+									// inside the dispatch loop, and a deferred closure
+									// here would only fire when the whole scheduler
+									// cycle function returns, long after trades/detail
+									// are read for this strategy.
+									hedgeAddFailed = true
+									hedgeAddFailReason = hedgeFailReason
+									hedgeAddFillQty = addFill.TotalSz
 								}
 							}
 							if !liveExecFailed {
@@ -2553,6 +2562,18 @@ func main() {
 									}
 								}
 								mu.Unlock()
+								// #1159 review round 3 finding 1: run the hedge-add
+								// unwind HERE — after the primary add above is booked
+								// into state — so the reduce-only close is valued
+								// against the POST-add quantity, never the pre-add one.
+								if hedgeAddFailed {
+									if unwindTrades, unwindDetail := unwindPrimaryAddAfterHedgeAddFailure(sc, stratState, result.Symbol, hedgeAddFillQty, hedgeAddFailReason, &mu, notifier, logger); unwindTrades > 0 {
+										trades += unwindTrades
+										if unwindDetail != "" {
+											detail = unwindDetail
+										}
+									}
+								}
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
 								// for the scale-in branch and when no tier tightened.
@@ -2616,15 +2637,6 @@ func main() {
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
 							}
-							// #1159: merge in the hedge-add-unwind trade/detail computed
-							// above (synchronous — NOT a defer; see the comment at the
-							// computation site for why a defer here would be wrong).
-							if hedgeAddUnwindTrades > 0 {
-								trades += hedgeAddUnwindTrades
-								if hedgeAddUnwindDetail != "" {
-									detail = hedgeAddUnwindDetail
-								}
-							}
 							// #1159: mirror a confirmed signal-based close/partial-close
 							// onto the hedge leg. result.CloseFraction > 0 only on a
 							// close action — mutually exclusive with the open/scale-in
@@ -2635,16 +2647,23 @@ func main() {
 							if hyperliquidIsLive(sc.Args) && !liveExecFailed && result.CloseFraction > 0 {
 								runHedgeCloseMirror(sc, stratState, result.Symbol, result.CloseFraction, &mu, logger)
 							}
-							// #1159: per-cycle coherence safety net. Runs every cycle for
-							// every hedge-enabled strategy regardless of what happened
-							// above (cheap no-op when nothing is open) — catches drift
-							// the synchronous mirrors above can't see: on-chain SL/TP/
-							// trailing fills on the primary (booked by the reconciler,
-							// not this dispatch), crashes mid-mirror, external hedge
-							// closes/liquidations.
-							if strategyHedgeEnabled(sc) {
-								syncHedgeCoherence(sc, stratState, result.Symbol, &mu, notifier, logger)
-							}
+							// #1159: per-cycle coherence safety net. Called
+							// UNCONDITIONALLY (not gated on
+							// strategyHedgeEnabled) — cheap no-op when nothing
+							// hedge-related is open, but a strategy that just
+							// had hedging disabled via edit+restart while a
+							// hedge leg was still open needs this to keep
+							// running so its internal orphan-aware lookup
+							// (hedgeCoinForStrategyOrOrphan) can still find and
+							// freeze+alert that leg (review round 3 finding
+							// 2) — gating the call itself on the now-disabled
+							// config flag would make that lookup unreachable
+							// no matter how it's implemented. Catches drift
+							// the synchronous mirrors above can't see: on-chain
+							// SL/TP/trailing fills on the primary (booked by
+							// the reconciler, not this dispatch), crashes
+							// mid-mirror, external hedge closes/liquidations.
+							syncHedgeCoherence(sc, stratState, result.Symbol, &mu, notifier, logger)
 						}
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {

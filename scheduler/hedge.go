@@ -520,6 +520,32 @@ func runHedgeCloseMirror(sc StrategyConfig, stratState *StrategyState, primarySy
 	hedgeReduceSymbolBy(sc, stratState, hedgeCoin, hedgeQty*closeFraction, hedgeQty, "hedge_reduce", mu, logger)
 }
 
+// hedgeCoinForStrategyOrOrphan resolves the hedge coin for sc: same as
+// hedgeCoinForStrategy when hedging is currently enabled, but ALSO falls
+// back to scanning ss.Positions for an orphaned hedge leg (IsHedge=true,
+// OwnerStrategyID==sc.ID) when it's disabled (#1159 review round 3 finding
+// 2). hedgeCoinForStrategy alone returns "" the instant hedging is
+// disabled — which would otherwise make an orphaned hedge leg from before
+// the disable invisible to every hedge-coin-derived management path
+// (coherence's freeze/close, the external-fill reconciler) the moment an
+// operator flips hedge.enabled=false (or removes the block) and restarts
+// while the leg is still open, bypassing the SIGHUP state-compat guard.
+// Callers must already hold whatever lock ss.Positions requires.
+func hedgeCoinForStrategyOrOrphan(sc StrategyConfig, ss *StrategyState) string {
+	if hc := hedgeCoinForStrategy(sc); hc != "" {
+		return hc
+	}
+	if ss == nil {
+		return ""
+	}
+	for _, pos := range ss.Positions {
+		if pos != nil && pos.IsHedge && pos.OwnerStrategyID == sc.ID {
+			return pos.Symbol
+		}
+	}
+	return ""
+}
+
 // ============================================================================
 // Per-cycle coherence safety net
 // ============================================================================
@@ -570,8 +596,13 @@ func syncHedgeCoherence(sc StrategyConfig, stratState *StrategyState, primarySym
 	hedgeCoin := ""
 	if primary != nil && primary.HedgeSymbol != "" {
 		hedgeCoin = primary.HedgeSymbol
-	} else if strategyHedgeEnabled(sc) {
-		hedgeCoin = hedgeCoinForStrategy(sc)
+	} else {
+		// hedgeCoinForStrategyOrOrphan falls back to an orphaned IsHedge row
+		// in state when hedging is currently disabled (#1159 review round 3
+		// finding 2) — without it, disabling hedging via edit+restart while
+		// a leg with no primary.HedgeSymbol trace is open would make it
+		// permanently invisible here.
+		hedgeCoin = hedgeCoinForStrategyOrOrphan(sc, stratState)
 	}
 	if hedgeCoin != "" {
 		if h, ok := stratState.Positions[hedgeCoin]; ok && h != nil {
@@ -661,10 +692,16 @@ func syncHedgeCoherence(sc StrategyConfig, stratState *StrategyState, primarySym
 // caller's gap-tracking/alerting surfaces for the operator, never silently
 // inferred here.
 func reconcileHedgeLegsForStrategy(sc StrategyConfig, ss *StrategyState, positions []HLPosition, resolveFee hlReconcileFillResolver, logger *StrategyLogger) bool {
-	if !strategyHedgeEnabled(sc) || ss == nil {
+	if ss == nil {
 		return false
 	}
-	hedgeCoin := hedgeCoinForStrategy(sc)
+	// hedgeCoinForStrategyOrOrphan (not hedgeCoinForStrategy) so a hedge leg
+	// still open from before an edit+restart that disabled hedging keeps
+	// getting reconciled against external fills/closes — otherwise its
+	// virtual row would go stale forever the moment hedging turns off
+	// (#1159 review round 3 finding 2), and syncHedgeCoherence's freeze
+	// would be comparing against outdated state.
+	hedgeCoin := hedgeCoinForStrategyOrOrphan(sc, ss)
 	if hedgeCoin == "" {
 		return false
 	}

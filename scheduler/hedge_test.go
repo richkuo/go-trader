@@ -63,6 +63,69 @@ func TestHedgeCoinForStrategy(t *testing.T) {
 	}
 }
 
+func TestHedgeCoinForStrategyOrOrphan(t *testing.T) {
+	// Regression for review round 3, finding 2: hedgeCoinForStrategy alone
+	// returns "" the instant hedging is disabled, which would make an
+	// orphaned hedge leg invisible to coherence/reconcile. The "OrOrphan"
+	// variant must fall back to a state scan in that case.
+	t.Run("enabled delegates to hedgeCoinForStrategy, ignores state", func(t *testing.T) {
+		sc := testHedgeStrategy("hl-eth", "ETH", "BTC")
+		ss := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+			"SOL": {Symbol: "SOL", IsHedge: true, OwnerStrategyID: "hl-eth"},
+		}}
+		if got := hedgeCoinForStrategyOrOrphan(sc, ss); got != "BTC" {
+			t.Errorf("expected the configured coin BTC, got %q", got)
+		}
+	})
+	t.Run("disabled with an orphaned hedge leg finds it", func(t *testing.T) {
+		sc := testHedgeStrategy("hl-eth", "ETH", "BTC")
+		sc.Hedge.Enabled = false
+		ss := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", IsHedge: true, OwnerStrategyID: "hl-eth"},
+		}}
+		if got := hedgeCoinForStrategyOrOrphan(sc, ss); got != "BTC" {
+			t.Errorf("expected the orphaned coin BTC, got %q", got)
+		}
+	})
+	t.Run("disabled with nil hedge block finds an orphaned leg", func(t *testing.T) {
+		sc := testHedgeStrategy("hl-eth", "ETH", "BTC")
+		sc.Hedge = nil
+		ss := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", IsHedge: true, OwnerStrategyID: "hl-eth"},
+		}}
+		if got := hedgeCoinForStrategyOrOrphan(sc, ss); got != "BTC" {
+			t.Errorf("expected the orphaned coin BTC, got %q", got)
+		}
+	})
+	t.Run("disabled with no orphaned leg returns empty", func(t *testing.T) {
+		sc := testHedgeStrategy("hl-eth", "ETH", "BTC")
+		sc.Hedge.Enabled = false
+		ss := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "long"},
+		}}
+		if got := hedgeCoinForStrategyOrOrphan(sc, ss); got != "" {
+			t.Errorf("expected no coin, got %q", got)
+		}
+	})
+	t.Run("disabled ignores a hedge leg owned by a different strategy", func(t *testing.T) {
+		sc := testHedgeStrategy("hl-eth", "ETH", "BTC")
+		sc.Hedge.Enabled = false
+		ss := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", IsHedge: true, OwnerStrategyID: "hl-other"},
+		}}
+		if got := hedgeCoinForStrategyOrOrphan(sc, ss); got != "" {
+			t.Errorf("expected no coin for a differently-owned hedge row, got %q", got)
+		}
+	})
+	t.Run("nil state is safe", func(t *testing.T) {
+		sc := testHedgeStrategy("hl-eth", "ETH", "BTC")
+		sc.Hedge.Enabled = false
+		if got := hedgeCoinForStrategyOrOrphan(sc, nil); got != "" {
+			t.Errorf("expected no coin with nil state, got %q", got)
+		}
+	})
+}
+
 func TestHedgeOpenQty(t *testing.T) {
 	cases := []struct {
 		name                                    string
@@ -483,6 +546,31 @@ func TestReconcileHedgeLegsForStrategy(t *testing.T) {
 		s := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{}}
 		if changed := reconcileHedgeLegsForStrategy(disabled, s, nil, noFillFeeResolver, logger); changed {
 			t.Error("expected no-op when hedge disabled")
+		}
+	})
+
+	t.Run("still reconciles an orphaned hedge leg when hedge is now disabled", func(t *testing.T) {
+		// Regression for review round 3, finding 2: disabling hedge.enabled
+		// via edit+restart must not make a leg still open from before the
+		// disable invisible to the external-fill reconciler — otherwise its
+		// virtual row goes stale forever and syncHedgeCoherence's freeze
+		// compares against outdated state.
+		disabled := sc
+		disabled.Hedge = nil
+		s := &StrategyState{
+			ID:   "hl-eth",
+			Cash: 1000,
+			Positions: map[string]*Position{
+				"ETH": {Symbol: "ETH", Quantity: 1, Side: "long", HedgeSymbol: "BTC"},
+				"BTC": {Symbol: "BTC", Quantity: 0.05, InitialQuantity: 0.05, AvgCost: 60000, Side: "short", IsHedge: true, HedgeFor: "ETH", OwnerStrategyID: "hl-eth"},
+			},
+		}
+		changed := reconcileHedgeLegsForStrategy(disabled, s, nil /* externally closed */, noFillFeeResolver, logger)
+		if !changed {
+			t.Fatal("expected the orphaned hedge's external close to still be booked while disabled")
+		}
+		if _, ok := s.Positions["BTC"]; ok {
+			t.Error("orphaned hedge position should have been removed after external close")
 		}
 	})
 
