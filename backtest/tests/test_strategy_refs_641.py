@@ -1118,3 +1118,30 @@ def test_config_flag_threads_allowed_regimes_to_run_single(tmp_path, monkeypatch
     run_backtest.main()
     assert captured.get("allowed_regimes") == ["trending_up", "ranging"]
     assert captured.get("regime_enabled") is True
+
+
+def test_load_strategy_config_rejects_enabled_hedge_1159(tmp_path):
+    """#1159: hedge-enabled configs are HL-live-only — backtester must reject loudly."""
+    import json
+    from backtest.run_backtest import load_strategy_config
+
+    cfg = {
+        "config_version": 15,
+        "strategies": [
+            {
+                "id": "hl-eth",
+                "type": "perps",
+                "platform": "hyperliquid",
+                "args": ["momentum", "ETH", "1h"],
+                "hedge": {"enabled": True, "symbol": "BTC", "side": "inverse", "ratio": 1.0},
+            }
+        ],
+    }
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(cfg))
+    try:
+        load_strategy_config(str(path), "hl-eth")
+        raise AssertionError("expected ValueError for enabled hedge")
+    except ValueError as e:
+        msg = str(e).lower()
+        assert "hedge" in msg

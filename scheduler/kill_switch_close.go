@@ -53,6 +53,10 @@ type KillSwitchCloseInputs struct {
 	// resting and burn HL's open-order cap (#421 review point 1, #479).
 	// nil/empty disables; coins with no resting SL are simply absent.
 	HLStopLossOIDs map[string][]int64
+	// HLHedgeCoins are coins where a strategy currently HOLDS a hedge leg
+	// (#1159). Gated on the held leg (not config alone) so a declared-but-flat
+	// hedge coin never liquidates a foreign on-chain position.
+	HLHedgeCoins map[string]bool
 
 	// OKXLiveAllPerps: every live OKX perps strategy configured (used to
 	// decide which coins to close and to detect "unconfigured" positions).
@@ -386,7 +390,7 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	case hlStateFetched && len(in.HLLiveAll) > 0:
 		recoverSince := time.Now().UTC().Add(-hlKillSwitchNoFillRecoveryLookback)
 		ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.HLCloseTimeout))
-		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser, in.HLStopLossOIDs)
+		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser, in.HLStopLossOIDs, in.HLHedgeCoins)
 		cancel()
 		if !plan.CloseReport.ConfirmedFlat() {
 			if in.HLAddr != "" && in.HLFetcher != nil {
