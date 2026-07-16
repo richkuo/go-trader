@@ -187,31 +187,32 @@ func (lc LeaderboardSummaryConfig) Key() string {
 
 // Config is the top-level scheduler configuration.
 type Config struct {
-	ConfigVersion          int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
-	IntervalSeconds        int                        `json:"interval_seconds"`
-	LogDir                 string                     `json:"log_dir"`
-	DBFile                 string                     `json:"db_file,omitempty"`     // SQLite state DB path (default: "scheduler/state.db")
-	StatusPort             int                        `json:"status_port,omitempty"` // HTTP status server port (default: 8099; auto-fallback if taken)
-	StatusToken            string                     `json:"-"`                     // loaded from STATUS_AUTH_TOKEN env var only
-	Discord                DiscordConfig              `json:"discord"`
-	Telegram               TelegramConfig             `json:"telegram,omitempty"`
-	AutoUpdate             string                     `json:"auto_update,omitempty"`           // "off", "daily", "heartbeat" (default: "off")
-	LeaderboardPostTime    string                     `json:"leaderboard_post_time,omitempty"` // "HH:MM" in UTC; auto-post daily leaderboard at this time (empty = disabled)
-	Strategies             []StrategyConfig           `json:"strategies"`
-	PortfolioRisk          *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
-	Correlation            *CorrelationConfig         `json:"correlation,omitempty"`
-	Regime                 *RegimeConfig              `json:"regime,omitempty"`
-	Platforms              map[string]*PlatformConfig `json:"platforms,omitempty"`
-	LeaderboardSummaries   []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"`      // #308 — configurable per-channel leaderboards
-	SummaryFrequency       map[string]string          `json:"summary_frequency,omitempty"`          // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every channel run; spot: hourly)
-	RiskFreeRate           *float64                   `json:"risk_free_rate,omitempty"`             // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
-	DefaultStopLossATRMult *float64                   `json:"default_stop_loss_atr_mult,omitempty"` // #605 — top-level default applied to HL perps/manual strategies that omit all stop_loss_* / trailing_stop_* fields. Nil/missing falls back to 1.0; explicit values let operators tune the ATR stop without recompiling.
-	ATRMethod              string                     `json:"atr_method,omitempty"`                 // #1277 — global default ATR smoothing method for the standard_atr surface (EntryATR stamping, live market_ctx["atr"], manual fetch-atr, tuner simulate): "simple" (default; frozen legacy rolling mean with the #887 >=100 integer rounding) or "wilder" (published Wilder RMA, never rounded). Per-strategy atr_method overrides. Strategy-internal indicator math is NOT config-driven (see docs/research/1277-wilder-atr-cutover.md). Read via resolveATRMethod(sc, cfg), never directly. Hot-reload: blocked while the affected strategy has open positions (EntryATR/frozen stop geometry must not be re-based mid-position); applies when flat.
-	NotifyTPSLFills        *bool                      `json:"notify_tp_sl_fills,omitempty"`         // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
-	NotifyRatchetTriggers  *bool                      `json:"notify_ratchet_triggers,omitempty"`    // #1110 — owner DM when a trailing_tp_ratchet* tier clears and tightens the trail. Nil/missing → enabled; explicit false disables.
-	AlertThrottleInterval  string                     `json:"alert_throttle_interval,omitempty"`    // #1266 — fleet-wide re-alert back-off for throttled operator alerts. Go duration ("6h", "30m"); empty → 6h.
-	TradingViewExport      TradingViewExportConfig    `json:"tradingview_export,omitempty"`         // #3 — optional symbol overrides for TradingView portfolio CSV exports
-	UserDefaults           *UserDefaultsConfig        `json:"user_defaults,omitempty"`              // #1135 — canonical operator override layer for defaults. close → close-evaluator tier ladders; regime_atr → standalone use_defaults-only *_atr_regime owners; manual → manual-open/type=manual defaults. Legacy user_close_defaults/manual_defaults are migrated to this tree at load.
+	ConfigVersion            int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
+	IntervalSeconds          int                        `json:"interval_seconds"`
+	LogDir                   string                     `json:"log_dir"`
+	DBFile                   string                     `json:"db_file,omitempty"`     // SQLite state DB path (default: "scheduler/state.db")
+	StatusPort               int                        `json:"status_port,omitempty"` // HTTP status server port (default: 8099; auto-fallback if taken)
+	StatusToken              string                     `json:"-"`                     // loaded from STATUS_AUTH_TOKEN env var only
+	Discord                  DiscordConfig              `json:"discord"`
+	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
+	AutoUpdate               string                     `json:"auto_update,omitempty"`           // "off", "daily", "heartbeat" (default: "off")
+	LeaderboardPostTime      string                     `json:"leaderboard_post_time,omitempty"` // "HH:MM" in UTC; auto-post daily leaderboard at this time (empty = disabled)
+	Strategies               []StrategyConfig           `json:"strategies"`
+	PortfolioRisk            *PortfolioRiskConfig       `json:"portfolio_risk,omitempty"`
+	Correlation              *CorrelationConfig         `json:"correlation,omitempty"`
+	Regime                   *RegimeConfig              `json:"regime,omitempty"`
+	Platforms                map[string]*PlatformConfig `json:"platforms,omitempty"`
+	LeaderboardSummaries     []LeaderboardSummaryConfig `json:"leaderboard_summaries,omitempty"`        // #308 — configurable per-channel leaderboards
+	SummaryFrequency         map[string]string          `json:"summary_frequency,omitempty"`            // #30 — per-channel summary cadence; keys match Discord/Telegram channel keys (e.g. "spot", "options", "hyperliquid"). Values: Go duration ("30m", "2h"), alias ("hourly", "every"/"per_check"/"always"), or empty for legacy default (continuous: every channel run; spot: hourly)
+	RiskFreeRate             *float64                   `json:"risk_free_rate,omitempty"`               // #397 — annualized risk-free rate used in Sharpe-ratio calculations (e.g. 0.02 for 2%). Nil/missing falls back to DefaultAnnualRiskFreeRate; an explicit 0 is respected so backtest comparisons can pin to a 0% benchmark.
+	DefaultStopLossATRMult   *float64                   `json:"default_stop_loss_atr_mult,omitempty"`   // #605 — top-level default applied to HL perps/manual strategies that omit all stop_loss_* / trailing_stop_* fields. Nil/missing falls back to 1.0; explicit values let operators tune the ATR stop without recompiling.
+	ATRMethod                string                     `json:"atr_method,omitempty"`                   // #1277 — global default ATR smoothing method for the standard_atr surface (EntryATR stamping, live market_ctx["atr"], manual fetch-atr, tuner simulate): "simple" (default; frozen legacy rolling mean with the #887 >=100 integer rounding) or "wilder" (published Wilder RMA, never rounded). Per-strategy atr_method overrides. Strategy-internal indicator math is NOT config-driven (see docs/research/1277-wilder-atr-cutover.md). Read via resolveATRMethod(sc, cfg), never directly. Hot-reload: blocked while the affected strategy has open positions (EntryATR/frozen stop geometry must not be re-based mid-position); applies when flat.
+	NotifyTPSLFills          *bool                      `json:"notify_tp_sl_fills,omitempty"`           // #661 — owner DM when HL on-chain TP/SL fills are detected by the reconciler. Nil/missing → enabled; explicit false disables.
+	NotifyRatchetTriggers    *bool                      `json:"notify_ratchet_triggers,omitempty"`      // #1110 — owner DM when a trailing_tp_ratchet* tier clears and tightens the trail. Nil/missing → enabled; explicit false disables.
+	AlertThrottleInterval    string                     `json:"alert_throttle_interval,omitempty"`      // #1266 — fleet-wide re-alert back-off for throttled operator alerts. Go duration ("6h", "30m"); empty → 6h.
+	KillSwitchResetDMTimeout string                     `json:"kill_switch_reset_dm_timeout,omitempty"` // #1368 — AskOwnerDM wait for the portfolio kill-switch reset prompt. Go duration ("6h", "30m"); empty → 6h. Independent of alert_throttle_interval (re-alert back-off ≠ interactive reply wait).
+	TradingViewExport        TradingViewExportConfig    `json:"tradingview_export,omitempty"`           // #3 — optional symbol overrides for TradingView portfolio CSV exports
+	UserDefaults             *UserDefaultsConfig        `json:"user_defaults,omitempty"`                // #1135 — canonical operator override layer for defaults. close → close-evaluator tier ladders; regime_atr → standalone use_defaults-only *_atr_regime owners; manual → manual-open/type=manual defaults. Legacy user_close_defaults/manual_defaults are migrated to this tree at load.
 }
 
 // UserDefaultsConfig is the canonical #1135 operator defaults block.
@@ -2367,6 +2368,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 
 	if _, err := ParseAlertThrottleInterval(cfg.AlertThrottleInterval); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if _, err := ParseKillSwitchResetDMTimeout(cfg.KillSwitchResetDMTimeout); err != nil {
 		errs = append(errs, err.Error())
 	}
 

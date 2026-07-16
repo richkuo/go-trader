@@ -5,6 +5,7 @@
   "status_port": 8099,
   "default_stop_loss_atr_mult": 1.0,
   "alert_throttle_interval": "6h",
+  "kill_switch_reset_dm_timeout": "6h",
   "user_defaults": {
     "close": {
       "trailing_tp_ratchet": {
