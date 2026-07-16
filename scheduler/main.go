@@ -114,6 +114,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to apply alert throttle interval: %v\n", err)
 		os.Exit(1)
 	}
+	if err := applyKillSwitchResetDMTimeoutFromConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to apply kill-switch reset DM timeout: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
 	// #1085: load the directional-certification artifact (SSoT for the
@@ -1560,12 +1564,14 @@ func main() {
 			}
 
 			// Kill switch reset goroutine: prompt owner to reset via DM.
+			// AskOwnerDM wait is kill_switch_reset_dm_timeout (default 6h, #1368).
 			if killSwitchFired && notifier.HasOwner() && !resetGoroutineRunning {
 				resetGoroutineRunning = true
 				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, plan)
+				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
 				go func() {
 					defer func() { resetGoroutineRunning = false }()
-					resp, err := notifier.AskOwnerDM(resetPrompt, 30*time.Minute)
+					resp, err := notifier.AskOwnerDM(resetPrompt, resetDMTimeout)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
 						return

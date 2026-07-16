@@ -59,6 +59,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			return nil, fmt.Errorf("alert_throttle_interval: %w", err)
 		}
 	}
+	if cfg.KillSwitchResetDMTimeout != next.KillSwitchResetDMTimeout {
+		addChange("kill_switch_reset_dm_timeout: %q -> %q", cfg.KillSwitchResetDMTimeout, next.KillSwitchResetDMTimeout)
+		cfg.KillSwitchResetDMTimeout = next.KillSwitchResetDMTimeout
+		if err := applyKillSwitchResetDMTimeoutFromConfig(cfg); err != nil {
+			return nil, fmt.Errorf("kill_switch_reset_dm_timeout: %w", err)
+		}
+	}
 	// #1135: user_defaults flows through hot-reload so SIGHUP edits to the
 	// operator-default layer shape subsequent manual-open invocations, new
 	// type=manual defaults, and close-default injection. The CLI loads fresh
