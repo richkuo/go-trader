@@ -1397,6 +1397,15 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 
 	res.outf("Force-closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
 		filledQty, sym, fillAvgPx, realizedPnL, fillFee)
+	// #1159: the scheduler owns the hedge leg exclusively. A manual force-close
+	// of the primary leaves the hedge coherence to the next cycle's state-derived
+	// hedge sync (primary flat/reduced → hedge closed/reduced), which is
+	// restart-safe. No CLI-side hedge order.
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(sc); hc != "" {
+			res.outf("note: hedge leg %s will be reduced/closed by the scheduler on the next cycle (#1159)", hc)
+		}
+	}
 
 	action := PendingManualAction{
 		StrategyID:      strategyID,

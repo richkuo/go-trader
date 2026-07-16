@@ -280,6 +280,12 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: detect a persisted hedge leg whose strategy no longer declares an
+	// enabled hedge block (or whose coin no longer matches the configured
+	// hedge.symbol) — a config edit + restart bypasses the SIGHUP hot-reload
+	// guard. Non-destructive: the leg is left frozen and the owner warned.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -499,6 +505,13 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward startup hedge-state-consistency warnings.
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1412,6 +1425,7 @@ func main() {
 				// coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
 				hlSLOIDs := map[string][]int64{}
+				hlHedgeCoins := map[string]bool{}
 				mu.RLock()
 				for _, sc := range hlLiveAll {
 					sym := hyperliquidSymbol(sc.Args)
@@ -1423,6 +1437,15 @@ func main() {
 							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.StopLossOID)
 							for _, tpOID := range pos.TPOIDs {
 								hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], tpOID)
+							}
+						}
+						// #1159: record hedge coins with a live virtual hedge leg
+						// so the kill switch flattens them on-chain too.
+						if sc.HedgeEnabled() {
+							if hc := hedgeCoin(sc); hc != "" {
+								if hpos, hok := ss.Positions[hc]; hok && hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+									hlHedgeCoins[hc] = true
+								}
 							}
 						}
 					}
@@ -1439,6 +1462,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLHedgeCoins:      hlHedgeCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -2501,6 +2525,20 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: converge the correlated hedge leg to the current
+							// primary state every cycle (fresh open, scale-in add,
+							// partial/full close, paused/latched-CB/daily-loss manage
+							// cycles). State-derived, so it also self-heals reconcile-
+							// booked SL/TP fills and crash-between-legs restarts. A
+							// hedge-open failure on a FRESH-open cycle (hlPosQty was
+							// flat) escalates to a fail-closed primary unwind; later
+							// drift cycles alert + retry. Hedge orders are deliberately
+							// NOT gated by pause/daily-loss/exposure-cap — a held/paused
+							// primary can only shrink, so the hedge can only reduce/close
+							// under those states anyway.
+							if sc.HedgeEnabled() && !liveExecFailed {
+								runHedgeSync(sc, stratState, result.Symbol, &mu, prices, hlPosQty <= 0, notifier, logger)
 							}
 						}
 					case "futures":

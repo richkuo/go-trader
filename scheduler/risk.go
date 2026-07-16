@@ -84,6 +84,14 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		case "okx":
 			okxSet[coin] = true
 		}
+		// #1159: an HL perps hedge-enabled strategy also needs its hedge coin
+		// marked every cycle so runHedgeSync can size/value the hedge leg and
+		// portfolio valuation/exposure never fall back to AvgCost for it.
+		if sc.Platform == "hyperliquid" && sc.HedgeEnabled() {
+			if hc := hedgeCoin(sc); hc != "" {
+				hlSet[hc] = true
+			}
+		}
 	}
 	hlCoins = make([]string, 0, len(hlSet))
 	for c := range hlSet {
@@ -939,22 +947,34 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return
 	}
+	var symbols []PendingCircuitCloseSymbol
 	sym := hyperliquidSymbol(sc.Args)
-	if sym == "" {
-		return
+	// Primary coin: skipped when shared (forceCloseAllPositions handles the
+	// virtual side; a partial on-chain close would disturb peers).
+	if sym != "" && !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		if _, ok := s.Positions[sym]; ok {
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+			}
+		}
 	}
-	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		return
+	// #1159: the hedge coin is sole-owned (collision-validated), so enqueue it
+	// even when the PRIMARY coin is shared — otherwise the virtual primary
+	// force-close would orphan the real on-chain hedge.
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(*sc); hc != "" {
+			if hpos, ok := s.Positions[hc]; ok && hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+				if qty, ok := computeHyperliquidCircuitCloseQty(hc, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hc, Size: qty})
+				}
+			}
+		}
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
-	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
+	if len(symbols) == 0 {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1167,6 +1187,13 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
+	// #1159: a correlated hedge leg is labeled "hedge" so force-close/kill-switch
+	// legs are excluded from lifetime #T/W-L (db.go) and never counted as
+	// independent alpha. Ledger sums are unaffected (tradeLedgerDeltaSQL ignores
+	// trade_type).
+	if pos.HedgeFor != "" {
+		return "hedge"
+	}
 	if pos.Multiplier > 0 {
 		if s != nil {
 			switch {
@@ -1262,7 +1289,12 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		// #1159: hedge legs update daily-PnL but not the CB loss streak.
+		if pos.HedgeFor != "" {
+			RecordHedgeTradeResult(&s.RiskState, pnl)
+		} else {
+			RecordTradeResult(&s.RiskState, pnl)
+		}
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1597,4 +1629,16 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult books a #1159 hedge-leg close into the daily-PnL
+// accounting (so #1269 daily-loss limits and drawdown revaluation stay exact)
+// but deliberately does NOT touch ConsecutiveLosses. An inverse hedge leg loses
+// by construction whenever the primary thesis wins (and vice versa); counting a
+// hedge close in the loss streak would double-count one thesis and mis-fire the
+// circuit-breaker loss-streak arm. Every close-booking site routes hedge legs
+// (pos.HedgeFor != "") here instead of RecordTradeResult.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }

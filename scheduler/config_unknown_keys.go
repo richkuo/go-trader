@@ -31,6 +31,10 @@ func knownManualDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(ManualDefaultsConfig{}))
 }
 
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownJSONKeys(t reflect.Type) map[string]bool {
 	known := make(map[string]bool)
 	for i := 0; i < t.NumField(); i++ {
@@ -107,6 +111,25 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+		// #1159: descend into the nested hedge block so a typo like "ration"
+		// fails loudly instead of silently defaulting (mirrors the
+		// user_defaults.manual nested-key pass).
+		if rawHedge, ok := s["hedge"]; ok {
+			var hedge map[string]json.RawMessage
+			if err := json.Unmarshal(rawHedge, &hedge); err == nil && hedge != nil {
+				hedgeKnown := knownHedgeConfigKeys()
+				hkeys := make([]string, 0, len(hedge))
+				for k := range hedge {
+					if !hedgeKnown[k] {
+						hkeys = append(hkeys, k)
+					}
+				}
+				sort.Strings(hkeys)
+				for _, k := range hkeys {
+					errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
+				}
+			}
 		}
 	}
 	return errs

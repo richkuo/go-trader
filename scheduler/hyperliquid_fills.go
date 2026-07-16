@@ -498,6 +498,24 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 				}
 			}
 		}
+		// #1159: include the HEDGE coin so an external hedge close resolves its
+		// real userFills fee (VWAP) instead of falling back to a modeled fee.
+		if sc.HedgeEnabled() {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hpos := ss.Positions[hc]; hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+					onChainSize, present := onChainByCoin[hc]
+					if !present || math.Abs(math.Abs(onChainSize)-hpos.Quantity) > 1e-9 {
+						addCandidate(hc, 0, hpos.Quantity)
+						if present && onChainSize != 0 {
+							onChainAbs := math.Abs(onChainSize)
+							if onChainAbs+1e-9 < hpos.Quantity {
+								addCandidate(hc, 0, hpos.Quantity-onChainAbs)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy
