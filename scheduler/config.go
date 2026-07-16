@@ -661,6 +661,57 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159 — optional state-derived inverse hedge leg. HL perps only; managed by hedge sync, never by a check script or close evaluator. Read via HedgeEnabled/hedge* accessors.
+}
+
+// HedgeConfig declares the phase-1 correlated hedge coupled to one HL perps
+// strategy. The hedge leg has its own exchange margin assignment.
+type HedgeConfig struct {
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
+}
+
+func (sc StrategyConfig) HedgeEnabled() bool {
+	return sc.Hedge != nil && sc.Hedge.Enabled
+}
+
+// hedgeCoin accepts bare HL tickers and ccxt symbols such as BTC/USDC:USDC.
+func hedgeCoin(sc StrategyConfig) string {
+	if sc.Hedge == nil {
+		return ""
+	}
+	raw := strings.ToUpper(strings.TrimSpace(sc.Hedge.Symbol))
+	if slash := strings.IndexByte(raw, '/'); slash >= 0 {
+		raw = raw[:slash]
+	}
+	return strings.TrimSpace(raw)
+}
+
+func hedgeRatio(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Ratio == 0 {
+		return 1
+	}
+	return sc.Hedge.Ratio
+}
+
+func hedgeLeverage(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Leverage == 0 {
+		return 1
+	}
+	return sc.Hedge.Leverage
+}
+
+func hedgeMarginMode(sc StrategyConfig) string {
+	if sc.Hedge == nil || strings.TrimSpace(sc.Hedge.MarginMode) == "" {
+		return "isolated"
+	}
+	return strings.ToLower(strings.TrimSpace(sc.Hedge.MarginMode))
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -1502,6 +1553,79 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	return errs
 }
 
+// hyperliquidHedgeConfigErrors validates the phase-1 hedge vocabulary and
+// collision matrix. A hedge coin must not be any configured strategy coin and
+// must have exactly one hedge owner because HL nets positions per wallet/coin.
+func hyperliquidHedgeConfigErrors(strategies []StrategyConfig) []string {
+	configuredCoins := make(map[string][]string)
+	for _, sc := range strategies {
+		if coin := hyperliquidConfiguredCoin(sc); coin != "" {
+			configuredCoins[coin] = append(configuredCoins[coin], sc.ID)
+		}
+	}
+	hedgeOwners := make(map[string][]string)
+	var errs []string
+	for _, sc := range strategies {
+		if sc.Hedge == nil || !sc.Hedge.Enabled {
+			continue
+		}
+		h := sc.Hedge
+		prefix := fmt.Sprintf("strategy[%s].hedge", sc.ID)
+		if sc.Platform != "hyperliquid" || sc.Type != "perps" {
+			errs = append(errs, fmt.Sprintf("%s: enabled hedge is only supported for platform=hyperliquid type=perps", prefix))
+		}
+		if p := strings.ToLower(strings.TrimSpace(h.Platform)); p != "" && p != "hyperliquid" {
+			errs = append(errs, fmt.Sprintf("%s.platform must be \"hyperliquid\" when set, got %q", prefix, h.Platform))
+		}
+		if typ := strings.ToLower(strings.TrimSpace(h.Type)); typ != "" && typ != "perps" {
+			errs = append(errs, fmt.Sprintf("%s.type must be \"perps\" when set, got %q", prefix, h.Type))
+		}
+		if side := strings.ToLower(strings.TrimSpace(h.Side)); side != "" && side != "inverse" {
+			errs = append(errs, fmt.Sprintf("%s.side must be \"inverse\", got %q", prefix, h.Side))
+		}
+		if h.Ratio < 0 || h.Ratio > 10 {
+			errs = append(errs, fmt.Sprintf("%s.ratio must be in (0, 10] when set (0 defaults to 1), got %g", prefix, h.Ratio))
+		}
+		if h.Leverage < 0 || h.Leverage > 100 {
+			errs = append(errs, fmt.Sprintf("%s.leverage must be in (0, 100] when set (0 defaults to 1), got %g", prefix, h.Leverage))
+		}
+		switch mode := strings.ToLower(strings.TrimSpace(h.MarginMode)); mode {
+		case "", "isolated", "cross":
+		default:
+			errs = append(errs, fmt.Sprintf("%s.margin_mode must be \"isolated\" or \"cross\", got %q", prefix, h.MarginMode))
+		}
+		coin := hedgeCoin(sc)
+		if coin == "" {
+			errs = append(errs, fmt.Sprintf("%s.symbol is required when enabled", prefix))
+			continue
+		}
+		if EffectiveDirection(sc) == DirectionBoth {
+			errs = append(errs, fmt.Sprintf("%s is not supported with direction=\"both\" in phase 1", prefix))
+		}
+		if owners := configuredCoins[coin]; len(owners) > 0 {
+			ids := append([]string(nil), owners...)
+			sort.Strings(ids)
+			errs = append(errs, fmt.Sprintf("%s coin %s collides with configured strategy coin owned by %s", prefix, coin, strings.Join(ids, ", ")))
+		}
+		hedgeOwners[coin] = append(hedgeOwners[coin], sc.ID)
+	}
+	coins := make([]string, 0, len(hedgeOwners))
+	for coin := range hedgeOwners {
+		coins = append(coins, coin)
+	}
+	sort.Strings(coins)
+	for _, coin := range coins {
+		owners := hedgeOwners[coin]
+		if len(owners) < 2 {
+			continue
+		}
+		sort.Strings(owners)
+		errs = append(errs, fmt.Sprintf("hedge coin %s is shared by strategies %s; phase 1 requires sole hedge ownership", coin, strings.Join(owners, ", ")))
+	}
+	sort.Strings(errs)
+	return errs
+}
+
 // ParseLeaderboardPostTime parses a "HH:MM" string and returns (hour, minute, ok).
 func ParseLeaderboardPostTime(s string) (int, int, bool) {
 	if s == "" {
@@ -2223,6 +2347,7 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
+	errs = append(errs, hyperliquidHedgeConfigErrors(cfg.Strategies)...)
 
 	// #42: Validate portfolio risk config.
 	if cfg.PortfolioRisk != nil {
