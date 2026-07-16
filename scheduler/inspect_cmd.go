@@ -474,6 +474,10 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 			fmt.Fprintf(&b, "  margin_mode:         %s%s\n", sc.MarginMode, markIfDefault(explicit, "margin_mode"))
 		}
 	}
+	if hedgeEnabled(sc) {
+		fmt.Fprintf(&b, "  hedge:               %s × %.4f inverse (%s %dx, rebalance ≥ %.3g%%)\n",
+			hedgeCoin(sc), sc.Hedge.Ratio, sc.Hedge.MarginMode, int(sc.Hedge.Leverage), hedgeRebalanceMinMovePct(sc))
+	}
 
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
@@ -596,6 +600,9 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	// #1150: surface a paused strategy in the startup summary line.
 	if sc.Paused {
 		parts = append(parts, "paused")
+	}
+	if hedgeEnabled(sc) {
+		parts = append(parts, fmt.Sprintf("hedge=%s×%.4g@%.3g%%", hedgeCoin(sc), sc.Hedge.Ratio, hedgeRebalanceMinMovePct(sc)))
 	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
@@ -914,6 +921,9 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
 			positions = append(positions, map[string]interface{}{
 				"symbol":                      sym,
+				"is_hedge":                    pos.IsHedge,
+				"hedge_primary_symbol":        pos.HedgePrimarySymbol,
+				"hedge_primary_position_id":   pos.HedgePrimaryPositionID,
 				"side":                        pos.Side,
 				"quantity":                    pos.Quantity,
 				"regime":                      pos.Regime,

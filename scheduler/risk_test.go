@@ -809,6 +809,39 @@ func TestForceCloseAllPositionsRecordsDirectionalTradeSides(t *testing.T) {
 	}
 }
 
+func TestForceCloseAllPositions_HedgeNeverClassifiesPrimaryOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		primaryPx  float64
+		hedgePx    float64
+		wantLosses int
+	}{
+		{name: "net winning fallback", primaryPx: 110, hedgePx: 110, wantLosses: 0},
+		{name: "net losing fallback", primaryPx: 90, hedgePx: 90, wantLosses: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &StrategyState{
+				ID: "hl-hedged", Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 100, Side: "long", Multiplier: 1},
+					"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "short", Multiplier: 1, IsHedge: true, HedgePrimarySymbol: "ETH"},
+				},
+				OptionPositions: map[string]*OptionPosition{},
+			}
+			forceCloseAllPositions(s, map[string]float64{"ETH": tc.primaryPx, "BTC": tc.hedgePx}, nil)
+			if s.RiskState.ConsecutiveLosses != tc.wantLosses {
+				t.Fatalf("ConsecutiveLosses=%d want %d", s.RiskState.ConsecutiveLosses, tc.wantLosses)
+			}
+			if math.Abs(s.RiskState.DailyPnL) > 1e-9 {
+				t.Fatalf("DailyPnL=%g, want both fallback legs represented and net zero", s.RiskState.DailyPnL)
+			}
+			if len(s.TradeHistory) != 2 || !s.TradeHistory[0].IsHedge && !s.TradeHistory[1].IsHedge {
+				t.Fatalf("force-close trades missing hedge marker: %+v", s.TradeHistory)
+			}
+		})
+	}
+}
+
 // #1009 (acceptance criterion folded in from PR #1008): a force-close fired on
 // a structurally-corrupt position must NOT book an inflated realized_pnl. The
 // booked Trade.RealizedPnL must reconcile (within rounding) with its

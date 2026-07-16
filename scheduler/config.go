@@ -606,6 +606,21 @@ type StrategyRef struct {
 	Params map[string]interface{} `json:"params,omitempty"`
 }
 
+const HedgeSideInverse = "inverse"
+
+// HedgeConfig declares a strictly-coupled Hyperliquid perps hedge leg.
+type HedgeConfig struct {
+	Enabled             bool    `json:"enabled"`
+	Symbol              string  `json:"symbol"`
+	Side                string  `json:"side"`
+	Ratio               float64 `json:"ratio"`
+	Platform            string  `json:"platform"`
+	Type                string  `json:"type"`
+	MarginMode          string  `json:"margin_mode"`
+	Leverage            float64 `json:"leverage"`
+	RebalanceMinMovePct float64 `json:"rebalance_min_move_pct,omitempty"` // 0/missing → 0.5%; hold-cycle target drift below this is suppressed. Confirmed primary lifecycle mutations bypass the gate.
+}
+
 // StrategyConfig describes a single strategy job.
 type StrategyConfig struct {
 	ID                          string                   `json:"id"`
@@ -661,6 +676,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159 — live HL-perps correlated hedge, strictly coupled to the primary lifecycle.
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -2223,6 +2239,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
+	// #1159: phase-1 hedge ownership is structurally unambiguous. Reject
+	// primary/hedge and hedge/hedge coin collisions before any live order.
+	errs = append(errs, validateHedgeConfigs(cfg.Strategies)...)
 
 	// #42: Validate portfolio risk config.
 	if cfg.PortfolioRisk != nil {

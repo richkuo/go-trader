@@ -80,7 +80,12 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		}
 		switch sc.Platform {
 		case "hyperliquid":
-			hlSet[coin] = true
+			hlSet[strings.ToUpper(strings.TrimSpace(coin))] = true
+			if hedgeEnabled(sc) {
+				if hedge := hedgeCoin(sc); hedge != "" {
+					hlSet[strings.ToUpper(strings.TrimSpace(hedge))] = true
+				}
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -953,9 +958,11 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
-	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
-	})
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	if hedge := findHedgePosition(s, *sc); hedge != nil {
+		symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedge.Symbol, Size: hedge.Quantity})
+	}
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: symbols})
 }
 
 func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
@@ -1262,7 +1269,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		RecordPositionCloseResult(&s.RiskState, pos, pnl)
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1587,14 +1594,40 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 	}
 }
 
-// RecordTradeResult updates risk state with realized PnL for daily limits and
-// consecutive-loss circuit breakers. Lifetime trade stats come from SQLite.
-func RecordTradeResult(r *RiskState, pnl float64) {
+// RecordRealizedPnL updates the portfolio-wide daily realized-PnL ledger.
+// It deliberately does not classify the fill as a winning/losing round trip.
+func RecordRealizedPnL(r *RiskState, pnl float64) {
 	rolloverDailyPnL(r)
 	r.DailyPnL += pnl
+}
+
+// RecordTradeOutcome updates the consecutive-loss circuit breaker for one
+// completed directional round trip. Coupled hedge legs are not independent
+// outcomes and must not call this helper.
+func RecordTradeOutcome(r *RiskState, pnl float64) {
 	if pnl >= 0 {
 		r.ConsecutiveLosses = 0
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordTradeResult updates risk state with realized PnL for daily limits and
+// classifies one completed directional round trip for the consecutive-loss
+// circuit breaker. Lifetime trade stats come from SQLite.
+func RecordTradeResult(r *RiskState, pnl float64) {
+	RecordRealizedPnL(r, pnl)
+	RecordTradeOutcome(r, pnl)
+}
+
+// RecordPositionCloseResult applies realized PnL for any position close while
+// classifying a consecutive-loss outcome only for independent directional
+// positions. A coupled hedge leg belongs in the daily ledger but must never
+// advance or reset its primary strategy's loss streak.
+func RecordPositionCloseResult(r *RiskState, pos *Position, pnl float64) {
+	if pos != nil && pos.IsHedge {
+		RecordRealizedPnL(r, pnl)
+		return
+	}
+	RecordTradeResult(r, pnl)
 }

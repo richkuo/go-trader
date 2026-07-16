@@ -756,6 +756,14 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
+        # #1159 phase 1: correlated hedge execution is live Hyperliquid-only.
+        hedge = sc.get("hedge") or {}
+        if isinstance(hedge, dict) and hedge.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} uses enabled hedge "
+                f"configuration, which is HL-live-only in this release "
+                f"(backtester parity deferred — see #1159)."
+            )
         # #842: a strategy has a single close_strategy ref. Still accept the
         # legacy close_strategies array (length <=1 after the collapse) so old
         # configs keep backtesting; the backtester's close_strategies= list

@@ -42,6 +42,12 @@ func RecordTrade(s *StrategyState, trade Trade) {
 	if trade.StrategyID == "" {
 		trade.StrategyID = s.ID
 	}
+	if pos := s.Positions[trade.Symbol]; pos != nil && pos.IsHedge {
+		// Stamp from position ownership rather than a PositionID naming
+		// convention, so legitimate non-hedge IDs ending in ":hedge" remain
+		// ordinary primary trades in lifetime metrics.
+		trade.IsHedge = true
+	}
 	if trade.PositionID == "" {
 		if pos := s.Positions[trade.Symbol]; pos != nil {
 			trade.PositionID = ensurePositionTradeID(s.ID, trade.Symbol, pos)

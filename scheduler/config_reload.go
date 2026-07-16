@@ -357,6 +357,15 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: shape updated", sc.ID)
+			if ns.Hedge == nil {
+				sc.Hedge = nil
+			} else {
+				clone := *ns.Hedge
+				sc.Hedge = &clone
+			}
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -644,6 +653,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] margin_mode changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, sc.MarginMode, ns.MarginMode))
 		}
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			ss := stateStrategy(state, sc.ID)
+			if strategyHasOpenHedgeLeg(ss) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] hedge changed with an open hedge leg (flatten first or restart after close)", sc.ID))
+			} else if strategyHasOpenPositions(ss) {
+				errs = append(errs, fmt.Sprintf("strategy[%s] hedge changed with open positions (flatten first or restart after close)", sc.ID))
+			}
+		}
 		if hyperliquidManagedStopReloadGuard(sc) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldTrailing := sc.TrailingStopPct != nil && *sc.TrailingStopPct > 0
 			newTrailing := ns.TrailingStopPct != nil && *ns.TrailingStopPct > 0
@@ -817,6 +834,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.Paused = false                    // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
 	sc.LLMEntryAnalysis = nil            // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
 	sc.AllowDeprecated = false           // #1275: hot-reloadable always, including while open — acknowledgment flag only, never gates loading, probing, or trading. Applied in applyHotReloadConfig; reloadConfig re-evaluates the deprecated-edge warning after apply, so flipping the ack off re-warns.
+	sc.Hedge = nil                       // #1159: hedge configuration is hot-reloadable while flat; state-compatibility blocks changes with any open position.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0

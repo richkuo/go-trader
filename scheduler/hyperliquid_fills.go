@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,6 +40,8 @@ type HLFillLookup struct {
 	Px             float64 // size-weighted avg fill price across matched records; 0 when missed
 	Count          int
 	OID            int64
+	Direction      string // exchange dir, e.g. "Open Short"; used by hedge-orphan recovery
+	TimeMs         int64  // newest matched fill timestamp
 }
 
 func splitHyperliquidFillLookupByQty(lookup HLFillLookup, qty, totalQty float64) (HLFillLookup, bool) {
@@ -154,6 +157,10 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 				out.FilledQty += sz
 				pxNumerator += sz * parseHLFloat(f.Px)
 				out.Count++
+				out.Direction = f.Dir
+				if f.Time > out.TimeMs {
+					out.TimeMs = f.Time
+				}
 			}
 			if out.Count > 0 {
 				if out.FilledQty > 0 {
@@ -216,6 +223,8 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 						FilledQty:      parseHLFloat(anchor.Sz),
 						Px:             parseHLFloat(anchor.Px),
 						Count:          1,
+						Direction:      anchor.Dir,
+						TimeMs:         anchor.Time,
 					}, true
 				}
 				out := HLFillLookup{OID: anchorOID}
@@ -230,6 +239,10 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 					out.FilledQty += sz
 					pxNumerator += sz * parseHLFloat(f.Px)
 					out.Count++
+					out.Direction = f.Dir
+					if f.Time > out.TimeMs {
+						out.TimeMs = f.Time
+					}
 				}
 				if out.Count > 0 {
 					if out.FilledQty > 0 {
@@ -237,6 +250,83 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 					}
 					return out, true
 				}
+			}
+		}
+		if attempt < hlFillLookupRetries-1 {
+			time.Sleep(hlFillLookupRetryDelay)
+		}
+	}
+	return HLFillLookup{}, false
+}
+
+func normalizedHLFillDirection(dir string) string {
+	return strings.ToLower(strings.Join(strings.Fields(dir), " "))
+}
+
+// findUniqueHyperliquidHedgeOpenFill accepts only one exact, post-intent
+// userFills order in the intended opening direction. This deliberately rejects
+// close fills and multiple candidates instead of guessing ownership.
+func findUniqueHyperliquidHedgeOpenFill(fills []hlFillRecord, coin, side string, expectedQty, tolerance float64, startTimeMs int64) (HLFillLookup, bool) {
+	if coin == "" || expectedQty <= 0 || (side != "long" && side != "short") {
+		return HLFillLookup{}, false
+	}
+	expectedDir := "open " + side
+	type aggregate struct {
+		lookup      HLFillLookup
+		pxNumerator float64
+	}
+	byOID := make(map[int64]*aggregate)
+	for _, f := range fills {
+		if f.Time < startTimeMs || normalizeHLFillCoin(f.Coin) != normalizeHLFillCoin(coin) || normalizedHLFillDirection(f.Dir) != expectedDir {
+			continue
+		}
+		oid, err := f.OID.Int64()
+		if err != nil || oid <= 0 {
+			continue
+		}
+		a := byOID[oid]
+		if a == nil {
+			a = &aggregate{lookup: HLFillLookup{OID: oid, Direction: f.Dir}}
+			byOID[oid] = a
+		}
+		sz := math.Abs(parseHLFloat(f.Sz))
+		px := parseHLFloat(f.Px)
+		a.lookup.Fee += parseHLFloat(f.Fee)
+		a.lookup.ClosedPnLGross += parseHLFloat(f.ClosedPnl)
+		a.lookup.FilledQty += sz
+		a.pxNumerator += sz * px
+		a.lookup.Count++
+		if f.Time > a.lookup.TimeMs {
+			a.lookup.TimeMs = f.Time
+		}
+	}
+	var match HLFillLookup
+	matches := 0
+	for _, a := range byOID {
+		if math.Abs(a.lookup.FilledQty-expectedQty) > tolerance || a.lookup.FilledQty <= 0 {
+			continue
+		}
+		a.lookup.Px = a.pxNumerator / a.lookup.FilledQty
+		if a.lookup.Px <= 0 {
+			continue
+		}
+		match = a.lookup
+		matches++
+	}
+	return match, matches == 1
+}
+
+// lookupHyperliquidHedgeOpenFill retries the strict matcher to absorb indexer
+// lag after an ambiguous execute response.
+func lookupHyperliquidHedgeOpenFill(accountAddress, coin, side string, expectedQty float64, startTimeMs int64) (HLFillLookup, bool) {
+	if accountAddress == "" {
+		return HLFillLookup{}, false
+	}
+	for attempt := 0; attempt < hlFillLookupRetries; attempt++ {
+		fills, err := fetchHyperliquidUserFillsByTime(accountAddress, startTimeMs)
+		if err == nil {
+			if lookup, ok := findUniqueHyperliquidHedgeOpenFill(fills, coin, side, expectedQty, hlReconcileFillSizeTolerance, startTimeMs); ok {
+				return lookup, true
 			}
 		}
 		if attempt < hlFillLookupRetries-1 {
@@ -400,9 +490,11 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 	}
 
 	type candidate struct {
-		coin string
-		oid  int64
-		qty  float64
+		coin          string
+		oid           int64
+		qty           float64
+		hedgeOpenSide string
+		startTimeMs   int64
 	}
 
 	onChainByCoin := make(map[string]float64, len(positions))
@@ -422,6 +514,17 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		}
 		seen[key] = true
 		candidates = append(candidates, candidate{coin: coin, oid: oid, qty: qty})
+	}
+	addHedgeOpenCandidate := func(coin, side string, qty float64, startTimeMs int64) {
+		if coin == "" || qty <= 0 || (side != "long" && side != "short") {
+			return
+		}
+		key := makeHLReconcileFeeCacheKey(coin, 0, qty)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		candidates = append(candidates, candidate{coin: coin, qty: qty, hedgeOpenSide: side, startTimeMs: startTimeMs})
 	}
 
 	mu.RLock()
@@ -538,6 +641,47 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			addCandidate(coin, 0, closeQty)
 		}
 	}
+	// #1159: hedge legs are owned by persisted position metadata rather than
+	// hyperliquidSymbol(sc.Args). Prefetch their exact coin+size close/add
+	// candidates so restart reconciliation can book real fills and fees instead
+	// of falling back to a guessed mark/modelled fee.
+	for _, sc := range allStrategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		hedgePos := findHedgePosition(ss, sc)
+		if hedgePos == nil {
+			coin := hedgeCoin(sc)
+			onChainSize, present := onChainByCoin[coin]
+			primary := findPrimaryPosition(ss, hyperliquidSymbol(sc.Args))
+			if !present || primary == nil || math.Abs(onChainSize) <= hedgeQtyEpsilon {
+				continue
+			}
+			expectedSide := "short"
+			if primary.Side == "short" {
+				expectedSide = "long"
+			}
+			startTimeMs := int64(0)
+			if !primary.OpenedAt.IsZero() {
+				startTimeMs = primary.OpenedAt.Add(-2 * time.Second).UnixMilli()
+			}
+			addHedgeOpenCandidate(coin, expectedSide, math.Abs(onChainSize), startTimeMs)
+			continue
+		}
+		coin := strings.ToUpper(strings.TrimSpace(hedgePos.Symbol))
+		onChainSize, present := onChainByCoin[coin]
+		if !present {
+			addCandidate(coin, 0, hedgePos.Quantity)
+			continue
+		}
+		onChainAbs := math.Abs(onChainSize)
+		if onChainAbs+1e-9 < hedgePos.Quantity {
+			addCandidate(coin, 0, hedgePos.Quantity-onChainAbs)
+		} else if onChainAbs > hedgePos.Quantity+1e-9 {
+			addCandidate(coin, 0, onChainAbs-hedgePos.Quantity)
+		}
+	}
 	mu.RUnlock()
 
 	if len(candidates) == 0 {
@@ -550,7 +694,12 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 	}
 	cache := make(map[hyperliquidReconcileFeeCacheKey]cacheEntry, len(candidates))
 	for _, c := range candidates {
-		lookup, ok := lookupHyperliquidReconcileFillFee(accountAddress, c.coin, c.oid, c.qty)
+		lookup, ok := HLFillLookup{}, false
+		if c.hedgeOpenSide != "" {
+			lookup, ok = lookupHyperliquidHedgeOpenFill(accountAddress, c.coin, c.hedgeOpenSide, c.qty, c.startTimeMs)
+		} else {
+			lookup, ok = lookupHyperliquidReconcileFillFee(accountAddress, c.coin, c.oid, c.qty)
+		}
 		cache[makeHLReconcileFeeCacheKey(c.coin, c.oid, c.qty)] = cacheEntry{lookup: lookup, ok: ok}
 	}
 
