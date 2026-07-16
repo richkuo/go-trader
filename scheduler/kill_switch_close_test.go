@@ -218,6 +218,74 @@ func TestHyperliquidKillSwitchClose_UsesRealFillBeforeMark(t *testing.T) {
 	}
 }
 
+// #1159: kill-switch CloseReport.Fills may include the hedge coin. Booking
+// only fills[primary] left the hedge leg to forceCloseAllPositions at mark +
+// modeled fee — divergence vs the primary's real-fill path.
+func TestHyperliquidKillSwitchClose_HedgeLegUsesRealFillBeforeMark(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{
+			ID: "hl-btc", Platform: "hyperliquid", Type: "perps", Leverage: 5,
+			Args:  []string{"sma", "BTC", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "ETH", Ratio: 1, Leverage: 5},
+		},
+	}
+	fills := map[string]HyperliquidCloseFill{
+		"BTC": {TotalSz: 1.0, AvgPx: 49000, Fee: 2.0},
+		"ETH": {TotalSz: 1.0, AvgPx: 3100, Fee: 0.5},
+	}
+	s := &StrategyState{
+		ID: "hl-btc", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1, Leverage: 5},
+			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 3000, Side: "short", Multiplier: 1, Leverage: 5, HedgeFor: "hl-btc"},
+		},
+	}
+	// Marks deliberately worse than fills so a mark fallback would fail assertions.
+	forceCloseKillSwitchPositions(s, hlLive[0], map[string]float64{"BTC": 48000, "ETH": 3200}, fills, hlLive, nil, nil)
+
+	if len(s.Positions) != 0 {
+		t.Fatalf("expected flat after kill-switch, still hold %v", s.Positions)
+	}
+	if len(s.TradeHistory) != 2 {
+		t.Fatalf("expected 2 trades (primary+hedge), got %d", len(s.TradeHistory))
+	}
+	bySym := map[string]Trade{}
+	for _, tr := range s.TradeHistory {
+		bySym[tr.Symbol] = tr
+	}
+	btc, okBTC := bySym["BTC"]
+	eth, okETH := bySym["ETH"]
+	if !okBTC || !okETH {
+		t.Fatalf("trades by symbol = %v; want BTC and ETH", bySym)
+	}
+	if btc.Price != 49000 || btc.ExchangeFee != 2.0 {
+		t.Errorf("BTC trade price/fee = %.2f/%.4f; want fill 49000/2.0", btc.Price, btc.ExchangeFee)
+	}
+	if eth.Price != 3100 || eth.ExchangeFee != 0.5 {
+		t.Errorf("ETH hedge trade price/fee = %.2f/%.4f; want fill 3100/0.5 (not mark 3200)", eth.Price, eth.ExchangeFee)
+	}
+	if eth.TradeType != "hedge" {
+		t.Errorf("ETH TradeType = %q; want hedge", eth.TradeType)
+	}
+	// short ETH: gross = qty*(avgCost-fillPx) = -100; ClosedPosition stores net after fee.
+	wantHedgePnL := -100.5
+	closedBySym := map[string]ClosedPosition{}
+	for _, cp := range s.ClosedPositions {
+		closedBySym[cp.Symbol] = cp
+	}
+	if cp, ok := closedBySym["ETH"]; !ok {
+		t.Fatal("missing ETH ClosedPosition")
+	} else if cp.ClosePrice != 3100 {
+		t.Errorf("ETH ClosedPosition.ClosePrice = %.2f; want fill AvgPx 3100", cp.ClosePrice)
+	} else if math.Abs(cp.RealizedPnL-wantHedgePnL) > 1e-9 {
+		t.Errorf("ETH ClosedPosition.RealizedPnL = %.4f; want %.4f", cp.RealizedPnL, wantHedgePnL)
+	}
+	// Primary BTC close is a loss (counts once); hedge must not add a second streak tick.
+	if s.RiskState.ConsecutiveLosses != 1 {
+		t.Errorf("ConsecutiveLosses = %d; want 1 (primary only; hedge ignored)", s.RiskState.ConsecutiveLosses)
+	}
+}
+
 func TestHyperliquidKillSwitchClose_AlreadyFlatRecoversRecentUserFill(t *testing.T) {
 	hlLive := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Leverage: 5,

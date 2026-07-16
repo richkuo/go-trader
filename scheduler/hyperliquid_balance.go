@@ -2158,25 +2158,42 @@ func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fill
 
 // applyHyperliquidKillSwitchCloseFill applies one strategy's virtual-quantity
 // share of the portfolio kill-switch fill before generic virtual-state cleanup
-// runs.
+// runs. #1159: when a held hedge leg was closed on-chain in the same
+// CloseReport, book that fill here too — otherwise forceCloseAllPositions
+// falls back to mark price + modeled fee for the hedge coin even though
+// Fills[hedgeCoin] carries the realized exchange fill (primary already used
+// that path via fills[hyperliquidSymbol(sc.Args)]).
 func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, virtualQty hlVirtualQuantitySnapshot) bool {
 	if s == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return false
 	}
-	coin := hyperliquidSymbol(sc.Args)
-	if coin == "" {
-		return false
+	applied := false
+	if coin := hyperliquidSymbol(sc.Args); coin != "" {
+		if fill, ok := fills[coin]; ok && fill.TotalSz > 1e-15 && fill.AvgPx > 0 {
+			fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
+			if fillSz > 1e-15 {
+				applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+				applied = true
+			}
+		}
 	}
-	fill, ok := fills[coin]
-	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
-		return false
+	if sc.HedgeEnabled() {
+		if hc := hedgeCoin(sc); hc != "" {
+			if hp := s.Positions[hc]; hp != nil && hp.HedgeFor != "" && hp.Quantity > 0 {
+				if fill, ok := fills[hc]; ok && fill.TotalSz > 1e-15 && fill.AvgPx > 0 {
+					// Hedge coins are sole-owned (collision validation); peers
+					// for hc is empty → hyperliquidKillSwitchFillShare returns
+					// the full fill size/fee.
+					fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, hc, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
+					if fillSz > 1e-15 {
+						applyHyperliquidCircuitCloseFill(s, hc, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+						applied = true
+					}
+				}
+			}
+		}
 	}
-	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
-	if fillSz <= 1e-15 {
-		return false
-	}
-	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
-	return true
+	return applied
 }
 
 func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfig {
