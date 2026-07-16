@@ -82,6 +82,13 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 		spotPrice := findSpotPrice(asset, prices)
 
 		var deltaUSD float64
+		// #1159: a hedge leg trades a DIFFERENT coin than the strategy's
+		// configured asset by design — bucketed separately under its OWN
+		// asset below instead of being silently invisible to correlation/
+		// exposure-cap accounting (it would otherwise never match
+		// posAsset == asset and get skipped like a foreign symbol).
+		var hedgeDeltaUSD float64
+		var hedgeAsset string
 
 		switch sc.Type {
 		case "spot", "perps", "manual":
@@ -94,6 +101,32 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 			for _, sym := range syms {
 				pos := ss.Positions[sym]
 				if pos == nil {
+					continue
+				}
+				if pos.IsHedge {
+					if pos.Quantity <= 0 {
+						skipped = append(skipped, fmt.Sprintf("%s/%s: non-positive quantity (hedge)", id, pos.Symbol))
+						continue
+					}
+					hAsset := strings.TrimSuffix(strings.ToUpper(pos.Symbol), "/USDT")
+					if hAsset == "" {
+						continue
+					}
+					hPx := findSpotPrice(hAsset, prices)
+					if hPx <= 0 {
+						hPx = pos.AvgCost
+					}
+					if hPx <= 0 {
+						skipped = append(skipped, fmt.Sprintf("%s/%s: no usable price (hedge)", id, pos.Symbol))
+						continue
+					}
+					hedgeAsset = hAsset
+					legUSD := pos.Quantity * positionMultiplier(pos) * hPx
+					if pos.Side == "short" {
+						hedgeDeltaUSD -= legUSD
+					} else {
+						hedgeDeltaUSD += legUSD
+					}
 					continue
 				}
 				posAsset := strings.TrimSuffix(strings.ToUpper(pos.Symbol), "/USDT")
@@ -157,22 +190,36 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 			}
 		}
 
-		if deltaUSD == 0 {
-			continue
+		if deltaUSD != 0 {
+			ae, exists := assets[asset]
+			if !exists {
+				ae = &AssetExposure{Asset: asset}
+				assets[asset] = ae
+			}
+			ae.Strategies = append(ae.Strategies, StrategyExposure{
+				StrategyID: id,
+				DeltaUSD:   deltaUSD,
+				Type:       sc.Type,
+			})
+			ae.NetDeltaUSD += deltaUSD
+			ae.GrossDeltaUSD += math.Abs(deltaUSD)
 		}
-
-		ae, exists := assets[asset]
-		if !exists {
-			ae = &AssetExposure{Asset: asset}
-			assets[asset] = ae
+		// #1159: hedge exposure buckets under its OWN asset, independent of
+		// whether the primary leg produced any deltaUSD above.
+		if hedgeDeltaUSD != 0 && hedgeAsset != "" {
+			hae, exists := assets[hedgeAsset]
+			if !exists {
+				hae = &AssetExposure{Asset: hedgeAsset}
+				assets[hedgeAsset] = hae
+			}
+			hae.Strategies = append(hae.Strategies, StrategyExposure{
+				StrategyID: id,
+				DeltaUSD:   hedgeDeltaUSD,
+				Type:       sc.Type,
+			})
+			hae.NetDeltaUSD += hedgeDeltaUSD
+			hae.GrossDeltaUSD += math.Abs(hedgeDeltaUSD)
 		}
-		ae.Strategies = append(ae.Strategies, StrategyExposure{
-			StrategyID: id,
-			DeltaUSD:   deltaUSD,
-			Type:       sc.Type,
-		})
-		ae.NetDeltaUSD += deltaUSD
-		ae.GrossDeltaUSD += math.Abs(deltaUSD)
 	}
 
 	sort.Strings(skipped)

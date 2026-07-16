@@ -661,6 +661,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159 — opt-in per-strategy correlated hedge leg. Phase 1: HL perps live only, direction != "both", strictly coupled lifecycle (no independent hedge SL/TP). Nil/disabled = no hedge (default). Read via strategyHedgeEnabled(sc), never directly.
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -683,6 +684,174 @@ type ScaleInConfig struct {
 	// AddNotionalUSD is the USD notional to add per leg (0 = default to the
 	// strategy's standard open notional, i.e. the same sizing a fresh open uses).
 	AddNotionalUSD float64 `json:"add_notional_usd,omitempty"`
+}
+
+// HedgeConfig declares an opt-in scheduler-managed correlated hedge leg
+// (#1159, phase 1). The hedge is a second HL perps position on a DIFFERENT
+// coin, opened inverse to the primary and strictly slaved to its lifecycle —
+// it carries no signal, no check script, no close evaluator, and no
+// independent SL/TP. Every field is validated by hyperliquidHedgeConfigErrors;
+// never construct execution logic against unvalidated fields directly — read
+// through strategyHedgeEnabled/hedgeCoinForStrategy.
+type HedgeConfig struct {
+	// Enabled opts the strategy into hedge management. Default false (no
+	// behavior change for existing configs).
+	Enabled bool `json:"enabled"`
+	// Symbol is the hedge coin, either the bare HL ticker ("BTC") or CCXT form
+	// ("BTC/USDC:USDC"); normalized to the bare uppercase ticker via
+	// hedgeCoinForStrategy. Must differ from this strategy's own primary coin
+	// and from every other configured strategy's coin or hedge coin
+	// (hyperliquidHedgeConfigErrors) — the hedge coin is always sole-owned by
+	// construction, so no shared-coin machinery needs to know about it.
+	Symbol string `json:"symbol"`
+	// Side is the hedge direction policy relative to the primary. Phase 1
+	// supports only "inverse" (primary long -> hedge short, primary short ->
+	// hedge long).
+	Side string `json:"side"`
+	// Ratio is the hedge notional as a multiple of the primary's notional at
+	// each open/add event (0 = default 1.0). Bounds (0, 5].
+	Ratio float64 `json:"ratio,omitempty"`
+	// Platform/Type are phase-1 documentation fields — must be empty or
+	// "hyperliquid"/"perps" respectively. Reserved for a future multi-platform
+	// hedge; phase 1 always executes on Hyperliquid perps regardless.
+	Platform string `json:"platform,omitempty"`
+	Type     string `json:"type,omitempty"`
+	// MarginMode/Leverage are the hedge coin's OWN on-chain margin assignment —
+	// required, never inherited from the primary's margin_mode/leverage, since
+	// the hedge lives on a different coin with its own HL margin bucket.
+	MarginMode string  `json:"margin_mode"`
+	Leverage   float64 `json:"leverage"`
+}
+
+// HedgeSideInverse is the only phase-1-supported HedgeConfig.Side value.
+const HedgeSideInverse = "inverse"
+
+// hedgeCoverageTolerance is the relative (fraction-of-initial-quantity)
+// tolerance syncHedgeCoherence allows between primary and hedge coverage
+// before reducing one side. Absorbs HL sz_decimals flooring between two
+// different coins' lot sizes without converge-thrashing every cycle.
+const hedgeCoverageTolerance = 0.02
+
+// hedgeMinNotionalUSD is the smallest hedge order syncHedgeCoherence/
+// hedgePreOpenGate will submit. HL rejects orders below roughly $10 notional;
+// refusing up front avoids an open-then-immediately-fail-to-unwind cycle on a
+// tiny primary fill.
+const hedgeMinNotionalUSD = 12.0
+
+// hedgeMaxRatio bounds HedgeConfig.Ratio.
+const hedgeMaxRatio = 5.0
+
+// strategyHedgeEnabled reports whether sc has opted into hedge management.
+// The single read path for "is hedging active" — never inspect sc.Hedge
+// directly.
+func strategyHedgeEnabled(sc StrategyConfig) bool {
+	return sc.Hedge != nil && sc.Hedge.Enabled
+}
+
+// hedgeCoinForStrategy normalizes sc.Hedge.Symbol to a bare uppercase HL coin
+// ticker, accepting either the bare form ("BTC") or CCXT form
+// ("BTC/USDC:USDC"). Mirrors the normalization hyperliquidConfiguredCoin
+// applies to primary symbols so hedge/primary coins compare equal regardless
+// of which form an operator used. Returns "" when hedging is disabled or the
+// symbol is empty.
+func hedgeCoinForStrategy(sc StrategyConfig) string {
+	if !strategyHedgeEnabled(sc) {
+		return ""
+	}
+	raw := sc.Hedge.Symbol
+	if idx := strings.Index(raw, "/"); idx >= 0 {
+		raw = raw[:idx]
+	}
+	return strings.ToUpper(strings.TrimSpace(raw))
+}
+
+// hedgeSideForPrimary returns the inverse-hedge side for a given primary
+// position side. Pure and total: any input other than "long"/"short" (e.g.
+// flat/"") returns "" so callers can detect the invalid case rather than
+// silently picking a side.
+func hedgeSideForPrimary(primarySide string) string {
+	switch primarySide {
+	case "long":
+		return "short"
+	case "short":
+		return "long"
+	default:
+		return ""
+	}
+}
+
+// hedgeOpenQty sizes a hedge leg on notional exposure: the primary fill's
+// notional (qty*px) times the configured ratio, converted to hedge-coin size
+// at the current hedge mark. Returns 0 when any input can't produce a
+// well-defined size (zero/negative mark, qty, price, or ratio) so callers
+// treat 0 as "cannot size" rather than risking a divide-by-zero or negative
+// order.
+func hedgeOpenQty(primaryFillQty, primaryFillPx, ratio, hedgeMark float64) float64 {
+	if primaryFillQty <= 0 || primaryFillPx <= 0 || ratio <= 0 || hedgeMark <= 0 {
+		return 0
+	}
+	notional := primaryFillQty * primaryFillPx * ratio
+	return notional / hedgeMark
+}
+
+// hedgeCoherenceDecision computes what syncHedgeCoherence (hedge.go) should
+// do this cycle for a primary+hedge pair that both currently exist — pure
+// quantity comparison against a fixed, price-independent basis (ratio),
+// never live marks. Two different coins never move identically, so a
+// live-mark recompute of "expected hedge qty" every cycle would misread
+// ordinary price drift as desync and reduce-only ratchet a winning primary
+// toward zero on every up-move; comparing quantities against the ratio
+// captured at the last confirmed open/add event has no such price
+// sensitivity.
+//
+// ratio is Position.HedgeQtyRatio (hedge qty per unit of primary qty),
+// stamped by applyHedgeOpen/applyHedgeScaleIn at each confirmed mirror
+// event. ratio<=0 means no basis has been established yet (brand-new
+// position this cycle, or a pre-existing position from before this field
+// existed) — the caller must bootstrap it from the current actual
+// quantities and take no action, never guess a target from an absent basis.
+//
+// Deliberately NOT a Quantity/InitialQuantity coverage fraction either:
+// InitialQuantity is intentionally monotonic (#496, shared with the TP-tier
+// fraction-of-initial system) — it never decreases on a partial close — so
+// after unwindPrimaryAddAfterHedgeAddFailure reduces a botched add back off,
+// a coverage-fraction comparison would permanently read the primary as
+// "under 100%" even though the position is economically back to its pre-add
+// size, spuriously shrinking an already-correctly-sized hedge. A ratio
+// re-anchored at every confirmed open/add event has no such history-
+// dependent drift.
+//
+// Returns:
+//   - needsBootstrap=true: ratio<=0; caller records hedgeQty/primaryQty as
+//     the new basis and takes no reduce action this cycle.
+//   - reduceSymbol=="": already coherent within tolerance (or malformed
+//     inputs) — no action.
+//   - reduceSymbol==hedgeSymbol: over-hedged — reduce the hedge down to
+//     expected.
+//   - reduceSymbol==primarySymbol: under-hedged — reduce the PRIMARY down to
+//     hedgeQty/ratio, matching the hedge's actual (smaller) size. Never
+//     adds exposure to either leg to converge.
+func hedgeCoherenceDecision(primaryQty, hedgeQty, ratio float64, primarySymbol, hedgeSymbol string) (needsBootstrap bool, reduceSymbol string, reduceQty, expected float64) {
+	if primaryQty <= 0 || hedgeQty <= 0 {
+		return false, "", 0, 0
+	}
+	if ratio <= 0 {
+		return true, "", 0, 0
+	}
+	expected = ratio * primaryQty
+	if expected <= 0 {
+		return false, "", 0, 0
+	}
+	tol := expected * hedgeCoverageTolerance
+	switch {
+	case hedgeQty > expected+tol:
+		return false, hedgeSymbol, hedgeQty - expected, expected
+	case hedgeQty < expected-tol:
+		targetPrimaryQty := hedgeQty / ratio
+		return false, primarySymbol, primaryQty - targetPrimaryQty, expected
+	default:
+		return false, "", 0, expected
+	}
 }
 
 // UnmarshalJSON parses a StrategyConfig while accepting both the canonical
@@ -1217,6 +1386,14 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 		// go-trader's per-strategy risk model.
 		if cfg.Strategies[i].Type == "perps" && cfg.Strategies[i].Platform == "hyperliquid" && cfg.Strategies[i].MarginMode == "" {
 			cfg.Strategies[i].MarginMode = "isolated"
+		}
+
+		// #1159: default hedge.ratio to 1.0 (notional-matched hedge) when a
+		// hedge block is present but ratio is omitted/zero. Normalized here so
+		// every downstream reader (validation, sizing, coherence) sees the
+		// resolved value.
+		if cfg.Strategies[i].Hedge != nil && cfg.Strategies[i].Hedge.Ratio <= 0 {
+			cfg.Strategies[i].Hedge.Ratio = 1.0
 		}
 
 		// #56: Default theta harvest for options strategies — sold options
@@ -2223,6 +2400,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
+
+	// #1159: hedge coins must be sole-owned by construction — reject any
+	// hedge-vs-primary or hedge-vs-hedge collision, plus per-strategy
+	// HedgeConfig shape errors.
+	errs = append(errs, hyperliquidHedgeConfigErrors(cfg.Strategies)...)
 
 	// #42: Validate portfolio risk config.
 	if cfg.PortfolioRisk != nil {

@@ -847,19 +847,28 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		if ss == nil {
 			continue
 		}
-		sym := hyperliquidSymbol(sc.Args)
-		if sym == "" {
-			continue
-		}
-		if sharedCoins[sym] {
-			continue // handled below
-		}
 		logger, err := logMgr.GetStrategyLogger(sc.ID)
 		if err != nil {
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+		sym := hyperliquidSymbol(sc.Args)
+		if sym != "" && !sharedCoins[sym] {
+			if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+				changed = true
+			}
+		}
+		// #1159 review round 4: hedge coins are guaranteed sole-owned by
+		// hyperliquidHedgeConfigErrors REGARDLESS of whether the strategy's
+		// PRIMARY coin is shared with a peer — #258's shared-coin lane below
+		// is keyed entirely on primary coins and never touches hedge coins,
+		// so a hedge-enabled strategy whose primary happens to be shared
+		// must still reconcile its hedge leg here, unconditionally, or an
+		// externally-closed/reduced hedge goes stale forever (virtual state
+		// never updates, so syncHedgeCoherence sees an unchanged pair and
+		// never notices the primary is actually unhedged). No-op when
+		// hedging isn't enabled and no orphaned hedge row exists.
+		if reconcileHedgeLegsForStrategy(sc, ss, positions, resolveFee, logger) {
 			changed = true
 		}
 	}
@@ -1961,6 +1970,14 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 		if sym != "" {
 			tradedCoins[sym] = true
 		}
+		// #1159: a hedge coin is scheduler-managed exposure too — omitting it
+		// here would make the kill switch treat a live hedge leg as an
+		// "unowned" foreign position and refuse to flatten it.
+		if strategyHedgeEnabled(sc) {
+			if hedgeCoin := hedgeCoinForStrategy(sc); hedgeCoin != "" {
+				tradedCoins[hedgeCoin] = true
+			}
+		}
 	}
 
 	for _, p := range positions {
@@ -2144,20 +2161,35 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 	if s == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return false
 	}
+	applied := false
 	coin := hyperliquidSymbol(sc.Args)
-	if coin == "" {
-		return false
+	if coin != "" {
+		if fill, ok := fills[coin]; ok && fill.TotalSz > 1e-15 && fill.AvgPx > 0 {
+			fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
+			if fillSz > 1e-15 {
+				applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+				applied = true
+			}
+		}
 	}
-	fill, ok := fills[coin]
-	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
-		return false
+	// #1159: the hedge coin is a distinct on-chain position from the primary
+	// and forceCloseHyperliquidLive now flattens it too (tradedCoins
+	// includes hedge coins) — book its fill onto this strategy's ledger. The
+	// coin is always sole-owned (hyperliquidHedgeConfigErrors), so
+	// hyperliquidKillSwitchFillShare's len(peers)<=1 fast path returns the
+	// fill unshared.
+	if strategyHedgeEnabled(sc) {
+		if hedgeCoin := hedgeCoinForStrategy(sc); hedgeCoin != "" {
+			if fill, ok := fills[hedgeCoin]; ok && fill.TotalSz > 1e-15 && fill.AvgPx > 0 {
+				fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, hedgeCoin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
+				if fillSz > 1e-15 {
+					applyHyperliquidCircuitCloseFill(s, hedgeCoin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+					applied = true
+				}
+			}
+		}
 	}
-	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
-	if fillSz <= 1e-15 {
-		return false
-	}
-	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
-	return true
+	return applied
 }
 
 func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfig {
@@ -2286,8 +2318,21 @@ func runPendingHyperliquidCircuitCloses(
 			if !ok || qty <= 0 {
 				continue
 			}
+			recoveredSymbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+			// #1159: reconstruct the hedge leg alongside the primary coin —
+			// today's derivation is coin->configured-symbol only
+			// (hyperliquidConfiguredCoin), which is invisible to hedge coins,
+			// so a stuck-CB recovery that omitted this would leave the hedge
+			// stranded after the drain flattens only the primary.
+			if strategyHedgeEnabled(sc) {
+				if hedgeCoin := hedgeCoinForStrategy(sc); hedgeCoin != "" {
+					if hedgeQty, hedgeOK := computeHyperliquidCircuitCloseQty(hedgeCoin, sc.ID, positions, hlCircuitPeerAll); hedgeOK && hedgeQty > 0 {
+						recoveredSymbols = append(recoveredSymbols, PendingCircuitCloseSymbol{Symbol: hedgeCoin, Size: hedgeQty})
+					}
+				}
+			}
 			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-				Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+				Symbols: recoveredSymbols,
 			})
 			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
 				sc.ID, sym, qty)

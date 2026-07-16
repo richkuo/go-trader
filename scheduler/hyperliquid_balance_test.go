@@ -899,6 +899,70 @@ func TestAccountSyncMixedSharedAndNonShared(t *testing.T) {
 	}
 }
 
+// TestReconcileHedgeLegReconciledDespiteSharedPrimaryCoin is a regression for
+// #1159 review round 4: a hedge-enabled strategy whose PRIMARY coin is
+// shared with a peer must still reconcile its (always sole-owned) hedge
+// coin. hyperliquidHedgeConfigErrors only guarantees the HEDGE coin is
+// sole-owned — the primary is free to be shared (that's the whole point of
+// the #258 shared-coin lane) — so skipping reconcileHedgeLegsForStrategy
+// whenever the primary is shared left an externally-closed hedge leg stale
+// in virtual state forever, and syncHedgeCoherence (which only compares
+// virtual quantities) never noticed the primary had gone unhedged.
+func TestReconcileHedgeLegReconciledDespiteSharedPrimaryCoin(t *testing.T) {
+	hedgeSC := testHedgeStrategy("hl-eth-hedge", "ETH", "BTC")
+	peerSC := StrategyConfig{ID: "hl-eth-peer", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}}
+	allStrategies := []StrategyConfig{hedgeSC, peerSC}
+
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-eth-hedge": {
+				ID:   "hl-eth-hedge",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth-hedge", HedgeSymbol: "BTC"},
+					"BTC": {Symbol: "BTC", Quantity: 0.05, InitialQuantity: 0.05, AvgCost: 60000, Side: "short", Multiplier: 1, IsHedge: true, HedgeFor: "ETH", OwnerStrategyID: "hl-eth-hedge"},
+				},
+			},
+			"hl-eth-peer": {
+				ID:   "hl-eth-peer",
+				Cash: 1000,
+				Positions: map[string]*Position{
+					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-eth-peer"},
+				},
+			},
+		},
+	}
+
+	// On-chain: ETH (shared primary) present — its own reconcile stays
+	// skipped either way (#258 protection, unrelated to this fix); BTC (the
+	// sole-owned hedge coin) is fully closed externally (absent from the
+	// on-chain snapshot).
+	positions := []HLPosition{
+		{Coin: "ETH", Size: 1.5},
+	}
+
+	logMgr, _ := NewLogManager(t.TempDir())
+	var mu sync.RWMutex
+	_, _, _ = reconcileHyperliquidAccountPositions(allStrategies, allStrategies, state, &mu, logMgr, positions, nil, "", nil, false)
+
+	if _, ok := state.Strategies["hl-eth-hedge"].Positions["BTC"]; ok {
+		t.Error("expected the externally-closed hedge leg to be reconciled away despite the shared primary coin")
+	}
+	// HedgeSymbol must remain set (round-2 fix) so coherence's "hedge gone"
+	// branch can pick this primary up and close it reduce-only next cycle.
+	if state.Strategies["hl-eth-hedge"].Positions["ETH"].HedgeSymbol != "BTC" {
+		t.Errorf("primary HedgeSymbol should remain set, got %q", state.Strategies["hl-eth-hedge"].Positions["ETH"].HedgeSymbol)
+	}
+	// The shared ETH primary itself must stay untouched by this reconcile
+	// pass (the pre-existing #258 protection for shared coins).
+	if state.Strategies["hl-eth-hedge"].Positions["ETH"].Quantity != 1 {
+		t.Errorf("shared primary quantity should be unchanged, got %v", state.Strategies["hl-eth-hedge"].Positions["ETH"].Quantity)
+	}
+	if state.Strategies["hl-eth-peer"].Positions["ETH"].Quantity != 0.5 {
+		t.Errorf("peer's shared primary quantity should be unchanged, got %v", state.Strategies["hl-eth-peer"].Positions["ETH"].Quantity)
+	}
+}
+
 // TestAccountSyncSharedCoinGapClearedWhenNoLongerShared verifies that
 // reconciliation gaps are cleaned up when a coin is no longer shared.
 func TestAccountSyncSharedCoinGapClearedWhenNoLongerShared(t *testing.T) {

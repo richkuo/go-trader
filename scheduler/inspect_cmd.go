@@ -475,6 +475,27 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 		}
 	}
 
+	// #1159: correlated hedge leg. Surface config + live status so a hedge
+	// position is never mistaken for an unmanaged one.
+	if strategyHedgeEnabled(sc) {
+		h := sc.Hedge
+		fmt.Fprintf(&b, "  hedge:\n")
+		fmt.Fprintf(&b, "    symbol:            %s (%s)\n", h.Symbol, h.Side)
+		fmt.Fprintf(&b, "    ratio:             %g\n", h.Ratio)
+		fmt.Fprintf(&b, "    margin_mode:       %s\n", h.MarginMode)
+		fmt.Fprintf(&b, "    leverage:          %g\n", h.Leverage)
+		hedgeCoin := hedgeCoinForStrategy(sc)
+		if state != nil {
+			if ss := state.Strategies[sc.ID]; ss != nil {
+				if pos := ss.Positions[hedgeCoin]; pos != nil && pos.Quantity > 0 {
+					fmt.Fprintf(&b, "    live:              %s %.6f @ avg $%.4f\n", pos.Side, pos.Quantity, pos.AvgCost)
+				} else {
+					fmt.Fprintf(&b, "    live:              flat\n")
+				}
+			}
+		}
+	}
+
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
 		fmt.Fprintf(&b, "  stop_loss:\n")
@@ -729,6 +750,31 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	} else if cfg != nil {
 		out["interval_seconds"] = cfg.IntervalSeconds
 		out["interval_seconds_explicit"] = false
+	}
+	// #1159: correlated hedge leg — config + live status.
+	if strategyHedgeEnabled(sc) {
+		h := sc.Hedge
+		hedgeCoin := hedgeCoinForStrategy(sc)
+		hedgeMap := map[string]interface{}{
+			"symbol":      h.Symbol,
+			"side":        h.Side,
+			"ratio":       h.Ratio,
+			"margin_mode": h.MarginMode,
+			"leverage":    h.Leverage,
+			"live":        "flat",
+		}
+		if state != nil {
+			if ss := state.Strategies[sc.ID]; ss != nil {
+				if pos := ss.Positions[hedgeCoin]; pos != nil && pos.Quantity > 0 {
+					hedgeMap["live"] = map[string]interface{}{
+						"side":     pos.Side,
+						"quantity": pos.Quantity,
+						"avg_cost": pos.AvgCost,
+					}
+				}
+			}
+		}
+		out["hedge"] = hedgeMap
 	}
 	return out
 }

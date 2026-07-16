@@ -10,7 +10,7 @@ import (
 
 // CurrentConfigVersion is the version embedded in newly generated configs.
 // When the binary starts and cfg.ConfigVersion < CurrentConfigVersion, migration runs.
-const CurrentConfigVersion = 17
+const CurrentConfigVersion = 18
 
 // MinSupportedConfigVersion is the oldest stamped config_version the migration
 // ladder can still bring forward (#1285). The v6–v12 rewrite handlers (channel
@@ -160,6 +160,24 @@ const v17ATRMethodNotice = "**Note:** ATR smoothing is now configurable (#1277).
 	"frozen entry-ATR and on-chain protection are unaffected. A startup check DMs the owner if " +
 	"this happens. " +
 	"Backtest baselines were established under simple; re-validate before promoting Wilder-based results."
+
+// v18 introduces the opt-in per-strategy correlated hedge leg surface
+// (#1159). Purely additive — no on-disk rewrite: an absent `hedge` block
+// means "no hedge" (identical to previous behavior), so migration only
+// bumps the stamp and informs the operator that the surface exists.
+const v18HedgeNotice = "**Note:** per-strategy correlated hedge legs are now available (#1159). " +
+	"An opt-in `hedge` block on an HL perps strategy (direction != \"both\", live mode only) opens a " +
+	"second, scheduler-managed inverse position on a different coin alongside every primary open/add, " +
+	"sized on notional exposure × `ratio`. The hedge is strictly slaved to the primary lifecycle — no " +
+	"independent SL/TP, no check script — and mirrors scale-in, partial/full close, force-close, kill " +
+	"switch, and circuit-breaker events, with a per-cycle coherence pass as a reduce-only safety net. " +
+	"Config validation rejects a hedge coin that collides with any configured strategy's coin or " +
+	"another strategy's hedge coin (HL aggregates per coin per account — hedge coins must be " +
+	"sole-owned). If the primary fill confirms but the hedge open fails, the primary is immediately " +
+	"reduce-only closed and the owner alerted — hedging never runs unhedged silently. " +
+	"SIGHUP hot-reload refuses any hedge-block change while the primary or the hedge leg is open " +
+	"(flatten first, or restart after close). The backtester rejects hedge-enabled configs loudly — " +
+	"there is no hedge PnL/fee/slippage model yet. Default (no `hedge` block) is unchanged behavior."
 
 // NewFieldsSince returns all ConfigFields added after the given version number.
 func NewFieldsSince(version int) []ConfigField {
@@ -356,6 +374,14 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
 			}
 		}
+		// v18: notify about the correlated hedge leg surface (#1159).
+		if cfg.ConfigVersion < 18 {
+			if notifier != nil && notifier.HasOwner() {
+				notifier.SendOwnerDM(v18HedgeNotice)
+			} else {
+				fmt.Printf("[migration] %s\n", v18HedgeNotice)
+			}
+		}
 		return
 	}
 
@@ -380,6 +406,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 		}
 		if cfg.ConfigVersion < 17 {
 			fmt.Printf("[migration] %s\n", v17ATRMethodNotice)
+		}
+		if cfg.ConfigVersion < 18 {
+			fmt.Printf("[migration] %s\n", v18HedgeNotice)
 		}
 		return
 	}
@@ -421,6 +450,10 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	// v17: notify about the atr_method surface (#1277).
 	if cfg.ConfigVersion < 17 {
 		notifier.SendOwnerDM(v17ATRMethodNotice)
+	}
+	// v18: notify about the correlated hedge leg surface (#1159).
+	if cfg.ConfigVersion < 18 {
+		notifier.SendOwnerDM(v18HedgeNotice)
 	}
 }
 
