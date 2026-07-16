@@ -142,6 +142,9 @@ func applyHedgeOpen(s *StrategyState, sc StrategyConfig, primarySymbol, hedgeCoi
 	}
 	if primaryPos, ok := s.Positions[primarySymbol]; ok && primaryPos != nil {
 		primaryPos.HedgeSymbol = hedgeCoin
+		if primaryPos.Quantity > 0 {
+			primaryPos.HedgeQtyRatio = fill.TotalSz / primaryPos.Quantity
+		}
 	}
 	side := "buy"
 	if hedgeSide == "short" {
@@ -175,14 +178,24 @@ func applyHedgeOpen(s *StrategyState, sc StrategyConfig, primarySymbol, hedgeCoi
 // applyHedgeScaleIn blends an additional hedge fill into the existing hedge
 // position via the same blend primitive scale-in adds use (applyScaleIn,
 // scale_in.go), so hedge/primary InitialQuantity growth stays in lockstep
-// when both legs add successfully. Must be called under Lock.
-func applyHedgeScaleIn(s *StrategyState, hedgeCoin string, fill *HyperliquidFill) *Trade {
+// when both legs add successfully. Also refreshes the primary's
+// HedgeQtyRatio to the post-add quantities: an add's hedge sizing uses the
+// price AT ADD TIME (hedgeOpenQty), which generally differs from the
+// open-time price, so the correct qty ratio shifts slightly on every add —
+// re-anchoring here (rather than recomputing from live marks) keeps
+// syncHedgeCoherence's price-independent comparison exact instead of
+// misreading a legitimate, already-mirrored add as desync. Must be called
+// under Lock.
+func applyHedgeScaleIn(s *StrategyState, primarySymbol, hedgeCoin string, fill *HyperliquidFill) *Trade {
 	pos, ok := s.Positions[hedgeCoin]
 	if !ok || pos == nil || fill == nil || fill.TotalSz <= 0 || fill.AvgPx <= 0 {
 		return nil
 	}
 	s.Cash -= fill.Fee
 	applyScaleIn(pos, fill.TotalSz, fill.AvgPx)
+	if primaryPos, ok := s.Positions[primarySymbol]; ok && primaryPos != nil && primaryPos.Quantity > 0 {
+		primaryPos.HedgeQtyRatio = pos.Quantity / primaryPos.Quantity
+	}
 	now := time.Now().UTC()
 	side := "buy"
 	if pos.Side == "short" {
@@ -346,7 +359,16 @@ func runHedgeOpenMirror(sc StrategyConfig, primarySide string, fill *Hyperliquid
 // Alerts CRITICAL throughout. Manages its own Lock/Unlock phases — call from
 // Phase 3 (no lock held). Returns (trades booked, detail string) for the
 // caller's cycle-summary counters.
-func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, stratState *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, cfg *Config, hedgeReason string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
+//
+// hedgeCoin is the intended hedge coin (the one that failed to open) — if the
+// reduce-only close itself ALSO fails, it gets stamped onto the primary's
+// HedgeSymbol so syncHedgeCoherence's "primary exists, hedge gone" branch
+// (which is gated on HedgeSymbol != "") picks the primary up and keeps
+// retrying the reduce-only close every cycle until it succeeds. Without this,
+// a primary left open after a failed close silently degrades to an ordinary,
+// permanently-unhedged position after a single alert — coherence would never
+// touch it, because as far as it could tell no hedge was ever intended.
+func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, stratState *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, cfg *Config, hedgeCoin, hedgeReason string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) (int, string) {
 	mu.Lock()
 	trades, detail, openTrade, ratchetAlert := executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 	var pos *Position
@@ -376,6 +398,11 @@ func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, stratState *StrategyS
 		if closeResult != nil && closeResult.Error != "" {
 			errMsg = closeResult.Error
 		}
+		mu.Lock()
+		if p, ok3 := stratState.Positions[result.Symbol]; ok3 && p != nil {
+			p.HedgeSymbol = hedgeCoin
+		}
+		mu.Unlock()
 		notifyHedgeCritical(notifier, logger, sc, fmt.Sprintf(
 			"hedge-unwind close of primary %s FAILED (%s) — position left open UNHEDGED, retrying reduce-only every cycle via coherence sync", result.Symbol, errMsg))
 		return trades, detail
@@ -519,9 +546,18 @@ func runHedgeCloseMirror(sc StrategyConfig, stratState *StrategyState, primarySy
 //     CRITICAL; an edit+restart can bypass the SIGHUP state-compat guard, so
 //     this is the backstop that catches it
 //
+// "expected" is derived from Position.HedgeQtyRatio (hedge qty per unit of
+// primary qty, fixed at the last confirmed open/add event) times the
+// CURRENT primary quantity — deliberately quantity-only, never live marks.
+// Two different coins never move identically, so recomputing "expected" from
+// live prices every cycle would misread ordinary price drift between the two
+// coins as desync and reduce-only ratchet a winning primary toward zero on
+// every up-move. See hedgeCoherenceDecision (config.go) for the comparison
+// math and the InitialQuantity-coverage-fraction alternative it also rejects.
+//
 // Must be called from Phase 3 (no lock held) — it manages its own lock
 // phases because reduce/close orders are subprocess calls.
-func syncHedgeCoherence(sc StrategyConfig, stratState *StrategyState, primarySymbol string, prices map[string]float64, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) {
+func syncHedgeCoherence(sc StrategyConfig, stratState *StrategyState, primarySymbol string, mu *sync.RWMutex, notifier *MultiNotifier, logger *StrategyLogger) {
 	if !hyperliquidIsLive(sc.Args) {
 		return
 	}
@@ -574,25 +610,31 @@ func syncHedgeCoherence(sc StrategyConfig, stratState *StrategyState, primarySym
 		hedgeFullCloseSymbol(sc, stratState, primarySymbol, "hedge_coherence_hedge_lost", mu, logger)
 
 	case primary != nil && hedge != nil && strategyHedgeEnabled(sc):
-		primaryMark := prices[primarySymbol]
-		hedgeMark := prices[hedge.Symbol]
-		if primaryMark <= 0 || hedgeMark <= 0 || sc.Hedge == nil {
+		if sc.Hedge == nil {
 			return
 		}
-		expected := hedgeExpectedQty(primary.Quantity, primaryMark, sc.Hedge.Ratio, hedgeMark)
-		if expected <= 0 {
+		needsBootstrap, reduceSymbol, reduceQty, expected := hedgeCoherenceDecision(primary.Quantity, hedge.Quantity, primary.HedgeQtyRatio, primarySymbol, hedge.Symbol)
+		if needsBootstrap {
+			// No basis established yet (brand-new position this cycle, or a
+			// position that predates HedgeQtyRatio) — record the CURRENT
+			// actual quantities as the new basis rather than guessing a
+			// target from an absent one. Never triggers a reduction on this
+			// pass; comparisons start from the next cycle onward.
+			mu.Lock()
+			if p, ok := stratState.Positions[primarySymbol]; ok && p != nil && p.Quantity > 0 {
+				p.HedgeQtyRatio = hedge.Quantity / p.Quantity
+			}
+			mu.Unlock()
 			return
 		}
-		tol := expected * hedgeCoverageTolerance
-		switch {
-		case hedge.Quantity > expected+tol:
-			hedgeReduceSymbolBy(sc, stratState, hedge.Symbol, hedge.Quantity-expected, hedge.Quantity, "hedge_coherence_over_hedged", mu, logger)
-		case hedge.Quantity < expected-tol:
+		switch reduceSymbol {
+		case hedge.Symbol:
+			hedgeReduceSymbolBy(sc, stratState, hedge.Symbol, reduceQty, hedge.Quantity, "hedge_coherence_over_hedged", mu, logger)
+		case primarySymbol:
 			notifyHedgeCritical(notifier, logger, sc, fmt.Sprintf(
-				"hedge under-covers primary for %s: hedge qty %.6f < expected %.6f (ratio %.2f) — reducing primary to match (never adding exposure to converge)",
-				primarySymbol, hedge.Quantity, expected, sc.Hedge.Ratio))
-			targetPrimaryQty := primaryQtyForHedgeQty(hedge.Quantity, hedgeMark, sc.Hedge.Ratio, primaryMark)
-			hedgeReduceSymbolBy(sc, stratState, primarySymbol, primary.Quantity-targetPrimaryQty, primary.Quantity, "hedge_coherence_under_hedged", mu, logger)
+				"hedge under-covers primary for %s: hedge qty %.6f < expected %.6f (qty-ratio %.6f) — reducing primary to match (never adding exposure to converge)",
+				primarySymbol, hedge.Quantity, expected, primary.HedgeQtyRatio))
+			hedgeReduceSymbolBy(sc, stratState, primarySymbol, reduceQty, primary.Quantity, "hedge_coherence_under_hedged", mu, logger)
 		}
 	}
 }

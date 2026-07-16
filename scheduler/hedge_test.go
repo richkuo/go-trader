@@ -89,26 +89,95 @@ func TestHedgeOpenQty(t *testing.T) {
 	}
 }
 
-func TestHedgeExpectedQtyAndInverse(t *testing.T) {
-	// Round-trip: hedgeExpectedQty and primaryQtyForHedgeQty must invert each
-	// other exactly for well-formed inputs — this is the pair coherence math
-	// leans on to converge without ever adding exposure.
-	primaryQty, primaryMark, ratio, hedgeMark := 2.0, 3000.0, 1.5, 60000.0
-	expected := hedgeExpectedQty(primaryQty, primaryMark, ratio, hedgeMark)
-	if expected <= 0 {
-		t.Fatalf("hedgeExpectedQty returned non-positive: %v", expected)
+func TestHedgeCoherenceDecisionIgnoresMarkDrift(t *testing.T) {
+	// Regression for review round 1, finding 1: syncHedgeCoherence must
+	// NEVER be triggered by primary/hedge coins simply moving at different
+	// rates — only by an actual quantity desync. Long BTC 1.0, hedge short
+	// ETH 25 (ratio 1.0, sized at open when BTC=$100k/ETH=$4k). BTC then
+	// rallies to $110k while ETH stays flat — a purely mark-driven
+	// "expected" recompute (the pre-fix bug) would read this as
+	// under-hedged and trim the primary by ~9%. The ratio-based decision
+	// must see zero drift and take no action at all.
+	ratio := 25.0 / 1.0 // captured once at open, exactly as applyHedgeOpen would
+	needsBootstrap, reduceSymbol, _, _ := hedgeCoherenceDecision(1.0, 25.0, ratio, "BTC", "ETH")
+	if needsBootstrap {
+		t.Fatal("expected an established basis, not a bootstrap")
 	}
-	backOut := primaryQtyForHedgeQty(expected, hedgeMark, ratio, primaryMark)
-	if diff := backOut - primaryQty; diff > 1e-9 || diff < -1e-9 {
-		t.Errorf("round-trip primaryQtyForHedgeQty(hedgeExpectedQty(...)) = %v, want %v", backOut, primaryQty)
+	if reduceSymbol != "" {
+		t.Errorf("expected no action on mark drift alone, got reduceSymbol=%q", reduceSymbol)
 	}
+}
 
-	if got := primaryQtyForHedgeQty(0, hedgeMark, ratio, primaryMark); got != 0 {
-		t.Errorf("primaryQtyForHedgeQty with zero hedgeQty = %v, want 0", got)
+func TestHedgeCoherenceDecisionBootstrap(t *testing.T) {
+	// ratio<=0 means no basis has been established (brand-new position, or
+	// one that predates HedgeQtyRatio) — must never be treated as "expect
+	// zero hedge" (which would trigger an immediate, spurious full reduce).
+	needsBootstrap, reduceSymbol, reduceQty, _ := hedgeCoherenceDecision(1.0, 25.0, 0, "BTC", "ETH")
+	if !needsBootstrap {
+		t.Fatal("expected needsBootstrap=true for ratio<=0")
 	}
-	if got := primaryQtyForHedgeQty(1, 0, ratio, primaryMark); got != 0 {
-		t.Errorf("primaryQtyForHedgeQty with zero hedgeMark = %v, want 0", got)
+	if reduceSymbol != "" || reduceQty != 0 {
+		t.Errorf("bootstrap must never also propose a reduction, got symbol=%q qty=%v", reduceSymbol, reduceQty)
 	}
+}
+
+func TestHedgeCoherenceDecisionOverAndUnderHedged(t *testing.T) {
+	ratio := 25.0 / 1.0
+	t.Run("over-hedged reduces the hedge to expected", func(t *testing.T) {
+		// Primary shrank (e.g. an on-chain SL fill) without a mirrored
+		// hedge reduction: hedge is now too big for the smaller primary.
+		needsBootstrap, reduceSymbol, reduceQty, expected := hedgeCoherenceDecision(0.5, 25.0, ratio, "BTC", "ETH")
+		if needsBootstrap {
+			t.Fatal("unexpected bootstrap")
+		}
+		if reduceSymbol != "ETH" {
+			t.Errorf("expected to reduce the hedge (ETH), got %q", reduceSymbol)
+		}
+		wantExpected := 12.5
+		if diff := expected - wantExpected; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("expected = %v, want %v", expected, wantExpected)
+		}
+		wantReduceQty := 25.0 - wantExpected
+		if diff := reduceQty - wantReduceQty; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("reduceQty = %v, want %v", reduceQty, wantReduceQty)
+		}
+	})
+	t.Run("under-hedged reduces the primary, never adds hedge exposure", func(t *testing.T) {
+		// Hedge shrank externally (liquidation/manual close) without the
+		// primary changing: primary now exceeds what the actual hedge
+		// covers.
+		needsBootstrap, reduceSymbol, reduceQty, _ := hedgeCoherenceDecision(1.0, 10.0, ratio, "BTC", "ETH")
+		if needsBootstrap {
+			t.Fatal("unexpected bootstrap")
+		}
+		if reduceSymbol != "BTC" {
+			t.Errorf("expected to reduce the primary (BTC), got %q", reduceSymbol)
+		}
+		wantTargetPrimaryQty := 10.0 / ratio
+		wantReduceQty := 1.0 - wantTargetPrimaryQty
+		if diff := reduceQty - wantReduceQty; diff > 1e-9 || diff < -1e-9 {
+			t.Errorf("reduceQty = %v, want %v", reduceQty, wantReduceQty)
+		}
+	})
+	t.Run("within tolerance takes no action", func(t *testing.T) {
+		expected := ratio * 1.0
+		withinTol := expected * (hedgeCoverageTolerance / 2)
+		needsBootstrap, reduceSymbol, _, _ := hedgeCoherenceDecision(1.0, expected+withinTol, ratio, "BTC", "ETH")
+		if needsBootstrap {
+			t.Fatal("unexpected bootstrap")
+		}
+		if reduceSymbol != "" {
+			t.Errorf("expected no action within tolerance, got %q", reduceSymbol)
+		}
+	})
+	t.Run("malformed inputs take no action", func(t *testing.T) {
+		if _, reduceSymbol, _, _ := hedgeCoherenceDecision(0, 25.0, ratio, "BTC", "ETH"); reduceSymbol != "" {
+			t.Errorf("zero primary qty must not propose a reduction, got %q", reduceSymbol)
+		}
+		if _, reduceSymbol, _, _ := hedgeCoherenceDecision(1.0, 0, ratio, "BTC", "ETH"); reduceSymbol != "" {
+			t.Errorf("zero hedge qty must not propose a reduction, got %q", reduceSymbol)
+		}
+	})
 }
 
 func TestHedgeConfigEqual(t *testing.T) {
@@ -335,6 +404,9 @@ func TestApplyHedgeOpen(t *testing.T) {
 	if s.Positions["ETH"].HedgeSymbol != "BTC" {
 		t.Errorf("primary HedgeSymbol not stamped: %q", s.Positions["ETH"].HedgeSymbol)
 	}
+	if diff := s.Positions["ETH"].HedgeQtyRatio - 0.05; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("primary HedgeQtyRatio not stamped: got %v, want 0.05", s.Positions["ETH"].HedgeQtyRatio)
+	}
 	if s.Cash != 10000-3 {
 		t.Errorf("cash not debited by fee: got %v, want %v", s.Cash, 10000-3.0)
 	}
@@ -364,11 +436,12 @@ func TestApplyHedgeScaleIn(t *testing.T) {
 		ID:   "hl-eth",
 		Cash: 10000,
 		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1.2, Side: "long", OwnerStrategyID: "hl-eth", HedgeSymbol: "BTC", HedgeQtyRatio: 0.05},
 			"BTC": {Symbol: "BTC", Quantity: 0.05, InitialQuantity: 0.05, AvgCost: 60000, Side: "short", IsHedge: true, HedgeFor: "ETH"},
 		},
 	}
 	fill := &HyperliquidFill{AvgPx: 61000, TotalSz: 0.02, Fee: 1.5, OID: 43}
-	trade := applyHedgeScaleIn(s, "BTC", fill)
+	trade := applyHedgeScaleIn(s, "ETH", "BTC", fill)
 	if trade == nil {
 		t.Fatal("applyHedgeScaleIn returned nil trade")
 	}
@@ -379,12 +452,21 @@ func TestApplyHedgeScaleIn(t *testing.T) {
 	if pos.InitialQuantity != 0.07 {
 		t.Errorf("hedge InitialQuantity not grown: got %v, want 0.07", pos.InitialQuantity)
 	}
+	// Regression for review round 1, finding 1: the primary's HedgeQtyRatio
+	// must be re-anchored to the post-add quantities (an add's hedge sizing
+	// uses the price at add time, which generally differs from open time),
+	// not left at its pre-add value — else syncHedgeCoherence would misread
+	// this legitimate, already-mirrored add as desync next cycle.
+	wantRatio := 0.07 / 1.2
+	if diff := s.Positions["ETH"].HedgeQtyRatio - wantRatio; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("primary HedgeQtyRatio not re-anchored: got %v, want %v", s.Positions["ETH"].HedgeQtyRatio, wantRatio)
+	}
 }
 
 func TestApplyHedgeScaleInNoOpWithoutExistingPosition(t *testing.T) {
 	s := &StrategyState{ID: "hl-eth", Positions: map[string]*Position{}}
 	fill := &HyperliquidFill{AvgPx: 61000, TotalSz: 0.02, Fee: 1.5}
-	if trade := applyHedgeScaleIn(s, "BTC", fill); trade != nil {
+	if trade := applyHedgeScaleIn(s, "ETH", "BTC", fill); trade != nil {
 		t.Error("expected nil trade when no existing hedge position")
 	}
 }

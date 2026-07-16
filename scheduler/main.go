@@ -2480,7 +2480,7 @@ func main() {
 								if hedgeOK {
 									hedgeOpenFill = fill
 								} else {
-									trades, detail = unwindPrimaryAfterHedgeOpenFailure(sc, stratState, result, execResult, signalStr, price, cfg, hedgeFailReason, &mu, notifier, logger)
+									trades, detail = unwindPrimaryAfterHedgeOpenFailure(sc, stratState, result, execResult, signalStr, price, cfg, hlHedgeCoin, hedgeFailReason, &mu, notifier, logger)
 									// Both legs (open + unwind close) are already
 									// booked by the unwind — skip the normal
 									// booking path below entirely.
@@ -2527,7 +2527,7 @@ func main() {
 								if scaleInAddQty > 0 {
 									trades, detail, openTrade = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
 									if hedgeAddFill != nil {
-										if ht := applyHedgeScaleIn(stratState, hlHedgeCoin, hedgeAddFill); ht != nil {
+										if ht := applyHedgeScaleIn(stratState, result.Symbol, hlHedgeCoin, hedgeAddFill); ht != nil {
 											trades++
 											detail = fmt.Sprintf("[%s] HEDGE add %s @ $%.2f", sc.ID, hlHedgeCoin, hedgeAddFill.AvgPx)
 										}
@@ -2632,7 +2632,7 @@ func main() {
 							// not this dispatch), crashes mid-mirror, external hedge
 							// closes/liquidations.
 							if strategyHedgeEnabled(sc) {
-								syncHedgeCoherence(sc, stratState, result.Symbol, prices, &mu, notifier, logger)
+								syncHedgeCoherence(sc, stratState, result.Symbol, &mu, notifier, logger)
 							}
 						}
 					case "futures":

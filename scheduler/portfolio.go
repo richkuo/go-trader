@@ -125,11 +125,19 @@ type Position struct {
 	// HedgeFor names the primary symbol this hedge mirrors (set only when
 	// IsHedge). HedgeSymbol is the mirror-image field stamped on the PRIMARY
 	// position: the hedge coin opened alongside it, "" when no hedge is open.
-	// Persisted (db.go) so restart/reconcile recovers ownership from state,
-	// never from coin->configured-symbol inference (constraint 5).
-	IsHedge     bool   `json:"is_hedge,omitempty"`
-	HedgeFor    string `json:"hedge_for,omitempty"`
-	HedgeSymbol string `json:"hedge_symbol,omitempty"`
+	// HedgeQtyRatio (stamped on the PRIMARY only) is the hedge-quantity-per-
+	// unit-of-primary-quantity established at the last confirmed open/add
+	// event (applyHedgeOpen/applyHedgeScaleIn) — the fixed, price-independent
+	// basis syncHedgeCoherence compares live quantities against. Deliberately
+	// NOT derived from live marks each cycle: two different coins never move
+	// identically, so a live-mark recompute would misread ordinary price
+	// drift as desync and ratchet a winning primary down every cycle. Persisted
+	// (db.go) so restart/reconcile recovers ownership from state, never from
+	// coin->configured-symbol inference (constraint 5).
+	IsHedge       bool    `json:"is_hedge,omitempty"`
+	HedgeFor      string  `json:"hedge_for,omitempty"`
+	HedgeSymbol   string  `json:"hedge_symbol,omitempty"`
+	HedgeQtyRatio float64 `json:"hedge_qty_ratio,omitempty"`
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are

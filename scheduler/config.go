@@ -794,34 +794,64 @@ func hedgeOpenQty(primaryFillQty, primaryFillPx, ratio, hedgeMark float64) float
 	return notional / hedgeMark
 }
 
-// hedgeExpectedQty returns the hedge quantity that SHOULD currently be open
-// given the primary's live quantity, current marks, and the configured
-// ratio — the steady-state target syncHedgeCoherence (hedge.go) converges
-// toward every cycle. Deliberately notional-based (primary notional * ratio
-// / hedge mark) rather than a Quantity/InitialQuantity coverage fraction:
+// hedgeCoherenceDecision computes what syncHedgeCoherence (hedge.go) should
+// do this cycle for a primary+hedge pair that both currently exist — pure
+// quantity comparison against a fixed, price-independent basis (ratio),
+// never live marks. Two different coins never move identically, so a
+// live-mark recompute of "expected hedge qty" every cycle would misread
+// ordinary price drift as desync and reduce-only ratchet a winning primary
+// toward zero on every up-move; comparing quantities against the ratio
+// captured at the last confirmed open/add event has no such price
+// sensitivity.
+//
+// ratio is Position.HedgeQtyRatio (hedge qty per unit of primary qty),
+// stamped by applyHedgeOpen/applyHedgeScaleIn at each confirmed mirror
+// event. ratio<=0 means no basis has been established yet (brand-new
+// position this cycle, or a pre-existing position from before this field
+// existed) — the caller must bootstrap it from the current actual
+// quantities and take no action, never guess a target from an absent basis.
+//
+// Deliberately NOT a Quantity/InitialQuantity coverage fraction either:
 // InitialQuantity is intentionally monotonic (#496, shared with the TP-tier
 // fraction-of-initial system) — it never decreases on a partial close — so
 // after unwindPrimaryAddAfterHedgeAddFailure reduces a botched add back off,
 // a coverage-fraction comparison would permanently read the primary as
 // "under 100%" even though the position is economically back to its pre-add
-// size, and would spuriously shrink an already-correctly-sized hedge to
-// match. Recomputing from live quantities and marks has no such
-// history-dependent drift.
-func hedgeExpectedQty(primaryQty, primaryMark, ratio, hedgeMark float64) float64 {
-	return hedgeOpenQty(primaryQty, primaryMark, ratio, hedgeMark)
-}
-
-// primaryQtyForHedgeQty inverts hedgeExpectedQty: the primary quantity whose
-// expected hedge (at the given marks/ratio) would exactly equal hedgeQty.
-// Used by syncHedgeCoherence's under-hedged branch to compute how far to
-// reduce the primary so it matches the hedge's ACTUAL (smaller) size,
-// converging without ever adding exposure to either leg.
-func primaryQtyForHedgeQty(hedgeQty, hedgeMark, ratio, primaryMark float64) float64 {
-	if hedgeQty <= 0 || hedgeMark <= 0 || ratio <= 0 || primaryMark <= 0 {
-		return 0
+// size, spuriously shrinking an already-correctly-sized hedge. A ratio
+// re-anchored at every confirmed open/add event has no such history-
+// dependent drift.
+//
+// Returns:
+//   - needsBootstrap=true: ratio<=0; caller records hedgeQty/primaryQty as
+//     the new basis and takes no reduce action this cycle.
+//   - reduceSymbol=="": already coherent within tolerance (or malformed
+//     inputs) — no action.
+//   - reduceSymbol==hedgeSymbol: over-hedged — reduce the hedge down to
+//     expected.
+//   - reduceSymbol==primarySymbol: under-hedged — reduce the PRIMARY down to
+//     hedgeQty/ratio, matching the hedge's actual (smaller) size. Never
+//     adds exposure to either leg to converge.
+func hedgeCoherenceDecision(primaryQty, hedgeQty, ratio float64, primarySymbol, hedgeSymbol string) (needsBootstrap bool, reduceSymbol string, reduceQty, expected float64) {
+	if primaryQty <= 0 || hedgeQty <= 0 {
+		return false, "", 0, 0
 	}
-	notional := hedgeQty * hedgeMark / ratio
-	return notional / primaryMark
+	if ratio <= 0 {
+		return true, "", 0, 0
+	}
+	expected = ratio * primaryQty
+	if expected <= 0 {
+		return false, "", 0, 0
+	}
+	tol := expected * hedgeCoverageTolerance
+	switch {
+	case hedgeQty > expected+tol:
+		return false, hedgeSymbol, hedgeQty - expected, expected
+	case hedgeQty < expected-tol:
+		targetPrimaryQty := hedgeQty / ratio
+		return false, primarySymbol, primaryQty - targetPrimaryQty, expected
+	default:
+		return false, "", 0, expected
+	}
 }
 
 // UnmarshalJSON parses a StrategyConfig while accepting both the canonical
