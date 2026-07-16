@@ -533,6 +533,22 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: emit the hedge leg's virtual qty too — without it,
+		// attributeSharedWalletUPnL classifies the hedge coin as an orphan
+		// (phantom drift alerts) and wallet-ledger funding events on the
+		// hedge coin land as funding_orphan instead of booking to the owner.
+		if key.Platform == "hyperliquid" {
+			for hsym, hpos := range ss.Positions {
+				if hpos == nil || hpos.HedgeFor == "" || hpos.Quantity <= 0 {
+					continue
+				}
+				hcoin := strings.ToUpper(strings.TrimSpace(hsym))
+				if virtualQty[hcoin] == nil {
+					virtualQty[hcoin] = make(map[string]float64)
+				}
+				virtualQty[hcoin][id] = hpos.Quantity
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

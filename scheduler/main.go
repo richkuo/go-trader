@@ -280,6 +280,13 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: surface hedge state↔config drift (config edit + restart bypasses
+	// the SIGHUP hot-reload guard). Non-destructive — legs are left frozen.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+	for _, msg := range hedgeStateWarnings {
+		fmt.Printf("[WARN] %s\n", msg)
+	}
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -499,6 +506,13 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward hedge state↔config drift warnings to the owner.
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1428,6 +1442,18 @@ func main() {
 					}
 				}
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
+				// #1159: hedge coins with a held virtual hedge leg join the
+				// close roster (see KillSwitchCloseInputs.HLHedgeCoins).
+				hlHedgeCoins := map[string]bool{}
+				for _, sc := range hlLiveAll {
+					if ss, ok := state.Strategies[sc.ID]; ok && ss != nil {
+						for hsym, hpos := range ss.Positions {
+							if hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+								hlHedgeCoins[hsym] = true
+							}
+						}
+					}
+				}
 				mu.RUnlock()
 
 				inputs := KillSwitchCloseInputs{
@@ -1439,6 +1465,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLHedgeCoins:      hlHedgeCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -2235,6 +2262,7 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
+							hedgeFreshOpen := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
@@ -2439,6 +2467,9 @@ func main() {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 								}
 								mu.Unlock()
+								// #1159: a position-increasing fill this cycle marks the hedge
+								// sync's fail-closed escalation window (constraint 4).
+								hedgeFreshOpen = openTrade != nil
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
 								// for the scale-in branch and when no tier tightened.
@@ -2501,6 +2532,18 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: converge the correlated hedge leg to the target implied
+							// by the CURRENT primary position — runs on trade and manage
+							// cycles alike (paused/daily-loss/exposure-cap holds included:
+							// under a hold the primary can only shrink, so the sync can only
+							// reduce/close). Deliberately after the execute/apply block so a
+							// fresh open, scale-in add, or evaluator close this cycle is
+							// mirrored within the same cycle.
+							if HedgeEnabled(sc) {
+								if hedgeTrades := runHedgeSync(sc, stratState, result.Symbol, price, prices, hlPositions, hedgeFreshOpen, &mu, notifier, logger); hedgeTrades > 0 {
+									trades += hedgeTrades
+								}
 							}
 						}
 					case "futures":

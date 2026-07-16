@@ -661,6 +661,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // HL perps only: opt-in correlated hedge leg strictly coupled to the primary position (#1159 phase 1). Read via HedgeEnabled/hedgeCoin/hedgeRatio/hedgeExchangeLeverage, never directly. Hot-reload blocked while any position is open (validateHotReloadStateCompatible).
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -683,6 +684,81 @@ type ScaleInConfig struct {
 	// AddNotionalUSD is the USD notional to add per leg (0 = default to the
 	// strategy's standard open notional, i.e. the same sizing a fresh open uses).
 	AddNotionalUSD float64 `json:"add_notional_usd,omitempty"`
+}
+
+// HedgeConfig declares an automatically managed correlated hedge leg for one
+// HL perps strategy (#1159 phase 1). The hedge lifecycle is strictly coupled
+// to the primary position: it opens with the primary open, scales with
+// scale-in, reduces with partial close, and closes with full close /
+// force-close / kill-switch / circuit-breaker. No independent hedge SL/TP or
+// close evaluator exists — the scheduler's per-cycle hedge sync (hedge.go) is
+// the sole manager. Config validation rejects any hedge symbol that collides
+// with a configured strategy coin or another strategy's hedge symbol, so a
+// hedge coin always has exactly one owner on the wallet.
+type HedgeConfig struct {
+	Enabled bool `json:"enabled"`
+	// Symbol is the hedge instrument: a bare HL coin ticker ("BTC") or a ccxt
+	// symbol ("BTC/USDC:USDC") — normalized to the coin ticker via hedgeCoin.
+	Symbol string `json:"symbol"`
+	// Side is the hedge side policy. "" or "inverse" (the only phase-1 value):
+	// primary long → hedge short, primary short → hedge long.
+	Side string `json:"side,omitempty"`
+	// Ratio is hedge notional / primary notional. 0 defaults to 1.0; bounds (0, 10].
+	Ratio float64 `json:"ratio,omitempty"`
+	// Platform/Type must be ""/"hyperliquid" and ""/"perps" in phase 1.
+	Platform string `json:"platform,omitempty"`
+	Type     string `json:"type,omitempty"`
+	// MarginMode/Leverage are the hedge coin's OWN on-chain margin assignment —
+	// never inherited from the primary. "" margin mode and 0 leverage follow the
+	// same adapter defaults a primary strategy would (isolated, 1x).
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
+}
+
+// HedgeEnabled reports whether sc opts into a correlated hedge leg (#1159).
+func HedgeEnabled(sc StrategyConfig) bool {
+	return sc.Hedge != nil && sc.Hedge.Enabled
+}
+
+// hedgeCoin returns the normalized HL coin ticker of sc's hedge instrument
+// ("" when no hedge is configured). Accepts both a bare ticker ("BTC") and a
+// ccxt symbol ("BTC/USDC:USDC") — everything from the first "/" is stripped —
+// and normalizes upper/trimmed exactly like hyperliquidConfiguredCoin so
+// collision checks compare like with like.
+func hedgeCoin(sc StrategyConfig) string {
+	if sc.Hedge == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(sc.Hedge.Symbol)
+	if i := strings.Index(raw, "/"); i >= 0 {
+		raw = raw[:i]
+	}
+	return strings.ToUpper(strings.TrimSpace(raw))
+}
+
+// hedgeRatio returns the hedge notional multiplier (0 → default 1.0).
+func hedgeRatio(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Ratio == 0 {
+		return 1.0
+	}
+	return sc.Hedge.Ratio
+}
+
+// hedgeExchangeLeverage returns the hedge leg's own exchange leverage (0 → 1).
+func hedgeExchangeLeverage(sc StrategyConfig) float64 {
+	if sc.Hedge == nil || sc.Hedge.Leverage <= 0 {
+		return 1
+	}
+	return sc.Hedge.Leverage
+}
+
+// hedgeConfigEqual compares hedge blocks for hot-reload gating (nil-vs-nil
+// pointer semantics, mirrors scaleInConfigEqual).
+func hedgeConfigEqual(a, b *HedgeConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // UnmarshalJSON parses a StrategyConfig while accepting both the canonical
@@ -1502,6 +1578,87 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 	return errs
 }
 
+// validateHedgeConfigs returns validation messages for correlated hedge legs
+// (#1159 phase 1). Fail-loud at load: HL perps only, "inverse" side only,
+// direction "both" rejected (flip mirroring is phase 2), and the full
+// collision matrix — a hedge coin must never be any configured strategy's
+// coin (perps AND manual, live and paper: paper peers still collide with a
+// live hedge on the same wallet coin) nor another strategy's hedge coin.
+// Collision rejection is what keeps hedge coins invisible to every
+// shared-coin mechanism keyed on hyperliquidConfiguredCoin.
+func validateHedgeConfigs(strategies []StrategyConfig) []string {
+	var errs []string
+	// coin → owning strategy IDs, for the cross-strategy collision arms.
+	configuredCoinOwners := make(map[string][]string)
+	for _, sc := range strategies {
+		if coin := hyperliquidConfiguredCoin(sc); coin != "" {
+			configuredCoinOwners[coin] = append(configuredCoinOwners[coin], sc.ID)
+		}
+	}
+	hedgeCoinOwners := make(map[string][]string)
+	for _, sc := range strategies {
+		if !HedgeEnabled(sc) {
+			continue
+		}
+		prefix := fmt.Sprintf("strategy[%s]", sc.ID)
+		h := sc.Hedge
+		if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+			errs = append(errs, fmt.Sprintf("%s: hedge is only supported for hyperliquid perps strategies (got platform %q type %q)", prefix, sc.Platform, sc.Type))
+			continue
+		}
+		if h.Platform != "" && h.Platform != "hyperliquid" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.platform must be \"\" or \"hyperliquid\" in phase 1, got %q", prefix, h.Platform))
+		}
+		if h.Type != "" && h.Type != "perps" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.type must be \"\" or \"perps\" in phase 1, got %q", prefix, h.Type))
+		}
+		if h.Side != "" && h.Side != "inverse" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.side must be \"\" or \"inverse\" in phase 1, got %q", prefix, h.Side))
+		}
+		if h.Ratio < 0 || h.Ratio > 10 {
+			errs = append(errs, fmt.Sprintf("%s: hedge.ratio must be in (0, 10] (0 = default 1.0), got %g", prefix, h.Ratio))
+		}
+		if h.Leverage < 0 {
+			errs = append(errs, fmt.Sprintf("%s: hedge.leverage must be >= 0 (0 = default 1), got %g", prefix, h.Leverage))
+		}
+		if h.MarginMode != "" && h.MarginMode != "isolated" && h.MarginMode != "cross" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.margin_mode must be \"\", \"isolated\", or \"cross\", got %q", prefix, h.MarginMode))
+		}
+		// Flip mirroring (direction "both") changes the hedge SIDE mid-flight
+		// and interacts with the catastrophic-flip close-only degradation —
+		// deterministic hedge mirroring of flips is phase 2.
+		if EffectiveDirection(sc) == "both" {
+			errs = append(errs, fmt.Sprintf("%s: hedge with direction \"both\" is not supported in phase 1 (flip mirroring deferred)", prefix))
+		}
+		hc := hedgeCoin(sc)
+		if hc == "" {
+			errs = append(errs, fmt.Sprintf("%s: hedge.symbol is required when hedge is enabled", prefix))
+			continue
+		}
+		if hc == hyperliquidConfiguredCoin(sc) {
+			errs = append(errs, fmt.Sprintf("%s: hedge.symbol %s equals the strategy's own coin — a same-coin hedge just nets the position on-chain", prefix, hc))
+		} else if owners := configuredCoinOwners[hc]; len(owners) > 0 {
+			ids := append([]string(nil), owners...)
+			sort.Strings(ids)
+			errs = append(errs, fmt.Sprintf("%s: hedge.symbol %s collides with configured strategy coin (strategies %s) — HL aggregates per coin per account (#1159 constraint 2)", prefix, hc, strings.Join(ids, ", ")))
+		}
+		hedgeCoinOwners[hc] = append(hedgeCoinOwners[hc], sc.ID)
+	}
+	coins := make([]string, 0, len(hedgeCoinOwners))
+	for c := range hedgeCoinOwners {
+		coins = append(coins, c)
+	}
+	sort.Strings(coins)
+	for _, c := range coins {
+		if owners := hedgeCoinOwners[c]; len(owners) > 1 {
+			ids := append([]string(nil), owners...)
+			sort.Strings(ids)
+			errs = append(errs, fmt.Sprintf("hedge symbol %s is shared by multiple hedge-enabled strategies (%s) — two hedge legs on one coin would share one on-chain position (#1159 constraint 2)", c, strings.Join(ids, ", ")))
+		}
+	}
+	return errs
+}
+
 // ParseLeaderboardPostTime parses a "HH:MM" string and returns (hour, minute, ok).
 func ParseLeaderboardPostTime(s string) (int, int, bool) {
 	if s == "" {
@@ -2221,6 +2378,14 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+
+	// #1159: correlated hedge legs — vocabulary + collision matrix. Rejecting
+	// collisions up front is what keeps hedge coins invisible to every
+	// shared-coin mechanism (peer detection, CB drain, kill-switch fill share,
+	// reconcile owner mapping).
+	for _, msg := range validateHedgeConfigs(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 

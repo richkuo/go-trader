@@ -357,6 +357,19 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
+		// #1159: hedge block is hot-reloadable when flat. The state-compat
+		// gate above blocks the change while any position is open; reaching
+		// here with a difference means the strategy is flat and the next
+		// cycle's hedge sync reads the new block.
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: shape updated", sc.ID)
+			if ns.Hedge != nil {
+				clone := *ns.Hedge
+				sc.Hedge = &clone
+			} else {
+				sc.Hedge = nil
+			}
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -552,6 +565,12 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		errs = append(errs, msg)
 	}
 
+	// #1159: a reload must not introduce a hedge collision startup would have
+	// rejected.
+	for _, msg := range validateHedgeConfigs(next.Strategies) {
+		errs = append(errs, msg)
+	}
+
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))
@@ -624,6 +643,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+		}
+		// #1159: the hedge block is state-shifting — editing it while a
+		// position is open (primary OR a residual hedge leg, which lives in
+		// the same Positions map) would desync the hedge sync's target from
+		// the persisted watermark. Freely reloadable while flat.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge block changed with open positions (flatten first or restart after close)",
+				sc.ID))
 		}
 		// #1268: switching between risk-per-trade and notional sizing while a
 		// position is open changes what the NEXT flip/re-entry sizing means
@@ -846,6 +873,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks change while open (incl. while only a residual hedge leg is open)
 	return sc
 }
 
