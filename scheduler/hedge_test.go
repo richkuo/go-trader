@@ -166,6 +166,97 @@ func TestHedgeReduceQty(t *testing.T) {
 	}
 }
 
+// Review finding: a partial live fill must advance the basis by only the
+// achieved fraction of the gap, not the full intended target — otherwise
+// the shortfall (open/add) or residual (reduce) is frozen as if fully
+// converged and never self-corrects.
+func TestHedgeProportionalBasis(t *testing.T) {
+	// Full fill (open, oldBasis=0): converges exactly to target, matching
+	// pre-fix behavior.
+	if got := hedgeProportionalBasis(0, 2, 2, 2); !approxEq(got, 2) {
+		t.Errorf("full open fill: basis = %v, want 2", got)
+	}
+	// 50% fill on an open (oldBasis=0, target=2, intended=2, achieved=1):
+	// only half the gap is credited.
+	if got := hedgeProportionalBasis(0, 2, 2, 1); !approxEq(got, 1) {
+		t.Errorf("50%% open fill: basis = %v, want 1", got)
+	}
+	// 50% fill on an add (oldBasis=1, target=2, intended=1, achieved=0.5):
+	// basis advances halfway from 1 toward 2.
+	if got := hedgeProportionalBasis(1, 2, 1, 0.5); !approxEq(got, 1.5) {
+		t.Errorf("50%% add fill: basis = %v, want 1.5", got)
+	}
+	// 50% fill on a reduce (oldBasis=2, target=1, intended=0.5 hedge-qty
+	// reduce, achieved=0.25): basis only moves halfway from 2 toward 1.
+	if got := hedgeProportionalBasis(2, 1, 0.5, 0.25); !approxEq(got, 1.5) {
+		t.Errorf("50%% reduce fill: basis = %v, want 1.5", got)
+	}
+	// Full/over fill always clamps to the target exactly (no float drift
+	// from the frac==1 arithmetic path, and slippage overfill doesn't
+	// overshoot the target).
+	if got := hedgeProportionalBasis(1, 2, 1, 1); !approxEq(got, 2) {
+		t.Errorf("full add fill: basis = %v, want 2", got)
+	}
+	if got := hedgeProportionalBasis(1, 2, 1, 1.3); !approxEq(got, 2) {
+		t.Errorf("over fill: basis = %v, want 2 (clamped)", got)
+	}
+	// Zero intended qty (defensive; unreachable via hedgeTargetDecision,
+	// which never returns a zero-Qty open/add/reduce action) still returns
+	// the target rather than dividing by zero.
+	if got := hedgeProportionalBasis(1, 2, 0, 0); !approxEq(got, 2) {
+		t.Errorf("zero intended qty: basis = %v, want target 2", got)
+	}
+}
+
+// Must survive (a): an open that fills 50% must add the shortfall on the
+// next cycle rather than freezing at the partial size.
+func TestHedgeProportionalBasisPartialOpenThenAddsShortfall(t *testing.T) {
+	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1})
+	// Cycle 1 (simulated): open intended 0.1 BTC, only 0.05 filled.
+	basisAfterPartialOpen := hedgeProportionalBasis(0, 2 /* target primary qty */, 0.1, 0.05)
+	if !approxEq(basisAfterPartialOpen, 1) {
+		t.Fatalf("basis after 50%% open = %v, want 1", basisAfterPartialOpen)
+	}
+	// Cycle 2: primary unchanged at 2, hedge now held at 0.05 with basis 1
+	// -> must ADD (top up the shortfall), not sit idle.
+	snap := hedgeSnapshot{PrimaryQty: 2, PrimarySide: "long", HedgeQty: 0.05, HedgeSide: "short", HedgeBasis: basisAfterPartialOpen}
+	action := hedgeTargetDecision(sc, snap, 3000, 60000)
+	if action.Kind != hedgeActionAdd {
+		t.Errorf("Kind = %v, want add (topping up the partial-fill shortfall)", action.Kind)
+	}
+}
+
+// Must survive (b): a reduce that fills 50% must correct the remaining
+// residual on the next cycle rather than treating it as converged.
+func TestHedgeProportionalBasisPartialReduceThenCorrectsResidual(t *testing.T) {
+	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1})
+	// Cycle 1 (simulated): primary basis was 2, fell to 1; intended reduce
+	// 0.5 hedge-qty, only 0.25 filled.
+	basisAfterPartialReduce := hedgeProportionalBasis(2, 1, 0.5, 0.25)
+	if !approxEq(basisAfterPartialReduce, 1.5) {
+		t.Fatalf("basis after 50%% reduce = %v, want 1.5", basisAfterPartialReduce)
+	}
+	// Cycle 2: primary still at 1, hedge now at 0.75 (1.0-0.25) with basis
+	// 1.5 -> must REDUCE again (the unfilled residual), not sit idle.
+	snap := hedgeSnapshot{PrimaryQty: 1, PrimarySide: "long", HedgeQty: 0.75, HedgeSide: "short", HedgeBasis: basisAfterPartialReduce}
+	action := hedgeTargetDecision(sc, snap, 3000, 60000)
+	if action.Kind != hedgeActionReduce {
+		t.Errorf("Kind = %v, want reduce (correcting the partial-fill residual)", action.Kind)
+	}
+}
+
+// Must survive (c): a full fill still converges to exactly one action then
+// None on the next cycle — no regression to the basic convergence behavior.
+func TestHedgeProportionalBasisFullFillStillConvergesToNone(t *testing.T) {
+	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1})
+	basisAfterFullOpen := hedgeProportionalBasis(0, 2, 0.1, 0.1)
+	snap := hedgeSnapshot{PrimaryQty: 2, PrimarySide: "long", HedgeQty: 0.1, HedgeSide: "short", HedgeBasis: basisAfterFullOpen}
+	action := hedgeTargetDecision(sc, snap, 3000, 60000)
+	if action.Kind != hedgeActionNone {
+		t.Errorf("Kind = %v, want none after a full fill converges exactly", action.Kind)
+	}
+}
+
 // --- decision core ---
 
 func TestHedgeTargetDecisionDisabled(t *testing.T) {
@@ -202,8 +293,12 @@ func TestHedgeTargetDecisionOpenFailsClosedOnBadPrice(t *testing.T) {
 	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC"})
 	snap := hedgeSnapshot{PrimaryQty: 2, PrimarySide: "long"}
 	action := hedgeTargetDecision(sc, snap, 3000, 0) // no hedge mark
-	if action.Kind != hedgeActionNone {
-		t.Errorf("Kind = %v, want none (fail-closed) on unusable hedge price", action.Kind)
+	// hedgeActionOpenUnavailable, NOT the generic hedgeActionNone: primary
+	// held + no hedge held + no order sizeable is the one no-op runHedgeSync
+	// must treat as an open failure on a fresh-open cycle (review finding),
+	// so it needs its own distinguishable Kind.
+	if action.Kind != hedgeActionOpenUnavailable {
+		t.Errorf("Kind = %v, want hedgeActionOpenUnavailable on unusable hedge-open price", action.Kind)
 	}
 	if action.Reason == "" {
 		t.Error("expected a Reason explaining the fail-closed no-op")
@@ -366,6 +461,54 @@ func TestRunHedgeSyncReduceAdvancesBasisThenConverges(t *testing.T) {
 	}
 	if !approxEq(hpos.HedgePrimaryQtyBasis, 0.6) {
 		t.Errorf("cycle 3: HedgePrimaryQtyBasis = %v, want 0.6", hpos.HedgePrimaryQtyBasis)
+	}
+}
+
+// Review finding: a fresh-open cycle whose hedge price is unusable must
+// escalate to the fail-closed unwind (constraint 4), not silently Info-log
+// and leave the primary open-and-unhedged. Paper mode has no live order to
+// fail, so the unwind is a direct virtual close of the primary at its mark.
+func TestRunHedgeSyncFreshOpenUnavailablePriceUnwindsPrimaryPaper(t *testing.T) {
+	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1})
+	now := time.Now().UTC()
+	s := &StrategyState{
+		ID: "hl-eth-hedged", Type: "perps", Platform: "hyperliquid",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1, OpenedAt: now},
+		},
+	}
+	prices := map[string]float64{"ETH": 3000} // no BTC mark this cycle
+	var mu sync.RWMutex
+
+	runHedgeSync(sc, s, prices, &mu, true /* freshOpenThisCycle */, nil, nil)
+
+	if _, stillOpen := s.Positions["ETH"]; stillOpen {
+		t.Error("primary should have been unwound (virtual close) after the hedge open couldn't be priced")
+	}
+	if len(s.TradeHistory) != 1 {
+		t.Fatalf("expected 1 unwind trade, got %d", len(s.TradeHistory))
+	}
+	if s.TradeHistory[0].Details == "" {
+		t.Error("expected unwind trade to carry details")
+	}
+}
+
+// Must survive (c): a legitimate no-op (both flat) on a fresh-open flag must
+// NOT escalate — freshOpenThisCycle alone is not sufficient, the decision
+// core's Kind must actually be hedgeActionOpenUnavailable.
+func TestRunHedgeSyncFreshOpenFlagAloneDoesNotEscalateOnBenignNoOp(t *testing.T) {
+	sc := hedgeTestStrategy(&HedgeConfig{Enabled: true, Symbol: "BTC", Ratio: 1})
+	s := &StrategyState{
+		ID: "hl-eth-hedged", Type: "perps", Platform: "hyperliquid",
+		Positions: map[string]*Position{}, // both primary and hedge flat
+	}
+	prices := map[string]float64{"ETH": 3000, "BTC": 60000}
+	var mu sync.RWMutex
+
+	runHedgeSync(sc, s, prices, &mu, true, nil, nil)
+
+	if len(s.TradeHistory) != 0 {
+		t.Errorf("expected no trades for a benign both-flat no-op, got %d", len(s.TradeHistory))
 	}
 }
 
@@ -624,6 +767,66 @@ func TestApplyHyperliquidCircuitCloseFillNonHedgeUnaffected(t *testing.T) {
 	}
 	if s.RiskState.ConsecutiveLosses != 1 {
 		t.Errorf("ConsecutiveLosses = %d, want 1 (non-hedge loss must still feed the streak)", s.RiskState.ConsecutiveLosses)
+	}
+}
+
+// --- CB pending-close: hedge fate must track the primary's, not diverge
+// (review finding: a shared primary that can't be force-closed must not
+// still drain the sole-owned hedge — that only de-hedges the strategy for a
+// cycle before runHedgeSync reopens it, with no risk reduction achieved) ---
+
+func TestSetHyperliquidCircuitBreakerPendingSharedPrimaryDrainsNeitherLeg(t *testing.T) {
+	sc := &StrategyConfig{
+		ID: "hl-eth-hedged", Type: "perps", Platform: "hyperliquid",
+		Args:  []string{"--symbol", "ETH", "--mode=live"},
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"},
+	}
+	peer := StrategyConfig{ID: "hl-eth-peer", Type: "perps", Platform: "hyperliquid", Args: []string{"--symbol", "ETH", "--mode=live"}}
+	s := &StrategyState{
+		ID: sc.ID,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, Side: "short", HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+		},
+	}
+	assist := &PlatformRiskAssist{
+		HLPositions: []HLPosition{{Coin: "ETH", Size: 2}, {Coin: "BTC", Size: -0.05}},
+		HLLiveAll:   []StrategyConfig{*sc, peer}, // ETH shared by sc + peer
+	}
+	setHyperliquidCircuitBreakerPending(sc, s, assist)
+	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+		t.Fatalf("expected NO pending close (shared primary) — hedge must not drain alone, got %+v", p)
+	}
+}
+
+func TestSetHyperliquidCircuitBreakerPendingSoleOwnedPrimaryDrainsBothLegs(t *testing.T) {
+	sc := &StrategyConfig{
+		ID: "hl-eth-hedged", Type: "perps", Platform: "hyperliquid",
+		Args:  []string{"--symbol", "ETH", "--mode=live"},
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"},
+	}
+	s := &StrategyState{
+		ID: sc.ID,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "long"},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, Side: "short", HedgeFor: "ETH", HedgePrimaryQtyBasis: 1},
+		},
+	}
+	assist := &PlatformRiskAssist{
+		HLPositions: []HLPosition{{Coin: "ETH", Size: 1}, {Coin: "BTC", Size: -0.05}},
+		HLLiveAll:   []StrategyConfig{*sc}, // ETH sole-owned
+	}
+	setHyperliquidCircuitBreakerPending(sc, s, assist)
+	p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil {
+		t.Fatal("expected a pending close (sole-owned primary)")
+	}
+	got := map[string]bool{}
+	for _, sym := range p.Symbols {
+		got[sym.Symbol] = true
+	}
+	if !got["ETH"] || !got["BTC"] {
+		t.Errorf("Symbols = %+v, want both ETH (primary) and BTC (hedge)", p.Symbols)
 	}
 }
 

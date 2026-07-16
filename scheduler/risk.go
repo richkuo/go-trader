@@ -951,18 +951,29 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
+	// A shared primary coin can never be unilaterally force-closed (it would
+	// close a peer's exposure too) — it is deliberately left open for the
+	// whole latch window, and circuitBreakerPermitsManagement (#1046) keeps
+	// its trailing-SL/TP-ratchet running normally throughout. The hedge leg
+	// exists purely to protect THAT SAME primary exposure, so its CB fate
+	// must track the primary's, not diverge from it: draining only the
+	// hedge while the shared primary stays open de-risks nothing (runHedgeSync
+	// is not gated on latched CB state, so it reopens the hedge the very next
+	// cycle against the still-open primary) while leaving a real gap in
+	// between where the primary sits naked — strictly worse than leaving
+	// both alone (review finding, #1159). So: both close together when the
+	// primary is sole-owned and force-closeable; neither closes when the
+	// primary is shared — the state-derived hedge sync then keeps tracking
+	// the still-open primary exactly as it does outside any CB window.
+	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		return
+	}
 	var symbols []PendingCircuitCloseSymbol
-	if !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
-		if _, ok := s.Positions[sym]; ok {
-			if qty, ok2 := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok2 && qty > 0 {
-				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
-			}
+	if _, ok := s.Positions[sym]; ok {
+		if qty, ok2 := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok2 && qty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
 		}
 	}
-	// #1159: the hedge coin is guaranteed sole-owned by validateHedgeConfigs'
-	// collision matrix, so it drains even when the PRIMARY coin is shared
-	// with a peer (the branch above skipped) — a shared primary alone must
-	// never strand a hedge leg without a pending close.
 	if sc.HedgeEnabled() {
 		if hCoin := hedgeCoin(*sc); hCoin != "" {
 			if _, ok := s.Positions[hCoin]; ok {

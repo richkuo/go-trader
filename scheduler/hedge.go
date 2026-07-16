@@ -46,6 +46,15 @@ const (
 	hedgeActionAdd
 	hedgeActionReduce
 	hedgeActionCloseFull
+	// hedgeActionOpenUnavailable is a distinct no-op: the primary is held,
+	// no hedge is held yet, but the hedge coin's price is unusable so no
+	// open order can even be sized. Unlike every other hedgeActionNone
+	// cause (both flat, basis already matches, an existing hedge's reduce
+	// deferred as dust), this one leaves a HELD primary with NO hedge at
+	// all — on a fresh-open cycle that is exactly the fail-open constraint
+	// 4 exists to prevent, so runHedgeSync must treat it like an open-order
+	// failure, not a benign no-op (review finding).
+	hedgeActionOpenUnavailable
 )
 
 // hedgeSnapshot is the primary+hedge state hedgeTargetDecision needs,
@@ -82,6 +91,28 @@ func hedgeOpenNotionalQty(qty, px, ratio, hedgePx float64) (float64, bool) {
 		return 0, false
 	}
 	return hedgeQty, true
+}
+
+// hedgeProportionalBasis returns the HedgePrimaryQtyBasis watermark after an
+// action that intended to move the basis from oldBasis toward
+// targetPrimaryQty by executing intendedQty (hedge-coin units) but actually
+// achieved achievedQty (the real fill size — paper always achieves the full
+// intendedQty; live can partially fill). A full/over fill converges exactly
+// to targetPrimaryQty (identical to always stamping the target, the
+// pre-existing behavior); a partial fill advances the basis by only the
+// achieved fraction of the gap, so the next cycle's delta captures the
+// unfilled shortfall/residual instead of freezing a partial-fill error as
+// fully converged (review finding — this is the fill-level counterpart of
+// the cycle-level basis-never-advances bug fixed earlier in this PR).
+func hedgeProportionalBasis(oldBasis, targetPrimaryQty, intendedQty, achievedQty float64) float64 {
+	if intendedQty <= 0 || achievedQty >= intendedQty {
+		return targetPrimaryQty
+	}
+	frac := achievedQty / intendedQty
+	if frac < 0 {
+		frac = 0
+	}
+	return oldBasis + (targetPrimaryQty-oldBasis)*frac
 }
 
 // hedgeReduceQty returns the hedge quantity to reduce by by, proportional to
@@ -135,7 +166,7 @@ func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedge
 	if !hedgeHeld {
 		qty, ok := hedgeOpenNotionalQty(snap.PrimaryQty, primaryPx, hedgeRatio(sc), hedgePx)
 		if !ok {
-			return hedgeAction{Kind: hedgeActionNone, Reason: "unusable price for hedge open"}
+			return hedgeAction{Kind: hedgeActionOpenUnavailable, Reason: "unusable price for hedge open"}
 		}
 		return hedgeAction{Kind: hedgeActionOpen, Qty: qty, Side: desiredSide}
 	}
@@ -297,15 +328,40 @@ func runHyperliquidHedgeOpenOrAdd(sc StrategyConfig, hCoin, side string, qty flo
 
 // unwindPrimaryAfterHedgeOpenFailure implements the phase-1 fail-closed
 // policy (issue constraint 4): a confirmed primary fill on a fresh-open
-// cycle whose hedge open failed must never leave the strategy running
-// unhedged silently. Submits a SIZED (never a full/sz=None) reduce-only
-// close of the primary fill — sized because the primary coin may be shared
-// with peer strategies, unlike the hedge coin — cancelling its just-armed
-// SL/TP OIDs, books the close, and DMs the owner CRITICAL. If the unwind
-// itself also fails, virtual state is left unchanged (the primary fill was
-// real) and the NEXT cycle's hedge sync retries the hedge open against the
+// cycle whose hedge open failed (a live order failure, OR the hedge open
+// couldn't even be sized — e.g. an unusable/missing hedge-coin price) must
+// never leave the strategy running unhedged silently. On live it submits a
+// SIZED (never a full/sz=None) reduce-only close of the primary fill —
+// sized because the primary coin may be shared with peer strategies, unlike
+// the hedge coin — cancelling its just-armed SL/TP OIDs. On paper there is
+// no live order to fail or unwind, so it books a direct virtual close at
+// primaryPx instead (mirrors how a paper hedge fill is applied directly,
+// with no subprocess call). Either way it DMs the owner CRITICAL. If the
+// unwind itself also fails (paper: primaryPx unusable too; live: the close
+// order fails), virtual state is left unchanged (the primary fill was real)
+// and the NEXT cycle's hedge sync retries the hedge open against the
 // still-open primary — no new latch state, restart-safe degraded loop.
-func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, primaryCoin string, fillQty float64, notifier *MultiNotifier, logger *StrategyLogger) {
+func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, primaryCoin string, fillQty, primaryPx float64, live bool, notifier *MultiNotifier, logger *StrategyLogger) {
+	if !live {
+		mu.Lock()
+		ok := bookPerpsCloseWithFillFee(s, primaryCoin, primaryPx, 0, false, "", "hedge_open_failed_unwind", "Hedge-open-failed primary unwind (paper)", "Hedge-open-failed primary unwind (paper)", logger)
+		mu.Unlock()
+		msg := fmt.Sprintf("[CRITICAL] %s: hedge open FAILED (unusable hedge price) with primary %s open this cycle — unwinding primary at mark (paper, phase-1 fail-closed policy, #1159)", sc.ID, primaryCoin)
+		if !ok {
+			msg += "; UNWIND ALSO FAILED (no usable primary mark to book a virtual close) — primary remains open and UNHEDGED; the next cycle's hedge sync will retry the hedge open"
+		} else {
+			msg += fmt.Sprintf("; primary unwound @ $%.4f (paper)", primaryPx)
+		}
+		if logger != nil {
+			logger.Error("%s", msg)
+		}
+		if notifier != nil {
+			notifier.SendToAllChannels(msg)
+			notifier.SendOwnerDM(msg)
+		}
+		return
+	}
+
 	mu.RLock()
 	var cancelOIDs []int64
 	if pos, ok := s.Positions[primaryCoin]; ok && pos != nil {
@@ -403,22 +459,42 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, prices map[string]float64
 	primaryPx := prices[primaryCoin]
 	hedgePx := prices[hCoin]
 	action := hedgeTargetDecision(sc, snap, primaryPx, hedgePx)
+	live := hyperliquidIsLive(sc.Args)
 	if action.Kind == hedgeActionNone {
 		if action.Reason != "" && logger != nil {
 			logger.Info("Hedge sync %s: no action (%s)", hCoin, action.Reason)
 		}
 		return
 	}
-
-	live := hyperliquidIsLive(sc.Args)
+	if action.Kind == hedgeActionOpenUnavailable {
+		// The primary is held with NO hedge at all and no order could even be
+		// sized (unusable/missing hedge-coin price) — on a fresh open this is
+		// the same fail-open constraint 4 exists to prevent, so it must
+		// escalate exactly like a failed hedge-open order, not log-and-return
+		// like every other no-op (review finding).
+		if freshOpenThisCycle {
+			if logger != nil {
+				logger.Warn("Hedge sync %s: %s on a fresh-open cycle — escalating to fail-closed primary unwind", hCoin, action.Reason)
+			}
+			unwindPrimaryAfterHedgeOpenFailure(sc, s, mu, primaryCoin, snap.PrimaryQty, primaryPx, live, notifier, logger)
+		} else if logger != nil {
+			logger.Warn("Hedge open unavailable for %s: %s — hedge sync will retry next cycle", hCoin, action.Reason)
+		}
+		return
+	}
 
 	switch action.Kind {
 	case hedgeActionOpen, hedgeActionAdd:
 		isFreshOpen := action.Kind == hedgeActionOpen
-		newBasis := snap.PrimaryQty
+		oldBasis := snap.HedgeBasis
+		if isFreshOpen {
+			oldBasis = 0 // no primary was hedged before this cycle
+		}
 		if !live {
+			// Paper always "fills" the full intended qty — proportional basis
+			// reduces to the target exactly like the pre-existing behavior.
 			mu.Lock()
-			applyHedgeOpenOrAddFill(s, sc, hCoin, action.Side, action.Qty, hedgePx, 0, "", false, newBasis)
+			applyHedgeOpenOrAddFill(s, sc, hCoin, action.Side, action.Qty, hedgePx, 0, "", false, snap.PrimaryQty)
 			mu.Unlock()
 			return
 		}
@@ -433,7 +509,7 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, prices map[string]float64
 			}
 			notifyLiveExecFailure(notifier, sc, "hedge-open", hCoin, errMsg)
 			if isFreshOpen && freshOpenThisCycle {
-				unwindPrimaryAfterHedgeOpenFailure(sc, s, mu, primaryCoin, snap.PrimaryQty, notifier, logger)
+				unwindPrimaryAfterHedgeOpenFailure(sc, s, mu, primaryCoin, snap.PrimaryQty, primaryPx, live, notifier, logger)
 			} else if logger != nil {
 				action := "add"
 				if isFreshOpen {
@@ -449,6 +525,7 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, prices map[string]float64
 		if fill.OID != 0 {
 			fillOID = fmt.Sprintf("%d", fill.OID)
 		}
+		newBasis := hedgeProportionalBasis(oldBasis, snap.PrimaryQty, action.Qty, fill.TotalSz)
 		mu.Lock()
 		applyHedgeOpenOrAddFill(s, sc, hCoin, action.Side, fill.TotalSz, fill.AvgPx, fill.Fee, fillOID, true, newBasis)
 		mu.Unlock()
@@ -506,7 +583,8 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, prices map[string]float64
 		if full {
 			applyHedgeCloseFill(s, hCoin, fill.AvgPx, fill.Fee, true, fillOID, reason, logger)
 		} else {
-			applyHedgeReduceFill(s, hCoin, fill.TotalSz, fill.AvgPx, fill.Fee, true, fillOID, reason, snap.PrimaryQty, logger)
+			newBasis := hedgeProportionalBasis(snap.HedgeBasis, snap.PrimaryQty, action.Qty, fill.TotalSz)
+			applyHedgeReduceFill(s, hCoin, fill.TotalSz, fill.AvgPx, fill.Fee, true, fillOID, reason, newBasis, logger)
 		}
 		mu.Unlock()
 	}
