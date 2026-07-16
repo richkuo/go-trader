@@ -306,6 +306,29 @@ func runHedgeOrder(sc StrategyConfig, coin string, action hedgeAction, walletSna
 	}
 }
 
+// hedgeBasisAfterFill returns the updated HedgePrimaryQtyBasis watermark
+// after a hedge fill, prorating convergence toward primaryQtyAtEvent by the
+// fraction of the intended order (requestedQty, i.e. action.Qty) that
+// actually filled (filledQty). A thin book or slippage cap can fill an HL
+// market order short of what was requested; stamping the basis as if the
+// full requested qty had filled would make next cycle's delta computation
+// see zero change (primary qty unchanged since the snapshot) and never
+// retry the shortfall, silently leaving the leg under- (open/add) or
+// over- (reduce) hedged with no operator signal (#1159 review). Prorating
+// leaves the unfilled remainder as a live delta the next cycle picks up.
+func hedgeBasisAfterFill(oldBasis, primaryQtyAtEvent, requestedQty, filledQty float64) float64 {
+	if requestedQty <= hedgeQtyEpsilon {
+		return primaryQtyAtEvent
+	}
+	fraction := filledQty / requestedQty
+	if fraction > 1 {
+		fraction = 1
+	} else if fraction < 0 {
+		fraction = 0
+	}
+	return oldBasis + fraction*(primaryQtyAtEvent-oldBasis)
+}
+
 // applyHedgeOpenOrAddFill books a confirmed hedge open/add fill under
 // mu.Lock(). Bespoke (not a reuse of the primary's ExecutePerpsSignalWithLeverage
 // path) because a hedge leg never flips, carries no SL/TP, and doesn't
@@ -330,6 +353,7 @@ func applyHedgeOpenOrAddFill(s *StrategyState, sc StrategyConfig, coin string, a
 		}
 		s.Positions[coin] = pos
 	}
+	oldBasis := pos.HedgePrimaryQtyBasis
 	newQty := pos.Quantity + fillQty
 	if pos.Quantity <= 0 {
 		pos.AvgCost = fillPx
@@ -342,7 +366,7 @@ func applyHedgeOpenOrAddFill(s *StrategyState, sc StrategyConfig, coin string, a
 		pos.AvgCost = (pos.AvgCost*pos.Quantity + fillPx*fillQty) / newQty
 	}
 	pos.Quantity = newQty
-	pos.HedgePrimaryQtyBasis = primaryQtyAtEvent
+	pos.HedgePrimaryQtyBasis = hedgeBasisAfterFill(oldBasis, primaryQtyAtEvent, action.Qty, fillQty)
 
 	positionID := ensurePositionTradeID(sc.ID, coin, pos)
 	var exchangeOID string
@@ -374,7 +398,10 @@ func applyHedgeOpenOrAddFill(s *StrategyState, sc StrategyConfig, coin string, a
 // dup-OID guard for free, and (via its #1159 hedge-routing addition) tags
 // trade_type="hedge" and books PnL through RecordHedgeTradeResult rather than
 // RecordTradeResult because pos.HedgeFor is non-empty. Advances the basis
-// watermark to primaryQtyAtEvent when the leg survives as a partial reduce.
+// watermark toward primaryQtyAtEvent (prorated by fill fraction via
+// hedgeBasisAfterFill, #1159 review) when the leg survives as a partial
+// reduce — a short fill leaves the excess hedge as a live delta the next
+// cycle retries, rather than being stamped as fully converged.
 func applyHedgeReduceOrCloseFill(s *StrategyState, sc StrategyConfig, coin string, action hedgeAction, fillQty, fillPx, fillFee float64, fillOID int64, primaryQtyAtEvent float64, logger *StrategyLogger) bool {
 	primarySym := hyperliquidSymbol(sc.Args)
 	var exchangeOID string
@@ -389,7 +416,7 @@ func applyHedgeReduceOrCloseFill(s *StrategyState, sc StrategyConfig, coin strin
 	ok := bookPerpsPartialCloseWithFillFee(s, coin, fillQty, fillPx, fillFee, true, exchangeOID, reason, detailsPrefix, "Hedge close", logger)
 	if ok && action.Kind == hedgeActionReduce {
 		if pos, stillOpen := s.Positions[coin]; stillOpen && pos != nil {
-			pos.HedgePrimaryQtyBasis = primaryQtyAtEvent
+			pos.HedgePrimaryQtyBasis = hedgeBasisAfterFill(pos.HedgePrimaryQtyBasis, primaryQtyAtEvent, action.Qty, fillQty)
 		}
 	}
 	return ok

@@ -1365,6 +1365,15 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 // must be > 0 — when zero, the function returns (0, 0) and the caller falls
 // back to peak-relative drawdown.
 //
+// #1159: a correlated hedge leg (pos.HedgeFor != "") is excluded entirely —
+// numerator and denominator alike. A hedge is by construction in unrealized
+// loss whenever its primary is in profit; folding that loss into the
+// numerator while the primary's offsetting gain clamps to zero would inflate
+// the ratio and mis-fire the CB/kill switch on a strategy that is net flat or
+// winning. RecordHedgeTradeResult already excludes the hedge from
+// ConsecutiveLosses for the same reason — this is the drawdown arm's
+// counterpart.
+//
 // The unrealized-loss numerator (rather than peakValue - portfolioValue) keeps
 // the drawdown ratio referenced to the currently-open position: prior realized
 // losses that already live in Cash below the high-water mark do NOT inflate
@@ -1380,7 +1389,7 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 		return 0, 0
 	}
 	for sym, pos := range s.Positions {
-		if pos.Multiplier <= 0 {
+		if pos.Multiplier <= 0 || pos.HedgeFor != "" {
 			continue
 		}
 		price, ok := prices[sym]

@@ -427,3 +427,175 @@ func TestHedgeTradesExcludedFromLifetimeStats(t *testing.T) {
 		t.Errorf("Wins=%d Losses=%d, want 1/0 (hedge close excluded from W/L)", got.Wins, got.Losses)
 	}
 }
+
+// --- CB/kill-switch margin-drawdown hedge exclusion (#1159 review) ---
+
+// A hedge leg's by-construction unrealized loss (the primary is in profit)
+// must not enter the margin-drawdown numerator or denominator — otherwise a
+// net-flat/net-winning hedged strategy could mis-fire its circuit breaker.
+func TestPerpsMarginDrawdownInputs_ExcludesHedgeLeg(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long", Multiplier: 1},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 60000, Side: "short", Multiplier: 1, HedgeFor: "ETH"},
+		},
+	}
+	prices := map[string]float64{"ETH": 3200, "BTC": 62000}
+	loss, margin := perpsMarginDrawdownInputs(s, 10, prices)
+	if loss != 0 {
+		t.Errorf("unrealizedLoss = %v, want 0 (hedge leg excluded, primary is winning)", loss)
+	}
+	wantMargin := (1 * 3200.0) / 10
+	if !approxEq(margin, wantMargin) {
+		t.Errorf("margin = %v, want %v (only primary notional/leverage)", margin, wantMargin)
+	}
+}
+
+// A primary leg genuinely losing must still count toward drawdown even with
+// a hedge open alongside it — the exclusion must not dilute or suppress a
+// real drawdown signal.
+func TestPerpsMarginDrawdownInputs_PrimaryLossStillCounted(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, AvgCost: 3200, Side: "long", Multiplier: 1},
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 60000, Side: "short", Multiplier: 1, HedgeFor: "ETH"},
+		},
+	}
+	prices := map[string]float64{"ETH": 3000, "BTC": 58000}
+	loss, margin := perpsMarginDrawdownInputs(s, 10, prices)
+	wantLoss := 1 * (3200.0 - 3000.0)
+	if !approxEq(loss, wantLoss) {
+		t.Errorf("unrealizedLoss = %v, want %v (primary's own loss must still count)", loss, wantLoss)
+	}
+	wantMargin := (1 * 3000.0) / 10
+	if !approxEq(margin, wantMargin) {
+		t.Errorf("margin = %v, want %v", margin, wantMargin)
+	}
+}
+
+// A stray hedge leg with the primary already flat contributes nothing.
+func TestPerpsMarginDrawdownInputs_StrayHedgeWithPrimaryFlat(t *testing.T) {
+	s := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.05, AvgCost: 60000, Side: "short", Multiplier: 1, HedgeFor: "ETH"},
+		},
+	}
+	prices := map[string]float64{"BTC": 65000}
+	loss, margin := perpsMarginDrawdownInputs(s, 10, prices)
+	if loss != 0 || margin != 0 {
+		t.Errorf("loss=%v margin=%v, want 0/0 (stray hedge leg alone must not trip CB)", loss, margin)
+	}
+}
+
+// --- Partial-fill basis proration (#1159 review) ---
+
+func TestHedgeBasisAfterFill_FullFillConvergesFully(t *testing.T) {
+	got := hedgeBasisAfterFill(2, 5, 3, 3)
+	if !approxEq(got, 5) {
+		t.Errorf("basis = %v, want 5 (full fill converges fully)", got)
+	}
+}
+
+func TestHedgeBasisAfterFill_OpenPartialFillProratesFromZero(t *testing.T) {
+	got := hedgeBasisAfterFill(0, 10, 1, 0.4)
+	want := 4.0
+	if !approxEq(got, want) {
+		t.Errorf("basis = %v, want %v (40%% of the way from 0 to target)", got, want)
+	}
+}
+
+func TestHedgeBasisAfterFill_AddPartialFillProratesFromOldBasis(t *testing.T) {
+	got := hedgeBasisAfterFill(4, 10, 2, 1)
+	want := 4 + 0.5*(10.0-4.0)
+	if !approxEq(got, want) {
+		t.Errorf("basis = %v, want %v", got, want)
+	}
+}
+
+func TestHedgeBasisAfterFill_ZeroRequestedQtyFallsBackToTarget(t *testing.T) {
+	got := hedgeBasisAfterFill(2, 5, 0, 0)
+	if !approxEq(got, 5) {
+		t.Errorf("basis = %v, want 5 (degenerate requestedQty falls back to target)", got)
+	}
+}
+
+func TestHedgeBasisAfterFill_OverfillClampsFractionToOne(t *testing.T) {
+	got := hedgeBasisAfterFill(0, 10, 1, 1.5)
+	if !approxEq(got, 10) {
+		t.Errorf("basis = %v, want 10 (fraction clamped to 1)", got)
+	}
+}
+
+func TestApplyHedgeOpenOrAddFill_PartialFillProratesBasis(t *testing.T) {
+	sc := hedgeTestStrategy(nil)
+	s := &StrategyState{ID: sc.ID, Positions: map[string]*Position{}}
+	action := hedgeAction{Kind: hedgeActionOpen, Qty: 1.0, Side: "short"}
+	// Sizing intended to hedge primaryQtyAtEvent=2 fully via a 1.0-BTC order,
+	// but the exchange only filled 0.4 BTC (thin book / slippage cap).
+	got := applyHedgeOpenOrAddFill(s, sc, "BTC", action, 0.4, 60000, 5, 111, 2)
+	if got != 1 {
+		t.Fatalf("applyHedgeOpenOrAddFill returned %d, want 1", got)
+	}
+	pos := s.Positions["BTC"]
+	if pos == nil {
+		t.Fatal("expected BTC position to exist")
+	}
+	wantBasis := 0.4 / 1.0 * 2.0
+	if !approxEq(pos.HedgePrimaryQtyBasis, wantBasis) {
+		t.Errorf("HedgePrimaryQtyBasis = %v, want %v (prorated by 40%% fill, not stamped as fully converged)", pos.HedgePrimaryQtyBasis, wantBasis)
+	}
+}
+
+func TestApplyHedgeOpenOrAddFill_FullFillSetsBasisToTarget(t *testing.T) {
+	sc := hedgeTestStrategy(nil)
+	s := &StrategyState{ID: sc.ID, Positions: map[string]*Position{}}
+	action := hedgeAction{Kind: hedgeActionOpen, Qty: 1.0, Side: "short"}
+	applyHedgeOpenOrAddFill(s, sc, "BTC", action, 1.0, 60000, 5, 111, 2)
+	pos := s.Positions["BTC"]
+	if !approxEq(pos.HedgePrimaryQtyBasis, 2) {
+		t.Errorf("HedgePrimaryQtyBasis = %v, want 2 (full fill converges fully)", pos.HedgePrimaryQtyBasis)
+	}
+}
+
+func TestApplyHedgeReduceOrCloseFill_PartialFillProratesBasis(t *testing.T) {
+	sc := hedgeTestStrategy(nil)
+	s := &StrategyState{
+		ID: sc.ID,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 60000, Side: "short",
+				Multiplier: 1, OwnerStrategyID: sc.ID, HedgeFor: "ETH", HedgePrimaryQtyBasis: 4},
+		},
+	}
+	// Primary shrank from basis=4 to primaryQtyAtEvent=2; the reduce action
+	// requested cutting 0.05 BTC to fully converge, but only 0.02 BTC (40%) filled.
+	action := hedgeAction{Kind: hedgeActionReduce, Qty: 0.05, Side: "short"}
+	ok := applyHedgeReduceOrCloseFill(s, sc, "BTC", action, 0.02, 61000, 1, 222, 2, nil)
+	if !ok {
+		t.Fatalf("applyHedgeReduceOrCloseFill returned false, want true")
+	}
+	pos := s.Positions["BTC"]
+	if pos == nil {
+		t.Fatal("expected BTC position to still exist (partial reduce)")
+	}
+	wantBasis := 4 + (0.02/0.05)*(2.0-4.0)
+	if !approxEq(pos.HedgePrimaryQtyBasis, wantBasis) {
+		t.Errorf("HedgePrimaryQtyBasis = %v, want %v (prorated by 40%% fill, excess hedge left as a live delta)", pos.HedgePrimaryQtyBasis, wantBasis)
+	}
+}
+
+func TestApplyHedgeReduceOrCloseFill_FullFillSetsBasisToTarget(t *testing.T) {
+	sc := hedgeTestStrategy(nil)
+	s := &StrategyState{
+		ID: sc.ID,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.1, InitialQuantity: 0.1, AvgCost: 60000, Side: "short",
+				Multiplier: 1, OwnerStrategyID: sc.ID, HedgeFor: "ETH", HedgePrimaryQtyBasis: 4},
+		},
+	}
+	action := hedgeAction{Kind: hedgeActionReduce, Qty: 0.05, Side: "short"}
+	applyHedgeReduceOrCloseFill(s, sc, "BTC", action, 0.05, 61000, 1, 222, 2, nil)
+	pos := s.Positions["BTC"]
+	if !approxEq(pos.HedgePrimaryQtyBasis, 2) {
+		t.Errorf("HedgePrimaryQtyBasis = %v, want 2 (full fill converges fully)", pos.HedgePrimaryQtyBasis)
+	}
+}
