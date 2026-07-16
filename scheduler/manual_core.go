@@ -1417,9 +1417,96 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		return res, manualFailf("error queuing force-close action: %v", err)
 	}
 
+	// #1159: mirror the close onto the strategy's hedge leg so a manual
+	// force-close never strands one side of the pair. Failure here is
+	// non-fatal for the primary close (already submitted and queued) — the
+	// scheduler's per-cycle hedge sync is the backstop that converges the
+	// hedge next cycle.
+	forceCloseHedgeFollowUp(d, sc, strategyID, filledQty, pos.Quantity, actualFullClose, res)
+
 	res.queued = true
 	res.outf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.")
 	return res, nil
+}
+
+// forceCloseHedgeFollowUp submits a reduce-only close for the strategy's held
+// hedge leg after a successful primary force-close (#1159): full close when
+// the primary fully closed, else the primary's closed fraction. Books via a
+// second PendingManualAction row so the scheduler adopts both legs.
+func forceCloseHedgeFollowUp(d manualCoreDeps, sc StrategyConfig, strategyID string, primaryFilledQty, primaryPrevQty float64, primaryFullClose bool, res *manualCoreResult) {
+	if !HedgeEnabled(sc) {
+		return
+	}
+	hCoin := hedgeCoin(sc)
+	if hCoin == "" || primaryPrevQty <= 0 {
+		return
+	}
+	hview, err := d.loadState(strategyID, hCoin)
+	if err != nil || hview.Pos == nil || hview.Pos.HedgeFor == "" || hview.Pos.Quantity <= 0 {
+		return
+	}
+	hpos := hview.Pos
+	hedgeQty := hpos.Quantity
+	hedgeFull := true
+	if !primaryFullClose {
+		hedgeQty = hpos.Quantity * (primaryFilledQty / primaryPrevQty)
+		if hpos.Quantity-hedgeQty > 1e-9 {
+			hedgeFull = false
+		}
+	}
+	if hedgeQty <= 0 {
+		return
+	}
+	sz := hedgeQty
+	result, execErr := d.closer(hCoin, &sz, nil)
+	if execErr != nil || result == nil || result.Close == nil || result.Error != "" || result.Close.Fill == nil {
+		detail := "no usable fill"
+		if execErr != nil {
+			detail = execErr.Error()
+		} else if result != nil && result.Error != "" {
+			detail = result.Error
+		}
+		res.errf("CRITICAL: hedge leg close for %s/%s FAILED (%s) — the scheduler's hedge sync will retry next cycle; verify on-chain exposure", strategyID, hCoin, detail)
+		return
+	}
+	fill := result.Close.Fill
+	filled := fill.TotalSz
+	if filled <= 0 || filled > hpos.Quantity {
+		filled = hedgeQty
+	}
+	var hedgePnL float64
+	if hpos.Side == "long" {
+		hedgePnL = filled * (fill.AvgPx - hpos.AvgCost)
+	} else {
+		hedgePnL = filled * (hpos.AvgCost - fill.AvgPx)
+	}
+	hedgePnL -= fill.Fee
+	hedgeSide := "sell"
+	if hpos.Side == "short" {
+		hedgeSide = "buy"
+	}
+	var oid string
+	if fill.OID != 0 {
+		oid = fmt.Sprintf("%d", fill.OID)
+	}
+	haction := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "close",
+		Symbol:          hCoin,
+		Side:            hedgeSide,
+		Quantity:        filled,
+		FillPrice:       fill.AvgPx,
+		FillFee:         fill.Fee,
+		ExchangeOrderID: oid,
+		RealizedPnL:     hedgePnL,
+		IsFullClose:     hedgeFull,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(haction); err != nil {
+		res.errf("CRITICAL: hedge close for %s/%s filled on-chain but queuing failed (%v) — the next reconcile books it as an external close", strategyID, hCoin, err)
+		return
+	}
+	res.outf("Hedge leg closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)", filled, hCoin, fill.AvgPx, hedgePnL, fill.Fee)
 }
 
 // ---------------------------------------------------------------------------

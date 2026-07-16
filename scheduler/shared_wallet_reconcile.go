@@ -533,6 +533,19 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: emit the hedge leg too — without this the hedge coin is
+		// classified as an ORPHAN coin by attributeSharedWalletUPnL (phantom
+		// drift alerts) and its wallet-ledger funding events go unattributed.
+		if key.Platform == "hyperliquid" && HedgeEnabled(sc) {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hpos, hok := ss.Positions[hc]; hok && hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+					if virtualQty[hc] == nil {
+						virtualQty[hc] = make(map[string]float64)
+					}
+					virtualQty[hc][id] = hpos.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }
