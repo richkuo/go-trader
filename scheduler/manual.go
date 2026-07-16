@@ -551,6 +551,13 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		closedFull := a.IsFullClose
 		side := closeTradeSide(pos.Side)
 		closeLabel := operatorCloseLabel(sc)
+		// #1159: a hedge leg's forced close is tagged distinctly and its PnL
+		// routes through RecordHedgeTradeResult (DailyPnL only) instead of
+		// RecordTradeResult, mirroring every other close-booking path.
+		tradeType := "perps"
+		if pos.HedgeFor != "" {
+			tradeType = hedgeTradeType
+		}
 
 		trade := Trade{
 			Timestamp:       now,
@@ -560,7 +567,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			Quantity:        a.Quantity,
 			Price:           a.FillPrice,
 			Value:           a.Quantity * a.FillPrice,
-			TradeType:       "perps",
+			TradeType:       tradeType,
 			Details:         fmt.Sprintf("%s %s @ $%.4f | PnL=$%.2f", closeLabel, a.Symbol, a.FillPrice, a.RealizedPnL),
 			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
@@ -573,7 +580,11 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		}
 		RecordTrade(ss, trade)
 		if sc.Type != "manual" {
-			RecordTradeResult(&ss.RiskState, a.RealizedPnL)
+			if pos.HedgeFor != "" {
+				RecordHedgeTradeResult(&ss.RiskState, a.RealizedPnL)
+			} else {
+				RecordTradeResult(&ss.RiskState, a.RealizedPnL)
+			}
 		}
 		// Fix #1: perps close credits only the realized PnL; notional was never debited.
 		ss.Cash += a.RealizedPnL
@@ -585,6 +596,23 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			pos.Quantity -= a.Quantity
 			if sc.Type != "manual" {
 				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
+			}
+			// #1159 review: a partial force-close on a hedge leg (queued by
+			// forceCloseCore's best-effort mirror) reduces pos.Quantity here but
+			// must also advance the basis watermark to the primary's CURRENT
+			// qty — otherwise the next runHedgeSync cycle still sees the old
+			// (pre-close) basis, computes a fresh delta against it, and reduces
+			// the hedge a SECOND time on top of this mirror's reduce. The
+			// primary's own "close" drain always applies before this one (both
+			// were queued in the same forceCloseCore call, primary inserted
+			// first, and LoadPendingManualActions replays by ascending id), so
+			// ss.Positions[pos.HedgeFor] already reflects the post-close qty.
+			if pos.HedgeFor != "" {
+				if primaryPos, ok := ss.Positions[pos.HedgeFor]; ok && primaryPos != nil {
+					pos.HedgePrimaryQtyBasis = primaryPos.Quantity
+				} else {
+					pos.HedgePrimaryQtyBasis = 0
+				}
 			}
 		}
 		fmt.Printf("[manual] applied %s: %s %.6f %s @ $%.4f | PnL=$%.2f\n",

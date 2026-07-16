@@ -745,6 +745,84 @@ func TestApplyManualAction_PerpsForceClosePartialUpdatesDailyPnL(t *testing.T) {
 	}
 }
 
+// #1159 review: forceCloseCore's best-effort hedge mirror queues the primary's
+// own partial-close action AND a separate partial-close action for the hedge
+// leg (both drained via applyManualAction, primary first per insertion order).
+// Before this fix, the hedge leg's drain reduced pos.Quantity but never
+// advanced HedgePrimaryQtyBasis, so the next runHedgeSync cycle would see the
+// stale basis and reduce the hedge a SECOND time. This replays that exact
+// two-action sequence and asserts the basis lands on the primary's new qty.
+func TestApplyManualAction_PartialHedgeMirrorAdvancesBasisWatermark(t *testing.T) {
+	stratID := "hl-eth-long"
+	now := time.Now().UTC()
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:       stratID,
+				Type:     "perps",
+				Platform: "hyperliquid",
+				Cash:     1000,
+				Positions: map[string]*Position{
+					"ETH": {
+						Symbol: "ETH", Quantity: 10, InitialQuantity: 10, AvgCost: 3000, Side: "long",
+						Multiplier: 1, Leverage: 5, OwnerStrategyID: stratID, OpenedAt: now.Add(-time.Hour),
+					},
+					"BTC": {
+						Symbol: "BTC", Quantity: 3, InitialQuantity: 3, AvgCost: 60000, Side: "short",
+						Multiplier: 1, Leverage: 3, OwnerStrategyID: stratID, OpenedAt: now.Add(-time.Hour),
+						HedgeFor: "ETH", HedgePrimaryQtyBasis: 10,
+					},
+				},
+			},
+		},
+	}
+	scByID := map[string]StrategyConfig{
+		stratID: {
+			ID: stratID, Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"},
+		},
+	}
+
+	// Primary drains first (lower id / inserted first in forceCloseCore).
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
+		StrategyID: stratID, Action: "close", Symbol: "ETH", Side: "sell",
+		Quantity: 5, FillPrice: 3200, RealizedPnL: 1000, IsFullClose: false, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("primary partial close: %v", err)
+	}
+	if got := state.Strategies[stratID].Positions["ETH"].Quantity; got != 5 {
+		t.Fatalf("primary qty after partial close = %g, want 5", got)
+	}
+
+	// Hedge mirror drains second, reducing proportionally (3 * 5/10 = 1.5).
+	if err := applyManualAction(state, nil, scByID, PendingManualAction{
+		StrategyID: stratID, Action: "close", Symbol: "BTC", Side: "buy",
+		Quantity: 1.5, FillPrice: 61000, RealizedPnL: -1500, IsFullClose: false, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("hedge partial close: %v", err)
+	}
+
+	hedgePos := state.Strategies[stratID].Positions["BTC"]
+	if hedgePos == nil {
+		t.Fatal("hedge position should remain open after partial reduce")
+	}
+	if !approxEq(hedgePos.Quantity, 1.5) {
+		t.Errorf("hedge qty = %v, want 1.5", hedgePos.Quantity)
+	}
+	if !approxEq(hedgePos.HedgePrimaryQtyBasis, 5) {
+		t.Errorf("HedgePrimaryQtyBasis = %v, want 5 (advanced to primary's post-close qty, not left stale at 10)", hedgePos.HedgePrimaryQtyBasis)
+	}
+
+	// With basis correctly advanced, hedgeTargetDecision must now see no
+	// further change to make — the double-reduce this fix prevents would
+	// instead compute a fresh non-zero reduce here.
+	snap := hedgeSnapshotFor(state.Strategies[stratID], "ETH", "BTC")
+	action := hedgeTargetDecision(scByID[stratID], snap, 3200, 61000)
+	if action.Kind != hedgeActionNone {
+		t.Errorf("hedgeTargetDecision after mirror = %v (%s), want none (basis already converged)", action.Kind, action.Reason)
+	}
+}
+
 func TestApplyManualAction_ManualCloseDoesNotUpdateRiskState(t *testing.T) {
 	stratID := "hl-manual-eth"
 	now := time.Now().UTC()

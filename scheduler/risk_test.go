@@ -2029,6 +2029,98 @@ func TestCheckRisk_LiveHLSoleOwner_StillForceCloses(t *testing.T) {
 	}
 }
 
+// #1159 review round 3: a per-strategy circuit breaker firing while the
+// primary is flat but a hedge leg is still held (e.g. a prior closeFull
+// attempt failed and left it dangling) must still queue the hedge leg for
+// an on-chain close — setHyperliquidCircuitBreakerPending must not skip
+// queuing anything just because the primary itself isn't held.
+func TestCheckRisk_HedgeStrandedWithFlatPrimary_StillQueuesOnChainClose(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-eth-long", Platform: "hyperliquid", Type: "perps",
+		Capital: 500, Leverage: 20,
+		Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"},
+	}
+	assist := &PlatformRiskAssist{
+		HLPositions: []HLPosition{{Coin: "BTC", Size: -1.5, EntryPrice: 60000}},
+		HLLiveAll:   []StrategyConfig{sc},
+	}
+	s := &StrategyState{
+		ID:       sc.ID,
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     1000,
+		RiskState: RiskState{
+			ConsecutiveLosses: 5,
+			DailyPnLDate:      todayUTC(),
+		},
+		Positions: map[string]*Position{
+			// Primary ("ETH") is flat — no entry at all. The hedge leg is
+			// still held, dangling from a prior failed closeFull.
+			"BTC": {Symbol: "BTC", Quantity: 1.5, AvgCost: 60000, Side: "short",
+				Multiplier: 1, Leverage: 3, OwnerStrategyID: sc.ID, HedgeFor: "ETH"},
+		},
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+	prices := map[string]float64{"BTC": 61000}
+
+	allowed, reason := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
+
+	if allowed {
+		t.Fatalf("expected loss-streak circuit breaker to fire; reason=%s", reason)
+	}
+	p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid)
+	if p == nil || len(p.Symbols) != 1 || p.Symbols[0].Symbol != "BTC" {
+		t.Fatalf("expected Hyperliquid pending close for the stranded hedge leg; got %+v", p)
+	}
+	if p.Symbols[0].Size <= 0 {
+		t.Errorf("expected positive hedge close size, got %v", p.Symbols[0].Size)
+	}
+	if _, ok := s.Positions["BTC"]; ok {
+		t.Fatal("expected hedge leg to be force-closed in-state (in-state close is unconditional; the bug is the on-chain roster silently omitting it)")
+	}
+}
+
+// A foreign position on a strategy's declared hedge coin, with the primary
+// flat, must never be queued by the per-strategy CB just because the coin
+// is configured as a hedge target.
+func TestCheckRisk_ForeignPositionOnHedgeCoinNotQueued(t *testing.T) {
+	sc := StrategyConfig{
+		ID: "hl-eth-long", Platform: "hyperliquid", Type: "perps",
+		Capital: 500, Leverage: 20,
+		Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+		Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"},
+	}
+	assist := &PlatformRiskAssist{
+		HLPositions: []HLPosition{{Coin: "BTC", Size: 0.3, EntryPrice: 60000}},
+		HLLiveAll:   []StrategyConfig{sc},
+	}
+	s := &StrategyState{
+		ID:       sc.ID,
+		Type:     "perps",
+		Platform: "hyperliquid",
+		Cash:     1000,
+		RiskState: RiskState{
+			ConsecutiveLosses: 5,
+			DailyPnLDate:      todayUTC(),
+		},
+		Positions:       map[string]*Position{}, // no virtual BTC position at all
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+	}
+	prices := map[string]float64{}
+
+	allowed, _ := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, assist)
+
+	if allowed {
+		t.Fatal("expected loss-streak circuit breaker to fire")
+	}
+	if p := s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid); p != nil {
+		t.Fatalf("expected no pending close (nothing virtually held); got %+v", p)
+	}
+}
+
 // TestCheckRisk_LiveTopStepCB_SetsPendingFullFlatten verifies #362: a live
 // TopStep futures strategy with a sole-peer contract gets a full-flatten
 // pending close enqueued when its per-strategy circuit breaker fires.

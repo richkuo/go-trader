@@ -2759,7 +2759,7 @@ func TestForceCloseHyperliquidLive_NonSharedCoin(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2788,7 +2788,7 @@ func TestForceCloseHyperliquidLive_SharedCoinEmptyVirtual(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2819,7 +2819,7 @@ func TestForceCloseHyperliquidLive_NetZeroSziAlreadyFlat(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors for net-zero coin, got %v", report.Errors)
@@ -2852,7 +2852,7 @@ func TestForceCloseHyperliquidLive_ShortPosition(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2884,7 +2884,7 @@ func TestForceCloseHyperliquidLive_ClosePartialFailure(t *testing.T) {
 	closeErr := fmt.Errorf("hl rate limited")
 	closer, _ := fakeCloser(map[string]error{"BTC": closeErr})
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -2913,7 +2913,7 @@ func TestForceCloseHyperliquidLive_UnownedPositionIgnored(t *testing.T) {
 	}
 
 	closer, calls := fakeCloser(nil)
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "ETH" {
 		t.Errorf("ClosedCoins = %v, want [ETH]", report.ClosedCoins)
@@ -2933,7 +2933,7 @@ func TestForceCloseHyperliquidLive_EmptyInputs(t *testing.T) {
 	report := forceCloseHyperliquidLive(context.Background(), nil, nil, func(string, *float64, []int64) (*HyperliquidCloseResult, error) {
 		t.Fatalf("closer should not be called with empty inputs")
 		return nil, nil
-	}, nil)
+	}, nil, nil)
 	if len(report.ClosedCoins) != 0 || len(report.AlreadyFlat) != 0 || len(report.Errors) != 0 {
 		t.Errorf("expected empty report, got %+v", report)
 	}
@@ -2960,7 +2960,7 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 		}, nil
 	}
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, nil)
 
 	if len(report.Errors) != 0 {
 		t.Errorf("expected no errors, got %v", report.Errors)
@@ -2973,6 +2973,78 @@ func TestForceCloseHyperliquidLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.
 	}
 	if len(calls) != 1 || calls[0] != "ETH" {
 		t.Errorf("closer should still be called once (Go side saw non-zero szi), got %v", calls)
+	}
+}
+
+// #1159 review: a hedge leg held while its primary is flat (e.g. a prior
+// closeFull attempt failed and left it dangling) must still be captured by
+// snapshotHyperliquidVirtualQuantities and closed on-chain by the kill
+// switch — not silently stranded because the hedge-capture block used to be
+// nested under the primary coin's `continue`.
+func TestForceCloseHyperliquidLive_StrandedHedgeWithFlatPrimaryIsClosed(t *testing.T) {
+	stratID := "hl-eth-long"
+	hlLiveAll := []StrategyConfig{
+		{ID: stratID, Platform: "hyperliquid", Type: "perps",
+			Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}},
+	}
+	strategies := map[string]*StrategyState{
+		stratID: {
+			ID: stratID, Type: "perps", Platform: "hyperliquid",
+			Positions: map[string]*Position{
+				// Primary is flat (no ETH entry at all — e.g. already closed).
+				"BTC": {Symbol: "BTC", Quantity: 1.5, AvgCost: 60000, Side: "short",
+					Multiplier: 1, OwnerStrategyID: stratID, HedgeFor: "ETH"},
+			},
+		},
+	}
+	hlVirtualQty := snapshotHyperliquidVirtualQuantities(strategies, hlLiveAll)
+	if got := hlVirtualQty["BTC"][stratID]; got != 1.5 {
+		t.Fatalf("hlVirtualQty[BTC][%s] = %v, want 1.5 (hedge leg must be captured despite flat primary)", stratID, got)
+	}
+
+	positions := []HLPosition{{Coin: "BTC", Size: -1.5, EntryPrice: 60000}}
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, hlVirtualQty)
+
+	if len(report.Errors) != 0 {
+		t.Errorf("expected no errors, got %v", report.Errors)
+	}
+	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "BTC" {
+		t.Errorf("ClosedCoins = %v, want [BTC] (stranded hedge must be closed on-chain)", report.ClosedCoins)
+	}
+	if len(*calls) != 1 || (*calls)[0] != "BTC" {
+		t.Errorf("closer calls = %v, want [BTC]", *calls)
+	}
+}
+
+// A foreign position sitting on a strategy's declared hedge coin — never
+// tracked in this strategy's virtual state — must never be treated as held
+// just because the coin is configured as a hedge target.
+func TestForceCloseHyperliquidLive_ForeignPositionOnHedgeCoinNotTouched(t *testing.T) {
+	stratID := "hl-eth-long"
+	hlLiveAll := []StrategyConfig{
+		{ID: stratID, Platform: "hyperliquid", Type: "perps",
+			Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}},
+	}
+	strategies := map[string]*StrategyState{
+		stratID: {ID: stratID, Type: "perps", Platform: "hyperliquid", Positions: map[string]*Position{}},
+	}
+	hlVirtualQty := snapshotHyperliquidVirtualQuantities(strategies, hlLiveAll)
+	if hlVirtualQty != nil {
+		t.Fatalf("hlVirtualQty = %v, want nil (nothing held)", hlVirtualQty)
+	}
+
+	positions := []HLPosition{{Coin: "BTC", Size: 0.3, EntryPrice: 60000}}
+	closer, calls := fakeCloser(nil)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, nil, hlVirtualQty)
+
+	if len(report.ClosedCoins) != 0 {
+		t.Errorf("ClosedCoins = %v, want none (foreign position on hedge coin must not be touched)", report.ClosedCoins)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("closer calls = %v, want none", *calls)
 	}
 }
 
@@ -3088,6 +3160,66 @@ func TestRunPendingHyperliquidCircuitCloses_RecoversStuckCB(t *testing.T) {
 		t.Errorf("closer calls=%v want [ETH:0.4] (recovered pending should drain full szi as sole owner)", calls)
 	}
 	if state.Strategies["hl-a"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Error("expected pending cleared after successful recovery close")
+	}
+}
+
+// #1159 review round 3: the Phase-2 stuck-CB recovery must still reconstruct
+// and drain the hedge leg's pending close when the PRIMARY has no on-chain
+// position to recover (flat) but the hedge leg does — mirrors the
+// setHyperliquidCircuitBreakerPending fix for the first-fire path.
+func TestRunPendingHyperliquidCircuitCloses_RecoversStrandedHedgeWithFlatPrimary(t *testing.T) {
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-eth-long": {
+				ID: "hl-eth-long",
+				RiskState: RiskState{
+					CircuitBreaker:       true,
+					CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
+					PendingCircuitCloses: nil,
+				},
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 1.5, AvgCost: 60000, Side: "short",
+						Multiplier: 1, OwnerStrategyID: "hl-eth-long", HedgeFor: "ETH"},
+				},
+			},
+		},
+	}
+	cfg := []StrategyConfig{
+		{ID: "hl-eth-long", Platform: "hyperliquid", Type: "perps",
+			Args:  []string{"momentum", "ETH", "1h", "--mode=live"},
+			Hedge: &HedgeConfig{Enabled: true, Symbol: "BTC"}},
+	}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		if partialSz != nil {
+			calls = append(calls, fmt.Sprintf("%s:%g", sym, *partialSz))
+		} else {
+			calls = append(calls, sym)
+		}
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: 1.5, AvgPx: 61000}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(),
+		state,
+		cfg,
+		"0xabc",
+		[]HLPosition{{Coin: "BTC", Size: -1.5, EntryPrice: 60000}}, // no ETH entry: primary flat on-chain too
+		true,
+		nil,
+		closer,
+		30*time.Second,
+		&mu,
+		nil,
+	)
+	if len(calls) != 1 || calls[0] != "BTC:1.5" {
+		t.Errorf("closer calls=%v want [BTC:1.5] (stranded hedge leg must still be recovered and closed)", calls)
+	}
+	if state.Strategies["hl-eth-long"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Error("expected pending cleared after successful recovery close")
 	}
 }

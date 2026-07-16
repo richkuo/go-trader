@@ -280,6 +280,12 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: detect a persisted hedge leg whose config no longer declares a
+	// matching enabled hedge block (config edit + restart, same class of gap
+	// as the atr_method drift check above). Collect here, forward to owner DM
+	// once the notifier is wired below.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -499,6 +505,13 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward startup hedge-state-consistency warnings to the owner.
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1439,6 +1452,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLVirtualQty:      hlVirtualQty,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -2369,6 +2383,19 @@ func main() {
 								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON)
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
+							// #1159: manage-only cycles (paused, latched-CB manage-only,
+							// daily-loss hold all force Signal=0 while a position stays
+							// open, and #822 orphan reconcile can also leave the primary
+							// flat with a stray hedge leg) still need the hedge leg
+							// converged. Gated on result.Signal == 0 like the protection
+							// sync above it — mutually exclusive with the execute-dispatch
+							// path below, which runs its OWN hedge sync (Call B) after the
+							// primary's own trade applies, so a single cycle never runs
+							// hedge sync twice against different (stale vs fresh) primary
+							// state.
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && HedgeEnabled(sc) {
+								runHedgeSync(sc, stratState, &mu, price, prices, hlPositions, notifier, logger, false)
+							}
 							// #873 scale-in: a same-direction signal on an open HL
 							// perps position ADDS size when allow_scale_in is
 							// enabled and the caps/spacing allow. Computed once
@@ -2489,6 +2516,18 @@ func main() {
 									}
 									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
+									// #1159: fresh open / scale-in add / evaluator partial-or-
+									// full close all funnel through this trades>0 block — mirror
+									// the qty event into the hedge leg now, with fresh
+									// post-trade state. freshOpenThisCycle (no scale-in add, and
+									// the Phase-1 snapshot found the primary flat) gates the
+									// constraint-4 fail-closed unwind: a hedge-open failure on a
+									// genuine fresh open unwinds the primary; failures on a later
+									// add/reduce/drift cycle only alert + retry next cycle.
+									if hyperliquidIsLive(sc.Args) && HedgeEnabled(sc) {
+										freshOpenThisCycle := scaleInAddQty <= 0 && hlPosQty <= 0
+										runHedgeSync(sc, stratState, &mu, price, prices, hlPositions, notifier, logger, freshOpenThisCycle)
+									}
 								}
 							}
 							// #998: stamp the active profile on a freshly opened

@@ -64,12 +64,24 @@ func collectPriceSymbols(strategies []StrategyConfig) []string {
 // The returned coins are used as inputs to fetchHyperliquidMids and
 // fetchOKXPerpsMids respectively. This is the correct oracle for perps
 // positions; see issue #263 for why BinanceUS spot is wrong.
+//
+// #1159: a hedge-enabled strategy's hedge coin is included in hlCoins
+// unconditionally (not only while a hedge leg is held) — hedgeTargetDecision
+// needs a live hedgePx to size the FIRST hedge open, and PortfolioValue/
+// exposure math must never fall back to AvgCost for a held hedge leg.
+// hedgeCollisionErrors guarantees this coin is never any strategy's own
+// configured coin, so it can't already be in the set from another entry.
 func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []string) {
 	hlSet := make(map[string]bool)
 	okxSet := make(map[string]bool)
 	for _, sc := range strategies {
 		if sc.Type != "perps" {
 			continue
+		}
+		if HedgeEnabled(sc) {
+			if coin := hedgeCoin(sc); coin != "" {
+				hlSet[coin] = true
+			}
 		}
 		if len(sc.Args) < 2 {
 			continue
@@ -946,15 +958,41 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
 		return
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
+	// #1159 review round 3: the primary being flat must not skip queuing the
+	// hedge leg below — a hedge dangling from a prior failed closeFull
+	// (primary flat, hedge still held) still needs an on-chain flatten, or
+	// forceCloseAllPositions (called unconditionally by both CB arms right
+	// after this function) closes it in-state only and strands it on the
+	// exchange. Build symbols conditionally per leg instead of returning
+	// early on the primary.
+	var symbols []PendingCircuitCloseSymbol
+	if _, ok := s.Positions[sym]; ok {
+		if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+		}
 	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
+	// #1159: append the hedge coin as a SECOND leg of the same pending close —
+	// setPendingCircuitClose REPLACES the whole entry per platform, so both
+	// legs must be built before the single call below, or a second call would
+	// silently drop the primary's just-set request. computeHyperliquidCircuitCloseQty
+	// treats a coin with zero hlLiveStrategiesForCoin peers (true of every
+	// hedge coin, by hedgeCollisionErrors construction) as sole-owner, sizing
+	// off the full on-chain qty exactly like the primary above.
+	// hedgeCoinForProtection (not HedgeEnabled+hedgeCoin directly) so a leg
+	// orphaned by hedge.enabled being flipped off via config edit + cold
+	// restart is still discovered from persisted state (round-3 Optional).
+	if hCoin := hedgeCoinForProtection(*sc, s, sym); hCoin != "" {
+		if hPos, held := s.Positions[hCoin]; held && hPos != nil && hPos.HedgeFor != "" {
+			if hQty, hOk := computeHyperliquidCircuitCloseQty(hCoin, s.ID, assist.HLPositions, assist.HLLiveAll); hOk && hQty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
+			}
+		}
+	}
+	if len(symbols) == 0 {
 		return
 	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1167,6 +1205,11 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
+	// #1159: a hedge leg is display-only labeled distinctly (operator-facing;
+	// does not feed any ledger sum) — mirrors the #1008 doc comment above.
+	if pos.HedgeFor != "" {
+		return hedgeTradeType
+	}
 	if pos.Multiplier > 0 {
 		if s != nil {
 			switch {
@@ -1262,7 +1305,15 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		// #1159: a hedge leg loses by construction whenever the primary wins —
+		// counting it in the loss streak would double-count one economic
+		// outcome and mis-fire the CB loss-streak arm on a strategy behaving
+		// exactly as configured.
+		if pos.HedgeFor != "" {
+			RecordHedgeTradeResult(&s.RiskState, pnl)
+		} else {
+			RecordTradeResult(&s.RiskState, pnl)
+		}
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1323,6 +1374,15 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 // must be > 0 — when zero, the function returns (0, 0) and the caller falls
 // back to peak-relative drawdown.
 //
+// #1159: a correlated hedge leg (pos.HedgeFor != "") is excluded entirely —
+// numerator and denominator alike. A hedge is by construction in unrealized
+// loss whenever its primary is in profit; folding that loss into the
+// numerator while the primary's offsetting gain clamps to zero would inflate
+// the ratio and mis-fire the CB/kill switch on a strategy that is net flat or
+// winning. RecordHedgeTradeResult already excludes the hedge from
+// ConsecutiveLosses for the same reason — this is the drawdown arm's
+// counterpart.
+//
 // The unrealized-loss numerator (rather than peakValue - portfolioValue) keeps
 // the drawdown ratio referenced to the currently-open position: prior realized
 // losses that already live in Cash below the high-water mark do NOT inflate
@@ -1338,7 +1398,7 @@ func perpsMarginDrawdownInputs(s *StrategyState, configLeverage float64, prices 
 		return 0, 0
 	}
 	for sym, pos := range s.Positions {
-		if pos.Multiplier <= 0 {
+		if pos.Multiplier <= 0 || pos.HedgeFor != "" {
 			continue
 		}
 		price, ok := prices[sym]
@@ -1597,4 +1657,16 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult books a hedge leg's realized PnL into DailyPnL (#1269
+// accounting integrity) WITHOUT touching ConsecutiveLosses. A hedge leg loses
+// by construction whenever the primary thesis wins — counting it in the loss
+// streak would double-count one economic outcome and mis-fire the CB
+// loss-streak arm on a strategy that is behaving exactly as configured
+// (#1159). Route every hedge close-booking site through this, never
+// RecordTradeResult.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }

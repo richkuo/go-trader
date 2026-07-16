@@ -546,6 +546,13 @@ func perpsRegimeDirectionOrphanConflict(stratState *StrategyState, sc StrategyCo
 	if pos.OwnerStrategyID != "" && pos.OwnerStrategyID != sc.ID {
 		return false, "", ""
 	}
+	// #1159: an auto-managed hedge leg is deliberately opposite-side to the
+	// strategy's own effective direction — that's the entire point of a
+	// hedge, not a #822 regime/direction orphan. Without this, reconcile would
+	// queue the hedge leg for auto-close every cycle it's held.
+	if pos.HedgeFor != "" {
+		return false, "", ""
+	}
 	currentRegime = strategyCurrentDirectionalRegime(stratState, sc)
 	effectiveDir = regimeDirectionOrphanEffectiveDir(stratState, sc, pos.DirectionCertifiedStatesAtOpen)
 	if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {

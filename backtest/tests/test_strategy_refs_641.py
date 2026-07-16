@@ -507,6 +507,38 @@ def test_load_strategy_config_single_close_wins_over_legacy_array(tmp_path):
     assert [r["name"] for r in kwargs["close_strategies"]] == ["tiered_tp_pct"]
 
 
+def test_load_strategy_config_rejects_hedge_enabled(tmp_path):
+    # #1159 phase 1: a hedge block is HL-live-only (runHedgeSync places real
+    # correlated-hedge orders on a second instrument) — the bar-level
+    # backtester has no resolver hook for a second leg's fills/fees/slippage,
+    # so it must reject loudly rather than silently backtest the primary alone.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {
+            "id": "hl-eth-long",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "hedge": {"enabled": True, "symbol": "BTC"},
+        },
+    ])
+    with pytest.raises(ValueError, match="hedge"):
+        run_backtest.load_strategy_config(path, "hl-eth-long")
+
+
+def test_load_strategy_config_allows_hedge_explicitly_disabled(tmp_path):
+    # An explicitly disabled hedge block changes nothing live, so it must not
+    # be rejected — only `enabled: true` configs are HL-live-only.
+    path = _write_config(tmp_path, version=15, strategies=[
+        {
+            "id": "hl-eth-long",
+            "type": "perps",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "hedge": {"enabled": False, "symbol": "BTC"},
+        },
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-eth-long")
+    assert kwargs["open_strategy"]["name"] == "tema_cross_bd"
+
+
 def test_load_strategy_config_rejects_pre_v15_gate(tmp_path):
     # #942 (D2.8): the loader gates on v15 (not v13) because the v15 migration
     # canonicalizes close params on disk. A pre-gate version raises before any

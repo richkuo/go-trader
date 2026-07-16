@@ -650,6 +650,7 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
+	base += hedgeStatusNote(d.cfg.Strategies)
 	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
 	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
@@ -673,6 +674,24 @@ func pausedStrategiesNote(strategies []StrategyConfig) string {
 	}
 	sort.Strings(paused)
 	return fmt.Sprintf("\n⏸️ paused: %s", strings.Join(paused, ", "))
+}
+
+// hedgeStatusNote lists hedge-enabled strategies (#1159) for /status, tagged
+// with their hedge coin, so a hedge leg is never mistaken for an unmanaged
+// position. Empty string when none are hedge-enabled. IDs are sorted for
+// stable operator output.
+func hedgeStatusNote(strategies []StrategyConfig) string {
+	var lines []string
+	for _, sc := range strategies {
+		if HedgeEnabled(sc) {
+			lines = append(lines, fmt.Sprintf("%s->%s", sc.ID, hedgeCoin(sc)))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	sort.Strings(lines)
+	return fmt.Sprintf("\n🛡️ hedged: %s", strings.Join(lines, ", "))
 }
 
 func (d *DiscordNotifier) buildHealth() string {
