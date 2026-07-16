@@ -81,6 +81,13 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		switch sc.Platform {
 		case "hyperliquid":
 			hlSet[coin] = true
+			// #1159: a hedge-enabled HL perps strategy also holds a leg on its
+			// hedge coin — fetch its mark so PortfolioValue / exposure math never
+			// falls back to AvgCost for the hedge, and so the dispatch has a live
+			// hedge price to size open/add orders.
+			if hc := hedgeCoin(sc); hc != "" {
+				hlSet[hc] = true
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -953,8 +960,22 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	// #1159: when the strategy holds a correlated hedge leg, the per-strategy
+	// circuit breaker must also flatten the hedge on-chain (else it survives the
+	// halt as one-sided exposure). The hedge coin is sole-owned by validation so
+	// computeHyperliquidCircuitCloseQty's peers>1 guard passes vacuously.
+	if HedgeEnabled(*sc) {
+		if hc := hedgeCoin(*sc); hc != "" {
+			if hp, hok := s.Positions[hc]; hok && hp != nil && hp.HedgeFor != "" && hp.Quantity > 0 {
+				if hqty, hok2 := computeHyperliquidCircuitCloseQty(hc, s.ID, assist.HLPositions, assist.HLLiveAll); hok2 && hqty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hc, Size: hqty})
+				}
+			}
+		}
+	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1167,6 +1188,13 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
+	// #1159: a correlated hedge leg is labeled "hedge" so it is excluded from
+	// lifetime #T / W/L round-trip stats (it is not independent alpha). Ledger
+	// sums ignore trade_type, so PnL/fees still attribute to the owning
+	// strategy — the label is display + stats-exclusion only.
+	if pos.HedgeFor != "" {
+		return "hedge"
+	}
 	if pos.Multiplier > 0 {
 		if s != nil {
 			switch {
@@ -1262,7 +1290,13 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		// #1159: a hedge leg's realized PnL feeds daily-loss accounting but not
+		// the consecutive-loss streak (a hedge loses when its primary wins).
+		if pos.HedgeFor != "" {
+			RecordHedgeTradeResult(&s.RiskState, pnl)
+		} else {
+			RecordTradeResult(&s.RiskState, pnl)
+		}
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1597,4 +1631,16 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult books a #1159 hedge leg's realized PnL into daily-loss
+// accounting (so the portfolio daily-loss limit and drawdown see the true net
+// economics of the primary+hedge thesis) but deliberately does NOT touch
+// ConsecutiveLosses. A correlated hedge loses by construction when its primary
+// wins (and vice-versa); folding the hedge leg into the loss streak would
+// double-count one thesis and mis-fire the circuit-breaker loss-streak arm.
+// The primary leg's own close is the sole driver of the streak.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }

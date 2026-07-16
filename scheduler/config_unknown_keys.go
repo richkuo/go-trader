@@ -31,6 +31,14 @@ func knownManualDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(ManualDefaultsConfig{}))
 }
 
+// knownHedgeConfigKeys returns the JSON tag names declared on HedgeConfig.
+// #1159: a typo inside the hedge block (e.g. "ration" for "ratio") must reject
+// loudly rather than silently default — an under-sized or mis-configured hedge
+// on a live wallet is exactly the failure this guard prevents.
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownJSONKeys(t reflect.Type) map[string]bool {
 	known := make(map[string]bool)
 	for i := 0; i < t.NumField(); i++ {
@@ -107,6 +115,25 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+
+		// #1159: validate nested hedge block keys (the top-level "hedge" key is
+		// already covered by knownStrategyConfigKeys above).
+		if rawHedge, ok := s["hedge"]; ok {
+			var hedge map[string]json.RawMessage
+			if err := json.Unmarshal(rawHedge, &hedge); err == nil && hedge != nil {
+				hedgeKnown := knownHedgeConfigKeys()
+				hkeys := make([]string, 0, len(hedge))
+				for k := range hedge {
+					if !hedgeKnown[k] {
+						hkeys = append(hkeys, k)
+					}
+				}
+				sort.Strings(hkeys)
+				for _, k := range hkeys {
+					errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
+				}
+			}
 		}
 	}
 	return errs
