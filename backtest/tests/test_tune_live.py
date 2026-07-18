@@ -594,7 +594,93 @@ def test_config_strategy_entries_uses_trade_timeframe_not_regime(tmp_path):
                            "open_strategy": {"name": "sma_crossover", "params": {}}}]}
     path = _write_config(tmp_path, cfg)
     entries = tl.config_strategy_entries(path, None)
-    assert entries == [("s", "BTC/USDT", "4h")]
+    assert entries == [("s", "BTC/USDT", "4h", "spot")]
+
+
+def test_config_strategy_entries_accepts_ordered_strategy_subset(tmp_path):
+    cfg = _sma_config(sid="first")
+    second = dict(cfg["strategies"][0])
+    second["id"] = "second"
+    second["args"] = ["sma_crossover", "ETH/USDT", "1h"]
+    cfg["strategies"].append(second)
+    path = _write_config(tmp_path, cfg)
+
+    entries = tl.config_strategy_entries(path, ["second", "first"])
+
+    assert entries == [
+        ("second", "ETH/USDT", "1h", "spot"),
+        ("first", "BTC/USDT", "1d", "spot"),
+    ]
+
+
+def test_config_strategy_entries_rejects_duplicate_strategy_subset(tmp_path):
+    path = _write_config(tmp_path, _sma_config(sid="first"))
+    with pytest.raises(ValueError, match="duplicate strategy id"):
+        tl.config_strategy_entries(path, ["first", "first"])
+
+
+def test_main_auto_resolves_mixed_registry_per_strategy(tmp_path, monkeypatch):
+    cfg = _sma_config(sid="spot-one")
+    futures = dict(cfg["strategies"][0])
+    futures.update({
+        "id": "futures-one",
+        "type": "futures",
+        "platform": "topstep",
+        "args": ["breakout", "ES", "1h"],
+        "open_strategy": {"name": "breakout", "params": {}},
+    })
+    cfg["strategies"].append(futures)
+    path = _write_config(tmp_path, cfg)
+    loaded = []
+    tuned = []
+
+    def fake_load_registry(registry):
+        loaded.append(registry)
+        return types.SimpleNamespace(name=registry)
+
+    def fake_tune(config_path, sid, symbol, timeframe, registry, reg_mod,
+                  args, overrides, out_dir):
+        tuned.append((sid, registry, reg_mod.name))
+        return {"strategy_id": sid, "status": "dry_run"}
+
+    monkeypatch.setattr(tl, "load_registry", fake_load_registry)
+    monkeypatch.setattr(tl, "tune_strategy", fake_tune)
+    rc = tl.main(["--config", path, "--out-dir", str(tmp_path),
+                  "--json", str(tmp_path / "mixed.json"), "--dry-run"])
+
+    assert rc == 0
+    assert loaded == ["spot", "futures"]
+    assert tuned == [
+        ("spot-one", "spot", "spot"),
+        ("futures-one", "futures", "futures"),
+    ]
+
+
+@pytest.mark.parametrize("override", ["spot", "futures"])
+def test_main_explicit_registry_overrides_whole_mixed_run(
+        tmp_path, monkeypatch, override):
+    cfg = _sma_config(sid="spot-one")
+    perps = dict(cfg["strategies"][0])
+    perps.update({"id": "perps-one", "type": "perps"})
+    cfg["strategies"].append(perps)
+    path = _write_config(tmp_path, cfg)
+    loaded = []
+    tuned = []
+
+    monkeypatch.setattr(tl, "load_registry", lambda registry: (
+        loaded.append(registry) or types.SimpleNamespace(name=registry)))
+    monkeypatch.setattr(tl, "tune_strategy", lambda config_path, sid, symbol,
+                        timeframe, registry, reg_mod, args, overrides, out_dir: (
+                            tuned.append((sid, registry)) or
+                            {"strategy_id": sid, "status": "dry_run"}))
+
+    rc = tl.main(["--config", path, "--registry", override,
+                  "--out-dir", str(tmp_path),
+                  "--json", str(tmp_path / f"{override}.json"), "--dry-run"])
+
+    assert rc == 0
+    assert loaded == [override]
+    assert tuned == [("spot-one", override), ("perps-one", override)]
 
 
 def test_regime_timeframe_mismatch_skipped_unsupported(tmp_path):

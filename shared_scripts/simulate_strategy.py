@@ -20,14 +20,8 @@ sys.path.insert(0, os.path.join(ROOT, "backtest"))
 from atr import ensure_atr_indicator  # noqa: E402
 from regime import normalize_regime_gate_on_failure  # noqa: E402
 from backtester import Backtester  # noqa: E402
-from registry_loader import load_registry  # noqa: E402
+from registry_loader import load_registry, registry_for_strategy_type  # noqa: E402
 from run_backtest import _apply_htf_filter_to_df  # noqa: E402
-
-
-def _registry_for_type(strategy_type: str) -> str:
-    if strategy_type in ("perps", "futures", "manual"):
-        return "futures"
-    return "spot"
 
 
 def _fee_platform(platform: str, strategy_type: str) -> str:
@@ -170,7 +164,7 @@ def _simulate_one(cfg: dict, candles: List[dict]) -> List[dict]:
     if not open_name:
         raise ValueError("missing open strategy name")
 
-    reg = load_registry(_registry_for_type(strategy_type))
+    reg = load_registry(registry_for_strategy_type(strategy_type))
     if open_name not in reg.STRATEGY_REGISTRY:
         raise ValueError(f"unknown strategy {open_name!r}")
 

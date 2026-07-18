@@ -38,7 +38,7 @@ report; a human makes every promotion call.
 
 Usage:
   uv run --no-sync python backtest/tune_live.py --config <cfg> [--strategy <id>] \\
-      [--registry spot|futures] [--datasets BTC/USDT:1h] [--windows is,oos] \\
+      [--registry auto|spot|futures] [--datasets BTC/USDT:1h] [--windows is,oos] \\
       [--param fast_period=10,15,20] [--overrides overrides.json] \\
       [--out-dir DIR] [--json OUT.json] [--jobs 4] [--dry-run]
 """
@@ -50,6 +50,7 @@ import itertools
 import json
 import os
 import sys
+import tempfile
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.abspath(os.path.join(_THIS_DIR, ".."))
@@ -61,7 +62,7 @@ import auto_suggest  # noqa: E402
 from data_fetcher import load_cached_data  # noqa: E402 (module-level: tests patch tune_live.load_cached_data)
 from eval_windows import WINDOWS as M1_WINDOWS, PLATFORM as DATA_PLATFORM, FEE_PLATFORM  # noqa: E402
 from optimizer import DEFAULT_PARAM_RANGES, generate_param_grid, walk_forward_optimize  # noqa: E402
-from registry_loader import load_registry  # noqa: E402
+from registry_loader import load_registry, registry_for_strategy_type  # noqa: E402
 from run_backtest import (  # noqa: E402
     FUNDING_COLUMN_STRATEGIES,
     _attach_funding_if_needed,
@@ -435,19 +436,34 @@ def stage1_skip_reason(resolution: dict) -> str | None:
 # I/O — config enumeration, stage 1, stage 2, orchestration
 # ===========================================================================
 
-def config_strategy_entries(config_path: str, only_id: str | None) -> list:
-    """Read the config once and return ``[(strategy_id, symbol, timeframe), ...]``
-    for the strategies to tune (all, or the one named). Raises with the same
-    context as the loader on a missing id / pre-v15 config is left to
-    ``load_strategy_config`` per strategy so its rich rejection text surfaces."""
+def config_strategy_entries(config_path: str,
+                            only_id: str | list[str] | None) -> list:
+    """Return ``[(strategy_id, symbol, timeframe, registry), ...]`` in config
+    or requested order. Registry selection is derived from each strategy's
+    live type so a mixed spot/futures fleet never shares one accidental default.
+    Missing-id and pre-v15 validation remains with ``load_strategy_config`` per
+    strategy so its richer rejection text surfaces."""
     with open(config_path) as fh:
         cfg = json.load(fh)
     strategies = cfg.get("strategies") or []
+    requested = ([only_id] if isinstance(only_id, str)
+                 else list(only_id) if only_id is not None else None)
+    if requested is not None and len(set(requested)) != len(requested):
+        raise ValueError("duplicate strategy id in --strategy selection")
+    by_id = {sc.get("id"): sc for sc in strategies}
+    if requested is not None:
+        missing = [sid for sid in requested if sid not in by_id]
+        if missing:
+            available = [s.get("id") for s in strategies]
+            raise ValueError(
+                f"{config_path}: no strategy with id={missing[0]!r}. "
+                f"Available: {available}")
+        selected = [by_id[sid] for sid in requested]
+    else:
+        selected = strategies
     out = []
-    for sc in strategies:
+    for sc in selected:
         sid = sc.get("id")
-        if only_id is not None and sid != only_id:
-            continue
         args = sc.get("args") or []
         symbol = str(args[1]) if len(args) > 1 else None
         # The strategy TRADES on args[2]; regime.timeframe is a SEPARATE
@@ -458,12 +474,8 @@ def config_strategy_entries(config_path: str, only_id: str | None) -> list:
         # regime interval, not the one the strategy trades. Always use args[2];
         # a regime-timeframe mismatch is handled downstream as unsupported.
         timeframe = str(args[2]) if len(args) > 2 else None
-        out.append((sid, symbol, timeframe))
-    if only_id is not None and not out:
-        available = [s.get("id") for s in strategies]
-        raise ValueError(
-            f"{config_path}: no strategy with id={only_id!r}. "
-            f"Available: {available}")
+        registry = registry_for_strategy_type(sc.get("type"))
+        out.append((sid, symbol, timeframe, registry))
     return out
 
 
@@ -568,13 +580,33 @@ def _progress_path(out_dir: str) -> str:
     return os.path.join(out_dir, "tune_live.progress.json")
 
 
+def write_json_atomic(path: str, payload: dict) -> None:
+    """Replace one JSON artifact atomically so API polling never observes a
+    partially-written progress/result document."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tune-live-", suffix=".json",
+                                    dir=directory)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def write_progress(out_dir: str, payload: dict) -> None:
     """Structured progress a poller reads instead of parsing stdout (#1339). No
     wall-clock timestamp — the artifact and progress stay reproducible/testable;
     phase + strategy index + candidate counts are the poll signal."""
     payload = {"schema_version": SCHEMA_VERSION, "tool": "tune_live", **payload}
-    with open(_progress_path(out_dir), "w") as fh:
-        json.dump(payload, fh, indent=2, default=str)
+    write_json_atomic(_progress_path(out_dir), payload)
 
 
 def tune_strategy(config_path: str, strategy_id: str, symbol: str,
@@ -808,9 +840,12 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--config", required=True, help="Path to a live go-trader config.json")
-    p.add_argument("--strategy", default=None,
-                   help="Strategy id to tune (default: every strategy in the config)")
-    p.add_argument("--registry", choices=["spot", "futures"], default="spot")
+    p.add_argument("--strategy", action="append", default=None,
+                   help="Strategy id to tune; repeat for a subset (default: every strategy in the config)")
+    p.add_argument("--registry", choices=["auto", "spot", "futures"],
+                   default="auto",
+                   help="Registry selection (default: auto from each strategy "
+                        "type); spot/futures overrides the whole run")
     p.add_argument("--datasets", default=None,
                    help="Stage-2 datasets, comma list SYMBOL:TIMEFRAME "
                         "(default: the strategy's own market)")
@@ -875,7 +910,7 @@ def main(argv=None) -> int:
                              "{strategy_id: {...}}")
         # Reject an override keyed to a strategy id the config does not define —
         # a silently-ignored override reads as "applied" when it never ran.
-        all_ids = {sid for sid, _, _ in config_strategy_entries(config_path, None)}
+        all_ids = {sid for sid, _, _, _ in config_strategy_entries(config_path, None)}
         unknown_ids = set(overrides_map) - all_ids
         if unknown_ids:
             raise SystemExit(
@@ -885,17 +920,21 @@ def main(argv=None) -> int:
     out_dir = args.out_dir or os.path.join(os.path.dirname(config_path),
                                            "tune_live_runs")
     os.makedirs(out_dir, exist_ok=True)
-    reg_mod = load_registry(args.registry)
+    registry_modules = {}
 
     n = len(entries)
     write_progress(out_dir, {"phase": "start", "n_strategies": n,
                              "strategy_index": 0})
     results = []
-    for i, (sid, symbol, timeframe) in enumerate(entries):
+    for i, (sid, symbol, timeframe, auto_registry) in enumerate(entries):
         write_progress(out_dir, {
             "phase": "tuning", "strategy": sid, "strategy_index": i,
             "n_strategies": n})
-        res = tune_strategy(config_path, sid, symbol, timeframe, args.registry,
+        registry = auto_registry if args.registry == "auto" else args.registry
+        if registry not in registry_modules:
+            registry_modules[registry] = load_registry(registry)
+        reg_mod = registry_modules[registry]
+        res = tune_strategy(config_path, sid, symbol, timeframe, registry,
                             reg_mod, args, overrides_map, out_dir)
         results.append(res)
         write_progress(out_dir, {
@@ -920,8 +959,7 @@ def main(argv=None) -> int:
 
     print(format_summary(artifact))
     json_out = args.json_out or os.path.join(out_dir, "tune_live.artifact.json")
-    with open(json_out, "w") as fh:
-        json.dump(artifact, fh, indent=2, default=str)
+    write_json_atomic(json_out, artifact)
     print(f"\nwrote {json_out}")
     print(FOOTER)
     # Exit-code contract (see _PRODUCTIVE_STATUSES): the artifact always carries
