@@ -58,7 +58,7 @@ func TestNewTuningRunManagerFailsLoudlyForUnwritableCachePath(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(stateDir, "ohlcv_cache.sqlite3"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := newTuningRunManager(configPath, nil)
+	_, err := newTuningRunManager(configPath, nil, 0)
 	if err == nil || !strings.Contains(err.Error(), "ohlcv_cache.sqlite3") {
 		t.Fatalf("err = %v, want loud cache-path failure", err)
 	}
@@ -88,7 +88,7 @@ func TestTuningRunManagerSerializesJobs(t *testing.T) {
 			return nil
 		}
 	}
-	mgr, err := newTuningRunManager(configPath, runner)
+	mgr, err := newTuningRunManager(configPath, runner, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestTuningRunManagerMarksActiveRunInterruptedOnRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := newTuningRunManager(configPath, nil)
+	mgr, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestTuningRunManagerMarksActiveRunInterruptedOnRestart(t *testing.T) {
 
 func TestRunTuningProcessBypassesTradingSemaphoreAndSetsCacheEnv(t *testing.T) {
 	configPath := writeTuningTestConfig(t, t.TempDir())
-	mgr, err := newTuningRunManager(configPath, nil)
+	mgr, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestTuningPOSTRequiresAuthAndSameOrigin(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-	})
+	}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestTuningPOSTRequiresAuthAndSameOrigin(t *testing.T) {
 
 func TestTuningGETSurvivesManagerRestart(t *testing.T) {
 	configPath := writeTuningTestConfig(t, t.TempDir())
-	mgr, err := newTuningRunManager(configPath, nil)
+	mgr, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestTuningGETSurvivesManagerRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restarted, err := newTuningRunManager(configPath, nil)
+	restarted, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestTuningStartValidationRejectsUnknownOrUnselectedOverrides(t *testing.T) 
 
 func TestTuningRunProcessReportsInvalidArtifact(t *testing.T) {
 	configPath := writeTuningTestConfig(t, t.TempDir())
-	mgr, err := newTuningRunManager(configPath, nil)
+	mgr, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestTuningRunProcessReportsInvalidArtifact(t *testing.T) {
 
 func TestTuningRunProcessReportsOrderedArtifactFailures(t *testing.T) {
 	configPath := writeTuningTestConfig(t, t.TempDir())
-	mgr, err := newTuningRunManager(configPath, nil)
+	mgr, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestTuningRunProcessReportsOrderedArtifactFailures(t *testing.T) {
 
 func TestTuningRunProcessFallsBackToStderrWithoutArtifact(t *testing.T) {
 	configPath := writeTuningTestConfig(t, t.TempDir())
-	mgr, err := newTuningRunManager(configPath, nil)
+	mgr, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestTuningRunProcessFallsBackToStderrWithoutArtifact(t *testing.T) {
 
 func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
 	configPath := writeTuningTestConfig(t, t.TempDir())
-	mgr, err := newTuningRunManager(configPath, nil)
+	mgr, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restarted, err := newTuningRunManager(configPath, nil)
+	restarted, err := newTuningRunManager(configPath, nil, 0)
 	if err != nil {
 		t.Fatalf("manager must start despite malformed dirs: %v", err)
 	}
@@ -600,4 +600,416 @@ func waitForTuningStatus(t *testing.T, mgr *tuningRunManager, status tuningRunSt
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("runs did not reach status %q: %#v", status, mgr.list())
+}
+
+func seedTuningTerminalRun(t *testing.T, root, id string, status tuningRunStatus, created time.Time) {
+	t.Helper()
+	if !tuningRunStatusIsTerminal(status) {
+		t.Fatalf("seed status %q is not terminal", status)
+	}
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rec := tuningRunRecord{
+		ID:          id,
+		Status:      status,
+		StrategyIDs: []string{"spot-a"},
+		CreatedAt:   created,
+	}
+	if err := writeTuningJSON(filepath.Join(dir, tuningRunRecordFile), rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(dir, tuningRunSpecFile), tuningRunSpec{
+		SchemaVersion: 1, StrategyIDs: []string{"spot-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(dir, tuningRunResultsFile), map[string]any{
+		"schema_version": 1, "marker": id,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTuningRunManagerKeepAllDoesNotPrune(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	ids := []string{
+		"20260701T000000000000000Z-keep0001",
+		"20260701T010000000000000Z-keep0002",
+		"20260701T020000000000000Z-keep0003",
+	}
+	statuses := []tuningRunStatus{tuningRunCompleted, tuningRunFailed, tuningRunInterrupted}
+	for i, id := range ids {
+		seedTuningTerminalRun(t, root, id, statuses[i], base.Add(time.Duration(i)*time.Hour))
+	}
+	mgr, err := newTuningRunManager(configPath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 3 {
+		t.Fatalf("keep-all listed %d runs, want 3", len(listed))
+	}
+	for _, id := range ids {
+		if _, err := os.Stat(filepath.Join(root, id, tuningRunRecordFile)); err != nil {
+			t.Fatalf("keep-all deleted %s: %v", id, err)
+		}
+	}
+}
+
+func TestTuningRunManagerPrunesOldestTerminalOverCap(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
+	type seeded struct {
+		id     string
+		status tuningRunStatus
+	}
+	seeds := []seeded{
+		{"20260702T000000000000000Z-oldcomp1", tuningRunCompleted},
+		{"20260702T010000000000000Z-oldfail2", tuningRunFailed},
+		{"20260702T020000000000000Z-oldintr3", tuningRunInterrupted},
+		{"20260702T030000000000000Z-oldrej04", tuningRunRejected},
+	}
+	for i, s := range seeds {
+		seedTuningTerminalRun(t, root, s.id, s.status, base.Add(time.Duration(i)*time.Hour))
+	}
+
+	// Spec-only orphan must stay skippable (never entered m.runs).
+	orphanID := "20260702T050000000000000Z-orphan99"
+	orphanDir := filepath.Join(root, orphanID)
+	if err := os.Mkdir(orphanDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(orphanDir, tuningRunSpecFile), tuningRunSpec{
+		SchemaVersion: 1, StrategyIDs: []string{"spot-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, err := newTuningRunManager(configPath, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 2 {
+		t.Fatalf("listed %d runs after prune, want 2: %#v", len(listed), listed)
+	}
+	wantKeep := map[string]bool{
+		"20260702T020000000000000Z-oldintr3": true,
+		"20260702T030000000000000Z-oldrej04": true,
+	}
+	for _, rec := range listed {
+		if !wantKeep[rec.ID] {
+			t.Fatalf("unexpected retained run %s status=%s", rec.ID, rec.Status)
+		}
+	}
+	for _, gone := range []string{
+		"20260702T000000000000000Z-oldcomp1",
+		"20260702T010000000000000Z-oldfail2",
+	} {
+		if _, err := os.Stat(filepath.Join(root, gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected pruned dir %s gone, err=%v", gone, err)
+		}
+		if _, ok := mgr.record(gone); ok {
+			t.Fatalf("dangling in-memory entry for pruned %s", gone)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(orphanDir, tuningRunSpecFile)); err != nil {
+		t.Fatalf("orphan skippable dir was deleted: %v", err)
+	}
+}
+
+func TestTuningRunManagerNeverPrunesQueuedOrRunning(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)
+	for i, id := range []string{
+		"20260705T000000000000000Z-term0001",
+		"20260705T010000000000000Z-term0002",
+		"20260705T020000000000000Z-term0003",
+	} {
+		seedTuningTerminalRun(t, root, id, tuningRunCompleted, base.Add(time.Duration(i)*time.Hour))
+	}
+	mgr, err := newTuningRunManager(configPath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Inject live in-flight records after load (startup would rewrite them to
+	// interrupted). Cap=1 must still preserve both active entries.
+	for _, rec := range []tuningRunRecord{
+		{ID: "20260705T030000000000000Z-queued01", Status: tuningRunQueued,
+			StrategyIDs: []string{"spot-a"}, CreatedAt: base.Add(3 * time.Hour)},
+		{ID: "20260705T040000000000000Z-running1", Status: tuningRunRunning,
+			StrategyIDs: []string{"spot-a"}, CreatedAt: base.Add(4 * time.Hour)},
+	} {
+		dir := filepath.Join(root, rec.ID)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeTuningJSON(filepath.Join(dir, tuningRunRecordFile), rec); err != nil {
+			t.Fatal(err)
+		}
+		mgr.mu.Lock()
+		mgr.runs[rec.ID] = rec
+		mgr.mu.Unlock()
+	}
+	mgr.setMaxRetainedRuns(1)
+	listed := mgr.list()
+	ids := map[string]tuningRunStatus{}
+	for _, rec := range listed {
+		ids[rec.ID] = rec.Status
+	}
+	if ids["20260705T030000000000000Z-queued01"] != tuningRunQueued {
+		t.Fatalf("queued pruned or rewritten: %#v", listed)
+	}
+	if ids["20260705T040000000000000Z-running1"] != tuningRunRunning {
+		t.Fatalf("running pruned or rewritten: %#v", listed)
+	}
+	if ids["20260705T020000000000000Z-term0003"] != tuningRunCompleted {
+		t.Fatalf("newest terminal missing: %#v", listed)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("listed %d, want 3 (2 active + 1 terminal): %#v", len(listed), listed)
+	}
+	for _, gone := range []string{
+		"20260705T000000000000000Z-term0001",
+		"20260705T010000000000000Z-term0002",
+	} {
+		if _, err := os.Stat(filepath.Join(root, gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected terminal %s pruned, err=%v", gone, err)
+		}
+	}
+}
+
+func TestTuningRunManagerSetMaxRetainedRunsHotReloadPrunes(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC)
+	ids := []string{
+		"20260703T000000000000000Z-hot00001",
+		"20260703T010000000000000Z-hot00002",
+		"20260703T020000000000000Z-hot00003",
+	}
+	for i, id := range ids {
+		seedTuningTerminalRun(t, root, id, tuningRunCompleted, base.Add(time.Duration(i)*time.Hour))
+	}
+	mgr, err := newTuningRunManager(configPath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mgr.list()) != 3 {
+		t.Fatalf("pre-reload listed %d, want 3", len(mgr.list()))
+	}
+	mgr.setMaxRetainedRuns(1)
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != ids[2] {
+		t.Fatalf("after hot-cap listed %#v, want only %s", listed, ids[2])
+	}
+	for _, gone := range ids[:2] {
+		if _, err := os.Stat(filepath.Join(root, gone)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s pruned after hot-reload cap, err=%v", gone, err)
+		}
+	}
+}
+
+func TestApplyHotReloadConfigAdoptsTuningRetention(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
+	ids := []string{
+		"20260704T000000000000000Z-sighup01",
+		"20260704T010000000000000Z-sighup02",
+	}
+	for i, id := range ids {
+		seedTuningTerminalRun(t, root, id, tuningRunCompleted, base.Add(time.Duration(i)*time.Hour))
+	}
+	mgr, err := newTuningRunManager(configPath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewAppState()
+	ss := NewStatusServer(state, &sync.RWMutex{}, "", nil, nil)
+	ss.tuning = mgr
+	strat := StrategyConfig{
+		ID: "spot-a", Type: "spot", Platform: "binanceus",
+		Script:  "shared_scripts/check_strategy.py",
+		Args:    []string{"sma_crossover", "BTC/USDT", "1h"},
+		Capital: 1000, MaxDrawdownPct: 20, IntervalSeconds: 60,
+	}
+	cfg := &Config{IntervalSeconds: 60, DBFile: "scheduler/state.db", Strategies: []StrategyConfig{strat}}
+	next := &Config{
+		IntervalSeconds: 60,
+		DBFile:          "scheduler/state.db",
+		Strategies:      []StrategyConfig{strat},
+		Tuning:          &TuningConfig{MaxRetainedRuns: 1},
+	}
+	changes, err := applyHotReloadConfig(cfg, next, state, nil, ss)
+	if err != nil {
+		t.Fatalf("applyHotReloadConfig: %v", err)
+	}
+	joined := strings.Join(changes, "\n")
+	if !strings.Contains(joined, "tuning:") {
+		t.Fatalf("expected tuning change, got %v", changes)
+	}
+	if cfg.tuningMaxRetainedRuns() != 1 {
+		t.Fatalf("cfg retention = %d, want 1", cfg.tuningMaxRetainedRuns())
+	}
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != ids[1] {
+		t.Fatalf("after SIGHUP prune listed %#v, want only %s", listed, ids[1])
+	}
+}
+
+func TestValidateConfigRejectsNegativeTuningRetention(t *testing.T) {
+	cfg := &Config{
+		IntervalSeconds: 60,
+		LogDir:          t.TempDir(),
+		Strategies: []StrategyConfig{{
+			ID: "spot-a", Type: "spot", Platform: "binanceus", Script: "check.py",
+			Args:    []string{"sma_crossover", "BTC/USDT", "1h"},
+			Capital: 1000, MaxDrawdownPct: 10,
+		}},
+		Tuning: &TuningConfig{MaxRetainedRuns: -1},
+	}
+	if err := validateConfig(cfg, true); err == nil || !strings.Contains(err.Error(), "tuning.max_retained_runs") {
+		t.Fatalf("err = %v, want tuning.max_retained_runs rejection", err)
+	}
+}
+
+func seedTuningTerminalRunNoResults(t *testing.T, root, id string, status tuningRunStatus, created, completed time.Time) {
+	t.Helper()
+	if !tuningRunStatusIsTerminal(status) {
+		t.Fatalf("seed status %q is not terminal", status)
+	}
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := completed.UTC()
+	rec := tuningRunRecord{
+		ID:          id,
+		Status:      status,
+		StrategyIDs: []string{"spot-a"},
+		CreatedAt:   created.UTC(),
+		CompletedAt: &completedAt,
+	}
+	if err := writeTuningJSON(filepath.Join(dir, tuningRunRecordFile), rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(dir, tuningRunSpecFile), tuningRunSpec{
+		SchemaVersion: 1, StrategyIDs: []string{"spot-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readTuningRecordForTest(t *testing.T, root, id string) (tuningRunRecord, error) {
+	t.Helper()
+	var rec tuningRunRecord
+	err := readTuningJSON(filepath.Join(root, id, tuningRunRecordFile), &rec)
+	return rec, err
+}
+
+func TestTuningRunManagerPrefersResultsOverNewerEmptyReject(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedID := "20260706T000000000000000Z-withres1"
+	rejectedID := "20260706T120000000000000Z-rejected"
+	// Older completed run that produced results; newer queue-full reject with none.
+	seedTuningTerminalRun(t, root, completedID, tuningRunCompleted,
+		time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC))
+	seedTuningTerminalRunNoResults(t, root, rejectedID, tuningRunRejected,
+		time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC))
+
+	mgr, err := newTuningRunManager(configPath, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != completedID {
+		t.Fatalf("listed %#v, want only completed %s with results", listed, completedID)
+	}
+	if _, err := os.Stat(filepath.Join(root, rejectedID)); !os.IsNotExist(err) {
+		t.Fatalf("expected empty reject pruned, err=%v", err)
+	}
+}
+
+func TestTuningRunManagerPrefersResultsOverNewerInterrupted(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedID := "20260707T000000000000000Z-olddone1"
+	interruptedID := "20260707T010000000000000Z-restart1"
+	seedTuningTerminalRun(t, root, completedID, tuningRunCompleted,
+		time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC))
+	completedAt := time.Date(2026, 7, 7, 0, 30, 0, 0, time.UTC)
+	rec, err := readTuningRecordForTest(t, root, completedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.CompletedAt = &completedAt
+	if err := writeTuningJSON(filepath.Join(root, completedID, tuningRunRecordFile), rec); err != nil {
+		t.Fatal(err)
+	}
+	// Restart-interrupted: fresh CompletedAt, no results artifact.
+	seedTuningTerminalRunNoResults(t, root, interruptedID, tuningRunInterrupted,
+		time.Date(2026, 7, 7, 1, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC))
+
+	mgr, err := newTuningRunManager(configPath, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != completedID {
+		t.Fatalf("listed %#v, want completed-with-results %s", listed, completedID)
+	}
+}
+
+func TestTuningRunManagerRetentionTieBreaksByID(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
+	completed := created.Add(time.Hour)
+	lowID := "20260709T000000000000000Z-aaaaaa"
+	highID := "20260709T000000000000000Z-zzzzzz"
+	seedTuningTerminalRunNoResults(t, root, lowID, tuningRunRejected, created, completed)
+	seedTuningTerminalRunNoResults(t, root, highID, tuningRunRejected, created, completed)
+
+	mgr, err := newTuningRunManager(configPath, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != highID {
+		t.Fatalf("listed %#v, want higher ID %s retained", listed, highID)
+	}
 }

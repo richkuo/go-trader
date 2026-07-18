@@ -213,6 +213,15 @@ type Config struct {
 	KillSwitchResetDMTimeout string                     `json:"kill_switch_reset_dm_timeout,omitempty"` // #1368 — AskOwnerDM wait for the portfolio kill-switch reset prompt. Go duration ("6h", "30m"); empty → 6h. Independent of alert_throttle_interval (re-alert back-off ≠ interactive reply wait).
 	TradingViewExport        TradingViewExportConfig    `json:"tradingview_export,omitempty"`           // #3 — optional symbol overrides for TradingView portfolio CSV exports
 	UserDefaults             *UserDefaultsConfig        `json:"user_defaults,omitempty"`                // #1135 — canonical operator override layer for defaults. close → close-evaluator tier ladders; regime_atr → standalone use_defaults-only *_atr_regime owners; manual → manual-open/type=manual defaults. Legacy user_close_defaults/manual_defaults are migrated to this tree at load.
+	Tuning                   *TuningConfig              `json:"tuning,omitempty"`                       // #1382 — retention for #1339 status-server tuning-run artifacts. Nil/omitted ≡ keep-all.
+}
+
+// TuningConfig bounds #1339 persistent tuning-run artifacts (#1382).
+// max_retained_runs=0 / omitted = keep-all (prune off); a positive N retains
+// the newest N terminal runs (completed/failed/interrupted/rejected) and
+// never deletes queued/running.
+type TuningConfig struct {
+	MaxRetainedRuns int `json:"max_retained_runs,omitempty"`
 }
 
 // UserDefaultsConfig is the canonical #1135 operator defaults block.
@@ -233,6 +242,15 @@ func (c *Config) userDefaultsClose() CloseDefaultsMap {
 		return nil
 	}
 	return c.UserDefaults.Close
+}
+
+// tuningMaxRetainedRuns returns the #1382 retention cap. Nil/omitted Tuning
+// or max_retained_runs=0 means keep-all (prune off).
+func (c *Config) tuningMaxRetainedRuns() int {
+	if c == nil || c.Tuning == nil {
+		return 0
+	}
+	return c.Tuning.MaxRetainedRuns
 }
 
 func (c *Config) userDefaultsRegimeATR() map[string]interface{} {
@@ -2372,6 +2390,9 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	}
 	if _, err := ParseKillSwitchResetDMTimeout(cfg.KillSwitchResetDMTimeout); err != nil {
 		errs = append(errs, err.Error())
+	}
+	if cfg.Tuning != nil && cfg.Tuning.MaxRetainedRuns < 0 {
+		errs = append(errs, fmt.Sprintf("tuning.max_retained_runs must be >= 0 (0 = keep-all), got %d", cfg.Tuning.MaxRetainedRuns))
 	}
 
 	for k, v := range cfg.TradingViewExport.SymbolOverrides {

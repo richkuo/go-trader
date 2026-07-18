@@ -66,6 +66,16 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			return nil, fmt.Errorf("kill_switch_reset_dm_timeout: %w", err)
 		}
 	}
+	// #1382: tuning retention is research-artifact housekeeping only — never
+	// touches positions/orders — so SIGHUP can adopt a new cap immediately and
+	// prune on the spot (queued/running runs are still never deleted).
+	if !reflect.DeepEqual(cfg.Tuning, next.Tuning) {
+		addChange("tuning: %+v -> %+v", cfg.Tuning, next.Tuning)
+		cfg.Tuning = cloneTuningConfig(next.Tuning)
+		if server != nil && server.tuning != nil {
+			server.tuning.setMaxRetainedRuns(cfg.tuningMaxRetainedRuns())
+		}
+	}
 	// #1135: user_defaults flows through hot-reload so SIGHUP edits to the
 	// operator-default layer shape subsequent manual-open invocations, new
 	// type=manual defaults, and close-default injection. The CLI loads fresh
@@ -1053,6 +1063,14 @@ func clonePortfolioRiskConfig(pr *PortfolioRiskConfig) *PortfolioRiskConfig {
 		return nil
 	}
 	cp := *pr
+	return &cp
+}
+
+func cloneTuningConfig(t *TuningConfig) *TuningConfig {
+	if t == nil {
+		return nil
+	}
+	cp := *t
 	return &cp
 }
 
