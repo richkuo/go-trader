@@ -61,10 +61,21 @@
       : "drifted";
   }
 
+  // Decide how loadRunDetail should treat a call while another fetch may be
+  // in flight. "start" begins a fetch; "skip" ignores a duplicate for the same
+  // run; "queue" remembers that the selected run changed and must load after
+  // the in-flight fetch finishes (so a click is never silently dropped).
+  function tuningDetailLoadAction(activeRunID, detailLoading, loadingRunID) {
+    if (!activeRunID) return "idle";
+    if (!detailLoading) return "start";
+    return loadingRunID === activeRunID ? "skip" : "queue";
+  }
+
   const tuningLogic = {
     baselineState: tuningBaselineState,
     paramDiff: tuningParamDiff,
     sameValue: sameValue,
+    detailLoadAction: tuningDetailLoadAction,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = tuningLogic;
   if (typeof document === "undefined") return;
@@ -314,6 +325,8 @@
       runs: [],
       activeRunID: "",
       detailLoading: false,
+      detailLoadingRunID: "",
+      detailReloadPending: false,
       pollTimer: 0,
     };
     const pageEls = {
@@ -793,9 +806,23 @@
     }
 
     async function loadRunDetail() {
-      if (!pageState.activeRunID || pageState.detailLoading) return;
+      const action = tuningLogic.detailLoadAction(
+        pageState.activeRunID,
+        pageState.detailLoading,
+        pageState.detailLoadingRunID
+      );
+      if (action === "idle" || action === "skip") {
+        if (action === "skip") pageState.detailReloadPending = false;
+        return;
+      }
+      if (action === "queue") {
+        pageState.detailReloadPending = true;
+        return;
+      }
       const expected = pageState.activeRunID;
       pageState.detailLoading = true;
+      pageState.detailLoadingRunID = expected;
+      pageState.detailReloadPending = false;
       try {
         const detail = await getJSON("/api/tuning/runs/" + encodeURIComponent(expected));
         if (pageState.activeRunID === expected) await renderRunDetail(detail, expected);
@@ -803,6 +830,11 @@
         handlePageError(err, "Run detail failed");
       } finally {
         pageState.detailLoading = false;
+        pageState.detailLoadingRunID = "";
+        if (pageState.detailReloadPending && pageState.activeRunID) {
+          pageState.detailReloadPending = false;
+          await loadRunDetail();
+        }
       }
     }
 

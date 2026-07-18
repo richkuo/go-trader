@@ -77,6 +77,7 @@ func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
 		`BH-adjusted`,
 		`Always re-read live config at render time`,
 		`memoized server-side`,
+		`detailReloadPending`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("tuning app wiring missing %q", want)
@@ -161,6 +162,11 @@ assert.strictEqual(logic.baselineState(
   {name: "sma", params: {fast: 11, slow: 50}},
   defaults
 ), "drifted");
+
+assert.strictEqual(logic.detailLoadAction("", false, ""), "idle");
+assert.strictEqual(logic.detailLoadAction("run-a", false, ""), "start");
+assert.strictEqual(logic.detailLoadAction("run-a", true, "run-a"), "skip");
+assert.strictEqual(logic.detailLoadAction("run-b", true, "run-a"), "queue");
 `
 	cmd := exec.Command("node", "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {
