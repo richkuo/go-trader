@@ -200,13 +200,20 @@ func (m *tuningRunManager) loadPersistedRuns() error {
 		path := filepath.Join(m.rootDir, entry.Name(), tuningRunRecordFile)
 		var rec tuningRunRecord
 		if err := readTuningJSON(path, &rec); err != nil {
-			return fmt.Errorf("load tuning run %s: %w", entry.Name(), err)
+			// Spec-only orphans (crash between Mkdir and run.json) and corrupt
+			// records must not disable recovery of every other valid run.
+			log.Printf("[tuning] skipping run directory %s: %v", entry.Name(), err)
+			continue
 		}
 		if rec.ID != entry.Name() {
-			return fmt.Errorf("load tuning run %s: record id %q does not match directory", entry.Name(), rec.ID)
+			log.Printf("[tuning] skipping run directory %s: record id %q does not match directory",
+				entry.Name(), rec.ID)
+			continue
 		}
 		if !validTuningRunStatus(rec.Status) {
-			return fmt.Errorf("load tuning run %s: invalid status %q", entry.Name(), rec.Status)
+			log.Printf("[tuning] skipping run directory %s: invalid status %q",
+				entry.Name(), rec.Status)
+			continue
 		}
 		if rec.Status == tuningRunQueued || rec.Status == tuningRunRunning {
 			now := m.now()
@@ -214,7 +221,9 @@ func (m *tuningRunManager) loadPersistedRuns() error {
 			rec.CompletedAt = &now
 			rec.Error = "scheduler restarted before the tuning run completed"
 			if err := writeTuningJSON(path, rec); err != nil {
-				return fmt.Errorf("mark tuning run %s interrupted: %w", rec.ID, err)
+				// Keep the in-memory interrupted view so the API still serves
+				// this run; the next restart will retry the persist.
+				log.Printf("[tuning] mark run %s interrupted on disk failed: %v", rec.ID, err)
 			}
 		}
 		m.runs[rec.ID] = rec

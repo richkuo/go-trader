@@ -397,6 +397,104 @@ func TestTuningRunProcessReportsInvalidArtifact(t *testing.T) {
 	}
 }
 
+func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	mgr, err := newTuningRunManager(configPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goodID := "20260718T000000000000000Z-aabbcc"
+	goodRec := tuningRunRecord{
+		ID:          goodID,
+		Status:      tuningRunCompleted,
+		StrategyIDs: []string{"spot-a"},
+		CreatedAt:   time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC),
+	}
+	goodDir := filepath.Join(mgr.rootDir, goodID)
+	if err := os.Mkdir(goodDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(goodDir, tuningRunRecordFile), goodRec); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(goodDir, tuningRunSpecFile), tuningRunSpec{
+		SchemaVersion: 1, StrategyIDs: []string{"spot-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) enqueue crash window: directory exists with spec.json only.
+	orphanID := "20260718T000001000000000Z-orphan1"
+	orphanDir := filepath.Join(mgr.rootDir, orphanID)
+	if err := os.Mkdir(orphanDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(orphanDir, tuningRunSpecFile), tuningRunSpec{
+		SchemaVersion: 1, StrategyIDs: []string{"spot-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// (b) truncated / syntactically corrupt run.json.
+	corruptID := "20260718T000002000000000Z-corrupt"
+	corruptDir := filepath.Join(mgr.rootDir, corruptID)
+	if err := os.Mkdir(corruptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptDir, tuningRunRecordFile), []byte(`{"id":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// (c) record ID disagrees with directory name.
+	mismatchID := "20260718T000003000000000Z-mismatc"
+	mismatchDir := filepath.Join(mgr.rootDir, mismatchID)
+	if err := os.Mkdir(mismatchDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(mismatchDir, tuningRunRecordFile), tuningRunRecord{
+		ID:          "20260718T000003000000000Z-otherid",
+		Status:      tuningRunCompleted,
+		StrategyIDs: []string{"spot-a"},
+		CreatedAt:   time.Date(2026, 7, 18, 0, 0, 3, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Invalid status should also be skipped without taking down recovery.
+	badStatusID := "20260718T000004000000000Z-badstat"
+	badStatusDir := filepath.Join(mgr.rootDir, badStatusID)
+	if err := os.Mkdir(badStatusDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badStatusDir, tuningRunRecordFile), []byte(
+		`{"id":"20260718T000004000000000Z-badstat","status":"not-a-status","strategy_ids":["spot-a"],"created_at":"2026-07-18T00:00:04Z"}`,
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := newTuningRunManager(configPath, nil)
+	if err != nil {
+		t.Fatalf("manager must start despite malformed dirs: %v", err)
+	}
+	listed := restarted.list()
+	if len(listed) != 1 || listed[0].ID != goodID || listed[0].Status != tuningRunCompleted {
+		t.Fatalf("listed = %#v, want only the valid completed run", listed)
+	}
+	detail, err := restarted.detail(goodID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Run.ID != goodID {
+		t.Fatalf("detail = %#v", detail)
+	}
+	for _, badID := range []string{orphanID, corruptID, mismatchID, badStatusID} {
+		if _, err := restarted.detail(badID); err == nil {
+			t.Fatalf("expected missing detail for skipped run %s", badID)
+		}
+	}
+}
+
 func waitForTuningStatus(t *testing.T, mgr *tuningRunManager, status tuningRunStatus, count int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
