@@ -38,7 +38,14 @@
 
   // Drift is a three-state claim. Missing metadata is not evidence of change;
   // an empty baseline_params object is still known metadata and must compare.
-  function tuningBaselineState(result, currentOpen) {
+  //
+  // Both sides must be effective-parameter sets (registry defaults merged under
+  // explicit overrides). /api/strategies/<id>/config already merges into
+  // open_strategy.params (buildUIStrategyConfig), but tune_live stores
+  // baseline_params as the RAW unmerged config dict — so defaults must be
+  // merged onto baseline before comparing, or common args-form strategies
+  // (empty explicit params) false-fire as "drifted".
+  function tuningBaselineState(result, currentOpen, defaultParams) {
     const hasOpenName = !!result && typeof result.open_strategy === "string" &&
       result.open_strategy.trim() !== "";
     const hasBaseline = !!result && hasOwn(result, "baseline_params") &&
@@ -46,7 +53,10 @@
       !Array.isArray(result.baseline_params);
     if (!hasOpenName || !hasBaseline) return "unknown";
     const live = currentOpen || {};
-    return live.name === result.open_strategy && sameValue(live.params || {}, result.baseline_params)
+    const defaults = defaultParams || {};
+    const liveEffective = Object.assign({}, defaults, live.params || {});
+    const baselineEffective = Object.assign({}, defaults, result.baseline_params);
+    return live.name === result.open_strategy && sameValue(liveEffective, baselineEffective)
       ? "current"
       : "drifted";
   }
@@ -701,7 +711,11 @@
       if (configError || !config) {
         section.appendChild(node("p", "tuning-error", "Live-value diff unavailable: " + (configError || "configuration missing")));
       } else {
-        const baselineState = tuningLogic.baselineState(result, config.open_strategy || {});
+        const baselineState = tuningLogic.baselineState(
+          result,
+          config.open_strategy || {},
+          config.default_params || {}
+        );
         const baselineClass = baselineState === "drifted"
           ? "baseline-drifted"
           : (baselineState === "current" ? "baseline-current" : "baseline-unknown");
