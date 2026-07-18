@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -72,6 +73,7 @@ func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
 		`/api/tuning/runs`,
 		`/api/strategies/`,
 		`baseline-drifted`,
+		`baseline-unknown`,
 		`BH-adjusted`,
 	} {
 		if !strings.Contains(js, want) {
@@ -85,5 +87,52 @@ func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
 	}
 	if !strings.Contains(string(index), `href="/tuning"`) {
 		t.Error("dashboard navigation missing /tuning link")
+	}
+}
+
+func TestTuningDiffAndBaselineStates(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is unavailable")
+	}
+	const script = `
+const assert = require("assert");
+const logic = require("./static/ui/app.js");
+
+let diff = logic.paramDiff({params: {fast: 20}}, {fast: 10, slow: 50});
+assert.deepStrictEqual(diff.keys, ["fast"]);
+assert.strictEqual(diff.replacement, false);
+
+diff = logic.paramDiff({params: {fast: 10}}, {fast: 10, slow: 50});
+assert.deepStrictEqual(diff.keys, []);
+
+diff = logic.paramDiff({patch: {open_strategy: {params: {fast: 20, slow: 50}}}}, {fast: 10, slow: 50});
+assert.deepStrictEqual(diff.keys, ["fast"]);
+
+diff = logic.paramDiff({patch: {open_strategy: {params: {fast: 10, slow: 50}}}}, {fast: 10, slow: 50});
+assert.deepStrictEqual(diff.keys, []);
+
+diff = logic.paramDiff({patch: {open_strategy: {params: {fast: 20}}}}, {fast: 10, slow: 50});
+assert.deepStrictEqual(diff.keys, ["fast", "slow"]);
+assert.strictEqual(diff.proposed.slow, undefined);
+assert.strictEqual(diff.replacement, true);
+
+assert.strictEqual(logic.baselineState({}, {name: "sma", params: {fast: 10}}), "unknown");
+assert.strictEqual(logic.baselineState({open_strategy: "sma"}, {name: "sma", params: {fast: 10}}), "unknown");
+assert.strictEqual(logic.baselineState(
+  {open_strategy: "sma", baseline_params: {fast: 10}},
+  {name: "sma", params: {fast: 10}}
+), "current");
+assert.strictEqual(logic.baselineState(
+  {open_strategy: "sma", baseline_params: {}},
+  {name: "sma", params: {}}
+), "current");
+assert.strictEqual(logic.baselineState(
+  {open_strategy: "sma", baseline_params: {fast: 11}},
+  {name: "sma", params: {fast: 10}}
+), "drifted");
+`
+	cmd := exec.Command("node", "-e", script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("tuning logic checks failed: %v\n%s", err, output)
 	}
 }

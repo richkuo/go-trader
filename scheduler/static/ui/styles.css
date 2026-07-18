@@ -1547,6 +1547,11 @@ h3 {
   color: var(--amber);
 }
 
+.baseline-unknown {
+  background: var(--position-line);
+  color: var(--muted);
+}
+
 .tuning-detail {
   margin-top: 18px;
 }

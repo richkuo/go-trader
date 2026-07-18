@@ -1,4 +1,64 @@
 (function () {
+  function stableJSON(value) {
+    if (Array.isArray(value)) return "[" + value.map(stableJSON).join(",") + "]";
+    if (value && typeof value === "object") {
+      return "{" + Object.keys(value).sort().map(function (key) {
+        return JSON.stringify(key) + ":" + stableJSON(value[key]);
+      }).join(",") + "}";
+    }
+    return JSON.stringify(value);
+  }
+
+  function sameValue(a, b) {
+    return stableJSON(a) === stableJSON(b);
+  }
+
+  function hasOwn(object, key) {
+    return !!object && Object.prototype.hasOwnProperty.call(object, key);
+  }
+
+  // A survivor patch from #1339 is a full open_strategy.params replacement,
+  // so omitted live keys are genuine removals. Ranked rows without a patch are
+  // evidence snapshots (the baseline may contain only explicit live params),
+  // so only their own keys are eligible for display as changes.
+  function tuningParamDiff(row, current) {
+    const patchOpen = row && row.patch && row.patch.open_strategy;
+    const replacement = !!patchOpen && hasOwn(patchOpen, "params") &&
+      !!patchOpen.params && typeof patchOpen.params === "object" && !Array.isArray(patchOpen.params);
+    const proposed = replacement ? patchOpen.params : ((row && row.params) || {});
+    const currentParams = current || {};
+    const candidateKeys = replacement
+      ? Array.from(new Set(Object.keys(currentParams).concat(Object.keys(proposed))))
+      : Object.keys(proposed);
+    const keys = candidateKeys.sort().filter(function (key) {
+      return !sameValue(currentParams[key], proposed[key]);
+    });
+    return { keys: keys, proposed: proposed, replacement: replacement };
+  }
+
+  // Drift is a three-state claim. Missing metadata is not evidence of change;
+  // an empty baseline_params object is still known metadata and must compare.
+  function tuningBaselineState(result, currentOpen) {
+    const hasOpenName = !!result && typeof result.open_strategy === "string" &&
+      result.open_strategy.trim() !== "";
+    const hasBaseline = !!result && hasOwn(result, "baseline_params") &&
+      !!result.baseline_params && typeof result.baseline_params === "object" &&
+      !Array.isArray(result.baseline_params);
+    if (!hasOpenName || !hasBaseline) return "unknown";
+    const live = currentOpen || {};
+    return live.name === result.open_strategy && sameValue(live.params || {}, result.baseline_params)
+      ? "current"
+      : "drifted";
+  }
+
+  const tuningLogic = {
+    baselineState: tuningBaselineState,
+    paramDiff: tuningParamDiff,
+    sameValue: sameValue,
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = tuningLogic;
+  if (typeof document === "undefined") return;
+
   const SIDEBAR_STORAGE_KEY = "goTraderSidebarOpen";
   const MOBILE_SIDEBAR_MQ = "(max-width: 980px)";
   const VIEW_MODE_KEY = "goTraderViewMode";
@@ -531,28 +591,8 @@
       pageEls.progress.appendChild(item);
     }
 
-    function stableJSON(value) {
-      if (Array.isArray(value)) return "[" + value.map(stableJSON).join(",") + "]";
-      if (value && typeof value === "object") {
-        return "{" + Object.keys(value).sort().map(function (key) {
-          return JSON.stringify(key) + ":" + stableJSON(value[key]);
-        }).join(",") + "}";
-      }
-      return JSON.stringify(value);
-    }
-
-    function sameValue(a, b) {
-      return stableJSON(a) === stableJSON(b);
-    }
-
     function liveEffectiveParams(config) {
       return Object.assign({}, config.default_params || {}, (config.open_strategy && config.open_strategy.params) || {});
-    }
-
-    function baselineDrifted(result, config) {
-      const currentOpen = config.open_strategy || {};
-      return currentOpen.name !== result.open_strategy ||
-        !sameValue(currentOpen.params || {}, result.baseline_params || {});
     }
 
     function bhAdjustedLabel(verdict) {
@@ -603,11 +643,13 @@
       card.appendChild(heading);
       card.appendChild(node("p", "tuning-bh-label", bhAdjustedLabel(row.verdict)));
 
-      const proposed = ((row.patch || {}).open_strategy || {}).params || row.params || {};
       const current = liveEffectiveParams(config);
-      const keys = Array.from(new Set(Object.keys(current).concat(Object.keys(proposed)))).sort()
-        .filter(function (key) { return !sameValue(current[key], proposed[key]); });
-      const diffTitle = node("h4", "", "Proposed patch vs current live values");
+      const diff = tuningLogic.paramDiff(row, current);
+      const proposed = diff.proposed;
+      const keys = diff.keys;
+      const diffTitle = node("h4", "", diff.replacement
+        ? "Proposed replacement patch vs current live values"
+        : "Candidate parameters vs current live values");
       card.appendChild(diffTitle);
       if (!keys.length) {
         card.appendChild(node("p", "panel-muted", "No parameter differences from the current live configuration."));
@@ -661,11 +703,16 @@
       if (configError || !config) {
         section.appendChild(node("p", "tuning-error", "Live-value diff unavailable: " + (configError || "configuration missing")));
       } else {
-        const drifted = baselineDrifted(result, config);
-        const drift = node("p", drifted ? "tuning-drift baseline-drifted" : "tuning-drift baseline-current",
-          drifted
-            ? "Baseline drifted: the run started from different live parameters. Suggestions are diffed against the values active now."
-            : "Baseline current: the run baseline still matches the live configuration.");
+        const baselineState = tuningLogic.baselineState(result, config.open_strategy || {});
+        const baselineClass = baselineState === "drifted"
+          ? "baseline-drifted"
+          : (baselineState === "current" ? "baseline-current" : "baseline-unknown");
+        const baselineMessage = baselineState === "drifted"
+          ? "Baseline drifted: the run started from different live parameters. Suggestions are diffed against the values active now."
+          : (baselineState === "current"
+            ? "Baseline current: the run baseline still matches the live configuration."
+            : "Baseline unknown: this run artifact does not include enough baseline metadata to determine drift.");
+        const drift = node("p", "tuning-drift " + baselineClass, baselineMessage);
         section.appendChild(drift);
         const ranked = result.ranked || [];
         if (!ranked.length) {
