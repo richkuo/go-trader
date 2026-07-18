@@ -3,6 +3,8 @@
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 
 import pandas as pd
 import pytest
@@ -11,6 +13,45 @@ import pytest
 # Note: storage.py calls init_db() at import time using default DB_PATH.
 # Tests always pass an explicit db_path to avoid touching the real database.
 from storage import get_connection, init_db, store_ohlcv, load_ohlcv, store_backtest_result, get_backtest_results
+
+
+def test_ohlcv_cache_env_override_is_import_time_default(tmp_path):
+    override = tmp_path / "state" / "ohlcv.sqlite3"
+    env = os.environ.copy()
+    env["GO_TRADER_OHLCV_CACHE_DB"] = str(override)
+    proc = subprocess.run(
+        [sys.executable, "-c", "import storage; print(storage.DB_PATH)"],
+        cwd=os.path.dirname(__file__), env=env, text=True,
+        capture_output=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(override.resolve())
+
+
+def test_ohlcv_cache_env_override_refuses_blank_value():
+    env = os.environ.copy()
+    env["GO_TRADER_OHLCV_CACHE_DB"] = "   "
+    proc = subprocess.run(
+        [sys.executable, "-c", "import storage"],
+        cwd=os.path.dirname(__file__), env=env, text=True,
+        capture_output=True, check=False,
+    )
+    assert proc.returncode != 0
+    assert "GO_TRADER_OHLCV_CACHE_DB" in proc.stderr
+
+
+def test_ohlcv_cache_env_override_fails_loudly_when_unwritable(tmp_path):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("block")
+    env = os.environ.copy()
+    env["GO_TRADER_OHLCV_CACHE_DB"] = str(blocker / "ohlcv.sqlite3")
+    proc = subprocess.run(
+        [sys.executable, "-c", "import storage; storage.get_connection()"],
+        cwd=os.path.dirname(__file__), env=env, text=True,
+        capture_output=True, check=False,
+    )
+    assert proc.returncode != 0
+    assert str(blocker / "ohlcv.sqlite3") in proc.stderr
 
 
 # ─── Fixtures ──────────────────────────────────

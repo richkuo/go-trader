@@ -597,6 +597,28 @@ def test_config_strategy_entries_uses_trade_timeframe_not_regime(tmp_path):
     assert entries == [("s", "BTC/USDT", "4h")]
 
 
+def test_config_strategy_entries_accepts_ordered_strategy_subset(tmp_path):
+    cfg = _sma_config(sid="first")
+    second = dict(cfg["strategies"][0])
+    second["id"] = "second"
+    second["args"] = ["sma_crossover", "ETH/USDT", "1h"]
+    cfg["strategies"].append(second)
+    path = _write_config(tmp_path, cfg)
+
+    entries = tl.config_strategy_entries(path, ["second", "first"])
+
+    assert entries == [
+        ("second", "ETH/USDT", "1h"),
+        ("first", "BTC/USDT", "1d"),
+    ]
+
+
+def test_config_strategy_entries_rejects_duplicate_strategy_subset(tmp_path):
+    path = _write_config(tmp_path, _sma_config(sid="first"))
+    with pytest.raises(ValueError, match="duplicate strategy id"):
+        tl.config_strategy_entries(path, ["first", "first"])
+
+
 def test_regime_timeframe_mismatch_skipped_unsupported(tmp_path):
     # regime enabled with regime.timeframe (1d) != trade tf (4h) → neither stage
     # can thread a separate regime interval → unsupported, never a tf swap.

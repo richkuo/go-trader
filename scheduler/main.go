@@ -308,14 +308,28 @@ func main() {
 	// Mutex for state access (HTTP server reads)
 	var mu sync.RWMutex
 
+	// Initialize the cancellable read-only/side-effect contexts before the
+	// status server can accept a tuning job. The #1339 research lane rides the
+	// read-only context and must be killable from its first accepted request.
+	initShutdownContexts()
+
 	// Start HTTP status server. Priority: CLI flag > config > default.
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
 	server.SetConfigContext(*configPath, cfg)
+	tuningManager, tuningErr := newTuningRunManager(*configPath, nil)
+	if tuningErr != nil {
+		fmt.Printf("[WARN] tuning API unavailable: %v\n", tuningErr)
+	} else {
+		server.tuning = tuningManager
+	}
 	// #1272: end single-threaded startup before the first state-reading
 	// goroutine (http.Serve). ClearLatchedKillSwitchSharedWallet above must
 	// stay before this call.
 	markSchedulerStarted()
+	if tuningManager != nil {
+		go tuningManager.run(shutdownReadOnlyCtx)
+	}
 	server.Start(statusPort)
 
 	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
@@ -329,8 +343,6 @@ func main() {
 	// down (registered AFTER buildNotifierFromConfig so it runs BEFORE
 	// cleanupNotifier in LIFO order) waits for in-flight side-effecting
 	// subprocesses and persists state before the notifier flushes.
-	initShutdownContexts()
-
 	// #1147 trade-quality diagnostics: eager row insert on every full close
 	// (hook fires inside recordClosedPosition, under mu — same cost class as
 	// the tradeRecorder insert), async MFE/MAE enrichment outside mu. The

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -160,19 +162,35 @@ func runPythonWithTimeout(parentCtx context.Context, script string, args []strin
 }
 
 // spawnPythonProcess is the semaphore-free spawn core shared by
-// runPythonWithTimeout and the #1137 LLM entry-analysis lane. The LLM lane
-// deliberately bypasses pythonSemaphore — a multi-minute LLM pipeline holding
-// one of the 4 trading-path slots would starve signal checks — and bounds
-// itself with its own worker-level concurrency cap instead. Every other
-// caller must go through runPython*/runPythonWithTimeout so trading-path
-// subprocesses stay capped.
+// runPythonWithTimeout and the dedicated #1137 LLM / #1339 tuning lanes. Those
+// long-running lanes deliberately bypass pythonSemaphore so they cannot starve
+// the 4 trading-path slots, and each supplies its own worker-level concurrency
+// cap. Other callers must go through runPython*/runPythonWithTimeout so
+// trading-path subprocesses stay capped.
 func spawnPythonProcess(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration) ([]byte, []byte, error) {
-	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+	return spawnPythonProcessWithEnv(parentCtx, script, args, stdinData, timeout, nil)
+}
+
+// spawnPythonProcessWithEnv is the dedicated-lane variant for subprocesses
+// that need a small, explicit environment overlay. A non-positive timeout
+// means the parent context is the only deadline; the tuning lane uses that so
+// research runs are cancelled on shutdown without an arbitrary wall-clock cap.
+func spawnPythonProcessWithEnv(parentCtx context.Context, script string, args []string, stdinData []byte, timeout time.Duration, envOverrides map[string]string) ([]byte, []byte, error) {
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(parentCtx, timeout)
+	} else {
+		ctx, cancel = context.WithCancel(parentCtx)
+	}
 	defer cancel()
 
 	cmdArgs := append([]string{script}, args...)
 	cmd := exec.CommandContext(ctx, ".venv/bin/python3", cmdArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if len(envOverrides) > 0 {
+		cmd.Env = processEnvironment(envOverrides)
+	}
 	if stdinData != nil {
 		cmd.Stdin = bytes.NewReader(stdinData)
 	}
@@ -182,13 +200,44 @@ func spawnPythonProcess(parentCtx context.Context, script string, args []string,
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
+	if ctx.Err() != nil {
 		if cmd.Process != nil {
 			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
+	}
+	if ctx.Err() == context.DeadlineExceeded {
 		return stdout.Bytes(), stderr.Bytes(), &pythonScriptTimeoutError{d: timeout}
 	}
 	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+func processEnvironment(overrides map[string]string) []string {
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	prefixes := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		prefixes[key+"="] = struct{}{}
+	}
+	env := make([]string, 0, len(os.Environ())+len(keys))
+	for _, item := range os.Environ() {
+		replaced := false
+		for prefix := range prefixes {
+			if strings.HasPrefix(item, prefix) {
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			env = append(env, item)
+		}
+	}
+	for _, key := range keys {
+		env = append(env, key+"="+overrides[key])
+	}
+	return env
 }
 
 // runPythonReadOnly is for scripts with no on-chain or local-state side

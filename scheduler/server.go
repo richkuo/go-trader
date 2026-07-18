@@ -24,6 +24,7 @@ type StatusServer struct {
 	stateDB        *StateDB // SQLite DB for /history queries (may be nil)
 	candleFetcher  UICandleFetcher
 	candleCache    *UICandleCache
+	tuning         *tuningRunManager // #1339 persistent dedicated research lane
 
 	// strategiesMu protects `strategies` independently of `mu`. SIGHUP holds
 	// the global state `mu.Lock()` across the reload (see config_reload.go);
@@ -241,6 +242,10 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies/dead", ss.handleAPIDeadStrategies)
 	mux.HandleFunc("/api/closing-strategies", ss.handleAPIClosingStrategies)
 	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
+	// #1339 persistent strategy-tuning jobs. The exact collection route
+	// handles GET/POST; the longer prefix serves one stable run id.
+	mux.HandleFunc("/api/tuning/runs", ss.handleAPITuningRuns)
+	mux.HandleFunc("/api/tuning/runs/", ss.handleAPITuningRun)
 	// #1256 low-risk mutation surface (ui_mutations.go): global notification
 	// toggle; per-strategy pause + notification toggles route through the
 	// "/api/strategies/" prefix handler below.
