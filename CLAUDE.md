@@ -97,12 +97,13 @@ Other dirs (guardrails; inventories in ARCHITECTURE.md):
 
 ## Pull Requests
 - Reference issue with `Closes #<N>` in body. In GitHub comments avoid `#N` for list items; use `1.`.
+- **PR body lead:** start with `## Plain simple English` — one short paragraph under 55 words, no jargon, no unexplained acronyms — stating what changed and why it matters, so a human can understand the PR without reading the technical summary. Then `## Summary` / verification; keep those scannable. Don't restate the whole issue.
 - Fetch latest bot review: `gh api repos/richkuo/go-trader/issues/<N>/comments --jq '[.[] | select(.user.login=="claude[bot]" or .user.login=="github-actions[bot]")] | last | .body'` (top-level summary on issues endpoint, not pulls; #1178 review runs post as `github-actions[bot]`, older reviews as `claude[bot]`).
 - Before merging a long-running PR: `git fetch origin main && git diff origin/main..HEAD -- <paths>` catches silent reverts.
 - **Commits and PR bodies:** end with `LLM: <model> | <effort> | Harness: <action>` (default Claude Code footer slot). Do **not** append any `Co-authored-by:` / `Co-Authored-By` trailer.
 
 ### PR review format (`@claude review`)
-**SSoT: `.github/prompts/pr-review-format.md`** (edit prompt file, not workflow string). First line exactly `LGTM` or `Needs Updates` (blocking = `### Needs Fixing` / `### Requires Human Review` only). Safety findings never dropped. Needs Fixing/Optional require **Invariant:** + **Must survive:** (1–3 cases). Prefer in-PR fixes; follow-up issue only when genuinely out-of-scope. **Reviews never gate on or wait for CI.** **Detail → ARCHITECTURE.md.**
+**SSoT: `.github/prompts/pr-review-format.md`** (edit prompt file, not workflow string). First line exactly `LGTM` or `Needs Updates` (blocking = `### Needs Fixing` / `### Requires Human Review` only). Safety findings never dropped. **Every finding** requires **Plain simple English:** (≤55 words, no jargon) after the technical description. Needs Fixing/Optional then require **Invariant:** + **Must survive:** (1–3 cases); Requires Human Review also requires **Recommended proposed solution:**. Prefer in-PR fixes; follow-up issue only when genuinely out-of-scope. **Reviews never gate on or wait for CI.** **Detail → ARCHITECTURE.md.**
 
 ### The Claude Code workflow itself (`.github/workflows/claude.yml` + the central run body)
 - **#1178 least-privilege split:** `claude.yml` = `classify` job + two caller jobs `uses:`-ing the central reusable body `richkuo/rk-skills/.github/workflows/claude-run.yml@main`; **only the call-site `permissions:` differ.** Review job: `contents: read`+`pull-requests: write`+`issues: write`, **no `id-token: write`**. Implement job keeps `contents: write`+`id-token: write`. **Detail → ARCHITECTURE.md.**
