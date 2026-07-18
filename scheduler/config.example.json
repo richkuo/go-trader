@@ -3,6 +3,9 @@
   "interval_seconds": 300,
   "db_file": "scheduler/state.db",
   "status_port": 8099,
+  "tuning": {
+    "max_retained_runs": 0
+  },
   "default_stop_loss_atr_mult": 1.0,
   "alert_throttle_interval": "6h",
   "kill_switch_reset_dm_timeout": "6h",

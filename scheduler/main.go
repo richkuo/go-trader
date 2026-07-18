@@ -317,7 +317,7 @@ func main() {
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
 	server.SetConfigContext(*configPath, cfg)
-	tuningManager, tuningErr := newTuningRunManager(*configPath, nil)
+	tuningManager, tuningErr := newTuningRunManager(*configPath, nil, cfg.tuningMaxRetainedRuns())
 	if tuningErr != nil {
 		fmt.Printf("[WARN] tuning API unavailable: %v\n", tuningErr)
 	} else {

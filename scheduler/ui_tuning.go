@@ -95,8 +95,9 @@ type tuningRunManager struct {
 	runner      tuningRunRunner
 	now         func() time.Time
 
-	mu   sync.RWMutex
-	runs map[string]tuningRunRecord
+	mu              sync.RWMutex
+	runs            map[string]tuningRunRecord
+	maxRetainedRuns int // #1382; 0 = keep-all
 }
 
 func resolveTuningPaths(configPath string) (string, string, error) {
@@ -116,7 +117,7 @@ func resolveTuningPaths(configPath string) (string, string, error) {
 		filepath.Join(stateDir, "ohlcv_cache.sqlite3"), nil
 }
 
-func newTuningRunManager(configPath string, runner tuningRunRunner) (*tuningRunManager, error) {
+func newTuningRunManager(configPath string, runner tuningRunRunner, maxRetainedRuns int) (*tuningRunManager, error) {
 	rootDir, cacheDBPath, err := resolveTuningPaths(configPath)
 	if err != nil {
 		return nil, err
@@ -142,18 +143,23 @@ func newTuningRunManager(configPath string, runner tuningRunRunner) (*tuningRunM
 	if runner == nil {
 		runner = runTuningProcess
 	}
+	if maxRetainedRuns < 0 {
+		maxRetainedRuns = 0
+	}
 	m := &tuningRunManager{
-		rootDir:     rootDir,
-		configPath:  resolvedConfig,
-		cacheDBPath: cacheDBPath,
-		jobs:        make(chan tuningRunJob, tuningRunQueueCap),
-		runner:      runner,
-		now:         func() time.Time { return time.Now().UTC() },
-		runs:        make(map[string]tuningRunRecord),
+		rootDir:         rootDir,
+		configPath:      resolvedConfig,
+		cacheDBPath:     cacheDBPath,
+		jobs:            make(chan tuningRunJob, tuningRunQueueCap),
+		runner:          runner,
+		now:             func() time.Time { return time.Now().UTC() },
+		runs:            make(map[string]tuningRunRecord),
+		maxRetainedRuns: maxRetainedRuns,
 	}
 	if err := m.loadPersistedRuns(); err != nil {
 		return nil, err
 	}
+	m.pruneRetainedRuns()
 	return m, nil
 }
 
@@ -332,7 +338,80 @@ func (m *tuningRunManager) storeRecord(rec tuningRunRecord) error {
 	m.mu.Lock()
 	m.runs[rec.ID] = rec
 	m.mu.Unlock()
+	if tuningRunStatusIsTerminal(rec.Status) {
+		m.pruneRetainedRuns()
+	}
 	return nil
+}
+
+func tuningRunStatusIsTerminal(status tuningRunStatus) bool {
+	switch status {
+	case tuningRunCompleted, tuningRunFailed, tuningRunInterrupted, tuningRunRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// setMaxRetainedRuns adopts a new #1382 retention cap (0 = keep-all) and
+// immediately prunes. Safe for SIGHUP from applyHotReloadConfig.
+func (m *tuningRunManager) setMaxRetainedRuns(n int) {
+	if m == nil {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	m.mu.Lock()
+	m.maxRetainedRuns = n
+	m.mu.Unlock()
+	m.pruneRetainedRuns()
+}
+
+// pruneRetainedRuns deletes the oldest terminal run directories beyond
+// maxRetainedRuns. In-flight (queued/running) runs are never candidates.
+// RemoveAll failures are fail-open per directory (log + continue); the map
+// entry is dropped only after a successful delete. Corrupt/skipped dirs that
+// never entered m.runs are left alone.
+func (m *tuningRunManager) pruneRetainedRuns() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	max := m.maxRetainedRuns
+	if max <= 0 {
+		m.mu.Unlock()
+		return
+	}
+	terminal := make([]tuningRunRecord, 0, len(m.runs))
+	for _, rec := range m.runs {
+		if tuningRunStatusIsTerminal(rec.Status) {
+			terminal = append(terminal, rec)
+		}
+	}
+	if len(terminal) <= max {
+		m.mu.Unlock()
+		return
+	}
+	sort.Slice(terminal, func(i, j int) bool {
+		if terminal[i].CreatedAt.Equal(terminal[j].CreatedAt) {
+			return terminal[i].ID < terminal[j].ID
+		}
+		return terminal[i].CreatedAt.Before(terminal[j].CreatedAt)
+	})
+	toDelete := append([]tuningRunRecord(nil), terminal[:len(terminal)-max]...)
+	m.mu.Unlock()
+
+	for _, rec := range toDelete {
+		runDir := filepath.Join(m.rootDir, rec.ID)
+		if err := os.RemoveAll(runDir); err != nil {
+			log.Printf("[tuning] prune run %s failed: %v", rec.ID, err)
+			continue
+		}
+		m.mu.Lock()
+		delete(m.runs, rec.ID)
+		m.mu.Unlock()
+	}
 }
 
 func (m *tuningRunManager) record(id string) (tuningRunRecord, bool) {
