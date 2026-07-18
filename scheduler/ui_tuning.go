@@ -19,14 +19,16 @@ import (
 )
 
 const (
-	tuningRunSchemaVersion = 1
-	tuningRunQueueCap      = 16
-	tuningCacheEnv         = "GO_TRADER_OHLCV_CACHE_DB"
-	tuningRunRecordFile    = "run.json"
-	tuningRunSpecFile      = "spec.json"
-	tuningRunOverridesFile = "overrides.json"
-	tuningRunProgressFile  = "tune_live.progress.json"
-	tuningRunResultsFile   = "results.json"
+	tuningRunSchemaVersion       = 1
+	tuningRunQueueCap            = 16
+	tuningCacheEnv               = "GO_TRADER_OHLCV_CACHE_DB"
+	tuningRunRecordFile          = "run.json"
+	tuningRunSpecFile            = "spec.json"
+	tuningRunOverridesFile       = "overrides.json"
+	tuningRunProgressFile        = "tune_live.progress.json"
+	tuningRunResultsFile         = "results.json"
+	tuningFailureDetailMaxRunes  = 240
+	tuningFailureSummaryMaxRunes = 4096
 )
 
 type tuningRunStatus string
@@ -488,23 +490,97 @@ func runTuningProcess(ctx context.Context, job tuningRunJob) error {
 	if len(job.Spec.Overrides) > 0 {
 		args = append(args, "--overrides", filepath.Join(job.RunDir, tuningRunOverridesFile))
 	}
-	_, stderr, err := tuningProcessSpawner(ctx, "backtest/tune_live.py", args,
+	_, stderr, processErr := tuningProcessSpawner(ctx, "backtest/tune_live.py", args,
 		map[string]string{tuningCacheEnv: job.CacheDBPath})
-	if err != nil {
-		return fmt.Errorf("tune_live failed: %w (stderr: %s)", err, firstLine(stderr))
-	}
 	resultsPath := filepath.Join(job.RunDir, tuningRunResultsFile)
-	var results map[string]any
-	if err := readTuningJSON(resultsPath, &results); err != nil {
-		return fmt.Errorf("read tuning results %s: %w", resultsPath, err)
+	results, resultsErr := readTuningResults(resultsPath)
+	if processErr != nil {
+		if resultsErr == nil {
+			if summary := tuningFailureSummary(results); summary != "" {
+				return fmt.Errorf("tune_live failed: %w (results: %s)", processErr, summary)
+			}
+		}
+		return fmt.Errorf("tune_live failed: %w (stderr: %s)", processErr, firstLine(stderr))
 	}
-	if _, ok := results["schema_version"]; !ok {
-		return fmt.Errorf("tuning results %s missing schema_version", resultsPath)
-	}
-	if _, ok := results["strategies"].([]any); !ok {
-		return fmt.Errorf("tuning results %s missing strategies array", resultsPath)
+	if resultsErr != nil {
+		return resultsErr
 	}
 	return nil
+}
+
+func readTuningResults(path string) (map[string]any, error) {
+	var results map[string]any
+	if err := readTuningJSON(path, &results); err != nil {
+		return nil, fmt.Errorf("read tuning results %s: %w", path, err)
+	}
+	if _, ok := results["schema_version"]; !ok {
+		return nil, fmt.Errorf("tuning results %s missing schema_version", path)
+	}
+	if _, ok := results["strategies"].([]any); !ok {
+		return nil, fmt.Errorf("tuning results %s missing strategies array", path)
+	}
+	return results, nil
+}
+
+func tuningFailureSummary(results map[string]any) string {
+	strategies, _ := results["strategies"].([]any)
+	parts := make([]string, 0, len(strategies))
+	usedRunes := 0
+	for i, raw := range strategies {
+		strategy, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := tuningSummaryString(strategy["strategy_id"])
+		if id == "" {
+			id = fmt.Sprintf("strategy[%d]", i)
+		}
+		status := tuningSummaryString(strategy["status"])
+		detail := tuningSummaryString(strategy["error"])
+		if detail == "" {
+			detail = tuningSummaryString(strategy["reason"])
+		}
+		var part string
+		switch {
+		case status != "" && detail != "":
+			part = fmt.Sprintf("%s [%s]: %s", id, status, detail)
+		case detail != "":
+			part = fmt.Sprintf("%s: %s", id, detail)
+		case status != "":
+			part = fmt.Sprintf("%s: %s", id, status)
+		default:
+			continue
+		}
+		separatorRunes := 0
+		if len(parts) > 0 {
+			separatorRunes = 2
+		}
+		if usedRunes+separatorRunes+len([]rune(part)) > tuningFailureSummaryMaxRunes {
+			parts = append(parts, fmt.Sprintf("%d additional strategy result(s) omitted", len(strategies)-i))
+			break
+		}
+		parts = append(parts, part)
+		usedRunes += separatorRunes + len([]rune(part))
+	}
+	summary := strings.Join(parts, "; ")
+	runes := []rune(summary)
+	if len(runes) > tuningFailureSummaryMaxRunes {
+		return string(runes[:tuningFailureSummaryMaxRunes-1]) + "…"
+	}
+	return summary
+}
+
+func tuningSummaryString(value any) string {
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) <= tuningFailureDetailMaxRunes {
+		return text
+	}
+	return string(runes[:tuningFailureDetailMaxRunes-1]) + "…"
 }
 
 func validateTuningStartRequest(req tuningStartRequest, strategies []StrategyConfig) (tuningRunSpec, error) {

@@ -397,6 +397,95 @@ func TestTuningRunProcessReportsInvalidArtifact(t *testing.T) {
 	}
 }
 
+func TestTuningRunProcessReportsOrderedArtifactFailures(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	mgr, err := newTuningRunManager(configPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(mgr.rootDir, "failed-artifact")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldSpawner := tuningProcessSpawner
+	defer func() { tuningProcessSpawner = oldSpawner }()
+	processErr := errors.New("exit status 1")
+	tuningProcessSpawner = func(context.Context, string, []string, map[string]string) ([]byte, []byte, error) {
+		results := map[string]any{
+			"schema_version": 1,
+			"strategies": []any{
+				map[string]any{"strategy_id": "spot-a", "status": "stage1_failed", "error": "market data unavailable"},
+				map[string]any{"strategy_id": "perps-b", "status": "unsupported", "reason": "unsupported risk sizing"},
+				map[string]any{"strategy_id": "futures-c", "status": "stage2_failed"},
+			},
+		}
+		if err := writeTuningJSON(filepath.Join(runDir, tuningRunResultsFile), results); err != nil {
+			t.Error(err)
+		}
+		return nil, []byte("generic stderr should not hide artifact detail"), processErr
+	}
+
+	err = runTuningProcess(context.Background(), tuningRunJob{
+		ID: "failed-artifact", RunDir: runDir, ConfigPath: configPath,
+		CacheDBPath: mgr.cacheDBPath, Spec: tuningRunSpec{
+			StrategyIDs: []string{"spot-a", "perps-b", "futures-c"},
+		},
+	})
+	if !errors.Is(err, processErr) {
+		t.Fatalf("err = %v, want wrapped process error", err)
+	}
+	got := err.Error()
+	wants := []string{
+		"spot-a [stage1_failed]: market data unavailable",
+		"perps-b [unsupported]: unsupported risk sizing",
+		"futures-c: stage2_failed",
+	}
+	last := -1
+	for _, want := range wants {
+		at := strings.Index(got, want)
+		if at < 0 {
+			t.Fatalf("err = %q, missing %q", got, want)
+		}
+		if at <= last {
+			t.Fatalf("err diagnostics are not in artifact order: %q", got)
+		}
+		last = at
+	}
+	if strings.Contains(got, "generic stderr") {
+		t.Fatalf("valid artifact diagnostics should take precedence over stderr: %q", got)
+	}
+}
+
+func TestTuningRunProcessFallsBackToStderrWithoutArtifact(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	mgr, err := newTuningRunManager(configPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(mgr.rootDir, "no-artifact")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldSpawner := tuningProcessSpawner
+	defer func() { tuningProcessSpawner = oldSpawner }()
+	processErr := errors.New("launch failed")
+	tuningProcessSpawner = func(context.Context, string, []string, map[string]string) ([]byte, []byte, error) {
+		return nil, []byte("python could not start\nmore detail"), processErr
+	}
+
+	err = runTuningProcess(context.Background(), tuningRunJob{
+		ID: "no-artifact", RunDir: runDir, ConfigPath: configPath,
+		CacheDBPath: mgr.cacheDBPath,
+		Spec:        tuningRunSpec{StrategyIDs: []string{"spot-a"}},
+	})
+	if !errors.Is(err, processErr) || !strings.Contains(err.Error(), "stderr: python could not start") {
+		t.Fatalf("err = %v, want wrapped process error with stderr fallback", err)
+	}
+	if strings.Contains(err.Error(), "more detail") {
+		t.Fatalf("stderr fallback should remain first-line bounded: %q", err.Error())
+	}
+}
+
 func TestLoadPersistedRunsSkipsMalformedDirectories(t *testing.T) {
 	configPath := writeTuningTestConfig(t, t.TempDir())
 	mgr, err := newTuningRunManager(configPath, nil)
