@@ -75,9 +75,18 @@ func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
 		`baseline-drifted`,
 		`baseline-unknown`,
 		`BH-adjusted`,
+		`Always re-read live config at render time`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("tuning app wiring missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`liveSnapshots`,
+		`forceLiveRead`,
+	} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("tuning app still caches live config via %q", forbidden)
 		}
 	}
 

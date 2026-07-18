@@ -305,7 +305,6 @@
       activeRunID: "",
       detailLoading: false,
       pollTimer: 0,
-      liveSnapshots: {},
     };
     const pageEls = {
       auth: document.getElementById("tuning-auth"),
@@ -567,9 +566,8 @@
         button.appendChild(node("small", "", runTime(run) + " · " + run.id));
         button.addEventListener("click", function () {
           pageState.activeRunID = run.id;
-          delete pageState.liveSnapshots[run.id];
           renderRuns();
-          loadRunDetail(true);
+          loadRunDetail();
         });
         pageEls.runs.appendChild(button);
       });
@@ -724,7 +722,7 @@
       return section;
     }
 
-    async function renderResults(results, expectedRunID, forceLiveRead) {
+    async function renderResults(results, expectedRunID) {
       clear(pageEls.results);
       const strategies = (results && results.strategies) || [];
       if (!strategies.length) {
@@ -735,33 +733,30 @@
         }
         return;
       }
-      let snapshot = pageState.liveSnapshots[expectedRunID];
-      if (!snapshot || forceLiveRead) {
-        const liveConfigs = {};
-        const liveErrors = {};
-        await Promise.all(strategies.map(async function (result) {
-          try {
-            liveConfigs[result.strategy_id] = await getJSON("/api/strategies/" + encodeURIComponent(result.strategy_id) + "/config");
-          } catch (err) {
-            liveErrors[result.strategy_id] = apiErrorMessage(err);
-            if (err.status === 401 || err.status === 403) showAuth(err, "Live-value diff authorization failed");
-          }
-        }));
-        snapshot = { configs: liveConfigs, errors: liveErrors };
-        pageState.liveSnapshots[expectedRunID] = snapshot;
-      }
+      // Always re-read live config at render time (including automatic poll cycles).
+      // Caching across polls left diffs/baseline banners stale after hot-reloads.
+      const liveConfigs = {};
+      const liveErrors = {};
+      await Promise.all(strategies.map(async function (result) {
+        try {
+          liveConfigs[result.strategy_id] = await getJSON("/api/strategies/" + encodeURIComponent(result.strategy_id) + "/config");
+        } catch (err) {
+          liveErrors[result.strategy_id] = apiErrorMessage(err);
+          if (err.status === 401 || err.status === 403) showAuth(err, "Live-value diff authorization failed");
+        }
+      }));
       if (pageState.activeRunID !== expectedRunID) return;
       clear(pageEls.results);
       strategies.forEach(function (result) {
         pageEls.results.appendChild(renderStrategyResults(
           result,
-          snapshot.configs[result.strategy_id],
-          snapshot.errors[result.strategy_id]
+          liveConfigs[result.strategy_id],
+          liveErrors[result.strategy_id]
         ));
       });
     }
 
-    async function renderRunDetail(detail, expectedRunID, forceLiveRead) {
+    async function renderRunDetail(detail, expectedRunID) {
       const run = detail.run || {};
       pageEls.detail.hidden = false;
       pageEls.runTitle.textContent = (run.strategy_ids || []).join(", ") || "Tuning run";
@@ -778,16 +773,16 @@
       appendProgress("Survivors", progress.survivors);
       pageEls.runError.hidden = !run.error;
       pageEls.runError.textContent = run.error || "";
-      await renderResults(detail.results || {}, expectedRunID, forceLiveRead);
+      await renderResults(detail.results || {}, expectedRunID);
     }
 
-    async function loadRunDetail(forceLiveRead) {
+    async function loadRunDetail() {
       if (!pageState.activeRunID || pageState.detailLoading) return;
       const expected = pageState.activeRunID;
       pageState.detailLoading = true;
       try {
         const detail = await getJSON("/api/tuning/runs/" + encodeURIComponent(expected));
-        if (pageState.activeRunID === expected) await renderRunDetail(detail, expected, forceLiveRead);
+        if (pageState.activeRunID === expected) await renderRunDetail(detail, expected);
       } catch (err) {
         handlePageError(err, "Run detail failed");
       } finally {
@@ -802,10 +797,7 @@
         renderStrategyPicker();
         renderOverrides();
         await loadRuns(selectNewest);
-        if (pageState.activeRunID) {
-          delete pageState.liveSnapshots[pageState.activeRunID];
-          await loadRunDetail(true);
-        }
+        if (pageState.activeRunID) await loadRunDetail();
         pageEls.auth.hidden = true;
       } catch (err) {
         handlePageError(err, "Refresh failed");
@@ -826,10 +818,9 @@
       try {
         const run = await postJSON("/api/tuning/runs", payload);
         pageState.activeRunID = run.id;
-        delete pageState.liveSnapshots[run.id];
         setLaunchMessage("Run queued: " + run.id, "success");
         await loadRuns(false);
-        await loadRunDetail(true);
+        await loadRunDetail();
       } catch (err) {
         handlePageError(err, "Launch failed");
       } finally {
