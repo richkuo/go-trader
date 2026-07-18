@@ -342,13 +342,14 @@ systemctl status go-trader
 curl -s localhost:8099/status            # live prices + P&L
 curl -s localhost:8099/health
 open http://localhost:8099/dashboard     # charts, trades, equity, regime badge, tuner, reports
+open http://localhost:8099/tuning        # research-run tuning page (suggest-only)
 journalctl -u go-trader -n 50
 ./go-trader inspect <strategy-id>        # resolved config + SL/TP provenance
 ./go-trader inspect --all --json
 ./go-trader agent-info                   # capabilities, schema, env vars, live state
 ```
 
-Loopback-only status server (`localhost:<port>`). Dashboard includes candle charts, trade history, equity sparklines, strategy tuner, and `/reports`. Set `status_token` for mutating API calls from the browser. Prefer VPN or reverse proxy over binding `0.0.0.0`.
+Loopback-only status server (`localhost:<port>`). Dashboard includes candle charts, trade history, equity sparklines, strategy tuner, and `/reports`. A separate `/tuning` page launches persistent research retunes across one or more strategies and diffs the ranked results against live config — suggestions are never auto-applied. Set `status_token` for mutating API calls from the browser. Prefer VPN or reverse proxy over binding `0.0.0.0`.
 
 **Tailscale Serve** — publish HTTPS on the tailnet while go-trader stays on loopback:
 
