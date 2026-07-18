@@ -78,6 +78,7 @@ func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
 		`Always re-read live config at render time`,
 		`memoized server-side`,
 		`detailReloadPending`,
+		`Defer clearing until replacement content is ready`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("tuning app wiring missing %q", want)

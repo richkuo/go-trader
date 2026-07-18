@@ -750,9 +750,9 @@
     }
 
     async function renderResults(results, expectedRunID) {
-      clear(pageEls.results);
       const strategies = (results && results.strategies) || [];
       if (!strategies.length) {
+        clear(pageEls.results);
         if (results && Object.keys(results).length) {
           pageEls.results.appendChild(node("pre", "tuning-raw-results", JSON.stringify(results, null, 2)));
         } else {
@@ -764,6 +764,8 @@
       // Caching the whole response across polls left diffs/baseline banners stale
       // after hot-reloads. Registry default_params are memoized server-side inside
       // /api/strategies/<id>/config so these polls stay off pythonSemaphore.
+      // Defer clearing until replacement content is ready so poll ticks do not
+      // blank already-visible diffs/evidence while config fetches are in flight.
       const liveConfigs = {};
       const liveErrors = {};
       await Promise.all(strategies.map(async function (result) {
