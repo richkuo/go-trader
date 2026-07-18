@@ -894,3 +894,122 @@ func TestValidateConfigRejectsNegativeTuningRetention(t *testing.T) {
 		t.Fatalf("err = %v, want tuning.max_retained_runs rejection", err)
 	}
 }
+
+func seedTuningTerminalRunNoResults(t *testing.T, root, id string, status tuningRunStatus, created, completed time.Time) {
+	t.Helper()
+	if !tuningRunStatusIsTerminal(status) {
+		t.Fatalf("seed status %q is not terminal", status)
+	}
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := completed.UTC()
+	rec := tuningRunRecord{
+		ID:          id,
+		Status:      status,
+		StrategyIDs: []string{"spot-a"},
+		CreatedAt:   created.UTC(),
+		CompletedAt: &completedAt,
+	}
+	if err := writeTuningJSON(filepath.Join(dir, tuningRunRecordFile), rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTuningJSON(filepath.Join(dir, tuningRunSpecFile), tuningRunSpec{
+		SchemaVersion: 1, StrategyIDs: []string{"spot-a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readTuningRecordForTest(t *testing.T, root, id string) (tuningRunRecord, error) {
+	t.Helper()
+	var rec tuningRunRecord
+	err := readTuningJSON(filepath.Join(root, id, tuningRunRecordFile), &rec)
+	return rec, err
+}
+
+func TestTuningRunManagerPrefersResultsOverNewerEmptyReject(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedID := "20260706T000000000000000Z-withres1"
+	rejectedID := "20260706T120000000000000Z-rejected"
+	// Older completed run that produced results; newer queue-full reject with none.
+	seedTuningTerminalRun(t, root, completedID, tuningRunCompleted,
+		time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC))
+	seedTuningTerminalRunNoResults(t, root, rejectedID, tuningRunRejected,
+		time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC))
+
+	mgr, err := newTuningRunManager(configPath, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != completedID {
+		t.Fatalf("listed %#v, want only completed %s with results", listed, completedID)
+	}
+	if _, err := os.Stat(filepath.Join(root, rejectedID)); !os.IsNotExist(err) {
+		t.Fatalf("expected empty reject pruned, err=%v", err)
+	}
+}
+
+func TestTuningRunManagerPrefersResultsOverNewerInterrupted(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedID := "20260707T000000000000000Z-olddone1"
+	interruptedID := "20260707T010000000000000Z-restart1"
+	seedTuningTerminalRun(t, root, completedID, tuningRunCompleted,
+		time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC))
+	completedAt := time.Date(2026, 7, 7, 0, 30, 0, 0, time.UTC)
+	rec, err := readTuningRecordForTest(t, root, completedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.CompletedAt = &completedAt
+	if err := writeTuningJSON(filepath.Join(root, completedID, tuningRunRecordFile), rec); err != nil {
+		t.Fatal(err)
+	}
+	// Restart-interrupted: fresh CompletedAt, no results artifact.
+	seedTuningTerminalRunNoResults(t, root, interruptedID, tuningRunInterrupted,
+		time.Date(2026, 7, 7, 1, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC))
+
+	mgr, err := newTuningRunManager(configPath, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != completedID {
+		t.Fatalf("listed %#v, want completed-with-results %s", listed, completedID)
+	}
+}
+
+func TestTuningRunManagerRetentionTieBreaksByID(t *testing.T) {
+	configPath := writeTuningTestConfig(t, t.TempDir())
+	root, _, err := resolveTuningPaths(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC)
+	completed := created.Add(time.Hour)
+	lowID := "20260709T000000000000000Z-aaaaaa"
+	highID := "20260709T000000000000000Z-zzzzzz"
+	seedTuningTerminalRunNoResults(t, root, lowID, tuningRunRejected, created, completed)
+	seedTuningTerminalRunNoResults(t, root, highID, tuningRunRejected, created, completed)
+
+	mgr, err := newTuningRunManager(configPath, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := mgr.list()
+	if len(listed) != 1 || listed[0].ID != highID {
+		t.Fatalf("listed %#v, want higher ID %s retained", listed, highID)
+	}
+}

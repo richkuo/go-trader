@@ -368,8 +368,10 @@ func (m *tuningRunManager) setMaxRetainedRuns(n int) {
 	m.pruneRetainedRuns()
 }
 
-// pruneRetainedRuns deletes the oldest terminal run directories beyond
+// pruneRetainedRuns deletes the least-valuable terminal run directories beyond
 // maxRetainedRuns. In-flight (queued/running) runs are never candidates.
+// Eviction order (least valuable first): result-less before result-bearing,
+// then older terminal time (CompletedAt, else CreatedAt), then ID.
 // RemoveAll failures are fail-open per directory (log + continue); the map
 // entry is dropped only after a successful delete. Corrupt/skipped dirs that
 // never entered m.runs are left alone.
@@ -393,25 +395,64 @@ func (m *tuningRunManager) pruneRetainedRuns() {
 		m.mu.Unlock()
 		return
 	}
-	sort.Slice(terminal, func(i, j int) bool {
-		if terminal[i].CreatedAt.Equal(terminal[j].CreatedAt) {
-			return terminal[i].ID < terminal[j].ID
-		}
-		return terminal[i].CreatedAt.Before(terminal[j].CreatedAt)
-	})
-	toDelete := append([]tuningRunRecord(nil), terminal[:len(terminal)-max]...)
+	rootDir := m.rootDir
 	m.mu.Unlock()
 
-	for _, rec := range toDelete {
-		runDir := filepath.Join(m.rootDir, rec.ID)
+	// Disk IO (results.json presence) stays outside mu so API list/detail
+	// readers are not blocked by prune ranking.
+	type pruneCandidate struct {
+		rec        tuningRunRecord
+		hasResults bool
+		retainedAt time.Time
+	}
+	cands := make([]pruneCandidate, len(terminal))
+	for i, rec := range terminal {
+		cands[i] = pruneCandidate{
+			rec:        rec,
+			hasResults: tuningRunDirHasResults(filepath.Join(rootDir, rec.ID)),
+			retainedAt: tuningRunRetentionTime(rec),
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].hasResults != cands[j].hasResults {
+			// Result-less first (evicted preferentially).
+			return !cands[i].hasResults && cands[j].hasResults
+		}
+		if !cands[i].retainedAt.Equal(cands[j].retainedAt) {
+			return cands[i].retainedAt.Before(cands[j].retainedAt)
+		}
+		return cands[i].rec.ID < cands[j].rec.ID
+	})
+	toDelete := cands[:len(cands)-max]
+
+	for _, cand := range toDelete {
+		runDir := filepath.Join(rootDir, cand.rec.ID)
 		if err := os.RemoveAll(runDir); err != nil {
-			log.Printf("[tuning] prune run %s failed: %v", rec.ID, err)
+			log.Printf("[tuning] prune run %s failed: %v", cand.rec.ID, err)
 			continue
 		}
 		m.mu.Lock()
-		delete(m.runs, rec.ID)
+		delete(m.runs, cand.rec.ID)
 		m.mu.Unlock()
 	}
+}
+
+// tuningRunRetentionTime is the timestamp used for age-based retention
+// ranking: CompletedAt when set (reject/interrupt/finish), else CreatedAt.
+func tuningRunRetentionTime(rec tuningRunRecord) time.Time {
+	if rec.CompletedAt != nil {
+		return rec.CompletedAt.UTC()
+	}
+	return rec.CreatedAt.UTC()
+}
+
+// tuningRunDirHasResults reports whether a run directory holds a real
+// results.json artifact. Empty/missing files count as result-less so
+// queue-full rejects and restart interrupts lose retention contests to
+// completed (or failed-with-artifact) runs.
+func tuningRunDirHasResults(runDir string) bool {
+	info, err := os.Stat(filepath.Join(runDir, tuningRunResultsFile))
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 func (m *tuningRunManager) record(id string) (tuningRunRecord, bool) {
