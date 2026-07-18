@@ -748,7 +748,9 @@
         return;
       }
       // Always re-read live config at render time (including automatic poll cycles).
-      // Caching across polls left diffs/baseline banners stale after hot-reloads.
+      // Caching the whole response across polls left diffs/baseline banners stale
+      // after hot-reloads. Registry default_params are memoized server-side inside
+      // /api/strategies/<id>/config so these polls stay off pythonSemaphore.
       const liveConfigs = {};
       const liveErrors = {};
       await Promise.all(strategies.map(async function (result) {
