@@ -148,6 +148,29 @@ func (ss *StatusServer) handleDashboard(w http.ResponseWriter, r *http.Request) 
 	http.StripPrefix("/dashboard/", http.FileServer(http.FS(sub))).ServeHTTP(w, r)
 }
 
+// handleTuning serves the dedicated read-and-launch tuning page. The page uses
+// the same embedded assets and loopback/drain boundary as the dashboard, while
+// the tuning APIs retain their own read and mutation authentication guards.
+func (ss *StatusServer) handleTuning(w http.ResponseWriter, r *http.Request) {
+	if ss.rejectIfDraining(w) {
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/tuning" && r.URL.Path != "/tuning/" {
+		http.NotFound(w, r)
+		return
+	}
+	sub, err := fs.Sub(uiAssets, "static/ui")
+	if err != nil {
+		http.Error(w, "ui assets unavailable", http.StatusInternalServerError)
+		return
+	}
+	http.ServeFileFS(w, r, sub, "tuning.html")
+}
+
 func (ss *StatusServer) handleAPIStrategies(w http.ResponseWriter, r *http.Request) {
 	if ss.rejectIfDraining(w) {
 		return

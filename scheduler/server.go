@@ -228,6 +228,8 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/history", ss.handleHistory)
 	mux.HandleFunc("/dashboard", ss.handleDashboard)
 	mux.HandleFunc("/dashboard/", ss.handleDashboard)
+	mux.HandleFunc("/tuning", ss.handleTuning)
+	mux.HandleFunc("/tuning/", ss.handleTuning)
 	mux.HandleFunc("/reports", ss.handleReports)
 	mux.HandleFunc("/reports/", ss.handleReports)
 	mux.HandleFunc("/api/strategies", ss.handleAPIStrategies)
@@ -273,6 +275,7 @@ func (ss *StatusServer) Start(port int) {
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
 	fmt.Printf("[server] Dashboard at http://localhost:%d/dashboard\n", boundPort)
+	fmt.Printf("[server] Tuning at http://localhost:%d/tuning\n", boundPort)
 	if ss.statusToken != "" {
 		fmt.Printf("[server] Dashboard API requires the configured status token\n")
 	} else {

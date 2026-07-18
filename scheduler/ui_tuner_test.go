@@ -278,6 +278,75 @@ func TestSimulateConfigPayloadOpenFallback(t *testing.T) {
 	}
 }
 
+func TestFetchStrategyDefaultParamsCachesSchemaLoad(t *testing.T) {
+	clearStrategySchemaCacheForTest()
+	t.Cleanup(clearStrategySchemaCacheForTest)
+
+	loads := 0
+	load := func(sc StrategyConfig) (map[string]interface{}, string, error) {
+		loads++
+		return map[string]interface{}{
+			"fast": float64(10),
+			"id":   sc.ID,
+		}, "desc-" + effectiveOpenStrategy(sc), nil
+	}
+
+	scA := StrategyConfig{ID: "a", Type: "perps", OpenStrategy: StrategyRef{Name: "momentum"}}
+	scB := StrategyConfig{ID: "b", Type: "perps", OpenStrategy: StrategyRef{Name: "momentum"}}
+	scC := StrategyConfig{ID: "c", Type: "perps", OpenStrategy: StrategyRef{Name: "sma"}}
+
+	first, desc, err := fetchStrategyDefaultParamsWith(scA, load)
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	if loads != 1 || desc != "desc-momentum" || first["fast"] != float64(10) {
+		t.Fatalf("first load unexpected: loads=%d desc=%q first=%v", loads, desc, first)
+	}
+
+	// Same (type, open name) must not re-invoke the schema loader — even for a
+	// different strategy id — so tuning-page poll storms stay off pythonSemaphore.
+	second, desc2, err := fetchStrategyDefaultParamsWith(scB, load)
+	if err != nil {
+		t.Fatalf("cached load: %v", err)
+	}
+	if loads != 1 {
+		t.Fatalf("cached load still invoked schema loader: loads=%d", loads)
+	}
+	if desc2 != "desc-momentum" || second["fast"] != float64(10) {
+		t.Fatalf("cached values = desc=%q params=%v", desc2, second)
+	}
+
+	// Returned maps must be defensive copies of the cache entry.
+	second["fast"] = float64(99)
+	third, _, err := fetchStrategyDefaultParamsWith(scA, load)
+	if err != nil {
+		t.Fatalf("post-mutation load: %v", err)
+	}
+	if loads != 1 || third["fast"] != float64(10) {
+		t.Fatalf("cache mutated via caller map: loads=%d third=%v", loads, third)
+	}
+
+	// Distinct open strategies keep distinct cache entries.
+	other, otherDesc, err := fetchStrategyDefaultParamsWith(scC, load)
+	if err != nil {
+		t.Fatalf("other strategy load: %v", err)
+	}
+	if loads != 2 || otherDesc != "desc-sma" {
+		t.Fatalf("other strategy cache miss failed: loads=%d desc=%q", loads, otherDesc)
+	}
+	if other["fast"] != float64(10) {
+		t.Fatalf("other strategy params = %v", other)
+	}
+
+	empty, emptyDesc, err := fetchStrategyDefaultParamsWith(StrategyConfig{Type: "spot"}, load)
+	if err != nil {
+		t.Fatalf("empty open name: %v", err)
+	}
+	if loads != 2 || emptyDesc != "" || len(empty) != 0 {
+		t.Fatalf("empty open name should skip loader: loads=%d desc=%q empty=%v", loads, emptyDesc, empty)
+	}
+}
+
 func mustRawJSON(t *testing.T, v interface{}) json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(v)

@@ -1,7 +1,93 @@
 (function () {
+  function stableJSON(value) {
+    if (Array.isArray(value)) return "[" + value.map(stableJSON).join(",") + "]";
+    if (value && typeof value === "object") {
+      return "{" + Object.keys(value).sort().map(function (key) {
+        return JSON.stringify(key) + ":" + stableJSON(value[key]);
+      }).join(",") + "}";
+    }
+    return JSON.stringify(value);
+  }
+
+  function sameValue(a, b) {
+    return stableJSON(a) === stableJSON(b);
+  }
+
+  function hasOwn(object, key) {
+    return !!object && Object.prototype.hasOwnProperty.call(object, key);
+  }
+
+  // A survivor patch from #1339 is a full open_strategy.params replacement,
+  // so omitted live keys are genuine removals. Ranked rows without a patch are
+  // evidence snapshots (the baseline may contain only explicit live params),
+  // so only their own keys are eligible for display as changes.
+  function tuningParamDiff(row, current) {
+    const patchOpen = row && row.patch && row.patch.open_strategy;
+    const replacement = !!patchOpen && hasOwn(patchOpen, "params") &&
+      !!patchOpen.params && typeof patchOpen.params === "object" && !Array.isArray(patchOpen.params);
+    const proposed = replacement ? patchOpen.params : ((row && row.params) || {});
+    const currentParams = current || {};
+    const candidateKeys = replacement
+      ? Array.from(new Set(Object.keys(currentParams).concat(Object.keys(proposed))))
+      : Object.keys(proposed);
+    const keys = candidateKeys.sort().filter(function (key) {
+      return !sameValue(currentParams[key], proposed[key]);
+    });
+    return { keys: keys, proposed: proposed, replacement: replacement };
+  }
+
+  // Drift is a three-state claim. Missing metadata is not evidence of change;
+  // an empty baseline_params object is still known metadata and must compare.
+  //
+  // Both sides must be effective-parameter sets (registry defaults merged under
+  // explicit overrides). /api/strategies/<id>/config already merges into
+  // open_strategy.params (buildUIStrategyConfig), but tune_live stores
+  // baseline_params as the RAW unmerged config dict — so defaults must be
+  // merged onto baseline before comparing, or common args-form strategies
+  // (empty explicit params) false-fire as "drifted".
+  function tuningBaselineState(result, currentOpen, defaultParams) {
+    const hasOpenName = !!result && typeof result.open_strategy === "string" &&
+      result.open_strategy.trim() !== "";
+    const hasBaseline = !!result && hasOwn(result, "baseline_params") &&
+      !!result.baseline_params && typeof result.baseline_params === "object" &&
+      !Array.isArray(result.baseline_params);
+    if (!hasOpenName || !hasBaseline) return "unknown";
+    const live = currentOpen || {};
+    const defaults = defaultParams || {};
+    const liveEffective = Object.assign({}, defaults, live.params || {});
+    const baselineEffective = Object.assign({}, defaults, result.baseline_params);
+    return live.name === result.open_strategy && sameValue(liveEffective, baselineEffective)
+      ? "current"
+      : "drifted";
+  }
+
+  // Decide how loadRunDetail should treat a call while another fetch may be
+  // in flight. "start" begins a fetch; "skip" ignores a duplicate for the same
+  // run; "queue" remembers that the selected run changed and must load after
+  // the in-flight fetch finishes (so a click is never silently dropped).
+  function tuningDetailLoadAction(activeRunID, detailLoading, loadingRunID) {
+    if (!activeRunID) return "idle";
+    if (!detailLoading) return "start";
+    return loadingRunID === activeRunID ? "skip" : "queue";
+  }
+
+  const tuningLogic = {
+    baselineState: tuningBaselineState,
+    paramDiff: tuningParamDiff,
+    sameValue: sameValue,
+    detailLoadAction: tuningDetailLoadAction,
+  };
+  if (typeof module !== "undefined" && module.exports) module.exports = tuningLogic;
+  if (typeof document === "undefined") return;
+
   const SIDEBAR_STORAGE_KEY = "goTraderSidebarOpen";
   const MOBILE_SIDEBAR_MQ = "(max-width: 980px)";
   const VIEW_MODE_KEY = "goTraderViewMode";
+
+  if (document.body.dataset.page === "tuning") {
+    initTuningPage();
+    return;
+  }
 
   const state = {
     strategies: [],
@@ -228,6 +314,589 @@
       throw err;
     }
     return res.json();
+  }
+
+  function initTuningPage() {
+    const pageState = {
+      strategies: [],
+      configs: {},
+      configErrors: {},
+      drafts: {},
+      runs: [],
+      activeRunID: "",
+      detailLoading: false,
+      detailLoadingRunID: "",
+      detailReloadPending: false,
+      pollTimer: 0,
+    };
+    const pageEls = {
+      auth: document.getElementById("tuning-auth"),
+      authForm: document.getElementById("tuning-auth-form"),
+      authToken: document.getElementById("tuning-auth-token"),
+      authMessage: document.getElementById("tuning-auth-message"),
+      refresh: document.getElementById("tuning-refresh"),
+      form: document.getElementById("tuning-launch-form"),
+      strategies: document.getElementById("tuning-strategies"),
+      overrides: document.getElementById("tuning-overrides"),
+      launch: document.getElementById("tuning-launch"),
+      launchMessage: document.getElementById("tuning-launch-message"),
+      runs: document.getElementById("tuning-runs"),
+      detail: document.getElementById("tuning-run-detail"),
+      runTitle: document.getElementById("tuning-run-title"),
+      runMeta: document.getElementById("tuning-run-meta"),
+      runStatus: document.getElementById("tuning-run-status"),
+      progress: document.getElementById("tuning-progress"),
+      runError: document.getElementById("tuning-run-error"),
+      results: document.getElementById("tuning-results"),
+    };
+
+    function node(tag, className, textValue) {
+      const out = document.createElement(tag);
+      if (className) out.className = className;
+      if (textValue !== undefined) out.textContent = textValue;
+      return out;
+    }
+
+    function clear(element) {
+      while (element && element.firstChild) element.removeChild(element.firstChild);
+    }
+
+    function apiErrorMessage(err) {
+      const raw = String((err && err.message) || "Request failed").trim();
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed.error || parsed.message || raw;
+      } catch (_err) {
+        return raw;
+      }
+    }
+
+    function setLaunchMessage(message, kind) {
+      pageEls.launchMessage.hidden = !message;
+      pageEls.launchMessage.textContent = message || "";
+      pageEls.launchMessage.className = "controls-message" + (kind ? " " + kind : "");
+    }
+
+    function showAuth(err, prefix) {
+      pageEls.auth.hidden = false;
+      pageEls.authToken.value = window.localStorage.getItem("goTraderStatusToken") || "";
+      const detail = err ? apiErrorMessage(err) : "Authorization required";
+      pageEls.authMessage.textContent = (prefix ? prefix + ": " : "") + detail;
+    }
+
+    function handlePageError(err, prefix) {
+      if (err && (err.status === 401 || err.status === 403)) {
+        showAuth(err, prefix || "Authorization failed");
+      }
+      setLaunchMessage((prefix ? prefix + ": " : "") + apiErrorMessage(err), "error");
+    }
+
+    function selectedStrategyIDs() {
+      return Array.from(pageEls.strategies.querySelectorAll("input[type=checkbox]:checked"))
+        .map(function (input) { return input.value; });
+    }
+
+    function ensureDraft(id) {
+      if (!pageState.drafts[id]) pageState.drafts[id] = { params: {}, freeze: {} };
+      return pageState.drafts[id];
+    }
+
+    async function loadStrategyConfig(id) {
+      if (pageState.configs[id] || pageState.configErrors[id] === "loading") return;
+      pageState.configErrors[id] = "loading";
+      renderOverrides();
+      try {
+        pageState.configs[id] = await getJSON("/api/strategies/" + encodeURIComponent(id) + "/config");
+        delete pageState.configErrors[id];
+      } catch (err) {
+        pageState.configErrors[id] = apiErrorMessage(err);
+        if (err.status === 401 || err.status === 403) showAuth(err, "Live config access failed");
+      }
+      renderOverrides();
+    }
+
+    function renderStrategyPicker() {
+      clear(pageEls.strategies);
+      if (!pageState.strategies.length) {
+        pageEls.strategies.appendChild(node("p", "panel-muted", "No configured strategies"));
+        return;
+      }
+      pageState.strategies.forEach(function (strategy) {
+        const label = node("label", "tuning-strategy-option");
+        const checkbox = node("input");
+        checkbox.type = "checkbox";
+        checkbox.value = strategy.id;
+        checkbox.addEventListener("change", function () {
+          ensureDraft(strategy.id);
+          if (checkbox.checked) loadStrategyConfig(strategy.id);
+          renderOverrides();
+        });
+        const copy = node("span", "tuning-strategy-copy");
+        copy.appendChild(node("strong", "", strategy.id));
+        copy.appendChild(node("small", "", [strategy.platform, strategy.symbol, strategy.timeframe].filter(Boolean).join(" · ")));
+        label.appendChild(checkbox);
+        label.appendChild(copy);
+        pageEls.strategies.appendChild(label);
+      });
+    }
+
+    function paramKeys(config) {
+      const keys = new Set();
+      Object.keys(config.default_params || {}).forEach(function (key) { keys.add(key); });
+      Object.keys((config.open_strategy && config.open_strategy.params) || {}).forEach(function (key) { keys.add(key); });
+      return Array.from(keys).sort();
+    }
+
+    function formatValue(value) {
+      if (value === undefined) return "—";
+      if (typeof value === "string") return value;
+      return JSON.stringify(value);
+    }
+
+    function renderOverrides() {
+      clear(pageEls.overrides);
+      const selected = selectedStrategyIDs();
+      selected.forEach(function (id) {
+        const card = node("section", "tuning-override-card");
+        const config = pageState.configs[id];
+        const error = pageState.configErrors[id];
+        card.appendChild(node("h3", "", id));
+        if (!config) {
+          card.appendChild(node("p", error && error !== "loading" ? "tuning-error" : "panel-muted",
+            error && error !== "loading" ? error : "Loading live parameters…"));
+          pageEls.overrides.appendChild(card);
+          return;
+        }
+        card.appendChild(node("p", "panel-muted", "Open strategy: " + ((config.open_strategy || {}).name || "—")));
+        const keys = paramKeys(config);
+        if (!keys.length) {
+          card.appendChild(node("p", "panel-muted", "This strategy exposes no tunable parameters."));
+          pageEls.overrides.appendChild(card);
+          return;
+        }
+        const draft = ensureDraft(id);
+        const tableWrap = node("div", "tuning-param-scroll");
+        const table = node("table", "tuning-param-table");
+        const thead = node("thead");
+        const headRow = node("tr");
+        ["Parameter", "Live", "Freeze", "Override grid (JSON array)"].forEach(function (heading) {
+          headRow.appendChild(node("th", "", heading));
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = node("tbody");
+        keys.forEach(function (key) {
+          const row = node("tr");
+          const params = (config.open_strategy && config.open_strategy.params) || {};
+          const live = Object.prototype.hasOwnProperty.call(params, key) ? params[key] : (config.default_params || {})[key];
+          row.appendChild(node("th", "", key));
+          row.appendChild(node("td", "tuning-live-value", formatValue(live)));
+
+          const freezeCell = node("td");
+          const freeze = node("input");
+          freeze.type = "checkbox";
+          freeze.checked = !!draft.freeze[key];
+          freeze.setAttribute("aria-label", "Freeze " + key);
+          freezeCell.appendChild(freeze);
+          row.appendChild(freezeCell);
+
+          const gridCell = node("td");
+          const grid = node("input", "tuning-grid-input");
+          grid.type = "text";
+          grid.spellcheck = false;
+          grid.placeholder = "e.g. [10, 14, 20]";
+          grid.value = draft.params[key] || "";
+          grid.disabled = freeze.checked;
+          grid.setAttribute("aria-label", "Override grid for " + key);
+          freeze.addEventListener("change", function () {
+            draft.freeze[key] = freeze.checked;
+            if (freeze.checked) {
+              draft.params[key] = "";
+              grid.value = "";
+            }
+            grid.disabled = freeze.checked;
+          });
+          grid.addEventListener("input", function () {
+            draft.params[key] = grid.value;
+            if (grid.value.trim()) {
+              draft.freeze[key] = false;
+              freeze.checked = false;
+            }
+          });
+          gridCell.appendChild(grid);
+          row.appendChild(gridCell);
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        tableWrap.appendChild(table);
+        card.appendChild(tableWrap);
+        pageEls.overrides.appendChild(card);
+      });
+    }
+
+    function launchPayload() {
+      const ids = selectedStrategyIDs();
+      if (!ids.length) throw new Error("Select at least one strategy");
+      const overrides = {};
+      ids.forEach(function (id) {
+        if (!pageState.configs[id]) throw new Error(id + ": live parameter metadata is unavailable");
+        const draft = ensureDraft(id);
+        const entry = { params: {}, freeze: [] };
+        Object.keys(draft.params).sort().forEach(function (key) {
+          const raw = String(draft.params[key] || "").trim();
+          if (!raw) return;
+          let values;
+          try {
+            values = JSON.parse(raw);
+          } catch (_err) {
+            throw new Error(id + "/" + key + ": override must be a JSON array");
+          }
+          if (!Array.isArray(values) || !values.length) {
+            throw new Error(id + "/" + key + ": override must be a non-empty JSON array");
+          }
+          entry.params[key] = values;
+        });
+        Object.keys(draft.freeze).sort().forEach(function (key) {
+          if (draft.freeze[key]) entry.freeze.push(key);
+        });
+        if (Object.keys(entry.params).length || entry.freeze.length) overrides[id] = entry;
+      });
+      const payload = { strategy_ids: ids };
+      if (Object.keys(overrides).length) payload.overrides = overrides;
+      return payload;
+    }
+
+    function runTime(run) {
+      const value = run.completed_at || run.started_at || run.created_at;
+      if (!value) return "—";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+    }
+
+    function renderRuns() {
+      clear(pageEls.runs);
+      if (!pageState.runs.length) {
+        pageEls.runs.appendChild(node("p", "panel-muted", "No tuning runs yet"));
+        return;
+      }
+      pageState.runs.forEach(function (run) {
+        const button = node("button", "tuning-run-button" + (run.id === pageState.activeRunID ? " active" : ""));
+        button.type = "button";
+        const top = node("span", "tuning-run-button-top");
+        top.appendChild(node("strong", "", (run.strategy_ids || []).join(", ") || run.id));
+        top.appendChild(node("span", "tuning-status-pill status-" + run.status, run.status));
+        button.appendChild(top);
+        button.appendChild(node("small", "", runTime(run) + " · " + run.id));
+        button.addEventListener("click", function () {
+          pageState.activeRunID = run.id;
+          renderRuns();
+          loadRunDetail();
+        });
+        pageEls.runs.appendChild(button);
+      });
+    }
+
+    async function loadRuns(selectNewest) {
+      const data = await getJSON("/api/tuning/runs");
+      pageState.runs = data.runs || [];
+      if (selectNewest && !pageState.activeRunID && pageState.runs.length) {
+        pageState.activeRunID = pageState.runs[0].id;
+      }
+      renderRuns();
+    }
+
+    function appendProgress(label, value) {
+      const item = node("div", "tuning-progress-item");
+      item.appendChild(node("span", "", label));
+      item.appendChild(node("strong", "", value === undefined || value === null ? "—" : String(value)));
+      pageEls.progress.appendChild(item);
+    }
+
+    function liveEffectiveParams(config) {
+      return Object.assign({}, config.default_params || {}, (config.open_strategy && config.open_strategy.params) || {});
+    }
+
+    function bhAdjustedLabel(verdict) {
+      switch (verdict) {
+      case "survivor": return "BH-adjusted: passed";
+      case "positive_uncorrected_only": return "BH-adjusted: raw signal did not survive correction";
+      case "positive_but_not_significant": return "BH-adjusted: not significant";
+      case "baseline": return "BH-adjusted: live baseline";
+      default: return "BH-adjusted verdict: " + (verdict || "inconclusive");
+      }
+    }
+
+    function collectEvidenceMetrics(value, path, out) {
+      if (out.length >= 10 || value === null || value === undefined) return;
+      if (typeof value === "number") {
+        const leaf = path.split(".").pop() || "";
+        if (/(mean|effect|delta|sharpe|return|permutation_p|p_value|^p$)/i.test(leaf)) {
+          out.push({ label: path, value: value });
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.slice(0, 4).forEach(function (item, index) {
+          collectEvidenceMetrics(item, path + "[" + index + "]", out);
+        });
+        return;
+      }
+      if (typeof value === "object") {
+        Object.keys(value).sort().forEach(function (key) {
+          collectEvidenceMetrics(value[key], path ? path + "." + key : key, out);
+        });
+      }
+    }
+
+    function appendDiff(tableBody, key, current, proposed) {
+      const row = node("tr");
+      row.appendChild(node("th", "", key));
+      row.appendChild(node("td", "", formatValue(current)));
+      row.appendChild(node("td", "", formatValue(proposed)));
+      tableBody.appendChild(row);
+    }
+
+    function renderRankedRow(row, config) {
+      const card = node("article", "tuning-suggestion");
+      const heading = node("div", "tuning-suggestion-heading");
+      heading.appendChild(node("strong", "", row.key || "candidate"));
+      heading.appendChild(node("span", "tuning-verdict verdict-" + (row.verdict || "unknown"), row.verdict || "unknown"));
+      card.appendChild(heading);
+      card.appendChild(node("p", "tuning-bh-label", bhAdjustedLabel(row.verdict)));
+
+      const current = liveEffectiveParams(config);
+      const diff = tuningLogic.paramDiff(row, current);
+      const proposed = diff.proposed;
+      const keys = diff.keys;
+      const diffTitle = node("h4", "", diff.replacement
+        ? "Proposed replacement patch vs current live values"
+        : "Candidate parameters vs current live values");
+      card.appendChild(diffTitle);
+      if (!keys.length) {
+        card.appendChild(node("p", "panel-muted", "No parameter differences from the current live configuration."));
+      } else {
+        const wrap = node("div", "tuning-param-scroll");
+        const table = node("table", "tuning-diff-table");
+        const head = node("thead");
+        const headRow = node("tr");
+        ["Parameter", "Current live", "Proposed"].forEach(function (label) { headRow.appendChild(node("th", "", label)); });
+        head.appendChild(headRow);
+        table.appendChild(head);
+        const body = node("tbody");
+        keys.forEach(function (key) { appendDiff(body, key, current[key], proposed[key]); });
+        table.appendChild(body);
+        wrap.appendChild(table);
+        card.appendChild(wrap);
+      }
+
+      const metrics = [];
+      collectEvidenceMetrics(row.evidence || {}, "", metrics);
+      if (metrics.length) {
+        const metricList = node("dl", "tuning-evidence-metrics");
+        metrics.forEach(function (metric) {
+          metricList.appendChild(node("dt", "", metric.label));
+          metricList.appendChild(node("dd", "", Number(metric.value).toPrecision(5)));
+        });
+        card.appendChild(metricList);
+      }
+      const evidence = node("details", "tuning-evidence");
+      evidence.appendChild(node("summary", "", "Evidence and limitations"));
+      evidence.appendChild(node("pre", "", JSON.stringify({ evidence: row.evidence || {}, limitations: row.limitations || [] }, null, 2)));
+      card.appendChild(evidence);
+      return card;
+    }
+
+    function renderStrategyResults(result, config, configError) {
+      const section = node("section", "tuning-strategy-result");
+      const heading = node("div", "tuning-result-heading");
+      heading.appendChild(node("h3", "", result.strategy_id || "Unknown strategy"));
+      heading.appendChild(node("span", "tuning-status-pill", result.status || "unknown"));
+      section.appendChild(heading);
+      if (result.error || result.reason) section.appendChild(node("p", "tuning-error", result.error || result.reason));
+      if (result.correction) {
+        const correction = result.correction;
+        section.appendChild(node("p", "tuning-correction",
+          "Benjamini–Hochberg correction: m=" + formatValue(correction.m) +
+          ", tests=" + formatValue(correction.tests_run) +
+          ", threshold=" + formatValue(correction.effective_threshold) +
+          ", survivors=" + formatValue(correction.n_survivors)));
+      }
+      if (configError || !config) {
+        section.appendChild(node("p", "tuning-error", "Live-value diff unavailable: " + (configError || "configuration missing")));
+      } else {
+        const baselineState = tuningLogic.baselineState(
+          result,
+          config.open_strategy || {},
+          config.default_params || {}
+        );
+        const baselineClass = baselineState === "drifted"
+          ? "baseline-drifted"
+          : (baselineState === "current" ? "baseline-current" : "baseline-unknown");
+        const baselineMessage = baselineState === "drifted"
+          ? "Baseline drifted: the run started from different live parameters. Suggestions are diffed against the values active now."
+          : (baselineState === "current"
+            ? "Baseline current: the run baseline still matches the live configuration."
+            : "Baseline unknown: this run artifact does not include enough baseline metadata to determine drift.");
+        const drift = node("p", "tuning-drift " + baselineClass, baselineMessage);
+        section.appendChild(drift);
+        const ranked = result.ranked || [];
+        if (!ranked.length) {
+          section.appendChild(node("p", "panel-muted", "No ranked suggestions for this strategy."));
+        } else {
+          ranked.forEach(function (row) { section.appendChild(renderRankedRow(row, config)); });
+        }
+      }
+      return section;
+    }
+
+    async function renderResults(results, expectedRunID) {
+      const strategies = (results && results.strategies) || [];
+      if (!strategies.length) {
+        clear(pageEls.results);
+        if (results && Object.keys(results).length) {
+          pageEls.results.appendChild(node("pre", "tuning-raw-results", JSON.stringify(results, null, 2)));
+        } else {
+          pageEls.results.appendChild(node("p", "panel-muted", "Results will appear when the run produces an artifact."));
+        }
+        return;
+      }
+      // Always re-read live config at render time (including automatic poll cycles).
+      // Caching the whole response across polls left diffs/baseline banners stale
+      // after hot-reloads. Registry default_params are memoized server-side inside
+      // /api/strategies/<id>/config so these polls stay off pythonSemaphore.
+      // Defer clearing until replacement content is ready so poll ticks do not
+      // blank already-visible diffs/evidence while config fetches are in flight.
+      const liveConfigs = {};
+      const liveErrors = {};
+      await Promise.all(strategies.map(async function (result) {
+        try {
+          liveConfigs[result.strategy_id] = await getJSON("/api/strategies/" + encodeURIComponent(result.strategy_id) + "/config");
+        } catch (err) {
+          liveErrors[result.strategy_id] = apiErrorMessage(err);
+          if (err.status === 401 || err.status === 403) showAuth(err, "Live-value diff authorization failed");
+        }
+      }));
+      if (pageState.activeRunID !== expectedRunID) return;
+      clear(pageEls.results);
+      strategies.forEach(function (result) {
+        pageEls.results.appendChild(renderStrategyResults(
+          result,
+          liveConfigs[result.strategy_id],
+          liveErrors[result.strategy_id]
+        ));
+      });
+    }
+
+    async function renderRunDetail(detail, expectedRunID) {
+      const run = detail.run || {};
+      pageEls.detail.hidden = false;
+      pageEls.runTitle.textContent = (run.strategy_ids || []).join(", ") || "Tuning run";
+      pageEls.runMeta.textContent = run.id + " · created " + runTime({ created_at: run.created_at });
+      pageEls.runStatus.textContent = run.status || "unknown";
+      pageEls.runStatus.className = "tuning-status-pill status-" + (run.status || "unknown");
+      clear(pageEls.progress);
+      const progress = detail.progress || {};
+      appendProgress("Phase", progress.phase || run.status);
+      appendProgress("Strategy", progress.strategy || "—");
+      appendProgress("Progress", progress.strategy_index !== undefined && progress.n_strategies !== undefined
+        ? progress.strategy_index + " / " + progress.n_strategies : "—");
+      appendProgress("Candidates", progress.candidates);
+      appendProgress("Survivors", progress.survivors);
+      pageEls.runError.hidden = !run.error;
+      pageEls.runError.textContent = run.error || "";
+      await renderResults(detail.results || {}, expectedRunID);
+    }
+
+    async function loadRunDetail() {
+      const action = tuningLogic.detailLoadAction(
+        pageState.activeRunID,
+        pageState.detailLoading,
+        pageState.detailLoadingRunID
+      );
+      if (action === "idle" || action === "skip") {
+        if (action === "skip") pageState.detailReloadPending = false;
+        return;
+      }
+      if (action === "queue") {
+        pageState.detailReloadPending = true;
+        return;
+      }
+      const expected = pageState.activeRunID;
+      pageState.detailLoading = true;
+      pageState.detailLoadingRunID = expected;
+      pageState.detailReloadPending = false;
+      try {
+        const detail = await getJSON("/api/tuning/runs/" + encodeURIComponent(expected));
+        if (pageState.activeRunID === expected) await renderRunDetail(detail, expected);
+      } catch (err) {
+        handlePageError(err, "Run detail failed");
+      } finally {
+        pageState.detailLoading = false;
+        pageState.detailLoadingRunID = "";
+        if (pageState.detailReloadPending && pageState.activeRunID) {
+          pageState.detailReloadPending = false;
+          await loadRunDetail();
+        }
+      }
+    }
+
+    async function refreshTuning(selectNewest) {
+      try {
+        const strategies = await getJSON("/api/strategies");
+        pageState.strategies = strategies.strategies || [];
+        renderStrategyPicker();
+        renderOverrides();
+        await loadRuns(selectNewest);
+        if (pageState.activeRunID) await loadRunDetail();
+        pageEls.auth.hidden = true;
+      } catch (err) {
+        handlePageError(err, "Refresh failed");
+      }
+    }
+
+    pageEls.form.addEventListener("submit", async function (event) {
+      event.preventDefault();
+      let payload;
+      try {
+        payload = launchPayload();
+      } catch (err) {
+        setLaunchMessage(apiErrorMessage(err), "error");
+        return;
+      }
+      pageEls.launch.disabled = true;
+      setLaunchMessage("Submitting tuning run…", "");
+      try {
+        const run = await postJSON("/api/tuning/runs", payload);
+        pageState.activeRunID = run.id;
+        setLaunchMessage("Run queued: " + run.id, "success");
+        await loadRuns(false);
+        await loadRunDetail();
+      } catch (err) {
+        handlePageError(err, "Launch failed");
+      } finally {
+        pageEls.launch.disabled = false;
+      }
+    });
+
+    pageEls.authForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      const token = pageEls.authToken.value.trim();
+      if (token) window.localStorage.setItem("goTraderStatusToken", token);
+      else window.localStorage.removeItem("goTraderStatusToken");
+      refreshTuning(true);
+    });
+    pageEls.refresh.addEventListener("click", function () { refreshTuning(false); });
+
+    refreshTuning(true);
+    pageState.pollTimer = window.setInterval(async function () {
+      try {
+        await loadRuns(false);
+        await loadRunDetail();
+      } catch (err) {
+        if (err.status === 401 || err.status === 403) showAuth(err, "Polling authorization failed");
+      }
+    }, 3000);
+    window.addEventListener("pagehide", function () { window.clearInterval(pageState.pollTimer); });
   }
 
   function isDarkMode() {
