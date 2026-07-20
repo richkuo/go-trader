@@ -1079,9 +1079,12 @@ func notifySpotLiveCashOverBudget(sender ownerDMSender, msg string) {
 }
 
 // maybeClearCashReconcileRequired drops the #1394 latch once virtual cash is
-// solvent again (>= spotLiveCashBudgetTolerance). Clamp-to-zero on load leaves
-// cash at 0, which is below the floor, so the latch survives restart until an
-// operator actually restores headroom.
+// solvent again (>= spotLiveCashBudgetTolerance). Solvency is a proxy, not
+// proof the books were reconciled against the venue — #1400 will replace this
+// auto-clear with an operator-explicit clear (removing it now would strand
+// latched strategies with no in-app resume path). Clamp-to-zero on load leaves
+// cash at 0 (< floor), so a persisted latch survives restart until cash
+// recovers or an operator clears it.
 func maybeClearCashReconcileRequired(s *StrategyState) {
 	if s == nil || !s.CashReconcileRequired {
 		return
@@ -1127,8 +1130,11 @@ type spotCashReconcileReminderTracker struct {
 var globalSpotCashReconcileReminder = &spotCashReconcileReminderTracker{}
 
 // ShouldNotify reports whether this cycle should re-DM the latched set. First
-// sighting of a non-empty set always notifies; thereafter on signature change
-// (strategy set changed) or once per effectiveAlertThrottleInterval.
+// sighting of a non-empty set always notifies; thereafter when a *new*
+// strategy ID appears in the set, or once per effectiveAlertThrottleInterval.
+// Shrinking the set (a peer cleared) must not re-DM strategies that were
+// already covered by the previous notification / MarkNotified seed — that
+// was the compound-cycle double-DM (#1397 review).
 func (t *spotCashReconcileReminderTracker) ShouldNotify(sig string, now time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -1142,12 +1148,39 @@ func (t *spotCashReconcileReminderTracker) ShouldNotify(sig string, now time.Tim
 		t.lastSig = sig
 		return true
 	case sig != t.lastSig:
-		t.lastNotifiedAt = now
+		if cashReconcileSigHasNewID(sig, t.lastSig) {
+			t.lastNotifiedAt = now
+			t.lastSig = sig
+			return true
+		}
+		// Subset shrink / reorder of an already-notified set: adopt the new
+		// signature without re-DMing.
 		t.lastSig = sig
-		return true
+		return false
 	case now.Sub(t.lastNotifiedAt) >= effectiveAlertThrottleInterval():
 		t.lastNotifiedAt = now
 		return true
+	}
+	return false
+}
+
+// cashReconcileSigHasNewID reports whether comma-joined sig contains any
+// strategy ID absent from lastSig. Empty tokens are ignored.
+func cashReconcileSigHasNewID(sig, lastSig string) bool {
+	last := make(map[string]struct{})
+	for _, id := range strings.Split(lastSig, ",") {
+		if id == "" {
+			continue
+		}
+		last[id] = struct{}{}
+	}
+	for _, id := range strings.Split(sig, ",") {
+		if id == "" {
+			continue
+		}
+		if _, ok := last[id]; !ok {
+			return true
+		}
 	}
 	return false
 }

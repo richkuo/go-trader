@@ -332,13 +332,18 @@ func TestSpotCashReconcileReminderTracker(t *testing.T) {
 	if tr.ShouldNotify("a,b", now.Add(time.Minute)) {
 		t.Fatal("same sig inside throttle must not notify")
 	}
-	if !tr.ShouldNotify("a", now.Add(2*time.Minute)) {
-		t.Fatal("sig change must notify")
+	// Shrink (peer cleared) must not re-DM — those IDs were already covered.
+	if tr.ShouldNotify("a", now.Add(2*time.Minute)) {
+		t.Fatal("subset shrink must not notify")
 	}
-	if tr.ShouldNotify("", now.Add(3*time.Minute)) {
+	// New ID appearing must notify.
+	if !tr.ShouldNotify("a,c", now.Add(3*time.Minute)) {
+		t.Fatal("new strategy ID in set must notify")
+	}
+	if tr.ShouldNotify("", now.Add(4*time.Minute)) {
 		t.Fatal("empty set must not notify")
 	}
-	if !tr.ShouldNotify("a", now.Add(3*time.Minute)) {
+	if !tr.ShouldNotify("a", now.Add(4*time.Minute)) {
 		t.Fatal("re-onset after clear must notify")
 	}
 }
@@ -355,6 +360,29 @@ func TestSpotCashReconcileReminderMarkNotifiedSuppressesSameCycle(t *testing.T) 
 	tr.ShouldNotify("", now.Add(2*time.Second))
 	if !tr.ShouldNotify("rh-btc", now.Add(3*time.Second)) {
 		t.Fatal("re-onset after clear must still notify")
+	}
+}
+
+func TestSpotCashReconcileReminderCompoundClearDoesNotDoubleDM(t *testing.T) {
+	// Compound cycle: MarkNotified seeds "a,b" after B's per-fill CRITICAL
+	// while A was already latched; A then clears same cycle → end sig "b".
+	// B must not get a second DM.
+	tr := &spotCashReconcileReminderTracker{}
+	now := time.Date(2026, 7, 20, 16, 0, 0, 0, time.UTC)
+	tr.MarkNotified("a,b", now)
+	if tr.ShouldNotify("b", now.Add(time.Second)) {
+		t.Fatal("after MarkNotified(a,b), shrink to b must not re-DM b")
+	}
+	// Two strategies over-budget same cycle: final MarkNotified is full set.
+	tr2 := &spotCashReconcileReminderTracker{}
+	tr2.MarkNotified("a", now)
+	tr2.MarkNotified("a,b", now.Add(time.Millisecond))
+	if tr2.ShouldNotify("a,b", now.Add(2*time.Second)) {
+		t.Fatal("two founding over-budgets must not also fire the cycle reminder")
+	}
+	// Later cycle: new ID still notifies.
+	if !tr.ShouldNotify("b,c", now.Add(3*time.Second)) {
+		t.Fatal("new peer latching later must still notify")
 	}
 }
 
