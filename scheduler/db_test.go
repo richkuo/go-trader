@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -952,6 +953,86 @@ func TestSaveStateFlushWritesTradePositionID(t *testing.T) {
 	}
 	if got != "position-save-fallback" {
 		t.Errorf("position_id = %q, want position-save-fallback", got)
+	}
+}
+
+func TestLoadState_TradeHistoryBoundedInSQL(t *testing.T) {
+	db := openTestDB(t)
+	if _, err := db.db.Exec("INSERT INTO app_state (id, cycle_count) VALUES (1, 1)"); err != nil {
+		t.Fatalf("seed app_state: %v", err)
+	}
+	if _, err := db.db.Exec("INSERT INTO strategies (id, type, platform, cash, initial_capital) VALUES (?, ?, ?, ?, ?)", "s1", "perps", "hyperliquid", 1000.0, 1000.0); err != nil {
+		t.Fatalf("seed strategy: %v", err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	const total = maxTradeHistory + 200
+	for i := 0; i < total; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		if _, err := db.db.Exec(`INSERT INTO trades
+			(strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, is_close, realized_pnl)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"s1", formatTime(ts), "BTC", "buy", 0.1, 50000.0, 5000.0, "perps", "open", 0, 0.0,
+		); err != nil {
+			t.Fatalf("seed trade %d: %v", i, err)
+		}
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	trades := loaded.Strategies["s1"].TradeHistory
+	if len(trades) != maxTradeHistory {
+		t.Fatalf("trade count = %d, want %d", len(trades), maxTradeHistory)
+	}
+	wantOldest := base.Add(time.Duration(total-maxTradeHistory) * time.Minute)
+	wantNewest := base.Add(time.Duration(total-1) * time.Minute)
+	if !trades[0].Timestamp.Equal(wantOldest) {
+		t.Errorf("trades[0].Timestamp = %v, want %v (oldest surviving trade)", trades[0].Timestamp, wantOldest)
+	}
+	if !trades[len(trades)-1].Timestamp.Equal(wantNewest) {
+		t.Errorf("trades[last].Timestamp = %v, want %v (newest trade)", trades[len(trades)-1].Timestamp, wantNewest)
+	}
+	for i := 1; i < len(trades); i++ {
+		if trades[i].Timestamp.Before(trades[i-1].Timestamp) {
+			t.Fatalf("trades not in ascending chronological order at index %d: %v before %v", i, trades[i].Timestamp, trades[i-1].Timestamp)
+		}
+	}
+
+	// The composite index must let SQLite satisfy strategy_id filter +
+	// timestamp/rowid order without a full table scan (#1395).
+	rows, err := db.db.Query(`EXPLAIN QUERY PLAN SELECT timestamp FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, "s1", maxTradeHistory)
+	if err != nil {
+		t.Fatalf("explain query plan: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatalf("columns: %v", err)
+		}
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatalf("scan explain row: %v", err)
+		}
+		for _, v := range vals {
+			fmt.Fprintf(&plan, "%v ", v)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate explain rows: %v", err)
+	}
+	planStr := plan.String()
+	if strings.Contains(planStr, "SCAN TABLE trades") {
+		t.Errorf("query plan does a full table scan, want an index-satisfied plan: %s", planStr)
+	}
+	if !strings.Contains(planStr, "idx_trades_strategy_timestamp") {
+		t.Errorf("query plan does not use idx_trades_strategy_timestamp: %s", planStr)
 	}
 }
 

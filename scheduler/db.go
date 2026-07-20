@@ -194,9 +194,9 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_id);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp DESC);
--- idx_trades_close (#455) and idx_trades_strategy_position (#471) are created
--- in migrateSchema, not here, so legacy DBs add columns before indexes
--- reference them.
+-- idx_trades_close (#455), idx_trades_strategy_position (#471), and
+-- idx_trades_strategy_timestamp (#1395) are created in migrateSchema, not
+-- here, so legacy DBs add columns before indexes reference them.
 
 CREATE TABLE IF NOT EXISTS portfolio_risk (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -619,6 +619,10 @@ func (sdb *StateDB) migrateSchema() error {
 		// second restart after ValidateState clamped cash to 0) cannot silently
 		// clear the "books still need reconciliation" guard.
 		"ALTER TABLE strategies ADD COLUMN cash_reconcile_required INTEGER NOT NULL DEFAULT 0",
+		// #1395: composite index so LoadState's per-strategy trade query can
+		// satisfy filter (strategy_id) + order (timestamp DESC, rowid DESC) from
+		// one index instead of the single-column strategy/timestamp indexes.
+		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_timestamp ON trades(strategy_id, timestamp DESC, rowid DESC)",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -1805,10 +1809,11 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("iterate option_positions: %w", err)
 	}
 
-	// 5. Load most recent 1000 trades per strategy (full history stays in SQLite).
+	// 5. Load most recent maxTradeHistory trades per strategy, bounded in SQL
+	// (full history stays in SQLite; see idx_trades_strategy_timestamp).
 	for id, s := range state.Strategies {
 		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
-			FROM trades WHERE strategy_id = ? ORDER BY timestamp ASC`, id)
+			FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, id, maxTradeHistory)
 		if err != nil {
 			return nil, fmt.Errorf("load trades for %s: %w", id, err)
 		}
@@ -1839,9 +1844,10 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		if err := tradeRows.Err(); err != nil {
 			return nil, fmt.Errorf("iterate trades for %s: %w", id, err)
 		}
-		// Keep only the most recent maxTradeHistory in memory.
-		if len(allTrades) > maxTradeHistory {
-			allTrades = allTrades[len(allTrades)-maxTradeHistory:]
+		// Query returns newest-first (bounded by LIMIT in SQL); reverse to
+		// chronological order for in-memory consumers.
+		for i, j := 0, len(allTrades)-1; i < j; i, j = i+1, j-1 {
+			allTrades[i], allTrades[j] = allTrades[j], allTrades[i]
 		}
 		if allTrades == nil {
 			allTrades = []Trade{}

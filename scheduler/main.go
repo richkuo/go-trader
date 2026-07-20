@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -752,7 +753,7 @@ func main() {
 	lastAutoUpdateCheck := time.Now()
 
 	saveFailures := 0
-	resetGoroutineRunning := false
+	var resetGoroutineRunning atomic.Bool
 
 	// Main loop
 	for {
@@ -1577,12 +1578,13 @@ func main() {
 
 			// Kill switch reset goroutine: prompt owner to reset via DM.
 			// AskOwnerDM wait is kill_switch_reset_dm_timeout (default 6h, #1368).
-			if killSwitchFired && notifier.HasOwner() && !resetGoroutineRunning {
-				resetGoroutineRunning = true
+			// Claim via atomic CAS so the main loop and the prompt goroutine
+			// never race on the single-flight flag (#1396).
+			if killSwitchFired && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {
 				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, plan)
 				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
 				go func() {
-					defer func() { resetGoroutineRunning = false }()
+					defer releaseKillSwitchResetPrompt(&resetGoroutineRunning)
 					resp, err := notifier.AskOwnerDM(resetPrompt, resetDMTimeout)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
@@ -4413,6 +4415,13 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 // calling the Python executor: otherwise a no-op ExecuteSpotSignalWithFillFee (e.g.
 // already-long with signal=1) would not record the live fill — the same bug
 // class as #298. See #300.
+//
+// Test seams: robinhoodExecuteFn / okxExecuteFn default to the real
+// Run*Execute wrappers so #1394 reconcile-gate tests can stub venue placement
+// without spawning Python.
+var robinhoodExecuteFn = RunRobinhoodExecute
+var okxExecuteFn = RunOKXExecute
+
 func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
 	if reason := SpotOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
@@ -4452,7 +4461,7 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 
 	logger.Info("Placing live %s %s amount_usd=%.2f qty=%.6f", side, result.Symbol, amountUSD, quantity)
 
-	execResult, stderr, err := RunRobinhoodExecute(sc.Script, result.Symbol, side, amountUSD, quantity)
+	execResult, stderr, err := robinhoodExecuteFn(sc.Script, result.Symbol, side, amountUSD, quantity)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -4675,7 +4684,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	instType := okxInstType(sc.Args)
 	logger.Info("Placing live %s %s size=%.6f inst_type=%s", side, result.Symbol, size, instType)
 
-	execResult, stderr, err := RunOKXExecute(sc.Script, result.Symbol, side, size, instType)
+	execResult, stderr, err := okxExecuteFn(sc.Script, result.Symbol, side, size, instType)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}

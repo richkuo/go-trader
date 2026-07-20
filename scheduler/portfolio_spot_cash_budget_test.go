@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"math"
 	"path/filepath"
 	"strings"
@@ -225,7 +226,7 @@ func TestMaybeClearCashReconcileRequired(t *testing.T) {
 
 func TestValidateStateLatchesCashReconcileOnNegativeClamp(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
-		"rh-btc": {ID: "rh-btc", Cash: -40.5, Positions: map[string]*Position{}},
+		"rh-btc": {ID: "rh-btc", Type: "spot", Cash: -40.5, Positions: map[string]*Position{}},
 	}}
 	ValidateState(state)
 	s := state.Strategies["rh-btc"]
@@ -234,6 +235,24 @@ func TestValidateStateLatchesCashReconcileOnNegativeClamp(t *testing.T) {
 	}
 	if !s.CashReconcileRequired {
 		t.Fatal("ValidateState must latch CashReconcileRequired when clamping negative cash")
+	}
+}
+
+func TestValidateStateDoesNotLatchCashReconcileForNonSpotNegativeCash(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-perp":  {ID: "hl-perp", Type: "perps", Cash: -120, Positions: map[string]*Position{}},
+		"ts-fut":   {ID: "ts-fut", Type: "futures", Cash: -5, Positions: map[string]*Position{}},
+		"okx-spot": {ID: "okx-spot", Type: "spot", Cash: -1, Positions: map[string]*Position{}},
+	}}
+	ValidateState(state)
+	if state.Strategies["hl-perp"].CashReconcileRequired {
+		t.Fatal("perps negative-cash clamp must NOT latch spot CashReconcileRequired")
+	}
+	if state.Strategies["ts-fut"].CashReconcileRequired {
+		t.Fatal("futures negative-cash clamp must NOT latch spot CashReconcileRequired")
+	}
+	if !state.Strategies["okx-spot"].CashReconcileRequired {
+		t.Fatal("spot negative-cash clamp must still latch CashReconcileRequired")
 	}
 }
 
@@ -460,5 +479,95 @@ func TestSellClearsCashReconcileWhenSolvent(t *testing.T) {
 	}
 	if s.CashReconcileRequired {
 		t.Fatal("solvent sell must clear CashReconcileRequired")
+	}
+}
+
+func TestRunRobinhoodExecuteOrder_CashReconcileGate(t *testing.T) {
+	orig := robinhoodExecuteFn
+	t.Cleanup(func() { robinhoodExecuteFn = orig })
+
+	var calls []string
+	robinhoodExecuteFn = func(script, symbol, side string, amountUSD, quantity float64) (*RobinhoodExecuteResult, string, error) {
+		calls = append(calls, side)
+		return &RobinhoodExecuteResult{
+			Execution: &RobinhoodExecution{Action: side, Symbol: symbol, Fill: &RobinhoodFill{AvgPx: 100, Quantity: quantity}},
+		}, "", nil
+	}
+	logger := &StrategyLogger{stratID: "rh-btc", writer: io.Discard}
+	sc := StrategyConfig{ID: "rh-btc", Type: "spot", Platform: "robinhood", Script: "check_robinhood.py"}
+
+	// (a) latched + buy → held, no venue call
+	calls = nil
+	er, ok := runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: 1}, 100, 50, true, 0, "", nil, logger)
+	if ok || er != nil {
+		t.Fatalf("latched buy: got ok=%v er=%v, want held", ok, er != nil)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("latched buy must not place order, calls=%v", calls)
+	}
+
+	// (b) latched + sell/close → proceeds
+	calls = nil
+	er, ok = runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: -1}, 100, 0, true, 0.5, "long", nil, logger)
+	if !ok || er == nil {
+		t.Fatalf("latched sell: got ok=%v er=%v, want proceed", ok, er != nil)
+	}
+	if len(calls) != 1 || calls[0] != "sell" {
+		t.Fatalf("latched sell calls=%v, want [sell]", calls)
+	}
+
+	// (c) unlatched + buy → proceeds
+	calls = nil
+	er, ok = runRobinhoodExecuteOrder(sc, &RobinhoodResult{Symbol: "BTC", Signal: 1}, 100, 50, false, 0, "", nil, logger)
+	if !ok || er == nil {
+		t.Fatalf("unlatched buy: got ok=%v er=%v, want proceed", ok, er != nil)
+	}
+	if len(calls) != 1 || calls[0] != "buy" {
+		t.Fatalf("unlatched buy calls=%v, want [buy]", calls)
+	}
+}
+
+func TestRunOKXExecuteOrder_CashReconcileGate(t *testing.T) {
+	orig := okxExecuteFn
+	t.Cleanup(func() { okxExecuteFn = orig })
+
+	var calls []string
+	okxExecuteFn = func(script, symbol, side string, size float64, instType string) (*OKXExecuteResult, string, error) {
+		calls = append(calls, side)
+		return &OKXExecuteResult{
+			Execution: &OKXExecution{Action: side, Symbol: symbol, Size: size, Fill: &OKXFill{AvgPx: 100, TotalSz: size}},
+		}, "", nil
+	}
+	logger := &StrategyLogger{stratID: "okx-btc", writer: io.Discard}
+	sc := StrategyConfig{ID: "okx-btc", Type: "spot", Platform: "okx", Script: "check_okx.py"}
+
+	// (a) latched + buy → held
+	calls = nil
+	er, ok := runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, true, 0, "", 0, nil, logger)
+	if ok || er != nil {
+		t.Fatalf("latched buy: got ok=%v er=%v, want held", ok, er != nil)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("latched buy must not place order, calls=%v", calls)
+	}
+
+	// (b) latched + sell/close → proceeds
+	calls = nil
+	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: -1, Price: 100}, 100, 0, true, 0.5, "long", 100, nil, logger)
+	if !ok || er == nil {
+		t.Fatalf("latched sell: got ok=%v er=%v, want proceed", ok, er != nil)
+	}
+	if len(calls) != 1 || calls[0] != "sell" {
+		t.Fatalf("latched sell calls=%v, want [sell]", calls)
+	}
+
+	// (c) unlatched + buy → proceeds
+	calls = nil
+	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, 0, "", 0, nil, logger)
+	if !ok || er == nil {
+		t.Fatalf("unlatched buy: got ok=%v er=%v, want proceed", ok, er != nil)
+	}
+	if len(calls) != 1 || calls[0] != "buy" {
+		t.Fatalf("unlatched buy calls=%v, want [buy]", calls)
 	}
 }

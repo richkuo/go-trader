@@ -188,8 +188,12 @@ func ValidateState(state *AppState) {
 			s.Cash = 0
 			// #1394: clamp hides the overshoot amount but must not hide that
 			// reconciliation is still required — latch so status/API/reminders
-			// keep the condition discoverable after restart.
-			s.CashReconcileRequired = true
+			// keep the condition discoverable after restart. Spot-only: perps/
+			// futures can go cash-negative from leveraged PnL; that is not a
+			// live-spot over-budget book and must not raise spot-reconcile CRITICAL.
+			if s.Type == "spot" {
+				s.CashReconcileRequired = true
+			}
 		}
 		maybeClearCashReconcileRequired(s)
 		for sym, pos := range s.Positions {
