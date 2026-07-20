@@ -390,7 +390,14 @@ func rawFieldPresence(root map[string]json.RawMessage, key string) (json.RawMess
 	return append(json.RawMessage(nil), raw...), true
 }
 
+// extractLiveBaselineHook is an optional test hook fired on every live-baseline
+// extract. Production leaves it nil.
+var extractLiveBaselineHook func()
+
 func extractLivePromotionBaseline(root map[string]json.RawMessage, strategyID string) (tuningPromotionBaseline, error) {
+	if extractLiveBaselineHook != nil {
+		extractLiveBaselineHook()
+	}
 	list, err := configStrategies(root)
 	if err != nil {
 		return tuningPromotionBaseline{}, err
@@ -552,7 +559,18 @@ func (m *tuningRunManager) resolveApplyTarget(runID, strategyID, suggestionKey s
 	}, "", nil
 }
 
-func computeApplyEligibility(runStatus tuningRunStatus, results map[string]any, strategyID, suggestionKey string, liveRoot map[string]json.RawMessage, journalRec tuningPromotionRecord, hasJournal bool) (elig string, appliedAt *time.Time) {
+func isTuningStrategyIdentityError(err error) bool {
+	return errors.Is(err, errTuningStrategyMissing) || errors.Is(err, errTuningStrategyDup)
+}
+
+func finalizePendingManualReview(m *tuningRunManager, pending tuningPromotionRecord, reason string, responseReason string, cause error) (string, time.Time, string, error) {
+	pending.State = tuningPromoManualReview
+	pending.Reason = reason
+	_ = m.upsertPromotion(pending)
+	return responseReason, time.Time{}, "", cause
+}
+
+func computeApplyEligibility(runStatus tuningRunStatus, results map[string]any, strategyID, suggestionKey string, liveBaseline *tuningPromotionBaseline, liveBaselineErr error, journalRec tuningPromotionRecord, hasJournal bool) (elig string, appliedAt *time.Time) {
 	if runStatus != tuningRunCompleted {
 		return tuningEligNotSurvivor, nil
 	}
@@ -579,7 +597,7 @@ func computeApplyEligibility(runStatus tuningRunStatus, results map[string]any, 
 	if _, err := extractOpenStrategyPatch(row); err != nil {
 		return tuningEligNotSurvivor, nil
 	}
-	if liveRoot == nil {
+	if liveBaseline == nil && liveBaselineErr == nil {
 		return tuningEligConfigUnavailable, nil
 	}
 	if hasJournal {
@@ -593,11 +611,10 @@ func computeApplyEligibility(runStatus tuningRunStatus, results map[string]any, 
 			if err != nil {
 				return tuningEligNotSurvivor, nil
 			}
-			liveOpen, present, err := extractLiveOpenStrategy(liveRoot, strategyID)
-			if err != nil {
+			if liveBaselineErr != nil || liveBaseline == nil {
 				return tuningEligConfigUnavailable, nil
 			}
-			if present && canonicalJSONEqual(liveOpen, patch) {
+			if liveBaseline.OpenStrategyPresent && canonicalJSONEqual(liveBaseline.OpenStrategy, patch) {
 				return tuningEligAlreadyApplied, journalRec.AppliedAt
 			}
 		}
@@ -606,11 +623,10 @@ func computeApplyEligibility(runStatus tuningRunStatus, results map[string]any, 
 	if err != nil {
 		return tuningEligLegacyArtifact, nil
 	}
-	liveBaseline, err := extractLivePromotionBaseline(liveRoot, strategyID)
-	if err != nil {
+	if liveBaselineErr != nil || liveBaseline == nil {
 		return tuningEligConfigUnavailable, nil
 	}
-	if !promotionBaselinesEqual(baseline, liveBaseline) {
+	if !promotionBaselinesEqual(baseline, *liveBaseline) {
 		return tuningEligBaselineDrifted, nil
 	}
 	return tuningEligEligible, nil
@@ -630,6 +646,30 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 		liveRootOK = liveRoot
 	}
 	promoIdx, promoErr := m.promotionIndex()
+	// Cache one live baseline lookup per strategy id — ranked rows under the
+	// same strategy share it (polled detail GET must not rescan N times).
+	liveBaselines := map[string]tuningPromotionBaseline{}
+	liveBaselineErrs := map[string]error{}
+	lookupLive := func(strategyID string) (*tuningPromotionBaseline, error) {
+		if liveRootOK == nil {
+			return nil, nil
+		}
+		if err, ok := liveBaselineErrs[strategyID]; ok {
+			return nil, err
+		}
+		if b, ok := liveBaselines[strategyID]; ok {
+			cp := b
+			return &cp, nil
+		}
+		b, err := extractLivePromotionBaseline(liveRootOK, strategyID)
+		if err != nil {
+			liveBaselineErrs[strategyID] = err
+			return nil, err
+		}
+		liveBaselines[strategyID] = b
+		cp := b
+		return &cp, nil
+	}
 	for _, raw := range strategies {
 		strategy, ok := raw.(map[string]any)
 		if !ok {
@@ -640,6 +680,7 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 		if !ok {
 			continue
 		}
+		liveB, liveBErr := lookupLive(strategyID)
 		for _, rowRaw := range ranked {
 			row, ok := rowRaw.(map[string]any)
 			if !ok {
@@ -651,7 +692,7 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 				continue
 			}
 			rec, hasJournal := promoIdx[tuningPromotionKey(detail.Run.ID, strategyID, key)]
-			elig, appliedAt := computeApplyEligibility(detail.Run.Status, detail.Results, strategyID, key, liveRootOK, rec, hasJournal)
+			elig, appliedAt := computeApplyEligibility(detail.Run.Status, detail.Results, strategyID, key, liveB, liveBErr, rec, hasJournal)
 			row["apply_eligibility"] = elig
 			if appliedAt != nil {
 				row["applied_at"] = appliedAt.UTC().Format(time.RFC3339Nano)
@@ -716,10 +757,7 @@ func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason s
 func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, rec tuningPromotionRecord) (string, time.Time, string, error) {
 	if _, err := os.Stat(filepath.Join(ss.tuning.rootDir, target.RunID)); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			rec.State = tuningPromoManualReview
-			rec.Reason = "run directory pruned while promotion was pending"
-			_ = ss.tuning.upsertPromotion(rec)
-			return tuningReasonManualReview, time.Time{}, "", errors.New(rec.Reason)
+			return finalizePendingManualReview(ss.tuning, rec, "run directory pruned while promotion was pending", tuningReasonManualReview, errors.New("run directory pruned while promotion was pending"))
 		}
 		return tuningReasonConflict, time.Time{}, "", err
 	}
@@ -728,6 +766,9 @@ func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, 
 		return tuningReasonConflict, time.Time{}, "", err
 	}
 	liveOpen, present, err := extractLiveOpenStrategy(root, target.StrategyID)
+	if isTuningStrategyIdentityError(err) {
+		return finalizePendingManualReview(ss.tuning, rec, "target strategy missing or ambiguous while promotion was pending", tuningReasonManualReview, err)
+	}
 	if err != nil {
 		return tuningReasonConflict, time.Time{}, "", err
 	}
@@ -744,14 +785,14 @@ func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, 
 		return tuningReasonAlreadyApplied, now, ss.triggerConfigReload(), nil
 	}
 	liveBaseline, err := extractLivePromotionBaseline(root, target.StrategyID)
+	if isTuningStrategyIdentityError(err) {
+		return finalizePendingManualReview(ss.tuning, rec, "target strategy missing or ambiguous while promotion was pending", tuningReasonManualReview, err)
+	}
 	if err != nil {
 		return tuningReasonConflict, time.Time{}, "", err
 	}
 	if !promotionBaselinesEqual(target.Baseline, liveBaseline) {
-		rec.State = tuningPromoManualReview
-		rec.Reason = "baseline drifted while promotion was pending"
-		_ = ss.tuning.upsertPromotion(rec)
-		return tuningReasonManualReview, time.Time{}, "", errTuningBaselineDrifted
+		return finalizePendingManualReview(ss.tuning, rec, "baseline drifted while promotion was pending", tuningReasonBaselineDrift, errTuningBaselineDrifted)
 	}
 	return ss.commitTuningPromotion(target, rec)
 }
@@ -768,12 +809,16 @@ func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending 
 		return replaceStrategyOpenStrategy(root, target.StrategyID, target.Patch)
 	})
 	if errors.Is(err, errTuningBaselineDrifted) {
-		pending.State = tuningPromoManualReview
-		pending.Reason = "baseline drifted during apply"
-		_ = ss.tuning.upsertPromotion(pending)
-		return tuningReasonBaselineDrift, time.Time{}, "", errTuningBaselineDrifted
+		return finalizePendingManualReview(ss.tuning, pending, "baseline drifted during apply", tuningReasonBaselineDrift, errTuningBaselineDrifted)
+	}
+	if isTuningStrategyIdentityError(err) {
+		// Strategy removed/duplicated between the unlocked pre-check and the
+		// locked write — settle pending to manual_review so retries cannot
+		// loop on the same permanent identity failure forever.
+		return finalizePendingManualReview(ss.tuning, pending, "target strategy missing or ambiguous during apply", tuningReasonManualReview, err)
 	}
 	if err != nil {
+		// Transient/unrelated errors leave pending so a clean retry can proceed.
 		return tuningReasonConflict, time.Time{}, "", err
 	}
 	now := ss.tuning.now()

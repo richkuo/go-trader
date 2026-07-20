@@ -754,3 +754,121 @@ func TestTuningApplySignalsReloadOnSuccessNotRefusal(t *testing.T) {
 		t.Fatalf("pending finalize reload count=%d, want 1", reloads2.Load())
 	}
 }
+
+func TestTuningApplyStrategyRemovedSettlesManualReview(t *testing.T) {
+	configPath := writeTuningApplyTestConfig(t, t.TempDir(), nil)
+	ss, mgr := newTuningApplyServer(t, configPath)
+	runID := "20260720T120000000000000Z-appymiss"
+	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
+	patch := json.RawMessage(`{"name":"sma_crossover","params":{"fast":20,"slow":50}}`)
+	hash, err := patchSHA256(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.upsertPromotion(tuningPromotionRecord{
+		RunID: runID, StrategyID: "spot-a", SuggestionKey: "cand_1",
+		State: tuningPromoPending, PatchHash: hash, CreatedAt: mgr.now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate concurrent remove-strategy between pre-check and locked write:
+	// pending already exists, live config no longer has spot-a.
+	root, err := readConfigRootMap(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := configStrategies(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := list[:0]
+	for _, raw := range list {
+		if strategyRawID(raw) != "spot-a" {
+			kept = append(kept, raw)
+		}
+	}
+	if err := setConfigStrategies(root, kept); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeValidatedConfigRoot(configPath, root); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"run_id":"` + runID + `","strategy_id":"spot-a","suggestion_key":"cand_1"}`
+	rr := postTuningApply(ss, body, "", "", "localhost")
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), tuningReasonManualReview) {
+		t.Fatalf("missing strategy status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	rec, ok, err := mgr.getPromotion(runID, "spot-a", "cand_1")
+	if err != nil || !ok || rec.State != tuningPromoManualReview {
+		t.Fatalf("journal state=%q ok=%v err=%v, want manual_review", rec.State, ok, err)
+	}
+
+	// Retry of manual_review stays refused — never silently applies.
+	rr = postTuningApply(ss, body, "", "", "localhost")
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), tuningReasonManualReview) {
+		t.Fatalf("manual_review retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	rec, ok, err = mgr.getPromotion(runID, "spot-a", "cand_1")
+	if err != nil || !ok || rec.State != tuningPromoManualReview {
+		t.Fatalf("retry mutated journal to %q", rec.State)
+	}
+}
+
+func TestTuningApplyTransientErrorLeavesPending(t *testing.T) {
+	configPath := writeTuningApplyTestConfig(t, t.TempDir(), nil)
+	ss, mgr := newTuningApplyServer(t, configPath)
+	runID := "20260720T120000000000000Z-appytrans"
+	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
+	patch := json.RawMessage(`{"name":"sma_crossover","params":{"fast":20,"slow":50}}`)
+	hash, err := patchSHA256(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.upsertPromotion(tuningPromotionRecord{
+		RunID: runID, StrategyID: "spot-a", SuggestionKey: "cand_1",
+		State: tuningPromoPending, PatchHash: hash, CreatedAt: mgr.now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Transient: corrupt config so the recover path fails before identity checks.
+	if err := os.WriteFile(configPath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"run_id":"` + runID + `","strategy_id":"spot-a","suggestion_key":"cand_1"}`
+	rr := postTuningApply(ss, body, "", "", "localhost")
+	if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), tuningReasonManualReview) {
+		t.Fatalf("transient failure should not settle manual_review: %d %s", rr.Code, rr.Body.String())
+	}
+	rec, ok, err := mgr.getPromotion(runID, "spot-a", "cand_1")
+	if err != nil || !ok || rec.State != tuningPromoPending {
+		t.Fatalf("transient failure mutated journal to %q ok=%v err=%v", rec.State, ok, err)
+	}
+}
+
+func TestTuningEligibilityOverlayCachesLiveBaselinePerStrategy(t *testing.T) {
+	configPath := writeTuningApplyTestConfig(t, t.TempDir(), nil)
+	ss, mgr := newTuningApplyServer(t, configPath)
+	ss.statusToken = "secret"
+	runID := "20260720T120000000000000Z-appybaseonce"
+	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
+
+	var extracts atomic.Int32
+	extractLiveBaselineHook = func() { extracts.Add(1) }
+	t.Cleanup(func() { extractLiveBaselineHook = nil })
+
+	r := httptest.NewRequest(http.MethodGet, "/api/tuning/runs/"+runID, nil)
+	r.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	ss.handleAPITuningRun(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", w.Code, w.Body.String())
+	}
+	// defaultApplyArtifacts has 2 strategies; ranked rows per strategy > 1.
+	// One extract per strategy id — not one per ranked row.
+	if got := extracts.Load(); got != 2 {
+		t.Fatalf("live baseline extracts = %d, want 2 (one per strategy)", got)
+	}
+}
