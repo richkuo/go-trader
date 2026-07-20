@@ -134,6 +134,18 @@ type StrategyState struct {
 	// strategy is not a shared-wallet member) makes display fall back to the
 	// modeled PortfolioValue.
 	SharedWalletValueSet bool `json:"-"`
+
+	// CashReconcileRequired latches when a live spot buy was booked whose
+	// notional+fee exceeded virtual cash beyond spotLiveCashBudgetTolerance
+	// (#1394). Venue fills are always booked (dropping them reproduces the
+	// #298 state-drift class); the latch keeps the condition observable after
+	// the one-shot CRITICAL DM: it is persisted to SQLite (strategies.cash_reconcile_required),
+	// surfaced in status/API, blocks further live spot buys until cash recovers,
+	// and drives a throttled cycle reminder. Cleared only when cash returns to a
+	// solvent level (>= spotLiveCashBudgetTolerance). Never inferred from
+	// negative cash on load — paper spot buys routinely end fee-negative
+	// (cash=-fee), and perps/futures can go negative from leveraged PnL.
+	CashReconcileRequired bool `json:"cash_reconcile_required,omitempty"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
@@ -175,7 +187,14 @@ func ValidateState(state *AppState) {
 		if s.Cash < 0 {
 			fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
 			s.Cash = 0
+			// #1394: do NOT infer CashReconcileRequired from negative cash.
+			// Paper spot buys always end fee-negative (cash=-fee), and
+			// perps/futures can go negative from leveraged PnL — neither is a
+			// live over-budget book. Genuine live overshoots persist the latch
+			// via strategies.cash_reconcile_required; maybeClear below keeps a
+			// loaded latch when clamp leaves cash at 0 (< tolerance).
 		}
+		maybeClearCashReconcileRequired(s)
 		for sym, pos := range s.Positions {
 			if pos.Quantity <= 0 {
 				fmt.Printf("[WARN] state: strategy %s position %s has invalid quantity=%g, removing\n", id, sym, pos.Quantity)

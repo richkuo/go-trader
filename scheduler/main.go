@@ -1833,6 +1833,7 @@ func main() {
 						}
 					}
 					var okxCash float64
+					var okxCashReconcile bool
 					var okxPosQty float64
 					var okxPosSide string
 					var okxAvgCost float64
@@ -1840,6 +1841,7 @@ func main() {
 					if sc.Platform == "okx" {
 						if okxLiveStrategy {
 							okxCash = stratState.Cash
+							okxCashReconcile = stratState.CashReconcileRequired
 						}
 						if sym := okxSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
@@ -1851,12 +1853,14 @@ func main() {
 						}
 					}
 					var rhCash float64
+					var rhCashReconcile bool
 					var rhPosQty float64
 					var rhPosSide string
 					var rhPosCtx PositionCtx
 					if sc.Platform == "robinhood" {
 						if rhLiveStrategy {
 							rhCash = stratState.Cash
+							rhCashReconcile = stratState.CashReconcileRequired
 						}
 						if sym := robinhoodSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
@@ -2001,16 +2005,26 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
 									}
 								}
 								if !liveExecFailed {
+									var cashAlert string
 									mu.Lock()
-									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
+									if cashAlert != "" {
+										notifySpotLiveCashOverBudget(notifier, cashAlert)
+										// Seed the cycle reminder so the founding
+										// over-budget DM is not immediately double-sent.
+										mu.RLock()
+										ids, _ := collectCashReconcileRequiredSnapshots(state)
+										mu.RUnlock()
+										globalSpotCashReconcileReminder.MarkNotified(strings.Join(ids, ","), time.Now().UTC())
+									}
 								}
 							}
 						} else if sc.Platform == "robinhood" {
@@ -2057,16 +2071,26 @@ func main() {
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
 								if robinhoodIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhPosQty, rhPosSide, notifier, logger); ok2 {
+									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhCashReconcile, rhPosQty, rhPosSide, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
 									}
 								}
 								if !liveExecFailed {
+									var cashAlert string
 									mu.Lock()
-									trades, detail = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
+									if cashAlert != "" {
+										notifySpotLiveCashOverBudget(notifier, cashAlert)
+										// Seed the cycle reminder so the founding
+										// over-budget DM is not immediately double-sent.
+										mu.RLock()
+										ids, _ := collectCashReconcileRequiredSnapshots(state)
+										mu.RUnlock()
+										globalSpotCashReconcileReminder.MarkNotified(strings.Join(ids, ","), time.Now().UTC())
+									}
 								}
 							}
 						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
@@ -2228,16 +2252,26 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
 									}
 								}
 								if !liveExecFailed {
+									var cashAlert string
 									mu.Lock()
-									trades, detail = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
+									if cashAlert != "" {
+										notifySpotLiveCashOverBudget(notifier, cashAlert)
+										// Seed the cycle reminder so the founding
+										// over-budget DM is not immediately double-sent.
+										mu.RLock()
+										ids, _ := collectCashReconcileRequiredSnapshots(state)
+										mu.RUnlock()
+										globalSpotCashReconcileReminder.MarkNotified(strings.Join(ids, ","), time.Now().UTC())
+									}
 								}
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
@@ -2888,12 +2922,40 @@ func main() {
 					}
 					mu.RUnlock()
 
-					logger.Info("%s", formatStatusLine(cash, posCount, pv, trades, regimeLabel))
+					statusLine := formatStatusLine(cash, posCount, pv, trades, regimeLabel)
+					mu.RLock()
+					cashReconcile := stratState.CashReconcileRequired
+					mu.RUnlock()
+					if cashReconcile {
+						statusLine += " | CASH RECONCILE REQUIRED"
+					}
+					logger.Info("%s", statusLine)
 
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
 				}
 			} // end if !killSwitchFired
+		}
+
+		// #1394: clear solvent latches and emit a throttled reminder for every
+		// strategy still needing cash reconciliation (covers DM-miss / restart).
+		mu.Lock()
+		for _, s := range state.Strategies {
+			maybeClearCashReconcileRequired(s)
+		}
+		mu.Unlock()
+		mu.RLock()
+		reconcileIDs, reconcileCash := collectCashReconcileRequiredSnapshots(state)
+		mu.RUnlock()
+		if len(reconcileIDs) > 0 {
+			sig := strings.Join(reconcileIDs, ",")
+			if globalSpotCashReconcileReminder.ShouldNotify(sig, time.Now().UTC()) {
+				msg := formatSpotLiveCashReconcileReminder(reconcileIDs, reconcileCash)
+				fmt.Printf("[CRITICAL] %s\n", msg)
+				notifySpotLiveCashOverBudget(notifier, msg)
+			}
+		} else {
+			globalSpotCashReconcileReminder.ShouldNotify("", time.Now().UTC())
 		}
 
 		// Build per-channel strategy lists for channel-level summaries.
@@ -4353,7 +4415,14 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 // calling the Python executor: otherwise a no-op ExecuteSpotSignalWithFillFee (e.g.
 // already-long with signal=1) would not record the live fill — the same bug
 // class as #298. See #300.
-func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
+//
+// Test seams: robinhoodExecuteFn / okxExecuteFn default to the real
+// Run*Execute wrappers so #1394 reconcile-gate tests can stub venue placement
+// without spawning Python.
+var robinhoodExecuteFn = RunRobinhoodExecute
+var okxExecuteFn = RunOKXExecute
+
+func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
 	if reason := SpotOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -4364,6 +4433,11 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 	side := "buy"
 
 	if isBuy {
+		// #1394: hold further live buys while books still need reconciliation.
+		if cashReconcileBlocksLiveBuy(cashReconcileRequired, true) {
+			logger.Warn("Skipping live buy for %s: cash reconcile required (#1394)", result.Symbol)
+			return nil, false
+		}
 		// #518: removed hardcoded 0.95 buffer for spot live buy.
 		amountUSD = cash
 		if amountUSD < 1 || price <= 0 {
@@ -4387,7 +4461,7 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 
 	logger.Info("Placing live %s %s amount_usd=%.2f qty=%.6f", side, result.Symbol, amountUSD, quantity)
 
-	execResult, stderr, err := RunRobinhoodExecute(sc.Script, result.Symbol, side, amountUSD, quantity)
+	execResult, stderr, err := robinhoodExecuteFn(sc.Script, result.Symbol, side, amountUSD, quantity)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -4410,7 +4484,9 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 }
 
 // executeRobinhoodResult applies a Robinhood result to state. Must be called under Lock.
-func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
+// cashOverBudgetAlert is non-empty when a live spot buy was booked past virtual
+// cash (#1394); callers must notify AFTER releasing mu.
+func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -4426,7 +4502,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	exec, err := ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
-		return 0, ""
+		return 0, "", ""
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
@@ -4446,7 +4522,11 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		}
 		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
 	}
-	return trades, detail
+	cashAlert := ""
+	if exec.CashReconcileRequired {
+		cashAlert = exec.CashOverBudgetAlert
+	}
+	return trades, detail, cashAlert
 }
 
 // okxIsLive reports whether --mode=live appears in strategy args.
@@ -4539,7 +4619,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 // ExecutePerpsSignalWithLeverage that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
-func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
 		skip = PerpsOrderSkipReason(result.Signal, posSide, EffectiveDirection(sc))
@@ -4551,6 +4631,12 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 		return nil, false
 	}
 	isBuy := result.Signal == 1
+	// #1394: hold further live SPOT buys while books still need reconciliation.
+	// Perps sizing is margin-based and out of scope for this latch.
+	if sc.Type != "perps" && cashReconcileBlocksLiveBuy(cashReconcileRequired, isBuy) {
+		logger.Warn("Skipping live buy for %s: cash reconcile required (#1394)", result.Symbol)
+		return nil, false
+	}
 	// #254/#497/#518: perps sizing uses PerpsOpenNotional (sizing_leverage or
 	// margin_per_trade_usd). EffectiveSizingLeverage returns 1 for spot, so
 	// the spot branch below remains a simple cash buy. #518 removed the
@@ -4598,7 +4684,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 	instType := okxInstType(sc.Args)
 	logger.Info("Placing live %s %s size=%.6f inst_type=%s", side, result.Symbol, size, instType)
 
-	execResult, stderr, err := RunOKXExecute(sc.Script, result.Symbol, side, size, instType)
+	execResult, stderr, err := okxExecuteFn(sc.Script, result.Symbol, side, size, instType)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -4621,7 +4707,9 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash, posQt
 }
 
 // executeOKXResult applies an OKX result to state. Must be called under Lock.
-func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
+// cashOverBudgetAlert is non-empty when a live spot buy was booked past virtual
+// cash (#1394); callers must notify AFTER releasing mu. Perps never set it.
+func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -4648,7 +4736,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	}
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
-		return 0, ""
+		return 0, "", ""
 	}
 	trades := exec.TradesExecuted
 	stampEntryATRIfOpened(s, result.Symbol, result.Indicators)
@@ -4668,7 +4756,11 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 		}
 		detail = fmt.Sprintf("[%s] %s%s %s @ $%.2f", sc.ID, prefix, signalStr, result.Symbol, fillPrice)
 	}
-	return trades, detail
+	cashAlert := ""
+	if exec.CashReconcileRequired {
+		cashAlert = exec.CashOverBudgetAlert
+	}
+	return trades, detail, cashAlert
 }
 
 // findLeaderboardSummariesByChannel returns every LeaderboardSummaryConfig

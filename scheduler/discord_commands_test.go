@@ -132,6 +132,41 @@ func TestFormatStatusResponse(t *testing.T) {
 	if !strings.Contains(got, "regime=trend_up") {
 		t.Errorf("expected regime in status, got: %s", got)
 	}
+	if strings.Contains(got, "CASH RECONCILE REQUIRED") {
+		t.Errorf("unlatched status must not mention reconcile, got: %s", got)
+	}
+}
+
+func TestFormatStatusResponse_CashReconcileRequired(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"z-latched": {ID: "z-latched", Platform: "robinhood", Cash: 0, CashReconcileRequired: true,
+			Positions: map[string]*Position{}},
+		"a-latched": {ID: "a-latched", Platform: "okx", Cash: 0.005, CashReconcileRequired: true,
+			Positions: map[string]*Position{}},
+		"m-ok": {ID: "m-ok", Platform: "hyperliquid", Cash: 50, CashReconcileRequired: false,
+			Positions: map[string]*Position{}},
+	}}
+	got := formatStatusResponse(state, nil)
+	if !strings.Contains(got, "CASH RECONCILE REQUIRED") {
+		t.Fatalf("expected reconcile banner, got: %s", got)
+	}
+	// IDs are collected in sortedAppStateIDs order then appended when latched —
+	// assert both appear and unlatched does not.
+	if !strings.Contains(got, "a-latched") || !strings.Contains(got, "z-latched") {
+		t.Fatalf("expected both latched IDs, got: %s", got)
+	}
+	if strings.Contains(got, "m-ok") && strings.Contains(got[strings.Index(got, "CASH RECONCILE REQUIRED"):], "m-ok") {
+		t.Fatalf("unlatched strategy must not appear in reconcile list, got: %s", got)
+	}
+	// sortedAppStateIDs sorts keys; latched append order follows that sort.
+	idx := strings.Index(got, "CASH RECONCILE REQUIRED:")
+	list := got[idx:]
+	if !strings.Contains(list, "a-latched, z-latched") && !strings.Contains(list, "a-latched,z-latched") {
+		// format uses strings.Join(reconcileIDs, ", ") after walking sortedAppStateIDs
+		if !(strings.Contains(list, "a-latched") && strings.Index(list, "a-latched") < strings.Index(list, "z-latched")) {
+			t.Fatalf("expected a-latched before z-latched in sorted list, got: %s", list)
+		}
+	}
 }
 
 func testPnLState() *AppState {

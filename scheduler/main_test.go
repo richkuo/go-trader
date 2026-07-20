@@ -933,7 +933,7 @@ func TestExecuteOKXResult_PerpsStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -972,7 +972,7 @@ func TestExecuteOKXResult_SpotStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1011,7 +1011,7 @@ func TestExecuteRobinhoodResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1021,6 +1021,85 @@ func TestExecuteRobinhoodResult_StampsExchangeData(t *testing.T) {
 	}
 	if tr.ExchangeFee != 0.07 {
 		t.Errorf("ExchangeFee = %g, want 0.07", tr.ExchangeFee)
+	}
+}
+
+func TestExecuteRobinhoodResult_LiveFillCashOverBudget(t *testing.T) {
+	s := &StrategyState{
+		ID:              "rh-momentum-btc",
+		Type:            "spot",
+		Platform:        "robinhood",
+		Cash:            50,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	sc := StrategyConfig{ID: "rh-momentum-btc", Type: "spot", Platform: "robinhood"}
+	result := &RobinhoodResult{Signal: 1, Symbol: "BTC", Price: 50000}
+	execResult := &RobinhoodExecuteResult{
+		Execution: &RobinhoodExecution{
+			Action: "buy", Symbol: "BTC", AmountUSD: 500,
+			Fill: &RobinhoodFill{AvgPx: 50000, Quantity: 0.01, OID: "rh-over-oid", Fee: 0.0},
+		},
+		Platform: "robinhood",
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, _, cashAlert := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1 — over-budget live fill must still book", trades)
+	}
+	if cashAlert == "" || !strings.Contains(cashAlert, "CRITICAL: LIVE SPOT CASH OVER BUDGET") {
+		t.Fatalf("cashAlert = %q, want CRITICAL over-budget alert", cashAlert)
+	}
+	if !s.CashReconcileRequired {
+		t.Fatal("CashReconcileRequired must latch on RH over-budget book")
+	}
+	if s.Positions["BTC"] == nil {
+		t.Fatal("position must exist after over-budget RH fill")
+	}
+}
+
+func TestExecuteOKXResult_SpotLiveFillCashOverBudget(t *testing.T) {
+	s := &StrategyState{
+		ID:              "okx-spot-btc",
+		Type:            "spot",
+		Platform:        "okx",
+		Cash:            0.40,
+		InitialCapital:  1000,
+		Positions:       make(map[string]*Position),
+		OptionPositions: make(map[string]*OptionPosition),
+		TradeHistory:    []Trade{},
+		RiskState:       RiskState{PeakValue: 1000},
+	}
+	sc := StrategyConfig{ID: "okx-spot-btc", Type: "spot", Platform: "okx"}
+	result := &OKXResult{Signal: 1, Symbol: "BTC", Price: 50000}
+	execResult := &OKXExecuteResult{
+		Execution: &OKXExecution{
+			Action: "buy", Symbol: "BTC", Size: 0.01,
+			Fill: &OKXFill{AvgPx: 50000, TotalSz: 0.01, OID: "okx-over-oid", Fee: 0.50},
+		},
+		Platform: "okx",
+	}
+
+	lm, _ := NewLogManager("")
+	logger, _ := lm.GetStrategyLogger("test")
+	defer logger.Close()
+
+	trades, _, cashAlert := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1 — sub-dollar cash live fill must book (#1394)", trades)
+	}
+	if cashAlert == "" || !strings.Contains(cashAlert, "CRITICAL: LIVE SPOT CASH OVER BUDGET") {
+		t.Fatalf("cashAlert = %q, want CRITICAL over-budget alert", cashAlert)
+	}
+	if !s.CashReconcileRequired {
+		t.Fatal("CashReconcileRequired must latch on OKX over-budget book")
 	}
 }
 
