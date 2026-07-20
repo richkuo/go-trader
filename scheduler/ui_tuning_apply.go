@@ -464,6 +464,13 @@ func (m *tuningRunManager) resolveApplyTarget(runID, strategyID, suggestionKey s
 	if !validTuningRunID(runID) {
 		return tuningApplyTarget{}, tuningReasonRunMissing, os.ErrNotExist
 	}
+	// Applied records must stay idempotent even after #1382 prune removed the
+	// run directory and in-memory record. Check the journal before any run lookup.
+	if promo, ok, jerr := m.getPromotion(runID, strategyID, suggestionKey); jerr == nil && ok && promo.State == tuningPromoApplied {
+		return tuningApplyTarget{
+			RunID: runID, StrategyID: strategyID, SuggestionKey: suggestionKey,
+		}, tuningReasonAlreadyApplied, nil
+	}
 	rec, ok := m.record(runID)
 	if !ok {
 		return tuningApplyTarget{}, tuningReasonRunMissing, os.ErrNotExist
@@ -630,16 +637,16 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 	}
 }
 
-func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason string, appliedAt time.Time, err error) {
+func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason string, appliedAt time.Time, reloadMsg string, err error) {
 	key := tuningPromotionKey(target.RunID, target.StrategyID, target.SuggestionKey)
 	release, err := ss.tuning.beginApplyInflight(key)
 	if err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
 	defer release()
 
 	if rec, ok, err := ss.tuning.getPromotion(target.RunID, target.StrategyID, target.SuggestionKey); err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	} else if ok {
 		switch rec.State {
 		case tuningPromoApplied:
@@ -647,9 +654,10 @@ func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason s
 			if rec.AppliedAt != nil {
 				at = *rec.AppliedAt
 			}
-			return tuningReasonAlreadyApplied, at, nil
+			// Idempotent retry of an already-finalized promotion — no reload signal.
+			return tuningReasonAlreadyApplied, at, "", nil
 		case tuningPromoManualReview:
-			return tuningReasonManualReview, time.Time{}, errors.New("promotion requires manual review")
+			return tuningReasonManualReview, time.Time{}, "", errors.New("promotion requires manual review")
 		case tuningPromoPending:
 			return ss.recoverPendingTuningPromotion(target, rec)
 		}
@@ -658,11 +666,11 @@ func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason s
 	// Optimistic pre-check avoids journaling an obvious drift. The in-transaction
 	// compare under configWriteMu remains the authoritative gate.
 	if root, err := readConfigRootMap(ss.configPath); err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	} else if liveBaseline, err := extractLivePromotionBaseline(root, target.StrategyID); err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	} else if !promotionBaselinesEqual(target.Baseline, liveBaseline) {
-		return tuningReasonBaselineDrift, time.Time{}, errTuningBaselineDrifted
+		return tuningReasonBaselineDrift, time.Time{}, "", errTuningBaselineDrifted
 	}
 
 	now := ss.tuning.now()
@@ -675,28 +683,28 @@ func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason s
 		CreatedAt:     now,
 	}
 	if err := ss.tuning.upsertPromotion(pending); err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
 	return ss.commitTuningPromotion(target, pending)
 }
 
-func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, rec tuningPromotionRecord) (string, time.Time, error) {
+func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, rec tuningPromotionRecord) (string, time.Time, string, error) {
 	if _, err := os.Stat(filepath.Join(ss.tuning.rootDir, target.RunID)); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			rec.State = tuningPromoManualReview
 			rec.Reason = "run directory pruned while promotion was pending"
 			_ = ss.tuning.upsertPromotion(rec)
-			return tuningReasonManualReview, time.Time{}, errors.New(rec.Reason)
+			return tuningReasonManualReview, time.Time{}, "", errors.New(rec.Reason)
 		}
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
 	root, err := readConfigRootMap(ss.configPath)
 	if err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
 	liveOpen, present, err := extractLiveOpenStrategy(root, target.StrategyID)
 	if err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
 	if present && canonicalJSONEqual(liveOpen, target.Patch) {
 		now := ss.tuning.now()
@@ -704,24 +712,26 @@ func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, 
 		rec.AppliedAt = &now
 		rec.Reason = ""
 		if err := ss.tuning.upsertPromotion(rec); err != nil {
-			return tuningReasonConflict, time.Time{}, err
+			return tuningReasonConflict, time.Time{}, "", err
 		}
-		return tuningReasonAlreadyApplied, now, nil
+		// Config already matches on disk, but the running daemon may still hold
+		// the pre-crash in-memory value — signal reload like a fresh apply.
+		return tuningReasonAlreadyApplied, now, ss.triggerConfigReload(), nil
 	}
 	liveBaseline, err := extractLivePromotionBaseline(root, target.StrategyID)
 	if err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
 	if !promotionBaselinesEqual(target.Baseline, liveBaseline) {
 		rec.State = tuningPromoManualReview
 		rec.Reason = "baseline drifted while promotion was pending"
 		_ = ss.tuning.upsertPromotion(rec)
-		return tuningReasonManualReview, time.Time{}, errTuningBaselineDrifted
+		return tuningReasonManualReview, time.Time{}, "", errTuningBaselineDrifted
 	}
 	return ss.commitTuningPromotion(target, rec)
 }
 
-func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending tuningPromotionRecord) (string, time.Time, error) {
+func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending tuningPromotionRecord) (string, time.Time, string, error) {
 	err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
 		liveBaseline, err := extractLivePromotionBaseline(root, target.StrategyID)
 		if err != nil {
@@ -736,28 +746,34 @@ func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending 
 		pending.State = tuningPromoManualReview
 		pending.Reason = "baseline drifted during apply"
 		_ = ss.tuning.upsertPromotion(pending)
-		return tuningReasonBaselineDrift, time.Time{}, errTuningBaselineDrifted
+		return tuningReasonBaselineDrift, time.Time{}, "", errTuningBaselineDrifted
 	}
 	if err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
 	now := ss.tuning.now()
 	pending.State = tuningPromoApplied
 	pending.AppliedAt = &now
 	pending.Reason = ""
 	if err := ss.tuning.upsertPromotion(pending); err != nil {
-		return tuningReasonConflict, time.Time{}, err
+		return tuningReasonConflict, time.Time{}, "", err
 	}
-	return tuningReasonApplied, now, nil
+	// Mirror every other UI config-write path: signal SIGHUP so the daemon
+	// adopts the promoted open_strategy. A failed signal degrades to a warning
+	// string — the write already landed.
+	return tuningReasonApplied, now, ss.triggerConfigReload(), nil
 }
 
-func writeTuningApplyResponse(w http.ResponseWriter, status int, reason string, appliedAt time.Time, errMsg string) {
+func writeTuningApplyResponse(w http.ResponseWriter, status int, reason string, appliedAt time.Time, errMsg, reloadMsg string) {
 	payload := map[string]any{"reason": reason}
 	if !appliedAt.IsZero() {
 		payload["applied_at"] = appliedAt.UTC().Format(time.RFC3339Nano)
 	}
 	if errMsg != "" {
 		payload["error"] = errMsg
+	}
+	if reloadMsg != "" {
+		payload["message"] = reloadMsg
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -780,7 +796,7 @@ func (ss *StatusServer) handleAPITuningApply(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if strings.TrimSpace(ss.configPath) == "" {
-		writeTuningApplyResponse(w, http.StatusServiceUnavailable, tuningEligConfigUnavailable, time.Time{}, "config path not configured")
+		writeTuningApplyResponse(w, http.StatusServiceUnavailable, tuningEligConfigUnavailable, time.Time{}, "config path not configured", "")
 		return
 	}
 
@@ -789,22 +805,30 @@ func (ss *StatusServer) handleAPITuningApply(w http.ResponseWriter, r *http.Requ
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeTuningApplyResponse(w, http.StatusBadRequest, tuningReasonBadRequest, time.Time{}, "invalid json body: "+err.Error())
+		writeTuningApplyResponse(w, http.StatusBadRequest, tuningReasonBadRequest, time.Time{}, "invalid json body: "+err.Error(), "")
 		return
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		writeTuningApplyResponse(w, http.StatusBadRequest, tuningReasonBadRequest, time.Time{}, "invalid json body: trailing data")
+		writeTuningApplyResponse(w, http.StatusBadRequest, tuningReasonBadRequest, time.Time{}, "invalid json body: trailing data", "")
 		return
 	}
 	req.RunID = strings.TrimSpace(req.RunID)
 	req.StrategyID = strings.TrimSpace(req.StrategyID)
 	req.SuggestionKey = strings.TrimSpace(req.SuggestionKey)
 	if req.RunID == "" || req.StrategyID == "" || req.SuggestionKey == "" {
-		writeTuningApplyResponse(w, http.StatusBadRequest, tuningReasonBadRequest, time.Time{}, "run_id, strategy_id, and suggestion_key are required")
+		writeTuningApplyResponse(w, http.StatusBadRequest, tuningReasonBadRequest, time.Time{}, "run_id, strategy_id, and suggestion_key are required", "")
 		return
 	}
 
 	target, refuseReason, err := ss.tuning.resolveApplyTarget(req.RunID, req.StrategyID, req.SuggestionKey)
+	if refuseReason == tuningReasonAlreadyApplied && err == nil {
+		at := ss.tuning.now()
+		if rec, ok, jerr := ss.tuning.getPromotion(req.RunID, req.StrategyID, req.SuggestionKey); jerr == nil && ok && rec.AppliedAt != nil {
+			at = *rec.AppliedAt
+		}
+		writeTuningApplyResponse(w, http.StatusOK, tuningReasonAlreadyApplied, at, "", "")
+		return
+	}
 	if err != nil {
 		if refuseReason == tuningReasonManualReview {
 			if rec, ok, jerr := ss.tuning.getPromotion(req.RunID, req.StrategyID, req.SuggestionKey); jerr == nil && ok && rec.State == tuningPromoPending {
@@ -822,18 +846,18 @@ func (ss *StatusServer) handleAPITuningApply(w http.ResponseWriter, r *http.Requ
 		case tuningReasonConflict:
 			status = http.StatusInternalServerError
 		}
-		writeTuningApplyResponse(w, status, refuseReason, time.Time{}, err.Error())
+		writeTuningApplyResponse(w, status, refuseReason, time.Time{}, err.Error(), "")
 		return
 	}
 
-	reason, appliedAt, err := ss.applyTuningPromotion(target)
+	reason, appliedAt, reloadMsg, err := ss.applyTuningPromotion(target)
 	if err != nil {
 		status := http.StatusConflict
 		if reason == tuningReasonConflict {
 			status = http.StatusInternalServerError
 		}
-		writeTuningApplyResponse(w, status, reason, time.Time{}, err.Error())
+		writeTuningApplyResponse(w, status, reason, time.Time{}, err.Error(), "")
 		return
 	}
-	writeTuningApplyResponse(w, http.StatusOK, reason, appliedAt, "")
+	writeTuningApplyResponse(w, http.StatusOK, reason, appliedAt, "", reloadMsg)
 }

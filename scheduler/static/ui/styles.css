@@ -1624,9 +1624,14 @@ h3 {
 }
 
 .tuning-apply-reason,
-.tuning-apply-status {
+.tuning-apply-status,
+.tuning-apply-exit-warning {
   margin: 0;
   flex: 1 1 220px;
+}
+
+.tuning-apply-exit-warning {
+  color: var(--warn, #9a6b2f);
 }
 
 .tuning-evidence-metrics {

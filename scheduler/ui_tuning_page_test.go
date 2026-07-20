@@ -82,6 +82,7 @@ func TestTuningStaticAppWiresRunAndLiveConfigAPIs(t *testing.T) {
 		`Defer clearing until replacement content is ready`,
 		`apply_eligibility`,
 		`Apply tuning suggestion`,
+		`open-as-close`,
 		`loadRunDetail()`,
 	} {
 		if !strings.Contains(js, want) {
@@ -190,6 +191,20 @@ assert.strictEqual(apply.enabled, false);
 
 apply = logic.applyButtonState("not_survivor");
 assert.strictEqual(apply.enabled, false);
+
+let confirm = logic.applyConfirmMessage("spot-a", "cand_1", {has_open_position: false});
+assert.ok(confirm.includes("spot-a"));
+assert.ok(!confirm.includes("open trade"));
+
+confirm = logic.applyConfirmMessage("spot-a", "cand_1", {
+  has_open_position: true,
+  close_strategy: {name: "tiered_tp_atr"}
+});
+assert.ok(!confirm.includes("open trade"));
+
+confirm = logic.applyConfirmMessage("spot-a", "cand_1", {has_open_position: true});
+assert.ok(confirm.includes("open trade"));
+assert.ok(confirm.includes("exits"));
 `
 	cmd := exec.Command("node", "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -130,6 +131,8 @@ func newTuningApplyServer(t *testing.T, configPath string) (*StatusServer, *tuni
 	ss := NewStatusServer(nil, nil, "", []StrategyConfig{{ID: "spot-a"}, {ID: "spot-b"}}, nil)
 	ss.configPath = configPath
 	ss.tuning = mgr
+	// Neutralize production SIGHUP so apply tests do not signal this process.
+	ss.reloadConfig = func() error { return nil }
 	return ss, mgr
 }
 
@@ -485,6 +488,7 @@ func TestTuningApplyJournalSurvivesPrune(t *testing.T) {
 	ss := NewStatusServer(nil, nil, "", []StrategyConfig{{ID: "spot-a"}, {ID: "spot-b"}}, nil)
 	ss.configPath = configPath
 	ss.tuning = mgr
+	ss.reloadConfig = func() error { return nil }
 
 	runID := "20260720T120000000000000Z-appyprune"
 	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
@@ -505,6 +509,17 @@ func TestTuningApplyJournalSurvivesPrune(t *testing.T) {
 	rec, ok, err := mgr.getPromotion(runID, "spot-a", "cand_1")
 	if err != nil || !ok || rec.State != tuningPromoApplied {
 		t.Fatalf("journal record lost: ok=%v rec=%+v err=%v", ok, rec, err)
+	}
+
+	// Pruned run + applied journal → idempotent already_applied, no write.
+	beforeApplied, _ := os.ReadFile(configPath)
+	rr = postTuningApply(ss, `{"run_id":"`+runID+`","strategy_id":"spot-a","suggestion_key":"cand_1"}`, "", "", "localhost")
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), tuningReasonAlreadyApplied) {
+		t.Fatalf("pruned applied retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	afterApplied, _ := os.ReadFile(configPath)
+	if string(beforeApplied) != string(afterApplied) {
+		t.Fatal("pruned applied retry must not rewrite config")
 	}
 
 	// Pending + pruned run → manual_review, no config write.
@@ -607,5 +622,79 @@ func TestTuningRunDetailOverlaysEligibility(t *testing.T) {
 	baseline := ranked[0].(map[string]any)
 	if baseline["apply_eligibility"] != tuningEligNotSurvivor {
 		t.Fatalf("baseline eligibility = %#v", baseline["apply_eligibility"])
+	}
+}
+
+func TestTuningApplySignalsReloadOnSuccessNotRefusal(t *testing.T) {
+	configPath := writeTuningApplyTestConfig(t, t.TempDir(), nil)
+	ss, mgr := newTuningApplyServer(t, configPath)
+	var reloads atomic.Int32
+	ss.reloadConfig = func() error {
+		reloads.Add(1)
+		return nil
+	}
+	runID := "20260720T120000000000000Z-appyreload"
+	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
+	body := `{"run_id":"` + runID + `","strategy_id":"spot-a","suggestion_key":"cand_1"}`
+
+	// Refusal paths must never signal.
+	rr := postTuningApply(ss, `{"run_id":"`+runID+`","strategy_id":"spot-a","suggestion_key":"baseline"}`, "", "", "localhost")
+	if rr.Code == http.StatusOK {
+		t.Fatal("baseline row should be refused")
+	}
+	if reloads.Load() != 0 {
+		t.Fatalf("refusal signaled reload %d times", reloads.Load())
+	}
+
+	rr = postTuningApply(ss, body, "", "", "localhost")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("apply status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if reloads.Load() != 1 {
+		t.Fatalf("successful apply reload count=%d, want 1", reloads.Load())
+	}
+	if !strings.Contains(rr.Body.String(), "Applied via SIGHUP") && !strings.Contains(rr.Body.String(), `"message"`) {
+		t.Fatalf("apply response missing reload message: %s", rr.Body.String())
+	}
+
+	// Idempotent retry of applied must not signal again.
+	rr = postTuningApply(ss, body, "", "", "localhost")
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), tuningReasonAlreadyApplied) {
+		t.Fatalf("idempotent retry status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if reloads.Load() != 1 {
+		t.Fatalf("idempotent applied retry re-signaled: count=%d", reloads.Load())
+	}
+
+	// Crash-recovery finalize (pending + config already equals patch) must signal.
+	configPath2 := writeTuningApplyTestConfig(t, t.TempDir(), nil)
+	ss2, mgr2 := newTuningApplyServer(t, configPath2)
+	var reloads2 atomic.Int32
+	ss2.reloadConfig = func() error {
+		reloads2.Add(1)
+		return nil
+	}
+	runID2 := "20260720T120000000000000Z-appyfinrl"
+	seedCompletedTuningRun(t, mgr2, runID2, defaultApplyArtifacts(nil))
+	patch := json.RawMessage(`{"name":"sma_crossover","params":{"fast":20,"slow":50}}`)
+	hash, err := patchSHA256(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := readConfigRootMap(configPath2)
+	_ = replaceStrategyOpenStrategy(root, "spot-a", patch)
+	_ = writeValidatedConfigRoot(configPath2, root)
+	if err := mgr2.upsertPromotion(tuningPromotionRecord{
+		RunID: runID2, StrategyID: "spot-a", SuggestionKey: "cand_1",
+		State: tuningPromoPending, PatchHash: hash, CreatedAt: mgr2.now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rr = postTuningApply(ss2, `{"run_id":"`+runID2+`","strategy_id":"spot-a","suggestion_key":"cand_1"}`, "", "", "localhost")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("finalize pending status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if reloads2.Load() != 1 {
+		t.Fatalf("pending finalize reload count=%d, want 1", reloads2.Load())
 	}
 }

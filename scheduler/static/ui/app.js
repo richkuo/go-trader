@@ -115,12 +115,25 @@
     }
   }
 
+  // Build the Apply confirmation copy. When the strategy is in a trade and has
+  // no separate close strategy, open-as-close means the promoted params also
+  // change live exit evaluation — warn advisory-only (never a gate).
+  function tuningApplyConfirmMessage(strategyID, suggestionKey, config) {
+    var msg = "Apply tuning suggestion " + suggestionKey +
+      " to strategy " + strategyID + "? This replaces the live open strategy parameters.";
+    if (config && config.has_open_position && !config.close_strategy) {
+      msg += " This strategy currently has an open trade and uses the same open logic for exits, so applying will also change how that live trade is managed.";
+    }
+    return msg;
+  }
+
   const tuningLogic = {
     baselineState: tuningBaselineState,
     paramDiff: tuningParamDiff,
     sameValue: sameValue,
     detailLoadAction: tuningDetailLoadAction,
     applyButtonState: tuningApplyButtonState,
+    applyConfirmMessage: tuningApplyConfirmMessage,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = tuningLogic;
   if (typeof document === "undefined") return;
@@ -758,12 +771,16 @@
         button.disabled = !applyState.enabled;
         if (applyState.enabled) {
           button.addEventListener("click", function () {
-            applyTuningSuggestion(runID, strategyID, row.key || "");
+            applyTuningSuggestion(runID, strategyID, row.key || "", config);
           });
         }
         actions.appendChild(button);
         if (applyState.reason) {
           actions.appendChild(node("p", "tuning-apply-reason panel-muted", applyState.reason));
+        }
+        if (applyState.enabled && config && config.has_open_position && !config.close_strategy) {
+          actions.appendChild(node("p", "tuning-apply-exit-warning panel-muted",
+            "Open trade uses open-as-close exits — applying also changes how this live trade is managed."));
         }
         const status = node("p", "tuning-apply-status panel-muted");
         status.hidden = true;
@@ -773,9 +790,8 @@
       return card;
     }
 
-    async function applyTuningSuggestion(runID, strategyID, suggestionKey) {
-      const confirmMsg = "Apply tuning suggestion " + suggestionKey +
-        " to strategy " + strategyID + "? This replaces the live open strategy parameters.";
+    async function applyTuningSuggestion(runID, strategyID, suggestionKey, config) {
+      const confirmMsg = tuningLogic.applyConfirmMessage(strategyID, suggestionKey, config);
       if (!window.confirm(confirmMsg)) return;
       try {
         const resp = await postJSON("/api/tuning/apply", {
@@ -784,7 +800,8 @@
           suggestion_key: suggestionKey,
         });
         const reason = (resp && resp.reason) || "applied";
-        setLaunchMessage("Apply " + reason + " for " + strategyID + " / " + suggestionKey, "success");
+        const reload = (resp && resp.message) ? (" — " + resp.message) : "";
+        setLaunchMessage("Apply " + reason + " for " + strategyID + " / " + suggestionKey + reload, "success");
       } catch (err) {
         const detail = apiErrorMessage(err);
         setLaunchMessage("Apply failed for " + strategyID + " / " + suggestionKey + ": " + detail, "error");
