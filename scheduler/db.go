@@ -57,7 +57,9 @@ CREATE TABLE IF NOT EXISTS strategies (
     -- DBs — one code path, no schema fork (#359).
     risk_pending_hl_close_json TEXT NOT NULL DEFAULT '',
     -- #998: regime-profile allocation active profile (flat-switch persistence).
-    active_profile TEXT NOT NULL DEFAULT ''
+    active_profile TEXT NOT NULL DEFAULT '',
+    -- #1394: live spot over-budget books still need operator reconciliation.
+    cash_reconcile_required INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -613,6 +615,10 @@ func (sdb *StateDB) migrateSchema() error {
 		// config edit + restart landing between queue and drain. "" = row
 		// queued pre-upgrade; the drain falls back to drain-time resolution.
 		"ALTER TABLE pending_manual_actions ADD COLUMN atr_method TEXT NOT NULL DEFAULT ''",
+		// #1394: persist the live-spot cash-reconcile latch so a restart (or a
+		// second restart after ValidateState clamped cash to 0) cannot silently
+		// clear the "books still need reconciliation" guard.
+		"ALTER TABLE strategies ADD COLUMN cash_reconcile_required INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
@@ -1216,8 +1222,9 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	stmtStrat, err := tx.Prepare(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
-		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
+		cash_reconcile_required)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -1262,6 +1269,10 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		if s.RiskState.CircuitBreaker {
 			cbInt = 1
 		}
+		cashReconcileInt := 0
+		if s.CashReconcileRequired {
+			cashReconcileInt = 1
+		}
 		if _, err := stmtStrat.Exec(
 			s.ID, s.Type, s.Platform, s.Cash, s.InitialCapital,
 			s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
@@ -1269,6 +1280,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
 			s.RiskState.MarshalPendingCircuitClosesJSON(),
 			strategyActiveProfile(s),
+			cashReconcileInt,
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -1674,7 +1686,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
-		COALESCE(active_profile, '') AS active_profile
+		COALESCE(active_profile, '') AS active_profile,
+		COALESCE(cash_reconcile_required, 0) AS cash_reconcile_required
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -1684,18 +1697,21 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	for rows.Next() {
 		var s StrategyState
 		var cbInt int
+		var cashReconcileInt int
 		var cbUntilStr, pendingCircuitClosesJSON, activeProfile string
 		if err := rows.Scan(
 			&s.ID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
 			&s.RiskState.DailyPnL, &s.RiskState.DailyPnLDate, &s.RiskState.ConsecutiveLosses,
 			&cbInt, &cbUntilStr, &pendingCircuitClosesJSON, &activeProfile,
+			&cashReconcileInt,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
 		s.RiskState.CircuitBreaker = cbInt != 0
 		s.RiskState.CircuitBreakerUntil = parseTime(cbUntilStr)
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
+		s.CashReconcileRequired = cashReconcileInt != 0
 		// #998: restore the flat-switch active profile; the pending counter
 		// re-arms from zero on restart (a restart can only delay a switch).
 		if activeProfile != "" {

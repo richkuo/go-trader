@@ -139,10 +139,10 @@ type StrategyState struct {
 	// notional+fee exceeded virtual cash beyond spotLiveCashBudgetTolerance
 	// (#1394). Venue fills are always booked (dropping them reproduces the
 	// #298 state-drift class); the latch keeps the condition observable after
-	// the one-shot CRITICAL DM: it is persisted, surfaced in status/API,
-	// blocks further live spot buys until cash recovers, and drives a
-	// throttled cycle reminder. Cleared only when cash returns to a solvent
-	// level (>= spotLiveCashBudgetTolerance) — ValidateState's clamp-to-zero
+	// the one-shot CRITICAL DM: it is persisted to SQLite (strategies.cash_reconcile_required),
+	// surfaced in status/API, blocks further live spot buys until cash recovers,
+	// and drives a throttled cycle reminder. Cleared only when cash returns to a
+	// solvent level (>= spotLiveCashBudgetTolerance) — ValidateState's clamp-to-zero
 	// leaves the latch set so a restart cannot hide the overshoot.
 	CashReconcileRequired bool `json:"cash_reconcile_required,omitempty"`
 }

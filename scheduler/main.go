@@ -2014,7 +2014,15 @@ func main() {
 									mu.Lock()
 									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
-									notifySpotLiveCashOverBudget(notifier, cashAlert)
+									if cashAlert != "" {
+										notifySpotLiveCashOverBudget(notifier, cashAlert)
+										// Seed the cycle reminder so the founding
+										// over-budget DM is not immediately double-sent.
+										mu.RLock()
+										ids, _ := collectCashReconcileRequiredSnapshots(state)
+										mu.RUnlock()
+										globalSpotCashReconcileReminder.MarkNotified(strings.Join(ids, ","), time.Now().UTC())
+									}
 								}
 							}
 						} else if sc.Platform == "robinhood" {
@@ -2072,7 +2080,15 @@ func main() {
 									mu.Lock()
 									trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
-									notifySpotLiveCashOverBudget(notifier, cashAlert)
+									if cashAlert != "" {
+										notifySpotLiveCashOverBudget(notifier, cashAlert)
+										// Seed the cycle reminder so the founding
+										// over-budget DM is not immediately double-sent.
+										mu.RLock()
+										ids, _ := collectCashReconcileRequiredSnapshots(state)
+										mu.RUnlock()
+										globalSpotCashReconcileReminder.MarkNotified(strings.Join(ids, ","), time.Now().UTC())
+									}
 								}
 							}
 						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
@@ -2245,7 +2261,15 @@ func main() {
 									mu.Lock()
 									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 									mu.Unlock()
-									notifySpotLiveCashOverBudget(notifier, cashAlert)
+									if cashAlert != "" {
+										notifySpotLiveCashOverBudget(notifier, cashAlert)
+										// Seed the cycle reminder so the founding
+										// over-budget DM is not immediately double-sent.
+										mu.RLock()
+										ids, _ := collectCashReconcileRequiredSnapshots(state)
+										mu.RUnlock()
+										globalSpotCashReconcileReminder.MarkNotified(strings.Join(ids, ","), time.Now().UTC())
+									}
 								}
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {

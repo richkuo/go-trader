@@ -1152,6 +1152,19 @@ func (t *spotCashReconcileReminderTracker) ShouldNotify(sig string, now time.Tim
 	return false
 }
 
+// MarkNotified seeds the throttle as if a reminder already fired for sig.
+// Call after the per-fill CRITICAL DM so the same-cycle reminder does not
+// double-DM the operator for the founding over-budget event (#1394 review).
+func (t *spotCashReconcileReminderTracker) MarkNotified(sig string, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if sig == "" {
+		return
+	}
+	t.lastNotifiedAt = now
+	t.lastSig = sig
+}
+
 // collectCashReconcileRequiredSnapshots returns sorted strategy IDs still
 // latched plus a cash map for the reminder body. Call under RLock.
 func collectCashReconcileRequiredSnapshots(state *AppState) (ids []string, cashByID map[string]float64) {

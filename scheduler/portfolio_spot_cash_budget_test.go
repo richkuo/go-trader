@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -274,6 +275,138 @@ func TestSpotCashReconcileReminderTracker(t *testing.T) {
 	}
 	if !tr.ShouldNotify("a", now.Add(3*time.Minute)) {
 		t.Fatal("re-onset after clear must notify")
+	}
+}
+
+func TestSpotCashReconcileReminderMarkNotifiedSuppressesSameCycle(t *testing.T) {
+	tr := &spotCashReconcileReminderTracker{}
+	now := time.Date(2026, 7, 20, 15, 0, 0, 0, time.UTC)
+	// Per-fill CRITICAL seeds the tracker; same-cycle reminder must not fire.
+	tr.MarkNotified("rh-btc", now)
+	if tr.ShouldNotify("rh-btc", now.Add(time.Second)) {
+		t.Fatal("MarkNotified must suppress same-cycle reminder for the founding sig")
+	}
+	// Re-onset after clear is still legitimate.
+	tr.ShouldNotify("", now.Add(2*time.Second))
+	if !tr.ShouldNotify("rh-btc", now.Add(3*time.Second)) {
+		t.Fatal("re-onset after clear must still notify")
+	}
+}
+
+func TestCashReconcileRequiredSaveLoadRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// cash in [0, 0.01) — the range where ValidateState will NOT re-latch from
+	// negative cash, so persistence (not clamp side-effect) must carry the flag.
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"rh-btc": {
+				ID: "rh-btc", Type: "spot", Platform: "robinhood",
+				Cash: 0.005, InitialCapital: 1000,
+				CashReconcileRequired: true,
+				Positions:             make(map[string]*Position),
+				OptionPositions:       make(map[string]*OptionPosition),
+				TradeHistory:          []Trade{},
+			},
+			"okx-btc": {
+				ID: "okx-btc", Type: "spot", Platform: "okx",
+				Cash: -12.5, InitialCapital: 1000,
+				CashReconcileRequired: true,
+				Positions:             make(map[string]*Position),
+				OptionPositions:       make(map[string]*OptionPosition),
+				TradeHistory:          []Trade{},
+			},
+		},
+	}
+	if err := SaveStateWithDB(state, &Config{}, db); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rh := loaded.Strategies["rh-btc"]
+	if rh == nil {
+		t.Fatal("rh-btc missing after LoadState")
+	}
+	if !rh.CashReconcileRequired {
+		t.Fatal("CashReconcileRequired must survive Save/Load when cash is in [0, 0.01)")
+	}
+	if rh.Cash != 0.005 {
+		t.Fatalf("cash = %g, want 0.005 (not clamped)", rh.Cash)
+	}
+	okx := loaded.Strategies["okx-btc"]
+	if okx == nil || !okx.CashReconcileRequired {
+		t.Fatal("negative-cash strategy must also keep CashReconcileRequired across Save/Load")
+	}
+
+	// Second restart simulation: clamp cash to 0 via ValidateState, save again,
+	// reload — latch must still be true (persisted column, not negative-cash re-derive).
+	ValidateState(loaded)
+	if loaded.Strategies["rh-btc"].Cash != 0.005 {
+		// 0.005 >= 0 so ValidateState does not clamp; okx clamps to 0 and keeps latch
+	}
+	if !loaded.Strategies["okx-btc"].CashReconcileRequired || loaded.Strategies["okx-btc"].Cash != 0 {
+		t.Fatalf("okx after ValidateState: cash=%g latch=%v", loaded.Strategies["okx-btc"].Cash, loaded.Strategies["okx-btc"].CashReconcileRequired)
+	}
+	// Force rh into the post-clamp solvent-but-sub-tolerance zone and re-save.
+	loaded.Strategies["rh-btc"].Cash = 0
+	loaded.Strategies["rh-btc"].CashReconcileRequired = true
+	if err := SaveStateWithDB(loaded, &Config{}, db); err != nil {
+		t.Fatal(err)
+	}
+	loaded2, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded2.Strategies["rh-btc"].CashReconcileRequired {
+		t.Fatal("second Save/Load with cash=0 must still restore CashReconcileRequired from SQLite")
+	}
+	ValidateState(loaded2)
+	if !loaded2.Strategies["rh-btc"].CashReconcileRequired {
+		t.Fatal("ValidateState must not clear a persisted latch when cash is 0")
+	}
+}
+
+func TestUIStrategyOverviewSurfacesCashReconcileRequired(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"rh-btc": {
+			ID: "rh-btc", Type: "spot", Platform: "robinhood", Cash: 0,
+			CashReconcileRequired: true,
+			Positions:             make(map[string]*Position),
+			OptionPositions:       make(map[string]*OptionPosition),
+		},
+		"okx-btc": {
+			ID: "okx-btc", Type: "spot", Platform: "okx", Cash: 100,
+			CashReconcileRequired: false,
+			Positions:             make(map[string]*Position),
+			OptionPositions:       make(map[string]*OptionPosition),
+		},
+	}}
+	cfgs := []StrategyConfig{
+		{ID: "rh-btc", Type: "spot", Platform: "robinhood", Args: []string{"momentum", "BTC"}},
+		{ID: "okx-btc", Type: "spot", Platform: "okx", Args: []string{"momentum", "BTC"}},
+	}
+	ss := newOpsTestServer(t, cfgs, state, false)
+
+	ov, _, ok := ss.uiStrategyOverview("rh-btc")
+	if !ok {
+		t.Fatal("rh-btc overview missing")
+	}
+	if !ov.CashReconcileRequired {
+		t.Fatal("overview must surface CashReconcileRequired=true")
+	}
+	ov2, _, ok := ss.uiStrategyOverview("okx-btc")
+	if !ok || ov2.CashReconcileRequired {
+		t.Fatal("unlatched strategy must surface CashReconcileRequired=false/omitted")
 	}
 }
 
