@@ -662,8 +662,35 @@ def _effective_direction(sc: dict) -> str:
     return "both" if sc.get("allow_shorts") else "long"
 
 
+def _capture_promotion_baseline(cfg: dict, sc: dict) -> dict:
+    """Snapshot raw config blocks for a later promotion drift check (#1386).
+
+    Captures verbatim JSON values with presence bits *before* any transform
+    (``_effective_user_close_defaults``, absent-``open_strategy`` collapse to
+    ``{}``, close/stop injection). Presence = key present in the object
+    (``null`` + ``true`` is distinguishable from absent → ``null`` + ``false``).
+    Deepcopied so later pipeline stages cannot alias into the persisted baseline.
+    Includes deprecated root ``user_close_defaults`` so drift through the legacy
+    block is visible (#1386 Finding 2).
+    """
+    open_present = "open_strategy" in sc
+    ud_present = "user_defaults" in cfg
+    ucd_present = "user_close_defaults" in cfg
+    return {
+        "open_strategy": deepcopy(sc["open_strategy"]) if open_present else None,
+        "open_strategy_present": open_present,
+        "user_defaults": deepcopy(cfg["user_defaults"]) if ud_present else None,
+        "user_defaults_present": ud_present,
+        "user_close_defaults": (
+            deepcopy(cfg["user_close_defaults"]) if ucd_present else None
+        ),
+        "user_close_defaults_present": ucd_present,
+    }
+
+
 def load_strategy_config(config_path: str, strategy_id: str,
-                         inject_user_defaults: bool = False) -> dict:
+                         inject_user_defaults: bool = False,
+                         include_promotion_baseline: bool = False) -> dict:
     """Load a single strategy's refs from a live go-trader config (#641).
 
     Reads the v13+ config at ``config_path``, finds the strategy with
@@ -673,6 +700,12 @@ def load_strategy_config(config_path: str, strategy_id: str,
     config without translating shapes.
 
     Returns ``{"open_strategy": {...}, "close_strategies": [...]}``.
+
+    ``include_promotion_baseline`` (default False) is opt-in: when True the
+    returned dict also carries a ``promotion_baseline`` key with the raw
+    ``open_strategy`` / ``user_defaults`` / ``user_close_defaults`` blocks and
+    presence bits (#1386). Opt-in because many callers spread this dict into
+    ``Backtester(**kwargs)`` — an unconditional extra key would crash them.
 
     Raises ValueError when the config is pre-v13 (legacy flat shape) or
     the strategy ID is not found — the caller should run the live
@@ -707,6 +740,12 @@ def load_strategy_config(config_path: str, strategy_id: str,
     for sc in cfg.get("strategies", []) or []:
         if sc.get("id") != strategy_id:
             continue
+        # #1386: capture raw blocks from the same cfg/sc of this single read,
+        # before absent-open collapse / close-stop injection can rewrite them.
+        promotion_baseline = (
+            _capture_promotion_baseline(cfg, sc)
+            if include_promotion_baseline else None
+        )
         open_ref = sc.get("open_strategy")
         if not isinstance(open_ref, dict):
             open_ref = {}
@@ -1098,7 +1137,7 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 _certs, cert_symbol, cert_timeframe, _clf,
             )
             regime_directional_certified = regime_directional_certified_states is not None
-        return {
+        out = {
             "open_strategy": {
                 "name": open_name,
                 "params": dict(open_ref.get("params") or {}),
@@ -1135,6 +1174,9 @@ def load_strategy_config(config_path: str, strategy_id: str,
             # #1277: resolved ATR smoothing method ("simple" = frozen legacy).
             "atr_method": atr_method,
         }
+        if include_promotion_baseline:
+            out["promotion_baseline"] = promotion_baseline
+        return out
     raise ValueError(
         f"{config_path}: no strategy with id={strategy_id!r}. "
         f"Available: {[s.get('id') for s in cfg.get('strategies', []) or []]}"
