@@ -129,6 +129,12 @@ func runManualOpen(args []string) int {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}
+				// #1344: a resting limit open still grows gross notional once it
+				// fills — refuse while over cap, same as the market-order core path.
+				if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
+					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked (closes and SL edits are unaffected)\n", detail)
+					return 1
+				}
 				// #1270: a resting limit open increases exposure in resolvedSide's
 				// direction once it fills — refuse while that direction's bucket
 				// is capped or this asset is over-concentrated in that direction.

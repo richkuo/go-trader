@@ -1932,15 +1932,14 @@ func main() {
 						}
 					}
 
-					// #42: Notional cap blocks new trades for this strategy. Under
-					// manage-only the position is never grown anyway, so let the
-					// trailing-SL/TP management run instead of skipping.
-					if !cbManageOnly && notionalBlocked {
-						logger.Warn("Notional cap exceeded — skipping new trades")
-						logger.Close()
-						lastRun[sc.ID] = time.Now()
-						continue
-					}
+					// #1344: notional cap is an ENTRY hold, not a cycle skip.
+					// Pre-#1344 this site `continue`d the whole strategy when
+					// notionalBlocked, which also skipped close/reduce evaluation
+					// and perps trailing-SL / TP-ratchet / protection-sync. Holds
+					// now land per-signal via pausedBlocksSignal at the six
+					// dispatch sites below (plus pausedOptionsActions); Signal==0
+					// manage paths and position-reducing actions pass through.
+					// (notionalCapSkipsStrategyCycle locks the never-skip invariant.)
 
 					// Phase 3 (no lock) + Phase 4 (Lock): subprocess then state mutation
 					trades := 0
@@ -1970,6 +1969,12 @@ func main() {
 								// position-increasing signals held, position-reducing actions pass.
 								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+									result.Signal = 0
+								}
+								// #1344: portfolio notional cap — hold position-increasing signals
+								// only; closes/reductions and Signal==0 manage keep running.
+								if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
+									logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 									result.Signal = 0
 								}
 								// #1270: same-direction exposure cap — only the capped direction's
@@ -2022,6 +2027,12 @@ func main() {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
+								// #1344: portfolio notional cap — hold position-increasing signals
+								// only; closes/reductions and Signal==0 manage keep running.
+								if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
+									logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
+									result.Signal = 0
+								}
 								// #1270: same-direction exposure cap — only the capped direction's
 								// position-increasing signals are held; the other direction and all
 								// position-reducing actions pass.
@@ -2070,6 +2081,12 @@ func main() {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
+							// #1344: portfolio notional cap — hold position-increasing signals
+							// only; closes/reductions and Signal==0 manage keep running.
+							if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
+								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
+								result.Signal = 0
+							}
 							// #1270: same-direction exposure cap — only the capped direction's
 							// position-increasing signals are held; the other direction and all
 							// position-reducing actions pass.
@@ -2101,6 +2118,15 @@ func main() {
 								kept, dropped := pausedOptionsActions(result.Actions)
 								if dropped > 0 {
 									logger.Info("Daily loss limit: %d option open action(s) dropped — entries held until UTC rollover (#1269)", dropped)
+								}
+								result.Actions = kept
+							}
+							// #1344: portfolio notional cap — drop option open actions; closes
+							// and the theta-harvest walker still manage existing positions.
+							if notionalBlocked {
+								kept, dropped := pausedOptionsActions(result.Actions)
+								if dropped > 0 {
+									logger.Warn("Notional cap: %d option open action(s) dropped — new opens blocked, exits continue (#1344)", dropped)
 								}
 								result.Actions = kept
 							}
@@ -2172,6 +2198,12 @@ func main() {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
+								// #1344: portfolio notional cap — hold position-increasing signals
+								// only; closes/reductions and Signal==0 manage keep running.
+								if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+									logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
+									result.Signal = 0
+								}
 								// #1270: same-direction exposure cap — only the capped direction's
 								// position-increasing signals are held; the other direction and all
 								// position-reducing actions pass.
@@ -2228,6 +2260,13 @@ func main() {
 							// position-increasing signals held, position-reducing actions pass.
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1344: portfolio notional cap — hold position-increasing signals
+							// only; closes/reductions and Signal==0 manage (trailing SL /
+							// TP ratchet / protection sync) keep running.
+							if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
 							// #1270: same-direction exposure cap — only the capped direction's
@@ -2544,6 +2583,13 @@ func main() {
 							// position-increasing signals held, position-reducing actions pass.
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
+								result.Signal = 0
+							}
+							// #1344: portfolio notional cap — gross notional includes futures
+							// (unlike #1270's crypto-only bucket), so TopStep is gated too.
+							// Position-increasing signals held; closeFraction>0 reductions pass.
+							if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
+								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
 							// #1270: deliberately NOT gated by the same-direction exposure

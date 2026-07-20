@@ -97,6 +97,8 @@ type manualStateView struct {
 	PendingCBClose bool
 	DailyLossHold  bool   // #1269: portfolio daily loss limit tripped — position-increasing manual actions refuse
 	DailyLossNote  string // #1269: one-line detail for the refusal message (set iff DailyLossHold)
+	NotionalHold   bool   // #1344: portfolio gross notional cap breached — position-increasing manual actions refuse
+	NotionalNote   string // #1344: one-line detail for the refusal message (set iff NotionalHold)
 	// #1270: same-direction exposure cap — both arms. The bucket arm sums at
 	// AvgCost (no live feed on this path); the concentration arm evaluates
 	// against the displayStrategyValue basis (see manualExposureCapStatus), so
@@ -117,6 +119,14 @@ func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol s
 		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC()); st.Tripped {
 			v.DailyLossHold = true
 			v.DailyLossNote = dailyLossHoldDetail(st)
+		}
+		// #1344: gross notional cap — manual opens/adds are CLI/dashboard-driven,
+		// not dispatch-loop signals, so the hold is enforced here next to the
+		// kill-switch / daily-loss / exposure-cap guards. nil prices → AvgCost
+		// inside PortfolioNotional (same fallback the exposure-cap manual path uses).
+		if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
+			v.NotionalHold = true
+			v.NotionalNote = detail
 		}
 		// #1270: same-direction exposure cap, both arms. nil prices →
 		// positions value at AvgCost (this path has no live price feed); the
@@ -525,6 +535,11 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			if view.DailyLossHold {
 				return res, manualFailf("error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
 			}
+			// #1344: a manual open grows gross notional — refuse while over cap
+			// (closes and SL edits are unaffected).
+			if view.NotionalHold {
+				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", view.NotionalNote)
+			}
 			// #1270: a manual open increases exposure in `side`'s direction —
 			// refuse while that direction's bucket is capped or this asset is
 			// over-concentrated in that direction (the other direction,
@@ -848,6 +863,11 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	pos := view.Pos
 	if pos == nil {
 		return res, manualFailf("error: no open position for %s/%s; open one first with manual-open", strategyID, sc.Symbol)
+	}
+	// #1344: an add grows gross notional — refuse while over cap (closes and
+	// SL edits are unaffected).
+	if view.NotionalHold {
+		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", view.NotionalNote)
 	}
 	// #1270: an add grows exposure in the position's direction — refuse while
 	// that direction's bucket is capped or this asset is over-concentrated in
