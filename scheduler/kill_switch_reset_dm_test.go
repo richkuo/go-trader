@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -257,5 +259,57 @@ func TestKillSwitchResetDMTimeout_ConcurrentProbeDoesNotRace(t *testing.T) {
 	<-done
 	if effectiveKillSwitchResetDMTimeout() != time.Hour {
 		t.Fatalf("runtime timeout = %s, want 1h", effectiveKillSwitchResetDMTimeout())
+	}
+}
+
+// TestTryClaimKillSwitchResetPrompt_SingleOwner: while held, a second claim
+// must fail; after release, a later claim must succeed (#1396).
+func TestTryClaimKillSwitchResetPrompt_SingleOwner(t *testing.T) {
+	var running atomic.Bool
+	if !tryClaimKillSwitchResetPrompt(&running) {
+		t.Fatal("first claim should succeed")
+	}
+	if tryClaimKillSwitchResetPrompt(&running) {
+		t.Fatal("second claim must fail while held")
+	}
+	releaseKillSwitchResetPrompt(&running)
+	if running.Load() {
+		t.Fatal("flag must be clear after release")
+	}
+	if !tryClaimKillSwitchResetPrompt(&running) {
+		t.Fatal("claim after release should succeed")
+	}
+	releaseKillSwitchResetPrompt(&running)
+}
+
+// TestTryClaimKillSwitchResetPrompt_ConcurrentClaimRelease stresses the
+// single-flight claim/release path under the race detector (#1396). The
+// pre-fix plain bool was read/written from the main loop and the AskOwnerDM
+// goroutine with no synchronization.
+func TestTryClaimKillSwitchResetPrompt_ConcurrentClaimRelease(t *testing.T) {
+	var running atomic.Bool
+	const goroutines = 64
+	const rounds = 400
+	var claims atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				if tryClaimKillSwitchResetPrompt(&running) {
+					claims.Add(1)
+					// Hold briefly so concurrent claimants observe the held state.
+					releaseKillSwitchResetPrompt(&running)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if claims.Load() == 0 {
+		t.Fatal("expected at least one successful claim")
+	}
+	if running.Load() {
+		t.Fatal("flag still set after all releases")
 	}
 }

@@ -3,8 +3,23 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// tryClaimKillSwitchResetPrompt atomically claims the single-flight slot for
+// the kill-switch reset AskOwnerDM goroutine (#1396). Returns true iff this
+// caller owns the prompt; the owner MUST call releaseKillSwitchResetPrompt
+// when the goroutine exits (typically via defer).
+func tryClaimKillSwitchResetPrompt(running *atomic.Bool) bool {
+	return running.CompareAndSwap(false, true)
+}
+
+// releaseKillSwitchResetPrompt clears the single-flight slot so a later cycle
+// can prompt again after the AskOwnerDM goroutine finishes.
+func releaseKillSwitchResetPrompt(running *atomic.Bool) {
+	running.Store(false)
+}
 
 // DefaultKillSwitchResetDMTimeout is the AskOwnerDM wait for the portfolio
 // kill-switch reset prompt when kill_switch_reset_dm_timeout is omitted
