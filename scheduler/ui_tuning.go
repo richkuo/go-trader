@@ -98,6 +98,12 @@ type tuningRunManager struct {
 	mu              sync.RWMutex
 	runs            map[string]tuningRunRecord
 	maxRetainedRuns int // #1382; 0 = keep-all
+
+	// journalMu guards promotions.json and applyInflight. It is intentionally
+	// separate from mu so subprocess lifecycle never holds the journal lock
+	// (#1341). config writes still serialize on StatusServer.configWriteMu.
+	journalMu     sync.Mutex
+	applyInflight map[string]chan struct{}
 }
 
 func resolveTuningPaths(configPath string) (string, string, error) {
@@ -155,6 +161,7 @@ func newTuningRunManager(configPath string, runner tuningRunRunner, maxRetainedR
 		now:             func() time.Time { return time.Now().UTC() },
 		runs:            make(map[string]tuningRunRecord),
 		maxRetainedRuns: maxRetainedRuns,
+		applyInflight:   make(map[string]chan struct{}),
 	}
 	if err := m.loadPersistedRuns(); err != nil {
 		return nil, err
@@ -633,8 +640,8 @@ func readTuningResults(path string) (map[string]any, error) {
 	if err := readTuningJSON(path, &results); err != nil {
 		return nil, fmt.Errorf("read tuning results %s: %w", path, err)
 	}
-	if _, ok := results["schema_version"]; !ok {
-		return nil, fmt.Errorf("tuning results %s missing schema_version", path)
+	if _, err := tuningResultsSchemaVersion(results); err != nil {
+		return nil, fmt.Errorf("tuning results %s: %w", path, err)
 	}
 	if _, ok := results["strategies"].([]any); !ok {
 		return nil, fmt.Errorf("tuning results %s missing strategies array", path)
@@ -862,5 +869,7 @@ func (ss *StatusServer) handleAPITuningRun(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Transient overlay only — never persisted into results.json (#1341).
+	overlayTuningApplyEligibility(&detail, ss.configPath, ss.tuning)
 	writeJSON(w, detail)
 }

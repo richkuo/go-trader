@@ -1610,6 +1610,25 @@ h3 {
   text-transform: uppercase;
 }
 
+.tuning-apply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.tuning-apply-actions .tuning-apply-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tuning-apply-reason,
+.tuning-apply-status {
+  margin: 0;
+  flex: 1 1 220px;
+}
+
 .tuning-evidence-metrics {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) auto;

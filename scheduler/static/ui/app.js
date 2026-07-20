@@ -71,11 +71,56 @@
     return loadingRunID === activeRunID ? "skip" : "queue";
   }
 
+  // Map server apply_eligibility to button enabled/label/reason for /tuning.
+  function tuningApplyButtonState(eligibility, appliedAt) {
+    switch (eligibility) {
+      case "eligible":
+        return { enabled: true, label: "Apply", reason: "" };
+      case "already_applied":
+        return {
+          enabled: false,
+          label: "Applied",
+          reason: appliedAt ? ("Promoted at " + appliedAt) : "Already promoted",
+        };
+      case "baseline_drifted":
+        return {
+          enabled: false,
+          label: "Apply",
+          reason: "Live values changed since this run. Re-run tuning before applying.",
+        };
+      case "legacy_artifact":
+        return {
+          enabled: false,
+          label: "Apply",
+          reason: "This run is too old to apply safely. Re-run tuning.",
+        };
+      case "not_survivor":
+        return {
+          enabled: false,
+          label: "Apply",
+          reason: "Only ranked survivors can be applied.",
+        };
+      case "config_unavailable":
+        return {
+          enabled: false,
+          label: "Apply",
+          reason: "Live configuration is unavailable right now.",
+        };
+      default:
+        return {
+          enabled: false,
+          label: "Apply",
+          reason: "Apply is unavailable for this suggestion.",
+        };
+    }
+  }
+
   const tuningLogic = {
     baselineState: tuningBaselineState,
     paramDiff: tuningParamDiff,
     sameValue: sameValue,
     detailLoadAction: tuningDetailLoadAction,
+    applyButtonState: tuningApplyButtonState,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = tuningLogic;
   if (typeof document === "undefined") return;
@@ -365,7 +410,8 @@
       const raw = String((err && err.message) || "Request failed").trim();
       try {
         const parsed = JSON.parse(raw);
-        return parsed.error || parsed.message || raw;
+        if (parsed.reason && parsed.error) return parsed.reason + ": " + parsed.error;
+        return parsed.error || parsed.reason || parsed.message || raw;
       } catch (_err) {
         return raw;
       }
@@ -656,7 +702,7 @@
       tableBody.appendChild(row);
     }
 
-    function renderRankedRow(row, config) {
+    function renderRankedRow(row, config, strategyID, runID) {
       const card = node("article", "tuning-suggestion");
       const heading = node("div", "tuning-suggestion-heading");
       heading.appendChild(node("strong", "", row.key || "candidate"));
@@ -703,10 +749,51 @@
       evidence.appendChild(node("summary", "", "Evidence and limitations"));
       evidence.appendChild(node("pre", "", JSON.stringify({ evidence: row.evidence || {}, limitations: row.limitations || [] }, null, 2)));
       card.appendChild(evidence);
+
+      if (row.verdict === "survivor") {
+        const applyState = tuningLogic.applyButtonState(row.apply_eligibility, row.applied_at);
+        const actions = node("div", "tuning-apply-actions");
+        const button = node("button", "tuner-button primary tuning-apply-button", applyState.label);
+        button.type = "button";
+        button.disabled = !applyState.enabled;
+        if (applyState.enabled) {
+          button.addEventListener("click", function () {
+            applyTuningSuggestion(runID, strategyID, row.key || "");
+          });
+        }
+        actions.appendChild(button);
+        if (applyState.reason) {
+          actions.appendChild(node("p", "tuning-apply-reason panel-muted", applyState.reason));
+        }
+        const status = node("p", "tuning-apply-status panel-muted");
+        status.hidden = true;
+        actions.appendChild(status);
+        card.appendChild(actions);
+      }
       return card;
     }
 
-    function renderStrategyResults(result, config, configError) {
+    async function applyTuningSuggestion(runID, strategyID, suggestionKey) {
+      const confirmMsg = "Apply tuning suggestion " + suggestionKey +
+        " to strategy " + strategyID + "? This replaces the live open strategy parameters.";
+      if (!window.confirm(confirmMsg)) return;
+      try {
+        const resp = await postJSON("/api/tuning/apply", {
+          run_id: runID,
+          strategy_id: strategyID,
+          suggestion_key: suggestionKey,
+        });
+        const reason = (resp && resp.reason) || "applied";
+        setLaunchMessage("Apply " + reason + " for " + strategyID + " / " + suggestionKey, "success");
+      } catch (err) {
+        const detail = apiErrorMessage(err);
+        setLaunchMessage("Apply failed for " + strategyID + " / " + suggestionKey + ": " + detail, "error");
+        if (err.status === 401 || err.status === 403) showAuth(err, "Apply authorization failed");
+      }
+      await loadRunDetail();
+    }
+
+    function renderStrategyResults(result, config, configError, runID) {
       const section = node("section", "tuning-strategy-result");
       const heading = node("div", "tuning-result-heading");
       heading.appendChild(node("h3", "", result.strategy_id || "Unknown strategy"));
@@ -743,7 +830,9 @@
         if (!ranked.length) {
           section.appendChild(node("p", "panel-muted", "No ranked suggestions for this strategy."));
         } else {
-          ranked.forEach(function (row) { section.appendChild(renderRankedRow(row, config)); });
+          ranked.forEach(function (row) {
+            section.appendChild(renderRankedRow(row, config, result.strategy_id || "", runID || ""));
+          });
         }
       }
       return section;
@@ -782,7 +871,8 @@
         pageEls.results.appendChild(renderStrategyResults(
           result,
           liveConfigs[result.strategy_id],
-          liveErrors[result.strategy_id]
+          liveErrors[result.strategy_id],
+          expectedRunID
         ));
       });
     }

@@ -246,8 +246,10 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
 	// #1339 persistent strategy-tuning jobs. The exact collection route
 	// handles GET/POST; the longer prefix serves one stable run id.
+	// #1341 operator-explicit promotion (exact /apply sibling; never under /runs/).
 	mux.HandleFunc("/api/tuning/runs", ss.handleAPITuningRuns)
 	mux.HandleFunc("/api/tuning/runs/", ss.handleAPITuningRun)
+	mux.HandleFunc("/api/tuning/apply", ss.handleAPITuningApply)
 	// #1256 low-risk mutation surface (ui_mutations.go): global notification
 	// toggle; per-strategy pause + notification toggles route through the
 	// "/api/strategies/" prefix handler below.
