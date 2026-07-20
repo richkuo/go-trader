@@ -1,6 +1,10 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"strings"
 	"testing"
 )
@@ -21,6 +25,89 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 	if notionalCapSkipsStrategyCycle(true) {
 		t.Fatal("notionalCapSkipsStrategyCycle(true) must be false — over-cap must not skip close/SL maintenance (#1344)")
 	}
+
+	// Production teeth: main.go must route any whole-strategy notional skip
+	// through the helper (so changing the return to true fails CI), and must
+	// not reintroduce a raw `if notionalBlocked { continue }` / the pre-#1344
+	// `!cbManageOnly && notionalBlocked` bypass that would skip silently.
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "notionalCapSkipsStrategyCycle(notionalBlocked)") {
+		t.Fatal("main.go must call notionalCapSkipsStrategyCycle(notionalBlocked) for the cycle-skip decision")
+	}
+	if strings.Contains(body, "!cbManageOnly && notionalBlocked") {
+		t.Fatal("main.go must not restore the pre-#1344 `!cbManageOnly && notionalBlocked` cycle skip")
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "main.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse main.go: %v", err)
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		ifs, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		if !astCondMentionsIdent(ifs.Cond, "notionalBlocked") {
+			return true
+		}
+		// Allowed: if notionalCapSkipsStrategyCycle(notionalBlocked) { continue }
+		if astCondIsNotionalCapSkipHelper(ifs.Cond) {
+			return true
+		}
+		if astBlockContainsContinue(ifs.Body) {
+			t.Errorf("main.go:%s: raw notionalBlocked-conditioned continue bypasses notionalCapSkipsStrategyCycle",
+				fset.Position(ifs.Pos()))
+		}
+		return true
+	})
+}
+
+// astCondMentionsIdent reports whether expr references the given identifier
+// anywhere (including nested binary/unary/call expressions).
+func astCondMentionsIdent(expr ast.Expr, name string) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// astCondIsNotionalCapSkipHelper reports whether expr is exactly
+// notionalCapSkipsStrategyCycle(...).
+func astCondIsNotionalCapSkipHelper(expr ast.Expr) bool {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	fun, ok := call.Fun.(*ast.Ident)
+	return ok && fun.Name == "notionalCapSkipsStrategyCycle"
+}
+
+// astBlockContainsContinue reports whether body (or any nested block) has a
+// bare `continue` statement.
+func astBlockContainsContinue(body *ast.BlockStmt) bool {
+	if body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		br, ok := n.(*ast.BranchStmt)
+		if ok && br.Tok == token.CONTINUE {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func TestNotionalCapHoldPassesReduceAndManage(t *testing.T) {

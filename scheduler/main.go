@@ -1939,7 +1939,16 @@ func main() {
 					// now land per-signal via pausedBlocksSignal at the six
 					// dispatch sites below (plus pausedOptionsActions); Signal==0
 					// manage paths and position-reducing actions pass through.
-					// (notionalCapSkipsStrategyCycle locks the never-skip invariant.)
+					//
+					// Any whole-strategy skip decision MUST route through
+					// notionalCapSkipsStrategyCycle (always false) so a helper
+					// regression fails CI — never a raw `if notionalBlocked { continue }`.
+					if notionalCapSkipsStrategyCycle(notionalBlocked) {
+						logger.Warn("Notional cap exceeded — skipping strategy cycle")
+						logger.Close()
+						lastRun[sc.ID] = time.Now()
+						continue
+					}
 
 					// Phase 3 (no lock) + Phase 4 (Lock): subprocess then state mutation
 					trades := 0

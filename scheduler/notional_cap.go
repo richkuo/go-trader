@@ -27,6 +27,11 @@ import "fmt"
 // notionalCapSkipsStrategyCycle reports whether the per-strategy dispatch
 // loop should skip the rest of the cycle when the notional cap is breached.
 // #1344: always false — holds are per-signal; never skip close/SL maintenance.
+//
+// main.go MUST call this (and only this) for any whole-strategy notional skip
+// so TestNotionalCapNeverSkipsStrategyCycle has production teeth: changing
+// the return to true fails CI, and a raw `if notionalBlocked { continue }`
+// bypass is caught by the main.go source scan in the same test.
 func notionalCapSkipsStrategyCycle(notionalBlocked bool) bool {
 	_ = notionalBlocked
 	return false
