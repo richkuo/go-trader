@@ -70,7 +70,9 @@ from run_backtest import (  # noqa: E402
 )
 
 # Downstream consumers (#1339-#1341) read this schema; bump on any layout change.
-SCHEMA_VERSION = 1
+# v2 (#1386): each ranked strategy result carries promotion_baseline (raw
+# open_strategy / user_defaults / user_close_defaults + presence bits).
+SCHEMA_VERSION = 2
 ISSUE = 1338
 
 DEFAULT_SINCE = "2019-01-01"          # stage-1 history start (sliced to end before stage 2)
@@ -620,8 +622,11 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     # 1. Resolve the live baseline (REUSE the config loader; inherit its v15 gate
     #    and rich rejection text). A load failure is per-strategy, not fatal.
     try:
-        resolution = load_strategy_config(config_path, strategy_id,
-                                          inject_user_defaults=True)
+        resolution = load_strategy_config(
+            config_path, strategy_id,
+            inject_user_defaults=True,
+            include_promotion_baseline=True,
+        )
     except ValueError as exc:
         result["status"] = "config_error"
         result["error"] = str(exc)
@@ -632,6 +637,9 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str,
     result["open_strategy"] = open_name
     result["direction"] = resolution.get("direction")
     result["baseline_params"] = baseline_params
+    # #1386: raw promotion baseline from the same load — pop so it never
+    # leaks into Backtester kwargs if a later stage spreads resolution.
+    result["promotion_baseline"] = resolution.pop("promotion_baseline")
     result["close_strategies"] = copy.deepcopy(resolution.get("close_strategies") or [])
     result["stop_owner"] = {
         k: resolution.get(k) for k in

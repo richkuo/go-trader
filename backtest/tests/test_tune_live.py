@@ -378,6 +378,21 @@ def test_generated_candidates_pass_auto_suggest_load_spec(tmp_path):
     assert spec["candidates"][0]["key"] == "baseline"
 
 
+_PROMOTION_BASELINE_KEYS = (
+    "open_strategy", "open_strategy_present",
+    "user_defaults", "user_defaults_present",
+    "user_close_defaults", "user_close_defaults_present",
+)
+
+
+def _assert_complete_promotion_baseline(baseline):
+    assert isinstance(baseline, dict)
+    assert set(baseline) == set(_PROMOTION_BASELINE_KEYS)
+    assert isinstance(baseline["open_strategy_present"], bool)
+    assert isinstance(baseline["user_defaults_present"], bool)
+    assert isinstance(baseline["user_close_defaults_present"], bool)
+
+
 def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(tl, "load_cached_data", lambda *a, **k: _synthetic_df())
     monkeypatch.setattr(tl, "run_stage2", _canned_stage2)
@@ -387,18 +402,204 @@ def test_full_main_writes_versioned_artifact_and_progress(tmp_path, monkeypatch)
                   "--out-dir", str(tmp_path), "--json", out, "--jobs", "1"])
     assert rc == 0
     art = json.loads((tmp_path / "art.json").read_text())
+    assert art["schema_version"] == 2
     assert art["schema_version"] == tl.SCHEMA_VERSION
     assert art["tool"] == "tune_live" and art["issue"] == 1338
     s = art["strategies"][0]
     assert s["status"] == "ranked"
     assert s["baseline_params"] == {"fast_period": 18, "slow_period": 50}
+    _assert_complete_promotion_baseline(s["promotion_baseline"])
+    assert s["promotion_baseline"]["open_strategy"] == {
+        "name": "sma_crossover",
+        "params": {"fast_period": 18, "slow_period": 50},
+    }
+    assert s["promotion_baseline"]["open_strategy_present"] is True
+    assert s["promotion_baseline"]["user_defaults"] is None
+    assert s["promotion_baseline"]["user_defaults_present"] is False
+    assert s["promotion_baseline"]["user_close_defaults"] is None
+    assert s["promotion_baseline"]["user_close_defaults_present"] is False
     surv = s["survivors"]
     assert surv and "patch" in surv[0]
     assert surv[0]["patch"]["open_strategy"]["name"] == "sma_crossover"
     # progress JSON is machine-consumable and reaches "done"
     prog = json.loads((tmp_path / "tune_live.progress.json").read_text())
+    assert prog["schema_version"] == 2
     assert prog["schema_version"] == tl.SCHEMA_VERSION
     assert prog["phase"] == "done"
+
+
+def test_promotion_baseline_raw_fidelity_with_user_defaults(tmp_path):
+    """#1386: baseline stores file blocks verbatim — no close injection leak."""
+    open_block = {
+        "name": "sma_crossover",
+        "params": {"fast_period": 18},  # slow_period omitted → registry fills eff
+    }
+    user_defaults = {
+        "close": {
+            "trailing_tp_ratchet": {
+                "tp_tiers": [
+                    {"atr_multiple": 2.0, "trailing_mult_after": 1.5,
+                     "close_fraction": 0.5},
+                ],
+            },
+        },
+    }
+    cfg = {
+        "config_version": 15,
+        "user_defaults": user_defaults,
+        "strategies": [{
+            "id": "spot-sma-btc", "type": "spot", "platform": "binanceus",
+            "args": ["sma_crossover", "BTC/USDT", "1d"],
+            "open_strategy": open_block,
+            "close_strategy": {
+                "name": "trailing_tp_ratchet",
+                "params": {"use_defaults": True},
+            },
+            "trailing_stop_atr_mult": 3.0,
+        }],
+    }
+    path = _write_config(tmp_path, cfg)
+    file_cfg = json.loads((tmp_path / "config.json").read_text())
+
+    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
+                           load_registry("spot"), _make_args(dry_run=True), {},
+                           str(tmp_path))
+    baseline = res["promotion_baseline"]
+    _assert_complete_promotion_baseline(baseline)
+    assert baseline["open_strategy"] == file_cfg["strategies"][0]["open_strategy"]
+    assert baseline["user_defaults"] == file_cfg["user_defaults"]
+    assert baseline["open_strategy_present"] is True
+    assert baseline["user_defaults_present"] is True
+    # No injected close data inside the baseline — close injection lives on
+    # close_strategies / stop_owner evidence fields only.
+    assert baseline["open_strategy"]["params"] == res["baseline_params"]
+    # Registry defaults fill omitted keys in effective_params, not baseline.
+    defaults = load_registry("spot").STRATEGY_REGISTRY["sma_crossover"]["default_params"]
+    eff = tl.effective_params(res["baseline_params"], defaults)
+    assert "slow_period" in eff and "slow_period" not in res["baseline_params"]
+    # Injected close lands on evidence, not on the raw baseline.
+    assert res["close_strategies"][0]["params"].get("tp_tiers") is not None
+    assert baseline["user_defaults"] == user_defaults
+
+
+def test_promotion_baseline_presence_matrix(tmp_path):
+    """#1386: absent → null+false; empty object → {}+true; legacy-only captured."""
+    from run_backtest import load_strategy_config
+
+    def _load(subdir, cfg, sid, **kw):
+        d = tmp_path / subdir
+        d.mkdir()
+        return load_strategy_config(_write_config(d, cfg), sid,
+                                    include_promotion_baseline=True, **kw)
+
+    # Absent open_strategy key (args-form) → null + false; name still resolves.
+    kwargs = _load("args", {
+        "config_version": 15,
+        "strategies": [{
+            "id": "spot-args", "type": "spot", "platform": "binanceus",
+            "args": ["sma_crossover", "BTC/USDT", "1d"],
+        }],
+    }, "spot-args")
+    b = kwargs["promotion_baseline"]
+    _assert_complete_promotion_baseline(b)
+    assert b["open_strategy"] is None and b["open_strategy_present"] is False
+    assert b["user_defaults"] is None and b["user_defaults_present"] is False
+    assert kwargs["open_strategy"]["name"] == "sma_crossover"  # resolved
+
+    # Empty-object user_defaults → {} + true.
+    b = _load("empty_ud", {
+        "config_version": 15,
+        "user_defaults": {},
+        "strategies": [{
+            "id": "spot-empty-ud", "type": "spot",
+            "args": ["sma_crossover", "BTC/USDT", "1d"],
+            "open_strategy": {"name": "sma_crossover", "params": {}},
+        }],
+    }, "spot-empty-ud")["promotion_baseline"]
+    assert b["user_defaults"] == {} and b["user_defaults_present"] is True
+
+    # Present-but-null open_strategy → null + true (key present).
+    b = _load("null_open", {
+        "config_version": 15,
+        "strategies": [{
+            "id": "spot-null-open", "type": "spot",
+            "args": ["sma_crossover", "BTC/USDT", "1d"],
+            "open_strategy": None,
+        }],
+    }, "spot-null-open")["promotion_baseline"]
+    assert b["open_strategy"] is None and b["open_strategy_present"] is True
+
+    # Args-form with empty open_strategy.name — raw stores empty name, not resolved.
+    kwargs = _load("empty_name", {
+        "config_version": 15,
+        "strategies": [{
+            "id": "spot-empty-name", "type": "spot",
+            "args": ["sma_crossover", "BTC/USDT", "1d"],
+            "open_strategy": {"name": "", "params": {"fast_period": 18}},
+        }],
+    }, "spot-empty-name")
+    b = kwargs["promotion_baseline"]
+    assert b["open_strategy"] == {"name": "", "params": {"fast_period": 18}}
+    assert kwargs["open_strategy"]["name"] == "sma_crossover"
+
+    # Legacy-only user_close_defaults — canonical absent, legacy present.
+    legacy = {
+        "trailing_tp_ratchet": {
+            "tp_tiers": [
+                {"atr_multiple": 2.0, "trailing_mult_after": 1.5,
+                 "close_fraction": 0.5},
+            ],
+        },
+    }
+    b = _load("legacy", {
+        "config_version": 15,
+        "user_close_defaults": legacy,
+        "strategies": [{
+            "id": "hl-legacy", "type": "perps", "platform": "hyperliquid",
+            "args": ["tema_cross_bd", "BTC", "1h"],
+            "open_strategy": {"name": "tema_cross_bd", "params": {}},
+            "trailing_stop_atr_mult": 3.0,
+            "close_strategy": {
+                "name": "trailing_tp_ratchet",
+                "params": {"use_defaults": True},
+            },
+        }],
+    }, "hl-legacy", inject_user_defaults=True)["promotion_baseline"]
+    assert b["user_defaults"] is None and b["user_defaults_present"] is False
+    assert b["user_close_defaults"] == legacy
+    assert b["user_close_defaults_present"] is True
+
+
+def test_promotion_baseline_opt_in_spread_contract(tmp_path):
+    """#1386 Finding 1: without the flag, no promotion_baseline key (Backtester-safe)."""
+    from run_backtest import load_strategy_config
+    path = _write_config(tmp_path, _sma_config())
+    kwargs = load_strategy_config(path, "spot-sma-btc")
+    assert "promotion_baseline" not in kwargs
+    kwargs_flag = load_strategy_config(path, "spot-sma-btc",
+                                       include_promotion_baseline=True)
+    assert "promotion_baseline" in kwargs_flag
+    _assert_complete_promotion_baseline(kwargs_flag["promotion_baseline"])
+
+
+def test_promotion_baseline_deepcopy_no_alias(tmp_path):
+    """#1386: mutating the baseline must not touch other resolution fields."""
+    from run_backtest import load_strategy_config
+    path = _write_config(tmp_path, _sma_config(
+        params={"fast_period": 18, "slow_period": 50}))
+    kwargs = load_strategy_config(path, "spot-sma-btc",
+                                  include_promotion_baseline=True)
+    baseline = kwargs["promotion_baseline"]
+    baseline["open_strategy"]["params"]["fast_period"] = 999
+    baseline["open_strategy"]["name"] = "mutated"
+    assert kwargs["open_strategy"]["params"]["fast_period"] == 18
+    assert kwargs["open_strategy"]["name"] == "sma_crossover"
+    # Result-side: tune_strategy also deepcopies via the loader capture.
+    res = tl.tune_strategy(path, "spot-sma-btc", "BTC/USDT", "1d", "spot",
+                           load_registry("spot"), _make_args(dry_run=True), {},
+                           str(tmp_path))
+    res["promotion_baseline"]["open_strategy"]["params"]["fast_period"] = 111
+    assert res["baseline_params"]["fast_period"] == 18
 
 
 # ==========================================================================
