@@ -645,6 +645,11 @@ type Trade struct {
 type SignalExecutionResult struct {
 	TradesExecuted int
 	OpenTrade      *Trade
+	// CashReconcileRequired is true when THIS execution booked a live spot
+	// buy that exceeded virtual cash beyond spotLiveCashBudgetTolerance
+	// (#1394). Callers emit CashOverBudgetAlert after releasing mu.
+	CashReconcileRequired bool
+	CashOverBudgetAlert   string
 }
 
 var tradePositionNonce uint64
@@ -1033,6 +1038,43 @@ func perpsCloseActionSuppressesNewSL(signal int, posSide string, allowsLong, all
 	return false
 }
 
+// spotLiveCashBudgetTolerance is the explicit USD slack for live spot-buy
+// cash validation (#1394). Matches the cent-exact shared-wallet drift
+// tolerance: anything larger is a real over-budget book that must CRITICAL-
+// alert and latch CashReconcileRequired; anything at or under is float noise.
+const spotLiveCashBudgetTolerance = 0.01
+
+// spotLiveBuyExceedsCash reports whether a live spot buy's total debit
+// (fill notional + fee) exceeds available virtual cash beyond
+// spotLiveCashBudgetTolerance. Pure helper — booking always proceeds for
+// venue fills; this only decides the CRITICAL / reconcile latch (#1394).
+func spotLiveBuyExceedsCash(cash, totalDebit float64) bool {
+	return totalDebit > cash+spotLiveCashBudgetTolerance
+}
+
+// formatSpotLiveCashOverBudgetAlert builds the CRITICAL owner-DM body for a
+// live spot buy booked past virtual cash (#1394). Pure so tests assert the
+// copy without a notifier.
+func formatSpotLiveCashOverBudgetAlert(strategyID, symbol string, cashBefore, totalDebit, cashAfter, fillQty, fillPrice, fee float64) string {
+	return fmt.Sprintf(
+		"**CRITICAL: LIVE SPOT CASH OVER BUDGET** [%s] %s fill %.6f @ $%.4f (fee $%.4f, debit $%.4f) exceeded virtual cash $%.4f → cash now $%.4f. Fill was booked (venue already filled); reconcile virtual cash against the exchange — dropping the fill would leave state behind real holdings (#1394 / #298).",
+		strategyID, symbol, fillQty, fillPrice, fee, totalDebit, cashBefore, cashAfter,
+	)
+}
+
+// notifySpotLiveCashOverBudget emits the over-budget CRITICAL to the owner
+// (and all channels when a MultiNotifier is wired). No-ops on nil sender.
+// Call AFTER releasing mu — Discord/Telegram HTTP must not run under the lock.
+func notifySpotLiveCashOverBudget(sender ownerDMSender, msg string) {
+	if msg == "" || sender == nil || isNilSender(sender) {
+		return
+	}
+	sender.SendOwnerDM(msg)
+	if mn, ok := sender.(*MultiNotifier); ok && mn != nil && mn.HasBackends() {
+		mn.SendToAllChannels(msg)
+	}
+}
+
 // SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignalWithFillFee's
 // side-based skip branches ("already long, skipping buy" at signal=1,
 // "No long position to sell, skipping" at signal=-1) must be consulted BEFORE
@@ -1044,8 +1086,10 @@ func perpsCloseActionSuppressesNewSL(signal int, posSide string, allowsLong, all
 //   - signal == 1 && pos.Side == "long"  → "Already long, skipping buy"
 //   - signal == -1 && no long position    → "No long position to sell, skipping"
 //
-// Cash-insufficient skips inside the open-long path are not mirrored here —
-// live helpers guard cash upstream before placing the order.
+// Paper cash-insufficient skips (budget < $1 with fillQty==0) are not mirrored
+// here — live helpers guard cash upstream before placing the order. Once a
+// venue fill exists (fillQty>0), booking always proceeds (#1394); an over-
+// budget book latches CashReconcileRequired instead of dropping the fill.
 func SpotOrderSkipReason(signal int, posSide string) string {
 	switch signal {
 	case 1:
@@ -1600,25 +1644,38 @@ func perpsSizingLabel(sizing PerpsSizing) string {
 // leg reduces pos.Quantity (paper) or uses fillQty (live) without deleting
 // the position. closeFraction == 0 preserves the legacy full-close semantics.
 func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	return executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
+	return out.TradesExecuted, err
 }
 
 func ExecuteSpotSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	trades, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
-	result.TradesExecuted = trades
+	result.TradesExecuted = out.TradesExecuted
+	result.CashReconcileRequired = out.CashReconcileRequired
+	result.CashOverBudgetAlert = out.CashOverBudgetAlert
 	return result, err
 }
 
-func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
+// spotSignalExecOutcome is the internal return of executeSpotSignalWithFillFee
+// so DeferredOpen can surface CashReconcileRequired without changing the
+// public (int, error) ExecuteSpotSignalWithFillFee signature (#1394).
+type spotSignalExecOutcome struct {
+	TradesExecuted        int
+	CashReconcileRequired bool
+	CashOverBudgetAlert   string
+}
+
+func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (spotSignalExecOutcome, error) {
 	if signal == 0 {
-		return 0, nil
+		return spotSignalExecOutcome{}, nil
 	}
+	out := spotSignalExecOutcome{}
 	tradesExecuted := 0
 	feePlatform := s.Platform
 	if s.Platform == "okx" && s.Type == "perps" {
@@ -1631,7 +1688,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		// Check if already long
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
 			logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
-			return 0, nil
+			return spotSignalExecOutcome{}, nil
 		}
 		// Close short if exists
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
@@ -1704,25 +1761,33 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		// open a long in the same cycle. Stop here when this signal is a
 		// close-action emitted by the open/close registry (#519).
 		if closeFraction > 0 {
-			return tradesExecuted, nil
+			out.TradesExecuted = tradesExecuted
+			return out, nil
 		}
 		// Open long — deploy full cash (paper) or exact fill qty (live). The
 		// hardcoded 0.95 safety buffer was removed in #518; spot has no
 		// margin to leave headroom for, and operators who want a buffer can
 		// reserve cash externally.
+		// #1394: the budget < $1 floor applies to PAPER only. A live venue
+		// fill (fillQty > 0) has already executed — dropping it here would
+		// leave virtual state behind real holdings (#298). Over-budget live
+		// fills are booked, then CRITICAL-alerted and marked reconcile-required.
 		budget := s.Cash
-		if budget < 1 {
+		liveBuy := fillQty > 0
+		if !liveBuy && budget < 1 {
 			logger.Info("Insufficient cash ($%.2f) to buy %s", s.Cash, symbol)
-			return tradesExecuted, nil
+			out.TradesExecuted = tradesExecuted
+			return out, nil
 		}
 		var execPrice, qty float64
-		if fillQty > 0 {
+		if liveBuy {
 			execPrice = price
 			qty = fillQty
 		} else {
 			execPrice = ApplySlippage(price)
 			if execPrice <= 0 {
-				return tradesExecuted, nil
+				out.TradesExecuted = tradesExecuted
+				return out, nil
 			}
 			qty = budget / execPrice
 		}
@@ -1732,7 +1797,10 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		if useFillMetadata {
 			fillMetadataUsed = true
 		}
-		s.Cash -= tradeCost + fee
+		totalDebit := tradeCost + fee
+		cashBefore := s.Cash
+		overBudget := liveBuy && spotLiveBuyExceedsCash(cashBefore, totalDebit)
+		s.Cash -= totalDebit
 		now := time.Now().UTC()
 		positionID := newTradePositionID(s.ID, symbol, now)
 		s.Positions[symbol] = &Position{
@@ -1745,6 +1813,16 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			OwnerStrategyID: s.ID,
 			OpenedAt:        now,
 		}
+		details := fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee)
+		if overBudget {
+			s.CashReconcileRequired = true
+			out.CashReconcileRequired = true
+			out.CashOverBudgetAlert = formatSpotLiveCashOverBudgetAlert(
+				s.ID, symbol, cashBefore, totalDebit, s.Cash, qty, execPrice, fee)
+			details += " [CASH OVER BUDGET — reconcile required]"
+			logger.Error("CRITICAL: live spot buy over virtual cash for %s: debit $%.4f > cash $%.4f (tol $%.2f) → cash now $%.4f — fill booked, reconcile required (#1394)",
+				symbol, totalDebit, cashBefore, spotLiveCashBudgetTolerance, s.Cash)
+		}
 		trade := Trade{
 			Timestamp:       now,
 			StrategyID:      s.ID,
@@ -1753,9 +1831,9 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			Side:            "buy",
 			Quantity:        qty,
 			Price:           execPrice,
-			Value:           tradeCost + fee,
+			Value:           totalDebit,
 			TradeType:       "spot",
-			Details:         fmt.Sprintf("Open long %.6f @ $%.2f (fee $%.2f)", qty, execPrice, fee),
+			Details:         details,
 			ExchangeOrderID: exchangeOrderIDForTrade(fillOID, useFillMetadata),
 			ExchangeFee:     fee,
 			FeeSource:       executionFeeSource(fillFee, useFillMetadata),
@@ -1763,7 +1841,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		}
 		trade.Regime = s.Regime
 		recordOpen(trade)
-		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, tradeCost+fee)
+		logger.Info("BUY %s: %.6f @ $%.2f (fee $%.2f, total $%.2f)", symbol, qty, execPrice, fee, totalDebit)
 		tradesExecuted++
 
 	} else if signal == -1 { // Sell
@@ -1837,7 +1915,8 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			logger.Info("No long position in %s to sell, skipping", symbol)
 		}
 	}
-	return tradesExecuted, nil
+	out.TradesExecuted = tradesExecuted
+	return out, nil
 }
 
 // ExecuteFuturesSignalWithFillFee processes a futures signal with optional

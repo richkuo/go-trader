@@ -134,6 +134,13 @@ type StrategyState struct {
 	// strategy is not a shared-wallet member) makes display fall back to the
 	// modeled PortfolioValue.
 	SharedWalletValueSet bool `json:"-"`
+
+	// CashReconcileRequired latches when a live spot buy was booked whose
+	// notional+fee exceeded virtual cash beyond spotLiveCashBudgetTolerance
+	// (#1394). Venue fills are always booked (dropping them reproduces the
+	// #298 state-drift class); the latch + CRITICAL owner DM mark the books
+	// as needing operator reconciliation. In-memory only — restart clears it.
+	CashReconcileRequired bool `json:"-"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
