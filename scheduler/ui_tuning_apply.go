@@ -118,6 +118,9 @@ func (m *tuningRunManager) beginApplyInflight(key string) (func(), error) {
 }
 
 func (m *tuningRunManager) loadPromotionJournal() (tuningPromotionJournal, error) {
+	if tuningJournalLoadHook != nil {
+		tuningJournalLoadHook()
+	}
 	var journal tuningPromotionJournal
 	err := readTuningJSON(m.promotionsPath(), &journal)
 	if errors.Is(err, os.ErrNotExist) {
@@ -131,6 +134,10 @@ func (m *tuningRunManager) loadPromotionJournal() (tuningPromotionJournal, error
 	}
 	return journal, nil
 }
+
+// tuningJournalLoadHook is an optional test hook fired on every journal load.
+// Production leaves it nil.
+var tuningJournalLoadHook func()
 
 func (m *tuningRunManager) storePromotionJournal(journal tuningPromotionJournal) error {
 	if journal.Promotions == nil {
@@ -176,6 +183,23 @@ func (m *tuningRunManager) getPromotion(runID, strategyID, suggestionKey string)
 		return tuningPromotionRecord{}, false, nil
 	}
 	return journal.Promotions[idx], true, nil
+}
+
+// promotionIndex loads promotions.json once and returns records keyed by
+// tuningPromotionKey. Used by the polled eligibility overlay so one detail GET
+// does not re-read the journal once per ranked row.
+func (m *tuningRunManager) promotionIndex() (map[string]tuningPromotionRecord, error) {
+	m.journalMu.Lock()
+	defer m.journalMu.Unlock()
+	journal, err := m.loadPromotionJournal()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]tuningPromotionRecord, len(journal.Promotions))
+	for _, rec := range journal.Promotions {
+		out[tuningPromotionKey(rec.RunID, rec.StrategyID, rec.SuggestionKey)] = rec
+	}
+	return out, nil
 }
 
 func tuningResultsSchemaVersion(results map[string]any) (int, error) {
@@ -605,6 +629,7 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 	if liveErr == nil {
 		liveRootOK = liveRoot
 	}
+	promoIdx, promoErr := m.promotionIndex()
 	for _, raw := range strategies {
 		strategy, ok := raw.(map[string]any)
 		if !ok {
@@ -621,11 +646,11 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 				continue
 			}
 			key, _ := row["key"].(string)
-			rec, hasJournal, err := m.getPromotion(detail.Run.ID, strategyID, key)
-			if err != nil {
+			if promoErr != nil {
 				row["apply_eligibility"] = tuningEligConfigUnavailable
 				continue
 			}
+			rec, hasJournal := promoIdx[tuningPromotionKey(detail.Run.ID, strategyID, key)]
 			elig, appliedAt := computeApplyEligibility(detail.Run.Status, detail.Results, strategyID, key, liveRootOK, rec, hasJournal)
 			row["apply_eligibility"] = elig
 			if appliedAt != nil {

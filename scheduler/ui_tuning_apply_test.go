@@ -625,6 +625,62 @@ func TestTuningRunDetailOverlaysEligibility(t *testing.T) {
 	}
 }
 
+func TestTuningEligibilityOverlayLoadsJournalOnce(t *testing.T) {
+	configPath := writeTuningApplyTestConfig(t, t.TempDir(), nil)
+	ss, mgr := newTuningApplyServer(t, configPath)
+	ss.statusToken = "secret"
+	runID := "20260720T120000000000000Z-appyonce"
+	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
+	// Seed a journal entry so the load path is exercised (missing file also
+	// loads once, but an existing file matches the polled production case).
+	if err := mgr.upsertPromotion(tuningPromotionRecord{
+		RunID: runID, StrategyID: "spot-a", SuggestionKey: "cand_1",
+		State: tuningPromoApplied, PatchHash: "abc", CreatedAt: mgr.now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var loads atomic.Int32
+	tuningJournalLoadHook = func() { loads.Add(1) }
+	t.Cleanup(func() { tuningJournalLoadHook = nil })
+
+	r := httptest.NewRequest(http.MethodGet, "/api/tuning/runs/"+runID, nil)
+	r.Header.Set("Authorization", "Bearer secret")
+	w := httptest.NewRecorder()
+	ss.handleAPITuningRun(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", w.Code, w.Body.String())
+	}
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("journal loads during detail overlay = %d, want 1 (one read for all ranked rows)", got)
+	}
+
+	var detail tuningRunDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	strategies := detail.Results["strategies"].([]any)
+	stratA := strategies[0].(map[string]any)
+	ranked := stratA["ranked"].([]any)
+	cand1 := ranked[1].(map[string]any)
+	if cand1["apply_eligibility"] != tuningEligAlreadyApplied {
+		t.Fatalf("cand_1 eligibility = %#v, want already_applied", cand1["apply_eligibility"])
+	}
+	// Missing journal still overlays correctly (second GET after clearing hook file).
+	loads.Store(0)
+	if err := os.Remove(mgr.promotionsPath()); err != nil {
+		t.Fatal(err)
+	}
+	w2 := httptest.NewRecorder()
+	ss.handleAPITuningRun(w2, r)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("detail after journal remove status=%d", w2.Code)
+	}
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("missing-journal detail loads = %d, want 1", got)
+	}
+}
+
 func TestTuningApplySignalsReloadOnSuccessNotRefusal(t *testing.T) {
 	configPath := writeTuningApplyTestConfig(t, t.TempDir(), nil)
 	ss, mgr := newTuningApplyServer(t, configPath)
