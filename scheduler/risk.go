@@ -457,7 +457,9 @@ func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []
 // CheckPortfolioRisk evaluates aggregate portfolio risk.
 // Returns (allowed, notionalBlocked, warning, reason).
 // allowed=false means the kill switch has fired or is latched; notionalBlocked=true
-// means new trades should be skipped but existing positions kept; warning=true
+// means position-INCREASING opens must be held (#1344 — per-signal via
+// pausedBlocksSignal at the dispatch sites; never a whole-strategy cycle skip)
+// while closes/reductions and SL/TP maintenance keep running; warning=true
 // means drawdown is approaching the kill switch threshold.
 //
 // Two independent drawdown signals feed the kill switch:
@@ -588,10 +590,10 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 		}
 	}
 
-	// Check notional cap — blocks new trades but does not force-close.
+	// Check notional cap — entry hold only (#1344); does not force-close and
+	// must not skip the strategy cycle (closes / SL/TP maintenance keep running).
 	if cfg.MaxNotionalUSD > 0 && totalNotional > cfg.MaxNotionalUSD {
-		return true, true, warning, fmt.Sprintf("portfolio notional $%.2f exceeds cap $%.2f — new trades blocked",
-			totalNotional, cfg.MaxNotionalUSD)
+		return true, true, warning, notionalCapHoldDetail(totalNotional, cfg.MaxNotionalUSD)
 	}
 
 	return true, false, warning, reason
