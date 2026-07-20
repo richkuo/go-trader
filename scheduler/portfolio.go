@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -1075,6 +1078,98 @@ func notifySpotLiveCashOverBudget(sender ownerDMSender, msg string) {
 	}
 }
 
+// maybeClearCashReconcileRequired drops the #1394 latch once virtual cash is
+// solvent again (>= spotLiveCashBudgetTolerance). Clamp-to-zero on load leaves
+// cash at 0, which is below the floor, so the latch survives restart until an
+// operator actually restores headroom.
+func maybeClearCashReconcileRequired(s *StrategyState) {
+	if s == nil || !s.CashReconcileRequired {
+		return
+	}
+	if s.Cash >= spotLiveCashBudgetTolerance {
+		s.CashReconcileRequired = false
+	}
+}
+
+// cashReconcileBlocksLiveBuy reports whether a live spot BUY placement must be
+// skipped because the strategy's books still need reconciliation (#1394).
+// Closes pass through — the operator must still be able to flatten.
+func cashReconcileBlocksLiveBuy(cashReconcileRequired bool, isBuy bool) bool {
+	return cashReconcileRequired && isBuy
+}
+
+// formatSpotLiveCashReconcileReminder builds the throttled cycle reminder for
+// every strategy still latched CashReconcileRequired (#1394). ids must already
+// be sorted. cashByID supplies current cash for the operator triage line.
+func formatSpotLiveCashReconcileReminder(ids []string, cashByID map[string]float64) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**CRITICAL: CASH RECONCILE STILL REQUIRED** — live spot books remain over-budget until virtual cash is restored:\n")
+	for _, id := range ids {
+		cash := cashByID[id]
+		b.WriteString(fmt.Sprintf("- %s cash=$%.4f\n", id, cash))
+	}
+	b.WriteString("Further live spot buys are held; closes still run. Top up / correct virtual cash above $0.01 to clear.")
+	return b.String()
+}
+
+// spotCashReconcileReminderTracker throttles the cycle reminder for latched
+// CashReconcileRequired strategies. In-memory; restart re-emits on first cycle
+// so a missed DM after reboot is not permanent.
+type spotCashReconcileReminderTracker struct {
+	mu             sync.Mutex
+	lastNotifiedAt time.Time
+	lastSig        string
+}
+
+var globalSpotCashReconcileReminder = &spotCashReconcileReminderTracker{}
+
+// ShouldNotify reports whether this cycle should re-DM the latched set. First
+// sighting of a non-empty set always notifies; thereafter on signature change
+// (strategy set changed) or once per effectiveAlertThrottleInterval.
+func (t *spotCashReconcileReminderTracker) ShouldNotify(sig string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if sig == "" {
+		t.lastSig = ""
+		return false
+	}
+	switch {
+	case t.lastNotifiedAt.IsZero():
+		t.lastNotifiedAt = now
+		t.lastSig = sig
+		return true
+	case sig != t.lastSig:
+		t.lastNotifiedAt = now
+		t.lastSig = sig
+		return true
+	case now.Sub(t.lastNotifiedAt) >= effectiveAlertThrottleInterval():
+		t.lastNotifiedAt = now
+		return true
+	}
+	return false
+}
+
+// collectCashReconcileRequiredSnapshots returns sorted strategy IDs still
+// latched plus a cash map for the reminder body. Call under RLock.
+func collectCashReconcileRequiredSnapshots(state *AppState) (ids []string, cashByID map[string]float64) {
+	cashByID = make(map[string]float64)
+	if state == nil {
+		return nil, cashByID
+	}
+	for id, s := range state.Strategies {
+		if s == nil || !s.CashReconcileRequired {
+			continue
+		}
+		ids = append(ids, id)
+		cashByID[id] = s.Cash
+	}
+	sort.Strings(ids)
+	return ids, cashByID
+}
+
 // SpotOrderSkipReason mirrors PerpsOrderSkipReason for spot. ExecuteSpotSignalWithFillFee's
 // side-based skip branches ("already long, skipping buy" at signal=1,
 // "No long position to sell, skipping" at signal=-1) must be consulted BEFORE
@@ -1716,6 +1811,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			pnl := closeQty*pos.AvgCost - totalCost
 			grossPnL := pnl + fee
 			s.Cash += closeQty*pos.AvgCost - totalCost
+			maybeClearCashReconcileRequired(s)
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close short, PnL: $%.2f (fee $%.2f)", pnl, fee)
@@ -1871,6 +1967,7 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			pnl := netProceeds - (closeQty * pos.AvgCost)
 			grossPnL := pnl + fee
 			s.Cash += netProceeds
+			maybeClearCashReconcileRequired(s)
 			now := time.Now().UTC()
 			positionID := ensurePositionTradeID(s.ID, symbol, pos)
 			details := fmt.Sprintf("Close long, PnL: $%.2f (fee $%.2f)", pnl, fee)

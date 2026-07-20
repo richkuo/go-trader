@@ -138,6 +138,7 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 	var cash, value float64
 	posCount, trades := 0, 0
 	regime := ""
+	var reconcileIDs []string
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
 		cash += s.Cash
@@ -147,8 +148,15 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 		if regime == "" && s.Regime != "" {
 			regime = s.Regime
 		}
+		if s.CashReconcileRequired {
+			reconcileIDs = append(reconcileIDs, id)
+		}
 	}
-	return formatStatusLine(cash, posCount, value, trades, regime)
+	line := formatStatusLine(cash, posCount, value, trades, regime)
+	if len(reconcileIDs) == 0 {
+		return line
+	}
+	return line + "\n**CASH RECONCILE REQUIRED:** " + strings.Join(reconcileIDs, ", ")
 }
 
 // formatPositionsResponse lists open positions grouped by platform. Call under RLock.

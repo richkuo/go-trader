@@ -138,9 +138,13 @@ type StrategyState struct {
 	// CashReconcileRequired latches when a live spot buy was booked whose
 	// notional+fee exceeded virtual cash beyond spotLiveCashBudgetTolerance
 	// (#1394). Venue fills are always booked (dropping them reproduces the
-	// #298 state-drift class); the latch + CRITICAL owner DM mark the books
-	// as needing operator reconciliation. In-memory only — restart clears it.
-	CashReconcileRequired bool `json:"-"`
+	// #298 state-drift class); the latch keeps the condition observable after
+	// the one-shot CRITICAL DM: it is persisted, surfaced in status/API,
+	// blocks further live spot buys until cash recovers, and drives a
+	// throttled cycle reminder. Cleared only when cash returns to a solvent
+	// level (>= spotLiveCashBudgetTolerance) — ValidateState's clamp-to-zero
+	// leaves the latch set so a restart cannot hide the overshoot.
+	CashReconcileRequired bool `json:"cash_reconcile_required,omitempty"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
@@ -182,7 +186,12 @@ func ValidateState(state *AppState) {
 		if s.Cash < 0 {
 			fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
 			s.Cash = 0
+			// #1394: clamp hides the overshoot amount but must not hide that
+			// reconciliation is still required — latch so status/API/reminders
+			// keep the condition discoverable after restart.
+			s.CashReconcileRequired = true
 		}
+		maybeClearCashReconcileRequired(s)
 		for sym, pos := range s.Positions {
 			if pos.Quantity <= 0 {
 				fmt.Printf("[WARN] state: strategy %s position %s has invalid quantity=%g, removing\n", id, sym, pos.Quantity)

@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSpotLiveBuyExceedsCash(t *testing.T) {
@@ -205,5 +206,126 @@ func TestNotifySpotLiveCashOverBudget(t *testing.T) {
 	notifySpotLiveCashOverBudget(rec, "alert-body")
 	if len(rec.msgs) != 1 || rec.msgs[0] != "alert-body" {
 		t.Fatalf("msgs = %v, want [alert-body]", rec.msgs)
+	}
+}
+
+func TestMaybeClearCashReconcileRequired(t *testing.T) {
+	s := &StrategyState{Cash: 0, CashReconcileRequired: true}
+	maybeClearCashReconcileRequired(s)
+	if !s.CashReconcileRequired {
+		t.Fatal("cash=0 must keep latch (ValidateState clamp must not auto-clear)")
+	}
+	s.Cash = spotLiveCashBudgetTolerance
+	maybeClearCashReconcileRequired(s)
+	if s.CashReconcileRequired {
+		t.Fatal("solvent cash must clear latch")
+	}
+}
+
+func TestValidateStateLatchesCashReconcileOnNegativeClamp(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"rh-btc": {ID: "rh-btc", Cash: -40.5, Positions: map[string]*Position{}},
+	}}
+	ValidateState(state)
+	s := state.Strategies["rh-btc"]
+	if s.Cash != 0 {
+		t.Fatalf("cash = %g, want 0 after clamp", s.Cash)
+	}
+	if !s.CashReconcileRequired {
+		t.Fatal("ValidateState must latch CashReconcileRequired when clamping negative cash")
+	}
+}
+
+func TestCashReconcileBlocksLiveBuy(t *testing.T) {
+	if !cashReconcileBlocksLiveBuy(true, true) {
+		t.Fatal("latched buy must block")
+	}
+	if cashReconcileBlocksLiveBuy(true, false) {
+		t.Fatal("latched sell/close must NOT block")
+	}
+	if cashReconcileBlocksLiveBuy(false, true) {
+		t.Fatal("unlatched buy must not block")
+	}
+}
+
+func TestFormatSpotLiveCashReconcileReminder(t *testing.T) {
+	msg := formatSpotLiveCashReconcileReminder([]string{"a", "b"}, map[string]float64{"a": 0, "b": -1.5})
+	for _, want := range []string{"CRITICAL: CASH RECONCILE STILL REQUIRED", "a", "b", "Further live spot buys are held"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("reminder missing %q: %s", want, msg)
+		}
+	}
+}
+
+func TestSpotCashReconcileReminderTracker(t *testing.T) {
+	tr := &spotCashReconcileReminderTracker{}
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	if !tr.ShouldNotify("a,b", now) {
+		t.Fatal("first sighting must notify")
+	}
+	if tr.ShouldNotify("a,b", now.Add(time.Minute)) {
+		t.Fatal("same sig inside throttle must not notify")
+	}
+	if !tr.ShouldNotify("a", now.Add(2*time.Minute)) {
+		t.Fatal("sig change must notify")
+	}
+	if tr.ShouldNotify("", now.Add(3*time.Minute)) {
+		t.Fatal("empty set must not notify")
+	}
+	if !tr.ShouldNotify("a", now.Add(3*time.Minute)) {
+		t.Fatal("re-onset after clear must notify")
+	}
+}
+
+func TestCollectCashReconcileRequiredSnapshots(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"z": {CashReconcileRequired: true, Cash: 0.1},
+		"a": {CashReconcileRequired: true, Cash: -2},
+		"m": {CashReconcileRequired: false, Cash: 50},
+	}}
+	ids, cash := collectCashReconcileRequiredSnapshots(state)
+	if len(ids) != 2 || ids[0] != "a" || ids[1] != "z" {
+		t.Fatalf("ids = %v, want [a z]", ids)
+	}
+	if cash["a"] != -2 || cash["z"] != 0.1 {
+		t.Fatalf("cash map = %v", cash)
+	}
+}
+
+func TestSellClearsCashReconcileWhenSolvent(t *testing.T) {
+	lm, err := NewLogManager("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger, err := lm.GetStrategyLogger("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	s := &StrategyState{
+		ID:       "rh-btc",
+		Cash:     0,
+		Platform: "robinhood",
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.01, InitialQuantity: 0.01, AvgCost: 50000, Side: "long", OwnerStrategyID: "rh-btc"},
+		},
+		OptionPositions:       make(map[string]*OptionPosition),
+		TradeHistory:          []Trade{},
+		CashReconcileRequired: true,
+	}
+	// Sell at a price that restores cash well above tolerance.
+	trades, err := ExecuteSpotSignalWithFillFee(s, -1, "BTC", 60000, 0.01, 0, "oid-close", 0, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	if s.Cash < spotLiveCashBudgetTolerance {
+		t.Fatalf("cash = %g, want solvent after sell", s.Cash)
+	}
+	if s.CashReconcileRequired {
+		t.Fatal("solvent sell must clear CashReconcileRequired")
 	}
 }
