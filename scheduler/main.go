@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -752,7 +753,7 @@ func main() {
 	lastAutoUpdateCheck := time.Now()
 
 	saveFailures := 0
-	resetGoroutineRunning := false
+	var resetGoroutineRunning atomic.Bool
 
 	// Main loop
 	for {
@@ -1577,12 +1578,13 @@ func main() {
 
 			// Kill switch reset goroutine: prompt owner to reset via DM.
 			// AskOwnerDM wait is kill_switch_reset_dm_timeout (default 6h, #1368).
-			if killSwitchFired && notifier.HasOwner() && !resetGoroutineRunning {
-				resetGoroutineRunning = true
+			// Claim via atomic CAS so the main loop and the prompt goroutine
+			// never race on the single-flight flag (#1396).
+			if killSwitchFired && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {
 				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, plan)
 				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
 				go func() {
-					defer func() { resetGoroutineRunning = false }()
+					defer releaseKillSwitchResetPrompt(&resetGoroutineRunning)
 					resp, err := notifier.AskOwnerDM(resetPrompt, resetDMTimeout)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
