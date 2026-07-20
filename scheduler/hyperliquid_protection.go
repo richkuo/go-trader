@@ -560,6 +560,12 @@ func runHyperliquidProtectionSync(
 	if stratState == nil || symbol == "" {
 		return false
 	}
+	mu.RLock()
+	if pos := stratState.Positions[symbol]; pos != nil && pos.IsHedge {
+		mu.RUnlock()
+		return false
+	}
+	mu.RUnlock()
 	var plan hlProtectionPlan
 	var syncOK bool
 	if strategyUsesDynamicRegimeClose(sc) {

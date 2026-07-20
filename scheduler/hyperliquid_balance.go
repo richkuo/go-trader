@@ -827,6 +827,9 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			continue
 		}
 		coinStrategies[sym] = append(coinStrategies[sym], sc.ID)
+		if hedge := hedgeCoin(sc); hedge != "" {
+			coinStrategies[hedge] = append(coinStrategies[hedge], sc.ID)
+		}
 	}
 	strategyByID := make(map[string]StrategyConfig, len(allStrategies))
 	for _, sc := range allStrategies {
@@ -842,6 +845,10 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 	}
 
 	// Reconcile non-shared coins normally for due strategies.
+	// Hedge legs are reconciled independently of whether the primary coin is
+	// shared — ownership comes from persisted IsHedge metadata (#1159 review).
+	// Phase-1 validation also rejects hedge+shared-primary, so the shared
+	// continue below is defense-in-depth for the primary path only.
 	for _, sc := range dueStrategies {
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
@@ -851,16 +858,27 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 		if sym == "" {
 			continue
 		}
-		if sharedCoins[sym] {
-			continue // handled below
-		}
 		logger, err := logMgr.GetStrategyLogger(sc.ID)
 		if err != nil {
 			fmt.Printf("[ERROR] hl-sync: logger for %s: %v\n", sc.ID, err)
 			continue
 		}
-		if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
-			changed = true
+		if !sharedCoins[sym] {
+			if reconcileHyperliquidPositionsForStrategy(sc, ss, sym, positions, resolveFee, logger, &pendingAlerts, &pendingOrphanCloses) {
+				changed = true
+			}
+		}
+		if hedgeEnabled(sc) {
+			hedgeSym := hedgeCoin(sc)
+			if hedgeSym != "" && findHedgePosition(ss, sc) != nil {
+				// Hedge ownership comes from the persisted IsHedge metadata above,
+				// never coin→configured-primary inference. Use the low-level
+				// reconciler with an empty config so hedge legs cannot acquire the
+				// primary's TP/SL or regime-direction policies.
+				if reconcileHyperliquidPositionsWithResolver(ss, hedgeSym, positions, resolveFee, logger, &pendingAlerts, nil, StrategyConfig{}) {
+					changed = true
+				}
+			}
 		}
 	}
 
@@ -1949,18 +1967,16 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 // should be cancelled before the close fires, so kill-switch flattening
 // doesn't leave orphan triggers consuming HL's open-order cap (#421, #479).
 // nil/empty disables the cancel; the closer is otherwise unchanged.
-func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) HyperliquidLiveCloseReport {
+func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64, tradedCoins map[string]bool) HyperliquidLiveCloseReport {
 	report := HyperliquidLiveCloseReport{
 		Fills:  make(map[string]HyperliquidCloseFill),
 		Errors: make(map[string]error),
 	}
 
-	tradedCoins := make(map[string]bool)
-	for _, sc := range hlLiveAll {
-		sym := hyperliquidSymbol(sc.Args)
-		if sym != "" {
-			tradedCoins[sym] = true
-		}
+	// tradedCoins must be a snapshot taken under mu by the caller. nil is the
+	// unit-test path: derive from config only (no live state.Strategies range).
+	if tradedCoins == nil {
+		tradedCoins = hyperliquidKillSwitchTradedCoins(hlLiveAll, nil)
 	}
 
 	for _, p := range positions {
@@ -2007,6 +2023,36 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 	}
 
 	return report
+}
+
+// hyperliquidKillSwitchTradedCoins returns the HL coins owned by the live
+// scheduler, including configured phase-1 hedge legs and state-only hedge
+// claims left by a removed/temporarily invalid config (#1159).
+func hyperliquidKillSwitchTradedCoins(hlLiveAll []StrategyConfig, strategies map[string]*StrategyState) map[string]bool {
+	tradedCoins := make(map[string]bool)
+	for _, sc := range hlLiveAll {
+		sym := hyperliquidSymbol(sc.Args)
+		if sym == "" {
+			sym = hyperliquidConfiguredCoin(sc)
+		}
+		if sym != "" {
+			tradedCoins[sym] = true
+		}
+		if hedge := hedgeCoin(sc); hedge != "" {
+			tradedCoins[hedge] = true
+		}
+	}
+	for _, ss := range strategies {
+		if ss == nil {
+			continue
+		}
+		for symbol, pos := range ss.Positions {
+			if pos != nil && pos.IsHedge && pos.Quantity > 0 {
+				tradedCoins[strings.ToUpper(strings.TrimSpace(symbol))] = true
+			}
+		}
+	}
+	return tradedCoins
 }
 
 func hlLiveStrategiesForCoin(coin string, hlLiveAll []StrategyConfig) []StrategyConfig {
@@ -2064,6 +2110,13 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 			out[coin] = make(map[string]float64)
 		}
 		out[coin][sc.ID] = pos.Quantity
+		if hedge := findHedgePosition(ss, sc); hedge != nil {
+			hedgeCoinName := strings.ToUpper(strings.TrimSpace(hedge.Symbol))
+			if out[hedgeCoinName] == nil {
+				out[hedgeCoinName] = make(map[string]float64)
+			}
+			out[hedgeCoinName][sc.ID] = hedge.Quantity
+		}
 	}
 	if len(out) == 0 {
 		return nil
@@ -2154,8 +2207,31 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 	}
 	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
 	if fillSz <= 1e-15 {
+		return applyHedgeKillSwitchCloseFill(s, sc, fills, hlLiveAll, virtualQty)
+	}
+	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+	applyHedgeKillSwitchCloseFill(s, sc, fills, hlLiveAll, virtualQty)
+	return true
+}
+
+func applyHedgeKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, virtualQty hlVirtualQuantitySnapshot) bool {
+	hedge := findHedgePosition(s, sc)
+	if hedge == nil {
 		return false
 	}
+	coin := strings.ToUpper(strings.TrimSpace(hedge.Symbol))
+	fill, ok := fills[coin]
+	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
+		return false
+	}
+	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
+	if fillSz <= 1e-15 {
+		return false
+	}
+	// Same closeReason as the primary kill-switch path above ("" → defaults
+	// to circuit_breaker inside applyHyperliquidCircuitCloseFill). Keep the
+	// args identical so paired legs of one flatten never diverge if the
+	// defaulting rule changes (#1159 review optional).
 	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
 	return true
 }
@@ -2286,9 +2362,11 @@ func runPendingHyperliquidCircuitCloses(
 			if !ok || qty <= 0 {
 				continue
 			}
-			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-				Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
-			})
+			symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+			if hedge := findHedgePosition(ss, sc); hedge != nil {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedge.Symbol, Size: hedge.Quantity})
+			}
+			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: symbols})
 			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
 				sc.ID, sym, qty)
 		}
@@ -2316,8 +2394,24 @@ func runPendingHyperliquidCircuitCloses(
 		if p == nil || len(p.Symbols) == 0 {
 			continue
 		}
-		slOIDs := make(map[string][]int64, len(p.Symbols))
-		for _, c := range p.Symbols {
+		pending := *p
+		sc := lookupStrategyConfig(strategies, id)
+		if sc != nil && hedgeEnabled(*sc) {
+			if hedge := findHedgePosition(ss, *sc); hedge != nil {
+				found := false
+				for _, c := range pending.Symbols {
+					if c.Symbol == hedge.Symbol {
+						found = true
+						break
+					}
+				}
+				if !found {
+					pending.Symbols = append(pending.Symbols, PendingCircuitCloseSymbol{Symbol: hedge.Symbol, Size: hedge.Quantity})
+				}
+			}
+		}
+		slOIDs := make(map[string][]int64, len(pending.Symbols))
+		for _, c := range pending.Symbols {
 			if pos, ok := ss.Positions[c.Symbol]; ok && pos != nil {
 				slOIDs[c.Symbol] = appendUniquePositiveStopLossOID(slOIDs[c.Symbol], pos.StopLossOID)
 				for _, tpOID := range pos.TPOIDs {
@@ -2325,7 +2419,7 @@ func runPendingHyperliquidCircuitCloses(
 				}
 			}
 		}
-		jobs = append(jobs, job{id, *p, slOIDs})
+		jobs = append(jobs, job{id, pending, slOIDs})
 	}
 	mu.RUnlock()
 

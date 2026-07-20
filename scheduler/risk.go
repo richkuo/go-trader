@@ -80,7 +80,12 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		}
 		switch sc.Platform {
 		case "hyperliquid":
-			hlSet[coin] = true
+			hlSet[strings.ToUpper(strings.TrimSpace(coin))] = true
+			if hedgeEnabled(sc) {
+				if hedge := hedgeCoin(sc); hedge != "" {
+					hlSet[strings.ToUpper(strings.TrimSpace(hedge))] = true
+				}
+			}
 		case "okx":
 			okxSet[coin] = true
 		}
@@ -955,9 +960,11 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
-	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
-	})
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	if hedge := findHedgePosition(s, *sc); hedge != nil {
+		symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedge.Symbol, Size: hedge.Quantity})
+	}
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: symbols})
 }
 
 func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
