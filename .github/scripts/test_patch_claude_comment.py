@@ -11,10 +11,13 @@ on PATH; the script's comment recomposition (compose_claude_comment.py) runs
 for real.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,23 +55,55 @@ COMMENTS_PAGE = [
     ]
 ]
 
+# Branch on argv with `case`, not `printf | grep -q`: under `set -o pipefail`,
+# grep -q closes the pipe early and printf can SIGPIPE/EPIPE under load,
+# making a matched --paginate/--method branch fall through to the single-
+# comment GET stub (#1389).
 FAKE_GH = """#!/usr/bin/env bash
 # Fake gh for tests: a --paginate fetch prints the canned comments page; a
 # --method call (PATCH/POST) records its argv (one arg per line) and prints
 # nothing; a bare `gh api repos/.../issues/comments/<id>` GET (the
 # TARGET_COMMENT_ID path) prints the canned single comment.
 set -euo pipefail
-if printf '%s\\n' "$@" | grep -q -- '--paginate'; then
-  cat "$GH_STUB_COMMENTS"
-elif printf '%s\\n' "$@" | grep -q -- '--method'; then
-  printf '%s\\n' "$@" >> "$GH_STUB_PATCH_LOG"
-else
-  cat "${GH_STUB_SINGLE:-/dev/null}"
-fi
+case " $* " in
+  *" --paginate "*)
+    cat "$GH_STUB_COMMENTS"
+    ;;
+  *" --method "*)
+    printf '%s\\n' "$@" >> "$GH_STUB_PATCH_LOG"
+    ;;
+  *)
+    cat "${GH_STUB_SINGLE:-/dev/null}"
+    ;;
+esac
 """
 
 
-def run_patch_script(tmp_path, extra_env, single_comment=None, capture_stdout=False):
+@dataclass(frozen=True)
+class PatchScriptResult:
+    stdout: str
+    stderr: str
+    log: str
+
+    def assert_log_contains(self, needle: str) -> None:
+        assert needle in self.log, (
+            f"expected {needle!r} in patch log, got {self.log!r}; "
+            f"stdout={self.stdout!r} stderr={self.stderr!r}"
+        )
+
+    def assert_clean_noop(self, bot_login: str) -> None:
+        assert self.log == "", (
+            f"expected empty patch log on noop, got {self.log!r}; "
+            f"stdout={self.stdout!r} stderr={self.stderr!r}"
+        )
+        msg = f"No {bot_login} comment found — nothing to update."
+        assert msg in self.stdout, (
+            f"expected noop message {msg!r} in stdout, got {self.stdout!r}; "
+            f"stderr={self.stderr!r}"
+        )
+
+
+def run_patch_script(tmp_path, extra_env, single_comment=None) -> PatchScriptResult:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -108,17 +143,18 @@ def run_patch_script(tmp_path, extra_env, single_comment=None, capture_stdout=Fa
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, (
+        f"patch script exited {result.returncode}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     log = patch_log.read_text() if patch_log.exists() else ""
-    if capture_stdout:
-        return result.stdout, log
-    return log
+    return PatchScriptResult(stdout=result.stdout, stderr=result.stderr, log=log)
 
 
 def test_default_bot_login_patches_claude_bot_comment(tmp_path):
     patched = run_patch_script(tmp_path, {})
-    assert "repos/richkuo/go-trader/issues/comments/101" in patched
-    assert "body from claude[bot]" in patched
+    patched.assert_log_contains("repos/richkuo/go-trader/issues/comments/101")
+    patched.assert_log_contains("body from claude[bot]")
 
 
 def test_bot_login_override_without_run_id_takes_latest_by_author(tmp_path):
@@ -126,7 +162,7 @@ def test_bot_login_override_without_run_id_takes_latest_by_author(tmp_path):
     # the newest github-actions[bot] comment wins even if another workflow
     # authored it.
     patched = run_patch_script(tmp_path, {"BOT_LOGIN": "github-actions[bot]"})
-    assert "repos/richkuo/go-trader/issues/comments/404" in patched
+    patched.assert_log_contains("repos/richkuo/go-trader/issues/comments/404")
 
 
 def test_run_id_selects_own_comment_despite_newer_same_author(tmp_path):
@@ -136,35 +172,34 @@ def test_run_id_selects_own_comment_despite_newer_same_author(tmp_path):
     patched = run_patch_script(
         tmp_path, {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "222"}
     )
-    assert "repos/richkuo/go-trader/issues/comments/202" in patched
-    assert "body from github-actions[bot]" in patched
+    patched.assert_log_contains("repos/richkuo/go-trader/issues/comments/202")
+    patched.assert_log_contains("body from github-actions[bot]")
 
 
 def test_run_id_without_match_is_a_clean_noop(tmp_path):
     # Must survive: no comment from this run — never fall back to another
     # author-matching comment (that would stamp a foreign workflow's comment).
-    patched = run_patch_script(
+    run_patch_script(
         tmp_path, {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555"}
-    )
-    assert patched == ""
+    ).assert_clean_noop("github-actions[bot]")
 
 
 def test_run_id_match_is_not_a_prefix_match(tmp_path):
     # Run 22 must not match /actions/runs/222.
-    patched = run_patch_script(
+    run_patch_script(
         tmp_path, {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "22"}
-    )
-    assert patched == ""
+    ).assert_clean_noop("github-actions[bot]")
 
 
 def test_run_id_also_constrains_default_claude_bot(tmp_path):
     patched = run_patch_script(tmp_path, {"RUN_ID": "111"})
-    assert "repos/richkuo/go-trader/issues/comments/101" in patched
+    patched.assert_log_contains("repos/richkuo/go-trader/issues/comments/101")
 
 
 def test_no_matching_comment_is_a_clean_noop(tmp_path):
-    patched = run_patch_script(tmp_path, {"BOT_LOGIN": "nobody[bot]"})
-    assert patched == ""
+    run_patch_script(tmp_path, {"BOT_LOGIN": "nobody[bot]"}).assert_clean_noop(
+        "nobody[bot]"
+    )
 
 
 def test_on_miss_post_creates_new_status_comment(tmp_path):
@@ -180,10 +215,13 @@ def test_on_miss_post_creates_new_status_comment(tmp_path):
             "STATUS_NOTE": "**Workflow failed before completion.** See run log.",
         },
     )
-    assert "--method\nPOST" in patched
-    assert "repos/richkuo/go-trader/issues/1178/comments" in patched
-    assert "Workflow failed before completion" in patched
-    assert "PATCH" not in patched
+    patched.assert_log_contains("--method\nPOST")
+    patched.assert_log_contains("repos/richkuo/go-trader/issues/1178/comments")
+    patched.assert_log_contains("Workflow failed before completion")
+    assert "PATCH" not in patched.log, (
+        f"unexpected PATCH in log={patched.log!r}; "
+        f"stdout={patched.stdout!r} stderr={patched.stderr!r}"
+    )
 
 
 def test_on_miss_post_still_patches_when_own_comment_exists(tmp_path):
@@ -196,41 +234,51 @@ def test_on_miss_post_still_patches_when_own_comment_exists(tmp_path):
             "STATUS_NOTE": "**Workflow failed before completion.** See run log.",
         },
     )
-    assert "repos/richkuo/go-trader/issues/comments/202" in patched
-    assert "--method\nPOST" not in patched
+    patched.assert_log_contains("repos/richkuo/go-trader/issues/comments/202")
+    assert "--method\nPOST" not in patched.log, (
+        f"unexpected POST in log={patched.log!r}; "
+        f"stdout={patched.stdout!r} stderr={patched.stderr!r}"
+    )
 
 
 def test_on_miss_post_without_status_note_is_a_noop(tmp_path):
     # A footer-only comment with no status note is pure noise — don't post it.
-    patched = run_patch_script(
+    run_patch_script(
         tmp_path,
         {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555", "ON_MISS": "post"},
-    )
-    assert patched == ""
+    ).assert_clean_noop("github-actions[bot]")
 
 
 def test_select_only_emits_run_matched_comment_id_without_patching(tmp_path):
     # The pre-revise capture step resolves the primary comment (id 202, run 222)
     # to stdout and must never patch — SELECT_ONLY leaves the log empty.
-    out, log = run_patch_script(
+    result = run_patch_script(
         tmp_path,
         {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "222", "SELECT_ONLY": "1"},
-        capture_stdout=True,
     )
-    assert out == "202"
-    assert log == ""
+    assert result.stdout == "202", (
+        f"expected stdout '202', got {result.stdout!r}; stderr={result.stderr!r}"
+    )
+    assert result.log == "", (
+        f"expected empty patch log, got {result.log!r}; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
 
 
 def test_select_only_emits_empty_string_on_miss(tmp_path):
     # No comment from this run — capture emits nothing so the footer step falls
     # back to its own selection instead of pinning a wrong id.
-    out, log = run_patch_script(
+    result = run_patch_script(
         tmp_path,
         {"BOT_LOGIN": "github-actions[bot]", "RUN_ID": "555", "SELECT_ONLY": "1"},
-        capture_stdout=True,
     )
-    assert out == ""
-    assert log == ""
+    assert result.stdout == "", (
+        f"expected empty stdout, got {result.stdout!r}; stderr={result.stderr!r}"
+    )
+    assert result.log == "", (
+        f"expected empty patch log, got {result.log!r}; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
 
 
 def test_target_comment_id_patches_that_comment_bypassing_selection(tmp_path):
@@ -244,8 +292,20 @@ def test_target_comment_id_patches_that_comment_bypassing_selection(tmp_path):
         "updated_at": "2026-07-01T01:00:00Z",
         "body": "primary work comment from claude[bot]",
     }
-    patched = run_patch_script(tmp_path, {"TARGET_COMMENT_ID": "202"}, single_comment=single)
-    assert "repos/richkuo/go-trader/issues/comments/202" in patched
-    assert "primary work comment" in patched
-    assert "--method\nPATCH" in patched
-    assert "issues/comments/101" not in patched
+    patched = run_patch_script(
+        tmp_path, {"TARGET_COMMENT_ID": "202"}, single_comment=single
+    )
+    patched.assert_log_contains("repos/richkuo/go-trader/issues/comments/202")
+    patched.assert_log_contains("primary work comment")
+    patched.assert_log_contains("--method\nPATCH")
+    assert "issues/comments/101" not in patched.log, (
+        f"unexpected comment 101 in log={patched.log!r}; "
+        f"stdout={patched.stdout!r} stderr={patched.stderr!r}"
+    )
+
+
+def test_fake_gh_stub_has_no_printf_grep_pipelines():
+    # #1389 acceptance: branch dispatch must not use printf|grep (pipefail+EPIPE).
+    assert "| grep" not in FAKE_GH
+    assert "grep -q" not in FAKE_GH
+    assert 'case " $* "' in FAKE_GH
