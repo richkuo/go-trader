@@ -224,35 +224,81 @@ func TestMaybeClearCashReconcileRequired(t *testing.T) {
 	}
 }
 
-func TestValidateStateLatchesCashReconcileOnNegativeClamp(t *testing.T) {
+func TestValidateStateDoesNotInferCashReconcileFromNegativeCash(t *testing.T) {
+	// Paper spot buys end fee-negative (cash=-fee); perps/futures can blow up
+	// cash-negative. None of these imply a live over-budget book.
 	state := &AppState{Strategies: map[string]*StrategyState{
-		"rh-btc": {ID: "rh-btc", Type: "spot", Cash: -40.5, Positions: map[string]*Position{}},
+		"paper-spot": {ID: "paper-spot", Type: "spot", Platform: "binanceus", Cash: -1.0, Positions: map[string]*Position{}},
+		"live-spot":  {ID: "live-spot", Type: "spot", Platform: "robinhood", Cash: -40.5, CashReconcileRequired: true, Positions: map[string]*Position{}},
+		"hl-perp":    {ID: "hl-perp", Type: "perps", Cash: -120, Positions: map[string]*Position{}},
+		"ts-fut":     {ID: "ts-fut", Type: "futures", Cash: -5, Positions: map[string]*Position{}},
 	}}
 	ValidateState(state)
-	s := state.Strategies["rh-btc"]
-	if s.Cash != 0 {
-		t.Fatalf("cash = %g, want 0 after clamp", s.Cash)
-	}
-	if !s.CashReconcileRequired {
-		t.Fatal("ValidateState must latch CashReconcileRequired when clamping negative cash")
+	for id, wantLatch := range map[string]bool{"paper-spot": false, "live-spot": true, "hl-perp": false, "ts-fut": false} {
+		s := state.Strategies[id]
+		if s.Cash != 0 {
+			t.Fatalf("%s cash = %g, want 0 after clamp", id, s.Cash)
+		}
+		if s.CashReconcileRequired != wantLatch {
+			t.Fatalf("%s CashReconcileRequired = %v, want %v (must not infer from negative cash)", id, s.CashReconcileRequired, wantLatch)
+		}
 	}
 }
 
-func TestValidateStateDoesNotLatchCashReconcileForNonSpotNegativeCash(t *testing.T) {
-	state := &AppState{Strategies: map[string]*StrategyState{
-		"hl-perp":  {ID: "hl-perp", Type: "perps", Cash: -120, Positions: map[string]*Position{}},
-		"ts-fut":   {ID: "ts-fut", Type: "futures", Cash: -5, Positions: map[string]*Position{}},
-		"okx-spot": {ID: "okx-spot", Type: "spot", Cash: -1, Positions: map[string]*Position{}},
-	}}
-	ValidateState(state)
-	if state.Strategies["hl-perp"].CashReconcileRequired {
-		t.Fatal("perps negative-cash clamp must NOT latch spot CashReconcileRequired")
+func TestPaperSpotFeeNegativeReloadDoesNotLatchCashReconcile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if state.Strategies["ts-fut"].CashReconcileRequired {
-		t.Fatal("futures negative-cash clamp must NOT latch spot CashReconcileRequired")
+	defer db.Close()
+
+	// Mirror TestExecuteSpotWithFillFeeBuy: paper buy leaves cash = -fee.
+	state := &AppState{
+		CycleCount: 1,
+		Strategies: map[string]*StrategyState{
+			"bn-btc": {
+				ID: "bn-btc", Type: "spot", Platform: "binanceus",
+				Cash: -1.0, InitialCapital: 1000,
+				CashReconcileRequired: false,
+				Positions: map[string]*Position{
+					"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.02, InitialQuantity: 0.02, AvgCost: 50000, Side: "long", OwnerStrategyID: "bn-btc"},
+				},
+				OptionPositions: make(map[string]*OptionPosition),
+				TradeHistory:    []Trade{},
+			},
+		},
 	}
-	if !state.Strategies["okx-spot"].CashReconcileRequired {
-		t.Fatal("spot negative-cash clamp must still latch CashReconcileRequired")
+	if err := SaveStateWithDB(state, &Config{}, db); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ValidateState(loaded)
+	s := loaded.Strategies["bn-btc"]
+	if s == nil {
+		t.Fatal("bn-btc missing after LoadState")
+	}
+	if s.Cash != 0 {
+		t.Fatalf("cash = %g, want 0 after ValidateState clamp", s.Cash)
+	}
+	if s.CashReconcileRequired {
+		t.Fatal("paper spot fee-negative reload must NOT latch CashReconcileRequired")
+	}
+	// Second restart after clamp-to-zero still must not invent the latch.
+	if err := SaveStateWithDB(loaded, &Config{}, db); err != nil {
+		t.Fatal(err)
+	}
+	loaded2, err := db.LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ValidateState(loaded2)
+	if loaded2.Strategies["bn-btc"].CashReconcileRequired {
+		t.Fatal("second paper-spot restart must still leave CashReconcileRequired false")
 	}
 }
 
@@ -321,8 +367,8 @@ func TestCashReconcileRequiredSaveLoadRoundTrip(t *testing.T) {
 	}
 	defer db.Close()
 
-	// cash in [0, 0.01) — the range where ValidateState will NOT re-latch from
-	// negative cash, so persistence (not clamp side-effect) must carry the flag.
+	// cash in [0, 0.01) — ValidateState never invents the latch from cash
+	// alone, so persistence (not clamp side-effect) must carry the flag.
 	state := &AppState{
 		CycleCount: 1,
 		Strategies: map[string]*StrategyState{
