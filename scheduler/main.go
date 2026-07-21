@@ -2937,8 +2937,11 @@ func main() {
 			} // end if !killSwitchFired
 		}
 
-		// #1394: clear solvent latches and emit a throttled reminder for every
-		// strategy still needing cash reconciliation (covers DM-miss / restart).
+		// #1394/#1400: emit a throttled reminder for every strategy still
+		// needing cash reconciliation (covers DM-miss / restart). The latch
+		// clears only via /go-trader-clear-cash-reconcile — maybeClear below
+		// is a no-op retained so a future verified books-match clear can
+		// re-arm without rewiring this path (solvency alone does not clear).
 		mu.Lock()
 		for _, s := range state.Strategies {
 			maybeClearCashReconcileRequired(s)
