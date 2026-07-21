@@ -140,11 +140,13 @@ type StrategyState struct {
 	// (#1394). Venue fills are always booked (dropping them reproduces the
 	// #298 state-drift class); the latch keeps the condition observable after
 	// the one-shot CRITICAL DM: it is persisted to SQLite (strategies.cash_reconcile_required),
-	// surfaced in status/API, blocks further live spot buys until cash recovers,
-	// and drives a throttled cycle reminder. Cleared only when cash returns to a
-	// solvent level (>= spotLiveCashBudgetTolerance). Never inferred from
-	// negative cash on load — paper spot buys routinely end fee-negative
-	// (cash=-fee), and perps/futures can go negative from leveraged PnL.
+	// surfaced in status/API, blocks further live spot buys, and drives a
+	// throttled cycle reminder. Cleared only by the owner-DM
+	// /clear-cash-reconcile command after the operator confirms books match
+	// the venue (#1400) — solvency (cash >= spotLiveCashBudgetTolerance) alone
+	// does not clear. Never inferred from negative cash on load — paper spot
+	// buys routinely end fee-negative (cash=-fee), and perps/futures can go
+	// negative from leveraged PnL.
 	CashReconcileRequired bool `json:"cash_reconcile_required,omitempty"`
 }
 
@@ -191,8 +193,9 @@ func ValidateState(state *AppState) {
 			// Paper spot buys always end fee-negative (cash=-fee), and
 			// perps/futures can go negative from leveraged PnL — neither is a
 			// live over-budget book. Genuine live overshoots persist the latch
-			// via strategies.cash_reconcile_required; maybeClear below keeps a
-			// loaded latch when clamp leaves cash at 0 (< tolerance).
+			// via strategies.cash_reconcile_required; #1400 keeps a loaded
+			// latch until the operator clears it via /clear-cash-reconcile
+			// (maybeClear below is a no-op — solvency alone does not clear).
 		}
 		maybeClearCashReconcileRequired(s)
 		for sym, pos := range s.Positions {

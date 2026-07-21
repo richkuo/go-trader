@@ -40,6 +40,10 @@ func TestAuthorizeCommand(t *testing.T) {
 		{"restart", "intruder", "", false},  // ops: non-owner in DM rejected
 		{"backtest", owner, "", true},
 		{"backtest", "intruder", "", false},
+		// #1400 clear-cash-reconcile: owner-DM only (resumes live buys).
+		{"clear-cash-reconcile", owner, "", true},
+		{"clear-cash-reconcile", owner, "guild1", false},
+		{"clear-cash-reconcile", "intruder", "", false},
 		{"unknown", owner, "", false}, // unknown command rejected
 	}
 	for _, c := range cases {

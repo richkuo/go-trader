@@ -40,16 +40,17 @@ var readOnlyCommandNames = map[string]bool{
 // mutating set (config/add-strategy/remove-strategy/add-platform/paper-to-live)
 // changes the config file, so it gets the same owner-DM-only gate.
 var opsCommandNames = map[string]bool{
-	"restart":           true,
-	"backtest":          true,
-	"logs":              true,
-	"report-an-issue":   true,
-	"config":            true,
-	"add-strategy":      true,
-	"remove-strategy":   true,
-	"add-platform":      true,
-	"paper-to-live":     true,
-	"apply-regime-gate": true,
+	"restart":              true,
+	"backtest":             true,
+	"logs":                 true,
+	"report-an-issue":      true,
+	"config":               true,
+	"add-strategy":         true,
+	"remove-strategy":      true,
+	"add-platform":         true,
+	"paper-to-live":        true,
+	"apply-regime-gate":    true,
+	"clear-cash-reconcile": true,
 }
 
 // authorizeCommand decides whether invokerID may run command `name`. Read-only
@@ -437,6 +438,9 @@ func slashCommands() []*discordgo.ApplicationCommand {
 		{Name: commandPrefix + "apply-regime-gate", Description: "Interactively wire a regime entry-gate onto a strategy (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionString, Name: "gate", Description: "Gate preset (default comp_up_clean_p21)"},
 		}},
+		{Name: commandPrefix + "clear-cash-reconcile", Description: "Clear CashReconcileRequired after books match the venue (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
+			{Type: discordgo.ApplicationCommandOptionString, Name: "strategy", Description: "Strategy ID whose cash-reconcile latch to clear", Required: true},
+		}},
 	}
 }
 
@@ -528,6 +532,8 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handlePaperToLive(s, i, data.Options)
 	case "apply-regime-gate":
 		d.handleApplyRegimeGate(s, i, data.Options)
+	case "clear-cash-reconcile":
+		d.handleClearCashReconcile(s, i, data.Options)
 	default:
 		respondEphemeral(s, i, "unknown command")
 	}

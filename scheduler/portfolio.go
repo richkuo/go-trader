@@ -1078,20 +1078,42 @@ func notifySpotLiveCashOverBudget(sender ownerDMSender, msg string) {
 	}
 }
 
-// maybeClearCashReconcileRequired drops the #1394 latch once virtual cash is
-// solvent again (>= spotLiveCashBudgetTolerance). Solvency is a proxy, not
-// proof the books were reconciled against the venue — #1400 will replace this
-// auto-clear with an operator-explicit clear (removing it now would strand
-// latched strategies with no in-app resume path). Clamp-to-zero on load leaves
-// cash at 0 (< floor), so a persisted latch survives restart until cash
-// recovers or an operator clears it.
+// maybeClearCashReconcileRequired is a no-op after #1400. Solvency
+// (cash >= spotLiveCashBudgetTolerance) is not proof the books were reconciled
+// against the venue — only the owner-DM /clear-cash-reconcile command (or a
+// future verified books-match) clears CashReconcileRequired. Call sites on load,
+// per-cycle, and booking paths are retained so a later verified clear can
+// re-arm without rewiring those paths.
 func maybeClearCashReconcileRequired(s *StrategyState) {
+	_ = s
+}
+
+// clearCashReconcileRequired drops the #1394 latch after the operator explicitly
+// confirms books were reconciled (#1400). Does not invent or adjust cash.
+// Returns true when a latched strategy was cleared.
+func clearCashReconcileRequired(s *StrategyState) bool {
 	if s == nil || !s.CashReconcileRequired {
-		return
+		return false
 	}
-	if s.Cash >= spotLiveCashBudgetTolerance {
-		s.CashReconcileRequired = false
+	s.CashReconcileRequired = false
+	return true
+}
+
+// clearCashReconcileRequiredForStrategy looks up id in state and clears its
+// CashReconcileRequired latch (#1400). Returns (cash, true, nil) on a successful
+// clear; (cash, false, nil) when the strategy exists but was not latched; and a
+// non-nil error when the strategy ID is unknown. Never mutates cash.
+func clearCashReconcileRequiredForStrategy(state *AppState, id string) (cash float64, cleared bool, err error) {
+	if state == nil || state.Strategies == nil {
+		return 0, false, fmt.Errorf("unknown strategy ID: %s", id)
 	}
+	s, ok := state.Strategies[id]
+	if !ok || s == nil {
+		return 0, false, fmt.Errorf("unknown strategy ID: %s", id)
+	}
+	cash = s.Cash
+	cleared = clearCashReconcileRequired(s)
+	return cash, cleared, nil
 }
 
 // cashReconcileBlocksLiveBuy reports whether a live spot BUY placement must be
@@ -1114,7 +1136,7 @@ func formatSpotLiveCashReconcileReminder(ids []string, cashByID map[string]float
 		cash := cashByID[id]
 		b.WriteString(fmt.Sprintf("- %s cash=$%.4f\n", id, cash))
 	}
-	b.WriteString("Further live spot buys are held; closes still run. Top up / correct virtual cash above $0.01 to clear.")
+	b.WriteString("Further live spot buys are held; closes still run. Clear with /go-trader-clear-cash-reconcile after confirming books match the venue — cash ≥ $0.01 alone does not clear.")
 	return b.String()
 }
 
