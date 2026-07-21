@@ -849,6 +849,57 @@ func (d *DiscordNotifier) handlePaperToLive(s *discordgo.Session, i *discordgo.I
 	d.applyConfigChange(s, i, true, msg)
 }
 
+// handleClearCashReconcile clears CashReconcileRequired for one strategy after
+// the owner confirms books were reconciled against the venue (#1400). Does not
+// invent cash — only drops the latch so live buys may resume. Persists via
+// SaveState when available so the clear survives restart before the next cycle.
+func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
+	deferAck(s, i)
+	id := optionString(opts, "strategy", "")
+	if id == "" {
+		followupText(s, i, "usage: /go-trader-clear-cash-reconcile <strategy>")
+		return
+	}
+	if d.ss == nil || d.ss.state == nil || d.ss.mu == nil {
+		followupText(s, i, "status server not ready")
+		return
+	}
+	prompt := fmt.Sprintf(
+		"Clear CashReconcileRequired for `%s`? This resumes live spot buys for that strategy. Only confirm after books match the venue — this command does not change virtual cash.",
+		id,
+	)
+	if !d.confirmDestructive(interactionUserID(i), prompt) {
+		followupText(s, i, "Cancelled — no confirmation received.")
+		return
+	}
+
+	d.ss.mu.Lock()
+	cash, cleared, err := clearCashReconcileRequiredForStrategy(d.ss.state, id)
+	var saveErr error
+	if err == nil && cleared && d.ss.stateDB != nil {
+		// Persist immediately so a restart before the next cycle SaveState
+		// does not resurrect the latch (and re-block buys the operator just
+		// cleared). Holding mu across SQLite matches the main-loop SaveState
+		// sites that already serialize state under the same lock.
+		saveErr = SaveStateWithDB(d.ss.state, d.cfg, d.ss.stateDB)
+	}
+	d.ss.mu.Unlock()
+
+	if err != nil {
+		followupText(s, i, err.Error())
+		return
+	}
+	if !cleared {
+		followupText(s, i, fmt.Sprintf("Strategy `%s` is not latched (cash=$%.4f) — nothing to clear.", id, cash))
+		return
+	}
+	msg := fmt.Sprintf("Cleared CashReconcileRequired for `%s` (cash=$%.4f). Live buys may resume; virtual cash was not changed.", id, cash)
+	if saveErr != nil {
+		msg += " WARNING: in-memory clear succeeded but SaveState failed (" + saveErr.Error() + ") — latch may return on restart until the next successful save."
+	}
+	followupText(s, i, msg)
+}
+
 // subcommandOptions extracts the chosen subcommand name and its options from a
 // command-with-subcommands interaction (e.g. /config show, /config set).
 func subcommandOptions(data discordgo.ApplicationCommandInteractionData) (string, []*discordgo.ApplicationCommandInteractionDataOption) {

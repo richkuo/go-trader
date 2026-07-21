@@ -212,15 +212,72 @@ func TestNotifySpotLiveCashOverBudget(t *testing.T) {
 }
 
 func TestMaybeClearCashReconcileRequired(t *testing.T) {
+	// #1400: solvency is not reconciliation — auto-clear is disabled.
 	s := &StrategyState{Cash: 0, CashReconcileRequired: true}
 	maybeClearCashReconcileRequired(s)
 	if !s.CashReconcileRequired {
-		t.Fatal("cash=0 must keep latch (ValidateState clamp must not auto-clear)")
+		t.Fatal("cash=0 must keep latch")
 	}
 	s.Cash = spotLiveCashBudgetTolerance
 	maybeClearCashReconcileRequired(s)
-	if s.CashReconcileRequired {
-		t.Fatal("solvent cash must clear latch")
+	if !s.CashReconcileRequired {
+		t.Fatal("solvent cash must NOT auto-clear latch (#1400 — use /clear-cash-reconcile)")
+	}
+	s.Cash = 1_000
+	maybeClearCashReconcileRequired(s)
+	if !s.CashReconcileRequired {
+		t.Fatal("large solvent cash must still keep latch without operator clear")
+	}
+}
+
+func TestClearCashReconcileRequired(t *testing.T) {
+	if clearCashReconcileRequired(nil) {
+		t.Fatal("nil strategy must return false")
+	}
+	unlatched := &StrategyState{Cash: 50, CashReconcileRequired: false}
+	if clearCashReconcileRequired(unlatched) {
+		t.Fatal("already-clear strategy must return false")
+	}
+	if unlatched.CashReconcileRequired {
+		t.Fatal("unlatched strategy must stay unlatched")
+	}
+	latched := &StrategyState{Cash: 0.005, CashReconcileRequired: true}
+	if !clearCashReconcileRequired(latched) {
+		t.Fatal("latched strategy must clear")
+	}
+	if latched.CashReconcileRequired {
+		t.Fatal("latch must be false after clear")
+	}
+	if latched.Cash != 0.005 {
+		t.Fatalf("clear must not invent cash: got %g", latched.Cash)
+	}
+}
+
+func TestClearCashReconcileRequiredForStrategy(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"rh-btc":  {ID: "rh-btc", Cash: 0.005, CashReconcileRequired: true},
+		"okx-eth": {ID: "okx-eth", Cash: 10, CashReconcileRequired: false},
+	}}
+	cash, cleared, err := clearCashReconcileRequiredForStrategy(state, "missing")
+	if err == nil || cleared || cash != 0 {
+		t.Fatalf("unknown id: cash=%g cleared=%v err=%v", cash, cleared, err)
+	}
+	cash, cleared, err = clearCashReconcileRequiredForStrategy(state, "okx-eth")
+	if err != nil || cleared || cash != 10 {
+		t.Fatalf("unlatched: cash=%g cleared=%v err=%v", cash, cleared, err)
+	}
+	if state.Strategies["okx-eth"].CashReconcileRequired {
+		t.Fatal("unlatched peer must stay unlatched")
+	}
+	cash, cleared, err = clearCashReconcileRequiredForStrategy(state, "rh-btc")
+	if err != nil || !cleared || cash != 0.005 {
+		t.Fatalf("latched clear: cash=%g cleared=%v err=%v", cash, cleared, err)
+	}
+	if state.Strategies["rh-btc"].CashReconcileRequired {
+		t.Fatal("latched strategy must be cleared")
+	}
+	if state.Strategies["rh-btc"].Cash != 0.005 {
+		t.Fatalf("clear must not invent cash: got %g", state.Strategies["rh-btc"].Cash)
 	}
 }
 
@@ -316,10 +373,18 @@ func TestCashReconcileBlocksLiveBuy(t *testing.T) {
 
 func TestFormatSpotLiveCashReconcileReminder(t *testing.T) {
 	msg := formatSpotLiveCashReconcileReminder([]string{"a", "b"}, map[string]float64{"a": 0, "b": -1.5})
-	for _, want := range []string{"CRITICAL: CASH RECONCILE STILL REQUIRED", "a", "b", "Further live spot buys are held"} {
+	for _, want := range []string{
+		"CRITICAL: CASH RECONCILE STILL REQUIRED",
+		"a", "b",
+		"Further live spot buys are held",
+		"/go-trader-clear-cash-reconcile",
+	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("reminder missing %q: %s", want, msg)
 		}
+	}
+	if strings.Contains(msg, "Top up / correct virtual cash above $0.01 to clear") {
+		t.Fatalf("reminder must not claim solvency clears the latch: %s", msg)
 	}
 }
 
@@ -518,7 +583,9 @@ func TestCollectCashReconcileRequiredSnapshots(t *testing.T) {
 	}
 }
 
-func TestSellClearsCashReconcileWhenSolvent(t *testing.T) {
+func TestSellDoesNotClearCashReconcileWhenSolvent(t *testing.T) {
+	// #1400: a round-trip close that restores cash must NOT drop the latch —
+	// solvency ≠ reconciled; only /clear-cash-reconcile clears it.
 	lm, err := NewLogManager("")
 	if err != nil {
 		t.Fatal(err)
@@ -551,8 +618,8 @@ func TestSellClearsCashReconcileWhenSolvent(t *testing.T) {
 	if s.Cash < spotLiveCashBudgetTolerance {
 		t.Fatalf("cash = %g, want solvent after sell", s.Cash)
 	}
-	if s.CashReconcileRequired {
-		t.Fatal("solvent sell must clear CashReconcileRequired")
+	if !s.CashReconcileRequired {
+		t.Fatal("solvent sell must NOT clear CashReconcileRequired (#1400)")
 	}
 }
 
