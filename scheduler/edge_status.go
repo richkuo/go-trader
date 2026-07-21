@@ -83,13 +83,15 @@ func strategyEdgeDeprecated(sc StrategyConfig) bool {
 
 // deprecatedEdgeStartupWarnings returns one operator-facing warning line per
 // configured strategy whose open leg is M5-deprecated and that has not been
-// acknowledged via allow_deprecated (#1275). Emitted once at startup — logged
-// and DM'd — so an operator live-trading a strategy the project's own
-// research says loses money before fees gets a loud, explicit signal.
+// acknowledged for the warning surface (#1275/#1402). Emitted once at
+// startup — logged and DM'd — so an operator live-trading a strategy the
+// project's own research says loses money before fees gets a loud, explicit
+// signal. Paper strategies auto-suppress unless allow_deprecated is
+// explicitly false (AllowDeprecatedEffective).
 func deprecatedEdgeStartupWarnings(strategies []StrategyConfig) []string {
 	var lines []string
 	for _, sc := range strategies {
-		if !strategyEdgeDeprecated(sc) || sc.AllowDeprecated {
+		if !strategyEdgeDeprecated(sc) || sc.AllowDeprecatedEffective() {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf(
@@ -104,24 +106,26 @@ func deprecatedEdgeStartupWarnings(strategies []StrategyConfig) []string {
 }
 
 // newlyDeprecatedEdgeWarnings returns the deprecated-edge warning lines that
-// apply after a SIGHUP hot reload but did not apply before it (#1275). A
+// apply after a SIGHUP hot reload but did not apply before it (#1275/#1402). A
 // strategy warns "newly" when its post-reload shape is deprecated-and-unacked
-// while its pre-reload shape (matched by ID) either warned for a different
-// open name, was acked, was clean, or did not exist. This keeps the reload
-// path loud for the two live transitions that can introduce the risk —
-// open_strategy switched onto an M5 name, or allow_deprecated flipped off —
-// without re-spamming unchanged deprecated strategies on every SIGHUP and
-// without warning when a strategy switches AWAY from a deprecated name.
+// (AllowDeprecatedEffective false) while its pre-reload shape (matched by ID)
+// either warned for a different open name, was acked/paper-suppressed, was
+// clean, or did not exist. This keeps the reload path loud for the live
+// transitions that can introduce the risk — open_strategy switched onto an
+// M5 name, or allow_deprecated flipped off — without re-spamming unchanged
+// deprecated strategies on every SIGHUP and without warning when a strategy
+// switches AWAY from a deprecated name. Paper auto-suppression uses the same
+// AllowDeprecatedEffective predicate as startup.
 func newlyDeprecatedEdgeWarnings(oldStrategies, newStrategies []StrategyConfig) []string {
 	prevWarned := make(map[string]string, len(oldStrategies)) // ID -> warned open name
 	for _, sc := range oldStrategies {
-		if strategyEdgeDeprecated(sc) && !sc.AllowDeprecated {
+		if strategyEdgeDeprecated(sc) && !sc.AllowDeprecatedEffective() {
 			prevWarned[sc.ID] = strategyOpenNameForEdgeStatus(sc)
 		}
 	}
 	var fresh []StrategyConfig
 	for _, sc := range newStrategies {
-		if !strategyEdgeDeprecated(sc) || sc.AllowDeprecated {
+		if !strategyEdgeDeprecated(sc) || sc.AllowDeprecatedEffective() {
 			continue
 		}
 		if prevWarned[sc.ID] == strategyOpenNameForEdgeStatus(sc) {
@@ -134,18 +138,22 @@ func newlyDeprecatedEdgeWarnings(oldStrategies, newStrategies []StrategyConfig) 
 
 // edgeStatusSummaryTag returns the startup-summary token for a strategy whose
 // open leg is M5-deprecated: "edge=deprecated_m5", with "(ack)" appended when
-// the operator acknowledged it via allow_deprecated. Empty for clean
-// strategies. The tag is never hidden by the acknowledgment — like cb=off, a
-// documented-negative-edge strategy trading live should always be visible in
-// the [config] audit line.
+// the operator explicitly set allow_deprecated:true, or "(paper)" when a
+// paper strategy is auto-suppressed via the unset default (#1402). Empty for
+// clean strategies. The tag is never hidden by acknowledgment or paper
+// suppression — like cb=off, a documented-negative-edge strategy should
+// always be visible in the [config] audit line (also consumed by inspect).
 func edgeStatusSummaryTag(sc StrategyConfig) string {
 	if !strategyEdgeDeprecated(sc) {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("edge=deprecated_m5")
-	if sc.AllowDeprecated {
+	switch {
+	case sc.AllowDeprecatedAcknowledged():
 		b.WriteString("(ack)")
+	case !isLiveArgs(sc.Args) && sc.AllowDeprecatedEffective():
+		b.WriteString("(paper)")
 	}
 	return b.String()
 }

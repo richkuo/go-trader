@@ -492,6 +492,33 @@ func (sc *StrategyConfig) CircuitBreakerEnabled() bool {
 	return *sc.CircuitBreaker
 }
 
+// AllowDeprecatedEffective reports whether the M5-deprecated-edge warning /
+// owner-DM surface should treat this strategy as acknowledged (#1275/#1402).
+// Explicit true/false always win. When unset (nil): paper strategies (no
+// --mode=live in Args) default to true (auto-suppress — paper exists to
+// evaluate documented losers); live strategies default to false (warn, same
+// as pre-#1402). Advisory only — never gates loading, probing, or trading.
+// Read via this accessor for the warning surface, never by dereferencing
+// AllowDeprecated directly. The [config] summary tag still surfaces the risk
+// state via edgeStatusSummaryTag (edge=deprecated_m5 with (ack)/(paper)).
+func (sc *StrategyConfig) AllowDeprecatedEffective() bool {
+	if sc == nil {
+		return false
+	}
+	if sc.AllowDeprecated != nil {
+		return *sc.AllowDeprecated
+	}
+	return !isLiveArgs(sc.Args)
+}
+
+// AllowDeprecatedAcknowledged reports whether allow_deprecated is explicitly
+// true. Nil/missing is not an acknowledgment — paper auto-suppression is
+// handled by AllowDeprecatedEffective (#1402). Used for the (ack) summary
+// tag so an explicit operator ack is never confused with the paper default.
+func (sc *StrategyConfig) AllowDeprecatedAcknowledged() bool {
+	return sc != nil && sc.AllowDeprecated != nil && *sc.AllowDeprecated
+}
+
 // Circuit-breaker timing/threshold defaults (#1273). These are the historical
 // hardcoded values; the per-strategy cb_* override fields fall back to them
 // when nil so an unmodified config reproduces prior behavior exactly.
@@ -651,7 +678,7 @@ type StrategyConfig struct {
 	CBLossStreakCooldownMinutes *int                     `json:"cb_loss_streak_cooldown_minutes,omitempty"` // #1273 — how long a loss-streak-triggered circuit breaker latches, in minutes. Nil/missing → 1h (the historical hardcoded value). Must be positive and ≤ 30 days; rejected on type=manual. Hot-reloadable via SIGHUP including while open (new fires only; a latched CircuitBreakerUntil is untouched). Read via CircuitBreakerLossStreakCooldown(), never directly.
 	NotifyRatchetTriggers       *bool                    `json:"notify_ratchet_triggers,omitempty"`         // #1118 — per-strategy override of the global notify_ratchet_triggers (#1110) ratchet-tighten owner DM. Nil/missing → inherit the global Config.NotifyRatchetTriggersEnabled(); explicit value wins. Notification-only (never affects position/order state), so SIGHUP hot-reloads it unconditionally even while a position is open. Read via NotifyRatchetTriggersEnabled(cfg), never directly.
 	LLMEntryAnalysis            *LLMEntryAnalysisConfig  `json:"llm_entry_analysis,omitempty"`              // #1137 — optional post-open LLM multi-agent entry analysis (advisory-only commentary; never gates/sizes/closes anything). Default off. Runs async on a dedicated lane after a FRESH position-open (not adds/flips/manual), posts a digest to the strategy's trade-alert DM by default (notify_dm on / notify_channel off; both per-strategy overridable), and stamps the verdict for trade_diagnostics.llm_verdict. Notification-only, so SIGHUP hot-reloads it unconditionally even while a position is open. Read via LLMEntryAnalysisEnabled()/resolveLLMEntryAnalysisParams().
-	AllowDeprecated             bool                     `json:"allow_deprecated,omitempty"`                // #1275 — operator acknowledgment that this strategy's open leg carries the M5 fee-audit deprecate verdict (documented gross edge <= 0; docs/research/fee-audit-m5.md). True suppresses the one-time startup owner DM; the [config] summary line still tags edge=deprecated_m5(ack) so the risk state is never hidden. Advisory only — never gates loading, probing, or trading.
+	AllowDeprecated             *bool                    `json:"allow_deprecated,omitempty"`                // #1275/#1402 — operator acknowledgment that this strategy's open leg carries the M5 fee-audit deprecate verdict (documented gross edge <= 0; docs/research/fee-audit-m5.md). Pointer so unset (nil) is distinguishable from explicit false: live strategies with nil/false warn + DM; paper strategies (!isLiveArgs) with nil auto-suppress the warning/DM (#1402) while an explicit false opts a paper strategy back into the warning. Explicit true always suppresses. The [config] summary line still tags edge=deprecated_m5 with (ack) or (paper) so the risk state is never hidden. Advisory only — never gates loading, probing, or trading. Read via AllowDeprecatedEffective()/AllowDeprecatedAcknowledged(), never directly for the warning surface.
 	Paused                      bool                     `json:"paused,omitempty"`                          // #1150 — per-strategy pause. The strategy stays in dueStrategies and runs its full cycle (manage-only, mirroring the #1046 latched-CB shape), but position-INCREASING signals are forced to hold via pausedBlocksSignal: fresh opens, scale-in adds, and bidirectional flips. Position-REDUCING actions pass through — close-registry actions (closeFraction>0) and pure-close directional exits — so an open position rides its natural exit; trailing SL, ratchet, protection sync, and paper SL/TP simulation all keep running on the Signal==0 manage path. Hot-reloadable via SIGHUP unconditionally, including while a position is open (pausing never strands protection). No effect on type=manual (no open signal to suppress; the manual dispatch is pure management).
 	IntervalSeconds             int                      `json:"interval_seconds,omitempty"`                // per-strategy override (0 = use global)
 	HTFFilter                   bool                     `json:"htf_filter,omitempty"`                      // higher-timeframe trend filter

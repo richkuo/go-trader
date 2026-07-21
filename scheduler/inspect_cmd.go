@@ -605,9 +605,10 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 			parts = append(parts, "atr="+m)
 		}
 	}
-	// #1275: surface an M5-deprecated open strategy (documented gross edge
-	// <= 0) so the negative-edge evidence is visible in the audit line even
-	// when the operator acknowledged it via allow_deprecated.
+	// #1275/#1402: surface an M5-deprecated open strategy (documented gross
+	// edge <= 0) so the negative-edge evidence is visible in the audit line
+	// even when the warning was silenced via allow_deprecated ack or paper
+	// auto-suppress (tag carries (ack)/(paper)).
 	if tag := edgeStatusSummaryTag(sc); tag != "" {
 		parts = append(parts, tag)
 	}

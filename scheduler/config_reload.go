@@ -179,12 +179,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
 			sc.Paused = ns.Paused
 		}
-		// #1275: allow_deprecated is hot-reloadable always, including while a
+		// #1275/#1402: allow_deprecated is hot-reloadable always, including while a
 		// position is open — an acknowledgment flag only, never gates loading,
-		// probing, or trading. reloadConfig re-evaluates the deprecated-edge
-		// warning after apply, so flipping the ack off re-warns immediately.
-		if sc.AllowDeprecated != ns.AllowDeprecated {
-			addChange("strategy[%s].allow_deprecated: %t -> %t", sc.ID, sc.AllowDeprecated, ns.AllowDeprecated)
+		// probing, or trading. Pointer so unset/true/false are distinct (paper
+		// auto-suppress vs explicit opt-out). reloadConfig re-evaluates the
+		// deprecated-edge warning after apply, so flipping the ack off (or
+		// setting explicit false on paper) re-warns immediately.
+		if !boolPtrEqual(sc.AllowDeprecated, ns.AllowDeprecated) {
+			addChange("strategy[%s].allow_deprecated: %s -> %s", sc.ID, formatAllowDeprecated(sc.AllowDeprecated), formatAllowDeprecated(ns.AllowDeprecated))
 			sc.AllowDeprecated = ns.AllowDeprecated
 		}
 		if sc.CapitalPct == 0 && sc.Capital != ns.Capital {
@@ -826,7 +828,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.NotifyRatchetTriggers = nil       // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
 	sc.Paused = false                    // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
 	sc.LLMEntryAnalysis = nil            // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
-	sc.AllowDeprecated = false           // #1275: hot-reloadable always, including while open — acknowledgment flag only, never gates loading, probing, or trading. Applied in applyHotReloadConfig; reloadConfig re-evaluates the deprecated-edge warning after apply, so flipping the ack off re-warns.
+	sc.AllowDeprecated = nil             // #1275/#1402: hot-reloadable always, including while open — acknowledgment flag only, never gates loading, probing, or trading. Pointer (*bool) so unset/true/false are distinct. Applied in applyHotReloadConfig; reloadConfig re-evaluates the deprecated-edge warning after apply, so flipping the ack off re-warns.
 	sc.Capital = 0
 	sc.Leverage = 0
 	sc.SizingLeverage = 0
@@ -942,6 +944,19 @@ func formatCircuitBreaker(p *bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// formatAllowDeprecated renders the per-strategy allow_deprecated flag for
+// reload change logs. nil → "unset" (paper auto-suppress / live warn via
+// AllowDeprecatedEffective); explicit true/false → "true"/"false". (#1402)
+func formatAllowDeprecated(p *bool) string {
+	if p == nil {
+		return "unset"
+	}
+	if *p {
+		return "true"
+	}
+	return "false"
 }
 
 // formatNotifyRatchetTriggers renders the per-strategy notify_ratchet_triggers

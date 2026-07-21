@@ -118,10 +118,13 @@ func TestStrategyEdgeDeprecatedResolution(t *testing.T) {
 }
 
 func TestDeprecatedEdgeStartupWarnings(t *testing.T) {
+	trueVal := true
 	strategies := []StrategyConfig{
-		{ID: "s-macd", Type: "spot", OpenStrategy: StrategyRef{Name: "macd"}},
-		{ID: "s-ack", Type: "perps", OpenStrategy: StrategyRef{Name: "rsi"}, AllowDeprecated: true},
-		{ID: "s-clean", Type: "spot", OpenStrategy: StrategyRef{Name: "chart_pattern"}},
+		// Live deprecated without ack → warns (live behavior unchanged).
+		{ID: "s-macd", Type: "spot", OpenStrategy: StrategyRef{Name: "macd"}, Args: []string{"macd", "BTC", "1h", "--mode=live"}},
+		// Live deprecated with explicit ack → silent.
+		{ID: "s-ack", Type: "perps", OpenStrategy: StrategyRef{Name: "rsi"}, Args: []string{"rsi", "ETH", "1h", "--mode=live"}, AllowDeprecated: &trueVal},
+		{ID: "s-clean", Type: "spot", OpenStrategy: StrategyRef{Name: "chart_pattern"}, Args: []string{"chart_pattern", "BTC", "1h", "--mode=live"}},
 	}
 	warnings := deprecatedEdgeStartupWarnings(strategies)
 	if len(warnings) != 1 {
@@ -135,12 +138,129 @@ func TestDeprecatedEdgeStartupWarnings(t *testing.T) {
 	}
 }
 
+// #1402: paper strategies auto-suppress the deprecated-edge warning/DM unless
+// allow_deprecated is explicitly false; live strategies keep pre-#1402
+// semantics. Summary tags still surface the risk state.
+func TestDeprecatedEdgePaperSuppression(t *testing.T) {
+	trueVal, falseVal := true, false
+	paperDep := StrategyConfig{
+		ID: "hl-vwap-sol-60", Type: "perps", Platform: "hyperliquid",
+		OpenStrategy: StrategyRef{Name: "vwap_reversion"},
+		Args:         []string{"vwap_reversion", "SOL", "1h", "--mode=paper"},
+	}
+	liveDep := StrategyConfig{
+		ID: "hl-vwap-sol-live", Type: "perps", Platform: "hyperliquid",
+		OpenStrategy: StrategyRef{Name: "vwap_reversion"},
+		Args:         []string{"vwap_reversion", "SOL", "1h", "--mode=live"},
+	}
+
+	t.Run("paper-default-suppressed", func(t *testing.T) {
+		if got := deprecatedEdgeStartupWarnings([]StrategyConfig{paperDep}); len(got) != 0 {
+			t.Fatalf("paper deprecated unset should suppress warning, got %v", got)
+		}
+		if !paperDep.AllowDeprecatedEffective() {
+			t.Fatal("AllowDeprecatedEffective should be true for paper unset")
+		}
+		if paperDep.AllowDeprecatedAcknowledged() {
+			t.Fatal("paper unset must not count as explicit ack")
+		}
+		if got := edgeStatusSummaryTag(paperDep); got != "edge=deprecated_m5(paper)" {
+			t.Errorf("tag = %q, want edge=deprecated_m5(paper)", got)
+		}
+	})
+
+	t.Run("paper-explicit-opt-out", func(t *testing.T) {
+		sc := paperDep
+		sc.AllowDeprecated = &falseVal
+		got := deprecatedEdgeStartupWarnings([]StrategyConfig{sc})
+		if len(got) != 1 {
+			t.Fatalf("paper allow_deprecated:false should warn, got %v", got)
+		}
+		if sc.AllowDeprecatedEffective() {
+			t.Fatal("AllowDeprecatedEffective should be false for explicit false")
+		}
+		if got := edgeStatusSummaryTag(sc); got != "edge=deprecated_m5" {
+			t.Errorf("opted-out paper tag = %q, want bare edge=deprecated_m5", got)
+		}
+	})
+
+	t.Run("paper-explicit-ack", func(t *testing.T) {
+		sc := paperDep
+		sc.AllowDeprecated = &trueVal
+		if got := deprecatedEdgeStartupWarnings([]StrategyConfig{sc}); len(got) != 0 {
+			t.Fatalf("paper allow_deprecated:true should suppress, got %v", got)
+		}
+		if got := edgeStatusSummaryTag(sc); got != "edge=deprecated_m5(ack)" {
+			t.Errorf("acked paper tag = %q, want edge=deprecated_m5(ack)", got)
+		}
+	})
+
+	t.Run("live-no-ack", func(t *testing.T) {
+		got := deprecatedEdgeStartupWarnings([]StrategyConfig{liveDep})
+		if len(got) != 1 {
+			t.Fatalf("live deprecated unset should warn, got %v", got)
+		}
+		if liveDep.AllowDeprecatedEffective() {
+			t.Fatal("AllowDeprecatedEffective should be false for live unset")
+		}
+		if got := edgeStatusSummaryTag(liveDep); got != "edge=deprecated_m5" {
+			t.Errorf("live unacked tag = %q, want edge=deprecated_m5", got)
+		}
+	})
+
+	t.Run("live-explicit-ack", func(t *testing.T) {
+		sc := liveDep
+		sc.AllowDeprecated = &trueVal
+		if got := deprecatedEdgeStartupWarnings([]StrategyConfig{sc}); len(got) != 0 {
+			t.Fatalf("live allow_deprecated:true should suppress, got %v", got)
+		}
+		if got := edgeStatusSummaryTag(sc); got != "edge=deprecated_m5(ack)" {
+			t.Errorf("acked live tag = %q, want edge=deprecated_m5(ack)", got)
+		}
+	})
+
+	t.Run("live-explicit-false", func(t *testing.T) {
+		sc := liveDep
+		sc.AllowDeprecated = &falseVal
+		if got := deprecatedEdgeStartupWarnings([]StrategyConfig{sc}); len(got) != 1 {
+			t.Fatalf("live allow_deprecated:false should warn, got %v", got)
+		}
+	})
+
+	t.Run("mixed-paper-live-config", func(t *testing.T) {
+		// Only the live peer warns; paper peer stays silent.
+		got := deprecatedEdgeStartupWarnings([]StrategyConfig{paperDep, liveDep})
+		if len(got) != 1 || !strings.Contains(got[0], liveDep.ID) {
+			t.Fatalf("mixed config should warn only live peer, got %v", got)
+		}
+	})
+
+	t.Run("paper-no-mode-flag-is-paper", func(t *testing.T) {
+		// Args without --mode=live are paper (isLiveArgs false).
+		sc := StrategyConfig{
+			ID: "s-spot-paper", Type: "spot",
+			OpenStrategy: StrategyRef{Name: "macd"},
+			Args:         []string{"macd", "BTC", "1h"},
+		}
+		if got := deprecatedEdgeStartupWarnings([]StrategyConfig{sc}); len(got) != 0 {
+			t.Fatalf("spot without --mode=live should auto-suppress, got %v", got)
+		}
+		if got := edgeStatusSummaryTag(sc); got != "edge=deprecated_m5(paper)" {
+			t.Errorf("tag = %q, want edge=deprecated_m5(paper)", got)
+		}
+	})
+}
+
 func TestEdgeStatusSummaryTagNeverHiddenByAck(t *testing.T) {
-	dep := StrategyConfig{ID: "s", Type: "spot", OpenStrategy: StrategyRef{Name: "macd"}}
+	trueVal := true
+	dep := StrategyConfig{
+		ID: "s", Type: "spot", OpenStrategy: StrategyRef{Name: "macd"},
+		Args: []string{"macd", "BTC", "1h", "--mode=live"},
+	}
 	if got := edgeStatusSummaryTag(dep); got != "edge=deprecated_m5" {
 		t.Errorf("tag = %q, want edge=deprecated_m5", got)
 	}
-	dep.AllowDeprecated = true
+	dep.AllowDeprecated = &trueVal
 	if got := edgeStatusSummaryTag(dep); got != "edge=deprecated_m5(ack)" {
 		t.Errorf("acknowledged tag = %q, want edge=deprecated_m5(ack)", got)
 	}
@@ -160,13 +280,18 @@ func TestEdgeStatusSummaryTagNeverHiddenByAck(t *testing.T) {
 // applyHotReloadConfig, alone, bundled with another reloadable field, and
 // while a position is open.
 func TestAllowDeprecatedHotReloadable(t *testing.T) {
-	a := StrategyConfig{ID: "s", AllowDeprecated: true}
-	b := StrategyConfig{ID: "s", AllowDeprecated: false}
+	trueVal, falseVal := true, false
+	a := StrategyConfig{ID: "s", AllowDeprecated: &trueVal}
+	b := StrategyConfig{ID: "s", AllowDeprecated: &falseVal}
 	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(b)) {
 		t.Fatal("allow_deprecated-only change should not affect restart shape")
 	}
+	unset := StrategyConfig{ID: "s"}
+	if !reflect.DeepEqual(strategyRestartShape(a), strategyRestartShape(unset)) {
+		t.Fatal("allow_deprecated unset vs set should not affect restart shape")
+	}
 
-	base := func(ack bool, capital float64) []StrategyConfig {
+	base := func(ack *bool, capital float64) []StrategyConfig {
 		return []StrategyConfig{{
 			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
 			Script:  "shared_scripts/check_hyperliquid.py",
@@ -188,13 +313,13 @@ func TestAllowDeprecatedHotReloadable(t *testing.T) {
 	}
 
 	// (a) toggle alone while a position is open: accepted, value applied.
-	cfg := minimalReloadConfig(base(false, 1000))
-	next := minimalReloadConfig(base(true, 1000))
+	cfg := minimalReloadConfig(base(&falseVal, 1000))
+	next := minimalReloadConfig(base(&trueVal, 1000))
 	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
 	if err != nil {
 		t.Fatalf("allow_deprecated toggle while open should be hot-reloadable: %v", err)
 	}
-	if !cfg.Strategies[0].AllowDeprecated {
+	if !cfg.Strategies[0].AllowDeprecatedAcknowledged() {
 		t.Fatal("expected allow_deprecated applied after reload")
 	}
 	if !strings.Contains(strings.Join(changes, "\n"), "allow_deprecated") {
@@ -202,41 +327,98 @@ func TestAllowDeprecatedHotReloadable(t *testing.T) {
 	}
 
 	// (b) bundled with another hot-reloadable field (capital): both applied.
-	cfg = minimalReloadConfig(base(true, 1000))
-	next = minimalReloadConfig(base(false, 2000))
+	cfg = minimalReloadConfig(base(&trueVal, 1000))
+	next = minimalReloadConfig(base(&falseVal, 2000))
 	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
 		t.Fatalf("bundled allow_deprecated + capital reload should succeed: %v", err)
 	}
-	if cfg.Strategies[0].AllowDeprecated {
+	if cfg.Strategies[0].AllowDeprecatedAcknowledged() {
 		t.Fatal("expected allow_deprecated cleared after reload")
+	}
+	if cfg.Strategies[0].AllowDeprecated == nil || *cfg.Strategies[0].AllowDeprecated {
+		t.Fatal("expected allow_deprecated explicit false after reload")
 	}
 	if cfg.Strategies[0].Capital != 2000 {
 		t.Fatalf("expected capital applied alongside, got %v", cfg.Strategies[0].Capital)
 	}
+
+	// (c) unset → explicit false on paper re-arms the warning path via Effective.
+	cfg = minimalReloadConfig(base(nil, 1000))
+	next = minimalReloadConfig(base(&falseVal, 1000))
+	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
+		t.Fatalf("unset→false reload should succeed: %v", err)
+	}
+	if cfg.Strategies[0].AllowDeprecatedEffective() {
+		t.Fatal("paper explicit false should not suppress after reload")
+	}
 }
 
-// #1275 review: a hot reload that moves an open leg onto an M5-deprecated
+// #1275/#1402 review: a hot reload that moves an open leg onto an M5-deprecated
 // name (or drops an allow_deprecated ack) must re-fire the warning, while
-// unchanged deprecated strategies and switches AWAY must stay silent.
+// unchanged deprecated strategies and switches AWAY must stay silent. Paper
+// auto-suppression uses the same Effective predicate on the reload path.
 func TestNewlyDeprecatedEdgeWarnings(t *testing.T) {
-	dep := func(id, name string, ack bool) StrategyConfig {
-		return StrategyConfig{ID: id, Type: "spot", OpenStrategy: StrategyRef{Name: name}, AllowDeprecated: ack}
+	trueVal, falseVal := true, false
+	live := func(id, name string, ack *bool) StrategyConfig {
+		return StrategyConfig{
+			ID: id, Type: "spot", OpenStrategy: StrategyRef{Name: name},
+			Args: []string{name, "BTC", "1h", "--mode=live"}, AllowDeprecated: ack,
+		}
+	}
+	paper := func(id, name string, ack *bool) StrategyConfig {
+		return StrategyConfig{
+			ID: id, Type: "spot", OpenStrategy: StrategyRef{Name: name},
+			Args: []string{name, "BTC", "1h", "--mode=paper"}, AllowDeprecated: ack,
+		}
 	}
 	cases := []struct {
 		name     string
 		old, new []StrategyConfig
 		want     int
 	}{
-		{"switch onto deprecated", []StrategyConfig{dep("s1", "chart_pattern", false)}, []StrategyConfig{dep("s1", "macd", false)}, 1},
-		{"unchanged deprecated no respam", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "macd", false)}, 0},
-		{"switch away no warn", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "chart_pattern", false)}, 0},
-		{"ack flipped off re-warns", []StrategyConfig{dep("s1", "macd", true)}, []StrategyConfig{dep("s1", "macd", false)}, 1},
-		{"ack flipped on silences", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "macd", true)}, 0},
-		{"deprecated-to-different-deprecated re-warns", []StrategyConfig{dep("s1", "macd", false)}, []StrategyConfig{dep("s1", "rsi", false)}, 1},
+		{"switch onto deprecated", []StrategyConfig{live("s1", "chart_pattern", nil)}, []StrategyConfig{live("s1", "macd", nil)}, 1},
+		{"unchanged deprecated no respam", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "macd", nil)}, 0},
+		{"switch away no warn", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "chart_pattern", nil)}, 0},
+		{"ack flipped off re-warns", []StrategyConfig{live("s1", "macd", &trueVal)}, []StrategyConfig{live("s1", "macd", &falseVal)}, 1},
+		{"ack flipped on silences", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "macd", &trueVal)}, 0},
+		{"deprecated-to-different-deprecated re-warns", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "rsi", nil)}, 1},
+		// #1402: paper unset stays silent across reload; paper unset→false re-warns.
+		{"paper unchanged no respam", []StrategyConfig{paper("s1", "macd", nil)}, []StrategyConfig{paper("s1", "macd", nil)}, 0},
+		{"paper switch onto deprecated still silent", []StrategyConfig{paper("s1", "chart_pattern", nil)}, []StrategyConfig{paper("s1", "macd", nil)}, 0},
+		{"paper unset to explicit false re-warns", []StrategyConfig{paper("s1", "macd", nil)}, []StrategyConfig{paper("s1", "macd", &falseVal)}, 1},
 	}
 	for _, tc := range cases {
 		if got := newlyDeprecatedEdgeWarnings(tc.old, tc.new); len(got) != tc.want {
 			t.Errorf("%s: got %d warnings (%v), want %d", tc.name, len(got), got, tc.want)
 		}
+	}
+}
+
+func TestAllowDeprecatedEffectiveAccessor(t *testing.T) {
+	trueVal, falseVal := true, false
+	var nilSC *StrategyConfig
+	if nilSC.AllowDeprecatedEffective() {
+		t.Fatal("nil receiver should not suppress")
+	}
+	if nilSC.AllowDeprecatedAcknowledged() {
+		t.Fatal("nil receiver should not be acknowledged")
+	}
+
+	paper := StrategyConfig{Args: []string{"macd", "BTC", "1h", "--mode=paper"}}
+	live := StrategyConfig{Args: []string{"macd", "BTC", "1h", "--mode=live"}}
+
+	if !paper.AllowDeprecatedEffective() {
+		t.Fatal("paper unset should Effective=true")
+	}
+	if live.AllowDeprecatedEffective() {
+		t.Fatal("live unset should Effective=false")
+	}
+	paper.AllowDeprecated = &falseVal
+	if paper.AllowDeprecatedEffective() {
+		t.Fatal("paper explicit false should Effective=false")
+	}
+	live.AllowDeprecated = &trueVal
+	if !live.AllowDeprecatedEffective() || !live.AllowDeprecatedAcknowledged() {
+		t.Fatal("live explicit true should Effective+Acknowledged")
 	}
 }
