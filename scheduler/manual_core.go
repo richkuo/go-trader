@@ -1276,6 +1276,12 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 	if !manualPositionOwnedByStrategy(pos, strategyID) {
 		return res, manualFailf("error: position %s/%s is owned by %q, not %q", strategyID, sym, pos.OwnerStrategyID, strategyID)
 	}
+	// #1159: hedge legs are auto-managed coupling — closing one directly
+	// would leave the primary running unhedged behind the operator's back.
+	// Force-close the PRIMARY instead; the hedge follows within one cycle.
+	if pos.IsHedge {
+		return res, manualFailf("error: %s/%s is an auto-managed hedge leg for %s — force-close the primary position instead; the hedge follows it within one cycle (#1159)", strategyID, sym, pos.HedgePrimarySymbol)
+	}
 
 	closeQty := pos.Quantity
 	intentFullClose := true

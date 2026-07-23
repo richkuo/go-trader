@@ -369,6 +369,19 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
+		// #1159: hedge block is hot-reloadable while no hedge leg is open (the
+		// state-compat gate blocks it otherwise). Reaching here means the next
+		// hedge_sync cycle converges against the new shape — including opening
+		// a hedge for an already-open primary when the block was just enabled.
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: shape updated", sc.ID)
+			if ns.Hedge != nil {
+				clone := *ns.Hedge
+				sc.Hedge = &clone
+			} else {
+				sc.Hedge = nil
+			}
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -650,6 +663,17 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
+		// #1159: the hedge block is state-shifting for the OPEN hedge leg —
+		// enable/disable, symbol, side, ratio, and margin fields all change
+		// what the convergence engine would do to a live on-chain position
+		// (e.g. a symbol change would strand the old leg; a ratio change
+		// would re-derive coverage mid-flight). Block while a hedge leg is
+		// open; freely reloadable otherwise (issue constraint 7), including
+		// enabling a hedge for an already-open primary.
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenHedgeLeg(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge changed with an open hedge leg (flatten first or restart after close)",
+				sc.ID))
+		}
 		// #486: HL rejects margin-mode changes on an open position; treat
 		// the same way as Leverage. Stays hot-reloadable when flat.
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
@@ -858,6 +882,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
+	sc.Hedge = nil                   // #1159: hot-reloadable while no hedge leg is open; state-compat blocks change while a hedge leg is open
 	return sc
 }
 

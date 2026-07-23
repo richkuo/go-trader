@@ -560,6 +560,15 @@ func runHyperliquidProtectionSync(
 	if stratState == nil || symbol == "" {
 		return false
 	}
+	// #1159: hedge legs carry no protection orders in phase 1 — the sync is
+	// keyed by the primary symbol at every call site, so this guard is
+	// belt-and-suspenders against a future caller passing the hedge coin.
+	mu.RLock()
+	if pos, ok := stratState.Positions[symbol]; ok && pos != nil && pos.IsHedge {
+		mu.RUnlock()
+		return false
+	}
+	mu.RUnlock()
 	var plan hlProtectionPlan
 	var syncOK bool
 	if strategyUsesDynamicRegimeClose(sc) {
