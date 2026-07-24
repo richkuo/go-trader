@@ -795,6 +795,30 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
+        # #1159: correlated hedge legs are HL-perps-live-only in phase 1. The
+        # backtester simulates ONE instrument, so a hedge-enabled config would
+        # silently drop the hedge's entire PnL, fee and slippage stream and
+        # report the naked primary's results as if they were the strategy's.
+        # That is not a small parity gap — an inverse leg sized at the primary's
+        # full notional roughly halves realized directional PnL and doubles
+        # round-trip fees, so a backtest that ignores it is not merely
+        # imprecise, it is measuring a different strategy. Reject loudly rather
+        # than hand back a number the operator would reasonably trust.
+        #
+        # An explicitly DISABLED block changes nothing live, so it passes
+        # through — parking a disabled hedge block on a strategy must not make
+        # it unbacktestable.
+        hedge_cfg = sc.get("hedge")
+        if isinstance(hedge_cfg, dict) and hedge_cfg.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} configures a correlated "
+                f"hedge leg (hedge block on {hedge_cfg.get('symbol')!r}), which is "
+                f"HL-live-only in phase 1 (#1159). The backtester models a single "
+                f"instrument and would silently drop the hedge's PnL, fees and "
+                f"slippage — reporting the unhedged primary as if it were the "
+                f"strategy. Set hedge.enabled=false (or remove the block) to "
+                f"backtest the primary leg alone."
+            )
         # #842: a strategy has a single close_strategy ref. Still accept the
         # legacy close_strategies array (length <=1 after the collapse) so old
         # configs keep backtesting; the backtester's close_strategies= list

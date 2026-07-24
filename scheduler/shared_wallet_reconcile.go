@@ -533,6 +533,24 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: publish the hedge leg under its own coin so the wallet
+		// reconciler attributes it to the owning strategy. Without this,
+		// attributeSharedWalletUPnL classifies the hedge coin as an ORPHAN
+		// (on-chain position nobody claims) and every cycle reports its
+		// unrealized PnL as unattributed drift — a permanent false alarm — and
+		// wallet-ledger funding events on the hedge coin, which key on the
+		// same map, would land nowhere instead of on the owner's ledger
+		// (issue requirement 6).
+		if key.Platform == "hyperliquid" {
+			if hCoin := hedgeCoin(sc); hCoin != "" {
+				if hPos, hok := ss.Positions[hCoin]; hok && hPos != nil && hPos.isHedgeLeg() && hPos.Quantity > 0 {
+					if virtualQty[hCoin] == nil {
+						virtualQty[hCoin] = make(map[string]float64)
+					}
+					virtualQty[hCoin][id] = hPos.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

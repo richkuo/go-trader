@@ -519,6 +519,17 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.Paused {
 		fmt.Fprintf(&b, "  paused:              true — position-increasing signals held; closes and SL/TP management still run\n")
 	}
+	// #1159: correlated hedge leg. Shown whenever a block exists (even
+	// disabled) so an operator auditing a config sees the whole exposure
+	// surface, not just what happens to be armed right now.
+	if sc.Hedge != nil {
+		state := "disabled"
+		if sc.Hedge.Enabled {
+			state = "enabled"
+		}
+		fmt.Fprintf(&b, "  hedge:               %s — %s inverse ×%.4g, margin=%s leverage=%gx (auto-managed, coupled to the primary; no independent SL/TP)\n",
+			state, normalizeHedgeCoin(sc.Hedge.Symbol), hedgeRatio(sc), hedgeMarginMode(sc), hedgeLeverage(sc))
+	}
 	if sc.IntervalSeconds > 0 {
 		fmt.Fprintf(&b, "  interval_seconds:    %d\n", sc.IntervalSeconds)
 	} else if cfg != nil {
@@ -612,6 +623,12 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	if tag := edgeStatusSummaryTag(sc); tag != "" {
 		parts = append(parts, tag)
 	}
+	// #1159: a hedge-enabled strategy carries a SECOND live position on another
+	// coin. That must be visible in the startup audit line or an operator
+	// reading it would under-count the account's real exposure.
+	if line := hedgeStatusLine(sc, nil); line != "" {
+		parts = append(parts, line)
+	}
 	return fmt.Sprintf("[config] %s: %s", sc.ID, strings.Join(parts, " "))
 }
 
@@ -678,6 +695,11 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	}
 	// #1150: pause state, always emitted so dashboards can key off it.
 	out["paused"] = sc.Paused
+	// #1159: hedge block, always emitted (nil when unconfigured) so dashboards
+	// and audit scripts can see the second live instrument.
+	if hs := buildHedgeStatus(sc, nil); hs != nil {
+		out["hedge"] = hs
+	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows
 		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)

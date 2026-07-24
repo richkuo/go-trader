@@ -281,6 +281,14 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: detect a config edit + restart that orphaned or re-pointed a live
+	// hedge leg. The SIGHUP guard blocks a hedge-block change while a leg is
+	// open, but a restart has no previous config to diff against — this is the
+	// only place that gap is visible. Non-destructive: the leg is left frozen
+	// and the operator is told, because guessing a close would liquidate real
+	// money on the strength of a config diff.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -512,6 +520,15 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward hedge state-vs-config gaps. A frozen hedge leg is real
+	// leveraged exposure that nothing will manage, so it must reach the owner
+	// even when nobody is tailing stderr.
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1440,6 +1457,18 @@ func main() {
 						}
 					}
 				}
+				// #1159: hedge coins the scheduler CURRENTLY holds a leg on.
+				// Gated on the held leg, not on config, so the kill switch
+				// never liquidates a foreign position sitting on a coin a
+				// strategy merely declares as its hedge.
+				hlHedgeCoins := map[string]bool{}
+				for _, sc := range hlLiveAll {
+					if ss, ok := state.Strategies[sc.ID]; ok {
+						if coin := heldHedgeCoin(sc, ss); coin != "" {
+							hlHedgeCoins[coin] = true
+						}
+					}
+				}
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
 				mu.RUnlock()
 
@@ -1448,6 +1477,7 @@ func main() {
 					HLStateFetched:    hlStateFetched,
 					HLPositions:       hlPositions,
 					HLLiveAll:         hlLiveAll,
+					HLHedgeCoins:      hlHedgeCoins,
 					HLCloser:          defaultHyperliquidLiveCloser,
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
@@ -2331,6 +2361,10 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
+							// #1159: quantity of PRIMARY exposure this cycle added that the
+							// hedge does not yet cover. Non-zero enables the fail-closed
+							// unwind when the hedge order fails on the same cycle.
+							hedgeFreshExposureQty := 0.0
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
@@ -2555,6 +2589,11 @@ func main() {
 										if execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.TotalSz > 0 {
 											filledAddQty = execResult.Execution.Fill.TotalSz
 										}
+										// #1159: an add grows the primary past the hedge basis.
+										// If this cycle's hedge add then fails, only this
+										// increment is unwound — the pre-add position stays
+										// correctly hedged.
+										hedgeFreshExposureQty = filledAddQty
 										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledAddQty, &mu, notifier, logger); extraTrades > 0 {
 											trades += extraTrades
 											detail = slDetail
@@ -2585,6 +2624,11 @@ func main() {
 									}
 									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
+									// #1159: a fresh open (not an add — that branch set the
+									// quantity above) is the whole unhedged increment.
+									if scaleInAddQty <= 0 && openTrade != nil && openTrade.Quantity > 0 {
+										hedgeFreshExposureQty = openTrade.Quantity
+									}
 								}
 							}
 							// #998: stamp the active profile on a freshly opened
@@ -2597,6 +2641,28 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: converge the correlated hedge leg to the target
+							// derived from the primary position. Placed here — after every
+							// execute/close/protection path for this cycle has settled —
+							// so ONE reconciler mirrors every primary lifecycle event:
+							// fresh open, scale-in add, evaluator partial/full close,
+							// on-chain SL/TP fill booked by reconcile, ratchet close, and
+							// external close. Also runs on the Signal==0 manage path and
+							// under pause (#1150) / latched-CB manage-only (#1046) /
+							// daily-loss hold (#1269), which is deliberate: hedge orders
+							// are coupled risk management, not signals. A held or paused
+							// primary cannot INCREASE, so under those states hedge sync
+							// can only reduce or close — exactly the direction that must
+							// never be blocked.
+							if HedgeEnabled(sc) {
+								runHedgeSync(sc, stratState, &mu, defaultHedgeExecutor(), hedgeSyncInputs{
+									PrimaryPx:         price,
+									HedgePx:           prices[hedgeCoin(sc)],
+									FreshExposureQty:  hedgeFreshExposureQty,
+									PrimaryCancelOIDs: hedgeUnwindCancelOIDs(stratState, &mu, result.Symbol),
+									Live:              hyperliquidIsLive(sc.Args),
+								}, notifier, logger)
 							}
 						}
 					case "futures":

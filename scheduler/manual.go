@@ -566,7 +566,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			Quantity:        a.Quantity,
 			Price:           a.FillPrice,
 			Value:           a.Quantity * a.FillPrice,
-			TradeType:       "perps",
+			TradeType:       manualCloseTradeType(pos),
 			Details:         fmt.Sprintf("%s %s @ $%.4f | PnL=$%.2f", closeLabel, a.Symbol, a.FillPrice, a.RealizedPnL),
 			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
@@ -579,7 +579,9 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		}
 		RecordTrade(ss, trade)
 		if sc.Type != "manual" {
-			RecordTradeResult(&ss.RiskState, a.RealizedPnL)
+			// #1159: route through the hedge-aware accumulator so a hedge leg
+			// force-closed alongside its primary never feeds the loss streak.
+			recordPositionTradeResult(ss, pos, a.RealizedPnL)
 		}
 		// Fix #1: perps close credits only the realized PnL; notional was never debited.
 		ss.Cash += a.RealizedPnL
@@ -591,6 +593,20 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			pos.Quantity -= a.Quantity
 			if sc.Type != "manual" {
 				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
+			}
+			// #1159: a partially closed hedge leg must re-anchor its quantity
+			// watermark to the primary's CURRENT quantity. Pending rows drain
+			// in insertion order and force-close queues the primary first, so
+			// the primary is already reduced here. Without the re-anchor the
+			// next hedge sync would diff the new hedge size against the OLD
+			// basis and reduce a second time — compounding the operator's
+			// single close into a runaway under-hedge.
+			if pos.isHedgeLeg() {
+				primaryQty := 0.0
+				if pp, pok := ss.Positions[pos.HedgeFor]; pok && pp != nil {
+					primaryQty = pp.Quantity
+				}
+				pos.HedgePrimaryQtyBasis = primaryQty
 			}
 		}
 		fmt.Printf("[manual] applied %s: %s %.6f %s @ $%.4f | PnL=$%.2f\n",

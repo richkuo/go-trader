@@ -122,6 +122,29 @@ type Position struct {
 	// compares this stamp to the live resolution once per boot to catch that
 	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
 	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
+	// #1159 correlated hedge leg. HedgeFor names the PRIMARY position symbol
+	// this leg hedges ("" = an ordinary position, never a hedge). It is
+	// stamped once when the hedge fill is booked and is the ONLY source of
+	// hedge ownership — reconcile, kill switch, CB, wallet attribution and the
+	// operator surfaces all read this persisted field rather than inferring
+	// "coin X must be strategy Y's hedge" from the current config
+	// (issue constraint 5). That matters because a config edit between two
+	// boots would otherwise silently re-point or orphan a live on-chain leg.
+	//
+	// HedgePrimaryQtyBasis is the PRIMARY position quantity this hedge leg was
+	// last sized against — the watermark that hedgeTargetDecision diffs to
+	// detect a quantity event. Keying on quantity (not price) is what stops
+	// mark drift from re-trading the hedge every cycle: only a real primary
+	// add/reduce/close moves the basis.
+	HedgeFor             string  `json:"hedge_for,omitempty"`
+	HedgePrimaryQtyBasis float64 `json:"hedge_primary_qty_basis,omitempty"`
+}
+
+// isHedgeLeg reports whether a position is an auto-managed #1159 hedge leg.
+// Every risk/stats/diagnostics path that must treat the hedge as coupled risk
+// rather than independent alpha branches on this.
+func (p *Position) isHedgeLeg() bool {
+	return p != nil && p.HedgeFor != ""
 }
 
 // riskAnchorPrice returns the price geometry that on-chain SL/TP triggers are
@@ -295,7 +318,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 			Quantity:        absQty(pos.Quantity),
 			Price:           closePx,
 			Value:           0,
-			TradeType:       "perps",
+			TradeType:       perpsPositionTradeType(pos), // #1159: hedge legs label as "hedge" on every leg
 			Details:         fmt.Sprintf("%s (corrupt position qty=%.6f avg_cost=%.4f) — zero PnL booked", detailsPrefix, pos.Quantity, pos.AvgCost),
 			IsClose:         true,
 			RealizedPnL:     0,
@@ -305,7 +328,8 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, 0)
+		// #1159: a hedge leg's PnL never feeds the loss streak.
+		recordPositionTradeResult(s, pos, 0)
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -377,7 +401,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		Quantity:        qty,
 		Price:           closePx,
 		Value:           qty * closePx,
-		TradeType:       "perps",
+		TradeType:       perpsPositionTradeType(pos), // #1159: hedge legs label as "hedge" on every leg
 		Details:         fmt.Sprintf("%s, PnL: $%.2f (fee $%.2f)", detailsPrefix, pnl, fee),
 		IsClose:         true,
 		RealizedPnL:     grossPnL,
@@ -392,7 +416,8 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	// #1159: a hedge leg's PnL never feeds the loss streak.
+	recordPositionTradeResult(s, pos, pnl)
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
 	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -460,7 +485,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		Quantity:        qty,
 		Price:           closePx,
 		Value:           qty * closePx,
-		TradeType:       "perps",
+		TradeType:       perpsPositionTradeType(pos), // #1159: hedge legs label as "hedge" on every leg
 		Details:         fmt.Sprintf("%s %.6f, PnL: $%.2f (fee $%.2f)", detailsPrefix, qty, pnl, fee),
 		IsClose:         true,
 		RealizedPnL:     grossPnL,
@@ -475,7 +500,8 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-	RecordTradeResult(&s.RiskState, pnl)
+	// #1159: a hedge leg's PnL never feeds the loss streak.
+	recordPositionTradeResult(s, pos, pnl)
 
 	remaining := pos.Quantity - qty
 	if remaining <= 1e-9 {

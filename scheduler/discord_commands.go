@@ -664,6 +664,7 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
+	base += hedgeStatusNote(d.cfg.Strategies, d.ss.state)
 	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
 	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
@@ -687,6 +688,38 @@ func pausedStrategiesNote(strategies []StrategyConfig) string {
 	}
 	sort.Strings(paused)
 	return fmt.Sprintf("\n⏸️ paused: %s", strings.Join(paused, ", "))
+}
+
+// hedgeStatusNote lists auto-managed correlated hedge legs (#1159) for
+// /status so an operator never mistakes a hedge position for an unmanaged one.
+// Empty when no strategy has a hedge enabled. Caller must hold the state read
+// lock; IDs are sorted for stable output.
+func hedgeStatusNote(strategies []StrategyConfig, state *AppState) string {
+	type row struct {
+		id   string
+		line string
+	}
+	var rows []row
+	for _, sc := range strategies {
+		if !HedgeEnabled(sc) {
+			continue
+		}
+		var ss *StrategyState
+		if state != nil {
+			ss = state.Strategies[sc.ID]
+		}
+		rows = append(rows, row{id: sc.ID, line: hedgeStatusLine(sc, ss)})
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].id < rows[j].id })
+	var b strings.Builder
+	b.WriteString("\n🛡️ hedge legs (auto-managed, coupled to their primary):")
+	for _, r := range rows {
+		fmt.Fprintf(&b, "\n  • %s: %s", r.id, r.line)
+	}
+	return b.String()
 }
 
 func (d *DiscordNotifier) buildHealth() string {

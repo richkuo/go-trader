@@ -89,6 +89,14 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 	if tradeDiagnosticsRecorder == nil || s == nil || pos == nil {
 		return
 	}
+	// #1159: a correlated hedge leg is not an independent trade. Its exit is
+	// dictated entirely by the primary's quantity events, so its MFE/MAE,
+	// hold time and close reason describe the PRIMARY's decisions, not its
+	// own — recording it would pollute every per-strategy trade-quality
+	// aggregate with a mirror-image row for each real trade.
+	if pos.isHedgeLeg() {
+		return
+	}
 	row := TradeDiagnosticsRow{
 		StrategyID:      s.ID,
 		PositionID:      pos.TradePositionID,

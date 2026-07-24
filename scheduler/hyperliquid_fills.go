@@ -498,6 +498,26 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 				}
 			}
 		}
+		// #1159: a hedge leg's coin is invisible to the loop above (it keys on
+		// hyperliquidConfiguredCoin, which only ever names a PRIMARY). Without
+		// a candidate here, an externally closed / liquidated hedge leg books
+		// through the reconciler with a modeled fee and no fill price instead
+		// of the real userFills VWAP. Sole ownership is guaranteed by the
+		// collision validation, so the coin+size form is unambiguous.
+		if hCoin := hedgeCoin(sc); hCoin != "" {
+			if hPos := ss.Positions[hCoin]; hPos != nil && hPos.isHedgeLeg() && hPos.Quantity > 0 {
+				onChainSize, present := onChainByCoin[hCoin]
+				if !present || math.Abs(math.Abs(onChainSize)-hPos.Quantity) > 1e-9 {
+					addCandidate(hCoin, 0, hPos.Quantity)
+					if present && onChainSize != 0 {
+						onChainAbs := math.Abs(onChainSize)
+						if onChainAbs+1e-9 < hPos.Quantity {
+							addCandidate(hCoin, 0, hPos.Quantity-onChainAbs)
+						}
+					}
+				}
+			}
+		}
 	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy

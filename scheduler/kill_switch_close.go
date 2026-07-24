@@ -40,8 +40,19 @@ type KillSwitchCloseInputs struct {
 	HLStateFetched bool
 	HLPositions    []HLPosition
 	HLLiveAll      []StrategyConfig
-	HLCloser       HyperliquidLiveCloser
-	HLFetcher      HLStateFetcher
+	// HLHedgeCoins is the set of #1159 hedge coins that a live strategy
+	// CURRENTLY HOLDS a virtual hedge leg on. Hedge coins are invisible to
+	// hyperliquidConfiguredCoin, so without this the kill switch would skip
+	// them as "unowned" and leave real leveraged exposure running after a
+	// portfolio-wide flatten.
+	//
+	// Keyed on the HELD leg, never on config alone: a coin a strategy merely
+	// declares as its hedge but is currently flat on may carry a genuinely
+	// foreign position, and liquidating that would break the kill switch's
+	// "only act on coins this scheduler trades" contract.
+	HLHedgeCoins map[string]bool
+	HLCloser     HyperliquidLiveCloser
+	HLFetcher    HLStateFetcher
 	// HLNoFillRecoverer fetches recent userFills when the close subprocess
 	// reports already_flat with no OID/fill. That response can happen after
 	// the exchange accepted the reduce-only close but before statuses surface,
@@ -386,7 +397,7 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 	case hlStateFetched && len(in.HLLiveAll) > 0:
 		recoverSince := time.Now().UTC().Add(-hlKillSwitchNoFillRecoveryLookback)
 		ctx, cancel := context.WithTimeout(context.Background(), in.platformCloseBudget(in.HLCloseTimeout))
-		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLCloser, in.HLStopLossOIDs)
+		plan.CloseReport = forceCloseHyperliquidLive(ctx, hlPositions, in.HLLiveAll, in.HLHedgeCoins, in.HLCloser, in.HLStopLossOIDs)
 		cancel()
 		if !plan.CloseReport.ConfirmedFlat() {
 			if in.HLAddr != "" && in.HLFetcher != nil {

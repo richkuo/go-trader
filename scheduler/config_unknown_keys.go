@@ -108,6 +108,43 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 			}
 			errs = append(errs, msg)
 		}
+		// #1159: the hedge block is a live-order surface — a typo'd
+		// `"ration": 0.5` would silently default the ratio to 1.0 and open a
+		// hedge at twice the intended notional. The top-level "hedge" key is
+		// covered by the reflective knownStrategyConfigKeys above; this walks
+		// one level deeper.
+		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hedge", knownHedgeConfigKeys(), prefix)...)
+	}
+	return errs
+}
+
+// knownHedgeConfigKeys returns the JSON tag names declared on HedgeConfig.
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
+// nestedObjectUnknownKeyErrors flags unknown keys inside a nested object field
+// of a strategy entry. A non-object value (or a missing field) is not this
+// helper's problem — json.Unmarshal reports the type error separately.
+func nestedObjectUnknownKeyErrors(entry map[string]json.RawMessage, field string, known map[string]bool, prefix string) []string {
+	raw, ok := entry[field]
+	if !ok {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		if !known[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	errs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		errs = append(errs, fmt.Sprintf("%s: unknown field %q in %s block", prefix, k, field))
 	}
 	return errs
 }
