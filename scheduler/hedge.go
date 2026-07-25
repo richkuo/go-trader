@@ -710,6 +710,41 @@ func formatHedgeOID(oid int64) string {
 	return strconv.FormatInt(oid, 10)
 }
 
+// hedgeReducedBasis advances the quantity watermark for a hedge REDUCE (or a
+// short-filled close) in proportion to what actually filled.
+//
+// The reduce path is the one place a partial fill can silently strand
+// exposure. `bookPerpsPartialCloseWithFillFee` shrinks the leg by `filledQty`,
+// but stamping the basis at the full post-reduce target would claim the leg is
+// already sized for that target. `hedgeTargetDecision` would then compute
+// `delta == 0` and report the pair in sync while it is still over-hedged —
+// leaving a net directional bias past neutral for the remaining life of the
+// position, with no event that ever revisits it (mark drift deliberately does
+// not re-trade the hedge).
+//
+// Interpolating between the OLD basis and the target by the fill ratio keeps
+// the residual delta proportional to the residual surplus, so the next cycle
+// trims exactly what is left. It composes across consecutive partials: each
+// call re-bases off the true current basis rather than the original target, so
+// two half-fills converge instead of compounding an error.
+//
+// A non-positive old basis means the leg was never anchored (legacy or
+// corrupted row); fall through to the target and let the "no basis" re-anchor
+// path in hedgeTargetDecision take it from there.
+func hedgeReducedBasis(oldBasis, targetBasis, filledQty, requestedQty float64) float64 {
+	if oldBasis <= hedgeQtyEpsilon || requestedQty <= hedgeQtyEpsilon {
+		return targetBasis
+	}
+	ratio := filledQty / requestedQty
+	if ratio >= 1 {
+		return targetBasis
+	}
+	if ratio <= 0 {
+		return oldBasis
+	}
+	return oldBasis - (oldBasis-targetBasis)*ratio
+}
+
 // applyHedgeFill mutates virtual state for a CONFIRMED hedge fill. MUST be
 // called under mu.Lock.
 //
@@ -814,14 +849,18 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 		}
 
 	case hedgeActionReduce:
-		if s.Positions[coin] == nil {
+		pre := s.Positions[coin]
+		if pre == nil {
 			return
 		}
+		// Capture the pre-reduce basis BEFORE booking: the booker mutates (or
+		// on a full drain, deletes) the position.
+		reduceBasis := hedgeReducedBasis(pre.HedgePrimaryQtyBasis, action.NewBasis, filledQty, action.Qty)
 		if bookPerpsPartialCloseWithFillFee(s, coin, filledQty, fillPx, fillFee, useFillFee, oid, hedgeReduceCloseReason, detailsPrefix+" reduce", "hedge", logger) {
 			// bookPerpsPartialCloseWithFillFee deletes the position when it
 			// fully drains; re-read before stamping the basis.
 			if p, ok := s.Positions[coin]; ok && p != nil {
-				p.HedgePrimaryQtyBasis = action.NewBasis
+				p.HedgePrimaryQtyBasis = reduceBasis
 			}
 		}
 
@@ -838,9 +877,13 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 			if logger != nil {
 				logger.Warn("hedge: %s close filled only %.8f of %.8f — booking a partial close; the remainder is re-closed next cycle", coin, filledQty, pos.Quantity)
 			}
+			// Same proportional rule as a partial reduce: a short-filled close
+			// must leave a basis that still describes the surplus, or the next
+			// cycle sees delta==0 and abandons it.
+			closeBasis := hedgeReducedBasis(pos.HedgePrimaryQtyBasis, action.NewBasis, filledQty, action.Qty)
 			if bookPerpsPartialCloseWithFillFee(s, coin, filledQty, fillPx, fillFee, useFillFee, oid, hedgeReduceCloseReason, detailsPrefix+" close (partial fill)", "hedge", logger) {
 				if p, ok := s.Positions[coin]; ok && p != nil {
-					p.HedgePrimaryQtyBasis = action.NewBasis
+					p.HedgePrimaryQtyBasis = closeBasis
 				}
 			}
 			return

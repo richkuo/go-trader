@@ -1742,3 +1742,151 @@ func TestRunHedgeSyncBooksExchangeReportedFillSize(t *testing.T) {
 		t.Fatalf("booked qty = %v, want the exchange's 0.25", got)
 	}
 }
+
+// Regression (#1404 review, finding 1): a PARTIALLY-filled hedge reduce must
+// advance the watermark only in proportion to what filled. Stamping the full
+// post-reduce target while the leg only shrank part-way leaves the pair
+// over-hedged — a net directional bias past neutral — and, because the basis
+// then claims the leg is already sized for that target, `hedgeTargetDecision`
+// computes delta==0 and never revisits it. Mark drift deliberately does not
+// re-trade the hedge, so nothing else would ever trim the surplus.
+func TestPartialHedgeReduceLeavesDeltaForTheNextCycle(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	log := silentStrategyLogger("eth-long")
+
+	// Primary halved 10 → 5; the hedge should end at half of 0.4 = 0.2.
+	newState := func() *StrategyState {
+		s := hedgeTestState("eth-long")
+		s.Positions["ETH"] = primaryPos(5, "long")
+		s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+		return s
+	}
+
+	t.Run("half-filled reduce still shows a delta next cycle", func(t *testing.T) {
+		s := newState()
+		act := hedgeAction{Kind: hedgeActionReduce, Qty: 0.2, NewBasis: 5}
+		applyHedgeFill(sc, s, "ETH", act, 0.1, 51000, 2, true, "r1", log)
+
+		pos := s.Positions["BTC"]
+		if math.Abs(pos.Quantity-0.3) > 1e-9 {
+			t.Fatalf("hedge qty = %v, want 0.3 (only half the reduce filled)", pos.Quantity)
+		}
+		if math.Abs(pos.HedgePrimaryQtyBasis-7.5) > 1e-9 {
+			t.Fatalf("basis = %v, want 7.5 — a half-filled reduce must advance the watermark half way", pos.HedgePrimaryQtyBasis)
+		}
+
+		// The next cycle must trim exactly the surplus (0.3 → 0.2).
+		snap := hedgeSnapshotFromState(sc, s)
+		next := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
+		if next.Kind != hedgeActionReduce {
+			t.Fatalf("follow-up = %v, want reduce — the surplus must not be abandoned (%s)", next.Kind, next.Reason)
+		}
+		if math.Abs(next.Qty-0.1) > 1e-9 {
+			t.Fatalf("follow-up reduce qty = %v, want 0.1 (0.3 held − 0.2 target)", next.Qty)
+		}
+	})
+
+	t.Run("two consecutive partials converge without compounding", func(t *testing.T) {
+		s := newState()
+		applyHedgeFill(sc, s, "ETH", hedgeAction{Kind: hedgeActionReduce, Qty: 0.2, NewBasis: 5}, 0.1, 51000, 2, true, "r1", log)
+
+		// Second cycle: re-derive from state, fill half of that too.
+		snap := hedgeSnapshotFromState(sc, s)
+		act2 := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
+		applyHedgeFill(sc, s, "ETH", act2, act2.Qty/2, 51000, 1, true, "r2", log)
+
+		pos := s.Positions["BTC"]
+		if math.Abs(pos.Quantity-0.25) > 1e-9 {
+			t.Fatalf("hedge qty = %v, want 0.25", pos.Quantity)
+		}
+		// Third cycle must still see exactly the remaining 0.05 surplus —
+		// re-based off the true remaining size, not compounding the first error.
+		act3 := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx)
+		if act3.Kind != hedgeActionReduce {
+			t.Fatalf("third-cycle action = %v, want reduce (%s)", act3.Kind, act3.Reason)
+		}
+		if math.Abs(act3.Qty-0.05) > 1e-9 {
+			t.Fatalf("third-cycle reduce qty = %v, want 0.05", act3.Qty)
+		}
+	})
+
+	t.Run("fully-filled reduce still lands exactly on the target basis", func(t *testing.T) {
+		s := newState()
+		act := hedgeAction{Kind: hedgeActionReduce, Qty: 0.2, NewBasis: 5}
+		applyHedgeFill(sc, s, "ETH", act, 0.2, 51000, 2, true, "r1", log)
+
+		pos := s.Positions["BTC"]
+		if pos.HedgePrimaryQtyBasis != 5 {
+			t.Fatalf("basis = %v, want exactly 5 on a full fill", pos.HedgePrimaryQtyBasis)
+		}
+		if next := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx); next.Kind != hedgeActionNone {
+			t.Fatalf("follow-up = %v, want none — a full fill is in sync (%s)", next.Kind, next.Reason)
+		}
+	})
+
+	t.Run("short-filled residual full-close keeps a delta", func(t *testing.T) {
+		// The reduce path collapses a sub-minimum residual into a full close.
+		// If THAT partially fills, the same stranding applies.
+		s := hedgeTestState("eth-long")
+		s.Positions["ETH"] = primaryPos(0.001, "long")
+		s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+
+		act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx)
+		if act.Kind != hedgeActionCloseFull {
+			t.Fatalf("setup: expected the residual-below-minimum full close, got %v (%s)", act.Kind, act.Reason)
+		}
+		applyHedgeFill(sc, s, "ETH", act, 0.2, 51000, 2, true, "c1", log)
+
+		pos := s.Positions["BTC"]
+		if pos == nil {
+			t.Fatal("a short-filled close must leave the remaining leg")
+		}
+		if math.Abs(pos.Quantity-0.2) > 1e-9 {
+			t.Fatalf("hedge qty = %v, want 0.2", pos.Quantity)
+		}
+		next := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx)
+		if next.Kind == hedgeActionNone {
+			t.Fatalf("follow-up = none — the surplus was abandoned (basis=%v, %s)", pos.HedgePrimaryQtyBasis, next.Reason)
+		}
+	})
+
+	t.Run("primary-flat close self-heals regardless of fill", func(t *testing.T) {
+		s := hedgeTestState("eth-long") // primary already gone
+		s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+		act := hedgeAction{Kind: hedgeActionCloseFull, Qty: 0.4, NewBasis: 0}
+		applyHedgeFill(sc, s, "ETH", act, 0.15, 51000, 2, true, "c2", log)
+
+		next := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx)
+		if next.Kind != hedgeActionCloseFull {
+			t.Fatalf("follow-up = %v, want closeFull — a flat primary must keep flattening (%s)", next.Kind, next.Reason)
+		}
+	})
+}
+
+func TestHedgeReducedBasisInterpolatesByFillRatio(t *testing.T) {
+	cases := []struct {
+		name                                string
+		oldBasis, target, filled, requested float64
+		want                                float64
+	}{
+		{"full fill lands on target", 10, 5, 0.2, 0.2, 5},
+		{"over-fill clamps to target", 10, 5, 0.3, 0.2, 5},
+		{"half fill interpolates", 10, 5, 0.1, 0.2, 7.5},
+		{"quarter fill interpolates", 10, 5, 0.05, 0.2, 8.75},
+		{"zero fill holds the old basis", 10, 5, 0, 0.2, 10},
+		{"unanchored basis falls through to target", 0, 5, 0.1, 0.2, 5},
+		{"zero request falls through to target", 10, 5, 0.1, 0, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hedgeReducedBasis(tc.oldBasis, tc.target, tc.filled, tc.requested)
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("hedgeReducedBasis(%v,%v,%v,%v) = %v, want %v", tc.oldBasis, tc.target, tc.filled, tc.requested, got, tc.want)
+			}
+		})
+	}
+}

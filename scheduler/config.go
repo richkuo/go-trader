@@ -1684,6 +1684,25 @@ const hedgeMaxRatio = 10.0
 // rail against a typo, not a substitute for the exchange's rejection.
 const hedgeMaxLeverage = 50.0
 
+// hedgeCollisionCoin returns a strategy's PRIMARY coin normalized the same way
+// a hedge symbol is, for the #1159 collision matrix only.
+//
+// hyperliquidConfiguredCoin uppercases and trims but deliberately does not
+// strip a ccxt suffix — it is the key the entire shared-coin machinery (peer
+// margin checks, kill-switch roster, circuit-breaker drain, reconcile
+// ownership) is built on, so its semantics are not this feature's to change.
+// But comparing an unstripped primary against a stripped hedge symbol means a
+// configured symbol written as "BTC/USDC:USDC" would never match a hedge
+// declared as "BTC", and a genuine same-coin or peer-coin collision would pass
+// validation — precisely the silent per-coin misattribution the matrix exists
+// to prevent.
+//
+// Normalizing both sides here can only ADD collision detections, never remove
+// one, so it is a strict tightening of the guard with no reachable regression.
+func hedgeCollisionCoin(sc StrategyConfig) string {
+	return normalizeHedgeCoin(hyperliquidConfiguredCoin(sc))
+}
+
 // validateHedgeConfigs validates every strategy's #1159 hedge block and the
 // cross-strategy collision matrix that makes phase 1 safe.
 //
@@ -1714,7 +1733,7 @@ func validateHedgeConfigs(cfg *Config) []string {
 	// different hedge coin.
 	primaryCoinOwners := make(map[string][]string)
 	for _, sc := range cfg.Strategies {
-		coin := hyperliquidConfiguredCoin(sc)
+		coin := hedgeCollisionCoin(sc)
 		if coin == "" {
 			continue
 		}
@@ -1789,7 +1808,7 @@ func validateHedgeConfigs(cfg *Config) []string {
 		// same-coin "hedge" just nets the position on-chain — the two legs
 		// cancel into one aggregated position and the hedge books phantom
 		// PnL against a position that no longer exists at the sizes recorded.
-		if own := hyperliquidConfiguredCoin(sc); own != "" && own == coin {
+		if own := hedgeCollisionCoin(sc); own != "" && own == coin {
 			errs = append(errs, fmt.Sprintf("%s: hedge.symbol %q is the strategy's own coin — a same-coin hedge nets the position on-chain instead of hedging it (#1159)", prefix, coin))
 		}
 

@@ -290,3 +290,66 @@ func TestHedgeConfigEqual(t *testing.T) {
 		t.Fatal("ratio change must compare unequal")
 	}
 }
+
+// Regression (#1404 review, optional finding): the collision matrix must
+// normalize BOTH sides identically. hyperliquidConfiguredCoin does not strip a
+// ccxt suffix while normalizeHedgeCoin does, so an unnormalized comparison lets
+// a configured "BTC/USDC:USDC" slip past a hedge declared as "BTC" — exactly
+// the silent per-coin misattribution the matrix exists to prevent.
+func TestValidateHedgeConfigsNormalizesBothSidesOfCollisionChecks(t *testing.T) {
+	ccxtPrimary := func(id, sym string) StrategyConfig {
+		sc := hedgePerpsStrategy(id, sym)
+		sc.Args = []string{"--symbol", sym, "--mode", "live"}
+		return sc
+	}
+
+	t.Run("suffixed primary vs bare hedge on a peer", func(t *testing.T) {
+		cfg := &Config{Strategies: []StrategyConfig{
+			withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+			ccxtPrimary("btc-long", "BTC/USDC:USDC"),
+		}}
+		if errs := validateHedgeConfigs(cfg); !hedgeErrsContaining(errs, "is the primary coin of strategy/strategies btc-long") {
+			t.Fatalf("expected the suffixed peer primary to collide, got %v", errs)
+		}
+	})
+
+	t.Run("suffixed primary vs bare hedge on itself", func(t *testing.T) {
+		cfg := &Config{Strategies: []StrategyConfig{
+			withHedge(ccxtPrimary("btc-long", "BTC/USDC:USDC"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+		}}
+		if errs := validateHedgeConfigs(cfg); !hedgeErrsContaining(errs, "is the strategy's own coin") {
+			t.Fatalf("expected the suffixed own-coin collision, got %v", errs)
+		}
+	})
+
+	t.Run("bare primary vs suffixed hedge", func(t *testing.T) {
+		cfg := &Config{Strategies: []StrategyConfig{
+			withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC/USDC:USDC"}),
+			hedgePerpsStrategy("btc-long", "BTC"),
+		}}
+		if errs := validateHedgeConfigs(cfg); !hedgeErrsContaining(errs, "is the primary coin of strategy/strategies btc-long") {
+			t.Fatalf("expected the suffixed hedge to collide, got %v", errs)
+		}
+	})
+
+	t.Run("suffixed manual peer collides with a bare hedge", func(t *testing.T) {
+		manual := StrategyConfig{ID: "btc-manual", Type: "manual", Platform: "hyperliquid", Symbol: "btc/USDC:USDC"}
+		cfg := &Config{Strategies: []StrategyConfig{
+			withHedge(hedgePerpsStrategy("eth-long", "ETH"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+			manual,
+		}}
+		if errs := validateHedgeConfigs(cfg); !hedgeErrsContaining(errs, "is the primary coin of strategy/strategies btc-manual") {
+			t.Fatalf("expected the suffixed manual peer to collide, got %v", errs)
+		}
+	})
+
+	t.Run("genuinely distinct coins still pass", func(t *testing.T) {
+		cfg := &Config{Strategies: []StrategyConfig{
+			withHedge(ccxtPrimary("eth-long", "ETH/USDC:USDC"), &HedgeConfig{Enabled: true, Symbol: "BTC"}),
+			ccxtPrimary("sol-long", "SOL/USDC:USDC"),
+		}}
+		if errs := validateHedgeConfigs(cfg); len(errs) != 0 {
+			t.Fatalf("distinct coins must not collide, got %v", errs)
+		}
+	})
+}
