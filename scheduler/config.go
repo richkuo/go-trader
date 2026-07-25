@@ -679,6 +679,7 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159 (phase 1) — optional correlated hedge leg: an inverse-side HL perps leg on a second coin, auto-managed off the primary position's qty events (no SL/TP, no close evaluator, no check script of its own). HL perps only (live + paper); direction="both" rejected; the hedge coin must be sole-owned (collision matrix in validateHedgeConfigs). Read via HedgeEnabled/hedgeCoin/HedgeRatio/hedgeLeverage/hedgeMarginMode, never the raw fields. SIGHUP: flat-only hot-reloadable — hedgeConfigEqual masks Hedge in strategyRestartShape; any change blocked while ANY leg is open (a residual hedge leg counts), else applies next cycle.
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -1066,6 +1067,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// otherwise produce a struct indistinguishable from "no protection configured".
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
+	unknownErrs = append(unknownErrs, validateHedgeJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
 	}
@@ -2239,6 +2241,15 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+
+	// #1159 (phase 1): correlated hedge leg shape + the sole-ownership
+	// collision matrix (hedge coin vs own coin, vs any configured HL strategy
+	// coin, vs other hedge coins). Runs on every load path; SIGHUP reloads
+	// re-enter through LoadConfig, so a reload can't introduce a collision
+	// startup would have caught.
+	for _, msg := range validateHedgeConfigs(cfg) {
 		errs = append(errs, msg)
 	}
 

@@ -650,6 +650,7 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
+	base += hedgeStatusNote(d.cfg.Strategies, d.ss.state)
 	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
 	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
@@ -673,6 +674,40 @@ func pausedStrategiesNote(strategies []StrategyConfig) string {
 	}
 	sort.Strings(paused)
 	return fmt.Sprintf("\n⏸️ paused: %s", strings.Join(paused, ", "))
+}
+
+// hedgeStatusNote lists hedge-enabled strategies and their held hedge leg
+// (#1159) for /status: id→coin×ratio, annotated with the open leg's
+// side/qty/basis or "(flat)". Empty string when no strategy has an enabled
+// hedge block. IDs are sorted for stable operator output.
+func hedgeStatusNote(strategies []StrategyConfig, state *AppState) string {
+	var ids []string
+	for _, sc := range strategies {
+		if HedgeEnabled(sc) && hedgeCoin(sc) != "" {
+			ids = append(ids, sc.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Strings(ids)
+	byID := strategyConfigByID(strategies)
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		sc := byID[id]
+		hc := hedgeCoin(sc)
+		note := fmt.Sprintf("%s→%s×%s", id, hc, formatHedgeRatio(HedgeRatio(sc)))
+		note += " (flat)"
+		if state != nil {
+			if ss := state.Strategies[id]; ss != nil {
+				if pos := ss.Positions[hc]; pos != nil && pos.HedgeFor != "" && pos.Quantity > 0 {
+					note = fmt.Sprintf("%s (%s %.6g held for %s, basis %.6g)", note, pos.Side, pos.Quantity, pos.HedgeFor, pos.HedgePrimaryQtyBasis)
+				}
+			}
+		}
+		parts = append(parts, note)
+	}
+	return fmt.Sprintf("\n🛡️ hedge: %s", strings.Join(parts, ", "))
 }
 
 func (d *DiscordNotifier) buildHealth() string {

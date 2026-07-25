@@ -797,7 +797,7 @@ func TestForceCloseHyperliquidLive_ThreadsStopLossOIDs(t *testing.T) {
 		}, nil
 	}
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, slOIDs)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, slOIDs, nil)
 	if len(report.Errors) != 0 {
 		t.Fatalf("expected no errors, got %v", report.Errors)
 	}
@@ -831,7 +831,7 @@ func TestForceCloseHyperliquidLive_CancelsAllSharedCoinStopLossOIDs(t *testing.T
 		}, nil
 	}
 
-	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, slOIDs)
+	report := forceCloseHyperliquidLive(context.Background(), positions, hlLiveAll, closer, slOIDs, nil)
 	if len(report.Errors) != 0 {
 		t.Fatalf("expected no errors, got %v", report.Errors)
 	}

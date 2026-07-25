@@ -597,6 +597,13 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	if sc.Paused {
 		parts = append(parts, "paused")
 	}
+	// #1159: surface the correlated hedge leg — coin, notional ratio, and the
+	// leg's resolved side/margin/leverage — so the audit line shows the full
+	// risk shape the strategy will open with.
+	if HedgeEnabled(sc) {
+		parts = append(parts, fmt.Sprintf("hedge=%s×%s(%s,%s,%sx)",
+			hedgeCoin(sc), formatHedgeRatio(HedgeRatio(sc)), hedgeSide(sc), hedgeMarginMode(sc), formatHedgeRatio(hedgeLeverage(sc))))
+	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
 	// (resolved, so a global wilder default tags every inheriting strategy).
@@ -677,6 +684,18 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	}
 	// #1150: pause state, always emitted so dashboards can key off it.
 	out["paused"] = sc.Paused
+	// #1159: correlated hedge block, resolved through the accessors (defaults
+	// applied) so external tools see the effective leg geometry. Omitted when
+	// the strategy has no enabled hedge block.
+	if HedgeEnabled(sc) {
+		out["hedge"] = map[string]interface{}{
+			"symbol":      hedgeCoin(sc),
+			"side":        hedgeSide(sc),
+			"ratio":       HedgeRatio(sc),
+			"margin_mode": hedgeMarginMode(sc),
+			"leverage":    hedgeLeverage(sc),
+		}
+	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows
 		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)

@@ -795,6 +795,22 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
+        # #1159: a correlated hedge leg opens/mirrors a second instrument
+        # (hedge symbol) alongside the primary position. The backtester
+        # models a single instrument, so an enabled hedge block would be
+        # silently dropped — hedge PnL and fees would never appear in the
+        # result. Reject loudly like the HL-live-only siblings above.
+        # Explicitly disabled (`"enabled": false`) passes through.
+        hedge_cfg = sc.get("hedge")
+        if isinstance(hedge_cfg, dict) and hedge_cfg.get("enabled") is not False:
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} uses "
+                f"hedge, which is HL-live-only in this release "
+                f"(backtester parity deferred — see #1159). The "
+                f"backtester models a single instrument and would "
+                f"silently drop hedge PnL/fees; set hedge.enabled=false "
+                f"to backtest the primary leg alone."
+            )
         # #842: a strategy has a single close_strategy ref. Still accept the
         # legacy close_strategies array (length <=1 after the collapse) so old
         # configs keep backtesting; the backtester's close_strategies= list

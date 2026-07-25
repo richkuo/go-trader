@@ -554,6 +554,14 @@ h3 {
   color: var(--red);
 }
 
+/* #1159: hedge-leg badge on position rows — muted, informational */
+.hedge-badge {
+  color: var(--muted);
+  font-weight: normal;
+  font-size: 0.85em;
+  margin-left: 0.35em;
+}
+
 /* #1230: risk / regime-store / transitions panels in the status rail */
 .risk-panel,
 .regime-store-panel,

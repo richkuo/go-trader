@@ -31,6 +31,10 @@ func knownManualDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(ManualDefaultsConfig{}))
 }
 
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownJSONKeys(t reflect.Type) map[string]bool {
 	known := make(map[string]bool)
 	for i := 0; i < t.NumField(); i++ {
@@ -107,6 +111,51 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+	}
+	return errs
+}
+
+// validateHedgeJSONKeys flags typos inside a strategy's `hedge` block (#1159).
+// Same rationale as validateStrategyJSONKeys: a misspelled key like "ration"
+// would silently unmarshal to the zero value and load as a hedge with the
+// default ratio — indistinguishable from operator intent without this guard.
+// The top-level "hedge" key itself is covered by the reflective
+// knownStrategyConfigKeys(); this pass checks the block's leaf keys.
+func validateHedgeJSONKeys(rawData []byte) []string {
+	var envelope struct {
+		Strategies []map[string]json.RawMessage `json:"strategies"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil {
+		return nil
+	}
+	known := knownHedgeConfigKeys()
+	var errs []string
+	for i, s := range envelope.Strategies {
+		raw, ok := s["hedge"]
+		if !ok {
+			continue
+		}
+		prefix := fmt.Sprintf("strategy[%d]", i)
+		if idRaw, ok := s["id"]; ok {
+			var id string
+			if json.Unmarshal(idRaw, &id) == nil && id != "" {
+				prefix = fmt.Sprintf("strategy[%s]", id)
+			}
+		}
+		var block map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &block); err != nil || block == nil {
+			continue // malformed hedge blocks are reported by the main unmarshal/validation
+		}
+		keys := make([]string, 0, len(block))
+		for k := range block {
+			if !known[k] {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
 		}
 	}
 	return errs

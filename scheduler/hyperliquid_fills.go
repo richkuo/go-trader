@@ -499,6 +499,45 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			}
 		}
 	}
+	// #1159: hedge-coin universe. Hedge legs carry no SL/TP OIDs of their
+	// own, so prefetch only the coin+size fallback candidates — the full
+	// external close (Detector-1 shape) and the same-direction partial drop —
+	// so a reconcile-detected hedge close books with the real userFills fee
+	// instead of the modeled fallback. Runs even when the PRIMARY is flat
+	// (orphan hedge leg: primary closed, hedge still held).
+	for _, sc := range allStrategies {
+		if !HedgeEnabled(sc) {
+			continue
+		}
+		ss := state.Strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		hc := hedgeCoin(sc)
+		if hc == "" {
+			continue
+		}
+		hpos := ss.Positions[hc]
+		if hpos == nil || hpos.HedgeFor == "" || hpos.Quantity <= 0 {
+			continue
+		}
+		onChainSize, present := onChainByCoin[hc]
+		mismatched := !present || math.Abs(math.Abs(onChainSize)-hpos.Quantity) > 1e-9
+		if !mismatched {
+			continue
+		}
+		addCandidate(hc, 0, hpos.Quantity)
+		if present && onChainSize != 0 {
+			signedVirtual := hpos.Quantity
+			if hpos.Side == "short" {
+				signedVirtual = -hpos.Quantity
+			}
+			sameDirection := (signedVirtual > 0 && onChainSize > 0) || (signedVirtual < 0 && onChainSize < 0)
+			if sameDirection && math.Abs(onChainSize)+1e-9 < hpos.Quantity {
+				addCandidate(hc, 0, hpos.Quantity-math.Abs(onChainSize))
+			}
+		}
+	}
 	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
 	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy
 	// prefetch above uses each strategy's own qty, but these detectors book

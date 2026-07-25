@@ -533,6 +533,22 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: hedge legs must be visible as strategy-owned virtual qty on
+		// their own coin — otherwise attributeSharedWalletUPnL classifies the
+		// hedge coin as an ORPHAN coin (phantom drift alerts) and
+		// wallet-ledger funding events on the hedge coin (keyed on the same
+		// map) never attribute to the owning strategy. Ownership comes from
+		// the persisted HedgeFor stamp, never from coin inference.
+		if key.Platform == "hyperliquid" && HedgeEnabled(sc) {
+			if hc := hedgeCoin(sc); hc != "" {
+				if hpos, hok := ss.Positions[hc]; hok && hpos != nil && hpos.HedgeFor != "" && hpos.Quantity > 0 {
+					if virtualQty[hc] == nil {
+						virtualQty[hc] = make(map[string]float64)
+					}
+					virtualQty[hc][id] = hpos.Quantity
+				}
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

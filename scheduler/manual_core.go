@@ -1437,9 +1437,125 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 		return res, manualFailf("error queuing force-close action: %v", err)
 	}
 
+	// #1159: flatten (or proportionally trim) the strategy's hedge leg
+	// alongside the primary. The hedge coin is sole-owned and carries no
+	// SL/TP, so a plain reduce-only close with no cancels is safe. A hedge
+	// failure never blocks the primary booking above — next-cycle hedge sync
+	// is the backstop, surfaced via a CRITICAL line.
+	if HedgeEnabled(sc) {
+		if hc := hedgeCoin(sc); hc != "" {
+			forceCloseHedgeLegCore(d, strategyID, hc, intentFullClose, closeQty, pos.Quantity, res)
+		}
+	}
+
 	res.queued = true
 	res.outf("Queued: force-close will be reflected in the dashboard after the next scheduler cycle.")
 	return res, nil
+}
+
+// forceCloseHedgeLegCore submits the reduce-only close for a force-closed
+// strategy's hedge leg and queues the matching PendingManualAction so the
+// scheduler adopts the booking (#1159 phase H). Full intent flattens via
+// market_close (nil size); partial intent trims the leg proportionally to
+// the primary fraction closed. Every failure mode degrades to a CRITICAL
+// output line — the next-cycle hedge sync re-targets the leg regardless.
+func forceCloseHedgeLegCore(d manualCoreDeps, strategyID, hc string, intentFullClose bool, primaryCloseQty, primaryPosQty float64, res *manualCoreResult) {
+	hv, herr := d.loadState(strategyID, hc)
+	if herr != nil {
+		res.errf("[CRITICAL] force-close: could not load hedge leg %s/%s state: %v — next-cycle hedge sync is the backstop", strategyID, hc, herr)
+		return
+	}
+	hpos := hv.Pos
+	if hpos == nil || hpos.HedgeFor == "" || hpos.Quantity <= 0 {
+		return // no held hedge leg — nothing to close
+	}
+
+	var hPartialSz *float64
+	if !intentFullClose {
+		hqty := hpos.Quantity
+		if primaryPosQty > 0 {
+			hqty = hpos.Quantity * (primaryCloseQty / primaryPosQty)
+		}
+		hPartialSz = &hqty
+	}
+
+	hResult, hErr := d.closer(hc, hPartialSz, nil)
+	if hErr != nil {
+		res.errf("[CRITICAL] force-close: hedge leg %s/%s close failed: %v — next-cycle hedge sync is the backstop", strategyID, hc, hErr)
+		return
+	}
+	if hResult == nil || hResult.Close == nil {
+		res.errf("[CRITICAL] force-close: hedge leg %s/%s close returned no result — next-cycle hedge sync is the backstop", strategyID, hc)
+		return
+	}
+	if hResult.Error != "" {
+		res.errf("[CRITICAL] force-close: hedge leg %s/%s close failed: %s — next-cycle hedge sync is the backstop", strategyID, hc, hResult.Error)
+		return
+	}
+	if hResult.Close.AlreadyFlat {
+		// On-chain flat while a virtual leg exists — the reconcile's
+		// external-close pass books it; queue nothing here.
+		res.errf("warning: hedge leg %s/%s already flat on-chain; scheduler reconcile will drop the virtual row", strategyID, hc)
+		return
+	}
+	hFill := hResult.Close.Fill
+	if hFill == nil || hFill.AvgPx <= 0 {
+		res.errf("[CRITICAL] force-close: hedge leg %s/%s close returned no usable fill — next-cycle hedge sync is the backstop", strategyID, hc)
+		return
+	}
+
+	hFilled := hFill.TotalSz
+	if hFilled <= 0 {
+		hFilled = hpos.Quantity
+		if hPartialSz != nil {
+			hFilled = *hPartialSz
+		}
+	}
+	hFee := hFill.Fee
+	if hFilled > hpos.Quantity {
+		if hFill.TotalSz > 0 {
+			hFee *= hpos.Quantity / hFill.TotalSz
+		}
+		res.errf("warning: hedge force-close fill size %.6f exceeds virtual hedge leg %.6f for %s/%s; attributing only the virtual quantity",
+			hFilled, hpos.Quantity, strategyID, hc)
+		hFilled = hpos.Quantity
+	}
+	if hFilled <= 0 {
+		res.errf("[CRITICAL] force-close: hedge leg %s/%s fill quantity is zero — next-cycle hedge sync is the backstop", strategyID, hc)
+		return
+	}
+
+	var hPnL float64
+	if hpos.Side == "long" {
+		hPnL = hFilled * (hFill.AvgPx - hpos.AvgCost)
+	} else {
+		hPnL = hFilled * (hpos.AvgCost - hFill.AvgPx)
+	}
+	hPnL -= hFee
+	var hOID string
+	if hFill.OID != 0 {
+		hOID = fmt.Sprintf("%d", hFill.OID)
+	}
+
+	hAction := PendingManualAction{
+		StrategyID:      strategyID,
+		Action:          "close",
+		Symbol:          hc,
+		Side:            closeTradeSide(hpos.Side),
+		Quantity:        hFilled,
+		FillPrice:       hFill.AvgPx,
+		FillFee:         hFee,
+		ExchangeOrderID: hOID,
+		RealizedPnL:     hPnL,
+		IsFullClose:     intentFullClose && hpos.Quantity-hFilled <= 0.0001,
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := d.stateDB.InsertPendingManualAction(hAction); err != nil {
+		res.errf("[CRITICAL] force-close: hedge leg %s/%s closed on-chain but failed to queue the adoption row: %v — next-cycle reconcile books it", strategyID, hc, err)
+		return
+	}
+	res.outf("Force-closed hedge: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
+		hFilled, hc, hFill.AvgPx, hPnL, hFee)
 }
 
 // ---------------------------------------------------------------------------

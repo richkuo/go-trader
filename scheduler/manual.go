@@ -566,7 +566,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			Quantity:        a.Quantity,
 			Price:           a.FillPrice,
 			Value:           a.Quantity * a.FillPrice,
-			TradeType:       "perps",
+			TradeType:       bookTradeTypeForPosition(pos, "perps"),
 			Details:         fmt.Sprintf("%s %s @ $%.4f | PnL=$%.2f", closeLabel, a.Symbol, a.FillPrice, a.RealizedPnL),
 			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
@@ -579,7 +579,9 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		}
 		RecordTrade(ss, trade)
 		if sc.Type != "manual" {
-			RecordTradeResult(&ss.RiskState, a.RealizedPnL)
+			// #1159: route through the hedge-aware router so a force-closed
+			// hedge leg feeds DailyPnL only, never the loss streak.
+			recordCloseTradeResult(ss, pos, a.RealizedPnL)
 		}
 		// Fix #1: perps close credits only the realized PnL; notional was never debited.
 		ss.Cash += a.RealizedPnL
