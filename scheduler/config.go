@@ -706,6 +706,45 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // HL perps only: opt-in auto-managed correlated hedge leg on a DIFFERENT coin, strictly coupled to the primary position's lifecycle (#1159). Nil/disabled = unchanged behavior. Read via HedgeEnabled/hedgeCoin/HedgeRatio/hedgeLeverage/hedgeMarginMode, never directly.
+}
+
+// HedgeConfig declares an automatically-managed correlated hedge leg for a
+// Hyperliquid perps strategy (#1159, phase 1). The hedge is NOT an independent
+// strategy: it has no check script, no close evaluator, and no stop-loss or
+// take-profit of its own. Its quantity mirrors primary-position QUANTITY events
+// (open / scale-in add / partial close / full close) at a fixed notional ratio;
+// mark-price drift alone never re-trades it.
+//
+// Phase-1 constraints enforced by validateHedgeConfigs:
+//   - only type=perps + platform=hyperliquid strategies may carry a hedge, and
+//     the block's own platform/type must agree;
+//   - side must be "inverse" (empty defaults to it);
+//   - the hedge coin must collide with nothing: not the strategy's own coin,
+//     not ANY configured strategy's coin, and not another strategy's hedge coin.
+//     Every shared-coin mechanism derives membership from
+//     hyperliquidConfiguredCoin, so collision rejection is what keeps hedge
+//     coins safely invisible to peer detection, margin matching, the CB drain,
+//     and kill-switch fill share;
+//   - direction "both" is rejected — a mid-flight flip is the one primary event
+//     that changes hedge SIDE, and the catastrophic-flip close-only degradation
+//     makes deterministic mirroring a phase-2 problem.
+type HedgeConfig struct {
+	Enabled bool    `json:"enabled"`         // false (or a nil block) = no hedge; everything else in the block is ignored
+	Symbol  string  `json:"symbol"`          // hedge instrument: HL coin ticker ("BTC") or a ccxt symbol ("BTC/USDC:USDC"); normalized to the coin ticker
+	Side    string  `json:"side,omitempty"`  // "inverse" only in phase 1 ("" defaults to it): hedge side is always the opposite of the LIVE primary side
+	Ratio   float64 `json:"ratio,omitempty"` // hedge notional as a multiple of primary notional; 0 → 1.0. Bounds (0, 10]
+
+	Platform string `json:"platform,omitempty"` // must be "" or "hyperliquid"
+	Type     string `json:"type,omitempty"`     // must be "" or "perps"
+
+	// MarginMode and Leverage are the hedge leg's OWN on-chain margin
+	// assignment — never inherited from the primary, because the hedge coin is
+	// a separate HL position with its own margin/leverage slot (#1159
+	// constraint 3). Applied via update_leverage on a FRESH hedge open only
+	// (HL rejects leverage updates on an open position).
+	MarginMode string  `json:"margin_mode,omitempty"` // "isolated" (default) or "cross"
+	Leverage   float64 `json:"leverage,omitempty"`    // 0 → 1. Bounds (0, 50]
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -2266,6 +2305,14 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+
+	// #1159: correlated hedge legs. The collision matrix here is what keeps
+	// hedge coins invisible to every hyperliquidConfiguredCoin-derived
+	// shared-coin mechanism (peer detection, margin matching, CB drain,
+	// kill-switch fill share) — validate before any live execution.
+	for _, msg := range validateHedgeConfigs(cfg) {
 		errs = append(errs, msg)
 	}
 

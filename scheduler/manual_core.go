@@ -1417,6 +1417,14 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 
 	res.outf("Force-closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
 		filledQty, sym, fillAvgPx, realizedPnL, fillFee)
+	// #1159: the hedge leg is converged by the scheduler's state-derived hedge
+	// sync, which sees the reduced/flat primary on its next cycle and reduces
+	// or closes the hedge to match. Say so explicitly so an operator running a
+	// force-close out-of-band knows a coupled leg is still open right now.
+	if hCoin := hedgeCoin(sc); hCoin != "" {
+		res.outf("note: strategy %s carries a correlated hedge leg on %s — the scheduler's hedge sync converges it on its next cycle (run `--once` to converge now) (#1159)",
+			strategyID, hCoin)
+	}
 
 	action := PendingManualAction{
 		StrategyID:      strategyID,

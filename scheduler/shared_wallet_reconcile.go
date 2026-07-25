@@ -533,6 +533,19 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
+		// #1159: a held hedge leg must appear here too. Without it,
+		// attributeSharedWalletUPnL classifies the hedge coin as an ORPHAN coin
+		// — producing phantom drift alerts — and the wallet-ledger funding
+		// events on that coin (ingestWalletLedgerEvents keys on the same map)
+		// never attribute to the owning strategy (requirement 6).
+		if key.Platform == "hyperliquid" {
+			if hCoin := strategyHeldHedgeCoin(sc, ss); hCoin != "" {
+				if virtualQty[hCoin] == nil {
+					virtualQty[hCoin] = make(map[string]float64)
+				}
+				virtualQty[hCoin][id] = ss.Positions[hCoin].Quantity
+			}
+		}
 	}
 	return capitalByID, virtualQty
 }

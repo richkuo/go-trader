@@ -23,6 +23,14 @@ func knownStrategyConfigKeys() map[string]bool {
 	return known
 }
 
+// knownHedgeConfigKeys returns the JSON tags declared on HedgeConfig (#1159).
+// knownStrategyConfigKeys only covers the top-level "hedge" key; without a
+// nested pass a typo'd `"ration": 0.5` silently defaults to ratio 1.0 and
+// places a hedge twice the intended size.
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownUserDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(UserDefaultsConfig{}))
 }
@@ -107,6 +115,24 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+		// #1159: the hedge block sizes live orders, so a dropped key is a
+		// silently mis-sized on-chain position. Validate its keys too.
+		if rawHedge, ok := s["hedge"]; ok {
+			var hedge map[string]json.RawMessage
+			if err := json.Unmarshal(rawHedge, &hedge); err == nil && hedge != nil {
+				hedgeKnown := knownHedgeConfigKeys()
+				hedgeKeys := make([]string, 0, len(hedge))
+				for k := range hedge {
+					if !hedgeKnown[k] {
+						hedgeKeys = append(hedgeKeys, k)
+					}
+				}
+				sort.Strings(hedgeKeys)
+				for _, k := range hedgeKeys {
+					errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q", prefix, k))
+				}
+			}
 		}
 	}
 	return errs

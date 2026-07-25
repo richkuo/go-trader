@@ -281,6 +281,14 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: a config edit + restart can leave a persisted hedge leg with no
+	// matching enabled hedge block (or on a different coin). Surface it loudly
+	// and leave the position frozen — never auto-close on a config warning.
+	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
+	for _, msg := range hedgeStateWarnings {
+		fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
+	}
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -512,6 +520,14 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward frozen-hedge-leg warnings — the restart path is the only
+	// place this is caught (the SIGHUP guard has no old value to diff).
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1440,6 +1456,17 @@ func main() {
 						}
 					}
 				}
+				// #1159: hedge coins the scheduler currently HOLDS a leg on,
+				// so the kill switch flattens them too instead of leaving
+				// naked hedge exposure on-chain.
+				hlHeldHedgeCoins := map[string]bool{}
+				for _, sc := range hlLiveAll {
+					if ss, ok := state.Strategies[sc.ID]; ok {
+						if hCoin := strategyHeldHedgeCoin(sc, ss); hCoin != "" {
+							hlHeldHedgeCoins[hCoin] = true
+						}
+					}
+				}
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
 				mu.RUnlock()
 
@@ -1452,6 +1479,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLHeldHedgeCoins:  hlHeldHedgeCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -2331,6 +2359,11 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
+							// #1159: set when THIS cycle produced a confirmed
+							// primary open/add, selecting the fail-closed
+							// escalation in runHedgeSync (unwind the primary
+							// rather than run it unhedged).
+							hedgeFreshOpen := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
@@ -2586,6 +2619,9 @@ func main() {
 									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
 								}
+								if openTrade != nil {
+									hedgeFreshOpen = true
+								}
 							}
 							// #998: stamp the active profile on a freshly opened
 							// position (freezes it for the position's life) and commit
@@ -2597,6 +2633,29 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1159: converge the correlated hedge leg. Runs on
+							// EVERY cycle of a hedge-enabled strategy — fresh
+							// open, scale-in add, evaluator close, and the
+							// Signal==0 manage path (incl. paused, daily-loss
+							// hold, and latched-CB manage-only) — because the
+							// decision is derived from current state versus the
+							// persisted quantity watermark, not from this
+							// cycle's event. That is what makes every primary
+							// close path self-mirroring without per-path hooks.
+							// Deliberately ungated by pause/daily-loss/exposure
+							// cap: a hedge order is a coupled risk-management
+							// leg, and those states can only hold the primary
+							// from growing, so hedge sync under them can only
+							// reduce or close.
+							if HedgeEnabled(sc) {
+								runHedgeSync(sc, stratState, &mu, hedgeSyncInputs{
+									PrimarySymbol: result.Symbol,
+									PrimaryPx:     price,
+									HedgePx:       prices[hedgeCoin(sc)],
+									FreshOpen:     hedgeFreshOpen,
+									Live:          hyperliquidIsLive(sc.Args),
+								}, liveHedgeExecutor{}, notifier, logger)
 							}
 						}
 					case "futures":

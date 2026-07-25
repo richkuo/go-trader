@@ -664,6 +664,9 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
+	if note := hedgeStatusNote(d.cfg.Strategies, d.ss.state); note != "" {
+		base += "\n" + note
+	}
 	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
 	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())

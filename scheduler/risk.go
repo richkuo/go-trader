@@ -71,6 +71,13 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		if sc.Type != "perps" {
 			continue
 		}
+		// #1159: a hedge leg needs a live mark for exactly the same reasons the
+		// primary does — PortfolioValue, the CB drawdown denominator, and the
+		// exposure model all fall back to AvgCost without one, which would hide
+		// the hedge's unrealized PnL from the strategy's own risk math.
+		if coin := hedgeCoin(sc); coin != "" && sc.Platform == "hyperliquid" {
+			hlSet[coin] = true
+		}
 		if len(sc.Args) < 2 {
 			continue
 		}
@@ -955,8 +962,21 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if !ok || qty <= 0 {
 		return
 	}
+	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+	// #1159: forceCloseAllPositions clears the virtual hedge leg alongside the
+	// primary, so without an on-chain close queued here the hedge would stay
+	// open on the exchange with nothing tracking it. Gate on the HELD leg (not
+	// on config) so a declared-but-flat hedge coin carrying a foreign position
+	// is never liquidated. Collision validation guarantees the hedge coin is
+	// sole-owned, so the peers>1 guard inside the sizing helper passes
+	// vacuously.
+	if hCoin := strategyHeldHedgeCoin(*sc, s); hCoin != "" {
+		if hQty, hOK := computeHyperliquidCircuitCloseQty(hCoin, s.ID, assist.HLPositions, assist.HLLiveAll); hOK && hQty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
+		}
+	}
 	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
+		Symbols: symbols,
 	})
 }
 
@@ -1169,6 +1189,14 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
+	// #1159: a hedge leg carries its own label so operator surfaces and the
+	// round-trip stats queries (which exclude trade_type='hedge') can tell it
+	// apart from an alpha position. Ledger sums are unaffected —
+	// tradeLedgerDeltaSQL/tradeNetPnLSQL deliberately ignore trade_type, which
+	// is exactly what books hedge PnL/fees to the owning strategy.
+	if pos.isHedgeLeg() {
+		return HedgeTradeType
+	}
 	if pos.Multiplier > 0 {
 		if s != nil {
 			switch {
@@ -1264,7 +1292,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		recordTradeResultForPosition(&s.RiskState, pos, pnl)
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1591,6 +1619,30 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 
 // RecordTradeResult updates risk state with realized PnL for daily limits and
 // consecutive-loss circuit breakers. Lifetime trade stats come from SQLite.
+// RecordHedgeTradeResult books a hedge leg's realized PnL into the daily/
+// drawdown aggregates WITHOUT touching the consecutive-loss counter (#1159).
+//
+// A hedge loses by construction whenever the primary thesis wins: counting it
+// in the loss streak would double-count a single trade idea and mis-fire the
+// circuit breaker's loss-streak arm after a run of PROFITABLE primaries. Daily
+// PnL, by contrast, must include it — #1269's daily-loss limit measures real
+// money, and a hedge's loss is real money.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
+}
+
+// recordTradeResultForPosition routes a close booking to the hedge-aware or
+// ordinary risk accumulator. Every perps close-booking site funnels through
+// here so a hedge leg can never silently advance the loss streak.
+func recordTradeResultForPosition(r *RiskState, pos *Position, pnl float64) {
+	if pos.isHedgeLeg() {
+		RecordHedgeTradeResult(r, pnl)
+		return
+	}
+	RecordTradeResult(r, pnl)
+}
+
 func RecordTradeResult(r *RiskState, pnl float64) {
 	rolloverDailyPnL(r)
 	r.DailyPnL += pnl

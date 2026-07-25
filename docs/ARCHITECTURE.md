@@ -54,6 +54,56 @@
 - `kill_switch_close.go`+`*_close.go` — `planKillSwitchClose(KillSwitchCloseInputs)` → `KillSwitchClosePlan{OnChainConfirmedFlat}`; new platform = add fields + a close/fetcher pair; OKX-spot/RH-options warn but don't block; auto-reset on confirmed-flat clears virtual state. **#1190** `formatKillSwitchResetPrompt` reuses the broadcast reason/close-report context, prefixes `killSwitchInstanceLabel` (derived from the deployed config path) + the HL wallet address, and states 'reset' only clears the latch (never itself closes/protects a position); when the plan hasn't confirmed flat (LATCHED/RETRYING) it also warns resting stop-losses may already be cancelled ahead of the flatten attempt. **#1368** `kill_switch_reset_dm_timeout` is independent of `alert_throttle_interval` — the two knobs govern different waits and are not interchangeable.
 - Also: `discord.go`, `hyperliquid_trailing_stop.go`, `portfolio.go` (`bookPerpsClose`/`recordPerpsExternalCloseWithFillFee`; `formatStatusLine(cash,posCount,value,trades,regime)` → `regime=<label>`/`-`; #1114 drops redundant `[classifier]` suffix from regime display; `PortfolioValue`), `*_marks.go`/`deribit.go` (`var xxxMainnetURL` for httptest), `init.go`, `sharpe.go`, `correlation.go`, `leaderboard.go`, `notifier.go`/`telegram.go`, `updater.go`, `pricer.go`, `tradingview_export.go` (`export tradingview`), `config_reload.go`.
 
+### `hedge.go` / `hedge_config.go` — correlated hedge legs (#1159, phase 1)
+
+Opt-in per-strategy auto-managed hedge leg on a DIFFERENT Hyperliquid coin, strictly coupled to the primary position. Config block `hedge: {enabled, symbol, side, ratio, platform, type, margin_mode, leverage}` on a `type=perps` + `platform=hyperliquid` strategy. Read via `HedgeEnabled` / `hedgeCoin` / `HedgeRatio` / `hedgeLeverage` / `hedgeMarginMode` / `hedgeSide` — never the fields directly. No config-version bump (purely additive).
+
+**Architecture: a state-derived reconciler, not per-event mirror hooks.** `hedgeTargetDecision(sc, snap, primaryPx, hedgePx)` is a pure function that diffs the CURRENT primary quantity against the persisted watermark `Position.HedgePrimaryQtyBasis`; `runHedgeSync` converges the hedge leg to that target on every HL perps dispatch cycle, including the `Signal==0` manage path. Consequence: fresh open, scale-in add, evaluator partial/full close, on-chain SL/TP fill detected by reconcile, ratchet close, #822 orphan close, and external close are all mirrored with no per-path hook. Only the two paths that bypass the dispatch loop — the portfolio kill switch and the per-strategy CB drain — get explicit extensions.
+
+Decision table (`hedgeTargetDecision`):
+
+| primary | hedge | result |
+|---|---|---|
+| flat | held | `closeFull` (never blocked on a missing mark — a full close is sized from the position) |
+| held | flat | `open`, side = inverse of live `pos.Side`, qty = primaryQty × primaryPx × ratio / hedgePx |
+| held | held, wrong side | `closeFull` (defense in depth; unreachable while `direction: "both"` is rejected) |
+| held, qty > basis | held | `add` sized on the DELTA notional |
+| held, qty < basis | held | `reduce` by the closed FRACTION of the hedge qty |
+| held, qty == basis | held | none — mark drift alone never re-trades |
+| basis == 0 (legacy row) | held | none + `AdoptBasis` (stamp the watermark, don't trade) |
+| unusable mark / unmappable side | any | `Blocked` → alert; on a fresh-open cycle, unwind the primary |
+
+A sub-$10 (`hedgeMinOrderNotionalUSD`) add/reduce defers and deliberately does NOT advance the basis, so the shortfall accumulates into a fillable order.
+
+**Fail-closed matrix.**
+
+| event | behavior |
+|---|---|
+| primary open failed | no position exists → decision returns none; no hedge order (test-asserted) |
+| primary filled, hedge open failed, SAME cycle | `unwindPrimaryAfterHedgeOpenFailure`: SIZED reduce-only close of the primary (never bare `market_close` — shared-coin peers) cancelling `hyperliquidProtectionCancelOIDs(pos)`, + CRITICAL owner DM and all-channels alert |
+| unwind itself failed | CRITICAL alert, state unchanged, NO latch — next cycle's state-derived sync retries the hedge open or the unwind. Restart-safe with zero new persisted flags |
+| hedge failure on a LATER cycle | alert + retry only. Never unwinds: the primary is already hedged or converging down, so a transient RPC error must not liquidate a healthy position |
+| hedge externally closed while primary open | reconcile books `hl_sync_external`; hedge sync re-opens next cycle |
+
+**Invariants.** Fill-confirmed state mutation only (mirrors `runHyperliquidExecuteOrder`'s `ok2=false` → no state update). `hedgeOrderSkipReason` re-reads state immediately before every spawn (skip-reason mirror rule). Sole ownership by construction: `validateHedgeConfigs` rejects a hedge coin equal to the strategy's own coin, to ANY configured strategy's coin (perps AND manual, live AND paper), or to another strategy's hedge coin — which is what keeps every `hyperliquidConfiguredCoin`-derived shared-coin mechanism correct while blind to hedge coins. `direction: "both"` + hedge is rejected (a mid-flight flip would change the hedge SIDE, and `perpsLiveOrderSize`'s catastrophic-flip close-only degradation makes deterministic mirroring a phase-2 problem). `side` accepts only `"inverse"`. Ownership lives in `Position.HedgeFor`, never inferred from coin→config mapping.
+
+**No protection.** The hedge symbol never enters `runHyperliquidProtectionSync`, the trailing walker, `post_tp_sl`, the regime store, `queueLLMEntryAnalysisIfOpened`, or any check script. It carries no SL/TP by design.
+
+**Accounting.** Hedge Trade rows carry `trade_type='hedge'`. `tradeLedgerDeltaSQL`/`tradeNetPnLSQL` ignore `trade_type`, which is exactly what books hedge PnL and fees into the OWNING strategy's ledger (requirement 6); `LifetimeTradeStatsAll` / `LifetimeTradeStatsForStrategy` exclude `trade_type='hedge'` from both the open count and the W/L round-trip aggregation. `RecordHedgeTradeResult` updates `DailyPnL` (a hedge loss is real money, #1269 must see it) but NEVER `ConsecutiveLosses` — a hedge loses by construction when the primary wins, so counting it would double-count one thesis and mis-fire the CB loss-streak arm. Route via `recordTradeResultForPosition`, never `RecordTradeResult`, at every perps close-booking site. `captureTradeDiagnostics` (#1147) is skipped for hedge legs.
+
+**Cross-subsystem extensions.** `collectPerpsMarkSymbols` emits hedge coins (else PortfolioValue/CB-drawdown/exposure fall back to AvgCost). `buildSharedWalletBooks` emits held hedge legs (else `attributeSharedWalletUPnL` classifies the coin as an orphan → phantom drift alerts, and wallet-ledger funding never attributes). `buildCachedHyperliquidReconcileFillResolver` includes hedge coins in its candidate universe. `reconcileHyperliquidAccountPositions` runs a hedge pass (sole-owned so never a "shared coin"); a foreign position on a declared hedge coin with NO virtual leg is WARNed and never adopted. `perpsRegimeDirectionOrphanConflict` (#822) and `ValidatePerpsDirectionConfig` skip hedge legs — an inverse leg is opposite the configured direction by design. `forceCloseHyperliquidLive` takes `heldHedgeCoins` (built from HELD legs, never config, so a declared-but-flat hedge coin carrying a foreign position is never liquidated); `snapshotHyperliquidVirtualQuantities` and `applyHyperliquidKillSwitchCloseFill` book the hedge coin's fill; `setHyperliquidCircuitBreakerPending` and the stuck-CB reconstruct append the hedge symbol (else `forceCloseAllPositions` clears it virtually while it stays on-chain).
+
+**Not gated by pause/daily-loss/exposure-cap/regime gate.** A hedge order is a coupled risk-management leg, not a signal. Those states can only hold the PRIMARY from growing, so hedge sync under them can only reduce or close — which is what they want.
+
+**Hot reload.** `sc.Hedge` is masked in `strategyRestartShape` (hot-reloadable, not restart-required) and blocked by `validateHotReloadStateCompatible` while `strategyHasOpenPositions` — which covers a residual hedge leg with the primary already flat, since the hedge lives in the same `Positions` map. `validateHotReloadCompatible` re-runs `validateHedgeConfigs(next)` so a reload can't introduce a collision. A config edit + process RESTART bypasses all of this, so `validateHedgeStateConsistency` warns loudly at startup and leaves the leg FROZEN (non-destructive — a config warning must never close live exposure).
+
+**Manual `force-close`.** No second on-chain close is issued; the next hedge-sync cycle converges the leg. `forceCloseCore` prints an explicit operator note naming the hedge coin.
+
+**Backtest: loud reject.** `load_strategy_config` in `backtest/run_backtest.py` rejects an ENABLED hedge block (a disabled block passes) — the single-instrument backtester would silently drop the hedge's PnL/fees/funding and report the primary's standalone edge as the hedged strategy's. Parity modeling is a follow-up.
+
+**Operator surfaces.** `formatStrategySummaryLine` appends `hedge=BTC×1.00(inverse,cross,3x)`; `/status` and the dashboard serialize `HedgeStatus` per strategy; Discord `/status` appends `hedgeStatusNote` listing held legs.
+
+
 ## Other dirs
 
 - `shared_scripts/` — `check_strategy.py`(spot), `check_options.py`(`--platform=…`), `check_price.py`, per-platform `check_{hyperliquid,topstep,robinhood,okx}.py` (OKX `--inst-type=spot|swap`), `fetch_*`, `close_*`; `strategy_tuner_schema.py --type <t> --strategy <name>` (`default_params`+description for tuner); `simulate_strategy.py` (stdin `{candles:[…], configs:[{label,config}]}` → `{markers:{label:[…]}}`); `check_regime.py` (#879 — dedicated regime subprocess; all check scripts accept `--regime-payload-json`, disabling inline `prepare_check_regime` via `regime_from_injected_payload`). All probed at startup when any strategy configured.

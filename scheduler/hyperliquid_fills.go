@@ -425,13 +425,27 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 	}
 
 	mu.RLock()
+	// #1159: hedge legs are reconciled like any other position, so their coins
+	// must be in the resolver's candidate universe — otherwise an externally
+	// closed hedge books at AvgCost with a modeled fee instead of the real
+	// userFills VWAP.
+	type reconcileTarget struct {
+		sc  StrategyConfig
+		sym string
+	}
+	targets := make([]reconcileTarget, 0, len(allStrategies)*2)
 	for _, sc := range allStrategies {
+		if sym := hyperliquidSymbol(sc.Args); sym != "" {
+			targets = append(targets, reconcileTarget{sc: sc, sym: sym})
+		}
+		if hCoin := hedgeCoin(sc); hCoin != "" {
+			targets = append(targets, reconcileTarget{sc: sc, sym: hCoin})
+		}
+	}
+	for _, t := range targets {
+		sc, sym := t.sc, t.sym
 		ss := state.Strategies[sc.ID]
 		if ss == nil {
-			continue
-		}
-		sym := hyperliquidSymbol(sc.Args)
-		if sym == "" {
 			continue
 		}
 		pos := ss.Positions[sym]

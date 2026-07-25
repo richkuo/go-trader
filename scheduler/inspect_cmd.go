@@ -519,6 +519,13 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.Paused {
 		fmt.Fprintf(&b, "  paused:              true — position-increasing signals held; closes and SL/TP management still run\n")
 	}
+	// #1159: correlated hedge leg. Surfaced only when configured so the normal
+	// case stays uncluttered; an operator must never mistake the extra on-chain
+	// position for an unmanaged one.
+	if hCoin := hedgeCoin(sc); hCoin != "" {
+		fmt.Fprintf(&b, "  hedge:               %s ×%.2f (%s, %s, %gx) — auto-managed, coupled to the primary; no SL/TP of its own\n",
+			hCoin, HedgeRatio(sc), hedgeSide(sc), hedgeMarginMode(sc), hedgeLeverage(sc))
+	}
 	if sc.IntervalSeconds > 0 {
 		fmt.Fprintf(&b, "  interval_seconds:    %d\n", sc.IntervalSeconds)
 	} else if cfg != nil {
@@ -596,6 +603,11 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	// #1150: surface a paused strategy in the startup summary line.
 	if sc.Paused {
 		parts = append(parts, "paused")
+	}
+	// #1159: surface an active correlated hedge leg — an operator must never
+	// mistake the extra on-chain position for an unmanaged one.
+	if hCoin := hedgeCoin(sc); hCoin != "" {
+		parts = append(parts, fmt.Sprintf("hedge=%s×%.2f(%s,%s,%gx)", hCoin, HedgeRatio(sc), hedgeSide(sc), hedgeMarginMode(sc), hedgeLeverage(sc)))
 	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
@@ -691,6 +703,16 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["leverage"] = EffectiveExchangeLeverage(sc)
 		out["sizing_leverage"] = EffectiveSizingLeverage(sc)
 		out["margin_mode"] = sc.MarginMode
+	}
+	// #1159: hedge block, emitted only when configured.
+	if hCoin := hedgeCoin(sc); hCoin != "" {
+		out["hedge"] = map[string]interface{}{
+			"symbol":      hCoin,
+			"side":        hedgeSide(sc),
+			"ratio":       HedgeRatio(sc),
+			"margin_mode": hedgeMarginMode(sc),
+			"leverage":    hedgeLeverage(sc),
+		}
 	}
 	if sc.Platform == "hyperliquid" && (sc.Type == "perps" || sc.Type == "manual") {
 		sl := resolveStopLoss(sc, explicit)
