@@ -52,6 +52,50 @@ func runHedgeSync(
 	if s == nil || mu == nil {
 		return
 	}
+	// One action per cycle, EXCEPT for a replace. The decision emits at most one
+	// action, so swapping a hedge (a primary side flip, or a changed
+	// hedge.symbol) needs close-then-reopen. Stopping after the close would
+	// leave the primary running with no correctly-sided hedge for a full
+	// strategy interval — the exact state this feature exists to prevent — so
+	// hedgeSyncStep signals "replace in progress" and the loop performs the
+	// reopen immediately.
+	//
+	// Every iteration re-snapshots and re-decides from scratch, so this is
+	// exactly equivalent to running the sync twice in a row, and a failed reopen
+	// still fail-closes the now-unhedged primary through the normal path. The
+	// cap is a hard backstop guaranteeing the loop cannot spin inside one cycle.
+	for i := 0; i < hedgeSyncMaxStepsPerCycle; i++ {
+		if !hedgeSyncStep(sc, s, mu, prices, notifier, logger) {
+			return
+		}
+	}
+	if logger != nil {
+		logger.Warn("hedge-sync: hit the %d-action cap in one cycle for %s — deferring the remainder to the next cycle (#1159)",
+			hedgeSyncMaxStepsPerCycle, sc.ID)
+	}
+}
+
+// hedgeSyncMaxStepsPerCycle bounds the convergence loop. Only a replace
+// (unwind-then-reopen) continues, so two actions is the real maximum any
+// reachable state needs; the extra slot is headroom against a state that
+// somehow chains another replace, and the cap itself is the hard backstop that
+// guarantees the loop cannot spin inside one cycle.
+const hedgeSyncMaxStepsPerCycle = 3
+
+// hedgeSyncStep performs at most one hedge action. Returns true only when the
+// action that just applied was HALF of a replace (hedgeAction.ReopenAfterClose)
+// — the caller must then re-derive and open the correct hedge in the same
+// cycle. Returns false for a converged hedge, a skipped step, a failed action
+// (handled here; never retried within the cycle), and for every ordinary
+// open/add/reduce, which keep the one-action-per-cycle cadence.
+func hedgeSyncStep(
+	sc StrategyConfig,
+	s *StrategyState,
+	mu *sync.RWMutex,
+	prices map[string]float64,
+	notifier *MultiNotifier,
+	logger *StrategyLogger,
+) bool {
 	// Phase 1: snapshot under RLock.
 	mu.RLock()
 	snap := hedgeSnapshotFor(sc, s, prices)
@@ -60,7 +104,7 @@ func runHedgeSync(
 	// A strategy with no hedge config and no hedge leg is the overwhelmingly
 	// common case — bail before doing any work.
 	if !HedgeEnabled(sc) && snap.HedgeQty <= 0 && snap.HedgeStaleReason == "" {
-		return
+		return false
 	}
 
 	action := hedgeTargetDecision(HedgeEnabled(sc), hedgeRatio(sc), snap)
@@ -68,7 +112,7 @@ func runHedgeSync(
 		if action.Blocked {
 			hedgeHandleBlockedAction(sc, s, mu, snap, action, prices, notifier, logger)
 		}
-		return
+		return false
 	}
 	if logger != nil {
 		logger.Info("hedge-sync: %s %s %.6f — %s", action.Kind, snap.HedgeSymbol, action.Qty, action.Reason)
@@ -84,13 +128,13 @@ func runHedgeSync(
 		if logger != nil {
 			logger.Info("hedge-sync: skipping %s on %s — %s", action.Kind, snap.HedgeSymbol, reason)
 		}
-		return
+		return false
 	}
 
 	fill, ok := runHedgeOrder(sc, snap, action, notifier, logger)
 	if !ok {
 		hedgeHandleOrderFailure(sc, s, mu, snap, action, prices, notifier, logger)
-		return
+		return false
 	}
 	if action.Kind.hedgeIncreasesExposure() {
 		globalHedgeFailures.clear(sc.ID)
@@ -100,6 +144,7 @@ func runHedgeSync(
 	mu.Lock()
 	applyHedgeFill(sc, s, snap, action, fill, logger)
 	mu.Unlock()
+	return action.ReopenAfterClose
 }
 
 // hedgeStrategyHoldsLeg reports whether the strategy currently holds a hedge
@@ -527,26 +572,33 @@ func hedgeHandleOrderFailure(
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
 ) {
-	if !action.Kind.hedgeIncreasesExposure() {
+	if !action.FailureLeavesPrimaryExposed {
+		// The residual leg is still INVERSE to the primary (an over-sized
+		// hedge), or the primary is already flat so there is nothing to unwind.
+		// Either way net exposure is no larger than intended, the retry is
+		// reduce-only and therefore bounded, and escalating would close a
+		// correctly-hedged position for no risk reduction.
+		detail := "the hedge leg is larger than the primary it covers"
+		if snap.PrimaryQty <= 0 {
+			detail = "the primary is already flat, so this residual leg is all that remains"
+		}
 		if logger != nil {
-			logger.Error("CRITICAL: hedge %s on %s failed — hedge remains over-sized vs the primary; retrying next cycle (reduce-only, bounded)",
-				action.Kind, snap.HedgeSymbol)
+			logger.Error("CRITICAL: hedge %s on %s failed — %s; retrying next cycle (reduce-only, bounded)",
+				action.Kind, snap.HedgeSymbol, detail)
 		}
 		hedgeNotifyCritical(notifier, fmt.Sprintf(
-			"**HEDGE %s FAILED** [%s] %s — the hedge leg is larger than the primary it covers. It is reduce-only and will retry every cycle.",
-			action.Kind.String(), sc.ID, snap.HedgeSymbol))
+			"**HEDGE %s FAILED** [%s] %s — %s. The retry is reduce-only and runs every cycle.",
+			action.Kind.String(), sc.ID, snap.HedgeSymbol, detail))
 		return
 	}
 	count, firstHold := globalHedgeFailures.recordFailure(sc.ID)
 	if logger != nil {
-		logger.Error("CRITICAL: hedge %s on %s failed (consecutive failures: %d) — unwinding the unhedged primary slice (#1159 fail-closed)",
-			action.Kind, snap.HedgeSymbol, count)
+		logger.Error("CRITICAL: hedge %s on %s failed (consecutive failures: %d) — unwinding the %.6f %s of primary no hedge covers (#1159 fail-closed)",
+			action.Kind, snap.HedgeSymbol, count, snap.PrimaryQty-action.HedgedPrimaryQtyOnFailure, snap.PrimarySymbol)
 	}
-	unwindUnhedgedPrimary(sc, s, mu, snap, prices, notifier, logger)
+	unwindUnhedgedPrimary(sc, s, mu, snap, action.HedgedPrimaryQtyOnFailure, prices, notifier, logger)
 	if firstHold {
-		hedgeNotifyCritical(notifier, fmt.Sprintf(
-			"**HEDGE ENTRY HOLD** [%s] %d consecutive hedge-leg failures on %s — new entries are held until a hedge opens successfully. Existing positions keep managing and closing normally.",
-			sc.ID, count, snap.HedgeSymbol))
+		hedgeNotifyCritical(notifier, hedgeEntryHoldMessage(sc.ID, count, snap.HedgeSymbol))
 	}
 }
 
@@ -563,18 +615,21 @@ func hedgeHandleBlockedAction(
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
 ) {
-	unhedged := snap.PrimaryQty > 0 && (snap.HedgeQty <= 0 || snap.PrimaryQty > snap.HedgeBasis)
-	if !unhedged {
+	if !action.FailureLeavesPrimaryExposed || snap.PrimaryQty <= 0 {
 		if logger != nil {
 			logger.Warn("hedge-sync: %s", action.Reason)
 		}
 		return
 	}
 	if logger != nil {
-		logger.Error("CRITICAL: hedge cannot be sized for %s — %s; unwinding the unhedged primary slice (#1159 fail-closed)", snap.PrimarySymbol, action.Reason)
+		logger.Error("CRITICAL: hedge cannot be sized for %s — %s; unwinding the %.6f %s of primary no hedge covers (#1159 fail-closed)",
+			snap.PrimarySymbol, action.Reason, snap.PrimaryQty-action.HedgedPrimaryQtyOnFailure, snap.PrimarySymbol)
 	}
-	globalHedgeFailures.recordFailure(sc.ID)
-	unwindUnhedgedPrimary(sc, s, mu, snap, prices, notifier, logger)
+	count, firstHold := globalHedgeFailures.recordFailure(sc.ID)
+	unwindUnhedgedPrimary(sc, s, mu, snap, action.HedgedPrimaryQtyOnFailure, prices, notifier, logger)
+	if firstHold {
+		hedgeNotifyCritical(notifier, hedgeEntryHoldMessage(sc.ID, count, snap.HedgeSymbol))
+	}
 }
 
 // unwindUnhedgedPrimary closes, reduce-only, the slice of the primary position
@@ -594,6 +649,7 @@ func unwindUnhedgedPrimary(
 	s *StrategyState,
 	mu *sync.RWMutex,
 	snap hedgeSnapshot,
+	hedgedQty float64,
 	prices map[string]float64,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
@@ -602,9 +658,12 @@ func unwindUnhedgedPrimary(
 	if sym == "" || snap.PrimaryQty <= 0 {
 		return
 	}
-	hedgedQty := 0.0
-	if snap.HedgeQty > 0 && snap.HedgeBasis > 0 {
-		hedgedQty = snap.HedgeBasis
+	// hedgedQty comes from the DECISION (hedgeAction.HedgedPrimaryQtyOnFailure),
+	// never from the snapshot's basis: after a side flip the stale basis still
+	// reads as the pre-flip quantity even though the residual same-side leg
+	// hedges none of the new primary.
+	if hedgedQty < 0 {
+		hedgedQty = 0
 	}
 	unwindQty := snap.PrimaryQty - hedgedQty
 	if unwindQty <= 0 {

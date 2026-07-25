@@ -434,7 +434,7 @@ func TestHedgeOrderSkipReasonCatchesStateMovingUnderTheDecision(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHedgeEntryHoldEngagesAfterConsecutiveFailuresAndClears(t *testing.T) {
-	tracker := &hedgeFailureTracker{counts: map[string]int{}, warned: map[string]bool{}}
+	tracker := newHedgeFailureTracker()
 	prev := globalHedgeFailures
 	globalHedgeFailures = tracker
 	defer func() { globalHedgeFailures = prev }()

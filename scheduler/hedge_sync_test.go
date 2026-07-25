@@ -71,7 +71,7 @@ func stubHedgeExecutors(t *testing.T,
 func resetHedgeFailures(t *testing.T) {
 	t.Helper()
 	prev := globalHedgeFailures
-	globalHedgeFailures = &hedgeFailureTracker{counts: map[string]int{}, warned: map[string]bool{}}
+	globalHedgeFailures = newHedgeFailureTracker()
 	t.Cleanup(func() { globalHedgeFailures = prev })
 }
 
@@ -249,15 +249,19 @@ func TestHedgeSyncUnwindsStaleHedgeWhenSymbolChanges(t *testing.T) {
 	sc.Hedge.Symbol = "SOL"
 	prices := hedgeTestPrices()
 	prices["SOL"] = 150
+	// A symbol change is a REPLACE: the stale leg is unwound and the newly
+	// configured hedge opens in the SAME cycle, so the primary is never left
+	// without a hedge for a whole strategy interval.
 	runHedgeSync(sc, s, &mu, prices, nil, nil)
 	if _, ok := s.Positions["BTC"]; ok {
-		t.Fatal("the stale BTC leg must be unwound first")
+		t.Fatal("the stale BTC leg must be unwound")
 	}
-	// The next cycle opens the newly configured hedge.
-	runHedgeSync(sc, s, &mu, prices, nil, nil)
 	sol := s.Positions["SOL"]
 	if sol == nil || sol.HedgeFor != "ETH" {
-		t.Fatalf("the reconfigured SOL hedge must open on the following cycle, got %+v", sol)
+		t.Fatalf("the reconfigured SOL hedge must open in the same cycle, got %+v", sol)
+	}
+	if sol.Side != "short" {
+		t.Errorf("the replacement hedge must be inverse of the long primary, got %q", sol.Side)
 	}
 }
 
@@ -530,8 +534,12 @@ func TestHedgeRepeatedOpenFailuresEngageEntryHold(t *testing.T) {
 
 func TestHedgeSuccessClearsEntryHold(t *testing.T) {
 	resetHedgeFailures(t)
-	globalHedgeFailures.counts["eth"] = hedgeOpenFailureHoldThreshold
-	globalHedgeFailures.warned["eth"] = true
+	for i := 0; i < hedgeOpenFailureHoldThreshold; i++ {
+		globalHedgeFailures.recordFailure("eth")
+	}
+	if !hedgeEntryHoldActive(hedgeTestConfig("live")) {
+		t.Fatal("precondition: the hold should be engaged before the successful open")
+	}
 
 	stubHedgeExecutors(t, okExecute(0.1, 60000, 5), nil, nil)
 	var mu sync.RWMutex
@@ -1416,5 +1424,377 @@ func TestCircuitDrainStripsOnlySharedPrimaryAndStillClosesHedge(t *testing.T) {
 	}
 	if _, ok := state.Strategies["hl-a"].Positions["ETH"]; !ok {
 		t.Error("the shared primary must be left untouched on-chain and in state")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Side-flip safety (review #1406: amplified same-direction exposure)
+// ---------------------------------------------------------------------------
+
+// hedgeFlipFixture returns a converged hedged pair, then flips the primary so
+// the surviving hedge leg is momentarily SAME-direction as the primary.
+func hedgeFlipFixture(t *testing.T, primarySide, flippedSide string, primaryQty float64) (StrategyConfig, *StrategyState) {
+	t.Helper()
+	sc := hedgeTestConfig("live")
+	s := hedgeTestState(primaryQty, primarySide)
+	s.Positions["BTC"] = &Position{
+		Symbol: "BTC", Quantity: primaryQty * 3000 / 60000, InitialQuantity: primaryQty * 3000 / 60000,
+		AvgCost: 60000, Side: hedgeInverseSide(primarySide), Multiplier: 1,
+		OwnerStrategyID: "eth", HedgeFor: "ETH", HedgePrimaryQtyBasis: primaryQty,
+	}
+	s.Positions["ETH"].Side = flippedSide
+	return sc, s
+}
+
+// The blocking finding: a failed side-mismatch close leaves a residual leg on
+// the SAME side as the flipped primary — roughly double correlated exposure,
+// not a benign over-hedge — so it must fail-close the primary.
+func TestHedgeFlipCloseFailureUnwindsPrimary(t *testing.T) {
+	for _, c := range []struct{ name, from, to string }{
+		{"long to short", "long", "short"},
+		{"short to long", "short", "long"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			resetHedgeFailures(t)
+			var unwoundSz float64
+			unwinds := 0
+			stubHedgeExecutors(t, nil,
+				func(string, string, *float64, []int64) (*HyperliquidCloseResult, string, error) {
+					return nil, "", errors.New("hedge venue rejected the close")
+				},
+				func(_ string, _ string, sz *float64, _ []int64) (*HyperliquidCloseResult, string, error) {
+					unwinds++
+					unwoundSz = *sz
+					return &HyperliquidCloseResult{Close: &HyperliquidClose{
+						Fill: &HyperliquidCloseFill{TotalSz: *sz, AvgPx: 3000, OID: 11, Fee: 1},
+					}}, "", nil
+				})
+
+			var mu sync.RWMutex
+			sc, s := hedgeFlipFixture(t, c.from, c.to, 2)
+			runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+
+			if unwinds != 1 {
+				t.Fatalf("a failed side-mismatch close must fail-close the primary, unwinds=%d", unwinds)
+			}
+			if math.Abs(unwoundSz-2) > 1e-9 {
+				t.Errorf("the WHOLE primary must unwind (the residual leg hedges none of the new side), got %v", unwoundSz)
+			}
+			if _, ok := s.Positions["ETH"]; ok {
+				t.Error("the primary must be booked closed — it was running at amplified exposure")
+			}
+			if globalHedgeFailures.count("eth") != 1 {
+				t.Errorf("the failure must count toward the entry hold, got %d", globalHedgeFailures.count("eth"))
+			}
+		})
+	}
+}
+
+// Case (c): a flip right after a scale-in leaves a residual leg LARGER than the
+// pre-flip hedge. The stale basis must not be credited as covered exposure.
+func TestHedgeFlipAfterScaleInUnwindsWholePrimaryNotJustTheDelta(t *testing.T) {
+	resetHedgeFailures(t)
+	var unwoundSz float64
+	stubHedgeExecutors(t, nil,
+		func(string, string, *float64, []int64) (*HyperliquidCloseResult, string, error) {
+			return nil, "", errors.New("close rejected")
+		},
+		func(_ string, _ string, sz *float64, _ []int64) (*HyperliquidCloseResult, string, error) {
+			unwoundSz = *sz
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+				Fill: &HyperliquidCloseFill{TotalSz: *sz, AvgPx: 3000, OID: 12, Fee: 1},
+			}}, "", nil
+		})
+
+	var mu sync.RWMutex
+	sc, s := hedgeFlipFixture(t, "long", "short", 3) // scaled in to 3 ETH, basis 3
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+
+	if math.Abs(unwoundSz-3) > 1e-9 {
+		t.Fatalf("the stale basis must NOT be treated as covered — expected the whole 3 ETH, got %v", unwoundSz)
+	}
+}
+
+// Case (d), the over-escalation guard: a genuine proportional reduce failure on
+// a still-INVERSE hedge stays benign and must not unwind anything.
+func TestHedgeInverseReduceFailureStillDoesNotUnwind(t *testing.T) {
+	resetHedgeFailures(t)
+	unwinds := 0
+	stubHedgeExecutors(t, nil,
+		func(string, string, *float64, []int64) (*HyperliquidCloseResult, string, error) {
+			return nil, "", errors.New("reduce rejected")
+		},
+		func(string, string, *float64, []int64) (*HyperliquidCloseResult, string, error) {
+			unwinds++
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+				Fill: &HyperliquidCloseFill{TotalSz: 1, AvgPx: 3000},
+			}}, "", nil
+		})
+
+	var mu sync.RWMutex
+	sc := hedgeTestConfig("live")
+	s := hedgeTestState(1, "long") // primary shrank 2 → 1
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short",
+		Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 2}
+
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+
+	if unwinds != 0 {
+		t.Fatal("an over-sized but still-inverse hedge is risk-reducing — it must never unwind the primary")
+	}
+	if s.Positions["ETH"] == nil || globalHedgeFailures.count("eth") != 0 {
+		t.Error("a benign reduce failure must not count toward the entry hold or touch the primary")
+	}
+}
+
+// A failed close with the primary already flat has no primary to unwind — the
+// reduce-only retry is the only action, and it must not be mis-escalated.
+func TestHedgeCloseFailureWithFlatPrimaryDoesNotEscalate(t *testing.T) {
+	resetHedgeFailures(t)
+	unwinds := 0
+	stubHedgeExecutors(t, nil,
+		func(string, string, *float64, []int64) (*HyperliquidCloseResult, string, error) {
+			return nil, "", errors.New("close rejected")
+		},
+		func(string, string, *float64, []int64) (*HyperliquidCloseResult, string, error) {
+			unwinds++
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{Fill: &HyperliquidCloseFill{TotalSz: 1, AvgPx: 1}}}, "", nil
+		})
+
+	var mu sync.RWMutex
+	sc := hedgeTestConfig("live")
+	s := hedgeTestState(0, "")
+	s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short",
+		Multiplier: 1, HedgeFor: "ETH", HedgePrimaryQtyBasis: 2}
+
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+
+	if unwinds != 0 {
+		t.Fatal("there is no primary to unwind when it is already flat")
+	}
+	if s.Positions["BTC"] == nil {
+		t.Error("a failed close must mutate no state so the next cycle retries")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Same-cycle replace (review #1406 optional 2)
+// ---------------------------------------------------------------------------
+
+// Case (a): a clean flip closes the stale leg AND opens the correctly-sided one
+// in a single cycle, so the primary is never unhedged for a strategy interval.
+func TestHedgeFlipReplacesHedgeInOneCycle(t *testing.T) {
+	resetHedgeFailures(t)
+	var orders []string
+	stubHedgeExecutors(t,
+		func(_ string, symbol, side string, size, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+			orders = append(orders, "open:"+side+":"+symbol)
+			return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{
+				Fill: &HyperliquidFill{TotalSz: size, AvgPx: 60000, OID: 3, Fee: 1},
+			}}, "", nil
+		},
+		func(_ string, symbol string, sz *float64, _ []int64) (*HyperliquidCloseResult, string, error) {
+			orders = append(orders, "close:"+symbol)
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+				Fill: &HyperliquidCloseFill{TotalSz: *sz, AvgPx: 60000, OID: 2, Fee: 1},
+			}}, "", nil
+		}, nil)
+
+	var mu sync.RWMutex
+	sc, s := hedgeFlipFixture(t, "long", "short", 2)
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+
+	if len(orders) != 2 || orders[0] != "close:BTC" || orders[1] != "open:buy:BTC" {
+		t.Fatalf("expected a same-cycle close-then-reopen, got %v", orders)
+	}
+	hedge := s.Positions["BTC"]
+	if hedge == nil || hedge.Side != "long" {
+		t.Fatalf("the replacement hedge must be LONG (inverse of the flipped short primary), got %+v", hedge)
+	}
+	if hedge.HedgePrimaryQtyBasis != 2 {
+		t.Errorf("the replacement hedge must re-base on the current primary qty, got %v", hedge.HedgePrimaryQtyBasis)
+	}
+	if s.Positions["ETH"] == nil {
+		t.Error("a successful replace must leave the primary running")
+	}
+}
+
+// Case (b): if the reopen half of a replace cannot be sized, the now-unhedged
+// primary must still fail-close.
+func TestHedgeFlipReopenFailureStillFailsClosed(t *testing.T) {
+	resetHedgeFailures(t)
+	var unwoundSz float64
+	stubHedgeExecutors(t,
+		func(string, string, string, float64, float64, int64, float64, string, float64, bool, hlExecuteSnapshot, ...int64) (*HyperliquidExecuteResult, string, error) {
+			return nil, "", errors.New("reopen rejected")
+		},
+		func(_ string, _ string, sz *float64, _ []int64) (*HyperliquidCloseResult, string, error) {
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+				Fill: &HyperliquidCloseFill{TotalSz: *sz, AvgPx: 60000, OID: 2, Fee: 1},
+			}}, "", nil
+		},
+		func(_ string, _ string, sz *float64, _ []int64) (*HyperliquidCloseResult, string, error) {
+			unwoundSz = *sz
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+				Fill: &HyperliquidCloseFill{TotalSz: *sz, AvgPx: 3000, OID: 13, Fee: 1},
+			}}, "", nil
+		})
+
+	var mu sync.RWMutex
+	sc, s := hedgeFlipFixture(t, "long", "short", 2)
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+
+	if _, ok := s.Positions["BTC"]; ok {
+		t.Error("the stale leg should have been closed successfully")
+	}
+	if math.Abs(unwoundSz-2) > 1e-9 {
+		t.Fatalf("a failed reopen must fail-close the whole now-unhedged primary, unwound %v", unwoundSz)
+	}
+	if _, ok := s.Positions["ETH"]; ok {
+		t.Error("the primary must be booked closed after the reopen failed")
+	}
+}
+
+// Case (c): a second flip on the following cycle converges just as cleanly.
+func TestHedgeRapidDoubleFlipConvergesEachCycle(t *testing.T) {
+	resetHedgeFailures(t)
+	stubHedgeExecutors(t,
+		func(_ string, _, _ string, size, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+			return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{
+				Fill: &HyperliquidFill{TotalSz: size, AvgPx: 60000, OID: 4, Fee: 1},
+			}}, "", nil
+		},
+		func(_ string, _ string, sz *float64, _ []int64) (*HyperliquidCloseResult, string, error) {
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+				Fill: &HyperliquidCloseFill{TotalSz: *sz, AvgPx: 60000, OID: 5, Fee: 1},
+			}}, "", nil
+		}, nil)
+
+	var mu sync.RWMutex
+	sc, s := hedgeFlipFixture(t, "long", "short", 2)
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+	if s.Positions["BTC"].Side != "long" {
+		t.Fatalf("first flip: hedge side = %q, want long", s.Positions["BTC"].Side)
+	}
+	// Flip straight back on the next cycle.
+	s.Positions["ETH"].Side = "long"
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+	if s.Positions["BTC"].Side != "short" {
+		t.Fatalf("second flip: hedge side = %q, want short", s.Positions["BTC"].Side)
+	}
+	if s.Positions["ETH"] == nil {
+		t.Error("neither flip should have unwound the primary — both replaces succeeded")
+	}
+}
+
+// An ordinary partial fill must NOT re-fire within the cycle: looping there
+// would triple order count on a thin book chasing a gap the next cycle closes.
+func TestHedgePartialFillDoesNotReorderWithinTheCycle(t *testing.T) {
+	resetHedgeFailures(t)
+	orders := 0
+	stubHedgeExecutors(t,
+		func(_ string, _, _ string, size, _ float64, _ int64, _ float64, _ string, _ float64, _ bool, _ hlExecuteSnapshot, _ ...int64) (*HyperliquidExecuteResult, string, error) {
+			orders++
+			return &HyperliquidExecuteResult{Execution: &HyperliquidExecution{
+				Fill: &HyperliquidFill{TotalSz: size / 2, AvgPx: 60000, OID: 6, Fee: 1},
+			}}, "", nil
+		}, nil, nil)
+
+	var mu sync.RWMutex
+	sc := hedgeTestConfig("live")
+	s := hedgeTestState(2, "long")
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+
+	if orders != 1 {
+		t.Fatalf("a partial fill must be retried NEXT cycle, not re-ordered immediately; orders=%d", orders)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Entry hold recovery (review #1406 optional 1)
+// ---------------------------------------------------------------------------
+
+// The hold must have a reachable clear condition — it blocks the very opens
+// that a success-only rule would need, so it expires on a timer.
+func TestHedgeEntryHoldExpiresAndReArms(t *testing.T) {
+	resetHedgeFailures(t)
+	now := time.Now()
+	globalHedgeFailures.now = func() time.Time { return now }
+
+	sc := hedgeTestConfig("live")
+	var dms int
+	for i := 0; i < hedgeOpenFailureHoldThreshold; i++ {
+		if _, first := globalHedgeFailures.recordFailure("eth"); first {
+			dms++
+		}
+	}
+	if !hedgeEntryHoldActive(sc) {
+		t.Fatal("the hold must engage at the threshold")
+	}
+	if dms != 1 {
+		t.Errorf("exactly one DM per episode, got %d", dms)
+	}
+
+	// Still held just before the cooldown elapses.
+	now = now.Add(hedgeEntryHoldCooldown - time.Minute)
+	if !hedgeEntryHoldActive(sc) {
+		t.Fatal("the hold must persist for the full cooldown window")
+	}
+
+	// Lifts on its own — no restart required.
+	now = now.Add(2 * time.Minute)
+	if hedgeEntryHoldActive(sc) {
+		t.Fatal("the hold must lift automatically once the cooldown elapses")
+	}
+	if globalHedgeFailures.count("eth") != 0 {
+		t.Errorf("expiry must grant a fresh retry budget, got count=%d", globalHedgeFailures.count("eth"))
+	}
+	// A fresh episode re-alerts rather than staying silent.
+	dms = 0
+	for i := 0; i < hedgeOpenFailureHoldThreshold; i++ {
+		if _, first := globalHedgeFailures.recordFailure("eth"); first {
+			dms++
+		}
+	}
+	if dms != 1 || !hedgeEntryHoldActive(sc) {
+		t.Errorf("a new episode must re-engage and re-alert (dms=%d, held=%v)", dms, hedgeEntryHoldActive(sc))
+	}
+}
+
+// Case (c): a transient failure followed by a healthy venue recovers at once,
+// without waiting out the cooldown.
+func TestHedgeSuccessDuringHoldClearsItImmediately(t *testing.T) {
+	resetHedgeFailures(t)
+	now := time.Now()
+	globalHedgeFailures.now = func() time.Time { return now }
+	for i := 0; i < hedgeOpenFailureHoldThreshold; i++ {
+		globalHedgeFailures.recordFailure("eth")
+	}
+	sc := hedgeTestConfig("live")
+	if !hedgeEntryHoldActive(sc) {
+		t.Fatal("precondition: hold engaged")
+	}
+	// The hedge sync itself is NOT gated by the entry hold, so an open primary
+	// still gets a hedge attempt — and a success clears the hold on the spot.
+	stubHedgeExecutors(t, okExecute(0.1, 60000, 7), nil, nil)
+	var mu sync.RWMutex
+	s := hedgeTestState(2, "long")
+	runHedgeSync(sc, s, &mu, hedgeTestPrices(), nil, nil)
+	if hedgeEntryHoldActive(sc) {
+		t.Fatal("a successful hedge open must clear the hold immediately, not wait out the cooldown")
+	}
+}
+
+// The operator message must describe the recovery path that actually exists.
+func TestHedgeEntryHoldMessageStatesTheRealRecoveryPath(t *testing.T) {
+	msg := hedgeEntryHoldMessage("eth", 3, "BTC")
+	if !strings.Contains(msg, hedgeEntryHoldCooldown.String()) {
+		t.Errorf("the DM must state the hold duration, got %q", msg)
+	}
+	if !strings.Contains(msg, "lifts automatically") {
+		t.Errorf("the DM must state that recovery is automatic, got %q", msg)
+	}
+	if strings.Contains(msg, "held until a hedge opens successfully") {
+		t.Error("the DM must not promise a clear condition the hold itself blocks")
 	}
 }

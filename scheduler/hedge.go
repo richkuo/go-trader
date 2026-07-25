@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Per-strategy correlated hedge legs (#1159, phase 1 — Hyperliquid perps).
@@ -67,12 +68,23 @@ const (
 	hedgeQtyRelTolerance = 1e-6
 	// hedgeQtyAbsTolerance floors the relative band for tiny quantities.
 	hedgeQtyAbsTolerance = 1e-9
-	// hedgeOpenFailureHoldThreshold is how many consecutive hedge open/add
-	// failures a strategy may accumulate before NEW primary entries are held.
-	// Without it, a persistently failing hedge venue turns every signal into an
-	// open→unwind round trip that burns fees. In-memory only: a restart clears
-	// it, which re-grants a bounded retry budget.
+	// hedgeOpenFailureHoldThreshold is how many consecutive hedge failures that
+	// forced a primary unwind a strategy may accumulate before NEW primary
+	// entries are held. Without it, a persistently failing hedge venue turns
+	// every signal into an open→unwind round trip that burns fees on both legs.
 	hedgeOpenFailureHoldThreshold = 3
+	// hedgeEntryHoldCooldown is how long that hold lasts before it lifts on its
+	// own and grants a fresh retry budget.
+	//
+	// A hold with no reachable clear condition would be a bug, not a safety
+	// feature: while entries are held no open is attempted, so a
+	// clear-only-on-success rule can never fire when the strategy is flat —
+	// recovery would need a process restart, which is not something an
+	// auto-protective mechanism may silently require. Expiring on a timer keeps
+	// the brake honest: worst case is one bounded retry episode
+	// (≤ hedgeOpenFailureHoldThreshold open→unwind round trips, each alerted)
+	// per cooldown window, and a venue that recovers resumes trading unattended.
+	hedgeEntryHoldCooldown = time.Hour
 )
 
 // HedgeEnabled reports whether the strategy runs an auto-managed hedge leg.
@@ -321,9 +333,15 @@ func (k hedgeActionKind) String() string {
 	return "none"
 }
 
-// hedgeIncreasesExposure reports whether the action grows the hedge leg. These
-// are the only actions whose failure leaves the primary partly unhedged and
-// therefore escalate to a fail-closed primary unwind.
+// hedgeIncreasesExposure reports whether the action grows the hedge leg. Used
+// only for order-side labelling and for deciding whether a SUCCESS clears the
+// consecutive-failure hold.
+//
+// It is deliberately NOT the escalation predicate: whether a FAILURE leaves the
+// primary exposed is a property of the specific decision, not of its kind — a
+// side-mismatch closeFull leaves a same-direction residual leg that AMPLIFIES
+// exposure even though it does not grow the hedge. See
+// hedgeAction.FailureLeavesPrimaryExposed.
 func (k hedgeActionKind) hedgeIncreasesExposure() bool {
 	return k == hedgeActionOpen || k == hedgeActionAdd
 }
@@ -365,6 +383,47 @@ type hedgeAction struct {
 	// mark, dust-sized reduce). Callers alert rather than silently no-op; a
 	// blocked increase on an unhedged primary escalates to the unwind.
 	Blocked bool
+	// FailureLeavesPrimaryExposed is THE escalation predicate: true when this
+	// action failing (or being blocked) leaves primary exposure that no
+	// correctly-sided hedge covers, so the fail-closed unwind must run.
+	//
+	// It is a property of the decision, not of the action kind, because the two
+	// do not coincide:
+	//
+	//   - open / add fail → the uncovered slice is real exposure → true.
+	//   - side-mismatch closeFull fails → the surviving hedge leg is now the
+	//     SAME direction as the flipped primary, so net correlated exposure is
+	//     roughly DOUBLED, not reduced → true. (Treating this as a benign
+	//     over-hedge would leave a strategy running at double the intended risk
+	//     with no unwind — the exact hole this field closes.)
+	//   - proportional reduce fails → the hedge is over-sized but still
+	//     INVERSE, so net exposure is smaller than intended → false, retry.
+	//   - closeFull with the primary already flat fails → there is no primary
+	//     left to unwind, so the reduce-only retry is the only action → false.
+	FailureLeavesPrimaryExposed bool
+	// ReopenAfterClose marks a close that is only HALF of a convergence: the
+	// decision emits at most one action, so replacing a hedge (a primary side
+	// flip, or a changed hedge.symbol) has to unwind the stale leg before the
+	// correct one can be opened. Set here, runHedgeSync immediately re-derives
+	// and performs that open in the SAME cycle — otherwise the primary would
+	// run with no correctly-sided hedge for a full strategy interval, which is
+	// precisely the state this feature exists to prevent.
+	//
+	// Deliberately narrow: it does NOT fire after an ordinary open/add/reduce.
+	// Looping on those would re-issue an order every time a venue partially
+	// filled, tripling order count on a thin book to chase a gap the next cycle
+	// handles for free.
+	ReopenAfterClose bool
+	// HedgedPrimaryQtyOnFailure is how much of the primary a surviving hedge
+	// leg still covers if this action fails — the watermark the unwind
+	// subtracts, so only the UNCOVERED slice is closed. 0 means "nothing is
+	// covered", which unwinds the whole primary.
+	//
+	// Passed explicitly rather than re-derived from the snapshot because the
+	// snapshot's basis is misleading exactly where it matters most: after a
+	// flip the stale basis still reads as the pre-flip primary quantity even
+	// though the residual leg hedges none of the new side.
+	HedgedPrimaryQtyOnFailure float64
 }
 
 // hedgeConverged reports whether primary qty is within tolerance of the basis.
@@ -401,7 +460,10 @@ func hedgeTargetDecision(enabled bool, ratio float64, snap hedgeSnapshot) hedgeA
 		if !hasHedge {
 			return hedgeAction{Kind: hedgeActionNone, Reason: snap.HedgeStaleReason}
 		}
-		return hedgeAction{Kind: hedgeActionCloseFull, Qty: snap.HedgeQty, Reason: snap.HedgeStaleReason}
+		// A symbol change (hedge still enabled) is the same unwind-then-reopen
+		// shape as a flip; a removed/disabled block has nothing to reopen.
+		return hedgeAction{Kind: hedgeActionCloseFull, Qty: snap.HedgeQty,
+			ReopenAfterClose: enabled, Reason: snap.HedgeStaleReason}
 	}
 	if !enabled {
 		return hedgeAction{Kind: hedgeActionNone, Reason: "hedge disabled"}
@@ -417,6 +479,10 @@ func hedgeTargetDecision(enabled bool, ratio float64, snap hedgeSnapshot) hedgeA
 	if wantSide == "" {
 		// A primary with an unrecognized side is a corrupt row; refuse to trade
 		// against it rather than guessing a hedge direction.
+		// Alert-only, deliberately NOT escalated: a garbage side is a data
+		// problem, and "which way is this position facing" is exactly what an
+		// unwind decision would need to be correct about. Surface it for the
+		// operator rather than trading off an unreadable row.
 		return hedgeAction{Kind: hedgeActionNone, Blocked: true,
 			Reason: fmt.Sprintf("primary %s has unrecognized side %q — refusing to derive a hedge side", snap.PrimarySymbol, snap.PrimarySide)}
 	}
@@ -425,20 +491,30 @@ func hedgeTargetDecision(enabled bool, ratio float64, snap hedgeSnapshot) hedgeA
 		qty, ok := hedgeQtyForNotional(snap.PrimaryQty, snap.PrimaryPx, ratio, snap.HedgePx)
 		if !ok {
 			return hedgeAction{Kind: hedgeActionNone, Blocked: true,
+				FailureLeavesPrimaryExposed: true, HedgedPrimaryQtyOnFailure: 0,
 				Reason: fmt.Sprintf("cannot size hedge open: primary_px=%.6f hedge_px=%.6f (need positive marks for %s and %s)",
 					snap.PrimaryPx, snap.HedgePx, snap.PrimarySymbol, snap.HedgeSymbol)}
 		}
 		return hedgeAction{Kind: hedgeActionOpen, Qty: qty, PositionSide: wantSide, NewBasis: snap.PrimaryQty,
+			FailureLeavesPrimaryExposed: true, HedgedPrimaryQtyOnFailure: 0,
 			Reason: fmt.Sprintf("open %s hedge for %.6f %s primary", wantSide, snap.PrimaryQty, snap.PrimarySymbol)}
 	}
 
 	if snap.HedgeSide != wantSide {
-		// Defense in depth: reachable only if a primary flipped side without a
-		// hedge close in between (the sync closes-then-reopens across cycles).
-		// Unwinding first is the only safe convergence — a same-coin opposite
-		// order would net on-chain, not flip cleanly.
+		// The primary flipped side (direction="both") without a hedge close in
+		// between. Unwinding the stale leg first is the only safe convergence —
+		// a same-coin opposite order would net on-chain, not flip cleanly.
+		//
+		// FailureLeavesPrimaryExposed is TRUE here even though this shrinks the
+		// hedge: until the stale leg is gone it sits on the SAME side as the
+		// flipped primary, so the pair is not hedged at all — it is roughly
+		// double exposure on two correlated coins. HedgedPrimaryQtyOnFailure is
+		// 0 because the residual leg covers none of the new primary side,
+		// regardless of what the stale basis says.
 		return hedgeAction{Kind: hedgeActionCloseFull, Qty: snap.HedgeQty,
-			Reason: fmt.Sprintf("hedge side %q no longer inverse of primary side %q — unwinding before re-opening", snap.HedgeSide, snap.PrimarySide)}
+			FailureLeavesPrimaryExposed: true, HedgedPrimaryQtyOnFailure: 0,
+			ReopenAfterClose: true,
+			Reason:           fmt.Sprintf("hedge side %q is no longer inverse of primary side %q — the pair is AMPLIFYING exposure until this leg is unwound", snap.HedgeSide, snap.PrimarySide)}
 	}
 
 	basis := snap.HedgeBasis
@@ -457,9 +533,13 @@ func hedgeTargetDecision(enabled bool, ratio float64, snap hedgeSnapshot) hedgeA
 		qty, ok := hedgeQtyForNotional(delta, snap.PrimaryPx, ratio, snap.HedgePx)
 		if !ok {
 			return hedgeAction{Kind: hedgeActionNone, Blocked: true,
+				FailureLeavesPrimaryExposed: true, HedgedPrimaryQtyOnFailure: basis,
 				Reason: fmt.Sprintf("cannot size hedge add: primary_px=%.6f hedge_px=%.6f", snap.PrimaryPx, snap.HedgePx)}
 		}
+		// A failed add leaves only the DELTA uncovered — the existing inverse
+		// leg still hedges `basis`, so the unwind must scope to the add.
 		return hedgeAction{Kind: hedgeActionAdd, Qty: qty, PositionSide: wantSide, NewBasis: snap.PrimaryQty,
+			FailureLeavesPrimaryExposed: true, HedgedPrimaryQtyOnFailure: basis,
 			Reason: fmt.Sprintf("primary grew %.6f → %.6f %s", basis, snap.PrimaryQty, snap.PrimarySymbol)}
 	}
 
@@ -670,32 +750,70 @@ func hedgeStrategiesNote(strategies []StrategyConfig, byID map[string]*StrategyS
 // Consecutive-failure entry hold
 // ---------------------------------------------------------------------------
 
-// hedgeFailureTracker counts consecutive hedge open/add failures per strategy
-// so a persistently failing hedge venue cannot turn every signal into an
-// open→unwind round trip. Deliberately in-memory: the hold is a fee-churn
-// brake, not a safety latch (the fail-closed unwind is the safety), so a
-// restart re-granting the retry budget is correct.
+// hedgeFailureTracker counts consecutive hedge failures that forced a primary
+// unwind, per strategy, so a persistently failing hedge venue cannot turn every
+// signal into an open→unwind round trip.
+//
+// Deliberately in-memory: this is a fee-churn brake, not a safety latch — the
+// fail-closed unwind is the safety, and it runs on every failure regardless of
+// this counter. The hold is TIME-BOUNDED (hedgeEntryHoldCooldown) rather than
+// cleared only on success, because while entries are held no open is attempted,
+// so a success-only clear is unreachable whenever the strategy is flat. A
+// successful hedge increase still clears it immediately, so a venue that
+// recovers mid-position resumes without waiting out the cooldown.
 type hedgeFailureTracker struct {
-	mu     sync.Mutex
-	counts map[string]int
-	warned map[string]bool
+	mu      sync.Mutex
+	counts  map[string]int
+	warned  map[string]bool
+	holdEnd map[string]time.Time
+	// now is injectable so tests can advance the clock without sleeping.
+	now func() time.Time
 }
 
-var globalHedgeFailures = &hedgeFailureTracker{counts: map[string]int{}, warned: map[string]bool{}}
+func newHedgeFailureTracker() *hedgeFailureTracker {
+	return &hedgeFailureTracker{
+		counts:  map[string]int{},
+		warned:  map[string]bool{},
+		holdEnd: map[string]time.Time{},
+	}
+}
+
+var globalHedgeFailures = newHedgeFailureTracker()
+
+func (t *hedgeFailureTracker) clock() time.Time {
+	if t.now != nil {
+		return t.now()
+	}
+	return time.Now()
+}
+
+// expireLocked drops a strategy's state once its hold window has passed, so the
+// next episode starts from a clean budget and re-DMs. Caller holds t.mu.
+func (t *hedgeFailureTracker) expireLocked(id string) {
+	end, held := t.holdEnd[id]
+	if !held || t.clock().Before(end) {
+		return
+	}
+	delete(t.counts, id)
+	delete(t.warned, id)
+	delete(t.holdEnd, id)
+}
 
 // recordFailure increments the counter and reports the new count plus whether
-// this crossing is the first to reach the hold threshold (so the owner DM
-// fires exactly once per episode).
+// this crossing is the first to reach the hold threshold (so the owner DM fires
+// exactly once per episode, and again on the next episode after a cooldown).
 func (t *hedgeFailureTracker) recordFailure(id string) (count int, firstHold bool) {
 	if t == nil || id == "" {
 		return 0, false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.expireLocked(id)
 	t.counts[id]++
 	count = t.counts[id]
 	if count >= hedgeOpenFailureHoldThreshold && !t.warned[id] {
 		t.warned[id] = true
+		t.holdEnd[id] = t.clock().Add(hedgeEntryHoldCooldown)
 		firstHold = true
 	}
 	return count, firstHold
@@ -709,6 +827,7 @@ func (t *hedgeFailureTracker) clear(id string) {
 	defer t.mu.Unlock()
 	delete(t.counts, id)
 	delete(t.warned, id)
+	delete(t.holdEnd, id)
 }
 
 func (t *hedgeFailureTracker) count(id string) int {
@@ -717,15 +836,38 @@ func (t *hedgeFailureTracker) count(id string) int {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.expireLocked(id)
 	return t.counts[id]
 }
 
+// holdActive reports whether the strategy is inside its cooldown window,
+// expiring a lapsed hold on the way.
+func (t *hedgeFailureTracker) holdActive(id string) bool {
+	if t == nil || id == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.expireLocked(id)
+	end, held := t.holdEnd[id]
+	return held && t.clock().Before(end)
+}
+
 // hedgeEntryHoldActive reports whether new position-increasing signals must be
-// held for this strategy because its hedge leg keeps failing to open. Shaped
-// like pausedBlocksSignal's callers: reductions and management always pass.
+// held for this strategy because its hedge leg keeps failing. Shaped like
+// pausedBlocksSignal's callers: reductions and management always pass.
 func hedgeEntryHoldActive(sc StrategyConfig) bool {
 	if !HedgeEnabled(sc) {
 		return false
 	}
-	return globalHedgeFailures.count(sc.ID) >= hedgeOpenFailureHoldThreshold
+	return globalHedgeFailures.holdActive(sc.ID)
+}
+
+// hedgeEntryHoldMessage is the operator DM for an engaged hold. It must state
+// the ACTUAL recovery path — an auto-hold that describes a clear condition it
+// blocks would leave the operator waiting for something that cannot happen.
+func hedgeEntryHoldMessage(strategyID string, count int, hedgeSymbol string) string {
+	return fmt.Sprintf(
+		"**HEDGE ENTRY HOLD** [%s] %d consecutive hedge-leg failures on %s — new entries are held for %s, then the hold lifts automatically and a bounded retry is attempted. Existing positions keep managing and closing normally, and a hedge that succeeds in the meantime clears the hold immediately.",
+		strategyID, count, hedgeSymbol, hedgeEntryHoldCooldown)
 }
