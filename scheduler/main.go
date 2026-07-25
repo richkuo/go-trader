@@ -2359,11 +2359,14 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							// #1159: set when THIS cycle produced a confirmed
-							// primary open/add, selecting the fail-closed
-							// escalation in runHedgeSync (unwind the primary
-							// rather than run it unhedged).
-							hedgeFreshOpen := false
+							// #1159: set only when THIS cycle took the primary
+							// from FLAT to open — the one case where a hedge
+							// failure means brand-new, still-uncovered exposure.
+							// A scale-in add is deliberately excluded: its
+							// pre-existing size is already covered by a hedge
+							// leg, so a failure on the small incremental hedge
+							// order must not tear down the whole position.
+							hedgeOpenedFromFlat := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
@@ -2619,8 +2622,12 @@ func main() {
 									recordPositionOpen(stratState, sc, openTrade, pos)
 									mu.Unlock()
 								}
-								if openTrade != nil {
-									hedgeFreshOpen = true
+								// scaleInAddQty == 0 is what distinguishes a
+								// genuine flat→open from a scale-in add: both
+								// produce an openTrade, only the former leaves
+								// exposure that no hedge leg covers yet.
+								if openTrade != nil && scaleInAddQty == 0 {
+									hedgeOpenedFromFlat = true
 								}
 							}
 							// #998: stamp the active profile on a freshly opened
@@ -2650,11 +2657,11 @@ func main() {
 							// reduce or close.
 							if HedgeEnabled(sc) {
 								runHedgeSync(sc, stratState, &mu, hedgeSyncInputs{
-									PrimarySymbol: result.Symbol,
-									PrimaryPx:     price,
-									HedgePx:       prices[hedgeCoin(sc)],
-									FreshOpen:     hedgeFreshOpen,
-									Live:          hyperliquidIsLive(sc.Args),
+									PrimarySymbol:         result.Symbol,
+									PrimaryPx:             price,
+									HedgePx:               prices[hedgeCoin(sc)],
+									PrimaryOpenedFromFlat: hedgeOpenedFromFlat,
+									Live:                  hyperliquidIsLive(sc.Args),
 								}, liveHedgeExecutor{}, notifier, logger)
 							}
 						}

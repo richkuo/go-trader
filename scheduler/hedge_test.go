@@ -315,7 +315,7 @@ func TestRunHedgeSync_OpensAndAttributesToOwner(t *testing.T) {
 	var mu sync.RWMutex
 	exec := &stubHedgeExecutor{}
 
-	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, FreshOpen: true, Live: true}, exec, nil, nil)
+	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, PrimaryOpenedFromFlat: true, Live: true}, exec, nil, nil)
 
 	pos := s.Positions["BTC"]
 	if pos == nil {
@@ -362,7 +362,7 @@ func TestRunHedgeSync_FailedHedgeOpenUnwindsPrimary(t *testing.T) {
 	var mu sync.RWMutex
 	exec := &stubHedgeExecutor{openErr: fmt.Errorf("insufficient margin")}
 
-	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, FreshOpen: true, Live: true}, exec, nil, nil)
+	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, PrimaryOpenedFromFlat: true, Live: true}, exec, nil, nil)
 
 	if _, still := s.Positions["ETH"]; still {
 		t.Fatal("primary must be closed when the hedge cannot be opened (fail-closed)")
@@ -402,7 +402,7 @@ func TestRunHedgeSync_LaterCycleFailureDoesNotUnwind(t *testing.T) {
 	var mu sync.RWMutex
 	exec := &stubHedgeExecutor{openErr: fmt.Errorf("rpc timeout")}
 
-	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, FreshOpen: false, Live: true}, exec, nil, nil)
+	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, PrimaryOpenedFromFlat: false, Live: true}, exec, nil, nil)
 
 	if s.Positions["ETH"] == nil {
 		t.Fatal("a later-cycle hedge failure must never unwind the primary")
@@ -415,6 +415,154 @@ func TestRunHedgeSync_LaterCycleFailureDoesNotUnwind(t *testing.T) {
 	}
 }
 
+// The scale-in regression (review round 1): a hedge-ADD failure on a cycle that
+// also grew the primary must never unwind. The pre-existing size is already
+// covered by the held hedge leg, so tearing down the whole position over a
+// transient error on the small incremental order both destroys healthy exposure
+// and contradicts constraint 4's actual scope. Both the error path and the
+// Blocked (unusable marks) path are exercised, and both are asserted even when
+// the caller WRONGLY reports the cycle as a flat→open — the hedge-flat clause in
+// hedgeFailureMayUnwindPrimary is the defense in depth that must hold.
+func TestRunHedgeSync_ScaleInAddFailureNeverUnwindsHedgedPrimary(t *testing.T) {
+	sc := hedgeTestStrategy(nil)
+
+	cases := []struct {
+		name              string
+		hedgePx           float64
+		openErr           error
+		openedFromFlat    bool
+		wantOpenAttempted bool
+	}{
+		// Production shape after the fix: main.go reports false for a scale-in.
+		{"transient add error, correctly flagged as not-from-flat", 60000, fmt.Errorf("rpc timeout"), false, true},
+		// Defense in depth: even if the caller mis-reports the cycle, a held
+		// hedge leg must make the primary structurally un-unwindable.
+		{"transient add error, caller wrongly reports from-flat", 60000, fmt.Errorf("rpc timeout"), true, true},
+		// Blocked path: marks momentarily unusable, no order is even attempted.
+		{"unusable marks, correctly flagged as not-from-flat", 0, nil, false, false},
+		{"unusable marks, caller wrongly reports from-flat", 0, nil, true, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := hedgeTestState(map[string]*Position{
+				"ETH": primaryPos(3, "long"),     // grew 2 → 3 this cycle
+				"BTC": hedgePos(0.1, "short", 2), // hedge still sized to the old basis
+			})
+			var mu sync.RWMutex
+			exec := &stubHedgeExecutor{openErr: tc.openErr}
+
+			runHedgeSync(sc, s, &mu, hedgeSyncInputs{
+				PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: tc.hedgePx,
+				PrimaryOpenedFromFlat: tc.openedFromFlat, Live: true,
+			}, exec, nil, nil)
+
+			if s.Positions["ETH"] == nil {
+				t.Fatal("an already-hedged primary must NEVER be unwound by a hedge-add failure")
+			}
+			if s.Positions["ETH"].Quantity != 3 {
+				t.Fatalf("the primary must be untouched, got qty %v", s.Positions["ETH"].Quantity)
+			}
+			if len(exec.primaryCalls) != 0 {
+				t.Fatalf("no primary close may be submitted, got %v", exec.primaryCalls)
+			}
+			if s.Positions["BTC"] == nil || s.Positions["BTC"].Quantity != 0.1 {
+				t.Fatalf("the existing hedge leg must be left intact, got %+v", s.Positions["BTC"])
+			}
+			// The watermark must NOT advance on a failure, so the next cycle
+			// retries the same add rather than losing the shortfall.
+			if s.Positions["BTC"].HedgePrimaryQtyBasis != 2 {
+				t.Fatalf("a failed add must not advance the watermark, got %v", s.Positions["BTC"].HedgePrimaryQtyBasis)
+			}
+			if got := len(exec.openCalls) > 0; got != tc.wantOpenAttempted {
+				t.Fatalf("open attempted = %t, want %t (%v)", got, tc.wantOpenAttempted, exec.openCalls)
+			}
+		})
+	}
+}
+
+// The inverse of the case above — the existing fail-closed behavior must NOT
+// regress. A genuine flat→open whose hedge cannot be placed still unwinds, on
+// both the error path and the Blocked (unusable marks) path.
+func TestRunHedgeSync_GenuineFreshOpenStillUnwinds(t *testing.T) {
+	sc := hedgeTestStrategy(nil)
+	for _, tc := range []struct {
+		name    string
+		hedgePx float64
+		openErr error
+	}{
+		{"hedge open errored", 60000, fmt.Errorf("insufficient margin")},
+		{"marks unusable so the hedge cannot be sized", 0, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := hedgeTestState(map[string]*Position{"ETH": primaryPos(2, "long")})
+			var mu sync.RWMutex
+			exec := &stubHedgeExecutor{openErr: tc.openErr}
+
+			runHedgeSync(sc, s, &mu, hedgeSyncInputs{
+				PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: tc.hedgePx,
+				PrimaryOpenedFromFlat: true, Live: true,
+			}, exec, nil, nil)
+
+			if _, still := s.Positions["ETH"]; still {
+				t.Fatal("a brand-new, still-unhedged primary must be closed when the hedge cannot be placed")
+			}
+			if len(exec.primaryCalls) != 1 {
+				t.Fatalf("want exactly one sized primary unwind, got %v", exec.primaryCalls)
+			}
+		})
+	}
+}
+
+// A long-running primary whose hedge was closed EXTERNALLY produces a
+// hedgeActionOpen with the hedge flat. That must still not unwind: the
+// documented behavior is re-open next cycle + alert, and this cycle never
+// opened the primary.
+func TestRunHedgeSync_ExternallyClosedHedgeReopenFailureDoesNotUnwind(t *testing.T) {
+	sc := hedgeTestStrategy(nil)
+	s := hedgeTestState(map[string]*Position{"ETH": primaryPos(2, "long")})
+	var mu sync.RWMutex
+	exec := &stubHedgeExecutor{openErr: fmt.Errorf("rpc timeout")}
+
+	runHedgeSync(sc, s, &mu, hedgeSyncInputs{
+		PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000,
+		PrimaryOpenedFromFlat: false, Live: true,
+	}, exec, nil, nil)
+
+	if s.Positions["ETH"] == nil {
+		t.Fatal("a long-running primary must not be liquidated over one failed hedge re-open")
+	}
+	if len(exec.primaryCalls) != 0 {
+		t.Fatalf("no primary close may be submitted, got %v", exec.primaryCalls)
+	}
+}
+
+// The predicate itself, exhaustively: it is the single gate on every path that
+// can close primary exposure because of a hedge error.
+func TestHedgeFailureMayUnwindPrimary(t *testing.T) {
+	cases := []struct {
+		name           string
+		openedFromFlat bool
+		primaryQty     float64
+		hedgeQty       float64
+		want           bool
+	}{
+		{"flat->open this cycle, primary held, hedge flat", true, 2, 0, true},
+		{"scale-in add: hedge already held", true, 3, 0.1, false},
+		{"not opened this cycle, hedge flat", false, 2, 0, false},
+		{"not opened this cycle, hedge held", false, 2, 0.1, false},
+		{"primary already flat", true, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := hedgeSnapshot{PrimaryQty: tc.primaryQty, HedgeQty: tc.hedgeQty}
+			if got := hedgeFailureMayUnwindPrimary(tc.openedFromFlat, snap); got != tc.want {
+				t.Fatalf("got %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 // Acceptance 6: a failed PRIMARY open places no hedge order at all.
 func TestRunHedgeSync_FailedPrimaryOpenPlacesNoHedge(t *testing.T) {
 	sc := hedgeTestStrategy(nil)
@@ -423,7 +571,7 @@ func TestRunHedgeSync_FailedPrimaryOpenPlacesNoHedge(t *testing.T) {
 	var mu sync.RWMutex
 	exec := &stubHedgeExecutor{}
 
-	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, FreshOpen: true, Live: true}, exec, nil, nil)
+	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, PrimaryOpenedFromFlat: true, Live: true}, exec, nil, nil)
 
 	if len(exec.openCalls) != 0 || len(exec.closeCalls) != 0 || len(exec.primaryCalls) != 0 {
 		t.Fatalf("a failed primary open must produce no orders at all: %+v", exec)
@@ -521,7 +669,7 @@ func TestRunHedgeSync_PaperModeIsVirtualOnly(t *testing.T) {
 	var mu sync.RWMutex
 	exec := &stubHedgeExecutor{}
 
-	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, FreshOpen: true, Live: false}, exec, nil, nil)
+	runHedgeSync(sc, s, &mu, hedgeSyncInputs{PrimarySymbol: "ETH", PrimaryPx: 3000, HedgePx: 60000, PrimaryOpenedFromFlat: true, Live: false}, exec, nil, nil)
 
 	if len(exec.openCalls) != 0 {
 		t.Fatalf("paper mode must place no on-chain order, got %v", exec.openCalls)

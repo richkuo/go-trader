@@ -507,11 +507,39 @@ type hedgeSyncInputs struct {
 	PrimarySymbol string
 	PrimaryPx     float64
 	HedgePx       float64
-	// FreshOpen is true when THIS cycle produced a confirmed primary open (or
-	// scale-in add). It selects the fail-closed escalation: a hedge failure on
-	// the opening cycle unwinds the primary rather than leaving it unhedged.
-	FreshOpen bool
-	Live      bool
+	// PrimaryOpenedFromFlat is true only when THIS cycle took the primary from
+	// FLAT to open. A scale-in add does NOT qualify: the pre-existing size is
+	// already covered by a hedge leg, so a failure on the small incremental
+	// hedge order must never tear down the whole healthy position. It selects
+	// the fail-closed escalation together with hedgeFailureMayUnwindPrimary.
+	PrimaryOpenedFromFlat bool
+	Live                  bool
+}
+
+// hedgeFailureMayUnwindPrimary reports whether a hedge failure on THIS cycle is
+// permitted to close primary exposure (#1159 constraint 4).
+//
+// The governing invariant: a hedge failure may only close primary exposure that
+// this cycle first opened WHILE STILL UNHEDGED. Three conditions, all required:
+//
+//   - the primary went flat→open this cycle (a scale-in add does not qualify —
+//     the pre-existing size is already covered);
+//   - the primary is actually held (nothing to unwind otherwise);
+//   - NO hedge leg is currently held. This last clause is the load-bearing
+//     defense in depth: it makes an already-hedged position structurally
+//     un-unwindable by a hedge error, even if a future caller mis-computes
+//     PrimaryOpenedFromFlat. It also protects the documented "hedge was closed
+//     externally → re-open next cycle and DM the owner" path, where a
+//     long-running primary must never be liquidated over one failed re-open.
+//
+// Gating on hedge-flat rather than on action.Kind is deliberate: the Blocked
+// branch has Kind==hedgeActionNone (the decision could not be computed at all),
+// so a Kind check there would silently disable the fail-closed unwind on a
+// genuine fresh open — the exact behavior constraint 4 requires.
+func hedgeFailureMayUnwindPrimary(openedFromFlat bool, snap hedgeSnapshot) bool {
+	return openedFromFlat &&
+		snap.PrimaryQty > hedgeQtyEpsilon &&
+		snap.HedgeQty <= hedgeQtyEpsilon
 }
 
 // runHedgeSync converges the hedge leg to its target for one strategy. Follows
@@ -544,7 +572,12 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, in hedg
 		if logger != nil {
 			logger.Error("%s", msg)
 		}
-		if in.FreshOpen && snap.PrimaryQty > hedgeQtyEpsilon {
+		// Unusable marks on the cycle that opened a still-unhedged primary are a
+		// hedge-open failure: we cannot size the leg, so we cannot hedge. Any
+		// other cycle (notably a scale-in add, where a hedge leg is already
+		// held) alerts and retries — a momentary mark gap must not liquidate
+		// covered exposure.
+		if hedgeFailureMayUnwindPrimary(in.PrimaryOpenedFromFlat, snap) {
 			unwindPrimaryAfterHedgeOpenFailure(sc, s, mu, snap, action.Reason, in.Live, exec, notifier, logger)
 			return
 		}
@@ -586,11 +619,14 @@ func runHedgeSync(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, in hedg
 		if logger != nil {
 			logger.Error("hedge(%s) on %s: %s failed — %s", in.PrimarySymbol, coin, action.Kind, errMsg)
 		}
-		// Fail-closed (#1159 constraint 4): a confirmed primary fill this cycle
-		// with no hedge behind it must not run unhedged. Later cycles' failures
-		// alert and retry instead — the primary was already hedged, or is being
-		// converged down.
-		if in.FreshOpen && (action.Kind == hedgeActionOpen || action.Kind == hedgeActionAdd) {
+		// Fail-closed (#1159 constraint 4): a primary taken from flat to open on
+		// THIS cycle with no hedge behind it must not run unhedged. Every other
+		// case — a scale-in add on an already-hedged position, a hedge reduce or
+		// close, a re-open after an external hedge close — alerts and retries,
+		// because the exposure at risk is either already covered or converging
+		// down. Evaluated against `fresh` (the pre-spawn re-read), so the
+		// decision reflects the state the order was actually sent against.
+		if hedgeFailureMayUnwindPrimary(in.PrimaryOpenedFromFlat, fresh) {
 			unwindPrimaryAfterHedgeOpenFailure(sc, s, mu, fresh, errMsg, in.Live, exec, notifier, logger)
 			return
 		}
@@ -729,20 +765,6 @@ func unwindPrimaryAfterHedgeOpenFailure(sc StrategyConfig, s *StrategyState, mu 
 		notifier.SendOwnerDM(done)
 		notifier.SendToAllChannels(done)
 	}
-}
-
-// hedgeCoinsForStrategies returns the set of hedge coins declared by enabled
-// hedge blocks, deduplicated. Consumers that must SEE hedge coins (mark
-// fetching, the fill resolver's coin universe) use this; consumers that must
-// not (peer detection, margin matching) keep using hyperliquidConfiguredCoin.
-func hedgeCoinsForStrategies(strategies []StrategyConfig) map[string]bool {
-	out := make(map[string]bool)
-	for _, sc := range strategies {
-		if coin := hedgeCoin(sc); coin != "" {
-			out[coin] = true
-		}
-	}
-	return out
 }
 
 // strategyHeldHedgeCoin returns the hedge coin a strategy CURRENTLY holds a
