@@ -2344,6 +2344,9 @@ func runPendingHyperliquidCircuitCloses(
 		recoverOrder := make([]StrategyConfig, len(hlLiveAll))
 		copy(recoverOrder, hlLiveAll)
 		sort.Slice(recoverOrder, func(i, j int) bool { return recoverOrder[i].ID < recoverOrder[j].ID })
+		// #1159: operator alerts raised inside the locked reconstruction are
+		// buffered and drained after the unlock.
+		var pendingCBAlerts []string
 		mu.Lock()
 		for _, sc := range recoverOrder {
 			ss := state.Strategies[sc.ID]
@@ -2360,11 +2363,18 @@ func runPendingHyperliquidCircuitCloses(
 			if sym == "" {
 				continue
 			}
-			qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll)
-			if !ok || qty <= 0 {
+			// A peer-shared primary never gets a pending close by design
+			// (hyperliquidCircuitBreakerHasSharedCoin routes it to the
+			// operator-required path), so neither leg is reconstructed here.
+			if len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
 				continue
 			}
-			symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
+			var symbols []PendingCircuitCloseSymbol
+			qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll)
+			primaryLive := ok && qty > 0
+			if primaryLive {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+			}
 			// #1159 (review round 2): reconstruct the hedge leg's pending
 			// close from CONFIG + the on-chain snapshot, exactly as the
 			// primary above — NOT from the virtual position.
@@ -2394,22 +2404,69 @@ func runPendingHyperliquidCircuitCloses(
 				switch {
 				case !hok || hQty <= 0:
 					// Nothing on-chain to close.
-				case !hedgeIsInverseOfPrimaryOnChain(sym, hCoin, positions):
+				case primaryLive && !hedgeIsInverseOfPrimaryOnChain(sym, hCoin, positions):
+					// The primary is live, so the discriminator applies and it
+					// says this position cannot be one we opened.
 					fmt.Printf("[CRITICAL] hl-circuit-close: %s declares hedge coin %s and the circuit breaker is latched, but the on-chain %s position is NOT inverse to the primary %s — refusing to close it as a hedge (it is not one this scheduler could have opened). Reconcile it manually.\n",
 						sc.ID, hCoin, hCoin, sym)
+					pendingCBAlerts = append(pendingCBAlerts, fmt.Sprintf(
+						"🚨 **CRITICAL — hedge coin conflict under a latched circuit breaker**\nStrategy `%s`: the circuit breaker is latched and %s carries an on-chain position, but it is NOT inverse to the live %s primary, so it cannot be this strategy's hedge. It was left untouched. Reconcile it manually.",
+						sc.ID, hCoin, sym))
+				case !primaryLive:
+					// #1159 (review round 3) — the compound-outage case: the CB
+					// fired on a cycle whose HL fetch failed (so no pending was
+					// set, yet forceCloseAllPositions still deleted both virtual
+					// legs), AND the primary went flat on-chain during the same
+					// outage via its SL or a liquidation. The primary
+					// reconstruction above therefore has nothing to enqueue, and
+					// with the primary flat the inverse discriminator cannot run.
+					//
+					// The hedge is still closed, on the SAME trust the primary
+					// reconstruction already uses — sole ownership of a
+					// configured coin under a latched CB. That trust is strictly
+					// STRONGER here: validateHedgeConfigs rejects a hedge coin
+					// that is any strategy's primary or any other hedger's hedge,
+					// whereas a primary coin need only be unshared among live
+					// peers.
+					//
+					// Leaving it alerts-only was the alternative. Rejected on the
+					// realistic worst case: if the leg is ours (overwhelmingly the
+					// likely reading — it is our declared coin, our CB just fired,
+					// and our virtual row was deleted by that fire), alerts-only
+					// leaves naked INVERSE leveraged exposure running unbounded on
+					// a strategy the breaker just halted — the precise harm the CB
+					// exists to stop. If instead it is an operator's manual trade
+					// on a coin they declared machine-managed, the cost is one
+					// bounded, reversible, loudly-announced close. Unbounded loss
+					// outweighs bounded reversible loss.
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
+					fmt.Printf("[CRITICAL] hl-circuit-close: %s primary %s is already flat on-chain but hedge coin %s still carries %.6f — closing the orphaned hedge leg on sole-ownership trust (CB latched, virtual legs cleared by the fire cycle)\n",
+						sc.ID, sym, hCoin, hQty)
+					pendingCBAlerts = append(pendingCBAlerts, fmt.Sprintf(
+						"🚨 **CRITICAL — orphaned hedge leg closed under a latched circuit breaker**\nStrategy `%s`: the circuit breaker is latched and its %s primary had already gone flat on-chain (stop-loss or liquidation during the fetch outage), leaving %.6f on the hedge coin %s with no primary to pair against.\n\nThat leg has been queued for a reduce-only close. With the primary flat there is no way to prove the position was ours beyond sole ownership of the declared hedge coin — the same trust the primary close already uses. **If you opened a manual position on %s yourself, it is being closed; re-open it and remove %s from this strategy's hedge block.**",
+						sc.ID, sym, hQty, hCoin, hCoin, hCoin))
 				default:
 					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
 					fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending HEDGE close for strategy %s coin %s sz=%.6f (virtual leg was cleared by the force-close sweep on the fire cycle)\n",
 						sc.ID, hCoin, hQty)
 				}
 			}
+			if len(symbols) == 0 {
+				continue
+			}
 			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
 				Symbols: symbols,
 			})
-			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
-				sc.ID, sym, qty)
+			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s (CB latched, HL fetch had failed at fire time): %s\n",
+				sc.ID, formatPendingCircuitCloseSymbols(symbols))
 		}
 		mu.Unlock()
+		// #880: owner DMs perform blocking HTTP and must never run under mu.
+		for _, msg := range pendingCBAlerts {
+			if ownerDM != nil {
+				ownerDM(msg)
+			}
+		}
 	}
 
 	// Phase 3: re-snapshot jobs (may now include recovered entries).

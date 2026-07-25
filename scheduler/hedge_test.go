@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -2311,4 +2313,151 @@ func forceCloseCoupledHedgeQueuedFullFlag(t *testing.T, heldQty, filled float64,
 	}
 	t.Fatal("no hedge close action was queued")
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Review round 3 regression (#1404)
+
+// The compound-outage case: the CB fires on a cycle whose HL fetch failed (no
+// pending set, yet forceCloseAllPositions still deleted BOTH virtual legs) AND
+// the primary goes flat on-chain during that same outage via its stop-loss or
+// a liquidation. The primary reconstruction then has nothing to enqueue, and
+// with the primary flat the inverse discriminator cannot run — so before this
+// fix the loop `continue`d and the hedge ran as naked inverse leveraged
+// exposure with only a per-cycle "foreign position" alert as backstop.
+func TestStuckCBClosesOrphanedHedgeWhenPrimaryWentFlatDuringTheOutage(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"eth-long": {ID: "eth-long", RiskState: RiskState{
+			CircuitBreaker:       true,
+			CircuitBreakerUntil:  time.Now().Add(24 * time.Hour),
+			PendingCircuitCloses: nil,
+		}},
+	}}
+	cfg := []StrategyConfig{hedgeTestConfig()}
+	var mu sync.RWMutex
+	var calls []string
+	var dms []string
+	closer := func(sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
+		sz := 0.0
+		if partialSz != nil {
+			sz = *partialSz
+		}
+		calls = append(calls, fmt.Sprintf("%s:%g", sym, sz))
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: sz, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+
+	// On-chain: the primary is GONE, only the hedge remains.
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, cfg, "0xabc",
+		[]HLPosition{{Coin: "BTC", Size: -0.4, EntryPrice: testHedgePx}},
+		true, nil, closer, 30*time.Second, &mu,
+		func(msg string) { dms = append(dms, msg) },
+	)
+
+	if len(calls) != 1 || calls[0] != "BTC:0.4" {
+		t.Fatalf("closer calls = %v, want [BTC:0.4] — the orphaned hedge must still be flattened", calls)
+	}
+	if len(dms) != 1 || !strings.Contains(dms[0], "orphaned hedge leg closed") {
+		t.Fatalf("owner DMs = %v, want the orphaned-hedge CRITICAL alert", dms)
+	}
+	if !strings.Contains(dms[0], "re-open it and remove") {
+		t.Fatalf("the DM must tell the operator what to do if the position was theirs: %q", dms[0])
+	}
+}
+
+// Both legs still live: the primary is enqueued and the hedge passes the
+// inverse discriminator.
+func TestStuckCBClosesBothLegsWhenPrimaryIsStillLive(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"eth-long": {ID: "eth-long", RiskState: RiskState{
+			CircuitBreaker: true, CircuitBreakerUntil: time.Now().Add(24 * time.Hour),
+		}},
+	}}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
+		sz := 0.0
+		if partialSz != nil {
+			sz = *partialSz
+		}
+		calls = append(calls, fmt.Sprintf("%s:%g", sym, sz))
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: sz, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, []StrategyConfig{hedgeTestConfig()}, "0xabc",
+		[]HLPosition{{Coin: "ETH", Size: 10, EntryPrice: testPrimaryPx}, {Coin: "BTC", Size: -0.4, EntryPrice: testHedgePx}},
+		true, nil, closer, 30*time.Second, &mu, nil,
+	)
+	sort.Strings(calls)
+	if len(calls) != 2 || calls[0] != "BTC:0.4" || calls[1] != "ETH:10" {
+		t.Fatalf("closer calls = %v, want both legs flattened", calls)
+	}
+}
+
+// A same-side position on the hedge coin while the primary is LIVE is provably
+// not ours — it must be refused, and the primary must still close.
+func TestStuckCBRefusesSameSideHedgeCoinPositionButStillClosesPrimary(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"eth-long": {ID: "eth-long", RiskState: RiskState{
+			CircuitBreaker: true, CircuitBreakerUntil: time.Now().Add(24 * time.Hour),
+		}},
+	}}
+	var mu sync.RWMutex
+	var calls []string
+	var dms []string
+	closer := func(sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
+		sz := 0.0
+		if partialSz != nil {
+			sz = *partialSz
+		}
+		calls = append(calls, fmt.Sprintf("%s:%g", sym, sz))
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: sym, Fill: &HyperliquidCloseFill{TotalSz: sz, AvgPx: 1}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, []StrategyConfig{hedgeTestConfig()}, "0xabc",
+		// BTC is LONG alongside a LONG primary — cannot be our inverse hedge.
+		[]HLPosition{{Coin: "ETH", Size: 10, EntryPrice: testPrimaryPx}, {Coin: "BTC", Size: 0.4, EntryPrice: testHedgePx}},
+		true, nil, closer, 30*time.Second, &mu,
+		func(msg string) { dms = append(dms, msg) },
+	)
+	if len(calls) != 1 || calls[0] != "ETH:10" {
+		t.Fatalf("closer calls = %v, want only the primary — a same-side position must not be liquidated as a hedge", calls)
+	}
+	if len(dms) != 1 || !strings.Contains(dms[0], "hedge coin conflict") {
+		t.Fatalf("owner DMs = %v, want the conflict alert", dms)
+	}
+}
+
+// Nothing on-chain at all is still a no-op — no zero-size orders.
+func TestStuckCBWithNothingOnChainIsANoOp(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"eth-long": {ID: "eth-long", RiskState: RiskState{
+			CircuitBreaker: true, CircuitBreakerUntil: time.Now().Add(24 * time.Hour),
+		}},
+	}}
+	var mu sync.RWMutex
+	var calls []string
+	closer := func(sym string, partialSz *float64, _ []int64) (*HyperliquidCloseResult, error) {
+		calls = append(calls, sym)
+		return &HyperliquidCloseResult{Close: &HyperliquidClose{Symbol: sym}}, nil
+	}
+	runPendingHyperliquidCircuitCloses(
+		context.Background(), state, []StrategyConfig{hedgeTestConfig()}, "0xabc",
+		nil, true, nil, closer, 30*time.Second, &mu, nil,
+	)
+	if len(calls) != 0 {
+		t.Fatalf("closer calls = %v, want none", calls)
+	}
+	if state.Strategies["eth-long"].RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Fatal("no pending should be set when nothing is on-chain")
+	}
 }

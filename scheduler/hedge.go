@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -743,6 +744,18 @@ func hedgeReducedBasis(oldBasis, targetBasis, filledQty, requestedQty float64) f
 		return oldBasis
 	}
 	return oldBasis - (oldBasis-targetBasis)*ratio
+}
+
+// formatPendingCircuitCloseSymbols renders a pending circuit-close symbol set
+// for the operator log line. Sorted so the message is stable across runs (Go
+// map iteration elsewhere in this path is randomized).
+func formatPendingCircuitCloseSymbols(symbols []PendingCircuitCloseSymbol) string {
+	parts := make([]string, 0, len(symbols))
+	for _, s := range symbols {
+		parts = append(parts, fmt.Sprintf("%s sz=%.6f", s.Symbol, s.Size))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 // hedgeIsInverseOfPrimaryOnChain reports whether the on-chain position on
