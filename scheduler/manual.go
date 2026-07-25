@@ -590,23 +590,31 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, operatorCloseReason(sc), now)
 			delete(ss.Positions, a.Symbol)
 		} else {
+			// #1159: capture the hedge leg's pre-reduce size before the
+			// decrement — the proportional re-anchor below needs both sides.
+			preReduceQty := pos.Quantity
+			preReduceBasis := pos.HedgePrimaryQtyBasis
 			pos.Quantity -= a.Quantity
 			if sc.Type != "manual" {
 				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
 			}
 			// #1159: a partially closed hedge leg must re-anchor its quantity
-			// watermark to the primary's CURRENT quantity. Pending rows drain
-			// in insertion order and force-close queues the primary first, so
-			// the primary is already reduced here. Without the re-anchor the
-			// next hedge sync would diff the new hedge size against the OLD
-			// basis and reduce a second time — compounding the operator's
-			// single close into a runaway under-hedge.
+			// watermark, or the next hedge sync would diff the new hedge size
+			// against the OLD basis and reduce a second time — compounding the
+			// operator's single close into a runaway under-hedge.
+			//
+			// (Review round 2) The re-anchor is PROPORTIONAL TO WHAT ACTUALLY
+			// FILLED, not a flat stamp of the primary's post-reduce quantity.
+			// `a.Quantity` is the exchange's real fill, so a short-filled
+			// coupled reduce leaves the leg larger than its proportional
+			// target; stamping the primary quantity would claim exact
+			// alignment, hedgeTargetDecision would compute delta==0, and the
+			// surplus would be stranded for the life of the position — the
+			// same defect hedgeReducedBasis fixes on the reconciler path.
+			// Neither reconcile nor the ledger can catch it, because virtual
+			// and on-chain both moved by the same filled quantity.
 			if pos.isHedgeLeg() {
-				primaryQty := 0.0
-				if pp, pok := ss.Positions[pos.HedgeFor]; pok && pp != nil {
-					primaryQty = pp.Quantity
-				}
-				pos.HedgePrimaryQtyBasis = primaryQty
+				pos.HedgePrimaryQtyBasis = hedgeBasisAfterPartialReduce(preReduceBasis, preReduceQty, pos.Quantity)
 			}
 		}
 		fmt.Printf("[manual] applied %s: %s %.6f %s @ $%.4f | PnL=$%.2f\n",

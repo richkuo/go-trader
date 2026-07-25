@@ -2365,13 +2365,42 @@ func runPendingHyperliquidCircuitCloses(
 				continue
 			}
 			symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
-			// #1159: reconstruct the hedge leg's pending close too, from the
-			// PERSISTED hedge position — otherwise a stuck-CB recovery would
-			// flatten the primary and strand the hedge as naked inverse
-			// exposure.
-			if hCoin := heldHedgeCoin(sc, ss); hCoin != "" {
-				if hQty, hok := computeHyperliquidCircuitCloseQty(hCoin, sc.ID, positions, hlCircuitPeerAll); hok && hQty > 0 {
+			// #1159 (review round 2): reconstruct the hedge leg's pending
+			// close from CONFIG + the on-chain snapshot, exactly as the
+			// primary above — NOT from the virtual position.
+			//
+			// The virtual leg is gone by this point. The CB fired on a cycle
+			// whose HL fetch failed, so setHyperliquidCircuitBreakerPending
+			// bailed on the empty snapshot and set no pending — but
+			// shouldForceCloseAllPositionsOnCircuitBreaker still returned true
+			// for a sole-owner strategy, so forceCloseAllPositions ran and
+			// deleted BOTH virtual legs. Reading ss.Positions here would
+			// therefore always find nothing, the hedge would never be
+			// enqueued, and the drain would flatten only the primary — leaving
+			// the on-chain hedge running as naked INVERSE leveraged exposure,
+			// the precise outcome this reconstruction exists to prevent.
+			// Nothing else recovers it: reconcileHyperliquidHedgeLeg only
+			// emits a foreign-position alert for an unstamped leg.
+			//
+			// Safety posture matches the primary's: the hedge coin is
+			// sole-owned by construction (validateHedgeConfigs rejects every
+			// collision), so an on-chain position there is either ours or an
+			// operator's manual trade on a coin they declared auto-managed.
+			// hedgeCircuitReconstructionSide adds the one discriminator that
+			// survives the virtual delete — our hedge is ALWAYS inverse to the
+			// primary, so a same-side position cannot be ours and is refused.
+			if hCoin := hedgeCoin(sc); hCoin != "" {
+				hQty, hok := computeHyperliquidCircuitCloseQty(hCoin, sc.ID, positions, hlCircuitPeerAll)
+				switch {
+				case !hok || hQty <= 0:
+					// Nothing on-chain to close.
+				case !hedgeIsInverseOfPrimaryOnChain(sym, hCoin, positions):
+					fmt.Printf("[CRITICAL] hl-circuit-close: %s declares hedge coin %s and the circuit breaker is latched, but the on-chain %s position is NOT inverse to the primary %s — refusing to close it as a hedge (it is not one this scheduler could have opened). Reconcile it manually.\n",
+						sc.ID, hCoin, hCoin, sym)
+				default:
 					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
+					fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending HEDGE close for strategy %s coin %s sz=%.6f (virtual leg was cleared by the force-close sweep on the fire cycle)\n",
+						sc.ID, hCoin, hQty)
 				}
 			}
 			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{

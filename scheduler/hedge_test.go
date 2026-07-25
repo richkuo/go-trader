@@ -1890,3 +1890,425 @@ func TestHedgeReducedBasisInterpolatesByFillRatio(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Review round 2 regressions (#1404)
+
+func TestHedgeBasisAfterPartialReduceScalesByHeldQuantity(t *testing.T) {
+	cases := []struct {
+		name                        string
+		oldBasis, preQty, remainQty float64
+		want                        float64
+	}{
+		{"half the leg remains", 10, 0.4, 0.2, 5},
+		{"three quarters remain", 10, 0.4, 0.3, 7.5},
+		{"nothing filled leaves the basis", 10, 0.4, 0.4, 10},
+		{"fully drained", 10, 0.4, 0, 0},
+		{"over-report clamps to the old basis", 10, 0.4, 0.5, 10},
+		{"unanchored basis untouched", 0, 0.4, 0.2, 0},
+		{"zero pre-size untouched", 10, 0, 0.2, 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := hedgeBasisAfterPartialReduce(tc.oldBasis, tc.preQty, tc.remainQty)
+			if math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("= %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// hedgeBasisAfterPartialReduce (derived from held sizes) and hedgeReducedBasis
+// (derived from the order's fill ratio) must agree — the manual drain and the
+// reconciler use different inputs to answer the same question.
+func TestHeldQuantityAndFillRatioBasisRulesAgree(t *testing.T) {
+	// Primary 10 → 5 halves the hedge target; hedge held 0.4, reduce 0.2.
+	for _, filled := range []float64{0.2, 0.15, 0.1, 0.05} {
+		byRatio := hedgeReducedBasis(10, 5, filled, 0.2)
+		byHeld := hedgeBasisAfterPartialReduce(10, 0.4, 0.4-filled)
+		if math.Abs(byRatio-byHeld) > 1e-9 {
+			t.Fatalf("filled %v: ratio rule %v vs held rule %v — the two derivations must agree", filled, byRatio, byHeld)
+		}
+	}
+}
+
+// Finding 1: the stuck-CB recovery must reconstruct the hedge from CONFIG, not
+// from virtual state the fire cycle already deleted.
+func TestHedgeIsInverseOfPrimaryOnChain(t *testing.T) {
+	cases := []struct {
+		name      string
+		positions []HLPosition
+		want      bool
+	}{
+		{"long primary / short hedge", []HLPosition{{Coin: "ETH", Size: 10}, {Coin: "BTC", Size: -0.4}}, true},
+		{"short primary / long hedge", []HLPosition{{Coin: "ETH", Size: -10}, {Coin: "BTC", Size: 0.4}}, true},
+		{"same side is not a hedge", []HLPosition{{Coin: "ETH", Size: 10}, {Coin: "BTC", Size: 0.4}}, false},
+		{"missing hedge position", []HLPosition{{Coin: "ETH", Size: 10}}, false},
+		{"missing primary position", []HLPosition{{Coin: "BTC", Size: -0.4}}, false},
+		{"flat hedge", []HLPosition{{Coin: "ETH", Size: 10}, {Coin: "BTC", Size: 0}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hedgeIsInverseOfPrimaryOnChain("ETH", "BTC", tc.positions); got != tc.want {
+				t.Fatalf("= %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The exact interaction the finding describes: the CB fires on a cycle whose HL
+// fetch failed, so no pending was set but forceCloseAllPositions still wiped
+// BOTH virtual legs. The reconstruction must still enqueue the hedge.
+func TestCircuitBreakerFireWithFailedFetchThenRecoveryClosesBothLegs(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	s := hedgeTestState("eth-long")
+	s.Positions["ETH"] = primaryPos(10, "long")
+	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+
+	// Fire cycle: the HL fetch failed, so the assist carries no positions.
+	assist := &PlatformRiskAssist{HLPositions: nil, HLLiveAll: []StrategyConfig{sc}}
+	setHyperliquidCircuitBreakerPending(&sc, s, assist)
+	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Fatal("setup: no pending should be set when the on-chain snapshot is empty")
+	}
+	if !shouldForceCloseAllPositionsOnCircuitBreaker(&sc, assist) {
+		t.Fatal("setup: a sole-owner strategy still force-closes virtually")
+	}
+	forceCloseAllPositions(s, map[string]float64{"ETH": testPrimaryPx, "BTC": testHedgePx}, silentStrategyLogger("eth-long"))
+	if len(s.Positions) != 0 {
+		t.Fatalf("setup: the sweep must clear both virtual legs, got %d", len(s.Positions))
+	}
+
+	// Recovery cycle: the exchange is reachable again and BOTH legs are live.
+	positions := []HLPosition{{Coin: "ETH", Size: 10}, {Coin: "BTC", Size: -0.4}}
+	if hCoin := heldHedgeCoin(sc, s); hCoin != "" {
+		t.Fatal("precondition: virtual state cannot name the hedge here — that is the whole bug")
+	}
+	hQty, hok := computeHyperliquidCircuitCloseQty(hedgeCoin(sc), sc.ID, positions, []StrategyConfig{sc})
+	if !hok || math.Abs(hQty-0.4) > 1e-9 {
+		t.Fatalf("config-derived hedge close qty = %v (ok=%v), want 0.4", hQty, hok)
+	}
+	if !hedgeIsInverseOfPrimaryOnChain("ETH", hedgeCoin(sc), positions) {
+		t.Fatal("the live inverse hedge must pass the discriminator")
+	}
+
+	// (b) a same-side foreign position on the sole-owned hedge coin is refused.
+	foreign := []HLPosition{{Coin: "ETH", Size: 10}, {Coin: "BTC", Size: 2}}
+	if hedgeIsInverseOfPrimaryOnChain("ETH", hedgeCoin(sc), foreign) {
+		t.Fatal("a same-side position on the hedge coin must never be closed as a hedge")
+	}
+}
+
+// (c) the loss-streak arm needs no on-chain fetch, so it can fire while the
+// fetch is down — same stranding, same recovery.
+func TestLossStreakCircuitBreakerWithFailedFetchLeavesNoPending(t *testing.T) {
+	sc := hedgeTestConfig()
+	s := hedgeTestState("eth-long")
+	s.Positions["ETH"] = primaryPos(10, "long")
+	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+	s.RiskState.ConsecutiveLosses = 99
+
+	setHyperliquidCircuitBreakerPending(&sc, s, &PlatformRiskAssist{HLLiveAll: []StrategyConfig{sc}})
+	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
+		t.Fatal("an empty on-chain snapshot must not produce a pending close")
+	}
+	// Recovery must then be able to name the hedge from config alone.
+	if hedgeCoin(sc) != "BTC" {
+		t.Fatalf("hedge coin = %q, want BTC from config", hedgeCoin(sc))
+	}
+}
+
+// Finding 4: an externally reduced hedge must be RE-GROWN, and the reconcile
+// comment must not promise behavior the delta math can't deliver.
+func TestExternallyReducedHedgeIsRegrown(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	s := hedgeTestState("eth-long")
+	s.Positions["ETH"] = primaryPos(10, "long")
+	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+
+	// Half the hedge is liquidated on-chain; the primary is untouched.
+	var alerts []string
+	reconcileHyperliquidHedgeLeg(sc, s, []HLPosition{{Coin: "BTC", Size: -0.2, EntryPrice: testHedgePx}},
+		noFillFeeResolver, silentStrategyLogger("eth-long"), nil, &alerts)
+
+	pos := s.Positions["BTC"]
+	if pos == nil || math.Abs(pos.Quantity-0.2) > 1e-9 {
+		t.Fatalf("leg = %v, want resynced to 0.2", pos)
+	}
+	if math.Abs(pos.HedgePrimaryQtyBasis-5) > 1e-9 {
+		t.Fatalf("basis = %v, want 5 — it must shrink with the leg so the shortfall is visible", pos.HedgePrimaryQtyBasis)
+	}
+	act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx)
+	if act.Kind != hedgeActionAdd {
+		t.Fatalf("follow-up = %v, want add — the lost hedge must be rebuilt (%s)", act.Kind, act.Reason)
+	}
+	if math.Abs(act.Qty-0.2) > 1e-9 {
+		t.Fatalf("re-grow qty = %v, want 0.2 (back to the full 0.4)", act.Qty)
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "RE-GROW") {
+		t.Fatalf("alerts = %v, want the re-grow notice", alerts)
+	}
+}
+
+// (b) The re-grow must not fight a surplus this scheduler never opened.
+func TestExternallyINCREASEDHedgeIsLeftAlone(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	s := hedgeTestState("eth-long")
+	s.Positions["ETH"] = primaryPos(10, "long")
+	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+
+	var alerts []string
+	reconcileHyperliquidHedgeLeg(sc, s, []HLPosition{{Coin: "BTC", Size: -0.9, EntryPrice: testHedgePx}},
+		noFillFeeResolver, silentStrategyLogger("eth-long"), nil, &alerts)
+
+	pos := s.Positions["BTC"]
+	if pos.HedgePrimaryQtyBasis != 10 {
+		t.Fatalf("basis = %v, want the original 10 — an upward resync must not move it", pos.HedgePrimaryQtyBasis)
+	}
+	if act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx); act.Kind != hedgeActionNone {
+		t.Fatalf("follow-up = %v, want none — surplus we never opened is not ours to trade (%s)", act.Kind, act.Reason)
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "EXCEEDS") {
+		t.Fatalf("alerts = %v, want the surplus notice", alerts)
+	}
+}
+
+// (c) A later primary reduce must still size correctly off the shrunk basis.
+func TestPrimaryReduceAfterExternalHedgeReductionSizesOffTheShrunkBasis(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	s := hedgeTestState("eth-long")
+	s.Positions["ETH"] = primaryPos(10, "long")
+	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+
+	var alerts []string
+	reconcileHyperliquidHedgeLeg(sc, s, []HLPosition{{Coin: "BTC", Size: -0.2, EntryPrice: testHedgePx}},
+		noFillFeeResolver, silentStrategyLogger("eth-long"), nil, &alerts)
+
+	// Primary now halves to 2.5 — below the shrunk basis of 5.
+	s.Positions["ETH"].Quantity = 2.5
+	act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx)
+	if act.Kind != hedgeActionReduce {
+		t.Fatalf("kind = %v, want reduce (%s)", act.Kind, act.Reason)
+	}
+	// basis 5 → primary 2.5 is a 50% cut of a 0.2 leg.
+	if math.Abs(act.Qty-0.1) > 1e-9 {
+		t.Fatalf("reduce qty = %v, want 0.1", act.Qty)
+	}
+}
+
+// Finding 3: the manual pending-action drain must re-anchor a partially closed
+// hedge leg PROPORTIONALLY. `a.Quantity` is the exchange's real fill, so a
+// short-filled coupled reduce leaves the leg larger than target; stamping the
+// primary's post-reduce quantity would claim exact alignment and strand the
+// surplus permanently — neither reconcile nor the ledger can catch it, because
+// virtual and on-chain both moved by the same filled quantity.
+func TestManualDrainReAnchorsHedgeBasisProportionally(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	scByID := map[string]StrategyConfig{"eth-long": sc}
+
+	// Operator force-closed 40% of the primary (10 → 6). The coupled hedge
+	// reduce was sized 0.16 but the exchange filled only `filled`.
+	newState := func() *AppState {
+		s := hedgeTestState("eth-long")
+		s.Positions["ETH"] = primaryPos(6, "long") // primary row already drained
+		s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+		return &AppState{Strategies: map[string]*StrategyState{"eth-long": s}}
+	}
+	drainHedgeClose := func(st *AppState, filled float64, full bool) error {
+		return applyManualAction(st, nil, scByID, PendingManualAction{
+			StrategyID:  "eth-long",
+			Action:      "close",
+			Symbol:      "BTC",
+			Side:        "buy",
+			Quantity:    filled,
+			FillPrice:   51000,
+			FillFee:     1,
+			RealizedPnL: -5,
+			IsFullClose: full,
+			CreatedAt:   time.Now().UTC(),
+		})
+	}
+
+	t.Run("short fill leaves a delta for the next cycle", func(t *testing.T) {
+		st := newState()
+		if err := drainHedgeClose(st, 0.08, false); err != nil { // half of the intended 0.16
+			t.Fatalf("drain: %v", err)
+		}
+		pos := st.Strategies["eth-long"].Positions["BTC"]
+		if math.Abs(pos.Quantity-0.32) > 1e-9 {
+			t.Fatalf("hedge qty = %v, want 0.32", pos.Quantity)
+		}
+		// 0.32/0.40 of a basis-10 leg = 8.
+		if math.Abs(pos.HedgePrimaryQtyBasis-8) > 1e-9 {
+			t.Fatalf("basis = %v, want 8 — a short fill must not claim alignment with the primary's 6", pos.HedgePrimaryQtyBasis)
+		}
+		act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, st.Strategies["eth-long"]), testPrimaryPx, testHedgePx)
+		if act.Kind != hedgeActionReduce {
+			t.Fatalf("follow-up = %v, want reduce — the surplus must be trimmed (%s)", act.Kind, act.Reason)
+		}
+	})
+
+	t.Run("full fill lands exactly on the primary quantity", func(t *testing.T) {
+		st := newState()
+		if err := drainHedgeClose(st, 0.16, false); err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		pos := st.Strategies["eth-long"].Positions["BTC"]
+		if math.Abs(pos.HedgePrimaryQtyBasis-6) > 1e-9 {
+			t.Fatalf("basis = %v, want 6 (the primary's post-reduce qty)", pos.HedgePrimaryQtyBasis)
+		}
+		if act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, st.Strategies["eth-long"]), testPrimaryPx, testHedgePx); act.Kind != hedgeActionNone {
+			t.Fatalf("follow-up = %v, want none — a full fill is in sync (%s)", act.Kind, act.Reason)
+		}
+	})
+
+	t.Run("two consecutive short fills re-base off the true remaining size", func(t *testing.T) {
+		st := newState()
+		if err := drainHedgeClose(st, 0.08, false); err != nil {
+			t.Fatalf("drain 1: %v", err)
+		}
+		if err := drainHedgeClose(st, 0.08, false); err != nil {
+			t.Fatalf("drain 2: %v", err)
+		}
+		pos := st.Strategies["eth-long"].Positions["BTC"]
+		if math.Abs(pos.Quantity-0.24) > 1e-9 {
+			t.Fatalf("hedge qty = %v, want 0.24", pos.Quantity)
+		}
+		// 0.24/0.40 of basis 10 = 6 — exactly aligned, no compounding.
+		if math.Abs(pos.HedgePrimaryQtyBasis-6) > 1e-9 {
+			t.Fatalf("basis = %v, want 6 — consecutive partials must converge, not compound", pos.HedgePrimaryQtyBasis)
+		}
+	})
+}
+
+// Finding 2: a short-filled coupled hedge close must be queued as a PARTIAL,
+// so the drain keeps the leg (and its HedgeFor stamp) and the reconciler can
+// finish it. Marking it full deletes the leg while inverse exposure remains
+// on-chain, and nothing recovers it — runHedgeSync sees primary-flat with no
+// leg, and reconcile refuses to adopt the now-unstamped position.
+func TestShortFilledCoupledHedgeCloseStaysTracked(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := hedgeTestConfig()
+	scByID := map[string]StrategyConfig{"eth-long": sc}
+
+	newState := func() *AppState {
+		s := hedgeTestState("eth-long") // primary already fully closed
+		s.Positions["BTC"] = hedgePos(0.4, "short", 10)
+		return &AppState{Strategies: map[string]*StrategyState{"eth-long": s}}
+	}
+
+	t.Run("60% fill keeps the residue tracked and re-closable", func(t *testing.T) {
+		st := newState()
+		full := forceCloseCoupledHedgeQueuedFullFlag(t, 0.4, 0.24, true)
+		if full {
+			t.Fatal("a 60% hedge fill must NOT be queued as a full close, even when the operator fully closed the primary")
+		}
+		if err := applyManualAction(st, nil, scByID, PendingManualAction{
+			StrategyID: "eth-long", Action: "close", Symbol: "BTC", Side: "buy",
+			Quantity: 0.24, FillPrice: 51000, FillFee: 1, RealizedPnL: -5,
+			IsFullClose: full, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		pos := st.Strategies["eth-long"].Positions["BTC"]
+		if pos == nil {
+			t.Fatal("the residue must stay tracked — deleting it strands on-chain exposure")
+		}
+		if math.Abs(pos.Quantity-0.16) > 1e-9 {
+			t.Fatalf("residue = %v, want 0.16", pos.Quantity)
+		}
+		if pos.HedgeFor != "ETH" {
+			t.Fatalf("HedgeFor = %q — the stamp must survive or reconcile refuses to adopt the leg", pos.HedgeFor)
+		}
+		// Primary is flat, so the next cycle must flatten the residue.
+		act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, st.Strategies["eth-long"]), testPrimaryPx, testHedgePx)
+		if act.Kind != hedgeActionCloseFull {
+			t.Fatalf("follow-up = %v, want closeFull (%s)", act.Kind, act.Reason)
+		}
+	})
+
+	t.Run("100% fill still books as a full close", func(t *testing.T) {
+		st := newState()
+		full := forceCloseCoupledHedgeQueuedFullFlag(t, 0.4, 0.4, true)
+		if !full {
+			t.Fatal("a complete hedge fill must be queued as a full close")
+		}
+		if err := applyManualAction(st, nil, scByID, PendingManualAction{
+			StrategyID: "eth-long", Action: "close", Symbol: "BTC", Side: "buy",
+			Quantity: 0.4, FillPrice: 51000, FillFee: 1, RealizedPnL: -8,
+			IsFullClose: full, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if _, ok := st.Strategies["eth-long"].Positions["BTC"]; ok {
+			t.Fatal("a complete fill must delete the leg")
+		}
+	})
+}
+
+// forceCloseCoupledHedgeQueuedFullFlag drives the REAL production path —
+// forceCloseCoupledHedgeLeg — with a stub closer that fills `filled` of a
+// `heldQty` hedge leg, and returns the IsFullClose flag it actually queued.
+// Asserting the flag's formula in the test would not catch the defect; the
+// defect was in this function's expression.
+func forceCloseCoupledHedgeQueuedFullFlag(t *testing.T, heldQty, filled float64, primaryFullClose bool) bool {
+	t.Helper()
+	db := openTestDB(t)
+	sc := hedgeTestConfig()
+
+	deps := manualCoreDeps{
+		cfg:     &Config{Strategies: []StrategyConfig{sc}},
+		stateDB: db,
+		loadState: func(strategyID, symbol string) (manualStateView, error) {
+			if symbol != "BTC" {
+				return manualStateView{HasStrategy: true}, nil
+			}
+			return manualStateView{HasStrategy: true, Pos: hedgePos(heldQty, "short", 10)}, nil
+		},
+		closer: func(symbol string, partialSz *float64, oids []int64) (*HyperliquidCloseResult, error) {
+			return &HyperliquidCloseResult{Close: &HyperliquidClose{
+				Fill: &HyperliquidCloseFill{AvgPx: 51000, TotalSz: filled, Fee: 1, OID: 7},
+			}}, nil
+		},
+	}
+	res := &manualCoreResult{}
+	forceCloseCoupledHedgeLeg(deps, sc, res, "eth-long", "ETH", 10, 10, primaryFullClose)
+
+	actions, err := db.LoadPendingManualActions()
+	if err != nil {
+		t.Fatalf("LoadPendingManualActions: %v", err)
+	}
+	for _, a := range actions {
+		if a.Symbol == "BTC" && a.Action == "close" {
+			if math.Abs(a.Quantity-filled) > 1e-9 {
+				t.Fatalf("queued hedge close qty = %v, want the actual fill %v", a.Quantity, filled)
+			}
+			return a.IsFullClose
+		}
+	}
+	t.Fatal("no hedge close action was queued")
+	return false
+}

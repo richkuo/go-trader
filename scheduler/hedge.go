@@ -745,6 +745,67 @@ func hedgeReducedBasis(oldBasis, targetBasis, filledQty, requestedQty float64) f
 	return oldBasis - (oldBasis-targetBasis)*ratio
 }
 
+// hedgeIsInverseOfPrimaryOnChain reports whether the on-chain position on
+// hedgeCoin is opposite in direction to the one on primaryCoin.
+//
+// It is the discriminator the stuck-CB reconstruction uses when the virtual
+// hedge leg has already been deleted and `Position.HedgeFor` is therefore
+// unavailable. An auto-managed hedge is ALWAYS inverse to its primary
+// (HedgeSideForPrimary), so a same-side position on the declared hedge coin
+// provably was not opened by this mechanism and must never be liquidated as
+// one. It does not prove the inverse case IS ours — no evidence surviving the
+// delete can — but it rules out the whole class of same-side foreign
+// positions, and the caller logs exactly what it closes either way.
+//
+// Returns false when either coin has no non-zero on-chain position, so a
+// missing side can never be read as "inverse".
+func hedgeIsInverseOfPrimaryOnChain(primaryCoin, hedgeCoin string, positions []HLPosition) bool {
+	var primarySize, hedgeSize float64
+	for i := range positions {
+		switch positions[i].Coin {
+		case primaryCoin:
+			primarySize = positions[i].Size
+		case hedgeCoin:
+			hedgeSize = positions[i].Size
+		}
+	}
+	if primarySize == 0 || hedgeSize == 0 {
+		return false
+	}
+	return (primarySize > 0) != (hedgeSize > 0)
+}
+
+// hedgeBasisAfterPartialReduce re-anchors the quantity watermark from the
+// hedge leg's own before/after sizes, for callers that know how much the leg
+// actually shrank but not what size was originally requested.
+//
+// Hedge size is proportional to the basis at a fixed ratio and entry price, so
+// the primary quantity the REMAINING leg corresponds to scales by the same
+// fraction the leg did: `newBasis = oldBasis × remaining / preReduce`. This is
+// the same answer hedgeReducedBasis produces from the order's fill ratio — it
+// is simply derived from held quantities instead, which is what the manual
+// pending-action drain and the reconciler have available.
+//
+// Deriving from held sizes also makes it composable: each call re-bases off the
+// true current basis and size, so consecutive partial reduces converge rather
+// than compounding an error.
+//
+// A fully drained leg returns 0 (nothing left to hedge with); a non-positive
+// pre-reduce size or basis returns the old basis untouched, leaving the "no
+// basis" re-anchor path in hedgeTargetDecision to handle it.
+func hedgeBasisAfterPartialReduce(oldBasis, preReduceQty, remainingQty float64) float64 {
+	if oldBasis <= hedgeQtyEpsilon || preReduceQty <= hedgeQtyEpsilon {
+		return oldBasis
+	}
+	if remainingQty <= hedgeQtyEpsilon {
+		return 0
+	}
+	if remainingQty >= preReduceQty {
+		return oldBasis
+	}
+	return oldBasis * (remainingQty / preReduceQty)
+}
+
 // applyHedgeFill mutates virtual state for a CONFIRMED hedge fill. MUST be
 // called under mu.Lock.
 //
@@ -1115,17 +1176,44 @@ func reconcileHyperliquidHedgeLeg(
 				sc.ID, coin, coin, hadQty, primary))
 		}
 	case hadLeg && stillHeld && after != nil:
-		// Reconcile may have resynced quantity against the exchange. The basis
-		// describes the PRIMARY, not the hedge, so it must survive untouched —
-		// but a resync means the hedge no longer matches what the basis
-		// implies, and the next hedge sync will size against the difference.
 		if after.HedgePrimaryQtyBasis == 0 && hadBasis > 0 {
 			after.HedgePrimaryQtyBasis = hadBasis
 		}
+		// #1159 (review round 2): a DOWNWARD resync means the exchange took
+		// hedge size away from us — a partial liquidation, or an operator
+		// closing part of the leg by hand. Shrink the basis by the same
+		// fraction the leg shrank, so hedgeTargetDecision sees a real delta
+		// and RE-GROWS the hedge back to the primary.
+		//
+		// Without this the shortfall is invisible: the decision core keys on
+		// `PrimaryQty - HedgeBasis`, never on the hedge's own size, so an
+		// unchanged primary yields delta==0 and the pair silently runs
+		// under-hedged for the rest of the position's life. That was also
+		// incoherent with the FULL external-close path, which already
+		// re-opens the leg from scratch on the next cycle — closing 100% of
+		// the hedge got it rebuilt while closing 99% did not.
+		//
+		// Re-growing via the basis (rather than comparing the held size to a
+		// target recomputed at the current mark) is what keeps the qty-event
+		// invariant intact: the basis moves only when the exchange actually
+		// takes size, never when a price moves, so this cannot degrade the
+		// hedge into a continuous rebalancer paying taker fees on noise.
+		//
+		// Deliberately one-directional. An UPWARD resync means unowned size
+		// appeared on our coin; trading it away would act on a position this
+		// scheduler never opened, so the basis is left alone and the operator
+		// gets the alert below.
+		if after.Quantity+1e-9 < hadQty {
+			after.HedgePrimaryQtyBasis = hedgeBasisAfterPartialReduce(after.HedgePrimaryQtyBasis, hadQty, after.Quantity)
+		}
 		if math.Abs(after.Quantity-hadQty) > 1e-9 && pendingHedgeAlerts != nil {
+			detail := "The leg has been resynced to the exchange and the quantity watermark shrank with it, so hedge sync will RE-GROW the hedge back to the primary on the next cycle. Disable the hedge block if you closed part of this leg deliberately."
+			if after.Quantity > hadQty {
+				detail = "On-chain size EXCEEDS the scheduler's record. The surplus was not opened by this scheduler, so it is left alone — hedge sync will not trade it away. Reconcile it manually."
+			}
 			*pendingHedgeAlerts = append(*pendingHedgeAlerts, fmt.Sprintf(
-				"⚠️ **Hedge leg resynced** — `%s` / %s\nOn-chain quantity differed from the scheduler's record (%.8f → %.8f). The leg has been resynced to the exchange; hedge sync will re-converge it to the primary next cycle.",
-				sc.ID, coin, hadQty, after.Quantity))
+				"⚠️ **Hedge leg resynced** — `%s` / %s\nOn-chain quantity differed from the scheduler's record (%.8f → %.8f). %s",
+				sc.ID, coin, hadQty, after.Quantity, detail))
 		}
 	case !hadLeg:
 		// No virtual leg. If something IS on-chain for this coin, the

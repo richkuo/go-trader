@@ -1553,8 +1553,16 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 		FillFee:         fill.Fee,
 		ExchangeOrderID: oid,
 		RealizedPnL:     pnl,
-		IsFullClose:     fullClose || hPos.Quantity-filled <= 1e-9,
-		CreatedAt:       time.Now().UTC(),
+		// #1159 (review round 2): mark full ONLY when the leg actually drained.
+		// `fullClose` is the operator's INTENT (the primary was fully closed);
+		// a reduce-only hedge close can still short-fill. Booking a short fill
+		// as full makes the drain delete the virtual leg — erasing its
+		// HedgeFor stamp while inverse exposure remains on-chain — and nothing
+		// recovers it: runHedgeSync sees primary-flat + no leg and does
+		// nothing, while reconcileHyperliquidHedgeLeg refuses to adopt the now
+		// unstamped position. Mirrors the primary path's actualFullClose.
+		IsFullClose: hPos.Quantity-filled <= 1e-9,
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
 		res.errf("CRITICAL: the %s hedge leg was closed ON-CHAIN but queuing its bookkeeping row failed: %v — virtual state now overstates the hedge. Run the scheduler to reconcile.", hCoin, err)
