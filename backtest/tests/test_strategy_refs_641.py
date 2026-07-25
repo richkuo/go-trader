@@ -773,6 +773,47 @@ def test_load_strategy_config_rejects_regime_window_divergence(tmp_path):
         run_backtest.load_strategy_config(path, "hl-d-btc")
 
 
+# ─── #1159: correlated hedge legs are HL-live-only in phase 1 ────────────────
+
+
+def test_load_strategy_config_rejects_enabled_hedge_block(tmp_path):
+    # The backtester simulates ONE instrument, so a hedge-enabled config would
+    # silently drop the hedge's PnL, fees, and margin — producing a strictly
+    # optimistic result that reads as a valid backtest. Reject loudly.
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(hedge={"enabled": True, "symbol": "BTC", "ratio": 1.0}),
+    ])
+    with pytest.raises(ValueError, match="hedge"):
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+
+
+def test_load_strategy_config_reject_names_the_issue_and_the_remedy(tmp_path):
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(hedge={"enabled": True, "symbol": "BTC"}),
+    ])
+    with pytest.raises(ValueError) as exc:
+        run_backtest.load_strategy_config(path, "hl-d-btc")
+    msg = str(exc.value)
+    assert "#1159" in msg
+    assert "hedge.enabled=false" in msg
+
+
+def test_load_strategy_config_allows_disabled_hedge_block(tmp_path):
+    # An explicitly disabled block changes nothing live, so it must load clean
+    # (mirrors the Go HedgeEnabled accessor).
+    path = _write_config(tmp_path, version=15, strategies=[
+        _perps_strategy(hedge={"enabled": False, "symbol": "BTC"}),
+    ])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["open_strategy"]["name"] == "tema_cross_bd"
+
+
+def test_load_strategy_config_allows_absent_hedge_block(tmp_path):
+    path = _write_config(tmp_path, version=15, strategies=[_perps_strategy()])
+    kwargs = run_backtest.load_strategy_config(path, "hl-d-btc")
+    assert kwargs["open_strategy"]["name"] == "tema_cross_bd"
+
+
 _REGIME_DIRECTIONAL_POLICY = {
     "trend_regime": {
         "trending_up": {"direction": "long", "invert_signal": False},

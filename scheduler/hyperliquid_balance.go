@@ -646,7 +646,12 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			statePos.Leverage = onChainPos.Leverage
 			changed = true
 		}
-		if pendingOrphanCloses != nil && sc.ID != "" {
+		// #1159: an inverse correlated hedge leg always "conflicts" with the
+		// strategy's effective direction — that is what a hedge is. Queuing it
+		// for the #822 orphan auto-close would flatten the hedge every cycle
+		// while the primary keeps running, producing exactly the unhedged state
+		// the feature exists to prevent.
+		if pendingOrphanCloses != nil && sc.ID != "" && statePos.HedgeFor == "" {
 			if conflict, currentRegime, effectiveDir := perpsRegimeDirectionOrphanConflict(stratState, sc, statePos); conflict {
 				logger.Warn("hl-sync: %s regime/direction orphan — %s qty=%.6f conflicts with current regime %q (effective_direction=%q); queuing auto-close (#822)",
 					sym, statePos.Side, statePos.Quantity, currentRegime, effectiveDir)
@@ -863,6 +868,21 @@ func reconcileHyperliquidAccountPositions(dueStrategies, allStrategies []Strateg
 			changed = true
 		}
 	}
+
+	// #1159: reconcile correlated hedge coins. Membership comes from the
+	// PERSISTED HedgeFor stamp, never from a coin→configured-symbol lookup
+	// (phase-1 constraint 5), so a foreign on-chain position on a declared
+	// hedge coin is never adopted. This runs over ALL strategies, not just due
+	// ones: a hedge leg has no check script and no interval of its own, so it
+	// would otherwise only resync when its primary happened to be scheduled.
+	//
+	// Reusing reconcileHyperliquidPositionsWithResolver gives qty/side drift
+	// resync and external-close booking at the real userFills VWAP for free,
+	// with the existing "on-chain exists but not in state → skip" safety. It is
+	// deliberately called with an EMPTY StrategyConfig and nil orphan queue:
+	// the hedge coin is not the strategy's configured coin, so none of the
+	// TP-tier / direction machinery keyed on sc applies to it.
+	reconcileHedgeCoins(allStrategies, state, logMgr, positions, resolveFee, &pendingAlerts, &changed)
 
 	if len(pendingOrphanCloses) > 0 {
 		sort.Slice(pendingOrphanCloses, func(i, j int) bool {
@@ -1949,7 +1969,12 @@ func (r HyperliquidLiveCloseReport) SortedErrorCoins() []string {
 // should be cancelled before the close fires, so kill-switch flattening
 // doesn't leave orphan triggers consuming HL's open-order cap (#421, #479).
 // nil/empty disables the cancel; the closer is otherwise unchanged.
-func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) HyperliquidLiveCloseReport {
+// heldHedgeCoins (#1159) extends the owned-coin roster with correlated hedge
+// coins whose leg a strategy currently holds. Without it the kill switch
+// flattens every primary and STRANDS the on-chain hedges: the generic virtual
+// cleanup would zero them in state while real, now-unhedged exposure keeps
+// running on the exchange. Pass nil when there are none.
+func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLiveAll []StrategyConfig, heldHedgeCoins map[string]bool, closer HyperliquidLiveCloser, stopLossOIDsByCoin map[string][]int64) HyperliquidLiveCloseReport {
 	report := HyperliquidLiveCloseReport{
 		Fills:  make(map[string]HyperliquidCloseFill),
 		Errors: make(map[string]error),
@@ -1960,6 +1985,11 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 		sym := hyperliquidSymbol(sc.Args)
 		if sym != "" {
 			tradedCoins[sym] = true
+		}
+	}
+	for coin := range heldHedgeCoins {
+		if coin != "" {
+			tradedCoins[coin] = true
 		}
 	}
 
@@ -2056,6 +2086,16 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 		if ss == nil {
 			continue
 		}
+		// #1159: snapshot the correlated hedge leg under its own coin key too.
+		// Without it, hyperliquidKillSwitchFillShare sees no virtual quantity
+		// for the hedge coin and fails closed to a zero share, so the on-chain
+		// hedge fill is never booked against the owning strategy.
+		if hedgePos, hedgeSym := hedgePositionOf(ss); hedgePos != nil && hedgePos.Quantity > 0 {
+			if out[hedgeSym] == nil {
+				out[hedgeSym] = make(map[string]float64)
+			}
+			out[hedgeSym][sc.ID] = hedgePos.Quantity
+		}
 		pos := ss.Positions[coin]
 		if pos == nil || pos.Quantity <= 0 {
 			continue
@@ -2064,6 +2104,30 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 			out[coin] = make(map[string]float64)
 		}
 		out[coin][sc.ID] = pos.Quantity
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// hyperliquidHeldHedgeCoins returns the set of hedge coins whose leg a live HL
+// strategy actually HOLDS right now (#1159). Gating on the held leg rather
+// than on config alone is deliberate and load-bearing: the kill switch must
+// flatten our own hedge exposure, but must never liquidate a foreign position
+// that happens to sit on a coin some strategy merely declares as its hedge.
+//
+// Caller must hold at least an RLock on state.
+func hyperliquidHeldHedgeCoins(strategies map[string]*StrategyState, hlLiveAll []StrategyConfig) map[string]bool {
+	out := make(map[string]bool)
+	for _, sc := range hlLiveAll {
+		ss := strategies[sc.ID]
+		if ss == nil {
+			continue
+		}
+		if pos, coin := hedgePositionOf(ss); pos != nil && pos.Quantity > 0 && coin != "" {
+			out[coin] = true
+		}
 	}
 	if len(out) == 0 {
 		return nil
@@ -2144,19 +2208,55 @@ func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fi
 	if s == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
 		return false
 	}
+	// #1159: book the correlated hedge leg's fill FIRST, and unconditionally —
+	// the primary may have had nothing to close (already flat, or no fill
+	// returned) while the hedge coin did fill, and an early return on the
+	// primary would leave the hedge to be zeroed at mark by the generic sweep.
+	applied := applyHyperliquidKillSwitchHedgeFill(s, sc, fills, hlLiveAll, virtualQty)
 	coin := hyperliquidSymbol(sc.Args)
 	if coin == "" {
-		return false
+		return applied
 	}
 	fill, ok := fills[coin]
 	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
-		return false
+		return applied
 	}
 	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, coin, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
 	if fillSz <= 1e-15 {
-		return false
+		return applied
 	}
 	applyHyperliquidCircuitCloseFill(s, coin, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
+	return true
+}
+
+// applyHyperliquidKillSwitchHedgeFill books the kill switch's fill on a
+// strategy's correlated hedge coin (#1159), before the generic
+// forceCloseAllPositions cleanup can zero the leg at mark.
+//
+// The share still routes through hyperliquidKillSwitchFillShare even though a
+// hedge coin is sole-owned by construction: the helper's fail-closed peer check
+// is precisely what protects against a future config or validation regression
+// silently letting one strategy claim another's fill. For a peer-less coin it
+// returns the full fill, so this is free.
+//
+// Double-booking is prevented by ordering plus the #954 one-fill-one-row OID
+// guard inside bookPerpsCloseWithFillFee: the position is deleted here, so the
+// later generic sweep finds nothing, and if it somehow raced, the duplicate OID
+// is caught.
+func applyHyperliquidKillSwitchHedgeFill(s *StrategyState, sc StrategyConfig, fills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, virtualQty hlVirtualQuantitySnapshot) bool {
+	hedgePos, hedgeSym := hedgePositionOf(s)
+	if hedgePos == nil || hedgeSym == "" {
+		return false
+	}
+	fill, ok := fills[hedgeSym]
+	if !ok || fill.TotalSz <= 1e-15 || fill.AvgPx <= 0 {
+		return false
+	}
+	fillSz, fillFee := hyperliquidKillSwitchFillShare(sc, hedgeSym, fill.TotalSz, fill.Fee, hlLiveAll, virtualQty)
+	if fillSz <= 1e-15 {
+		return false
+	}
+	applyHyperliquidCircuitCloseFill(s, hedgeSym, fillSz, fill.AvgPx, fillFee, 0, fill.OID, "")
 	return true
 }
 
@@ -2233,7 +2333,13 @@ func runPendingHyperliquidCircuitCloses(
 			continue
 		}
 		sym := hyperliquidConfiguredCoin(sc)
-		if sym == "" || len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
+		// #1159: a held correlated hedge leg is sole-owned by construction, so
+		// it is recoverable even when the PRIMARY coin is shared with peers and
+		// therefore skipped. Without this, a stuck CB on a shared-coin strategy
+		// would never reconstruct the hedge close and the hedge would be zeroed
+		// virtually while real exposure kept running.
+		hedgePos, _ := hedgePositionOf(ss)
+		if (sym == "" || len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1) && hedgePos == nil {
 			continue
 		}
 		if ss.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) == nil && ss.RiskState.CircuitBreaker {
@@ -2278,19 +2384,29 @@ func runPendingHyperliquidCircuitCloses(
 			if !ss.RiskState.CircuitBreaker {
 				continue
 			}
+			var symbols []PendingCircuitCloseSymbol
+			// #1159: reconstruct the hedge leg from PERSISTED position metadata
+			// (never from coin→config inference), independently of the primary
+			// so a shared or already-flat primary cannot strand it.
+			if hedgePos, hedgeSym := hedgePositionOf(ss); hedgePos != nil && hedgeSym != "" {
+				if hedgeQty, ok := computeHyperliquidCircuitCloseQty(hedgeSym, sc.ID, positions, hlCircuitPeerAll); ok && hedgeQty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedgeSym, Size: hedgeQty})
+				}
+			}
 			sym := hyperliquidConfiguredCoin(sc)
-			if sym == "" {
+			if sym != "" {
+				if qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll); ok && qty > 0 {
+					symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+				}
+			}
+			if len(symbols) == 0 {
 				continue
 			}
-			qty, ok := computeHyperliquidCircuitCloseQty(sym, sc.ID, positions, hlCircuitPeerAll)
-			if !ok || qty <= 0 {
-				continue
+			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: symbols})
+			for _, c := range symbols {
+				fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
+					sc.ID, c.Symbol, c.Size)
 			}
-			ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-				Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
-			})
-			fmt.Printf("[CRITICAL] hl-circuit-close: recovered pending for strategy %s coin %s sz=%.6f (CB latched, HL fetch had failed at fire time)\n",
-				sc.ID, sym, qty)
 		}
 		mu.Unlock()
 	}
@@ -2355,14 +2471,33 @@ func runPendingHyperliquidCircuitCloses(
 			continue
 		}
 		if sym := hyperliquidConfiguredCoin(*sc); sym != "" && len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
-			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — clearing pending close and leaving exchange position untouched\n",
-				j.stratID, sym)
+			// #1159: strip only the SHARED PRIMARY symbol. Clearing the whole
+			// pending (the pre-#1159 behavior) would also drop a sole-owned
+			// correlated hedge close, and forceCloseAllPositions has already
+			// zeroed that leg virtually — stranding real on-chain exposure with
+			// no virtual record of it.
+			remaining := j.pending.Symbols[:0:0]
+			for _, c := range j.pending.Symbols {
+				if c.Symbol != sym {
+					remaining = append(remaining, c)
+				}
+			}
+			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — leaving that exchange position untouched (%d other pending symbol(s) retained)\n",
+				j.stratID, sym, len(remaining))
+			if len(remaining) == 0 {
+				mu.Lock()
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+				}
+				mu.Unlock()
+				continue
+			}
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
-				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
+				ss.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: remaining})
 			}
 			mu.Unlock()
-			continue
+			j.pending.Symbols = remaining
 		}
 
 		allOK := true
@@ -2645,16 +2780,19 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	positionID := ensurePositionTradeID(s.ID, symbol, pos)
 
 	RecordTrade(s, Trade{
-		Timestamp:         now,
-		StrategyID:        s.ID,
-		Symbol:            symbol,
-		PositionID:        positionID,
-		Side:              closeTradeSide(side),
-		Quantity:          qtyClosed,
-		Price:             fillPx,
-		Value:             qtyClosed * fillPx,
-		TradeType:         "perps",
-		Details:           fmt.Sprintf("%s, PnL: $%.2f (fee $%.4f)", closeLabel, pnl, fillFee),
+		Timestamp:  now,
+		StrategyID: s.ID,
+		Symbol:     symbol,
+		PositionID: positionID,
+		Side:       closeTradeSide(side),
+		Quantity:   qtyClosed,
+		Price:      fillPx,
+		Value:      qtyClosed * fillPx,
+		// #1159: a correlated hedge leg keeps its own trade_type on the CB /
+		// kill-switch on-chain close path too, so lifetime #T and W-L stay
+		// excluded no matter which path flattened it.
+		TradeType:         perpsTradeTypeForPosition(pos),
+		Details:           hedgeDetailsPrefix(pos, fmt.Sprintf("%s, PnL: $%.2f (fee $%.4f)", closeLabel, pnl, fillFee)),
 		ExchangeOrderID:   oidStr,
 		ExchangeFee:       fillFee,
 		FeeSource:         FeeSourceUserFills,
@@ -2667,7 +2805,7 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		StopLossATRMult:   pos.StopLossATRMult,
 		TPTiersJSON:       pos.TPTiersJSON,
 	})
-	RecordTradeResult(&s.RiskState, pnl)
+	recordTradeResultForPosition(&s.RiskState, pos, pnl)
 
 	remaining := pos.Quantity - qtyClosed
 	if remaining <= 1e-9 {

@@ -369,6 +369,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
+		// #1159: hedge block. Reachable only when flat —
+		// validateHotReloadStateCompatible rejects the reload outright while any
+		// position (primary or hedge leg) is open.
+		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
+			addChange("strategy[%s].hedge: shape updated (enabled=%t symbol=%q)", sc.ID, HedgeEnabled(ns), hedgeCoin(ns))
+			sc.Hedge = cloneHedgeConfig(ns.Hedge)
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -564,6 +571,13 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		errs = append(errs, msg)
 	}
 
+	// #1159: same stance for hedge collisions — a reload must not be able to
+	// introduce a hedge coin that overlaps a strategy coin or another hedge,
+	// which is the invariant every shared-coin mechanism relies on.
+	for _, msg := range validateHedgeConfigs(next.Strategies) {
+		errs = append(errs, msg)
+	}
+
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("config reload rejected:\n  %s", strings.Join(errs, "\n  "))
@@ -636,6 +650,19 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] scale_in shape changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
+		}
+		// #1159: the hedge block is a state-shifting surface — symbol, side,
+		// ratio, and the hedge's own margin_mode/leverage all define exposure
+		// that is ALREADY on-chain. Changing any of them mid-position would
+		// silently re-target or re-size a live leg (and HL only accepts
+		// update_leverage from flat anyway), so block every change while the
+		// strategy holds anything. strategyHasOpenPositions counts the hedge leg
+		// itself — it lives in the same Positions map — so a residual hedge with
+		// the primary already flat still blocks, which is what we want: that is
+		// exactly the state the reconciler is mid-way through unwinding.
+		if sc.Type == "perps" && sc.Platform == "hyperliquid" && !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] hedge block changed with open positions (flatten first or restart after close)",
+				sc.ID))
 		}
 		// #1268: switching between risk-per-trade and notional sizing while a
 		// position is open changes what the NEXT flip/re-entry sizing means
@@ -858,6 +885,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.AllowScaleIn = false          // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
+	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks any hedge-block change while a position (primary OR hedge leg) is open
 	return sc
 }
 

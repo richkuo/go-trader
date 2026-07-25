@@ -23,6 +23,16 @@ func knownStrategyConfigKeys() map[string]bool {
 	return known
 }
 
+// knownHedgeConfigKeys returns the JSON tag names declared on HedgeConfig
+// (#1159). The top-level "hedge" key is picked up automatically by the
+// reflective knownStrategyConfigKeys, but its NESTED keys are not — without
+// this guard a typo like "ration" or "leverge" would silently unmarshal to the
+// zero value and the hedge would trade at a default ratio/leverage the operator
+// never asked for.
+func knownHedgeConfigKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
 func knownUserDefaultsKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(UserDefaultsConfig{}))
 }
@@ -107,6 +117,51 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 				msg += " — " + hint
 			}
 			errs = append(errs, msg)
+		}
+	}
+	return errs
+}
+
+// validateHedgeJSONKeys flags unknown keys inside each strategy's `hedge`
+// block (#1159). Same rationale as validateStrategyJSONKeys one level down: a
+// silently-dropped hedge field produces a config that reads correct but hedges
+// at the wrong size, side, or leverage.
+func validateHedgeJSONKeys(rawData []byte) []string {
+	var envelope struct {
+		Strategies []map[string]json.RawMessage `json:"strategies"`
+	}
+	if err := json.Unmarshal(rawData, &envelope); err != nil {
+		return nil
+	}
+	known := knownHedgeConfigKeys()
+	var errs []string
+	for i, s := range envelope.Strategies {
+		raw, ok := s["hedge"]
+		if !ok {
+			continue
+		}
+		var block map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &block); err != nil {
+			// Shape errors (e.g. hedge: "BTC") are reported by LoadConfig's own
+			// unmarshal; don't double-report here.
+			continue
+		}
+		prefix := fmt.Sprintf("strategy[%d]", i)
+		if idRaw, ok := s["id"]; ok {
+			var id string
+			if json.Unmarshal(idRaw, &id) == nil && id != "" {
+				prefix = fmt.Sprintf("strategy[%s]", id)
+			}
+		}
+		keys := make([]string, 0, len(block))
+		for k := range block {
+			if !known[k] {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			errs = append(errs, fmt.Sprintf("%s.hedge: unknown field %q — valid hedge fields: enabled, symbol, side, ratio, platform, type, margin_mode, leverage", prefix, k))
 		}
 	}
 	return errs

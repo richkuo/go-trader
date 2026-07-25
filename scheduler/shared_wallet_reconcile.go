@@ -523,6 +523,21 @@ func buildSharedWalletBooks(
 		case "okx":
 			posKey = okxSymbol(sc.Args)
 		}
+		// #1159: a correlated hedge leg is real wallet exposure owned by this
+		// strategy. Without it here, attributeSharedWalletUPnL classifies the
+		// hedge coin as an ORPHAN — producing phantom drift alerts — and
+		// ingestWalletLedgerEvents books the hedge coin's funding payments as
+		// funding_orphan instead of to the owning strategy (requirement 6).
+		// Emitted for HL only; hedge legs are Hyperliquid perps in phase 1.
+		if key.Platform == "hyperliquid" {
+			if hedgePos, hedgeCoinSym := hedgePositionOf(ss); hedgePos != nil && hedgePos.Quantity > 0 && hedgeCoinSym != "" {
+				coin := strings.ToUpper(strings.TrimSpace(hedgeCoinSym))
+				if virtualQty[coin] == nil {
+					virtualQty[coin] = make(map[string]float64)
+				}
+				virtualQty[coin][id] = hedgePos.Quantity
+			}
+		}
 		if posKey == "" {
 			continue
 		}

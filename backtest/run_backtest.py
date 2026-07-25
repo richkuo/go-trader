@@ -795,6 +795,24 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"release (backtester parity deferred — see #907). Use the "
                 f"static `direction` / `invert_signal` fields for backtesting."
             )
+        # #1159: correlated hedge legs are HL-perps-live-only in phase 1. The
+        # backtester simulates ONE instrument, so a hedge-enabled config would
+        # silently drop the hedge's PnL, fees, funding, and margin usage —
+        # producing a strictly optimistic result that looks like a valid
+        # backtest of the configured strategy. Reject loudly rather than
+        # reporting numbers the live system cannot reproduce. An explicitly
+        # disabled block changes nothing live, so it passes through inert
+        # (matching the Go HedgeEnabled accessor).
+        hedge_cfg = sc.get("hedge")
+        if isinstance(hedge_cfg, dict) and hedge_cfg.get("enabled"):
+            raise ValueError(
+                f"{config_path}: strategy {strategy_id!r} configures a correlated "
+                f"hedge leg (hedge block, symbol={hedge_cfg.get('symbol')!r}), which "
+                f"is HL-live-only in this release (backtester parity deferred — see "
+                f"#1159). The backtester models a single instrument and would silently "
+                f"drop the hedge's PnL, fees, and margin. Set hedge.enabled=false to "
+                f"backtest the primary leg alone."
+            )
         # #842: a strategy has a single close_strategy ref. Still accept the
         # legacy close_strategies array (length <=1 after the collapse) so old
         # configs keep backtesting; the backtester's close_strategies= list

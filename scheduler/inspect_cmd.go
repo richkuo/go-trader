@@ -519,6 +519,17 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.Paused {
 		fmt.Fprintf(&b, "  paused:              true — position-increasing signals held; closes and SL/TP management still run\n")
 	}
+	// #1159: correlated hedge leg. Always surfaced when a hedge block exists —
+	// an auto-managed position on a second coin must be visible in the audit
+	// output whether it is enabled or parked.
+	if hedgeConfigured(sc) {
+		if HedgeEnabled(sc) {
+			fmt.Fprintf(&b, "  hedge:               %s %s ratio=%.2f margin=%s leverage=%gx (auto-managed, strictly coupled to %s; no SL/TP of its own)\n",
+				hedgeCoin(sc), HedgeSideInverse, hedgeRatio(sc), hedgeMarginMode(sc), hedgeExchangeLeverage(sc), hyperliquidConfiguredCoin(sc))
+		} else {
+			fmt.Fprintf(&b, "  hedge:               %s (block present but disabled — no hedge leg is traded)\n", hedgeCoin(sc))
+		}
+	}
 	if sc.IntervalSeconds > 0 {
 		fmt.Fprintf(&b, "  interval_seconds:    %d\n", sc.IntervalSeconds)
 	} else if cfg != nil {
@@ -596,6 +607,11 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 	// #1150: surface a paused strategy in the startup summary line.
 	if sc.Paused {
 		parts = append(parts, "paused")
+	}
+	// #1159: surface the correlated hedge leg. An auto-managed position on a
+	// second coin must never be a surprise in an audit line.
+	if h := hedgeSummaryTag(sc); h != "" {
+		parts = append(parts, h)
 	}
 	// #1277: surface a non-default ATR smoothing method — wilder re-derives
 	// every ATR-based stop/TP distance, so the audit line must show it
@@ -678,6 +694,19 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	}
 	// #1150: pause state, always emitted so dashboards can key off it.
 	out["paused"] = sc.Paused
+	// #1159: correlated hedge leg config, emitted only when a block exists so
+	// the common unhedged case stays compact.
+	if hedgeConfigured(sc) {
+		out["hedge"] = map[string]interface{}{
+			"enabled":        HedgeEnabled(sc),
+			"symbol":         hedgeCoin(sc),
+			"side":           HedgeSideInverse,
+			"ratio":          hedgeRatio(sc),
+			"margin_mode":    hedgeMarginMode(sc),
+			"leverage":       hedgeExchangeLeverage(sc),
+			"primary_symbol": hyperliquidConfiguredCoin(sc),
+		}
+	}
 	if cfg != nil && cfg.Regime != nil && len(cfg.Regime.Windows) > 0 {
 		out["regime_windows"] = cfg.Regime.Windows
 		out["regime_gate_window"] = regimeWindowSelectorJSON(sc, "gate", cfg.Regime)

@@ -281,6 +281,18 @@ func main() {
 	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
+	// #1159: detect persisted correlated hedge legs the current config no
+	// longer authorizes (hedge removed/disabled, or hedge.symbol changed) — a
+	// config edit plus a process restart is the one path the SIGHUP hedge guard
+	// cannot see. Warn-and-continue rather than refusing to boot: refusing
+	// would leave live positions with no stop-loss walker, no protection sync
+	// and no reconcile, which is strictly worse than the drift. The hedge
+	// reconciler unwinds the stale leg deterministically on the first cycle.
+	hedgeStateWarnings := ValidateHedgeStateConsistency(state, cfg)
+	for _, msg := range hedgeStateWarnings {
+		fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
+	}
+
 	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
 	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
 	// perps strategies on the same account), use the real on-exchange balance
@@ -512,6 +524,14 @@ func main() {
 	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
+			notifier.SendOwnerDM("[state] " + msg)
+		}
+	}
+
+	// #1159: forward hedge state-drift warnings to the owner — a stale hedge
+	// leg is about to be unwound on-chain, which the operator must know about.
+	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
@@ -1441,6 +1461,10 @@ func main() {
 					}
 				}
 				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
+				// #1159: coins carrying a HELD correlated hedge leg, so the
+				// kill switch flattens them on-chain instead of stranding real
+				// exposure behind a virtual-only cleanup.
+				hlHeldHedgeCoins := hyperliquidHeldHedgeCoins(state.Strategies, hlLiveAll)
 				mu.RUnlock()
 
 				inputs := KillSwitchCloseInputs{
@@ -1452,6 +1476,7 @@ func main() {
 					HLFetcher:         defaultHLStateFetcher,
 					HLNoFillRecoverer: defaultHLKillSwitchNoFillRecoverer,
 					HLStopLossOIDs:    hlSLOIDs,
+					HLHeldHedgeCoins:  hlHeldHedgeCoins,
 					OKXLiveAllPerps:   okxLivePerps,
 					OKXLiveAllSpot:    okxLiveSpot,
 					OKXCloser:         defaultOKXLiveCloser,
@@ -1745,6 +1770,11 @@ func main() {
 				// alert on cross-window reversals. Sequential main loop,
 				// outside mu; fail-open — never blocks the dispatch below.
 				processRegimeTransitionAlerts(stateDB, globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
+				// #1159: strategies whose correlated hedge leg the dispatch below
+				// already converged. The post-loop sweep skips them so a fresh
+				// open whose hedge just failed (and whose primary was therefore
+				// just unwound) is not immediately re-attempted in the same cycle.
+				hedgeSyncedThisCycle := make(map[string]bool)
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -2322,6 +2352,16 @@ func main() {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
+							// #1159: consecutive hedge-leg failures — hold position-
+							// increasing signals only. Without this brake, a hedge venue
+							// that keeps rejecting turns every signal into an
+							// open→fail→unwind round trip that burns fees on both legs.
+							// Exits, closes, and the Signal==0 manage path keep running,
+							// so an existing position is never stranded by the hold.
+							if hedgeEntryHoldActive(sc) && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Warn("Hedge entry hold: %s signal suppressed — %d consecutive hedge-leg failures; exits continue (#1159)", signalStr, globalHedgeFailures.count(sc.ID))
+								result.Signal = 0
+							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							// #907: update per-strategy divergence state after regime sync.
@@ -2598,6 +2638,25 @@ func main() {
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
 							}
+						}
+						// #1159: converge the correlated hedge leg to whatever the
+						// primary position looks like at the END of this branch —
+						// after the execute apply, protection sync, trailing-SL arm,
+						// scale-in re-size, and the paper SL/TP books. Observing the
+						// final state is what lets ONE call cover fresh open, add,
+						// partial close, full close, and the Signal==0 manage path
+						// alike. A hedge-open failure here unwinds the unhedged
+						// primary slice reduce-only in the SAME cycle rather than
+						// leaving it naked for a full strategy interval.
+						//
+						// Runs even when the check subprocess failed (outside the
+						// `ok` branch): drift the reconciler booked earlier this
+						// cycle — an on-chain SL/TP fill, an external close — must
+						// still converge, and a failed check must never mean an
+						// unmanaged hedge.
+						if sc.Platform == "hyperliquid" && (HedgeEnabled(sc) || hedgeStrategyHoldsLeg(stratState, &mu)) {
+							runHedgeSync(sc, stratState, &mu, prices, notifier, logger)
+							hedgeSyncedThisCycle[sc.ID] = true
 						}
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
@@ -2934,6 +2993,18 @@ func main() {
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
 				}
+
+				// #1159: converge every hedge-enabled strategy the dispatch above
+				// did not reach — strategies that were not due this cycle, and
+				// strategies still holding a hedge leg after their config stopped
+				// declaring one. This is the repair engine for every path the
+				// per-strategy dispatch never sees: an on-chain SL/TP fill booked
+				// by reconcile, a circuit-breaker force-close, a manual
+				// force-close, an externally closed leg, or a crash between the
+				// two legs. Runs only when the kill switch has NOT fired — a
+				// latched kill switch is flattening everything, and opening a
+				// hedge into it would be exactly wrong.
+				runHedgeSweep(cfg.Strategies, state, &mu, logMgr, prices, hedgeSyncedThisCycle, notifier)
 			} // end if !killSwitchFired
 		}
 

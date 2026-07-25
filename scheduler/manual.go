@@ -786,6 +786,14 @@ func clearForceCloseCanceledProtectionOIDs(pos *Position, canceledSLOID int64, c
 }
 
 func validatePendingManualActionStrategy(sc StrategyConfig, a PendingManualAction) error {
+	// #1159: the scheduler owns correlated hedge legs exclusively — hedge
+	// orders are decided in exactly one place (hedgeTargetDecision) and booked
+	// in exactly one place. A queued manual action targeting a hedge coin would
+	// bypass both and desync the qty watermark, so refuse it. Nothing should
+	// ever enqueue one; this is the fail-closed backstop if something does.
+	if HedgeEnabled(sc) && a.Symbol != "" && normalizeHedgeCoin(a.Symbol) == hedgeCoin(sc) {
+		return fmt.Errorf("strategy %q symbol %q is its auto-managed correlated hedge coin — the scheduler owns that leg exclusively (#1159); act on the primary coin instead", a.StrategyID, a.Symbol)
+	}
 	if sc.Type == "manual" {
 		return nil
 	}

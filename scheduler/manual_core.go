@@ -1417,6 +1417,15 @@ func forceCloseCore(d manualCoreDeps, sc StrategyConfig, sym string, in forceClo
 
 	res.outf("Force-closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)",
 		filledQty, sym, fillAvgPx, realizedPnL, fillFee)
+	// #1159: a hedged strategy's correlated hedge leg is converged by the
+	// scheduler's hedge reconciler, never by the CLI — the daemon owns that leg
+	// exclusively so hedge orders stay decided and booked in one place. Say so
+	// explicitly, otherwise an operator who just flattened the primary sees a
+	// live position on a second coin and assumes it is orphaned.
+	if HedgeEnabled(sc) {
+		res.outf("note: the %s correlated hedge leg will be %s by the scheduler on its next cycle (the daemon owns that leg; do not close it by hand).",
+			hedgeCoin(sc), map[bool]string{true: "closed", false: "reduced proportionally"}[actualFullClose])
+	}
 
 	action := PendingManualAction{
 		StrategyID:      strategyID,

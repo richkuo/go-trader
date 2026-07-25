@@ -71,6 +71,16 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 		if sc.Type != "perps" {
 			continue
 		}
+		// #1159: a hedge coin must be marked every cycle even though no check
+		// script ever runs for it. Without a mark, PortfolioValue and the CB
+		// drawdown inputs would value the hedge at AvgCost (hiding its uPnL),
+		// the exposure/correlation deltas would be wrong, forceCloseAllPositions
+		// would book it at cost, and hedgeTargetDecision could not size an
+		// open. Collected independently of sc.Args so it survives even when the
+		// primary args are malformed.
+		if sc.Platform == "hyperliquid" && HedgeEnabled(sc) {
+			hlSet[hedgeCoin(sc)] = true
+		}
 		if len(sc.Args) < 2 {
 			continue
 		}
@@ -945,19 +955,36 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 	if sym == "" {
 		return
 	}
-	if hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+	var symbols []PendingCircuitCloseSymbol
+
+	// #1159: the correlated hedge leg is enqueued FIRST and independently of
+	// the primary. Two reasons this cannot be folded into the primary branch:
+	//
+	//  1. When the PRIMARY coin is shared with peers the function returns with
+	//     no pending at all (closing a shared coin would disturb peers). But the
+	//     hedge coin is sole-owned by construction, and the virtual close
+	//     performed by forceCloseAllPositions WILL zero the hedge leg in state.
+	//     Skipping it here would strand a real, now-unhedged on-chain position.
+	//  2. A hedge leg can exist while the primary has already gone flat
+	//     on-chain (SL fired between cycles), so gating on the primary's
+	//     presence would miss it.
+	if hedgePos, hedgeSym := hedgePositionOf(s); hedgePos != nil && hedgeSym != "" {
+		if hedgeQty, ok := computeHyperliquidCircuitCloseQty(hedgeSym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && hedgeQty > 0 {
+			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hedgeSym, Size: hedgeQty})
+		}
+	}
+
+	if !hyperliquidCircuitBreakerHasSharedCoin(sc, assist) {
+		if _, ok := s.Positions[sym]; ok {
+			if qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll); ok && qty > 0 {
+				symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: sym, Size: qty})
+			}
+		}
+	}
+	if len(symbols) == 0 {
 		return
 	}
-	if _, ok := s.Positions[sym]; !ok {
-		return
-	}
-	qty, ok := computeHyperliquidCircuitCloseQty(sym, s.ID, assist.HLPositions, assist.HLLiveAll)
-	if !ok || qty <= 0 {
-		return
-	}
-	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{
-		Symbols: []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}},
-	})
+	s.RiskState.setPendingCircuitClose(PlatformPendingCloseHyperliquid, &PendingCircuitClose{Symbols: symbols})
 }
 
 func hyperliquidCircuitBreakerHasSharedCoin(sc *StrategyConfig, assist *PlatformRiskAssist) bool {
@@ -1169,6 +1196,12 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
+	// #1159: a correlated hedge leg keeps its own label on every close path so
+	// lifetime #T / W-L stats can exclude it and operators can tell it apart
+	// from alpha. Same display-only contract as the rest of this function.
+	if pos.HedgeFor != "" {
+		return TradeTypeHedge
+	}
 	if pos.Multiplier > 0 {
 		if s != nil {
 			switch {
@@ -1238,6 +1271,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		if details == "" {
 			details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
 		}
+		details = hedgeDetailsPrefix(pos, details)
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
 		}
@@ -1264,7 +1298,7 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			TPTiersJSON:       pos.TPTiersJSON,
 		}
 		RecordTrade(s, trade)
-		RecordTradeResult(&s.RiskState, pnl)
+		recordTradeResultForPosition(&s.RiskState, pos, pnl)
 		recordClosedPosition(s, pos, price, pnl, reason, now)
 		delete(s.Positions, symbol)
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
@@ -1599,4 +1633,19 @@ func RecordTradeResult(r *RiskState, pnl float64) {
 	} else {
 		r.ConsecutiveLosses++
 	}
+}
+
+// RecordHedgeTradeResult books a correlated hedge leg's realized PnL (#1159).
+// It updates DailyPnL — the hedge's cash effect is real and must reach the
+// #1269 daily-loss aggregate — but deliberately never touches
+// ConsecutiveLosses.
+//
+// Why: an inverse hedge loses almost exactly when the primary wins. Feeding it
+// into the loss streak would count one thesis twice and fire the loss-streak
+// circuit breaker on a strategy that is making money. Never call
+// RecordTradeResult for a position with HedgeFor != "" — route through
+// recordTradeResultForPosition (portfolio.go), which picks the right one.
+func RecordHedgeTradeResult(r *RiskState, pnl float64) {
+	rolloverDailyPnL(r)
+	r.DailyPnL += pnl
 }

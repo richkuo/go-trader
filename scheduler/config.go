@@ -706,6 +706,55 @@ type StrategyConfig struct {
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
+	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // HL perps only: opt-in auto-managed correlated hedge leg on a DIFFERENT coin, strictly coupled to this strategy's primary position (#1159 phase 1). Nil/disabled = unchanged behavior. Read via HedgeEnabled/hedgeCoin/hedgeRatio accessors, never directly.
+}
+
+// HedgeConfig declares an auto-managed correlated hedge leg for a Hyperliquid
+// perps strategy (#1159 phase 1). The hedge is NOT independent alpha: it has no
+// check script, no close evaluator, and no stop-loss / take-profit of its own.
+// A single per-cycle reconciler (hedgeSync, scheduler/hedge.go) converges the
+// hedge leg to a target derived from the CURRENT primary position, so every
+// primary lifecycle event — fresh open, scale-in add, partial close, full
+// close, on-chain SL/TP fill, kill switch, circuit breaker, manual force-close,
+// external close — produces the matching hedge action without per-event hooks.
+//
+// Phase-1 constraints enforced at load by validateHedgeConfigs:
+//   - only platform=hyperliquid + type=perps strategies may carry a hedge;
+//   - the hedge coin may never collide with ANY configured strategy's coin, the
+//     strategy's own coin, or another strategy's hedge coin. HL aggregates one
+//     position per coin per wallet, so an overlapping hedge coin would share an
+//     on-chain position, margin assignment, and reduce-only order slots with a
+//     peer — the exact ambiguity every shared-coin mechanism keys on
+//     hyperliquidConfiguredCoin to avoid. Rejecting collisions makes the hedge
+//     coin sole-owned by construction.
+type HedgeConfig struct {
+	// Enabled turns the hedge leg on. A block with enabled=false is inert
+	// (still validated for shape, still rejected by the backtester only when
+	// enabled) so an operator can park a configuration without it trading.
+	Enabled bool `json:"enabled,omitempty"`
+	// Symbol is the hedge coin. Accepts a bare HL ticker ("BTC") or the ccxt
+	// form ("BTC/USDC:USDC"); everything from the first "/" is stripped and the
+	// remainder upper-cased/trimmed, mirroring hyperliquidConfiguredCoin.
+	Symbol string `json:"symbol,omitempty"`
+	// Side is the hedge's directional relationship to the primary. "inverse"
+	// (the only accepted value in phase 1; empty defaults to it) means a long
+	// primary opens a short hedge and vice versa. The hedge side always derives
+	// from the LIVE primary Position.Side, never from configured direction.
+	Side string `json:"side,omitempty"`
+	// Ratio is the hedge/primary notional multiplier. 0 defaults to 1.0;
+	// bounds are (0, HedgeMaxRatio].
+	Ratio float64 `json:"ratio,omitempty"`
+	// Platform must be empty or "hyperliquid" in phase 1.
+	Platform string `json:"platform,omitempty"`
+	// Type must be empty or "perps" in phase 1.
+	Type string `json:"type,omitempty"`
+	// MarginMode is the hedge coin's OWN exchange margin mode ("isolated"
+	// default, or "cross"). Never inherited from the primary — the hedge coin
+	// needs its own on-chain margin assignment, and HL only accepts
+	// update_leverage from flat, so it is sent on fresh hedge opens only.
+	MarginMode string `json:"margin_mode,omitempty"`
+	// Leverage is the hedge coin's OWN exchange leverage. 0 defaults to 1.
+	Leverage float64 `json:"leverage,omitempty"`
 }
 
 // ScaleInConfig tunes the opt-in scale-in / pyramiding path (#873). All fields
@@ -1092,6 +1141,7 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// before applying defaults; json.Unmarshal silently drops them and would
 	// otherwise produce a struct indistinguishable from "no protection configured".
 	unknownErrs := validateStrategyJSONKeys(data)
+	unknownErrs = append(unknownErrs, validateHedgeJSONKeys(data)...)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
 		return nil, fmt.Errorf("config validation errors:\n  %s", strings.Join(unknownErrs, "\n  "))
@@ -2266,6 +2316,15 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	// race on the shared position. Validate up front instead of failing at
 	// first trade.
 	for _, msg := range hyperliquidPeerStrategyErrors(cfg.Strategies) {
+		errs = append(errs, msg)
+	}
+
+	// #1159: correlated hedge legs. The collision matrix here is what makes
+	// every shared-coin mechanism (peer detection, margin compatibility,
+	// circuit-breaker drain, kill-switch fill share, reconcile attribution)
+	// correct for hedge coins without touching any of them — a hedge coin is
+	// guaranteed to have exactly one owner on the wallet.
+	for _, msg := range validateHedgeConfigs(cfg.Strategies) {
 		errs = append(errs, msg)
 	}
 

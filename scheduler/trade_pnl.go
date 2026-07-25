@@ -28,6 +28,18 @@ import (
 // PnL via tradeLedgerDeltaSQL.
 const TradeTypeFunding = "funding"
 
+// TradeTypeHedge labels both legs of an auto-managed correlated hedge (#1159).
+// A hedge is a coupled risk-management leg, not independent alpha, so its rows
+// are excluded from the lifetime open count (#T) and from W/L round-trip
+// grouping — otherwise every hedged trade would report as two trades, one of
+// which loses by construction.
+//
+// They ARE included in tradeLedgerDeltaSQL / tradeNetPnLSQL below, which
+// ignore trade_type entirely. That is deliberate and load-bearing: it is what
+// books hedge PnL and fees into the owning strategy's cash ledger and keeps
+// shared-wallet reconciliation exact (#1159 requirement 6).
+const TradeTypeHedge = "hedge"
+
 // FeeSourceUserFills / FeeSourceModeled / FeeSourceReconcileAdjustment are the
 // Trade.FeeSource values.
 const (

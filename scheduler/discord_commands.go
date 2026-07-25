@@ -664,6 +664,10 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
+	// #1159: render auto-managed correlated hedge legs as a labelled footer,
+	// never as bare position rows — an operator must be able to tell a coupled
+	// hedge from unmanaged exposure at a glance.
+	base += hedgeStrategiesNote(d.cfg.Strategies, d.ss.state.Strategies)
 	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
 	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
