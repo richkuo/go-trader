@@ -225,6 +225,44 @@ func TestReconcileSharedWalletDisplayValues_FetchFailedFallsBack(t *testing.T) {
 	}
 }
 
+func TestPooledReconcileFailureStillCountsFreshWalletBalanceInTotal(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "spot", Platform: "binanceus", Type: "spot", Capital: 200},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {Cash: -10, Positions: map[string]*Position{}},
+		"hl-b": {Cash: 5, Positions: map[string]*Position{}},
+		"spot": {Cash: 200, Positions: map[string]*Position{}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+
+	// A nil DB makes pooled ledger attribution fail, but the balance fetch
+	// itself succeeded and remains independently authoritative for TOTAL.
+	results := reconcileSharedWalletDisplayValues(
+		strategies, state, nil, shared,
+		map[SharedWalletKey]float64{key: 1000}, nil, nil, false,
+	)
+	if len(results) != 0 {
+		t.Fatalf("failed attribution must not emit a drift result: %+v", results)
+	}
+	if state.Strategies["hl-a"].SharedWalletValueSet || state.Strategies["hl-b"].SharedWalletValueSet {
+		t.Fatal("failed attribution must leave per-member rows on modeled fallback")
+	}
+	if got := latestDisplayTotal(state, nil); got != 1200 {
+		t.Fatalf("operator total=%v, want fresh wallet 1000 + allocated spot 200", got)
+	}
+
+	reconcileSharedWalletDisplayValues(strategies, state, nil, shared, nil, nil, nil, false)
+	if got := latestDisplayTotal(state, nil); got != 195 {
+		t.Fatalf("missing balance must retain modeled fallback without double count: got %v, want 195", got)
+	}
+}
+
 func TestDisplayStrategyValue_PrefersSetValue(t *testing.T) {
 	s := &StrategyState{ID: "x", Cash: 100, Positions: map[string]*Position{}}
 	if got := displayStrategyValue(s, nil); got != 100 {

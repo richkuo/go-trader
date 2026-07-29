@@ -414,6 +414,13 @@ func reconcileSharedWalletDisplayValues(
 			continue // fetch failed this cycle → members fall back (Set stays false)
 		}
 
+		// The real wallet balance is independently authoritative for the
+		// operator TOTAL. Record it before position/ledger attribution, which
+		// may fail and leave per-member rows on modeled-book fallback.
+		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
+		state.LatestSharedWalletBalances[key] = bal
+		state.LatestSharedWalletMembers[key] = append([]string(nil), members...)
+
 		// On-chain positions for this wallet's platform, coin-normalized to
 		// upper-case so they match the virtualQty keys below.
 		var positions []SharedWalletPosition
@@ -445,7 +452,6 @@ func reconcileSharedWalletDisplayValues(
 			continue // no position source wired for this platform yet
 		}
 
-		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
 		capitalByID, virtualQty := buildSharedWalletBooks(key, members, byID, state)
 
 		poolMode := false
@@ -479,8 +485,6 @@ func reconcileSharedWalletDisplayValues(
 			ss.SharedWalletPerformanceOnly = poolMode
 			memberSum += res.Values[id]
 		}
-		state.LatestSharedWalletBalances[key] = bal
-		state.LatestSharedWalletMembers[key] = append([]string(nil), members...)
 		results = append(results, sharedWalletDriftResult{
 			Key:         key,
 			Drift:       res.Drift,

@@ -1886,17 +1886,21 @@ func TestPerpsLiveOrderSize_SharedWalletPoolUnknownBalanceFlipClosesOnly(t *test
 func TestWithSharedWalletPoolSizingReleasesMarginOnlyWithKnownBalance(t *testing.T) {
 	sc := StrategyConfig{sharedWalletPoolBudget: true}
 	base := PerpsSizing{ExchangeLeverage: 5}
-	unknown := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, false)
+	unknown := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, 4, false)
 	if !unknown.SharedWalletPool || unknown.ReleasableMarginUSD != 0 {
 		t.Fatalf("unknown balance must not expose released margin: %+v", unknown)
 	}
-	known := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, true)
-	if !known.SharedWalletPool || known.ReleasableMarginUSD != 220 {
-		t.Fatalf("known balance released margin=%v, want 220", known.ReleasableMarginUSD)
+	known := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, 4, true)
+	if !known.SharedWalletPool || known.ReleasableMarginUSD != 275 {
+		t.Fatalf("known balance released margin=%v, want 275", known.ReleasableMarginUSD)
 	}
-	winner := withSharedWalletPoolSizing(sc, base, 0.5, 2400, 2200, true)
-	if winner.ReleasableMarginUSD != 240 {
-		t.Fatalf("winning position released margin=%v, want 240", winner.ReleasableMarginUSD)
+	winner := withSharedWalletPoolSizing(sc, base, 0.5, 2400, 2200, 4, true)
+	if winner.ReleasableMarginUSD != 300 {
+		t.Fatalf("winning position released margin=%v, want 300", winner.ReleasableMarginUSD)
+	}
+	legacy := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, 0, true)
+	if legacy.ReleasableMarginUSD != 220 {
+		t.Fatalf("legacy unstamped leverage must fall back to config: got %v, want 220", legacy.ReleasableMarginUSD)
 	}
 }
 

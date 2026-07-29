@@ -499,13 +499,22 @@ func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []
 // The emitted KillSwitchEvent.Source records whether equity or margin drove
 // the fire/warning so operators can tell at a glance which lever tripped.
 func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64) (allowed, notionalBlocked, warning bool, reason string) {
+	return checkPortfolioRiskWithEquityAvailability(prs, cfg, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin, true)
+}
+
+// checkPortfolioRiskWithEquityAvailability allows the shared-wallet risk path
+// to suppress only the equity-drawdown signal when a pooled wallet has neither
+// a current nor one-generation-old real balance. The perps margin signal and
+// notional cap remain active. Existing callers use CheckPortfolioRisk and
+// therefore retain the historical equity-available behavior.
+func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64, equityAvailable bool) (allowed, notionalBlocked, warning bool, reason string) {
 	if prs.KillSwitchActive {
 		return false, false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
 			prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"))
 	}
 
 	// Ratchet peak high-water mark upward only.
-	if totalValue > prs.PeakValue {
+	if equityAvailable && totalValue > prs.PeakValue {
 		prs.PeakValue = totalValue
 	}
 
@@ -513,7 +522,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	// own field so (PeakValue, CurrentDrawdownPct) stays internally consistent
 	// and operators can see both lenses at once.
 	var equityDD, marginDD float64
-	if prs.PeakValue > 0 {
+	if equityAvailable && prs.PeakValue > 0 {
 		equityDD = (prs.PeakValue - totalValue) / prs.PeakValue * 100
 		if equityDD < 0 {
 			equityDD = 0
@@ -533,7 +542,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	// account that blows up margin on bar 1 (before any equity snapshot) is
 	// still protected — equityDD is zero in that case and only the margin
 	// signal can fire.
-	if equityDD > cfg.MaxDrawdownPct || marginDD > cfg.MaxDrawdownPct {
+	if (equityAvailable && equityDD > cfg.MaxDrawdownPct) || marginDD > cfg.MaxDrawdownPct {
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = time.Now().UTC()
 		prs.WarningSent = false
@@ -547,11 +556,16 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 		// Tie-break to margin when the two signals are equal: the margin
 		// signal is the newer, more sensitive lens (#296) and surfacing it
 		// preferentially helps operators notice leveraged blow-ups.
-		if marginDD >= equityDD {
+		if !equityAvailable || marginDD >= equityDD {
 			source = "margin"
 			dd = marginDD
-			r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f, value=$%.2f, peak=$%.2f)",
-				marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, totalValue, prs.PeakValue)
+			if equityAvailable {
+				r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f, value=$%.2f, peak=$%.2f)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, totalValue, prs.PeakValue)
+			} else {
+				r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f; equity unavailable)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin)
+			}
 		} else {
 			source = "equity"
 			dd = equityDD
@@ -565,7 +579,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	// Warning check: approaching kill switch threshold on either signal.
 	if cfg.MaxDrawdownPct > 0 {
 		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
-		equityWarn := equityDD > warnDrawdownPct
+		equityWarn := equityAvailable && equityDD > warnDrawdownPct
 		marginWarn := marginDD > warnDrawdownPct
 		if equityWarn || marginWarn {
 			now := time.Now().UTC()
@@ -574,10 +588,16 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 				prs.WarningEquityDeltaPct = 0
 				prs.WarningMarginDeltaPct = 0
 			} else {
-				prs.WarningEquityDeltaPct = equityDD - prs.LastWarningEquityDDPct
+				if equityAvailable {
+					prs.WarningEquityDeltaPct = equityDD - prs.LastWarningEquityDDPct
+				} else {
+					prs.WarningEquityDeltaPct = 0
+				}
 				prs.WarningMarginDeltaPct = marginDD - prs.LastWarningMarginDDPct
 			}
-			prs.LastWarningEquityDDPct = equityDD
+			if equityAvailable {
+				prs.LastWarningEquityDDPct = equityDD
+			}
 			prs.LastWarningMarginDDPct = marginDD
 			prs.WarningSent = true
 			warning = true
@@ -595,7 +615,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 				reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
 					equityDD, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
 			}
-		} else {
+		} else if equityAvailable {
 			// Recovered below warning threshold — no active warning band.
 			prs.WarningSent = false
 			prs.WarnBandEnteredAt = time.Time{}

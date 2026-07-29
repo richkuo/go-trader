@@ -121,6 +121,72 @@ func usesSharedWalletPoolBudget(sc StrategyConfig) bool {
 	return sc.sharedWalletPoolBudget
 }
 
+// sharedWalletRiskBalanceSnapshot is the most recent real balance accepted by
+// the portfolio-risk path for one pooled wallet. Generation counts portfolio
+// risk evaluations (not scheduler ticks), so a snapshot is valid for exactly
+// the next risk evaluation after one failed fetch regardless of strategy
+// interval spacing. It is process-local and never used for order sizing,
+// reconciliation, or operator display.
+type sharedWalletRiskBalanceSnapshot struct {
+	Balance    float64
+	Generation int
+}
+
+// resolveSharedWalletRiskBalances builds the balance map used only by
+// computeTotalPortfolioValue in the portfolio kill-switch phase. Allocated
+// shared wallets retain the historical modeled-book fallback. A pool wallet,
+// whose books contain performance rather than deposits, may reuse exactly the
+// preceding risk evaluation's real balance for one fetch miss. With no such
+// snapshot the returned equityComplete flag is false so the caller suppresses
+// only the equity-drawdown arm; perps margin drawdown remains live.
+func resolveSharedWalletRiskBalances(
+	strategies []StrategyConfig,
+	sharedWallets map[SharedWalletKey][]string,
+	current map[SharedWalletKey]float64,
+	cache map[SharedWalletKey]sharedWalletRiskBalanceSnapshot,
+	generation int,
+) (resolved map[SharedWalletKey]float64, usedStale, equityComplete bool) {
+	resolved = make(map[SharedWalletKey]float64, len(current))
+	for key, balance := range current {
+		resolved[key] = balance
+	}
+	equityComplete = true
+
+	byID := make(map[string]StrategyConfig, len(strategies))
+	for _, sc := range strategies {
+		byID[sc.ID] = sc
+	}
+	for key, memberIDs := range sharedWallets {
+		pooled := false
+		for _, id := range memberIDs {
+			if usesSharedWalletPoolBudget(byID[id]) {
+				pooled = true
+				break
+			}
+		}
+		if !pooled {
+			continue
+		}
+		if balance, ok := current[key]; ok {
+			if cache != nil {
+				cache[key] = sharedWalletRiskBalanceSnapshot{Balance: balance, Generation: generation}
+			}
+			continue
+		}
+		if snapshot, ok := cache[key]; ok && snapshot.Generation == generation-1 {
+			resolved[key] = snapshot.Balance
+			usedStale = true
+			fmt.Printf("[WARN] shared-wallet %s/%s: balance fetch missing, using prior risk snapshot $%.2f for this cycle only (portfolio peak frozen)\n",
+				key.Platform, key.Account, snapshot.Balance)
+			continue
+		}
+		equityComplete = false
+		fmt.Printf("[WARN] shared-wallet %s/%s: pooled balance unavailable with no prior risk snapshot — suppressing portfolio equity drawdown this cycle (perps margin risk remains active)\n",
+			key.Platform, key.Account)
+	}
+	return resolved, usedStale, equityComplete
+}
+
 // sharedWalletPoolMarginBasisPrice returns the conservative price used for
 // both deployed-margin reservation and flip-release accounting. Account
 // equity already includes unrealized PnL, while an exchange can continue to
@@ -133,6 +199,20 @@ func sharedWalletPoolMarginBasisPrice(markPrice, avgCost float64) float64 {
 		return avgCost
 	}
 	return markPrice
+}
+
+// sharedWalletPoolMarginLeverage is the single leverage resolver for both
+// reservation and flip release. Stored position leverage wins because it is
+// the leverage under which the open was booked; current config is only a
+// fallback for legacy positions that lack the stamp.
+func sharedWalletPoolMarginLeverage(positionLeverage, configLeverage float64) float64 {
+	if positionLeverage > 0 {
+		return positionLeverage
+	}
+	if configLeverage > 0 {
+		return configLeverage
+	}
+	return 1
 }
 
 // validateConfiguredSharedWalletPools returns the zero-capital strategy IDs
@@ -316,13 +396,7 @@ func sharedWalletPoolAvailableMargin(
 			if price <= 0 {
 				continue
 			}
-			leverage := pos.Leverage
-			if leverage <= 0 {
-				leverage = EffectiveExchangeLeverage(memberCfg)
-			}
-			if leverage <= 0 {
-				leverage = 1
-			}
+			leverage := sharedWalletPoolMarginLeverage(pos.Leverage, EffectiveExchangeLeverage(memberCfg))
 			deployedMargin += pos.Quantity * price / leverage
 		}
 	}
