@@ -251,15 +251,27 @@ type PortfolioRiskState struct {
 // network or configuration failure.
 type SharedWalletBalanceFetcher func(platform string) (float64, error)
 
-// detectSharedWalletPlatforms returns the platforms with an actually detected
-// 2+ member live account. It deliberately shares detectSharedWallets' identity
-// model instead of inferring ownership from capital_pct: fixed-capital and
-// zero-baseline pool members can share an account too, while paper strategies
-// or unrelated instruments must not trigger startup recovery.
+// detectSharedWalletPlatforms returns actually detected live shared-wallet
+// platforms whose legacy percentage allocations could have produced the
+// inflated persisted peak that #244 repairs. Fixed-capital and zero-baseline
+// pool wallets are deliberately excluded: their kill-switch latch may reflect
+// a real loss and a process restart must never grant a fresh drawdown budget.
 func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
+	byID := make(map[string]StrategyConfig, len(strategies))
+	for _, sc := range strategies {
+		byID[sc.ID] = sc
+	}
 	platformSet := make(map[string]bool)
-	for key := range detectSharedWallets(strategies) {
-		platformSet[key.Platform] = true
+	for key, memberIDs := range detectSharedWallets(strategies) {
+		pctMembers := 0
+		for _, id := range memberIDs {
+			if byID[id].CapitalPct > 0 {
+				pctMembers++
+			}
+		}
+		if pctMembers > 1 {
+			platformSet[key.Platform] = true
+		}
 	}
 	var platforms []string
 	for platform := range platformSet {
@@ -278,7 +290,8 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 //
 // Guards (all must hold):
 //   - the kill switch must currently be active (otherwise no-op)
-//   - at least one platform must host an account-detected shared wallet
+//   - at least one platform must host an account-detected shared wallet with
+//     2+ legacy capital_pct members (the #244 fake-peak failure mode)
 //   - fetcher must successfully return a real balance for EVERY shared-wallet
 //     platform — any network/config failure preserves the kill switch so the
 //     re-baselined peak reflects the full portfolio-wide truth rather than a

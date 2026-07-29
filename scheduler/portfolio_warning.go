@@ -132,7 +132,11 @@ func portfolioWarningContributors(state *AppState, prices map[string]float64) []
 		pv := PortfolioValue(ss, prices)
 		initCap := ss.InitialCapital
 		pnlLabel := "P&L"
-		if initCap <= 0 {
+		if ss.SharedWalletPoolBudget || ss.SharedWalletPerformanceOnly {
+			pv = displayStrategyValue(ss, prices)
+			initCap = 0
+			pnlLabel = "net P&L"
+		} else if initCap <= 0 {
 			initCap = pv - ss.RiskState.DailyPnL
 			pnlLabel = "daily P&L"
 		}

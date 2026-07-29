@@ -145,6 +145,10 @@ type StrategyState struct {
 	// not an allocated slice of account equity. Operator surfaces use this to
 	// avoid labeling deposits as strategy value/return.
 	SharedWalletPerformanceOnly bool `json:"-"`
+	// SharedWalletPoolBudget is durable transition state. It prevents every
+	// restart from wiping the pool's modeled performance book and lets a
+	// later pool→allocated restart reseed exactly once.
+	SharedWalletPoolBudget bool `json:"shared_wallet_pool_budget,omitempty"`
 
 	// CashReconcileRequired latches when a live spot buy was booked whose
 	// notional+fee exceeded virtual cash beyond spotLiveCashBudgetTolerance
@@ -189,31 +193,65 @@ func NewAppState() *AppState {
 	}
 }
 
-// applySharedWalletPoolStateMode removes legacy virtual allocations when a
-// strategy starts in scheduler-owned pool mode. Trades remain authoritative
-// in SQLite and rebuild operator performance each cycle; Cash is only the
-// current-process modeled performance fallback and must never retain an old
-// fake starting balance.
-func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) bool {
+type sharedWalletPoolStateTransition string
+
+const (
+	sharedWalletPoolStateUnchanged sharedWalletPoolStateTransition = ""
+	sharedWalletPoolStateEntered   sharedWalletPoolStateTransition = "entered"
+	sharedWalletPoolStateLeft      sharedWalletPoolStateTransition = "left"
+)
+
+// applySharedWalletPoolStateMode performs one-time transitions between
+// allocated and pool books. Entering removes the virtual allocation. Leaving
+// adds the newly configured allocation to the existing pool performance book,
+// preserving realized losses and deployed-margin accounting instead of
+// manufacturing a fresh profit/loss history.
+func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (sharedWalletPoolStateTransition, error) {
 	if s == nil {
-		return false
+		return sharedWalletPoolStateUnchanged, nil
 	}
-	s.SharedWalletPerformanceOnly = usesSharedWalletPoolBudget(sc)
-	if !s.SharedWalletPerformanceOnly {
-		return false
+	currentPool := usesSharedWalletPoolBudget(sc)
+	s.SharedWalletPerformanceOnly = currentPool
+	if currentPool == s.SharedWalletPoolBudget {
+		return sharedWalletPoolStateUnchanged, nil
 	}
-	changed := s.Cash != 0 || s.RiskState.PeakValue != 0 || s.RiskState.CurrentDrawdownPct != 0
-	s.Cash = 0
-	s.RiskState.PeakValue = 0
+
+	if currentPool {
+		s.SharedWalletPoolBudget = true
+		s.Cash = 0
+		s.InitialCapital = 0
+		s.RiskState.PeakValue = 0
+		s.RiskState.CurrentDrawdownPct = 0
+		return sharedWalletPoolStateEntered, nil
+	}
+
+	baseline := sc.InitialCapital
+	if baseline <= 0 {
+		baseline = sc.Capital
+	}
+	if baseline <= 0 {
+		// Do not clear the durable pool marker or alter Cash: an allocated
+		// capital_pct config whose balance could not resolve must remain
+		// fail-closed instead of transitioning to an unusable half-state.
+		s.SharedWalletPerformanceOnly = true
+		return sharedWalletPoolStateUnchanged, fmt.Errorf(
+			"strategy[%s]: cannot leave shared-wallet pool mode without a positive resolved capital or initial_capital",
+			sc.ID)
+	}
+
+	s.SharedWalletPoolBudget = false
+	s.Cash += baseline
+	s.InitialCapital = baseline
+	s.RiskState.PeakValue = PortfolioValue(s, nil)
 	s.RiskState.CurrentDrawdownPct = 0
-	return changed
+	return sharedWalletPoolStateLeft, nil
 }
 
 // ValidateState checks loaded state for invalid entries and removes or clamps them (#39).
 // Logs warnings for each corrected field rather than refusing to start.
 func ValidateState(state *AppState) {
 	for id, s := range state.Strategies {
-		if s.InitialCapital <= 0 {
+		if s.InitialCapital < 0 {
 			fmt.Printf("[WARN] state: strategy %s has invalid initial_capital=%g, resetting to 0\n", id, s.InitialCapital)
 			s.InitialCapital = 0
 		}

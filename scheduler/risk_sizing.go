@@ -57,12 +57,12 @@ type PerpsSizing struct {
 	RiskStopUnresolved string
 }
 
-func withSharedWalletPoolSizing(sc StrategyConfig, sizing PerpsSizing, posQty, price float64) PerpsSizing {
+func withSharedWalletPoolSizing(sc StrategyConfig, sizing PerpsSizing, posQty, price float64, balanceKnown bool) PerpsSizing {
 	if !usesSharedWalletPoolBudget(sc) {
 		return sizing
 	}
 	sizing.SharedWalletPool = true
-	if posQty > 0 && price > 0 {
+	if balanceKnown && posQty > 0 && price > 0 {
 		leverage := sizing.ExchangeLeverage
 		if leverage <= 0 {
 			leverage = 1

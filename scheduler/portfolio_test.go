@@ -1865,6 +1865,37 @@ func TestPerpsLiveOrderSize_SharedWalletPoolUsesReleasedMargin(t *testing.T) {
 	}
 }
 
+func TestPerpsLiveOrderSize_SharedWalletPoolUnknownBalanceFlipClosesOnly(t *testing.T) {
+	sizing := PerpsSizing{
+		ExchangeLeverage:  5,
+		MarginPerTradeUSD: 100,
+		SharedWalletPool:  true,
+		// ReleasableMarginUSD remains zero when the account balance is unknown.
+	}
+	size, ok, reason := perpsLiveOrderSize(
+		-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
+	)
+	if !ok || reason != "" {
+		t.Fatalf("unknown-balance pooled flip rejected instead of closing: ok=%v reason=%q", ok, reason)
+	}
+	if size != 0.5 {
+		t.Fatalf("unknown-balance pooled flip size=%v, want close-only 0.5", size)
+	}
+}
+
+func TestWithSharedWalletPoolSizingReleasesMarginOnlyWithKnownBalance(t *testing.T) {
+	sc := StrategyConfig{sharedWalletPoolBudget: true}
+	base := PerpsSizing{ExchangeLeverage: 5}
+	unknown := withSharedWalletPoolSizing(sc, base, 0.5, 2000, false)
+	if !unknown.SharedWalletPool || unknown.ReleasableMarginUSD != 0 {
+		t.Fatalf("unknown balance must not expose released margin: %+v", unknown)
+	}
+	known := withSharedWalletPoolSizing(sc, base, 0.5, 2000, true)
+	if !known.SharedWalletPool || known.ReleasableMarginUSD != 200 {
+		t.Fatalf("known balance released margin=%v, want 200", known.ReleasableMarginUSD)
+	}
+}
+
 // #330 (final review) — a catastrophically-losing flip must still close the
 // position even when post-close margin can't fund the new side. Without
 // this fallback, a deep-underwater bidirectional strategy would be worse

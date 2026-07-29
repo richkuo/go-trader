@@ -56,17 +56,23 @@ func dailyLossLimitConfigured(pr *PortfolioRiskConfig) bool {
 // Pure read — never mutates state (see the stale-day note in the file
 // comment); safe under mu.RLock. now must be UTC-meaningful (callers pass
 // time.Now().UTC()); the day key matches rolloverDailyPnL's format.
-func evaluateDailyLossLimit(pr *PortfolioRiskConfig, states map[string]*StrategyState, now time.Time) DailyLossLimitStatus {
+func evaluateDailyLossLimit(pr *PortfolioRiskConfig, states map[string]*StrategyState, strategies []StrategyConfig, now time.Time) DailyLossLimitStatus {
 	st := DailyLossLimitStatus{Configured: dailyLossLimitConfigured(pr)}
+	pooledIDs := make(map[string]bool)
+	for _, sc := range strategies {
+		if usesSharedWalletPoolBudget(sc) {
+			pooledIDs[sc.ID] = true
+		}
+	}
 	today := now.UTC().Format("2006-01-02")
-	for _, ss := range states {
+	for id, ss := range states {
 		if ss == nil {
 			continue
 		}
 		if ss.RiskState.DailyPnLDate == today {
 			st.DailyPnL += ss.RiskState.DailyPnL
 		}
-		if ss.InitialCapital > 0 {
+		if !pooledIDs[id] && ss.InitialCapital > 0 {
 			st.CapitalBasis += ss.InitialCapital
 		}
 	}
@@ -151,11 +157,11 @@ func dailyLossStartupSummaryLine(pr *PortfolioRiskConfig) string {
 // dailyLossStatusNote renders the /status line for the daily loss limit.
 // Empty when no limit is configured; shows the live tripped/armed state
 // otherwise. Callers hold mu.RLock (pure read of states).
-func dailyLossStatusNote(pr *PortfolioRiskConfig, states map[string]*StrategyState, now time.Time) string {
+func dailyLossStatusNote(pr *PortfolioRiskConfig, states map[string]*StrategyState, strategies []StrategyConfig, now time.Time) string {
 	if !dailyLossLimitConfigured(pr) {
 		return ""
 	}
-	st := evaluateDailyLossLimit(pr, states, now)
+	st := evaluateDailyLossLimit(pr, states, strategies, now)
 	var note string
 	switch {
 	case st.Tripped:
@@ -175,7 +181,7 @@ func dailyLossStatusNote(pr *PortfolioRiskConfig, states map[string]*StrategySta
 // dailyLossPctBasisMissWarning is the shared operator text for a configured
 // pct arm that cannot evaluate. Used verbatim by /status, the per-cycle
 // [WARN], and the once-per-day DM so log greps and operator reports match.
-const dailyLossPctBasisMissWarning = "⚠️ daily loss limit: daily_max_loss_pct is configured but no strategy has initial_capital > 0 — the pct arm CANNOT evaluate and enforces nothing (set initial_capital or use daily_max_loss_usd)"
+const dailyLossPctBasisMissWarning = "⚠️ daily loss limit: daily_max_loss_pct is configured but no allocated strategy has initial_capital > 0 — the pct arm CANNOT evaluate and enforces nothing (keep an allocated baseline or use daily_max_loss_usd; pool members cannot set initial_capital)"
 
 // dailyLossPctBasisMissAlertDate throttles the inert-pct-arm owner DM to once
 // per UTC day, mirroring dailyLossLastAlertDate. Written only from the main

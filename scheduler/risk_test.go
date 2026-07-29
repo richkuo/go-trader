@@ -1234,22 +1234,41 @@ func TestClearLatchedKillSwitchSharedWallet_Success(t *testing.T) {
 	}
 }
 
-func TestClearLatchedKillSwitchSharedWallet_FixedCapitalMembers(t *testing.T) {
-	resetSchedulerStarted(t)
+func TestClearLatchedKillSwitchSharedWallet_NonLegacyMembersPreserveLatch(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xshared")
-	state := latchedSharedWalletState()
-	strategies := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
-		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+	marginCap := 100.0
+	tests := []struct {
+		name       string
+		strategies []StrategyConfig
+	}{
+		{
+			name: "fixed capital",
+			strategies: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+				{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+			},
+		},
+		{
+			name: "zero-baseline pool",
+			strategies: []StrategyConfig{
+				{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+				{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+			},
+		},
 	}
-
-	calls := 0
-	cleared := ClearLatchedKillSwitchSharedWallet(state, strategies, func(platform string) (float64, error) {
-		calls++
-		return 4500, nil
-	})
-	if !cleared || calls != 1 {
-		t.Fatalf("fixed-capital account-sharing members: cleared=%v calls=%d, want true/1", cleared, calls)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetSchedulerStarted(t)
+			state := latchedSharedWalletState()
+			calls := 0
+			cleared := ClearLatchedKillSwitchSharedWallet(state, tt.strategies, func(platform string) (float64, error) {
+				calls++
+				return 4500, nil
+			})
+			if cleared || calls != 0 || !state.PortfolioRisk.KillSwitchActive {
+				t.Fatalf("non-legacy wallet must preserve latch: cleared=%v calls=%d active=%v", cleared, calls, state.PortfolioRisk.KillSwitchActive)
+			}
+		})
 	}
 }
 
@@ -1387,10 +1406,10 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAllSuccess(t *testing.T
 	t.Setenv("OKX_API_KEY", "okx-shared")
 	state := latchedSharedWalletState()
 	strategies := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
-		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
-		{ID: "okx-a", Platform: "okx", Type: "perps", Capital: 300, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
-		{ID: "okx-b", Platform: "okx", Type: "perps", Capital: 700, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "okx-a", Platform: "okx", Type: "perps", CapitalPct: 0.3, Capital: 300, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "okx-b", Platform: "okx", Type: "perps", CapitalPct: 0.7, Capital: 700, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 	}
 
 	fetcher := func(platform string) (float64, error) {
@@ -1430,14 +1449,16 @@ func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAllSuccess(t *testing.T
 // unsafe.
 func TestClearLatchedKillSwitchSharedWallet_MultiPlatformAnyFailPreservesLatch(t *testing.T) {
 	resetSchedulerStarted(t)
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xshared")
+	t.Setenv("OKX_API_KEY", "okx-shared")
 	state := latchedSharedWalletState()
 	originalLatchedAt := state.PortfolioRisk.KillSwitchAt
 	originalPeak := state.PortfolioRisk.PeakValue
 	strategies := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
-		{ID: "hl-b", Platform: "hyperliquid", CapitalPct: 0.5, Capital: 1000},
-		{ID: "okx-a", Platform: "okx", CapitalPct: 0.3, Capital: 300},
-		{ID: "okx-b", Platform: "okx", CapitalPct: 0.7, Capital: 700},
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", CapitalPct: 0.5, Capital: 1000, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "okx-a", Platform: "okx", Type: "perps", CapitalPct: 0.3, Capital: 300, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "okx-b", Platform: "okx", Type: "perps", CapitalPct: 0.7, Capital: 700, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 	}
 
 	// hyperliquid fails; okx would succeed — but we should NOT partially
@@ -2308,14 +2329,14 @@ func TestCheckRisk_SpotUnchanged(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWalletPlatforms verifies the startup detector uses actual
-// live account identity rather than allocation fields.
+// TestDetectSharedWalletPlatforms verifies startup auto-clear requires both
+// actual live account identity and the legacy 2+ capital_pct failure mode.
 func TestDetectSharedWalletPlatforms(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xshared")
 	t.Setenv("OKX_API_KEY", "okx-shared")
 	strategies := []StrategyConfig{
-		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
-		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Capital: 1000, CapitalPct: 0.5, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Capital: 1000, CapitalPct: 0.5, Args: []string{"tema", "ETH", "1h", "--mode=live"}},
 		{ID: "okx-solo", Platform: "okx", Type: "perps", Capital: 1000, Args: []string{"sma", "BTC", "1h", "--mode=live"}}, // only one — not shared
 		{ID: "spot-a", Platform: "binanceus", Capital: 1000},                                                               // no capital_pct
 		{ID: "spot-b", Platform: "binanceus", Capital: 1000},
@@ -2737,6 +2758,31 @@ func TestBuildPortfolioWarningMessage_DailyPnLFallbackLabel(t *testing.T) {
 	})
 	if !strings.Contains(msg, "daily P&L -$75") {
 		t.Fatalf("expected daily P&L fallback label in warning message:\n%s", msg)
+	}
+}
+
+func TestBuildPortfolioWarningMessage_PoolIgnoresStaleInitialCapital(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-pool": {
+			ID: "hl-pool", Type: "perps",
+			InitialCapital:              1000, // legacy value must not leak
+			SharedWalletPoolBudget:      true,
+			SharedWalletPerformanceOnly: true,
+			SharedWalletValueSet:        true,
+			SharedWalletValue:           -75,
+			Positions:                   map[string]*Position{},
+			OptionPositions:             map[string]*OptionPosition{},
+		},
+	}}
+	msg := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+		Config: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+		State:  state,
+	})
+	if !strings.Contains(msg, "net P&L") || !strings.Contains(msg, "-$75") {
+		t.Fatalf("expected pool net P&L without stale baseline:\n%s", msg)
+	}
+	if strings.Contains(msg, "-$1075") {
+		t.Fatalf("stale initial capital leaked into pool warning:\n%s", msg)
 	}
 }
 

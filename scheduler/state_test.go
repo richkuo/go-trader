@@ -63,17 +63,59 @@ func TestNewStrategyState(t *testing.T) {
 func TestApplySharedWalletPoolStateModeClearsLegacyAllocation(t *testing.T) {
 	sc := StrategyConfig{sharedWalletPoolBudget: true}
 	s := &StrategyState{
-		Cash:      500,
-		RiskState: RiskState{PeakValue: 500, CurrentDrawdownPct: 12},
+		Cash:           500,
+		InitialCapital: 500,
+		RiskState:      RiskState{PeakValue: 500, CurrentDrawdownPct: 12},
 	}
-	if changed := applySharedWalletPoolStateMode(sc, s); !changed {
-		t.Fatal("expected legacy allocation reset")
+	transition, err := applySharedWalletPoolStateMode(sc, s)
+	if err != nil || transition != sharedWalletPoolStateEntered {
+		t.Fatalf("expected pool entry, got transition=%q err=%v", transition, err)
 	}
-	if s.Cash != 0 || s.RiskState.PeakValue != 0 || s.RiskState.CurrentDrawdownPct != 0 {
+	if s.Cash != 0 || s.InitialCapital != 0 || s.RiskState.PeakValue != 0 || s.RiskState.CurrentDrawdownPct != 0 {
 		t.Fatalf("pooled state not reset: %+v", s)
 	}
-	if !s.SharedWalletPerformanceOnly {
+	if !s.SharedWalletPerformanceOnly || !s.SharedWalletPoolBudget {
 		t.Fatal("pooled state must be marked performance-only")
+	}
+}
+
+func TestApplySharedWalletPoolStateModeLeavingReseedsOnce(t *testing.T) {
+	s := &StrategyState{
+		ID: "hl-a", Type: "perps",
+		Cash:                        -100,
+		InitialCapital:              0,
+		SharedWalletPoolBudget:      true,
+		SharedWalletPerformanceOnly: true,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 200, Leverage: 2, Multiplier: 1},
+		},
+	}
+	allocated := StrategyConfig{ID: "hl-a", Type: "perps", Capital: 1000}
+	transition, err := applySharedWalletPoolStateMode(allocated, s)
+	if err != nil || transition != sharedWalletPoolStateLeft {
+		t.Fatalf("expected pool exit, got transition=%q err=%v", transition, err)
+	}
+	if s.Cash != 900 || s.InitialCapital != 1000 {
+		t.Fatalf("pool exit must add allocation while preserving losses: cash=%v initial=%v", s.Cash, s.InitialCapital)
+	}
+	if s.SharedWalletPoolBudget || s.SharedWalletPerformanceOnly {
+		t.Fatal("pool exit must clear pool markers")
+	}
+	if s.RiskState.PeakValue != 900 {
+		t.Fatalf("open-position pool exit peak=%v, want preserved net book 900", s.RiskState.PeakValue)
+	}
+
+	transition, err = applySharedWalletPoolStateMode(allocated, s)
+	if err != nil || transition != sharedWalletPoolStateUnchanged || s.Cash != 900 {
+		t.Fatalf("allocated restart must not reseed twice: transition=%q cash=%v err=%v", transition, s.Cash, err)
+	}
+
+	pooled := allocated
+	pooled.Capital = 0
+	pooled.sharedWalletPoolBudget = true
+	transition, err = applySharedWalletPoolStateMode(pooled, s)
+	if err != nil || transition != sharedWalletPoolStateEntered || s.Cash != 0 || s.InitialCapital != 0 {
+		t.Fatalf("round trip back to pool failed: transition=%q state=%+v err=%v", transition, s, err)
 	}
 }
 

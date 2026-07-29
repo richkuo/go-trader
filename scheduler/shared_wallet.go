@@ -253,8 +253,10 @@ func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]stri
 // sharedWalletPoolAvailableMargin returns the account margin still available
 // to a pooled strategy after reserving margin for every virtual position on
 // the same wallet, including same-account live HL manual positions. The caller
-// must hold the state read lock. The second return value reports pool mode:
-// when true with available=0, position-increasing orders must fail closed.
+// must hold the state read lock. pooled reports pool mode; balanceKnown
+// distinguishes a real fully-deployed wallet (known balance, zero available)
+// from missing balance/identity data. A flip may reuse released margin only
+// in the former case.
 func sharedWalletPoolAvailableMargin(
 	sc StrategyConfig,
 	strategies []StrategyConfig,
@@ -262,23 +264,24 @@ func sharedWalletPoolAvailableMargin(
 	prices map[string]float64,
 	sharedWallets map[SharedWalletKey][]string,
 	walletBalances map[SharedWalletKey]float64,
-) (available float64, pooled bool) {
+) (available float64, pooled bool, balanceKnown bool) {
 	if !usesSharedWalletPoolBudget(sc) {
-		return 0, false
+		return 0, false, false
 	}
 	pooled = true
 	key, ok := walletKeyFor(sc)
 	if !ok {
-		return 0, true
+		return 0, true, false
 	}
 	perpsMemberIDs, ok := sharedWallets[key]
 	if !ok {
-		return 0, true
+		return 0, true, false
 	}
 	balance, ok := walletBalances[key]
 	if !ok || balance <= 0 || state == nil {
-		return 0, true
+		return 0, true, false
 	}
+	balanceKnown = true
 
 	byID := make(map[string]StrategyConfig, len(strategies))
 	for _, member := range strategies {
@@ -316,7 +319,7 @@ func sharedWalletPoolAvailableMargin(
 	if available < 0 {
 		available = 0
 	}
-	return available, true
+	return available, true, true
 }
 
 // detectTopStepSharedWallet reports whether 2+ live TopStep strategies share an

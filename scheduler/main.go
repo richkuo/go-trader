@@ -207,8 +207,10 @@ func main() {
 		if sc.CapitalPct == 0 {
 			syncHyperliquidLiveCapital(sc)
 		}
-		if s, exists := state.Strategies[sc.ID]; !exists {
-			state.Strategies[sc.ID] = NewStrategyState(*sc)
+		s, stateExisted := state.Strategies[sc.ID]
+		if !stateExisted {
+			s = NewStrategyState(*sc)
+			state.Strategies[sc.ID] = s
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
 		} else {
 			// Sync config → state (config is source of truth).
@@ -237,8 +239,24 @@ func main() {
 				}
 			}
 		}
-		if applySharedWalletPoolStateMode(*sc, state.Strategies[sc.ID]) {
-			fmt.Printf("  Reset %s virtual cash/peak for shared-wallet pool budgeting\n", sc.ID)
+		poolTransition, transitionErr := applySharedWalletPoolStateMode(*sc, s)
+		if transitionErr != nil {
+			fmt.Fprintf(os.Stderr, "Failed to reconcile shared-wallet pool state: %v\n", transitionErr)
+			os.Exit(1)
+		}
+		if poolTransition != sharedWalletPoolStateUnchanged {
+			if stateExisted {
+				if err := stateDB.PersistSharedWalletPoolStateTransition(s); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to persist shared-wallet pool state for %s: %v\n", sc.ID, err)
+					os.Exit(1)
+				}
+			}
+			switch poolTransition {
+			case sharedWalletPoolStateEntered:
+				fmt.Printf("  Reset %s virtual allocation for shared-wallet pool budgeting\n", sc.ID)
+			case sharedWalletPoolStateLeft:
+				fmt.Printf("  Reseeded %s allocated cash book at $%.2f after leaving shared-wallet pool budgeting\n", sc.ID, s.InitialCapital)
+			}
 		}
 	}
 
@@ -1230,7 +1248,7 @@ func main() {
 			// #1269: evaluate the portfolio-wide daily loss limit once per
 			// cycle (pure read — stale per-strategy days count as 0, matching
 			// what rolloverDailyPnL would reset them to).
-			dailyLossStatus := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC())
+			dailyLossStatus := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC())
 			// #1270: evaluate the same-direction exposure cap once per cycle
 			// (pure read over positions + this cycle's prices; totalPV is the
 			// concentration basis). Like the notional cap, this measures the
@@ -1801,11 +1819,13 @@ func main() {
 					var hlAddedNotionalUSD float64
 					var hlScaleInCash float64
 					var hlScaleInResizePending bool
+					var hlPoolBalanceKnown bool
 					var hlProfileState *RegimeProfileState
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
-							if poolCash, pooled := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
+							if poolCash, pooled, balanceKnown := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
 								hlCash = poolCash
+								hlPoolBalanceKnown = balanceKnown
 							} else {
 								hlCash = stratState.Cash
 							}
@@ -1821,7 +1841,7 @@ func main() {
 						// (hlCash above is live-only), under the same RLock.
 						hlScaleInCash = stratState.Cash
 						if hlLiveStrategy {
-							if poolCash, pooled := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
+							if poolCash, pooled, _ := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
 								hlScaleInCash = poolCash
 							}
 						}
@@ -1852,12 +1872,14 @@ func main() {
 					var okxPosQty float64
 					var okxPosSide string
 					var okxAvgCost float64
+					var okxPoolBalanceKnown bool
 					var okxPosCtx PositionCtx
 					if sc.Platform == "okx" {
 						if okxLiveStrategy {
 							if sc.Type == "perps" {
-								if poolCash, pooled := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
+								if poolCash, pooled, balanceKnown := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
 									okxCash = poolCash
+									okxPoolBalanceKnown = balanceKnown
 								} else {
 									okxCash = stratState.Cash
 								}
@@ -2028,7 +2050,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -2275,7 +2297,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -2525,7 +2547,7 @@ func main() {
 										liveExecFailed = true
 									}
 								} else {
-									er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
+									er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
 									if ok2 {
 										execResult = er
 									} else {
@@ -3830,7 +3852,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	directionEnum := EffectiveDirection(sc)
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
@@ -3849,6 +3871,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
 		posQty,
 		price,
+		poolBalanceKnown,
 	)
 	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
 	if !ok {
@@ -4650,7 +4673,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 // ExecutePerpsSignalWithLeverage that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
-func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float64, poolBalanceKnown, cashReconcileRequired bool, posQty float64, posSide string, avgCost float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
 		skip = PerpsOrderSkipReason(result.Signal, posSide, EffectiveDirection(sc))
@@ -4679,6 +4702,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
 		posQty,
 		price,
+		poolBalanceKnown,
 	)
 	var size float64
 	if sc.Type == "perps" {

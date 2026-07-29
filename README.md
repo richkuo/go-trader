@@ -241,7 +241,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `regime_gate_window` / `regime_atr_window` / `regime_directional_window` | Multi-window selectors | legacy |
 | `theta_harvest` | Early-exit config for sold options | null |
 
-Shared-wallet pool budgeting is enabled structurally: configure at least two live Hyperliquid or OKX perps strategies on the same process account, omit `capital`, `capital_pct`, and `initial_capital` from every member, and set a positive `margin_per_trade_usd` on every member. Mixed pooled/allocated members are rejected. Missing account balance data blocks opens/adds/flips but never blocks closes.
+Shared-wallet pool budgeting is enabled structurally: configure at least two live Hyperliquid or OKX perps strategies on the same process account, omit `capital`, `capital_pct`, and `initial_capital` from every member, and set a positive `margin_per_trade_usd` on every member. Mixed pooled/allocated members are rejected. Missing account balance data blocks opens/adds/flips but never blocks closes. Switching back to allocated capital requires a restart and reseeds the virtual cash book once while preserving pool-era gains/losses; restart never auto-clears a pooled wallet's portfolio kill switch.
 
 ### Custom Strategy Parameters
 

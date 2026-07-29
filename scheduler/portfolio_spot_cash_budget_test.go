@@ -684,7 +684,7 @@ func TestRunOKXExecuteOrder_CashReconcileGate(t *testing.T) {
 
 	// (a) latched + buy → held
 	calls = nil
-	er, ok := runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, true, 0, "", 0, nil, logger)
+	er, ok := runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, true, 0, "", 0, nil, logger)
 	if ok || er != nil {
 		t.Fatalf("latched buy: got ok=%v er=%v, want held", ok, er != nil)
 	}
@@ -694,7 +694,7 @@ func TestRunOKXExecuteOrder_CashReconcileGate(t *testing.T) {
 
 	// (b) latched + sell/close → proceeds
 	calls = nil
-	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: -1, Price: 100}, 100, 0, true, 0.5, "long", 100, nil, logger)
+	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: -1, Price: 100}, 100, 0, false, true, 0.5, "long", 100, nil, logger)
 	if !ok || er == nil {
 		t.Fatalf("latched sell: got ok=%v er=%v, want proceed", ok, er != nil)
 	}
@@ -704,7 +704,7 @@ func TestRunOKXExecuteOrder_CashReconcileGate(t *testing.T) {
 
 	// (c) unlatched + buy → proceeds
 	calls = nil
-	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, 0, "", 0, nil, logger)
+	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, false, 0, "", 0, nil, logger)
 	if !ok || er == nil {
 		t.Fatalf("unlatched buy: got ok=%v er=%v, want proceed", ok, er != nil)
 	}

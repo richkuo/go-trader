@@ -1206,20 +1206,43 @@ func TestSharedWalletPoolAvailableMarginReservesAllAccountPositions(t *testing.T
 	}}
 	shared := detectSharedWallets(strategies)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
-	available, pooled := sharedWalletPoolAvailableMargin(
+	available, pooled, balanceKnown := sharedWalletPoolAvailableMargin(
 		strategies[0], strategies, state,
 		map[string]float64{"BTC": 100, "ETH": 200, "SOL": 50},
 		shared, map[SharedWalletKey]float64{key: 1000},
 	)
 	// Deployed margin: BTC 20 + ETH 40 + manual SOL 25.
-	if !pooled || available != 915 {
-		t.Fatalf("available=%v pooled=%v, want 915/true", available, pooled)
+	if !pooled || !balanceKnown || available != 915 {
+		t.Fatalf("available=%v pooled=%v known=%v, want 915/true/true", available, pooled, balanceKnown)
 	}
 
-	available, pooled = sharedWalletPoolAvailableMargin(
+	available, pooled, balanceKnown = sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state, nil, shared,
+		map[SharedWalletKey]float64{key: 85},
+	)
+	if !pooled || !balanceKnown || available != 0 {
+		t.Fatalf("fully deployed wallet must remain known: available=%v pooled=%v known=%v", available, pooled, balanceKnown)
+	}
+
+	available, pooled, balanceKnown = sharedWalletPoolAvailableMargin(
 		strategies[0], strategies, state, nil, shared, nil,
 	)
-	if !pooled || available != 0 {
-		t.Fatalf("missing balance must fail closed: available=%v pooled=%v", available, pooled)
+	if !pooled || balanceKnown || available != 0 {
+		t.Fatalf("missing balance must fail closed: available=%v pooled=%v known=%v", available, pooled, balanceKnown)
+	}
+}
+
+func TestSharedWalletPoolAvailableMarginMissingIdentityFailsClosed(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+	sc := StrategyConfig{
+		ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+		Args:                   []string{"sma", "BTC", "1h", "--mode=live"},
+		sharedWalletPoolBudget: true,
+	}
+	available, pooled, balanceKnown := sharedWalletPoolAvailableMargin(
+		sc, []StrategyConfig{sc}, NewAppState(), nil, nil, nil,
+	)
+	if available != 0 || !pooled || balanceKnown {
+		t.Fatalf("missing identity must fail closed: available=%v pooled=%v known=%v", available, pooled, balanceKnown)
 	}
 }

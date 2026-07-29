@@ -1974,6 +1974,55 @@ func TestSetInitialCapital_RejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestPersistSharedWalletPoolStateTransitionRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {
+			ID: "hl-a", Type: "perps", Platform: "hyperliquid",
+			Cash: 1000, InitialCapital: 1000,
+			Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{},
+			RiskState: RiskState{PeakValue: 1000},
+		},
+	}}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+
+	s := state.Strategies["hl-a"]
+	poolCfg := StrategyConfig{ID: "hl-a", Type: "perps", sharedWalletPoolBudget: true}
+	if transition, err := applySharedWalletPoolStateMode(poolCfg, s); err != nil || transition != sharedWalletPoolStateEntered {
+		t.Fatalf("enter pool: transition=%q err=%v", transition, err)
+	}
+	if err := db.PersistSharedWalletPoolStateTransition(s); err != nil {
+		t.Fatalf("persist pool entry: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("load pool state: %v", err)
+	}
+	pooled := loaded.Strategies["hl-a"]
+	if !pooled.SharedWalletPoolBudget || !pooled.SharedWalletPerformanceOnly || pooled.Cash != 0 || pooled.InitialCapital != 0 {
+		t.Fatalf("pool entry did not round-trip: %+v", pooled)
+	}
+
+	pooled.Cash = -100 // realized loss/deployed-margin book accumulated in pool mode
+	allocatedCfg := StrategyConfig{ID: "hl-a", Type: "perps", Capital: 1000}
+	if transition, err := applySharedWalletPoolStateMode(allocatedCfg, pooled); err != nil || transition != sharedWalletPoolStateLeft {
+		t.Fatalf("leave pool: transition=%q err=%v", transition, err)
+	}
+	if err := db.PersistSharedWalletPoolStateTransition(pooled); err != nil {
+		t.Fatalf("persist pool exit: %v", err)
+	}
+	loaded, err = db.LoadState()
+	if err != nil {
+		t.Fatalf("load allocated state: %v", err)
+	}
+	allocated := loaded.Strategies["hl-a"]
+	if allocated.SharedWalletPoolBudget || allocated.SharedWalletPerformanceOnly || allocated.Cash != 900 || allocated.InitialCapital != 1000 {
+		t.Fatalf("pool exit did not round-trip exactly once: %+v", allocated)
+	}
+}
+
 // TestSaveState_GuardWarnIsOneShot covers the #343 review item 3 follow-up:
 // the baseline-guard warning must fire only once per strategy per process so
 // per-cycle SaveState calls don't spam the operator DM.

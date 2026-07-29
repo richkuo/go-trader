@@ -214,6 +214,9 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 		s := state.Strategies[id]
 		pv := displayStrategyValue(s, prices)
 		cap := s.InitialCapital
+		if s.SharedWalletPoolBudget || s.SharedWalletPerformanceOnly {
+			cap = 0
+		}
 		pnl := pv - cap
 		pnlPct := 0.0
 		if cap > 0 {
@@ -670,7 +673,7 @@ func (d *DiscordNotifier) buildDiscordStatus() string {
 	defer d.ss.mu.RUnlock()
 	base := formatStatusResponse(d.ss.state, prices)
 	base += pausedStrategiesNote(d.cfg.Strategies)
-	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, time.Now())
+	base += dailyLossStatusNote(d.cfg.PortfolioRisk, d.ss.state.Strategies, d.cfg.Strategies, time.Now())
 	base += exposureCapStatusNote(d.cfg.PortfolioRisk, d.ss.state, d.cfg.Strategies, prices)
 	base += recentRegimeTransitionsNote(d.ss.stateDB, d.cfg.Regime, time.Now())
 	if note := directionalCertOperatorNotes(d.cfg.Strategies, d.cfg.Regime); note != "" {
