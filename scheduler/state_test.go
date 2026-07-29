@@ -138,8 +138,15 @@ func TestValidateState(t *testing.T) {
 		},
 		TradeHistory: []Trade{},
 	}
+	state.Strategies["pool"] = &StrategyState{
+		ID:              "pool",
+		InitialCapital:  0,
+		Cash:            -25,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+	}
 
-	ValidateState(state)
+	ValidateState(state, []StrategyConfig{{ID: "pool", sharedWalletPoolBudget: true}})
 
 	s := state.Strategies["s1"]
 	if s.InitialCapital != 0 {
@@ -147,6 +154,9 @@ func TestValidateState(t *testing.T) {
 	}
 	if s.Cash != 0 {
 		t.Errorf("Cash should be clamped to 0, got %g", s.Cash)
+	}
+	if got := state.Strategies["pool"].Cash; got != -25 {
+		t.Errorf("configured pool performance cash should survive validation, got %g", got)
 	}
 	if _, ok := s.Positions["BTC/USDT"]; !ok {
 		t.Error("valid position BTC/USDT should remain")

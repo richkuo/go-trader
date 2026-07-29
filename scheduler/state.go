@@ -249,19 +249,27 @@ func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (shared
 
 // ValidateState checks loaded state for invalid entries and removes or clamps them (#39).
 // Logs warnings for each corrected field rather than refusing to start.
-func ValidateState(state *AppState) {
+func ValidateState(state *AppState, strategies []StrategyConfig) {
+	configuredPoolIDs := make(map[string]bool)
+	for _, sc := range strategies {
+		if usesSharedWalletPoolBudget(sc) {
+			configuredPoolIDs[sc.ID] = true
+		}
+	}
 	for id, s := range state.Strategies {
 		if s.InitialCapital < 0 {
 			fmt.Printf("[WARN] state: strategy %s has invalid initial_capital=%g, resetting to 0\n", id, s.InitialCapital)
 			s.InitialCapital = 0
 		}
-		if s.Cash < 0 {
+		if s.Cash < 0 && !s.SharedWalletPoolBudget && !configuredPoolIDs[id] {
 			fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
 			s.Cash = 0
 			// #1394: do NOT infer CashReconcileRequired from negative cash.
 			// Paper spot buys always end fee-negative (cash=-fee), and
 			// perps/futures can go negative from leveraged PnL — neither is a
-			// live over-budget book. Genuine live overshoots persist the latch
+			// live over-budget book. Pool performance books are explicitly
+			// preserved above because their negative cash is realized loss/fees,
+			// not an invalid allocation. Genuine live overshoots persist the latch
 			// via strategies.cash_reconcile_required; #1400 keeps a loaded
 			// latch until the operator clears it via /clear-cash-reconcile
 			// (maybeClear below is a no-op — solvency alone does not clear).

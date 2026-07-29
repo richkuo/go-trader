@@ -188,7 +188,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
 		os.Exit(1)
 	}
-	ValidateState(state)
+	ValidateState(state, cfg.Strategies)
 
 	// #87: Resolve capital_pct at startup so initial state gets the right capital.
 	resolveCapitalPct(cfg.Strategies)

@@ -2005,7 +2005,19 @@ func TestPersistSharedWalletPoolStateTransitionRoundTrip(t *testing.T) {
 		t.Fatalf("pool entry did not round-trip: %+v", pooled)
 	}
 
-	pooled.Cash = -100 // realized loss/deployed-margin book accumulated in pool mode
+	pooled.Cash = -100 // realized loss/fees accumulated in pool mode
+	if err := db.SaveState(loaded); err != nil {
+		t.Fatalf("persist pool performance book: %v", err)
+	}
+	loaded, err = db.LoadState()
+	if err != nil {
+		t.Fatalf("reload pool performance book: %v", err)
+	}
+	ValidateState(loaded, nil)
+	pooled = loaded.Strategies["hl-a"]
+	if pooled.Cash != -100 {
+		t.Fatalf("pool loss must survive reload validation, cash=%v", pooled.Cash)
+	}
 	allocatedCfg := StrategyConfig{ID: "hl-a", Type: "perps", Capital: 1000}
 	if transition, err := applySharedWalletPoolStateMode(allocatedCfg, pooled); err != nil || transition != sharedWalletPoolStateLeft {
 		t.Fatalf("leave pool: transition=%q err=%v", transition, err)
