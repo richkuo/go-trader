@@ -252,10 +252,11 @@ type PortfolioRiskState struct {
 type SharedWalletBalanceFetcher func(platform string) (float64, error)
 
 // detectSharedWalletPlatforms returns actually detected live shared-wallet
-// platforms whose legacy percentage allocations could have produced the
-// inflated persisted peak that #244 repairs. Fixed-capital and zero-baseline
-// pool wallets are deliberately excluded: their kill-switch latch may reflect
-// a real loss and a process restart must never grant a fresh drawdown budget.
+// platforms where every automated/manual risk-path member uses a legacy
+// percentage allocation that could have produced the inflated persisted peak
+// #244 repairs. One fixed-capital or zero-baseline pool member excludes the
+// entire wallet: its kill-switch latch may reflect a real loss, and a process
+// restart must never grant that account a fresh drawdown budget.
 func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 	byID := make(map[string]StrategyConfig, len(strategies))
 	walletMembers := make(map[SharedWalletKey][]string)
@@ -271,13 +272,14 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 		if len(memberIDs) < 2 {
 			continue
 		}
-		pctMembers := 0
+		allLegacyPct := true
 		for _, id := range memberIDs {
-			if byID[id].CapitalPct > 0 {
-				pctMembers++
+			if byID[id].CapitalPct <= 0 {
+				allLegacyPct = false
+				break
 			}
 		}
-		if pctMembers > 1 {
+		if allLegacyPct {
 			platformSet[key.Platform] = true
 		}
 	}
@@ -298,8 +300,8 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 //
 // Guards (all must hold):
 //   - the kill switch must currently be active (otherwise no-op)
-//   - at least one platform must host an account-detected shared wallet with
-//     2+ legacy capital_pct members (the #244 fake-peak failure mode)
+//   - at least one platform must host an account-detected shared wallet whose
+//     2+ risk-path members all use legacy capital_pct (the #244 fake-peak mode)
 //   - fetcher must successfully return a real balance for EVERY shared-wallet
 //     platform — any network/config failure preserves the kill switch so the
 //     re-baselined peak reflects the full portfolio-wide truth rather than a

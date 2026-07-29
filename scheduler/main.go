@@ -201,7 +201,8 @@ func main() {
 	initialCapitalChangeInfos, initialCapitalChangeErrors := ReconcileConfigInitialCapital(cfg, state, stateDB)
 
 	// Initialize new strategies and sync config values for existing ones
-	var sharedWalletPoolExitWarnings []string
+	sharedWalletTransitionBlockers := sharedWalletPoolTransitionBlockers(cfg.Strategies, state)
+	var sharedWalletTransitionWarnings []string
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
 		// For live Hyperliquid strategies without capital_pct, override capital with the real wallet balance.
@@ -240,16 +241,21 @@ func main() {
 				}
 			}
 		}
-		poolTransition, transitionErr := applySharedWalletPoolStateMode(*sc, s)
+		transitionErr := sharedWalletTransitionBlockers[sc.ID]
+		poolTransition := sharedWalletPoolStateUnchanged
+		if transitionErr == nil {
+			poolTransition, transitionErr = applySharedWalletPoolStateMode(*sc, s)
+		}
 		if transitionErr != nil {
-			// A pool→capital_pct transition can be temporarily unresolvable
-			// when the exchange balance fetch fails. Keep the durable pool
-			// marker and performance book intact, force this process into
-			// manage-only mode, and retry the one-time transition on restart.
-			// Exits/protection must keep running; fresh opens/adds/flips may not.
-			msg := deferSharedWalletPoolExit(sc, transitionErr)
+			// A transition can be unsafe while any wallet peer remains open,
+			// or a pool→capital_pct transition can be temporarily unresolvable
+			// when the exchange balance fetch fails. Keep every durable book
+			// marker intact, force the affected wallet into manage-only mode,
+			// and retry the one-time transition on a later flat restart.
+			// Exits/protection keep running; fresh opens/adds/flips may not.
+			msg := deferSharedWalletPoolTransition(sc, transitionErr)
 			fmt.Fprintf(os.Stderr, "[CRITICAL] %s\n", msg)
-			sharedWalletPoolExitWarnings = append(sharedWalletPoolExitWarnings, msg)
+			sharedWalletTransitionWarnings = append(sharedWalletTransitionWarnings, msg)
 			continue
 		}
 		if poolTransition != sharedWalletPoolStateUnchanged {
@@ -528,11 +534,11 @@ func main() {
 		}
 	}
 
-	// A deferred pool exit is deliberately non-fatal so protection management
-	// stays live during an exchange outage, but it requires prominent operator
-	// visibility because entries remain held until a successful restart.
-	if len(sharedWalletPoolExitWarnings) > 0 && notifier.HasOwner() {
-		for _, msg := range sharedWalletPoolExitWarnings {
+	// A deferred pool transition is deliberately non-fatal so protection
+	// management stays live, but it requires prominent operator visibility
+	// because entries remain held until a successful flat restart.
+	if len(sharedWalletTransitionWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range sharedWalletTransitionWarnings {
 			notifier.SendOwnerDM("[state] CRITICAL: " + msg)
 		}
 	}
@@ -3589,7 +3595,7 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 // capital_pct is set but capital resolved to $0 (balance fetch failed and
 // no fallback capital configured).
 func shouldSkipZeroCapital(sc StrategyConfig) bool {
-	return sc.CapitalPct > 0 && sc.Capital <= 0 && !sc.sharedWalletExitDeferred
+	return sc.CapitalPct > 0 && sc.Capital <= 0 && !sc.sharedWalletModeDeferred
 }
 
 func notifyPerStrategyCircuitBreaker(sc StrategyConfig, reason string, portfolioValue float64, notifier *MultiNotifier, portfolioKillSwitchFired bool) {

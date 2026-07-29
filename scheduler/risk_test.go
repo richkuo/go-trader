@@ -2429,6 +2429,70 @@ func TestDetectSharedWalletPlatformsCountsLegacyManualMember(t *testing.T) {
 	}
 }
 
+func TestDetectSharedWalletPlatformsRequiresEveryRiskPathMemberLegacyPct(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xshared")
+	livePerps := func(id string, pct float64, pooled bool) StrategyConfig {
+		return StrategyConfig{
+			ID: id, Platform: "hyperliquid", Type: "perps",
+			CapitalPct: pct, Args: []string{"sma", "BTC", "1h", "--mode=live"},
+			sharedWalletPoolBudget: pooled,
+		}
+	}
+	liveManual := func(id string) StrategyConfig {
+		return StrategyConfig{
+			ID: id, Platform: "hyperliquid", Type: "manual", CapitalPct: 0.5,
+			Args: []string{"hold", "ETH", "1h", "--mode=live"},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		strategies []StrategyConfig
+		want       bool
+	}{
+		{
+			name: "pooled perps cannot be masked by percentage manuals",
+			strategies: []StrategyConfig{
+				livePerps("pool-a", 0, true),
+				livePerps("pool-b", 0, true),
+				liveManual("manual-a"),
+				liveManual("manual-b"),
+			},
+		},
+		{
+			name: "all percentage perps and manual remain eligible",
+			strategies: []StrategyConfig{
+				livePerps("pct-a", 0.5, false),
+				livePerps("pct-b", 0.5, false),
+				liveManual("manual"),
+			},
+			want: true,
+		},
+		{
+			name: "one pooled perps member suppresses auto-clear",
+			strategies: []StrategyConfig{
+				livePerps("pool", 0, true),
+				livePerps("pct", 0.5, false),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectSharedWalletPlatforms(tt.strategies)
+			if tt.want {
+				if len(got) != 1 || got[0] != "hyperliquid" {
+					t.Fatalf("expected eligible Hyperliquid wallet, got %v", got)
+				}
+				return
+			}
+			if len(got) != 0 {
+				t.Fatalf("unsafe mixed wallet must not auto-clear a kill switch, got %v", got)
+			}
+		})
+	}
+}
+
 // --- #296: portfolio-level perps margin drawdown ---
 
 // TestCheckPortfolioRisk_AllPerps_MarginDrawdownFires is the core acceptance-

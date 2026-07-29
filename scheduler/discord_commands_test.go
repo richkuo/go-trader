@@ -306,6 +306,53 @@ func TestFormatPnLResponseMixedPoolInvalidatesOnlyContainingAggregates(t *testin
 	}
 }
 
+func TestFormatPnLResponseUsesWalletDedupedTotalWithoutChangingAttributedPnL(t *testing.T) {
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a", Platform: "hyperliquid", Cash: -10,
+				SharedWalletPoolBudget: true,
+			},
+			"hl-b": {
+				ID: "hl-b", Platform: "hyperliquid", Cash: 5,
+				SharedWalletPoolBudget: true,
+			},
+		},
+		LatestSharedWalletBalances: map[SharedWalletKey]float64{key: 1000},
+		LatestSharedWalletMembers:  map[SharedWalletKey][]string{key: {"hl-a", "hl-b"}},
+	}
+
+	allPooled := formatPnLResponse(state, nil)
+	if !strings.Contains(allPooled, "Total: $-5.00 (—) — value $1000.00 / capital $0.00") {
+		t.Fatalf("all-pooled /pnl must use real wallet equity while retaining attributed P&L:\n%s", allPooled)
+	}
+	if !strings.Contains(formatStatusResponse(state, nil), "value=$1000.00") {
+		t.Fatal("/pnl and /status test fixtures must share the same deduped total")
+	}
+
+	state.Strategies["spot"] = &StrategyState{
+		ID: "spot", Platform: "binanceus", Cash: 200, InitialCapital: 200,
+	}
+	mixed := formatPnLResponse(state, nil)
+	for _, want := range []string{
+		"Total: $-5.00 (—) — value $1200.00 / capital $200.00",
+		"hyperliquid: $-5.00 (—)",
+		"binanceus: $+0.00 (+0.00%)",
+	} {
+		if !strings.Contains(mixed, want) {
+			t.Fatalf("mixed /pnl missing %q:\n%s", want, mixed)
+		}
+	}
+
+	state.LatestSharedWalletBalances = nil
+	state.LatestSharedWalletMembers = nil
+	fallback := formatPnLResponse(state, nil)
+	if !strings.Contains(fallback, "Total: $-5.00 (—) — value $195.00 / capital $200.00") {
+		t.Fatalf("missing wallet balance must use latestDisplayTotal modeled fallback:\n%s", fallback)
+	}
+}
+
 func TestFormatCircuitBreakersResponse(t *testing.T) {
 	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
 	none := formatCircuitBreakersResponse(&AppState{Strategies: map[string]*StrategyState{}}, now)

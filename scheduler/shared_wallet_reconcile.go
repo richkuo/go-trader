@@ -393,7 +393,7 @@ func reconcileSharedWalletDisplayValues(
 	}
 	for _, sc := range strategies {
 		if ss := state.Strategies[sc.ID]; ss != nil {
-			ss.SharedWalletPerformanceOnly = usesSharedWalletPoolBudget(sc)
+			ss.SharedWalletPerformanceOnly = effectiveSharedWalletPoolBook(sc, ss)
 		}
 	}
 	state.LatestSharedWalletBalances = make(map[SharedWalletKey]float64)
@@ -456,7 +456,7 @@ func reconcileSharedWalletDisplayValues(
 
 		poolMode := false
 		for _, id := range memberIDs {
-			if usesSharedWalletPoolBudget(byID[id]) {
+			if effectiveSharedWalletPoolBook(byID[id], state.Strategies[id]) {
 				poolMode = true
 				break
 			}

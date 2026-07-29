@@ -1909,26 +1909,26 @@ func TestValidateHotReloadCompatible_SharedWalletPoolModeRequiresRestart(t *test
 	}
 }
 
-func TestApplyHotReloadConfigPreservesDeferredPoolExitManageOnlyLatch(t *testing.T) {
+func TestApplyHotReloadConfigPreservesDeferredPoolTransitionManageOnlyLatch(t *testing.T) {
 	strategy := StrategyConfig{
 		ID: "hl-a", Type: "perps", Platform: "hyperliquid",
 		Script:     "shared_scripts/check_hyperliquid.py",
 		Args:       []string{"momentum", "BTC", "1h", "--mode=live"},
 		CapitalPct: 0.5, MaxDrawdownPct: 10,
-		Paused: true, sharedWalletExitDeferred: true,
+		Paused: true, sharedWalletModeDeferred: true,
 	}
 	cfg := minimalReloadConfig([]StrategyConfig{strategy})
 	nextStrategy := strategy
 	nextStrategy.Paused = false
-	nextStrategy.sharedWalletExitDeferred = false
+	nextStrategy.sharedWalletModeDeferred = false
 	next := minimalReloadConfig([]StrategyConfig{nextStrategy})
 
 	if _, err := applyHotReloadConfig(cfg, next, NewAppState(), nil, nil); err != nil {
 		t.Fatalf("unrelated reload must not be rejected by process-local deferred latch: %v", err)
 	}
 	got := cfg.Strategies[0]
-	if !got.Paused || !got.sharedWalletExitDeferred {
-		t.Fatalf("SIGHUP must not resume a deferred pool exit before restart: %+v", got)
+	if !got.Paused || !got.sharedWalletModeDeferred {
+		t.Fatalf("SIGHUP must not resume a deferred pool transition before restart: %+v", got)
 	}
 }
 

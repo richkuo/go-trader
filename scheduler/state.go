@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -205,18 +206,29 @@ const (
 // allocated and pool books. Entering removes the virtual allocation. Leaving
 // adds the newly configured allocation to the existing pool performance book,
 // preserving realized losses and deployed-margin accounting instead of
-// manufacturing a fresh profit/loss history.
+// manufacturing a fresh profit/loss history. An open position blocks either
+// direction: changing its book beneath scale-in or flip sizing would reinterpret
+// live exposure under a different capital model.
 func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (sharedWalletPoolStateTransition, error) {
 	if s == nil {
 		return sharedWalletPoolStateUnchanged, nil
 	}
 	currentPool := usesSharedWalletPoolBudget(sc)
-	s.SharedWalletPerformanceOnly = currentPool
 	if currentPool == s.SharedWalletPoolBudget {
+		s.SharedWalletPerformanceOnly = currentPool
 		return sharedWalletPoolStateUnchanged, nil
+	}
+	if strategyHasOpenPositions(s) {
+		// Keep display/reconciliation semantics aligned with the durable book
+		// while the replacement config is held manage-only.
+		s.SharedWalletPerformanceOnly = s.SharedWalletPoolBudget
+		return sharedWalletPoolStateUnchanged, fmt.Errorf(
+			"strategy[%s]: cannot transition shared-wallet pool budgeting while positions are open",
+			sc.ID)
 	}
 
 	if currentPool {
+		s.SharedWalletPerformanceOnly = true
 		s.SharedWalletPoolBudget = true
 		s.Cash = 0
 		s.InitialCapital = 0
@@ -240,6 +252,7 @@ func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (shared
 	}
 
 	s.SharedWalletPoolBudget = false
+	s.SharedWalletPerformanceOnly = false
 	s.Cash += baseline
 	s.InitialCapital = baseline
 	s.RiskState.PeakValue = PortfolioValue(s, nil)
@@ -247,18 +260,77 @@ func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (shared
 	return sharedWalletPoolStateLeft, nil
 }
 
-// deferSharedWalletPoolExit converts an unresolved startup transition into a
+// deferSharedWalletPoolTransition converts an unsafe startup transition into a
 // process-local manage-only latch. The durable state marker remains untouched,
-// so a later restart retries applySharedWalletPoolStateMode. Paused keeps all
-// position-increasing signals held while normal exits and protection
+// so a later flat restart retries applySharedWalletPoolStateMode. Paused keeps
+// all position-increasing signals held while normal exits and protection
 // management continue, and the private flag prevents zero-capital scheduling
 // and SIGHUP resume from defeating that safety posture.
-func deferSharedWalletPoolExit(sc *StrategyConfig, transitionErr error) string {
-	sc.sharedWalletExitDeferred = true
+func deferSharedWalletPoolTransition(sc *StrategyConfig, transitionErr error) string {
+	sc.sharedWalletModeDeferred = true
 	sc.Paused = true
 	return fmt.Sprintf(
-		"strategy %s shared-wallet pool exit deferred: %v; running manage-only until a later restart resolves positive capital",
+		"strategy %s shared-wallet pool transition deferred: %v; running manage-only until a later flat restart can complete it",
 		sc.ID, transitionErr)
+}
+
+// effectiveSharedWalletPoolBook reports the accounting mode that display
+// reconciliation must use. During a deferred startup transition the durable
+// marker wins over the replacement config so operator values continue to
+// describe the book that actually owns the open exposure.
+func effectiveSharedWalletPoolBook(sc StrategyConfig, s *StrategyState) bool {
+	if sc.sharedWalletModeDeferred && s != nil {
+		return s.SharedWalletPoolBudget
+	}
+	return usesSharedWalletPoolBudget(sc)
+}
+
+// sharedWalletPoolTransitionBlockers keeps a configured wallet cluster atomic
+// across allocated↔pool startup transitions. If any member still has exposure,
+// every member stays on its durable book and runs manage-only; otherwise a
+// flat peer could transition first and leave one real account split across two
+// incompatible accounting/sizing models.
+func sharedWalletPoolTransitionBlockers(strategies []StrategyConfig, state *AppState) map[string]error {
+	blocked := make(map[string]error)
+	if state == nil {
+		return blocked
+	}
+	groups := make(map[configuredWalletKey][]StrategyConfig)
+	for _, sc := range strategies {
+		if key, ok := configuredWalletKeyFor(sc); ok {
+			groups[key] = append(groups[key], sc)
+		}
+	}
+	for key, members := range groups {
+		if len(members) < 2 {
+			continue
+		}
+		transitioning := false
+		var openIDs []string
+		for _, sc := range members {
+			ss := state.Strategies[sc.ID]
+			if ss == nil {
+				continue
+			}
+			if usesSharedWalletPoolBudget(sc) != ss.SharedWalletPoolBudget {
+				transitioning = true
+			}
+			if strategyHasOpenPositions(ss) {
+				openIDs = append(openIDs, sc.ID)
+			}
+		}
+		if !transitioning || len(openIDs) == 0 {
+			continue
+		}
+		sort.Strings(openIDs)
+		err := fmt.Errorf(
+			"shared-wallet %s/%s cannot transition pool budgeting while members have open positions: %s",
+			key.Platform, key.Instrument, strings.Join(openIDs, ", "))
+		for _, sc := range members {
+			blocked[sc.ID] = err
+		}
+	}
+	return blocked
 }
 
 // ValidateState checks loaded state for invalid entries and removes or clamps them (#39).

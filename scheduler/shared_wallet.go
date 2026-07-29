@@ -164,7 +164,7 @@ func resolveSharedWalletRiskBalances(
 		for _, id := range memberIDs {
 			sc := byID[id]
 			s := strategyStates[id]
-			if usesSharedWalletPoolBudget(sc) || sc.sharedWalletExitDeferred ||
+			if usesSharedWalletPoolBudget(sc) || sc.sharedWalletModeDeferred ||
 				(s != nil && s.SharedWalletPoolBudget) {
 				pooled = true
 				break

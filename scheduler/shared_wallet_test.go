@@ -1337,7 +1337,7 @@ func TestResolveSharedWalletRiskBalancesProtectsDeferredPoolExit(t *testing.T) {
 	// The process-local latch independently protects the interval between
 	// deferring the exit and any later state inspection.
 	deferredStrategies := append([]StrategyConfig(nil), strategies...)
-	deferredStrategies[0].sharedWalletExitDeferred = true
+	deferredStrategies[0].sharedWalletModeDeferred = true
 	_, stale, complete = resolveSharedWalletRiskBalances(
 		deferredStrategies, nil, shared, nil, nil, 1)
 	if stale || complete {

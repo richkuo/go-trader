@@ -86,9 +86,7 @@ func TestApplySharedWalletPoolStateModeLeavingReseedsOnce(t *testing.T) {
 		InitialCapital:              0,
 		SharedWalletPoolBudget:      true,
 		SharedWalletPerformanceOnly: true,
-		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 200, Leverage: 2, Multiplier: 1},
-		},
+		Positions:                   map[string]*Position{},
 	}
 	allocated := StrategyConfig{ID: "hl-a", Type: "perps", Capital: 1000}
 	transition, err := applySharedWalletPoolStateMode(allocated, s)
@@ -102,7 +100,7 @@ func TestApplySharedWalletPoolStateModeLeavingReseedsOnce(t *testing.T) {
 		t.Fatal("pool exit must clear pool markers")
 	}
 	if s.RiskState.PeakValue != 900 {
-		t.Fatalf("open-position pool exit peak=%v, want preserved net book 900", s.RiskState.PeakValue)
+		t.Fatalf("flat pool exit peak=%v, want preserved net book 900", s.RiskState.PeakValue)
 	}
 
 	transition, err = applySharedWalletPoolStateMode(allocated, s)
@@ -126,9 +124,7 @@ func TestApplySharedWalletPoolStateModeDefersUnresolvedCapitalPctManageOnly(t *t
 		InitialCapital:              0,
 		SharedWalletPoolBudget:      true,
 		SharedWalletPerformanceOnly: true,
-		Positions: map[string]*Position{
-			"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long"},
-		},
+		Positions:                   map[string]*Position{},
 	}
 	sc := StrategyConfig{ID: "hl-a", Type: "perps", CapitalPct: 0.5}
 
@@ -140,8 +136,8 @@ func TestApplySharedWalletPoolStateModeDefersUnresolvedCapitalPctManageOnly(t *t
 		t.Fatalf("failed transition must preserve durable pool book: %+v", s)
 	}
 
-	msg := deferSharedWalletPoolExit(&sc, err)
-	if msg == "" || !sc.sharedWalletExitDeferred || !sc.Paused {
+	msg := deferSharedWalletPoolTransition(&sc, err)
+	if msg == "" || !sc.sharedWalletModeDeferred || !sc.Paused {
 		t.Fatalf("deferred transition must latch manage-only mode: sc=%+v msg=%q", sc, msg)
 	}
 	if shouldSkipZeroCapital(sc) {
@@ -161,6 +157,109 @@ func TestApplySharedWalletPoolStateModeDefersUnresolvedCapitalPctManageOnly(t *t
 	}
 	if s.SharedWalletPoolBudget || s.Cash != 425 || s.InitialCapital != 500 {
 		t.Fatalf("resolved retry must reseed once while preserving loss: %+v", s)
+	}
+}
+
+func TestApplySharedWalletPoolStateModeDefersBothDirectionsWhileOpen(t *testing.T) {
+	tests := []struct {
+		name             string
+		sc               StrategyConfig
+		state            *StrategyState
+		wantPool         bool
+		wantPerformance  bool
+		increasingSignal int
+	}{
+		{
+			name: "pool to allocated blocks scale-in",
+			sc:   StrategyConfig{ID: "hl-a", Type: "perps", Capital: 1000},
+			state: &StrategyState{
+				ID: "hl-a", Type: "perps", Cash: -100,
+				SharedWalletPoolBudget: true, SharedWalletPerformanceOnly: true,
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 200, Side: "long"},
+				},
+			},
+			wantPool: true, wantPerformance: true, increasingSignal: 1,
+		},
+		{
+			name: "allocated to pool blocks flip",
+			sc: StrategyConfig{
+				ID: "hl-a", Type: "perps", sharedWalletPoolBudget: true,
+			},
+			state: &StrategyState{
+				ID: "hl-a", Type: "perps", Cash: 900, InitialCapital: 1000,
+				Positions: map[string]*Position{
+					"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 200, Side: "long"},
+				},
+			},
+			wantPool: false, wantPerformance: false, increasingSignal: -1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beforeCash, beforeInitial := tt.state.Cash, tt.state.InitialCapital
+			transition, err := applySharedWalletPoolStateMode(tt.sc, tt.state)
+			if err == nil || transition != sharedWalletPoolStateUnchanged {
+				t.Fatalf("open transition must defer: transition=%q err=%v", transition, err)
+			}
+			if tt.state.SharedWalletPoolBudget != tt.wantPool ||
+				tt.state.SharedWalletPerformanceOnly != tt.wantPerformance ||
+				tt.state.Cash != beforeCash || tt.state.InitialCapital != beforeInitial {
+				t.Fatalf("deferred transition changed the durable book: %+v", tt.state)
+			}
+
+			msg := deferSharedWalletPoolTransition(&tt.sc, err)
+			if msg == "" || !tt.sc.Paused || !tt.sc.sharedWalletModeDeferred {
+				t.Fatalf("deferred transition must enter manage-only: sc=%+v msg=%q", tt.sc, msg)
+			}
+			if got := effectiveSharedWalletPoolBook(tt.sc, tt.state); got != tt.wantPool {
+				t.Fatalf("deferred display/reconciliation mode=%t, want durable mode %t", got, tt.wantPool)
+			}
+			if !pausedBlocksSignal(tt.increasingSignal, 0, 1, "long", true, tt.sc.Paused) {
+				t.Fatal("manage-only transition must block scale-ins and flips")
+			}
+			if pausedBlocksSignal(-1, 1, 1, "long", true, tt.sc.Paused) {
+				t.Fatal("manage-only transition must preserve explicit closes")
+			}
+		})
+	}
+}
+
+func TestSharedWalletPoolTransitionBlockersAreWalletAtomic(t *testing.T) {
+	margin := 100.0
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-open", Platform: "hyperliquid", Type: "perps",
+			Args:              []string{"sma", "BTC", "1h", "--mode=live"},
+			MarginPerTradeUSD: &margin, sharedWalletPoolBudget: true,
+		},
+		{
+			ID: "hl-flat", Platform: "hyperliquid", Type: "perps",
+			Args:              []string{"rsi", "ETH", "1h", "--mode=live"},
+			MarginPerTradeUSD: &margin, sharedWalletPoolBudget: true,
+		},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-open": {
+			SharedWalletPoolBudget: false,
+			Positions: map[string]*Position{
+				"BTC": {Symbol: "BTC", Quantity: 1, Side: "long"},
+			},
+		},
+		"hl-flat": {SharedWalletPoolBudget: false, Positions: map[string]*Position{}},
+	}}
+
+	blocked := sharedWalletPoolTransitionBlockers(strategies, state)
+	for _, id := range []string{"hl-open", "hl-flat"} {
+		if blocked[id] == nil {
+			t.Fatalf("wallet peer %s must be blocked until the whole wallet is flat: %v", id, blocked)
+		}
+	}
+
+	state.Strategies["hl-open"].Positions = map[string]*Position{}
+	if got := sharedWalletPoolTransitionBlockers(strategies, state); len(got) != 0 {
+		t.Fatalf("flat wallet transition must remain unchanged: %v", got)
 	}
 }
 

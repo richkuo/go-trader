@@ -209,12 +209,12 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 // formatPnLResponse reports total / per-platform / per-strategy P&L. Call under RLock.
 func formatPnLResponse(state *AppState, prices map[string]float64) string {
 	type agg struct {
-		value, capital float64
-		includesPool   bool
+		pnl, capital float64
+		includesPool bool
 	}
 	byPlatform := map[string]*agg{}
 	platforms := []string{}
-	var totVal, totCap float64
+	var totPnL, totCap float64
 	var totalIncludesPool bool
 	var perStrat []string
 	for _, id := range sortedAppStateIDs(state) {
@@ -226,7 +226,7 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 			cap = 0
 		}
 		pnl := pv - cap
-		totVal += pv
+		totPnL += pnl
 		totCap += cap
 		totalIncludesPool = totalIncludesPool || poolBudget
 		plat := strategyPlatformLabel(s)
@@ -234,7 +234,7 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 			byPlatform[plat] = &agg{}
 			platforms = append(platforms, plat)
 		}
-		byPlatform[plat].value += pv
+		byPlatform[plat].pnl += pnl
 		byPlatform[plat].capital += cap
 		byPlatform[plat].includesPool = byPlatform[plat].includesPool || poolBudget
 		perStrat = append(perStrat, fmt.Sprintf(
@@ -244,18 +244,17 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 	sort.Strings(platforms)
 	var sb strings.Builder
 	sb.WriteString("**P&L**\n")
-	totPnL := totVal - totCap
+	totalDisplayValue := latestDisplayTotal(state, prices)
 	sb.WriteString(fmt.Sprintf(
 		"Total: $%+.2f (%s) — value $%.2f / capital $%.2f\n",
-		totPnL, formatPnLPercent(totPnL, totCap, totalIncludesPool), totVal, totCap,
+		totPnL, formatPnLPercent(totPnL, totCap, totalIncludesPool), totalDisplayValue, totCap,
 	))
 	sb.WriteString("__By platform__\n")
 	for _, plat := range platforms {
 		a := byPlatform[plat]
-		pnl := a.value - a.capital
 		sb.WriteString(fmt.Sprintf(
 			"  %s: $%+.2f (%s)\n",
-			plat, pnl, formatPnLPercent(pnl, a.capital, a.includesPool),
+			plat, a.pnl, formatPnLPercent(a.pnl, a.capital, a.includesPool),
 		))
 	}
 	sb.WriteString("__By strategy__\n")
