@@ -1184,3 +1184,42 @@ func TestComputeTotalPortfolioValue_PaperManualNotDeduped(t *testing.T) {
 		t.Errorf("paper manual: expected usedFallback=false")
 	}
 }
+
+func TestSharedWalletPoolAvailableMarginReservesAllAccountPositions(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Leverage: 5, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}, Leverage: 10, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-manual", Platform: "hyperliquid", Type: "manual", Args: []string{"hold", "SOL", "1h", "--mode=live"}, Leverage: 2},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {Positions: map[string]*Position{
+			"BTC": {Quantity: 1, AvgCost: 100, Leverage: 5},
+		}},
+		"hl-b": {Positions: map[string]*Position{
+			"ETH": {Quantity: 2, AvgCost: 200, Leverage: 10},
+		}},
+		"hl-manual": {Positions: map[string]*Position{
+			"SOL": {Quantity: 1, AvgCost: 50, Leverage: 2},
+		}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	available, pooled := sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state,
+		map[string]float64{"BTC": 100, "ETH": 200, "SOL": 50},
+		shared, map[SharedWalletKey]float64{key: 1000},
+	)
+	// Deployed margin: BTC 20 + ETH 40 + manual SOL 25.
+	if !pooled || available != 915 {
+		t.Fatalf("available=%v pooled=%v, want 915/true", available, pooled)
+	}
+
+	available, pooled = sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state, nil, shared, nil,
+	)
+	if !pooled || available != 0 {
+		t.Fatalf("missing balance must fail closed: available=%v pooled=%v", available, pooled)
+	}
+}

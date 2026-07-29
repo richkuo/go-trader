@@ -478,7 +478,8 @@ func FormatCategorySummary(
 		sb.WriteString("\n")
 	}
 
-	// Detect shared wallet groups: strategies on same platform with CapitalPct > 0.
+	// Detect legacy percentage-allocated wallet groups for the Wallet% column.
+	// Zero-baseline pool members deliberately have no percentage allocation.
 	walletCapital := make(map[string]float64) // platform -> sum of capitals
 	walletCount := make(map[string]int)       // platform -> count of strategies
 	for _, sc := range strategies {
@@ -491,6 +492,13 @@ func FormatCategorySummary(
 	for _, n := range walletCount {
 		if n > 1 {
 			hasSharedWallet = true
+			break
+		}
+	}
+	hasPoolBudget := false
+	for _, sc := range strategies {
+		if usesSharedWalletPoolBudget(sc) {
+			hasPoolBudget = true
 			break
 		}
 	}
@@ -546,6 +554,7 @@ func FormatCategorySummary(
 			value:          pv,
 			pnl:            pnl,
 			pnlPct:         pnlPct,
+			poolBudget:     usesSharedWalletPoolBudget(sc),
 			maxDrawdownPct: sc.MaxDrawdownPct,
 			walletPct:      walletPct,
 			trades:         len(ss.TradeHistory),
@@ -572,11 +581,21 @@ func FormatCategorySummary(
 	}
 	totalPnl := totalRowValue - totalInitCap
 	totalPnlPct := 0.0
-	if totalInitCap > 0 {
+	if hasPoolBudget {
+		// Deposits belong to the wallet, not to any pooled strategy. Without
+		// a portfolio-level external-flow baseline, total return is undefined.
+		totalPnl = math.NaN()
+		totalPnlPct = math.NaN()
+	} else if totalInitCap > 0 {
 		totalPnlPct = (totalPnl / totalInitCap) * 100
 	}
 
-	sb.WriteString(fmt.Sprintf("Cycle #%d | %.1fs | Initial capital: $%s\n", cycle, elapsed.Seconds(), fmtComma(totalInitCap)))
+	if hasPoolBudget {
+		sb.WriteString(fmt.Sprintf("Cycle #%d | %.1fs | Allocated initial capital: $%s\n", cycle, elapsed.Seconds(), fmtComma(totalInitCap)))
+		sb.WriteString("POOL rows show attributed net performance; deposits are counted only in TOTAL value and PnL% is unavailable.\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("Cycle #%d | %.1fs | Initial capital: $%s\n", cycle, elapsed.Seconds(), fmtComma(totalInitCap)))
+	}
 
 	// Render the strategy table in chunks of catTableMaxRows. The first chunk
 	// is appended to the in-message header; any extra chunks become standalone
@@ -758,6 +777,7 @@ type botInfo struct {
 	value          float64
 	pnl            float64
 	pnlPct         float64
+	poolBudget     bool
 	maxDrawdownPct float64
 	walletPct      float64 // 0 = not a shared wallet; >0 = strategy's share of the wallet
 	trades         int
@@ -927,9 +947,15 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := summaryStrategyLabel(bot.id)
+			if bot.poolBudget {
+				label += "*"
+			}
 			valStr := fmtComma(bot.value)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
+			if bot.poolBudget {
+				pctStr = "—"
+			}
 			maxDDStr := fmtDrawdownPct(bot.maxDrawdownPct)
 			wpStr := ""
 			if bot.walletPct > 0 {
@@ -953,9 +979,15 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 		sb.WriteString(sep + "\n")
 		for _, bot := range bots {
 			label := summaryStrategyLabel(bot.id)
+			if bot.poolBudget {
+				label += "*"
+			}
 			valStr := fmtComma(bot.value)
 			pnlStr := fmtPnl(bot.pnl)
 			pctStr := fmtPnlPct(bot.pnlPct)
+			if bot.poolBudget {
+				pctStr = "—"
+			}
 			wlStr := fmtWinLossRatio(bot.winningTrades, bot.losingTrades)
 			maxDDStr := fmtDrawdownPct(bot.maxDrawdownPct)
 			sb.WriteString(fmt.Sprintf("%-*s %6s %6s %8s%5s %5s %4s %4d %5s\n", catTableStrategyWidth, label, valStr, pnlStr, pctStr, maxDDStr, bot.timeframe, bot.interval, bot.closedTrades, wlStr))
@@ -1014,6 +1046,9 @@ func fmtWinLossRatio(wins, losses int) string {
 }
 
 func fmtPnl(pnl float64) string {
+	if math.IsNaN(pnl) {
+		return "—"
+	}
 	sign := "+"
 	abs := pnl
 	if pnl < 0 {
@@ -1024,6 +1059,9 @@ func fmtPnl(pnl float64) string {
 }
 
 func fmtPnlPct(pct float64) string {
+	if math.IsNaN(pct) {
+		return "—"
+	}
 	sign := "+"
 	if pct < 0 {
 		sign = ""

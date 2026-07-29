@@ -671,6 +671,7 @@ type StrategyConfig struct {
 	Capital                     float64                  `json:"capital"`
 	CapitalPct                  float64                  `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	InitialCapital              float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
+	sharedWalletPoolBudget      bool                     `json:"-"`                         // derived during validation: all members of a supported 2+ live wallet omit capital/capital_pct and use margin_per_trade_usd caps (#1408)
 	MaxDrawdownPct              float64                  `json:"max_drawdown_pct"`
 	CircuitBreaker              *bool                    `json:"circuit_breaker,omitempty"`                 // #1048 — per-strategy circuit-breaker opt-out. Nil/missing → enabled (the safe default); explicit false disables BOTH firing arms in CheckRisk (drawdown > max_drawdown_pct AND the consecutive-loss streak), uniformly for live and paper (no platform/live gating). Hot-reloadable via SIGHUP including while a position is open: disabling only suppresses NEW fires — an already-latched CB and any pending circuit close still drain. No effect on type=manual (exempt from CheckRisk). Read via CircuitBreakerEnabled(), never directly.
 	CBDrawdownCooldownMinutes   *int                     `json:"cb_drawdown_cooldown_minutes,omitempty"`    // #1273 — how long a drawdown-triggered circuit breaker latches, in minutes. Nil/missing → 24h (the historical hardcoded value). Must be positive and ≤ 30 days; rejected on type=manual (exempt from CheckRisk). Hot-reloadable via SIGHUP including while open — affects only NEW fires; an already-latched CircuitBreakerUntil is never rewritten. Read via CircuitBreakerDrawdownCooldown(), never directly.
@@ -1009,6 +1010,9 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 // EffectiveInitialCapital returns the fixed starting balance for PnL display.
 // Priority: config InitialCapital > state InitialCapital > config Capital.
 func EffectiveInitialCapital(sc StrategyConfig, ss *StrategyState) float64 {
+	if usesSharedWalletPoolBudget(sc) {
+		return 0
+	}
 	if sc.InitialCapital > 0 {
 		return sc.InitialCapital
 	}
@@ -1632,6 +1636,11 @@ func regimeDirectionalPolicyWarnings(cfg *Config) []string {
 func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	var errs []string
 	seenIDs := make(map[string]bool)
+	sharedWalletPoolIDs, poolErrs := validateConfiguredSharedWalletPools(cfg.Strategies)
+	errs = append(errs, poolErrs...)
+	for i := range cfg.Strategies {
+		cfg.Strategies[i].sharedWalletPoolBudget = sharedWalletPoolIDs[cfg.Strategies[i].ID]
+	}
 
 	// Validate leaderboard_post_time format if set.
 	if cfg.LeaderboardPostTime != "" {
@@ -1837,8 +1846,11 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("%s: initial_capital must be > 0 when set, got %g", prefix, sc.InitialCapital))
 		}
 
-		// #36: Capital must be > 0 (unless capital_pct is set).
-		if sc.Capital <= 0 && sc.CapitalPct == 0 {
+		// #36/#1408: standalone strategies still need positive virtual capital.
+		// A configured 2+ member live perps wallet may instead opt every member
+		// into scheduler-owned pool budgeting; cluster validation above requires
+		// a positive per-open margin cap and rejects mixed allocation models.
+		if sc.Capital <= 0 && sc.CapitalPct == 0 && !sharedWalletPoolIDs[sc.ID] {
 			errs = append(errs, fmt.Sprintf("%s: capital must be > 0 (or set capital_pct), got %g", prefix, sc.Capital))
 		}
 

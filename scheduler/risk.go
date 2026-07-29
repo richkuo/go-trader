@@ -251,23 +251,19 @@ type PortfolioRiskState struct {
 // network or configuration failure.
 type SharedWalletBalanceFetcher func(platform string) (float64, error)
 
-// detectSharedWalletPlatforms returns the list of platforms that have more
-// than one strategy sharing the same wallet (capital_pct > 0). A single
-// strategy with capital_pct alone is not a "shared" wallet — there is no
-// double-counting risk to recover from. The result is sorted alphabetically
-// for deterministic iteration order (callers rely on this).
+// detectSharedWalletPlatforms returns the platforms with an actually detected
+// 2+ member live account. It deliberately shares detectSharedWallets' identity
+// model instead of inferring ownership from capital_pct: fixed-capital and
+// zero-baseline pool members can share an account too, while paper strategies
+// or unrelated instruments must not trigger startup recovery.
 func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
-	walletCount := make(map[string]int)
-	for _, sc := range strategies {
-		if sc.CapitalPct > 0 {
-			walletCount[sc.Platform]++
-		}
+	platformSet := make(map[string]bool)
+	for key := range detectSharedWallets(strategies) {
+		platformSet[key.Platform] = true
 	}
 	var platforms []string
-	for plat, n := range walletCount {
-		if n > 1 {
-			platforms = append(platforms, plat)
-		}
+	for platform := range platformSet {
+		platforms = append(platforms, platform)
 	}
 	sort.Strings(platforms)
 	return platforms
@@ -282,8 +278,7 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 //
 // Guards (all must hold):
 //   - the kill switch must currently be active (otherwise no-op)
-//   - at least one platform must host a shared wallet (capital_pct > 0 with
-//     more than one strategy on the same platform)
+//   - at least one platform must host an account-detected shared wallet
 //   - fetcher must successfully return a real balance for EVERY shared-wallet
 //     platform — any network/config failure preserves the kill switch so the
 //     re-baselined peak reflects the full portfolio-wide truth rather than a
@@ -1447,8 +1442,12 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		circuitBreakerSuppressedWarned.Delete(s.ID)
 	}
 
-	// Update peak
-	if portfolioValue > r.PeakValue {
+	poolBudget := sc != nil && usesSharedWalletPoolBudget(*sc)
+
+	// A pooled strategy has no per-strategy equity baseline: its cash book is
+	// an attribution ledger, while solvency belongs to the account-level
+	// portfolio risk check. Do not manufacture a peak from that ledger.
+	if !poolBudget && portfolioValue > r.PeakValue {
 		r.PeakValue = portfolioValue
 	}
 
@@ -1472,29 +1471,29 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	// leverage unset, or non-perps type), we fall back to the classic
 	// peak-relative drawdown so strategies without leverage behave identically
 	// to before.
-	if r.PeakValue > 0 {
-		loss := r.PeakValue - portfolioValue
-		denom := r.PeakValue
-		denomLabel := "peak"
-		if s.Type == "perps" {
-			var configLev float64
-			if sc != nil {
-				configLev = sc.Leverage
-			}
-			if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
-				loss = pnlLoss
-				denom = margin
-				denomLabel = "margin"
-			}
+	loss := 0.0
+	denom := 0.0
+	denomLabel := "peak"
+	if s.Type == "perps" {
+		var configLev float64
+		if sc != nil {
+			configLev = sc.Leverage
 		}
+		if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
+			loss = pnlLoss
+			denom = margin
+			denomLabel = "margin"
+		}
+	}
+	if denom <= 0 && !poolBudget && r.PeakValue > 0 {
+		loss = r.PeakValue - portfolioValue
+		denom = r.PeakValue
+	}
+	if denom > 0 {
 		if loss < 0 {
 			loss = 0
 		}
-		if denom > 0 {
-			r.CurrentDrawdownPct = (loss / denom) * 100
-		} else {
-			r.CurrentDrawdownPct = 0
-		}
+		r.CurrentDrawdownPct = (loss / denom) * 100
 		if r.CurrentDrawdownPct > r.MaxDrawdownPct && cbEnabled {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerDrawdownCooldown())
@@ -1509,6 +1508,8 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
 		}
+	} else {
+		r.CurrentDrawdownPct = 0
 	}
 
 	// Consecutive losses circuit breaker (default 5 in a row → pause 1h, close

@@ -1892,6 +1892,23 @@ func TestValidateHotReloadCompatible_RegimeWindowOnlyChange(t *testing.T) {
 	}
 }
 
+func TestValidateHotReloadCompatible_SharedWalletPoolModeRequiresRestart(t *testing.T) {
+	base := StrategyConfig{
+		ID: "hl-a", Type: "perps", Platform: "hyperliquid",
+		Script: "shared_scripts/check_hyperliquid.py",
+		Args:   []string{"momentum", "BTC", "1h", "--mode=live"},
+	}
+	nextStrategy := base
+	nextStrategy.sharedWalletPoolBudget = true
+
+	cfg := minimalReloadConfig([]StrategyConfig{base})
+	next := minimalReloadConfig([]StrategyConfig{nextStrategy})
+	err := validateHotReloadCompatible(cfg, next)
+	if err == nil || !strings.Contains(err.Error(), "shared-wallet pool budgeting mode changed") {
+		t.Fatalf("expected pool-mode restart requirement, got %v", err)
+	}
+}
+
 // #1048: the circuit-breaker toggle is hot-reloadable always, including while a
 // position is open — it must NOT be rejected by the reload validators, and the
 // new value must actually be applied to the running config.

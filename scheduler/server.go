@@ -362,6 +362,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PortfolioValue                 float64                    `json:"portfolio_value"`
 		PnL                            float64                    `json:"pnl"`
 		PnLPct                         float64                    `json:"pnl_pct"`
+		PoolBudget                     bool                       `json:"pool_budget,omitempty"`
 		RiskState                      RiskState                  `json:"risk_state"`
 		Regime                         string                     `json:"regime,omitempty"`
 		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`          // #1278: entry gate is actively failing closed — allowed_regimes configured, policy "closed", strategy flat, and the cycle store has no gate label; fresh opens are held
@@ -389,10 +390,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ReconciliationGaps map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
 	}
 
-	totalValue := 0.0
-	for _, s := range ss.state.Strategies {
-		totalValue += displayStrategyValue(s, prices)
-	}
+	totalValue := latestDisplayTotal(ss.state, prices)
 	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
 
 	resp := StatusResp{
@@ -441,6 +439,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 			PortfolioValue:                 pv,
 			PnL:                            pnl,
 			PnLPct:                         pnlPct,
+			PoolBudget:                     usesSharedWalletPoolBudget(sc),
 			RiskState:                      s.RiskState,
 			Regime:                         strategyDisplayRegimeLabel(s, sc, ss.regime),
 			RegimeGateFailClosed:           regimeGateFailClosedActive(sc, s, ss.regime),

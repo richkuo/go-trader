@@ -1845,6 +1845,26 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	}
 }
 
+func TestPerpsLiveOrderSize_SharedWalletPoolUsesReleasedMargin(t *testing.T) {
+	sizing := PerpsSizing{
+		ExchangeLeverage:    5,
+		MarginPerTradeUSD:   100,
+		SharedWalletPool:    true,
+		ReleasableMarginUSD: 200,
+	}
+	size, ok, reason := perpsLiveOrderSize(
+		-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
+	)
+	if !ok || reason != "" {
+		t.Fatalf("pooled flip rejected: ok=%v reason=%q", ok, reason)
+	}
+	// $200 released, capped to $100, then 5x = $500 = 0.25 ETH;
+	// the market order also carries the 0.5 ETH close leg.
+	if math.Abs(size-0.75) > 1e-9 {
+		t.Fatalf("pooled flip size=%v, want 0.75", size)
+	}
+}
+
 // #330 (final review) — a catastrophically-losing flip must still close the
 // position even when post-close margin can't fund the new side. Without
 // this fallback, a deep-underwater bidirectional strategy would be worse

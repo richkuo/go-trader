@@ -237,6 +237,9 @@ func main() {
 				}
 			}
 		}
+		if applySharedWalletPoolStateMode(*sc, state.Strategies[sc.ID]) {
+			fmt.Printf("  Reset %s virtual cash/peak for shared-wallet pool budgeting\n", sc.ID)
+		}
 	}
 
 	// Prune strategies from state that are no longer in config
@@ -970,8 +973,11 @@ func main() {
 			for _, ss := range state.Strategies {
 				if ss != nil {
 					ss.SharedWalletValueSet = false
+					ss.SharedWalletPerformanceOnly = false
 				}
 			}
+			state.LatestSharedWalletBalances = nil
+			state.LatestSharedWalletMembers = nil
 			mu.Unlock()
 			mu.RLock()
 			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
@@ -1798,7 +1804,11 @@ func main() {
 					var hlProfileState *RegimeProfileState
 					if sc.Type == "perps" && sc.Platform == "hyperliquid" {
 						if hlLiveStrategy {
-							hlCash = stratState.Cash
+							if poolCash, pooled := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
+								hlCash = poolCash
+							} else {
+								hlCash = stratState.Cash
+							}
 						}
 						// #998: snapshot the regime-profile switch state under the
 						// Phase-1 RLock so the lock-free resolution reads a stable copy.
@@ -1810,6 +1820,11 @@ func main() {
 						// strategy cash like a fresh open — captured for paper too
 						// (hlCash above is live-only), under the same RLock.
 						hlScaleInCash = stratState.Cash
+						if hlLiveStrategy {
+							if poolCash, pooled := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
+								hlScaleInCash = poolCash
+							}
+						}
 						// Live-order sizing/cancel snapshots below are intentionally
 						// consumed only inside live execution branches. Paper paths
 						// should continue using PositionCtx only for close evaluation.
@@ -1840,7 +1855,15 @@ func main() {
 					var okxPosCtx PositionCtx
 					if sc.Platform == "okx" {
 						if okxLiveStrategy {
-							okxCash = stratState.Cash
+							if sc.Type == "perps" {
+								if poolCash, pooled := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
+									okxCash = poolCash
+								} else {
+									okxCash = stratState.Cash
+								}
+							} else {
+								okxCash = stratState.Cash
+							}
 							okxCashReconcile = stratState.CashReconcileRequired
 						}
 						if sym := okxSymbol(sc.Args); sym != "" {
@@ -3821,7 +3844,12 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// distance (ATR owners read the check payload's indicators.atr — the same
 	// value stampEntryATRIfOpened later freezes, so sizing and SL geometry
 	// agree) and fails closed on fresh opens when the distance is unresolvable.
-	sizing := PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators))
+	sizing := withSharedWalletPoolSizing(
+		sc,
+		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
+		posQty,
+		price,
+	)
 	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
@@ -4646,7 +4674,12 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	// hardcoded 0.95 safety buffer. risk_per_trade_pct (#1268) is HL-only, so
 	// PerpsSizingFor resolves zero risk fields here (validation rejects it on
 	// OKX at load).
-	sizing := PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators))
+	sizing := withSharedWalletPoolSizing(
+		sc,
+		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
+		posQty,
+		price,
+	)
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool

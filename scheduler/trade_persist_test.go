@@ -301,6 +301,35 @@ func TestDeferredOpenRecordsProtectionOIDSnapshotOnce(t *testing.T) {
 	}
 }
 
+func TestDeferredPerpsLiveFillBooksWithZeroVirtualCash(t *testing.T) {
+	s := &StrategyState{
+		ID:              "hl-pool",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Cash:            0,
+		InitialCapital:  0,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+		TradeHistory:    []Trade{},
+	}
+	logger := newTestLogger(t)
+
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(
+		s, 1, "ETH", 2000,
+		PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 5, MarginPerTradeUSD: 100},
+		0.25, "pool-oid", 0.25, DirectionLong, 0, logger,
+	)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignalWithLeverageDeferredOpen: %v", err)
+	}
+	if exec.TradesExecuted != 1 || exec.OpenTrade == nil {
+		t.Fatalf("live fill was not booked: exec=%+v", exec)
+	}
+	if pos := s.Positions["ETH"]; pos == nil || pos.Quantity != 0.25 {
+		t.Fatalf("position=%+v, want booked live qty 0.25", pos)
+	}
+}
+
 func TestDeferredOpenWrappersDoNotInsertBeforeRecordPositionOpen(t *testing.T) {
 	db := openTestDB(t)
 	prev := tradeRecorder

@@ -551,6 +551,11 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 		if !ok {
 			continue
 		}
+		if usesSharedWalletPoolBudget(sc) != usesSharedWalletPoolBudget(ns) {
+			errs = append(errs, fmt.Sprintf(
+				"strategy[%s] shared-wallet pool budgeting mode changed (restart required)",
+				sc.ID))
+		}
 		oldShape := strategyRestartShape(sc)
 		newShape := strategyRestartShape(ns)
 		if !reflect.DeepEqual(oldShape, newShape) {

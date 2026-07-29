@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 )
 
 // SharedWalletKey identifies a shared exchange account by platform + account ID.
@@ -22,6 +23,17 @@ type SharedWalletKey struct {
 // startup. This one is keyed by SharedWalletKey (platform + account) so a
 // single platform can host multiple distinct wallets if that ever comes up.
 type WalletBalanceFetcher func(SharedWalletKey) (float64, error)
+
+// configuredWalletKey identifies a wallet-shaped strategy without reading
+// credentials. It is used only during config validation, where live
+// credentials may deliberately be skipped (startup probes and tests). The
+// account token is the registry env-var name, not an account value; runtime
+// accounting must continue to use walletKeyFor.
+type configuredWalletKey struct {
+	Platform   string
+	Instrument string
+	AccountEnv string
+}
 
 // walletKeyRegistry enumerates the (platform, instrument) pairs we recognize
 // as single-on-exchange-account trading. Each entry supplies the live-mode
@@ -80,6 +92,90 @@ func walletKeyFor(sc StrategyConfig) (SharedWalletKey, bool) {
 		return SharedWalletKey{Platform: entry.platform, Account: account}, true
 	}
 	return SharedWalletKey{}, false
+}
+
+func configuredWalletKeyFor(sc StrategyConfig) (configuredWalletKey, bool) {
+	for _, entry := range walletKeyRegistry {
+		if sc.Platform != entry.platform || sc.Type != entry.instrument {
+			continue
+		}
+		if !entry.liveFn(sc.Args) || !hasSharedWalletBalanceFetcher(entry.platform) {
+			continue
+		}
+		return configuredWalletKey{
+			Platform:   entry.platform,
+			Instrument: entry.instrument,
+			AccountEnv: entry.envVar,
+		}, true
+	}
+	return configuredWalletKey{}, false
+}
+
+// usesSharedWalletPoolBudget is the structural opt-in for scheduler-owned
+// shared-wallet budgeting. Validation guarantees that every member of the
+// configured live wallet cluster opts in together and supplies a positive
+// margin_per_trade_usd cap. Runtime sizing additionally requires a fresh
+// account balance; missing balance data therefore fails position increases
+// closed while close-only orders remain available.
+func usesSharedWalletPoolBudget(sc StrategyConfig) bool {
+	return sc.sharedWalletPoolBudget
+}
+
+// validateConfiguredSharedWalletPools returns the zero-capital strategy IDs
+// that belong to a configured 2+ member wallet and any cluster-level errors.
+// A pool is all-or-nothing: mixing virtual allocations with pooled members
+// would let the allocated member bypass the account reservation path.
+func validateConfiguredSharedWalletPools(strategies []StrategyConfig) (map[string]bool, []string) {
+	groups := make(map[configuredWalletKey][]StrategyConfig)
+	for _, sc := range strategies {
+		if key, ok := configuredWalletKeyFor(sc); ok {
+			groups[key] = append(groups[key], sc)
+		}
+	}
+
+	pooledIDs := make(map[string]bool)
+	var errs []string
+	for key, members := range groups {
+		if len(members) < 2 {
+			continue
+		}
+		poolRequested := false
+		for _, sc := range members {
+			if sc.Capital == 0 && sc.CapitalPct == 0 {
+				poolRequested = true
+				pooledIDs[sc.ID] = true
+			}
+		}
+		if !poolRequested {
+			continue
+		}
+		for _, sc := range members {
+			if sc.Capital != 0 || sc.CapitalPct != 0 {
+				errs = append(errs, fmt.Sprintf(
+					"shared-wallet pool %s/%s: strategy[%s] uses a virtual capital allocation; every member must omit capital and capital_pct",
+					key.Platform, key.Instrument, sc.ID))
+				continue
+			}
+			pooledIDs[sc.ID] = true
+			if EffectiveMarginPerTradeUSD(sc) <= 0 {
+				errs = append(errs, fmt.Sprintf(
+					"strategy[%s]: shared-wallet pool members require positive margin_per_trade_usd as the per-open hard cap",
+					sc.ID))
+			}
+			if sc.InitialCapital != 0 {
+				errs = append(errs, fmt.Sprintf(
+					"strategy[%s]: initial_capital is not supported in shared-wallet pool mode; pooled performance has no per-strategy deposit baseline",
+					sc.ID))
+			}
+			if EffectiveRiskPerTradePct(sc) > 0 {
+				errs = append(errs, fmt.Sprintf(
+					"strategy[%s]: risk_per_trade_pct requires a per-strategy capital denominator and is not supported in shared-wallet pool mode",
+					sc.ID))
+			}
+		}
+	}
+	sort.Strings(errs)
+	return pooledIDs, errs
 }
 
 // platformsWithSharedWalletBalanceFetcher lists platforms for which
@@ -154,6 +250,75 @@ func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]stri
 	return shared
 }
 
+// sharedWalletPoolAvailableMargin returns the account margin still available
+// to a pooled strategy after reserving margin for every virtual position on
+// the same wallet, including same-account live HL manual positions. The caller
+// must hold the state read lock. The second return value reports pool mode:
+// when true with available=0, position-increasing orders must fail closed.
+func sharedWalletPoolAvailableMargin(
+	sc StrategyConfig,
+	strategies []StrategyConfig,
+	state *AppState,
+	prices map[string]float64,
+	sharedWallets map[SharedWalletKey][]string,
+	walletBalances map[SharedWalletKey]float64,
+) (available float64, pooled bool) {
+	if !usesSharedWalletPoolBudget(sc) {
+		return 0, false
+	}
+	pooled = true
+	key, ok := walletKeyFor(sc)
+	if !ok {
+		return 0, true
+	}
+	perpsMemberIDs, ok := sharedWallets[key]
+	if !ok {
+		return 0, true
+	}
+	balance, ok := walletBalances[key]
+	if !ok || balance <= 0 || state == nil {
+		return 0, true
+	}
+
+	byID := make(map[string]StrategyConfig, len(strategies))
+	for _, member := range strategies {
+		byID[member.ID] = member
+	}
+	deployedMargin := 0.0
+	for _, id := range riskPathWalletMemberIDs(key, perpsMemberIDs, strategies) {
+		ss := state.Strategies[id]
+		if ss == nil {
+			continue
+		}
+		memberCfg := byID[id]
+		for sym, pos := range ss.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			price := prices[sym]
+			if price <= 0 {
+				price = pos.AvgCost
+			}
+			if price <= 0 {
+				continue
+			}
+			leverage := pos.Leverage
+			if leverage <= 0 {
+				leverage = EffectiveExchangeLeverage(memberCfg)
+			}
+			if leverage <= 0 {
+				leverage = 1
+			}
+			deployedMargin += pos.Quantity * price / leverage
+		}
+	}
+	available = balance - deployedMargin
+	if available < 0 {
+		available = 0
+	}
+	return available, true
+}
+
 // detectTopStepSharedWallet reports whether 2+ live TopStep strategies share an
 // account, gating the #1106 shadow cash-flow journal. It is INTENTIONALLY
 // independent of detectSharedWallets / platformsWithSharedWalletBalanceFetcher:
@@ -188,6 +353,10 @@ func defaultSharedWalletFetcher(key SharedWalletKey) (float64, error) {
 	switch key.Platform {
 	case "hyperliquid":
 		return fetchHyperliquidBalance(key.Account)
+	case "okx":
+		// OKX credentials identify the process account; defaultSharedWalletBalance
+		// owns the validated fetch_okx_balance.py path used by startup recovery.
+		return defaultSharedWalletBalance("okx")
 	}
 	return 0, fmt.Errorf("unsupported shared-wallet platform %q", key.Platform)
 }

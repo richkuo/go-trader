@@ -160,6 +160,47 @@ func TestReconcileSharedWalletDisplayValues_OKXPositionsNotFetchedSkips(t *testi
 	}
 }
 
+func TestReconcileSharedWalletDisplayValues_OKXPoolShowsAttributedPerformance(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-pool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "okx-a", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "okx-b", Platform: "okx", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"okx-a": {ID: "okx-a", Platform: "okx", Type: "perps", Positions: map[string]*Position{}},
+		"okx-b": {ID: "okx-b", Platform: "okx", Type: "perps", Positions: map[string]*Position{}},
+	}}
+	db := newLedgerTestDB(t)
+	if err := db.InsertTrade("okx-a", Trade{
+		Timestamp: time.Now().UTC(), StrategyID: "okx-a", Symbol: "BTC",
+		Side: "buy", Quantity: 1, Price: 100, Value: 100,
+		TradeType: "perps", ExchangeFee: 2,
+	}); err != nil {
+		t.Fatalf("insert open fee: %v", err)
+	}
+
+	sharedWallets := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
+	results := reconcileSharedWalletDisplayValues(
+		strategies, state, db, sharedWallets,
+		map[SharedWalletKey]float64{key: 1000},
+		nil, nil, true,
+	)
+	if len(results) != 1 {
+		t.Fatalf("expected one pooled reconcile result, got %+v", results)
+	}
+	if got := state.Strategies["okx-a"].SharedWalletValue; got != -2 {
+		t.Fatalf("okx-a performance = %v, want -2 open fee (not a wallet allocation)", got)
+	}
+	if got := state.Strategies["okx-b"].SharedWalletValue; got != 0 {
+		t.Fatalf("idle okx-b performance = %v, want 0", got)
+	}
+	if got := latestDisplayTotal(state, nil); got != 1000 {
+		t.Fatalf("operator total=%v, want real wallet equity 1000 counted once", got)
+	}
+}
+
 func TestReconcileSharedWalletDisplayValues_FetchFailedFallsBack(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	state, strategies := buildSharedWalletTestState()

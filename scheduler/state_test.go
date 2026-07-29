@@ -60,6 +60,23 @@ func TestNewStrategyState(t *testing.T) {
 	}
 }
 
+func TestApplySharedWalletPoolStateModeClearsLegacyAllocation(t *testing.T) {
+	sc := StrategyConfig{sharedWalletPoolBudget: true}
+	s := &StrategyState{
+		Cash:      500,
+		RiskState: RiskState{PeakValue: 500, CurrentDrawdownPct: 12},
+	}
+	if changed := applySharedWalletPoolStateMode(sc, s); !changed {
+		t.Fatal("expected legacy allocation reset")
+	}
+	if s.Cash != 0 || s.RiskState.PeakValue != 0 || s.RiskState.CurrentDrawdownPct != 0 {
+		t.Fatalf("pooled state not reset: %+v", s)
+	}
+	if !s.SharedWalletPerformanceOnly {
+		t.Fatal("pooled state must be marked performance-only")
+	}
+}
+
 func TestValidateState(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["s1"] = &StrategyState{

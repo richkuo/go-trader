@@ -222,7 +222,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `type` | `spot` / `options` / `perps` / `futures` / `manual` | required |
 | `platform` | `binanceus` / `deribit` / `ibkr` / `hyperliquid` / `topstep` / `robinhood` / `okx` / `luno` | required |
 | `script`, `args` | Python entry-point + argv (auto-filled for `manual`) | required |
-| `capital` | Starting capital in USD | 1000 |
+| `capital` | Virtual starting capital in USD. May be omitted only when every member of one supported 2+ live perps wallet uses shared-wallet pool budgeting with `margin_per_trade_usd` | 1000 |
 | `max_drawdown_pct` | Per-strategy CB; peak-relative (spot/options/futures), margin-relative (perps) | spot 5, options 10, perps 5 |
 | `circuit_breaker` | Set `false` to disable both CB arms; latched CB still drains | enabled |
 | `llm_entry_analysis` | `{enabled, model, max_debate_rounds, timeout_s, notify_dm, notify_channel}` — post-open LLM multi-agent entry commentary (advisory only; never touches the trade). Digest defaults to DM (`notify_dm` on); the shared channel is opt-in (`notify_channel` off) | disabled |
@@ -232,7 +232,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `close_strategy` | Single `{name, params}` close evaluator ref | null |
 | `leverage` | Perps — exchange leverage (also sizing if `sizing_leverage` omitted) | 1 |
 | `sizing_leverage` | Perps — order sizing multiplier | `leverage` |
-| `margin_per_trade_usd` | HL perps — notional = `min(margin_per_trade_usd, cash) × leverage` | omitted |
+| `margin_per_trade_usd` | Live HL/OKX perps — per-open margin cap. In shared-wallet pool mode, notional = `min(cap, account equity − deployed wallet margin) × leverage` | omitted |
 | `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — at most one positive value; all omitted → `default_stop_loss_atr_mult × entry_atr`; `0` opts out | omitted |
 | `trailing_stop_min_move_pct` | HL trailing stop debounce (OID cap 1000) | 0.5 |
 | `margin_mode` | HL perps — `isolated` / `cross`; from flat only | `isolated` |
@@ -240,6 +240,8 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `allowed_regimes` | Whitelist for new entries; requires `regime.enabled` | (no gate) |
 | `regime_gate_window` / `regime_atr_window` / `regime_directional_window` | Multi-window selectors | legacy |
 | `theta_harvest` | Early-exit config for sold options | null |
+
+Shared-wallet pool budgeting is enabled structurally: configure at least two live Hyperliquid or OKX perps strategies on the same process account, omit `capital`, `capital_pct`, and `initial_capital` from every member, and set a positive `margin_per_trade_usd` on every member. Mixed pooled/allocated members are rejected. Missing account balance data blocks opens/adds/flips but never blocks closes.
 
 ### Custom Strategy Parameters
 

@@ -351,10 +351,16 @@ func formatLeaderboardResponse(cfg *Config, state *AppState, prices map[string]f
 		topN = len(entries)
 	}
 	var sb strings.Builder
-	sb.WriteString("**Leaderboard (by PnL%)**\n")
+	sb.WriteString("**Leaderboard (by PnL%; pool rows unranked)**\n")
+	rank := 0
 	for i := 0; i < topN; i++ {
 		e := entries[i]
-		sb.WriteString(fmt.Sprintf("  %d. %s — %+.2f%% ($%+.2f)\n", i+1, e.ID, e.PnLPct, e.PnL))
+		if e.PoolBudget {
+			sb.WriteString(fmt.Sprintf("  — %s — pool net $%+.2f (PnL%% unavailable)\n", e.ID, e.PnL))
+			continue
+		}
+		rank++
+		sb.WriteString(fmt.Sprintf("  %d. %s — %+.2f%% ($%+.2f)\n", rank, e.ID, e.PnLPct, e.PnL))
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

@@ -1984,12 +1984,18 @@
     els.statusDot.className = "status-dot ok";
     els.statusLabel.textContent = "Live";
     const drawdownPct = status.risk_state && status.risk_state.current_drawdown_pct;
-    const fields = [
+    const fields = status.pool_budget ? [
+      ["Budget", "Shared wallet pool"],
+      ["Net PnL", fmtSignedMoney(status.pnl), status.pnl],
+      ["PnL %", "-", null],
+    ] : [
       ["Cash", fmtMoney(status.cash)],
       ["Initial", fmtMoney(status.initial_capital)],
       ["Value", fmtMoney(status.portfolio_value)],
       ["PnL", fmtSignedMoney(status.pnl), status.pnl],
       ["PnL %", fmtPct(status.pnl_pct), status.pnl_pct],
+    ];
+    fields.push(
       ["Regime", status.regime || "-"],
       ["Drawdown", fmtPct(drawdownPct), drawdownPct, true],
       ["Leverage", fmtNumber(status.leverage)],
@@ -1997,7 +2003,7 @@
       ["W/L", winLoss(status)],
       ["Win Rate", status.win_rate ? fmtPct(status.win_rate) : "-"],
       ["Sharpe", status.sharpe ? fmtNumber(status.sharpe) : "-"],
-    ];
+    );
     const dirCell = directionCell(status);
     if (dirCell) {
       fields.push(["Direction", dirCell]);
@@ -2101,7 +2107,7 @@
         "<td>" + (row.paused ? '<span title="Paused">⏸</span> ' : "") + escapeHTML(row.id) + "</td>" +
         "<td>" + escapeHTML(row.platform || "-") + "</td>" +
         "<td>" + escapeHTML(row.symbol || "-") + "</td>" +
-        '<td class="' + pnlClassName + '">' + escapeHTML(fmtPct(row.pnl_pct)) + "</td>" +
+        '<td class="' + pnlClassName + '">' + escapeHTML(row.pool_budget ? "—" : fmtPct(row.pnl_pct)) + "</td>" +
         "<td>" + escapeHTML(row.win_rate ? fmtPct(row.win_rate) : "-") + "</td>" +
         "<td>" + escapeHTML(row.sharpe ? fmtNumber(row.sharpe) : "-") + "</td>" +
         "<td>" + escapeHTML(row.regime || "-") + "</td>" +
@@ -2252,7 +2258,7 @@
         return "<tr>" +
           "<td>" + (i + 1) + "</td>" +
           "<td>" + escapeHTML(e.id) + "</td>" +
-          '<td class="' + opsPnlClass(e.pnl_pct) + '">' + escapeHTML(fmtPct(e.pnl_pct)) + "</td>" +
+          '<td class="' + opsPnlClass(e.pnl_pct) + '">' + escapeHTML(e.pool_budget ? "—" : fmtPct(e.pnl_pct)) + "</td>" +
           '<td class="' + opsPnlClass(e.pnl) + '">' + escapeHTML(fmtMoney(e.pnl)) + "</td>" +
           "<td>" + escapeHTML(String(e.positions_opened || 0)) + "</td>" +
           "<td>" + escapeHTML((e.wins || 0) + "/" + (e.losses || 0)) + "</td>" +

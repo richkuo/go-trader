@@ -85,6 +85,12 @@ type AppState struct {
 	Strategies          map[string]*StrategyState `json:"strategies"`
 	PortfolioRisk       PortfolioRiskState        `json:"portfolio_risk"`
 	CorrelationSnapshot *CorrelationSnapshot      `json:"correlation_snapshot,omitempty"`
+	// LatestSharedWalletBalances/Members are fresh-cycle, in-memory snapshots
+	// used by operator totals. They let zero-baseline member rows show
+	// attributed performance while the TOTAL still counts real account equity
+	// exactly once.
+	LatestSharedWalletBalances map[SharedWalletKey]float64  `json:"-"`
+	LatestSharedWalletMembers  map[SharedWalletKey][]string `json:"-"`
 	// ReconciliationGaps is ephemeral — recomputed each sync cycle, not persisted to SQLite.
 	ReconciliationGaps      map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
 	LastLeaderboardPostDate string                        `json:"last_leaderboard_post_date,omitempty"`
@@ -134,6 +140,11 @@ type StrategyState struct {
 	// strategy is not a shared-wallet member) makes display fall back to the
 	// modeled PortfolioValue.
 	SharedWalletValueSet bool `json:"-"`
+	// SharedWalletPerformanceOnly marks a zero-baseline shared-wallet member:
+	// SharedWalletValue is attributed net performance (ledger + owned uPnL),
+	// not an allocated slice of account equity. Operator surfaces use this to
+	// avoid labeling deposits as strategy value/return.
+	SharedWalletPerformanceOnly bool `json:"-"`
 
 	// CashReconcileRequired latches when a live spot buy was booked whose
 	// notional+fee exceeded virtual cash beyond spotLiveCashBudgetTolerance
@@ -176,6 +187,26 @@ func NewAppState() *AppState {
 		CycleCount: 0,
 		Strategies: make(map[string]*StrategyState),
 	}
+}
+
+// applySharedWalletPoolStateMode removes legacy virtual allocations when a
+// strategy starts in scheduler-owned pool mode. Trades remain authoritative
+// in SQLite and rebuild operator performance each cycle; Cash is only the
+// current-process modeled performance fallback and must never retain an old
+// fake starting balance.
+func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) bool {
+	if s == nil {
+		return false
+	}
+	s.SharedWalletPerformanceOnly = usesSharedWalletPoolBudget(sc)
+	if !s.SharedWalletPerformanceOnly {
+		return false
+	}
+	changed := s.Cash != 0 || s.RiskState.PeakValue != 0 || s.RiskState.CurrentDrawdownPct != 0
+	s.Cash = 0
+	s.RiskState.PeakValue = 0
+	s.RiskState.CurrentDrawdownPct = 0
+	return changed
 }
 
 // ValidateState checks loaded state for invalid entries and removes or clamps them (#39).

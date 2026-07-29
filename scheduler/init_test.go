@@ -1073,6 +1073,114 @@ func TestConfigValidation_NoCapitalNoCapitalPct(t *testing.T) {
 	}
 }
 
+func TestConfigValidation_SharedWalletPoolAllowsZeroCapitalWithTradeCaps(t *testing.T) {
+	marginCap := 100.0
+	cfg := &Config{
+		IntervalSeconds: 600,
+		Strategies: []StrategyConfig{
+			{
+				ID: "hl-pool-a", Type: "perps", Platform: "hyperliquid",
+				Script:  "shared_scripts/check_strategy.py",
+				Args:    []string{"sma_crossover", "BTC", "1h", "--mode=live"},
+				Capital: 0, MaxDrawdownPct: 10, Leverage: 5,
+				MarginPerTradeUSD: &marginCap,
+			},
+			{
+				ID: "hl-pool-b", Type: "perps", Platform: "hyperliquid",
+				Script:  "shared_scripts/check_strategy.py",
+				Args:    []string{"tema", "ETH", "1h", "--mode=live"},
+				Capital: 0, MaxDrawdownPct: 10, Leverage: 5,
+				MarginPerTradeUSD: &marginCap,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	if err := validateConfig(cfg, true); err != nil {
+		t.Fatalf("shared-wallet pool config should be valid: %v", err)
+	}
+}
+
+func TestConfigValidation_SharedWalletPoolRequiresEveryTradeCap(t *testing.T) {
+	marginCap := 100.0
+	cfg := &Config{
+		IntervalSeconds: 600,
+		Strategies: []StrategyConfig{
+			{
+				ID: "okx-pool-a", Type: "perps", Platform: "okx",
+				Script:  "shared_scripts/check_strategy.py",
+				Args:    []string{"sma_crossover", "BTC", "1h", "--mode=live"},
+				Capital: 0, MaxDrawdownPct: 10, Leverage: 5,
+				MarginPerTradeUSD: &marginCap,
+			},
+			{
+				ID: "okx-pool-b", Type: "perps", Platform: "okx",
+				Script:  "shared_scripts/check_strategy.py",
+				Args:    []string{"tema", "ETH", "1h", "--mode=live"},
+				Capital: 0, MaxDrawdownPct: 10, Leverage: 5,
+			},
+		},
+		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+	}
+	err := validateConfig(cfg, true)
+	if err == nil || !strings.Contains(err.Error(), "margin_per_trade_usd") {
+		t.Fatalf("expected missing pooled trade-cap error, got %v", err)
+	}
+}
+
+func TestConfigValidation_SharedWalletPoolRejectsAllocationBaselines(t *testing.T) {
+	marginCap := 100.0
+	tests := []struct {
+		name       string
+		second     StrategyConfig
+		wantErrSub string
+	}{
+		{
+			name: "mixed virtual allocation",
+			second: StrategyConfig{
+				ID: "okx-pool-b", Type: "perps", Platform: "okx",
+				Script:  "shared_scripts/check_strategy.py",
+				Args:    []string{"tema", "ETH", "1h", "--mode=live"},
+				Capital: 500, MaxDrawdownPct: 10, Leverage: 5,
+				MarginPerTradeUSD: &marginCap,
+			},
+			wantErrSub: "every member must omit capital and capital_pct",
+		},
+		{
+			name: "fake initial capital",
+			second: StrategyConfig{
+				ID: "okx-pool-b", Type: "perps", Platform: "okx",
+				Script:  "shared_scripts/check_strategy.py",
+				Args:    []string{"tema", "ETH", "1h", "--mode=live"},
+				Capital: 0, InitialCapital: 500, MaxDrawdownPct: 10, Leverage: 5,
+				MarginPerTradeUSD: &marginCap,
+			},
+			wantErrSub: "initial_capital is not supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				IntervalSeconds: 600,
+				Strategies: []StrategyConfig{
+					{
+						ID: "okx-pool-a", Type: "perps", Platform: "okx",
+						Script:  "shared_scripts/check_strategy.py",
+						Args:    []string{"sma_crossover", "BTC", "1h", "--mode=live"},
+						Capital: 0, MaxDrawdownPct: 10, Leverage: 5,
+						MarginPerTradeUSD: &marginCap,
+					},
+					tt.second,
+				},
+				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+			}
+			err := validateConfig(cfg, true)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Fatalf("expected %q error, got %v", tt.wantErrSub, err)
+			}
+		})
+	}
+}
+
 func TestGenerateConfig_DefaultsForOptionalFields(t *testing.T) {
 	// Simulates what the interactive wizard now does: only essential fields are set,
 	// optional fields (notifications, auto-update) use zero-value/defaults.
