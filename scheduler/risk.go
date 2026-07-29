@@ -366,6 +366,12 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	return true
 }
 
+// portfolioPeakRebaselineAvailable returns true only when the cycle's portfolio
+// total was computed without any missing-balance or stale-snapshot substitution.
+func portfolioPeakRebaselineAvailable(usedPVFallback, usedStaleRiskBalance, pooledEquityComplete bool) bool {
+	return !usedPVFallback && !usedStaleRiskBalance && pooledEquityComplete
+}
+
 // AutoResetConfirmedFlatKillSwitch clears a portfolio kill-switch latch after
 // live close planning has confirmed all automated venues are flat. This is used
 // only when no DM-capable owner is configured; owner-backed deployments keep the
@@ -374,6 +380,9 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 // rebaselineValue is the best available estimate for post-close portfolio
 // value. The hot loop typically passes the pre-close mark-to-market totalPV,
 // which closely approximates post-close cash apart from fees and slippage.
+// rebaselineAvailable must be false when that value includes a missing-balance
+// fallback or stale pooled-wallet snapshot. The latch still clears in that
+// case, but the prior real-equity peak is retained.
 //
 // Note: callers should suppress this auto-reset when the close plan has
 // operator-required gaps such as OKX spot or Robinhood options. Those venues do
@@ -383,7 +392,12 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 // CONCURRENCY: lock-free body — the caller must hold mu while invoking this
 // (hot-loop site in main does). Unlike ClearLatchedKillSwitchSharedWallet,
 // this helper is intended for post-startup use under the state lock.
-func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue float64, details string) bool {
+func AutoResetConfirmedFlatKillSwitch(
+	prs *PortfolioRiskState,
+	rebaselineValue float64,
+	rebaselineAvailable bool,
+	details string,
+) bool {
 	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
@@ -394,6 +408,10 @@ func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue f
 		details = fmt.Sprintf("%s (previous equity drawdown=%.2f%%, previous margin drawdown=%.2f%%)",
 			details, prevEquityDrawdownPct, prevMarginDrawdownPct)
 	}
+	if !rebaselineAvailable {
+		details = fmt.Sprintf("%s (portfolio peak retained at $%.2f because current equity is not trustworthy)",
+			details, prs.PeakValue)
+	}
 
 	prs.KillSwitchActive = false
 	prs.KillSwitchAt = time.Time{}
@@ -403,10 +421,12 @@ func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue f
 	prs.LastWarningMarginDDPct = 0
 	prs.WarningEquityDeltaPct = 0
 	prs.WarningMarginDeltaPct = 0
-	prs.PeakValue = rebaselineValue
+	if rebaselineAvailable {
+		prs.PeakValue = rebaselineValue
+	}
 	prs.CurrentDrawdownPct = 0
 	prs.CurrentMarginDrawdownPct = 0
-	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, rebaselineValue, details)
+	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, prs.PeakValue, details)
 	return true
 }
 

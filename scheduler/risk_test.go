@@ -1545,7 +1545,7 @@ func TestAutoResetConfirmedFlatKillSwitch_Success(t *testing.T) {
 		WarningSent:              true,
 	}
 
-	if ok := AutoResetConfirmedFlatKillSwitch(prs, 1216.07, "confirmed flat; no owner configured"); !ok {
+	if ok := AutoResetConfirmedFlatKillSwitch(prs, 1216.07, true, "confirmed flat; no owner configured"); !ok {
 		t.Fatal("expected auto-reset to return true")
 	}
 	if prs.KillSwitchActive {
@@ -1586,6 +1586,63 @@ func TestAutoResetConfirmedFlatKillSwitch_Success(t *testing.T) {
 	}
 }
 
+func TestAutoResetConfirmedFlatKillSwitch_UntrustedEquityRetainsPeak(t *testing.T) {
+	prs := &PortfolioRiskState{
+		PeakValue:                10000,
+		CurrentDrawdownPct:       99,
+		CurrentMarginDrawdownPct: 30,
+		KillSwitchActive:         true,
+		KillSwitchAt:             time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC),
+	}
+
+	if ok := AutoResetConfirmedFlatKillSwitch(
+		prs, 0, false, "confirmed flat on missing-balance cycle",
+	); !ok {
+		t.Fatal("expected auto-reset to clear the ownerless latch")
+	}
+	if prs.KillSwitchActive {
+		t.Fatal("expected latch cleared after confirmed-flat close")
+	}
+	if prs.PeakValue != 10000 {
+		t.Fatalf("untrusted equity changed peak: got %.2f want 10000", prs.PeakValue)
+	}
+	if len(prs.Events) != 1 {
+		t.Fatalf("expected one audit event, got %d", len(prs.Events))
+	}
+	evt := prs.Events[0]
+	if evt.PortfolioValue != 0 || evt.PeakValue != 10000 {
+		t.Fatalf("event must preserve observed fallback and retained peak: %+v", evt)
+	}
+	if !strings.Contains(evt.Details, "peak retained") ||
+		!strings.Contains(evt.Details, "current equity is not trustworthy") {
+		t.Fatalf("event must explain retained peak: %q", evt.Details)
+	}
+}
+
+func TestPortfolioPeakRebaselineAvailable(t *testing.T) {
+	tests := []struct {
+		name                 string
+		usedPVFallback       bool
+		usedStaleRiskBalance bool
+		pooledEquityComplete bool
+		want                 bool
+	}{
+		{name: "fresh complete equity", pooledEquityComplete: true, want: true},
+		{name: "modeled fallback", usedPVFallback: true, pooledEquityComplete: true},
+		{name: "accepted prior snapshot", usedStaleRiskBalance: true, pooledEquityComplete: true},
+		{name: "missing pooled equity"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := portfolioPeakRebaselineAvailable(
+				tt.usedPVFallback, tt.usedStaleRiskBalance, tt.pooledEquityComplete,
+			); got != tt.want {
+				t.Fatalf("available=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAutoResetConfirmedFlatKillSwitch_NoOpWhenInactive(t *testing.T) {
 	prs := &PortfolioRiskState{
 		PeakValue:                5000,
@@ -1593,7 +1650,7 @@ func TestAutoResetConfirmedFlatKillSwitch_NoOpWhenInactive(t *testing.T) {
 		CurrentMarginDrawdownPct: 8,
 	}
 
-	if ok := AutoResetConfirmedFlatKillSwitch(prs, 4500, "no-op"); ok {
+	if ok := AutoResetConfirmedFlatKillSwitch(prs, 4500, true, "no-op"); ok {
 		t.Fatal("expected inactive kill switch to be a no-op")
 	}
 	if prs.PeakValue != 5000 {
@@ -1616,7 +1673,7 @@ func TestAutoResetConfirmedFlatKillSwitch_NoRelatchOnNextTick(t *testing.T) {
 		KillSwitchAt:       time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC),
 	}
 
-	AutoResetConfirmedFlatKillSwitch(prs, 7000, "confirmed flat; no owner configured")
+	AutoResetConfirmedFlatKillSwitch(prs, 7000, true, "confirmed flat; no owner configured")
 
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, 7000, 0, 0, 0)

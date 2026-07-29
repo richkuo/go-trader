@@ -1289,19 +1289,91 @@ func TestResolveSharedWalletRiskBalancesUsesOnlyPriorRiskGeneration(t *testing.T
 	cache := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 
 	current := map[SharedWalletKey]float64{key: 10000}
-	resolved, stale, complete := resolveSharedWalletRiskBalances(strategies, shared, current, cache, 1)
+	resolved, stale, complete := resolveSharedWalletRiskBalances(strategies, nil, shared, current, cache, 1)
 	if stale || !complete || resolved[key] != 10000 {
 		t.Fatalf("fresh snapshot: resolved=%v stale=%v complete=%v", resolved, stale, complete)
 	}
 
-	resolved, stale, complete = resolveSharedWalletRiskBalances(strategies, shared, nil, cache, 2)
+	resolved, stale, complete = resolveSharedWalletRiskBalances(strategies, nil, shared, nil, cache, 2)
 	if !stale || !complete || resolved[key] != 10000 {
 		t.Fatalf("single fetch miss must use prior risk generation: resolved=%v stale=%v complete=%v", resolved, stale, complete)
 	}
 
-	resolved, stale, complete = resolveSharedWalletRiskBalances(strategies, shared, nil, cache, 3)
+	resolved, stale, complete = resolveSharedWalletRiskBalances(strategies, nil, shared, nil, cache, 3)
 	if stale || complete {
 		t.Fatalf("second consecutive miss must expire snapshot: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+}
+
+func TestResolveSharedWalletRiskBalancesProtectsDeferredPoolExit(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}, CapitalPct: 50,
+		},
+		{
+			ID: "hl-b", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"rsi", "ETH", "1h", "--mode=live"}, CapitalPct: 50,
+		},
+	}
+	states := map[string]*StrategyState{
+		"hl-a": {SharedWalletPoolBudget: true},
+		"hl-b": {SharedWalletPoolBudget: true},
+	}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	cache := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
+
+	// The new config is allocated, but the durable marker proves the books have
+	// not been reseeded yet. With no current or prior balance the equity arm
+	// must be suppressed rather than evaluating the zero-baseline books.
+	resolved, stale, complete := resolveSharedWalletRiskBalances(
+		strategies, states, shared, nil, cache, 1)
+	if stale || complete || len(resolved) != 0 {
+		t.Fatalf("deferred exit miss: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+
+	// The process-local latch independently protects the interval between
+	// deferring the exit and any later state inspection.
+	deferredStrategies := append([]StrategyConfig(nil), strategies...)
+	deferredStrategies[0].sharedWalletExitDeferred = true
+	_, stale, complete = resolveSharedWalletRiskBalances(
+		deferredStrategies, nil, shared, nil, nil, 1)
+	if stale || complete {
+		t.Fatalf("process-local deferred exit must suppress equity: stale=%v complete=%v", stale, complete)
+	}
+
+	// If the exchange recovers before the first risk evaluation, normal equity
+	// evaluation resumes immediately from the real balance.
+	resolved, stale, complete = resolveSharedWalletRiskBalances(
+		strategies, states, shared, map[SharedWalletKey]float64{key: 8000}, cache, 2)
+	if stale || !complete || resolved[key] != 8000 {
+		t.Fatalf("deferred exit recovery: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+}
+
+func TestResolveSharedWalletRiskBalancesCompletedPoolExitUsesAllocatedFallback(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 500,
+		},
+		{
+			ID: "hl-b", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 500,
+		},
+	}
+	states := map[string]*StrategyState{
+		"hl-a": {Cash: 500, InitialCapital: 500},
+		"hl-b": {Cash: 500, InitialCapital: 500},
+	}
+
+	_, stale, complete := resolveSharedWalletRiskBalances(
+		strategies, states, detectSharedWallets(strategies), nil, nil, 1)
+	if stale || !complete {
+		t.Fatalf("completed exit must use allocated fallback: stale=%v complete=%v", stale, complete)
 	}
 }
 
@@ -1322,9 +1394,10 @@ func TestPooledRiskFallbackPreservesMixedAllocatedDrawdown(t *testing.T) {
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
 	cache := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	_, _, _ = resolveSharedWalletRiskBalances(
-		strategies, shared, map[SharedWalletKey]float64{key: 10000}, cache, 1)
+		strategies, state.Strategies, shared, map[SharedWalletKey]float64{key: 10000}, cache, 1)
 
-	riskBalances, stale, complete := resolveSharedWalletRiskBalances(strategies, shared, nil, cache, 2)
+	riskBalances, stale, complete := resolveSharedWalletRiskBalances(
+		strategies, state.Strategies, shared, nil, cache, 2)
 	if !stale || !complete {
 		t.Fatalf("single pooled fetch miss must retain complete equity: stale=%v complete=%v", stale, complete)
 	}

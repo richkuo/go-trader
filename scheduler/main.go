@@ -1257,10 +1257,10 @@ func main() {
 			}
 
 			sharedWalletRiskGeneration++
-			riskWalletBalances, usedStaleRiskBalance, pooledEquityComplete := resolveSharedWalletRiskBalances(
-				cfg.Strategies, sharedWallets, walletBalances, sharedWalletRiskBalances, sharedWalletRiskGeneration)
-
 			mu.RLock()
+			riskWalletBalances, usedStaleRiskBalance, pooledEquityComplete := resolveSharedWalletRiskBalances(
+				cfg.Strategies, state.Strategies, sharedWallets, walletBalances,
+				sharedWalletRiskBalances, sharedWalletRiskGeneration)
 			totalPV, usedPVFallback = computeTotalPortfolioValue(cfg.Strategies, state, prices, riskWalletBalances, sharedWallets)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
 			// #296: aggregate perps margin drawdown inputs alongside the
@@ -1543,10 +1543,17 @@ func main() {
 				}
 				if !notifier.HasOwner() {
 					if plan.CanAutoResetWithoutOwner() {
+						peakRebaselineAvailable := portfolioPeakRebaselineAvailable(
+							usedPVFallback, usedStaleRiskBalance, pooledEquityComplete)
 						killSwitchAutoReset = AutoResetConfirmedFlatKillSwitch(&state.PortfolioRisk, totalPV,
+							peakRebaselineAvailable,
 							"confirmed flat after portfolio kill-switch close; no DM owner configured, latch auto-cleared")
 						if killSwitchAutoReset {
-							fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, peak re-baselined to $%.2f)\n", totalPV)
+							if peakRebaselineAvailable {
+								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, peak re-baselined to $%.2f)\n", totalPV)
+							} else {
+								fmt.Printf("[CRITICAL] Portfolio kill switch auto-reset after confirmed flat close (no owner configured, prior peak retained because current equity is not trustworthy)\n")
+							}
 						}
 					} else {
 						fmt.Println("[CRITICAL] Portfolio kill switch auto-reset suppressed: operator-required close gaps remain")

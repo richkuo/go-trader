@@ -138,9 +138,12 @@ type sharedWalletRiskBalanceSnapshot struct {
 // whose books contain performance rather than deposits, may reuse exactly the
 // preceding risk evaluation's real balance for one fetch miss. With no such
 // snapshot the returned equityComplete flag is false so the caller suppresses
-// only the equity-drawdown arm; perps margin drawdown remains live.
+// only the equity-drawdown arm; perps margin drawdown remains live. The durable
+// state marker keeps this protection active while a pool exit is deferred,
+// even though the replacement config already uses an allocated budget.
 func resolveSharedWalletRiskBalances(
 	strategies []StrategyConfig,
+	strategyStates map[string]*StrategyState,
 	sharedWallets map[SharedWalletKey][]string,
 	current map[SharedWalletKey]float64,
 	cache map[SharedWalletKey]sharedWalletRiskBalanceSnapshot,
@@ -159,7 +162,10 @@ func resolveSharedWalletRiskBalances(
 	for key, memberIDs := range sharedWallets {
 		pooled := false
 		for _, id := range memberIDs {
-			if usesSharedWalletPoolBudget(byID[id]) {
+			sc := byID[id]
+			s := strategyStates[id]
+			if usesSharedWalletPoolBudget(sc) || sc.sharedWalletExitDeferred ||
+				(s != nil && s.SharedWalletPoolBudget) {
 				pooled = true
 				break
 			}
