@@ -1246,3 +1246,32 @@ func TestSharedWalletPoolAvailableMarginMissingIdentityFailsClosed(t *testing.T)
 		t.Fatalf("missing identity must fail closed: available=%v pooled=%v known=%v", available, pooled, balanceKnown)
 	}
 }
+
+func TestSharedWalletPoolAvailableMarginReservesUnderwaterEntryMargin(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Leverage: 5, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}, Leverage: 10, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {Positions: map[string]*Position{
+			"BTC": {Quantity: 1, AvgCost: 100, Leverage: 5},
+		}},
+		"hl-b": {Positions: map[string]*Position{
+			"ETH": {Quantity: 2, AvgCost: 200, Leverage: 10},
+		}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	available, pooled, balanceKnown := sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state,
+		map[string]float64{"BTC": 70, "ETH": 250},
+		shared, map[SharedWalletKey]float64{key: 1000},
+	)
+	// BTC is underwater, so reserve entry margin: 1*100/5 = 20.
+	// ETH is above entry, so reserve mark margin: 2*250/10 = 50.
+	if !pooled || !balanceKnown || available != 930 {
+		t.Fatalf("available=%v pooled=%v known=%v, want 930/true/true", available, pooled, balanceKnown)
+	}
+}

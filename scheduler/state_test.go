@@ -119,6 +119,51 @@ func TestApplySharedWalletPoolStateModeLeavingReseedsOnce(t *testing.T) {
 	}
 }
 
+func TestApplySharedWalletPoolStateModeDefersUnresolvedCapitalPctManageOnly(t *testing.T) {
+	s := &StrategyState{
+		ID:                          "hl-a",
+		Cash:                        -75,
+		InitialCapital:              0,
+		SharedWalletPoolBudget:      true,
+		SharedWalletPerformanceOnly: true,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long"},
+		},
+	}
+	sc := StrategyConfig{ID: "hl-a", Type: "perps", CapitalPct: 0.5}
+
+	transition, err := applySharedWalletPoolStateMode(sc, s)
+	if err == nil || transition != sharedWalletPoolStateUnchanged {
+		t.Fatalf("unresolved capital_pct exit: transition=%q err=%v", transition, err)
+	}
+	if !s.SharedWalletPoolBudget || !s.SharedWalletPerformanceOnly || s.Cash != -75 {
+		t.Fatalf("failed transition must preserve durable pool book: %+v", s)
+	}
+
+	msg := deferSharedWalletPoolExit(&sc, err)
+	if msg == "" || !sc.sharedWalletExitDeferred || !sc.Paused {
+		t.Fatalf("deferred transition must latch manage-only mode: sc=%+v msg=%q", sc, msg)
+	}
+	if shouldSkipZeroCapital(sc) {
+		t.Fatal("deferred pool exit must stay scheduled so protection management runs")
+	}
+	if !pausedBlocksSignal(-1, 0, 1, "long", true, true) {
+		t.Fatal("manage-only deferred exit must block a bidirectional flip")
+	}
+	if pausedBlocksSignal(-1, 1, 1, "long", true, true) {
+		t.Fatal("manage-only deferred exit must allow a close-registry exit")
+	}
+
+	retry := StrategyConfig{ID: "hl-a", Type: "perps", CapitalPct: 0.5, Capital: 500}
+	transition, err = applySharedWalletPoolStateMode(retry, s)
+	if err != nil || transition != sharedWalletPoolStateLeft {
+		t.Fatalf("later resolved restart must complete transition: transition=%q err=%v", transition, err)
+	}
+	if s.SharedWalletPoolBudget || s.Cash != 425 || s.InitialCapital != 500 {
+		t.Fatalf("resolved retry must reseed once while preserving loss: %+v", s)
+	}
+}
+
 func TestValidateState(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["s1"] = &StrategyState{

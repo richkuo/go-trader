@@ -201,6 +201,7 @@ func main() {
 	initialCapitalChangeInfos, initialCapitalChangeErrors := ReconcileConfigInitialCapital(cfg, state, stateDB)
 
 	// Initialize new strategies and sync config values for existing ones
+	var sharedWalletPoolExitWarnings []string
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
 		// For live Hyperliquid strategies without capital_pct, override capital with the real wallet balance.
@@ -241,8 +242,15 @@ func main() {
 		}
 		poolTransition, transitionErr := applySharedWalletPoolStateMode(*sc, s)
 		if transitionErr != nil {
-			fmt.Fprintf(os.Stderr, "Failed to reconcile shared-wallet pool state: %v\n", transitionErr)
-			os.Exit(1)
+			// A pool→capital_pct transition can be temporarily unresolvable
+			// when the exchange balance fetch fails. Keep the durable pool
+			// marker and performance book intact, force this process into
+			// manage-only mode, and retry the one-time transition on restart.
+			// Exits/protection must keep running; fresh opens/adds/flips may not.
+			msg := deferSharedWalletPoolExit(sc, transitionErr)
+			fmt.Fprintf(os.Stderr, "[CRITICAL] %s\n", msg)
+			sharedWalletPoolExitWarnings = append(sharedWalletPoolExitWarnings, msg)
+			continue
 		}
 		if poolTransition != sharedWalletPoolStateUnchanged {
 			if stateExisted {
@@ -517,6 +525,15 @@ func main() {
 		}
 		for _, msg := range initialCapitalChangeErrors {
 			notifier.SendOwnerDM("[state] ERROR: " + msg)
+		}
+	}
+
+	// A deferred pool exit is deliberately non-fatal so protection management
+	// stays live during an exchange outage, but it requires prominent operator
+	// visibility because entries remain held until a successful restart.
+	if len(sharedWalletPoolExitWarnings) > 0 && notifier.HasOwner() {
+		for _, msg := range sharedWalletPoolExitWarnings {
+			notifier.SendOwnerDM("[state] CRITICAL: " + msg)
 		}
 	}
 
@@ -3551,7 +3568,7 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 // capital_pct is set but capital resolved to $0 (balance fetch failed and
 // no fallback capital configured).
 func shouldSkipZeroCapital(sc StrategyConfig) bool {
-	return sc.CapitalPct > 0 && sc.Capital <= 0
+	return sc.CapitalPct > 0 && sc.Capital <= 0 && !sc.sharedWalletExitDeferred
 }
 
 func notifyPerStrategyCircuitBreaker(sc StrategyConfig, reason string, portfolioValue float64, notifier *MultiNotifier, portfolioKillSwitchFired bool) {
@@ -3871,6 +3888,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
 		posQty,
 		price,
+		avgCost,
 		poolBalanceKnown,
 	)
 	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
@@ -4702,6 +4720,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
 		posQty,
 		price,
+		avgCost,
 		poolBalanceKnown,
 	)
 	var size float64

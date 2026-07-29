@@ -247,6 +247,20 @@ func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (shared
 	return sharedWalletPoolStateLeft, nil
 }
 
+// deferSharedWalletPoolExit converts an unresolved startup transition into a
+// process-local manage-only latch. The durable state marker remains untouched,
+// so a later restart retries applySharedWalletPoolStateMode. Paused keeps all
+// position-increasing signals held while normal exits and protection
+// management continue, and the private flag prevents zero-capital scheduling
+// and SIGHUP resume from defeating that safety posture.
+func deferSharedWalletPoolExit(sc *StrategyConfig, transitionErr error) string {
+	sc.sharedWalletExitDeferred = true
+	sc.Paused = true
+	return fmt.Sprintf(
+		"strategy %s shared-wallet pool exit deferred: %v; running manage-only until a later restart resolves positive capital",
+		sc.ID, transitionErr)
+}
+
 // ValidateState checks loaded state for invalid entries and removes or clamps them (#39).
 // Logs warnings for each corrected field rather than refusing to start.
 func ValidateState(state *AppState, strategies []StrategyConfig) {

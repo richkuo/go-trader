@@ -258,11 +258,19 @@ type SharedWalletBalanceFetcher func(platform string) (float64, error)
 // a real loss and a process restart must never grant a fresh drawdown budget.
 func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 	byID := make(map[string]StrategyConfig, len(strategies))
+	walletMembers := make(map[SharedWalletKey][]string)
 	for _, sc := range strategies {
 		byID[sc.ID] = sc
+		if key, ok := walletKeyFor(sc); ok && hasSharedWalletBalanceFetcher(key.Platform) {
+			walletMembers[key] = append(walletMembers[key], sc.ID)
+		}
 	}
 	platformSet := make(map[string]bool)
-	for key, memberIDs := range detectSharedWallets(strategies) {
+	for key, memberIDs := range walletMembers {
+		memberIDs = riskPathWalletMemberIDs(key, memberIDs, strategies)
+		if len(memberIDs) < 2 {
+			continue
+		}
 		pctMembers := 0
 		for _, id := range memberIDs {
 			if byID[id].CapitalPct > 0 {

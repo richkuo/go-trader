@@ -175,7 +175,7 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		// the next cycle (closes, trailing SL, ratchet, and protection sync keep
 		// running), and resuming just lets entries flow again. The dispatch reads
 		// sc.Paused from the reloaded config, so no state mutation is needed.
-		if sc.Paused != ns.Paused {
+		if sc.Paused != ns.Paused && !sc.sharedWalletExitDeferred {
 			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
 			sc.Paused = ns.Paused
 		}
@@ -832,6 +832,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.CBLossStreakCooldownMinutes = nil // #1273: same stance as the drawdown cooldown.
 	sc.NotifyRatchetTriggers = nil       // #1118: hot-reloadable always, including while open — notification preference only, never touches position/order state. Masked here so a pure notify_ratchet_triggers toggle isn't flagged "restart required"; applied in applyHotReloadConfig.
 	sc.Paused = false                    // #1150: hot-reloadable always, including while open. Pausing only holds position-increasing signals from the next cycle — closes, trailing SL, ratchet, and protection sync keep running — so toggling mid-position never strands protection. Applied in applyHotReloadConfig.
+	sc.sharedWalletExitDeferred = false  // #1408 review: process-local startup latch, absent from freshly loaded config; it must neither reject unrelated SIGHUP changes nor permit a resume before restart completes the durable pool exit.
 	sc.LLMEntryAnalysis = nil            // #1137: hot-reloadable always, including while open — advisory-only entry commentary, never touches position/order state. Applied in applyHotReloadConfig.
 	sc.AllowDeprecated = nil             // #1275/#1402: hot-reloadable always, including while open — acknowledgment flag only, never gates loading, probing, or trading. Pointer (*bool) so unset/true/false are distinct. Applied in applyHotReloadConfig; reloadConfig re-evaluates the deprecated-edge warning after apply, so flipping the ack off re-warns.
 	sc.Capital = 0

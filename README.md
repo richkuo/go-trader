@@ -232,7 +232,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `close_strategy` | Single `{name, params}` close evaluator ref | null |
 | `leverage` | Perps — exchange leverage (also sizing if `sizing_leverage` omitted) | 1 |
 | `sizing_leverage` | Perps — order sizing multiplier | `leverage` |
-| `margin_per_trade_usd` | Live HL/OKX perps — per-open margin cap. In shared-wallet pool mode, notional = `min(cap, account equity − deployed wallet margin) × leverage` | omitted |
+| `margin_per_trade_usd` | Live HL/OKX perps — per-open margin cap. In shared-wallet pool mode, notional = `min(cap, account equity − deployed wallet margin) × leverage`, with each position reserved at the larger of entry-price or mark-price margin | omitted |
 | `stop_loss_pct` / `stop_loss_margin_pct` / `stop_loss_atr_mult` / `trailing_stop_pct` / `trailing_stop_atr_mult` | HL perps — at most one positive value; all omitted → `default_stop_loss_atr_mult × entry_atr`; `0` opts out | omitted |
 | `trailing_stop_min_move_pct` | HL trailing stop debounce (OID cap 1000) | 0.5 |
 | `margin_mode` | HL perps — `isolated` / `cross`; from flat only | `isolated` |
@@ -241,7 +241,7 @@ Values: `every` / `per_check` / `always`, `hourly`, `daily`, Go durations (`30m`
 | `regime_gate_window` / `regime_atr_window` / `regime_directional_window` | Multi-window selectors | legacy |
 | `theta_harvest` | Early-exit config for sold options | null |
 
-Shared-wallet pool budgeting is enabled structurally: configure at least two live Hyperliquid or OKX perps strategies on the same process account, omit `capital`, `capital_pct`, and `initial_capital` from every member, and set a positive `margin_per_trade_usd` on every member. Mixed pooled/allocated members are rejected. Missing account balance data blocks opens/adds/flips but never blocks closes. Switching back to allocated capital requires a restart and reseeds the virtual cash book once while preserving pool-era gains/losses; restart never auto-clears a pooled wallet's portfolio kill switch.
+Shared-wallet pool budgeting is enabled structurally: configure at least two live Hyperliquid or OKX perps strategies on the same process account, omit `capital`, `capital_pct`, and `initial_capital` from every member, and set a positive `margin_per_trade_usd` on every member. Mixed pooled/allocated members are rejected. Missing account balance data blocks opens/adds/flips but never blocks closes. Switching back to allocated capital requires a restart and reseeds the virtual cash book once while preserving pool-era gains/losses. If a `capital_pct` balance cannot resolve during that restart, the strategy stays manage-only so exits and protection continue, and a later restart retries the transition. Restart never auto-clears a pooled wallet's portfolio kill switch.
 
 ### Custom Strategy Parameters
 

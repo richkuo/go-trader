@@ -2348,6 +2348,30 @@ func TestDetectSharedWalletPlatforms(t *testing.T) {
 	}
 }
 
+func TestDetectSharedWalletPlatformsCountsLegacyManualMember(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xshared")
+	strategies := []StrategyConfig{
+		{ID: "hl-perps", Platform: "hyperliquid", Type: "perps", Capital: 500, CapitalPct: 0.5, Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+		{ID: "hl-manual", Platform: "hyperliquid", Type: "manual", Capital: 500, CapitalPct: 0.5, Args: []string{"hold", "ETH", "1h", "--mode=live"}},
+	}
+
+	got := detectSharedWalletPlatforms(strategies)
+	if len(got) != 1 || got[0] != "hyperliquid" {
+		t.Fatalf("legacy perps+manual wallet must qualify for #244 auto-clear; got %v", got)
+	}
+
+	strategies[1].CapitalPct = 0
+	if got := detectSharedWalletPlatforms(strategies); len(got) != 0 {
+		t.Fatalf("mixed percentage/fixed wallet must not widen auto-clear; got %v", got)
+	}
+
+	strategies[0].CapitalPct = 0
+	strategies[0].sharedWalletPoolBudget = true
+	if got := detectSharedWalletPlatforms(strategies); len(got) != 0 {
+		t.Fatalf("fixed/pool wallet with manual member must never auto-clear; got %v", got)
+	}
+}
+
 // --- #296: portfolio-level perps margin drawdown ---
 
 // TestCheckPortfolioRisk_AllPerps_MarginDrawdownFires is the core acceptance-

@@ -40,7 +40,9 @@ type PerpsSizing struct {
 	MarginPerTradeUSD float64
 	// SharedWalletPool says the cash input is remaining account margin, not a
 	// strategy cash book. On a flip, ReleasableMarginUSD is added back because
-	// the old side closes atomically before the new side consumes margin.
+	// the old side closes atomically before the new side consumes margin. Its
+	// basis must match sharedWalletPoolAvailableMargin's max(entry, mark)
+	// reservation so the old position cancels out exactly.
 	// Realized close PnL is already reflected in account equity and must not be
 	// added again.
 	SharedWalletPool    bool
@@ -57,17 +59,18 @@ type PerpsSizing struct {
 	RiskStopUnresolved string
 }
 
-func withSharedWalletPoolSizing(sc StrategyConfig, sizing PerpsSizing, posQty, price float64, balanceKnown bool) PerpsSizing {
+func withSharedWalletPoolSizing(sc StrategyConfig, sizing PerpsSizing, posQty, price, avgCost float64, balanceKnown bool) PerpsSizing {
 	if !usesSharedWalletPoolBudget(sc) {
 		return sizing
 	}
 	sizing.SharedWalletPool = true
-	if balanceKnown && posQty > 0 && price > 0 {
+	marginPrice := sharedWalletPoolMarginBasisPrice(price, avgCost)
+	if balanceKnown && posQty > 0 && marginPrice > 0 {
 		leverage := sizing.ExchangeLeverage
 		if leverage <= 0 {
 			leverage = 1
 		}
-		sizing.ReleasableMarginUSD = posQty * price / leverage
+		sizing.ReleasableMarginUSD = posQty * marginPrice / leverage
 	}
 	return sizing
 }

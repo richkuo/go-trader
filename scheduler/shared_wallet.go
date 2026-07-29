@@ -121,6 +121,20 @@ func usesSharedWalletPoolBudget(sc StrategyConfig) bool {
 	return sc.sharedWalletPoolBudget
 }
 
+// sharedWalletPoolMarginBasisPrice returns the conservative price used for
+// both deployed-margin reservation and flip-release accounting. Account
+// equity already includes unrealized PnL, while an exchange can continue to
+// reserve the entry-margin amount on an underwater position. Using the larger
+// of entry and mark prevents a losing position from making free margin look
+// larger than the venue will accept. The exact same basis must be released on
+// a flip so reservation and release cancel cleanly.
+func sharedWalletPoolMarginBasisPrice(markPrice, avgCost float64) float64 {
+	if avgCost > markPrice {
+		return avgCost
+	}
+	return markPrice
+}
+
 // validateConfiguredSharedWalletPools returns the zero-capital strategy IDs
 // that belong to a configured 2+ member wallet and any cluster-level errors.
 // A pool is all-or-nothing: mixing virtual allocations with pooled members
@@ -298,10 +312,7 @@ func sharedWalletPoolAvailableMargin(
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
-			price := prices[sym]
-			if price <= 0 {
-				price = pos.AvgCost
-			}
+			price := sharedWalletPoolMarginBasisPrice(prices[sym], pos.AvgCost)
 			if price <= 0 {
 				continue
 			}
