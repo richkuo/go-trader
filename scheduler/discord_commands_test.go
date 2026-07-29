@@ -247,6 +247,65 @@ func TestFormatPnLResponse(t *testing.T) {
 	}
 }
 
+func TestFormatPnLResponsePooledReturnsAreUndefined(t *testing.T) {
+	allPooled := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {
+			ID: "hl-a", Platform: "hyperliquid", Cash: -200,
+			SharedWalletPoolBudget: true,
+			// Ephemeral flag deliberately false: fallback/save-failure paths
+			// must still honor the durable pool marker.
+			SharedWalletPerformanceOnly: false,
+		},
+		"hl-b": {
+			ID: "hl-b", Platform: "hyperliquid", Cash: 0,
+			SharedWalletPoolBudget:      true,
+			SharedWalletPerformanceOnly: true,
+		},
+	}}
+	got := formatPnLResponse(allPooled, nil)
+	for _, want := range []string{
+		"Total: $-200.00 (—)",
+		"hyperliquid: $-200.00 (—)",
+		"hl-a: $-200.00 (—)",
+		"hl-b: $+0.00 (—)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("all-pooled P&L missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "+0.00%") {
+		t.Fatalf("pooled P&L must never render a fabricated zero return:\n%s", got)
+	}
+}
+
+func TestFormatPnLResponseMixedPoolInvalidatesOnlyContainingAggregates(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-pool": {
+			ID: "hl-pool", Platform: "hyperliquid", Cash: -20,
+			SharedWalletPoolBudget: true,
+		},
+		"hl-allocated": {
+			ID: "hl-allocated", Platform: "hyperliquid", Cash: 110, InitialCapital: 100,
+		},
+		"spot-allocated": {
+			ID: "spot-allocated", Platform: "binanceus", Cash: 220, InitialCapital: 200,
+		},
+	}}
+	got := formatPnLResponse(state, nil)
+	for _, want := range []string{
+		"Total: $+10.00 (—)",
+		"hyperliquid: $-10.00 (—)",
+		"hl-pool: $-20.00 (—)",
+		"hl-allocated: $+10.00 (+10.00%)",
+		"binanceus: $+20.00 (+10.00%)",
+		"spot-allocated: $+20.00 (+10.00%)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("mixed P&L missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestFormatCircuitBreakersResponse(t *testing.T) {
 	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
 	none := formatCircuitBreakersResponse(&AppState{Strategies: map[string]*StrategyState{}}, now)

@@ -208,25 +208,27 @@ func formatPositionsResponse(state *AppState, prices map[string]float64) string 
 
 // formatPnLResponse reports total / per-platform / per-strategy P&L. Call under RLock.
 func formatPnLResponse(state *AppState, prices map[string]float64) string {
-	type agg struct{ value, capital float64 }
+	type agg struct {
+		value, capital float64
+		includesPool   bool
+	}
 	byPlatform := map[string]*agg{}
 	platforms := []string{}
 	var totVal, totCap float64
+	var totalIncludesPool bool
 	var perStrat []string
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
 		pv := displayStrategyValue(s, prices)
 		cap := s.InitialCapital
-		if s.SharedWalletPoolBudget || s.SharedWalletPerformanceOnly {
+		poolBudget := s.SharedWalletPoolBudget || s.SharedWalletPerformanceOnly
+		if poolBudget {
 			cap = 0
 		}
 		pnl := pv - cap
-		pnlPct := 0.0
-		if cap > 0 {
-			pnlPct = pnl / cap * 100
-		}
 		totVal += pv
 		totCap += cap
+		totalIncludesPool = totalIncludesPool || poolBudget
 		plat := strategyPlatformLabel(s)
 		if byPlatform[plat] == nil {
 			byPlatform[plat] = &agg{}
@@ -234,30 +236,46 @@ func formatPnLResponse(state *AppState, prices map[string]float64) string {
 		}
 		byPlatform[plat].value += pv
 		byPlatform[plat].capital += cap
-		perStrat = append(perStrat, fmt.Sprintf("  %s: $%+.2f (%+.2f%%)", id, pnl, pnlPct))
+		byPlatform[plat].includesPool = byPlatform[plat].includesPool || poolBudget
+		perStrat = append(perStrat, fmt.Sprintf(
+			"  %s: $%+.2f (%s)", id, pnl, formatPnLPercent(pnl, cap, poolBudget),
+		))
 	}
 	sort.Strings(platforms)
 	var sb strings.Builder
 	sb.WriteString("**P&L**\n")
 	totPnL := totVal - totCap
-	totPct := 0.0
-	if totCap > 0 {
-		totPct = totPnL / totCap * 100
-	}
-	sb.WriteString(fmt.Sprintf("Total: $%+.2f (%+.2f%%) — value $%.2f / capital $%.2f\n", totPnL, totPct, totVal, totCap))
+	sb.WriteString(fmt.Sprintf(
+		"Total: $%+.2f (%s) — value $%.2f / capital $%.2f\n",
+		totPnL, formatPnLPercent(totPnL, totCap, totalIncludesPool), totVal, totCap,
+	))
 	sb.WriteString("__By platform__\n")
 	for _, plat := range platforms {
 		a := byPlatform[plat]
 		pnl := a.value - a.capital
-		pct := 0.0
-		if a.capital > 0 {
-			pct = pnl / a.capital * 100
-		}
-		sb.WriteString(fmt.Sprintf("  %s: $%+.2f (%+.2f%%)\n", plat, pnl, pct))
+		sb.WriteString(fmt.Sprintf(
+			"  %s: $%+.2f (%s)\n",
+			plat, pnl, formatPnLPercent(pnl, a.capital, a.includesPool),
+		))
 	}
 	sb.WriteString("__By strategy__\n")
 	sb.WriteString(strings.Join(perStrat, "\n"))
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// formatPnLPercent renders an undefined marker whenever the numerator includes
+// pooled performance: pooled strategies intentionally have no allocated
+// baseline, so dividing their PnL by zero or by another strategy's capital is
+// not a return. Allocated-only zero-capital rows retain the legacy +0.00%.
+func formatPnLPercent(pnl, capital float64, includesPool bool) string {
+	if includesPool {
+		return "—"
+	}
+	pct := 0.0
+	if capital > 0 {
+		pct = pnl / capital * 100
+	}
+	return fmt.Sprintf("%+.2f%%", pct)
 }
 
 // formatCircuitBreakersResponse lists open per-strategy breakers + portfolio kill switch. Call under RLock.
