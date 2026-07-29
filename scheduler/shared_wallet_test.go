@@ -1445,3 +1445,91 @@ func TestSharedWalletPoolFlipReleaseMatchesStoredLeverageReservation(t *testing.
 		t.Fatalf("release must exactly cancel stored-leverage reservation: available=%v sizing=%+v", available, sizing)
 	}
 }
+
+func TestSharedWalletPoolFlipPreservesSignedAccountHeadroom(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-pool")
+	marginCap := 100.0
+	sc := StrategyConfig{
+		ID: "okx-a", Platform: "okx", Type: "perps",
+		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+		Leverage: 1, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true,
+	}
+	peer := sc
+	peer.ID = "okx-b"
+	peer.Args = []string{"rsi", "ETH", "1h", "--mode=live"}
+	strategies := []StrategyConfig{sc, peer}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
+
+	tests := []struct {
+		name          string
+		flippingQty   float64
+		peerQty       float64
+		wantAvailable float64
+		wantSize      float64
+	}{
+		{
+			name: "deficit remains after release and closes only",
+			// Equity 100 - reservations 60 and 120 = -80; releasing 60
+			// still leaves -20, so the new side must be zero.
+			flippingQty: 6, peerQty: 12, wantAvailable: -80, wantSize: 6,
+		},
+		{
+			name: "deficit before release sizes within true remainder",
+			// Equity 100 - reservations 60 and 60 = -20; releasing 60
+			// leaves exactly 40 for the new side.
+			flippingQty: 6, peerQty: 6, wantAvailable: -20, wantSize: 10,
+		},
+		{
+			name: "only position can reuse full equity",
+			// Equity 100 - own reservation 60 = 40; releasing 60 leaves
+			// the full 100 for the new side.
+			flippingQty: 6, wantAvailable: 40, wantSize: 16,
+		},
+		{
+			name: "healthy wallet keeps existing sizing",
+			// Equity 100 - reservations 20 and 20 = 60; releasing 20
+			// leaves 80 for the new side.
+			flippingQty: 2, peerQty: 2, wantAvailable: 60, wantSize: 10,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &AppState{Strategies: map[string]*StrategyState{
+				"okx-a": {Positions: map[string]*Position{
+					"BTC": {Quantity: tt.flippingQty, AvgCost: 10, Leverage: 1, Side: "long"},
+				}},
+				"okx-b": {Positions: map[string]*Position{}},
+			}}
+			if tt.peerQty > 0 {
+				state.Strategies["okx-b"].Positions["ETH"] = &Position{
+					Quantity: tt.peerQty, AvgCost: 10, Leverage: 1, Side: "long",
+				}
+			}
+			prices := map[string]float64{"BTC": 10, "ETH": 10}
+			available, pooled, known := sharedWalletPoolAvailableMargin(
+				sc, strategies, state, prices, shared,
+				map[SharedWalletKey]float64{key: 100},
+			)
+			if !pooled || !known || available != tt.wantAvailable {
+				t.Fatalf("available=%v pooled=%v known=%v, want %v/true/true",
+					available, pooled, known, tt.wantAvailable)
+			}
+			sizing := withSharedWalletPoolSizing(
+				sc, PerpsSizingFor(sc, 10, 0), tt.flippingQty, 10, 10, 1, true,
+			)
+			size, ok, reason := perpsLiveOrderSize(
+				-1, 10, available, tt.flippingQty, 10, sizing, "long", DirectionBoth, 0,
+			)
+			if !ok || reason != "" {
+				t.Fatalf("flip sizing failed: ok=%v reason=%q", ok, reason)
+			}
+			if size != tt.wantSize {
+				t.Fatalf("flip size=%v, want %v", size, tt.wantSize)
+			}
+			if available <= 0 && PerpsOpenNotionalSized(available, 10, sizing) != 0 {
+				t.Fatal("fresh opens/adds must still clamp signed non-positive headroom to zero notional")
+			}
+		})
+	}
+}

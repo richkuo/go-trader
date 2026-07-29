@@ -960,10 +960,13 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing
 		effectiveCash := cash
 		if flipping {
 			if sizing.SharedWalletPool {
-				// cash is already account equity minus deployed margin. The
-				// flip releases this strategy's current-side margin before the
-				// new side opens; account equity already contains uPnL, so
-				// adding close PnL here would double count it.
+				// cash is signed account equity minus deployed margin. Keep any
+				// negative headroom until this strategy's current-side margin
+				// is released: max(0, cash) + release would hide a wallet
+				// shortfall and could oversize the atomic close+open order,
+				// losing the close leg to an exchange margin rejection.
+				// Account equity already contains uPnL, so adding close PnL
+				// here would double count it.
 				effectiveCash += sizing.ReleasableMarginUSD
 			} else {
 				// Close leg realizes PnL before the new side opens on-chain;

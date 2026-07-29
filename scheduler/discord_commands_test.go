@@ -141,6 +141,48 @@ func TestFormatStatusResponse(t *testing.T) {
 	}
 }
 
+func TestFormatStatusResponseUsesWalletDedupedDisplayTotal(t *testing.T) {
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a", Platform: "hyperliquid", Cash: -10,
+				SharedWalletPoolBudget: true,
+			},
+			"hl-b": {
+				ID: "hl-b", Platform: "hyperliquid", Cash: 5,
+				SharedWalletPoolBudget: true,
+			},
+		},
+		LatestSharedWalletBalances: map[SharedWalletKey]float64{key: 1000},
+		LatestSharedWalletMembers:  map[SharedWalletKey][]string{key: {"hl-a", "hl-b"}},
+	}
+
+	allPooled := formatStatusResponse(state, nil)
+	if !strings.Contains(allPooled, "value=$1000.00") {
+		t.Fatalf("all-pooled Discord value must use real wallet equity: %s", allPooled)
+	}
+	if !strings.Contains(allPooled, "shared-wallet equity is counted once") {
+		t.Fatalf("pooled status must explain the cash basis: %s", allPooled)
+	}
+
+	state.Strategies["spot"] = &StrategyState{ID: "spot", Platform: "binanceus", Cash: 200}
+	mixed := formatStatusResponse(state, nil)
+	if !strings.Contains(mixed, "value=$1200.00") || !strings.Contains(mixed, "cash=$195.00") {
+		t.Fatalf("mixed Discord total must count wallet once plus allocated book: %s", mixed)
+	}
+
+	state.LatestSharedWalletBalances = nil
+	state.LatestSharedWalletMembers = nil
+	fallback := formatStatusResponse(state, nil)
+	if !strings.Contains(fallback, "value=$195.00") {
+		t.Fatalf("missing-balance Discord total must match modeled fallback: %s", fallback)
+	}
+	if strings.Contains(fallback, "shared-wallet equity is counted once") {
+		t.Fatalf("missing-balance fallback must not claim fresh pooled equity: %s", fallback)
+	}
+}
+
 func TestFormatStatusResponse_CashReconcileRequired(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"z-latched": {ID: "z-latched", Platform: "robinhood", Cash: 0, CashReconcileRequired: true,

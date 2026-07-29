@@ -354,9 +354,12 @@ func detectSharedWallets(strategies []StrategyConfig) map[SharedWalletKey][]stri
 // to a pooled strategy after reserving margin for every virtual position on
 // the same wallet, including same-account live HL manual positions. The caller
 // must hold the state read lock. pooled reports pool mode; balanceKnown
-// distinguishes a real fully-deployed wallet (known balance, zero available)
-// from missing balance/identity data. A flip may reuse released margin only
-// in the former case.
+// distinguishes a real fully-deployed wallet (known balance, zero or negative
+// headroom) from missing balance/identity data. Available is intentionally SIGNED:
+// fresh-open and scale-in notional helpers clamp non-positive cash to zero,
+// while a flip must preserve any account-margin deficit until it adds back the
+// closing position's reservation. Clamping here would overstate post-close
+// headroom and could make an oversized flip order lose its close leg.
 func sharedWalletPoolAvailableMargin(
 	sc StrategyConfig,
 	strategies []StrategyConfig,
@@ -407,9 +410,6 @@ func sharedWalletPoolAvailableMargin(
 		}
 	}
 	available = balance - deployedMargin
-	if available < 0 {
-		available = 0
-	}
 	return available, true, true
 }
 

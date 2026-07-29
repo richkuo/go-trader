@@ -136,14 +136,13 @@ func formatHealthResponse(lastCycle time.Time, cycleCount int, version string, n
 
 // formatStatusResponse builds a portfolio-wide one-line status. Call under RLock.
 func formatStatusResponse(state *AppState, prices map[string]float64) string {
-	var cash, value float64
+	var cash float64
 	posCount, trades := 0, 0
 	regime := ""
 	var reconcileIDs []string
 	for _, id := range sortedAppStateIDs(state) {
 		s := state.Strategies[id]
 		cash += s.Cash
-		value += displayStrategyValue(s, prices)
 		posCount += len(s.Positions) + len(s.OptionPositions)
 		trades += len(s.TradeHistory)
 		if regime == "" && s.Regime != "" {
@@ -153,7 +152,11 @@ func formatStatusResponse(state *AppState, prices map[string]float64) string {
 			reconcileIDs = append(reconcileIDs, id)
 		}
 	}
+	value := latestDisplayTotal(state, prices)
 	line := formatStatusLine(cash, posCount, value, trades, regime)
+	if len(state.LatestSharedWalletBalances) > 0 {
+		line += "\nℹ️ shared-wallet equity is counted once in value; cash remains the virtual strategy-book sum."
+	}
 	if len(reconcileIDs) == 0 {
 		return line
 	}
