@@ -114,6 +114,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to apply alert throttle interval: %v\n", err)
 		os.Exit(1)
 	}
+	if err := applyKillSwitchResetDMTimeoutFromConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to apply kill-switch reset DM timeout: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
 	// #1085: load the directional-certification artifact (SSoT for the
@@ -304,14 +308,28 @@ func main() {
 	// Mutex for state access (HTTP server reads)
 	var mu sync.RWMutex
 
+	// Initialize the cancellable read-only/side-effect contexts before the
+	// status server can accept a tuning job. The #1339 research lane rides the
+	// read-only context and must be killable from its first accepted request.
+	initShutdownContexts()
+
 	// Start HTTP status server. Priority: CLI flag > config > default.
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
 	server.SetConfigContext(*configPath, cfg)
+	tuningManager, tuningErr := newTuningRunManager(*configPath, nil, cfg.tuningMaxRetainedRuns())
+	if tuningErr != nil {
+		fmt.Printf("[WARN] tuning API unavailable: %v\n", tuningErr)
+	} else {
+		server.tuning = tuningManager
+	}
 	// #1272: end single-threaded startup before the first state-reading
 	// goroutine (http.Serve). ClearLatchedKillSwitchSharedWallet above must
 	// stay before this call.
 	markSchedulerStarted()
+	if tuningManager != nil {
+		go tuningManager.run(shutdownReadOnlyCtx)
+	}
 	server.Start(statusPort)
 
 	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
@@ -325,8 +343,6 @@ func main() {
 	// down (registered AFTER buildNotifierFromConfig so it runs BEFORE
 	// cleanupNotifier in LIFO order) waits for in-flight side-effecting
 	// subprocesses and persists state before the notifier flushes.
-	initShutdownContexts()
-
 	// #1147 trade-quality diagnostics: eager row insert on every full close
 	// (hook fires inside recordClosedPosition, under mu — same cost class as
 	// the tradeRecorder insert), async MFE/MAE enrichment outside mu. The
@@ -1560,12 +1576,14 @@ func main() {
 			}
 
 			// Kill switch reset goroutine: prompt owner to reset via DM.
+			// AskOwnerDM wait is kill_switch_reset_dm_timeout (default 6h, #1368).
 			if killSwitchFired && notifier.HasOwner() && !resetGoroutineRunning {
 				resetGoroutineRunning = true
 				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, plan)
+				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
 				go func() {
 					defer func() { resetGoroutineRunning = false }()
-					resp, err := notifier.AskOwnerDM(resetPrompt, 30*time.Minute)
+					resp, err := notifier.AskOwnerDM(resetPrompt, resetDMTimeout)
 					if err != nil {
 						fmt.Printf("[update] Kill switch reset DM timed out or failed: %v\n", err)
 						return

@@ -10,7 +10,23 @@ from typing import Optional
 
 import pandas as pd
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "trading_bot.db")
+OHLCV_CACHE_DB_ENV = "GO_TRADER_OHLCV_CACHE_DB"
+
+
+def _resolve_default_db_path() -> str:
+    configured = os.environ.get(OHLCV_CACHE_DB_ENV)
+    if configured is None:
+        return os.path.join(os.path.dirname(__file__), "trading_bot.db")
+    configured = configured.strip()
+    if not configured:
+        raise RuntimeError(f"{OHLCV_CACHE_DB_ENV} must not be blank")
+    return os.path.abspath(os.path.expanduser(configured))
+
+
+# Read once at import so every default argument below resolves to the same
+# process-wide cache. The scheduler's tuning lane points this at StateDirectory;
+# ordinary CLI users retain the historical checkout-local default.
+DB_PATH = _resolve_default_db_path()
 
 # Paths whose schema has already been ensured this process. Lets us create
 # tables lazily on first real use instead of at import time — importing this
@@ -20,7 +36,11 @@ _SCHEMA_READY: set = set()
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    try:
+        conn = sqlite3.connect(db_path)
+    except sqlite3.Error as exc:
+        raise sqlite3.OperationalError(
+            f"cannot open SQLite cache {db_path}: {exc}") from exc
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn

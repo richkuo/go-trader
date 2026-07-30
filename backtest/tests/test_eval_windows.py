@@ -366,6 +366,62 @@ def test_validate_candidate_accepts_allowed_regimes():
     assert "allowed_regimes" not in c3  # normalized away
 
 
+def test_validate_candidate_accepts_legacy_regime_lookback():
+    # #1338: regime_period / regime_adx_threshold are threadable so a tuned
+    # candidate gates on the exact ADX(period, threshold) its live strategy
+    # runs, not the harness 14/20 defaults.
+    c = {"name": "x", "allowed_regimes": ["trending_up"],
+         "regime_period": 21, "regime_adx_threshold": 25.0}
+    assert ew.validate_candidate(c) is c
+
+
+def test_validate_candidate_rejects_bad_regime_lookback():
+    # Without a gate consumer the fields would be a silent no-op.
+    with pytest.raises(ValueError, match="gate consumer"):
+        ew.validate_candidate({"name": "x", "regime_period": 21})
+    # A windows spec owns its own classifier/lookback — mixing is ambiguous.
+    with pytest.raises(ValueError, match="windows spec owns"):
+        ew.validate_candidate({
+            "name": "x", "allowed_regimes": ["trending_up"],
+            "regime_windows_spec": {"medium": {"classifier": "adx",
+                                               "period": 14}},
+            "regime_period": 21})
+    for bad in (True, 1, "14", 14.0):
+        with pytest.raises(ValueError, match="regime_period"):
+            ew.validate_candidate({"name": "x",
+                                   "allowed_regimes": ["trending_up"],
+                                   "regime_period": bad})
+    for bad in (True, 0, -5, "20"):
+        with pytest.raises(ValueError, match="regime_adx_threshold"):
+            ew.validate_candidate({"name": "x",
+                                   "allowed_regimes": ["trending_up"],
+                                   "regime_adx_threshold": bad})
+
+
+def test_run_candidate_leg_threads_regime_lookback(monkeypatch):
+    # run_candidate_leg is the single candidate-dict -> run_leg translation;
+    # a dropped lookback here silently gates on ADX(14, 20) (#1338).
+    seen = {}
+
+    def fake_run_leg(reg, name, params, symbol, timeframe, window, **kw):
+        seen.update(kw)
+        return {"ok": True}
+
+    monkeypatch.setattr(ew, "run_leg", fake_run_leg, raising=True)
+    cand = {"name": "x", "allowed_regimes": ["trending_up"],
+            "regime_period": 21, "regime_adx_threshold": 25.0}
+    ew.run_candidate_leg(_FakeRegistry(), cand, "BTC/USDT", "1h",
+                         ("2026-01-01", None))
+    assert seen["regime_period"] == 21
+    assert seen["regime_adx_threshold"] == 25.0
+    # Absent fields fall back to run_leg's own defaults.
+    seen.clear()
+    ew.run_candidate_leg(_FakeRegistry(), {"name": "x"}, "BTC/USDT", "1h",
+                         ("2026-01-01", None))
+    assert seen["regime_period"] == 14
+    assert seen["regime_adx_threshold"] == 20.0
+
+
 def test_validate_candidate_rejects_malformed_allowed_regimes():
     # Bare string (common JSON mistake) must be rejected loudly, not become
     # a list of chars that silently gates everything to 0 trades.

@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from registry_loader import load_registry
+from registry_loader import load_registry, registry_for_strategy_type
 from optimizer import DEFAULT_PARAM_RANGES
 
 
@@ -41,6 +41,18 @@ def test_both_registries_coexist():
 def test_unknown_platform_rejected():
     with pytest.raises(ValueError, match="Unknown platform"):
         load_registry("options")
+
+
+@pytest.mark.parametrize("strategy_type,expected", [
+    ("spot", "spot"),
+    ("options", "spot"),
+    ("perps", "futures"),
+    ("futures", "futures"),
+    ("manual", "futures"),
+    (" PERPS ", "futures"),
+])
+def test_registry_for_strategy_type(strategy_type, expected):
+    assert registry_for_strategy_type(strategy_type) == expected
 
 
 def test_param_ranges_cover_every_registered_strategy():

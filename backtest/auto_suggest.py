@@ -163,6 +163,22 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         raise ValueError("correction.method must be 'benjamini_hochberg' "
                          "(the only supported family correction, per #1210 scope)")
     alpha = float(correction.get("alpha", 0.05))
+    # #1338: optional selection-aware family-size override. When a two-stage
+    # driver (tune_live.py) searched N candidates in stage 1 and hands only the
+    # survivors to auto_suggest, the BH family must be corrected against N, not
+    # the smaller survivor count — else the pruning inflates significance. The
+    # ">= actual test count" check runs in apply_family_correction where the
+    # produced p-value count is known; here we only fix the type (a positive
+    # integer; bool is explicitly rejected since it subclasses int).
+    family_size = correction.get("family_size")
+    if family_size is not None:
+        if isinstance(family_size, bool) or not isinstance(family_size, int):
+            raise ValueError(
+                "correction.family_size must be an integer (the searched "
+                "candidate-family size N for a selection-aware two-stage run; "
+                "#1338)")
+        if family_size < 1:
+            raise ValueError("correction.family_size must be >= 1")
 
     base = _resolve_ref(raw["base"], spec_dir) if raw.get("base") is not None else None
 
@@ -258,7 +274,8 @@ def load_spec(raw: dict, spec_dir: str) -> dict:
         "harnesses": harnesses,
         "windows": windows,
         "datasets": raw.get("datasets"),  # None -> audit six
-        "correction": {"method": method, "alpha": alpha},
+        "correction": {"method": method, "alpha": alpha,
+                       "family_size": family_size},
         "base": base,
         "candidates": candidates,
         "sweep": raw.get("sweep"),
@@ -683,20 +700,39 @@ def collect_family_pvalues(entries: list) -> list:
     return tests
 
 
-def apply_family_correction(tests: list, alpha: float = 0.05) -> dict:
+def apply_family_correction(tests: list, alpha: float = 0.05,
+                            family_size: int | None = None) -> dict:
     """One Benjamini-Hochberg pass over the whole family (the #1076 precedent).
     Stamps ``bh_pass`` onto each test and returns the correction summary
-    including the effective threshold (largest passing p)."""
+    including the effective threshold (largest passing p).
+
+    ``family_size`` (#1338): the searched candidate-family size N for a
+    selection-aware two-stage run. When set, the BH denominator becomes N
+    instead of the number of p-values actually produced — so a stage-1 sweep
+    of N candidates that hands only its survivors here cannot cash the pruning
+    in as extra significance. Must be ``>= len(tests)`` (a denominator below
+    the produced count would understate multiplicity); the type was fixed in
+    ``load_spec``, but only here is the produced count known to bound it."""
     pvals = [t["p"] for t in tests]
-    mask = benjamini_hochberg(pvals, alpha)
+    if family_size is not None and family_size < len(pvals):
+        raise ValueError(
+            f"correction.family_size={family_size} is smaller than the "
+            f"{len(pvals)} primary p-values this run produced; the searched "
+            f"family size must cover every test in the family (#1338)")
+    mask = benjamini_hochberg(pvals, alpha, family_size=family_size)
     for t, passed in zip(tests, mask):
         t["bh_pass"] = bool(passed)
     passing = [t["p"] for t, ok in zip(tests, mask) if ok]
-    m = len(tests)
+    tests_run = len(tests)
+    # ``m`` is the BH denominator (what the threshold divides by): the searched
+    # family size when overridden, else the tested count. ``tests_run`` records
+    # the actual pooled p-value count so the shortlist can show both.
+    m = family_size if family_size is not None else tests_run
     return {
         "method": "benjamini_hochberg",
         "alpha": alpha,
         "m": m,
+        "tests_run": tests_run,
         "effective_threshold": (max(passing) if passing else None),
         "bonferroni_threshold": (alpha / m if m else None),
         "n_survivors": sum(mask),
@@ -903,8 +939,14 @@ def format_shortlist(report: dict) -> str:
                      f"(ran {report['ran']} of {report['total']} candidates; "
                      "the committed artifact must come from a full-spec run) ***")
     thr = corr.get("effective_threshold")
+    # #1338: when a selection-aware family_size override is in force, m (the BH
+    # denominator) exceeds the pooled p-value count — spell out both so the
+    # reader never mistakes the searched family for the tested set.
+    tests_run = corr.get("tests_run", corr["m"])
+    m_note = (f"m={corr['m']} (searched family; {tests_run} tested)"
+              if tests_run != corr["m"] else f"m={corr['m']}")
     lines.append(
-        f"correction: {corr['method']} alpha={corr['alpha']} over m={corr['m']} "
+        f"correction: {corr['method']} alpha={corr['alpha']} over {m_note} "
         f"pooled p-values; effective threshold "
         f"{('p<=' + format(thr, '.4g')) if thr is not None else 'none pass'} "
         f"(Bonferroni {format(corr['bonferroni_threshold'], '.4g') if corr['bonferroni_threshold'] else 'n/a'}); "
@@ -1261,7 +1303,9 @@ def main(argv=None) -> int:
         list(ex.map(lambda e: run_exit_ab_entry(e, spec, out_dir), ab_entries))
 
     tests = collect_family_pvalues(entries)
-    correction = apply_family_correction(tests, spec["correction"]["alpha"])
+    correction = apply_family_correction(
+        tests, spec["correction"]["alpha"],
+        family_size=spec["correction"].get("family_size"))
     for e in entries:
         e["verdict"] = candidate_verdict(e, tests)
     ranked = rank_shortlist(entries)

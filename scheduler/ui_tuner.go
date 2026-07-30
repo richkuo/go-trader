@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type UIEditableField struct {
@@ -316,11 +317,40 @@ type pythonErrorResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-func fetchStrategyDefaultParams(sc StrategyConfig) (map[string]interface{}, string, error) {
-	name := effectiveOpenStrategy(sc)
-	if name == "" {
-		return map[string]interface{}{}, "", nil
+// strategy_tuner_schema.py output is registry-derived and process-static for a
+// given (type, open-strategy) pair. Cache it so repeated /api/strategies/*/config
+// polls (tuning page every 3s, dashboard refreshes) do not re-acquire
+// pythonSemaphore and contend with the live trading loop.
+type strategySchemaCacheEntry struct {
+	defaults map[string]interface{}
+	desc     string
+}
+
+var (
+	strategySchemaCacheMu sync.Mutex
+	strategySchemaCache   = map[string]strategySchemaCacheEntry{}
+)
+
+func strategySchemaCacheKey(typ, openName string) string {
+	return typ + "\x00" + openName
+}
+
+func cloneStringAnyMap(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
+	return out
+}
+
+func clearStrategySchemaCacheForTest() {
+	strategySchemaCacheMu.Lock()
+	defer strategySchemaCacheMu.Unlock()
+	strategySchemaCache = map[string]strategySchemaCacheEntry{}
+}
+
+func loadStrategyTunerSchema(sc StrategyConfig) (map[string]interface{}, string, error) {
+	name := effectiveOpenStrategy(sc)
 	args := []string{
 		"--type", sc.Type,
 		"--strategy", name,
@@ -347,6 +377,46 @@ func fetchStrategyDefaultParams(sc StrategyConfig) (map[string]interface{}, stri
 		resp.DefaultParams = map[string]interface{}{}
 	}
 	return resp.DefaultParams, resp.Description, nil
+}
+
+func fetchStrategyDefaultParams(sc StrategyConfig) (map[string]interface{}, string, error) {
+	return fetchStrategyDefaultParamsWith(sc, loadStrategyTunerSchema)
+}
+
+func fetchStrategyDefaultParamsWith(
+	sc StrategyConfig,
+	load func(StrategyConfig) (map[string]interface{}, string, error),
+) (map[string]interface{}, string, error) {
+	name := effectiveOpenStrategy(sc)
+	if name == "" {
+		return map[string]interface{}{}, "", nil
+	}
+	key := strategySchemaCacheKey(sc.Type, name)
+
+	strategySchemaCacheMu.Lock()
+	if cached, ok := strategySchemaCache[key]; ok {
+		defaults := cloneStringAnyMap(cached.defaults)
+		desc := cached.desc
+		strategySchemaCacheMu.Unlock()
+		return defaults, desc, nil
+	}
+	strategySchemaCacheMu.Unlock()
+
+	defaults, desc, err := load(sc)
+	if err != nil {
+		return nil, "", err
+	}
+	if defaults == nil {
+		defaults = map[string]interface{}{}
+	}
+
+	strategySchemaCacheMu.Lock()
+	strategySchemaCache[key] = strategySchemaCacheEntry{
+		defaults: cloneStringAnyMap(defaults),
+		desc:     desc,
+	}
+	strategySchemaCacheMu.Unlock()
+	return cloneStringAnyMap(defaults), desc, nil
 }
 
 func buildUIStrategyConfig(sc StrategyConfig, defaults map[string]interface{}, _ string, hasOpen bool) UIStrategyConfigResponse {

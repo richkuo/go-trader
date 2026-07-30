@@ -629,6 +629,37 @@ def validate_candidate(candidate: dict) -> dict:
             # constructor takes, with the compacted per-label entries.
             candidate["regime_directional_policy"] = {
                 "trend_regime": normalized_rdp}
+
+    # #1338: legacy single-lookback gate params, threadable so a candidate
+    # gates on the exact ADX(period, threshold) its live strategy runs
+    # instead of silently falling back to the harness 14/20 defaults. Only
+    # the legacy ADX gate reads them — a windows spec owns its own
+    # classifier/lookback, so mixing the two is ambiguous; and without a
+    # gate consumer they would be a silent no-op (#1031 style: loud reject).
+    rp = candidate.get("regime_period")
+    rt = candidate.get("regime_adx_threshold")
+    if rp is not None or rt is not None:
+        if candidate.get("regime_windows_spec"):
+            raise ValueError(
+                "candidate sets regime_period/regime_adx_threshold alongside "
+                "regime_windows_spec; the windows spec owns the gate's "
+                "classifier and lookback — drop the legacy fields")
+        if not (candidate.get("allowed_regimes")
+                or candidate.get("regime_directional_policy")):
+            raise ValueError(
+                "candidate sets regime_period/regime_adx_threshold without a "
+                "regime gate consumer (allowed_regimes or "
+                "regime_directional_policy) — they would be a silent no-op")
+        if rp is not None and (isinstance(rp, bool)
+                               or not isinstance(rp, int) or rp < 2):
+            raise ValueError(
+                f"candidate.regime_period must be an int >= 2, got {rp!r}")
+        if rt is not None and (isinstance(rt, bool)
+                               or not isinstance(rt, (int, float))
+                               or not rt > 0):
+            raise ValueError(
+                "candidate.regime_adx_threshold must be a positive number, "
+                f"got {rt!r}")
     return candidate
 
 
@@ -659,6 +690,11 @@ def run_candidate_leg(reg, candidate: dict, symbol: str, timeframe: str,
         trailing_stop_atr_mult=candidate.get("trailing_stop_atr_mult"),
         profile_allocation=candidate.get("profile_allocation"),
         allowed_regimes=candidate.get("allowed_regimes"),
+        # #1338: gate on the candidate's own ADX lookback when it carries
+        # one; the 14/20 fallbacks match run_leg's own defaults.
+        regime_period=int(candidate.get("regime_period") or 14),
+        regime_adx_threshold=float(
+            candidate.get("regime_adx_threshold") or 20.0),
         regime_windows_spec=candidate.get("regime_windows_spec"),
         regime_directional_policy=candidate.get("regime_directional_policy"),
         keep_trades=keep_trades,

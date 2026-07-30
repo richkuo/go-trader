@@ -23,6 +23,18 @@ _PLATFORM_DIRS = {"spot": _SPOT_DIR, "futures": _FUTURES_DIR}
 _cached: dict = {}
 
 
+def registry_for_strategy_type(strategy_type: str) -> str:
+    """Return the open-strategy registry used by a live strategy type.
+
+    Perpetuals, exchange futures, and manual Hyperliquid positions share the
+    futures strategy surface. Every other strategy type uses the spot surface.
+    Keep this mapping here so dashboard previews, tuner schema lookup, and
+    fleet tuning cannot drift onto different registries.
+    """
+    key = str(strategy_type or "").strip().lower()
+    return "futures" if key in ("perps", "futures", "manual") else "spot"
+
+
 def _ensure_import_paths() -> None:
     # Strategy modules resolve ``indicators``, ``amd_ifvg``, etc. via sys.path.
     for p in (_SPOT_DIR, _SHARED_DIR, _TOOLS_DIR):

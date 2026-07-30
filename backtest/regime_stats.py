@@ -41,14 +41,34 @@ def kruskal_h(groups: list[np.ndarray]) -> float:
     return float(h / c) if c > 0 else float(h)
 
 
-def benjamini_hochberg(pvals: list[float], alpha: float = 0.05) -> list[bool]:
+def benjamini_hochberg(pvals: list[float], alpha: float = 0.05,
+                       family_size: int | None = None) -> list[bool]:
+    """Benjamini-Hochberg FDR mask over ``pvals`` at level ``alpha``.
+
+    ``family_size`` overrides the BH denominator (default ``len(pvals)``). Pass
+    a value LARGER than the number of p-values to correct as if the family had
+    that many hypotheses, of which only these were tested — the untested
+    remainder is treated as p=1 (never rejected). Under BH this collapses to
+    ranking the k supplied p-values 1..k but dividing each rank's threshold by
+    the full family size N instead of k, i.e. ``thresh_i = (i / N) * alpha``.
+    That is exactly the correction a selection-aware two-stage search needs
+    (#1338): stage 1 mined N candidates, so the k survivors that reach stage 2
+    must be corrected against N, not re-baselined to a fresh family of k.
+    Must be ``>= len(pvals)`` — a denominator below the tested count would
+    understate, not correct for, multiplicity.
+    """
     p = np.asarray(pvals, dtype=float)
     m = len(p)
     if m == 0:
         return []
+    denom = m if family_size is None else int(family_size)
+    if denom < m:
+        raise ValueError(
+            f"family_size={denom} is smaller than the number of p-values "
+            f"({m}); the BH denominator must cover every tested hypothesis")
     order = np.argsort(p)
     ranked = p[order]
-    thresh = (np.arange(1, m + 1) / m) * alpha
+    thresh = (np.arange(1, m + 1) / denom) * alpha
     passed = ranked <= thresh
     cut = ranked[np.max(np.where(passed)[0])] if passed.any() else -1.0
     return (p <= cut).tolist()
