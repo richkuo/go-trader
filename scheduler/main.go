@@ -2628,6 +2628,16 @@ func main() {
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
 								// for the scale-in branch and when no tier tightened.
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
+								// #1416: scale-out ratchet tiers emit Signal!=0, so the
+								// manage-path walker never ran this cycle. Re-run it now
+								// that PostTPTrailingATRMult is stamped — live AND paper
+								// (outside the execResult gate; paper has nil execResult).
+								if ratchetAlert != nil {
+									if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlOnChainAbsQty, &mu, notifier, logger); extraTrades > 0 {
+										trades += extraTrades
+										detail = slDetail
+									}
+								}
 								if execResult != nil && trades > 0 {
 									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
