@@ -2420,9 +2420,15 @@ func main() {
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
+							// #1416: true only when a tier STRICTLY tightened the trail this
+							// cycle. The walkers below then drop the min-move debounce so the
+							// tighter trigger lands now; a watermark-only advance leaves this
+							// false and stays fully debounced.
+							manageRatchetTightened := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
+								manageRatchetTightened = ratchetAlert != nil
 								mu.RLock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos != nil {
 									hlPosSnapshot = hyperliquidProtectionPositionSnapshot(pos)
@@ -2447,7 +2453,7 @@ func main() {
 								// synthetic close when mark crosses the trigger. Each strategy's
 								// virtual position is isolated in stratState.Positions, so peers
 								// on the same coin are unaffected by this strategy's breach.
-								newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx)
+								newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, trailingReplacePolicy{ratchetTightened: manageRatchetTightened})
 								mu.Lock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
 									if breach {
@@ -2478,7 +2484,7 @@ func main() {
 								// on-chain size (!capped) so the trailing SL covers the
 								// new total without waiting for a trailing trigger move.
 								forceResize := hlScaleInResizePending && !capped
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, forceResize, notifier, logger)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened}, notifier, logger)
 								mu.Lock()
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
 									trades++
@@ -2845,9 +2851,13 @@ func main() {
 							// on cycle 1.
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							mark := prices[sc.Symbol]
+							// #1416: same as the perps manage path — a strict tighten drops
+							// the walker's min-move debounce for this cycle only.
+							manualRatchetTightened := false
 							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
+								manualRatchetTightened = ratchetAlert != nil
 							}
 							mu.RLock()
 							pos = stratState.Positions[sc.Symbol]
@@ -2862,7 +2872,7 @@ func main() {
 								// position (the trailing SL otherwise covers only the
 								// pre-add size until the next trigger move).
 								forceResize := pos.ScaleInResizePending && !capped
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, forceResize, notifier, logger)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manualRatchetTightened}, notifier, logger)
 								mu.Lock()
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest

@@ -61,7 +61,7 @@ func scaleInResizeTrailingSLNow(
 		logger.Warn("scale-in eager SL resize: %s still capped (virtual %.6f > on-chain %.6f); deferring to next walker cycle", symbol, posSnap.Quantity, slEffectiveQty)
 		return 0, ""
 	}
-	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, true, notifier, logger)
+	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, trailingReplacePolicy{forceResize: true}, notifier, logger)
 	mu.Lock()
 	defer mu.Unlock()
 	trades := 0

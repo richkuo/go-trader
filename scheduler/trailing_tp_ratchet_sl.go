@@ -5,6 +5,17 @@ import (
 	"sync"
 )
 
+// ratchetTightenReplacePolicy is the walker policy every ratchet→walker
+// dispatch uses on a cycle where applyTrailingTPRatchet* returned a non-nil
+// alert (i.e. a tier STRICTLY tightened the trail). It drops the min-move
+// debounce so the newly stamped, tighter trigger reaches the exchange the same
+// cycle instead of being discarded whenever Δmult × EntryATR / anchor lands
+// under trailing_stop_min_move_pct (#1416).
+//
+// Bounded by construction: a tier alerts at most once (SLAdjustedTiersProcessed
+// advances past it), so this can never turn into per-cycle cancel+replace churn.
+var ratchetTightenReplacePolicy = trailingReplacePolicy{ratchetTightened: true}
+
 // runTrailingStopUpdateAfterRatchetTighten re-runs the trailing walker on the
 // SAME cycle a ratchet tier tightened during execute (#1416).
 //
@@ -63,7 +74,7 @@ func runTrailingStopUpdateAfterRatchetTighten(
 			logger.Warn("ratchet same-cycle trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", qty, slEffectiveQty, symbol)
 		}
 		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(
-			sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, false, notifier, logger)
+			sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, ratchetTightenReplacePolicy, notifier, logger)
 		mu.Lock()
 		defer mu.Unlock()
 		if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
@@ -74,7 +85,7 @@ func runTrailingStopUpdateAfterRatchetTighten(
 
 	// Paper (#532): no exchange trigger; advance the virtual HWM/trigger with the
 	// tightened PostTPTrailingATRMult already stamped by the ratchet.
-	newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, side, &posSnap, mark, highWater, triggerPx)
+	newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, side, &posSnap, mark, highWater, triggerPx, ratchetTightenReplacePolicy)
 	mu.Lock()
 	defer mu.Unlock()
 	pos, ok := stratState.Positions[symbol]

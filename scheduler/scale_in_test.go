@@ -149,13 +149,13 @@ func TestTrailingStopForceResizeReplacesWithoutMove(t *testing.T) {
 	// mark==highWater, currentTrigger already at the trailing level → no move.
 	// forceResize=false: no replace.
 	called = false
-	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 2.0, &Position{AvgCost: 100}, 100, 100, 97, 111, false, nil, logger)
+	_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 2.0, &Position{AvgCost: 100}, 100, 100, 97, 111, trailingReplacePolicy{}, nil, logger)
 	if !ok || result != nil || called {
 		t.Fatalf("without force, expected no replace (called=%v result=%+v)", called, result)
 	}
 	// forceResize=true: replace at the existing trigger (97) with the grown size (2.0).
 	called = false
-	_, result, ok = runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 2.0, &Position{AvgCost: 100}, 100, 100, 97, 111, true, nil, logger)
+	_, result, ok = runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 2.0, &Position{AvgCost: 100}, 100, 100, 97, 111, trailingReplacePolicy{forceResize: true}, nil, logger)
 	if !ok || result == nil || !called {
 		t.Fatalf("with force, expected a replace (called=%v result=%+v ok=%v)", called, result, ok)
 	}

@@ -258,7 +258,7 @@ func TestRunHyperliquidTrailingStopUpdate_CancelThenPlaceArgs(t *testing.T) {
 	logger := silentStrategyLogger("hl-test")
 	defer logger.Close()
 
-	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, false, nil, logger)
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, trailingReplacePolicy{}, nil, logger)
 	if !ok {
 		t.Fatalf("runHyperliquidTrailingStopUpdate returned ok=false")
 	}
@@ -306,12 +306,12 @@ func TestRunHyperliquidTrailingStopUpdate_RatchetFallbackNormalizeWidensOnce(t *
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: triggerPx}, "", nil
 			}
 
-			_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", tc.side, 0.5, &Position{AvgCost: 100}, 100, 100, tc.currentTrigger, 111, false, nil, logger)
+			_, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", tc.side, 0.5, &Position{AvgCost: 100}, 100, 100, tc.currentTrigger, 111, trailingReplacePolicy{}, nil, logger)
 			if !ok || result != nil || called {
 				t.Fatalf("without marker expected no replace: ok=%v result=%+v called=%v", ok, result, called)
 			}
 
-			_, result, ok = runHyperliquidTrailingStopUpdate(sc, "ETH", tc.side, 0.5, &Position{AvgCost: 100, RatchetFallbackNormalizePending: true}, 100, 100, tc.currentTrigger, 111, false, nil, logger)
+			_, result, ok = runHyperliquidTrailingStopUpdate(sc, "ETH", tc.side, 0.5, &Position{AvgCost: 100, RatchetFallbackNormalizePending: true}, 100, 100, tc.currentTrigger, 111, trailingReplacePolicy{}, nil, logger)
 			if !ok || result == nil || !called {
 				t.Fatalf("with marker expected widen replace: ok=%v result=%+v called=%v", ok, result, called)
 			}
@@ -343,7 +343,7 @@ func TestRunHyperliquidTrailingStopUpdate_DefersOnCancelFailure(t *testing.T) {
 		ownerID:  "owner",
 	})
 
-	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, false, notifier, logger)
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, trailingReplacePolicy{}, notifier, logger)
 	if ok || result == nil {
 		t.Fatalf("runHyperliquidTrailingStopUpdate = (%+v, %v), want deferred result", result, ok)
 	}
@@ -374,7 +374,7 @@ func TestRunHyperliquidTrailingStopUpdate_DefersOnOpenOrderCheckFailure(t *testi
 	logger := silentStrategyLogger("hl-test")
 	defer logger.Close()
 
-	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, false, nil, logger)
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 0.5, &Position{AvgCost: 100}, 110, 100, 97, 111, trailingReplacePolicy{}, nil, logger)
 	if ok || result == nil {
 		t.Fatalf("runHyperliquidTrailingStopUpdate = (%+v, %v), want deferred result", result, ok)
 	}
@@ -1849,7 +1849,7 @@ func TestRunHyperliquidTrailingStopPaper(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotHW, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(c.sc, c.side, c.pos, c.mark, c.highWater, c.currentTrigger)
+			gotHW, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(c.sc, c.side, c.pos, c.mark, c.highWater, c.currentTrigger, trailingReplacePolicy{})
 			if floatDiff(gotHW, c.want.newHighWater) > 1e-9 ||
 				floatDiff(gotTrig, c.want.newTrigger) > 1e-9 ||
 				gotBreach != c.want.breach ||
@@ -1883,13 +1883,13 @@ func TestRunHyperliquidTrailingStopPaper_RegimeSnapshotArms(t *testing.T) {
 	}
 
 	incomplete := &Position{AvgCost: pos.AvgCost, EntryATR: pos.EntryATR}
-	_, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(sc, "long", incomplete, 2000, 0, 0)
+	_, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(sc, "long", incomplete, 2000, 0, 0, trailingReplacePolicy{})
 	if gotTrig != 0 || gotBreach || gotPx != 0 {
 		t.Fatalf("incomplete snapshot unexpectedly armed: trig=%v breach=%v px=%v", gotTrig, gotBreach, gotPx)
 	}
 
 	snapshot := hyperliquidProtectionPositionSnapshot(pos)
-	gotHW, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(sc, "long", snapshot, 2000, 0, 0)
+	gotHW, gotTrig, gotBreach, gotPx := runHyperliquidTrailingStopPaper(sc, "long", snapshot, 2000, 0, 0, trailingReplacePolicy{})
 	if !approxEq(gotHW, 2000) || !approxEq(gotTrig, 1900) || gotBreach || gotPx != 0 {
 		t.Fatalf("regime snapshot paper trail = (hw=%v trig=%v breach=%v px=%v), want (2000, 1900, false, 0)",
 			gotHW, gotTrig, gotBreach, gotPx)
