@@ -271,10 +271,16 @@ def hurst_exponent(close: pd.Series, *, min_points: int = HURST_DFA_MIN_POINTS) 
     Null-distribution caveat: DFA carries a known small upward bias at short
     sample sizes that a longer fetch does not remove. Measured at this scale
     floor (``_HURST_DFA_MIN_SCALE``) on memoryless (Gaussian random walk)
-    data, the estimate's own mean is ~0.51 at n=200 points and ~0.52 at
-    n=101 (sd ~0.06-0.09) rather than the "true" 0.50 -- a reading in the
-    ~0.50-0.55 band near those sample sizes is consistent with no memory at
-    all, not confirmed persistence.
+    data over 3000 independent trials, the estimate's own mean is ~0.51
+    (sd ~0.08) at n=201 points and ~0.51 (sd ~0.12) at n=101 -- the shortest
+    frame ``regime_enriched_features`` computes at -- rather than the "true"
+    0.50. The n=101 spread is wide enough that individual memoryless draws
+    regularly land at 0.65-0.70 (95th/99th percentile ~0.72/0.82); a single
+    reading near 0.50-0.55 is consistent with no memory, but at n=101 a
+    single high reading (even above 0.7) is NOT reliable evidence of
+    persistence on its own -- only a reading well outside this spread, or
+    persistence confirmed by other signals, should be trusted at short
+    sample sizes.
     """
     prices = close.astype(float).to_numpy()
     prices = prices[np.isfinite(prices)]

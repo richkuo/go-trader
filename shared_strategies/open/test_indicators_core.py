@@ -660,6 +660,58 @@ def test_hurst_random_walk_mean_near_half_at_enriched_column_frame_size():
     assert abs(mean_h - 0.5) < 0.03, mean_h
 
 
+# --- Null-distribution spread pinned to the docstring caveat (#1419 review) ---
+#
+# The mean-only tests above don't catch an understated spread: a reading can sit
+# well outside a narrow claimed sd while the *mean* over many draws still looks
+# fine. These regression-pin the empirical sd/percentiles the docstring caveat
+# now cites, using 1000-trial samples (same order as the review's own re-measure)
+# and seeds disjoint from the mean tests above so the two don't share draws.
+
+
+def test_hurst_random_walk_sd_within_caveat_at_live_frame_size():
+    """At n=201, the null-distribution sd must stay close to the ~0.08 the
+    docstring caveat cites -- not silently drift to the wider n=101 figure."""
+    values = [
+        hurst_exponent(_ar1_log_price_series(201, phi=0.0, seed=10_000 + i))
+        for i in range(1000)
+    ]
+    values = np.array([v for v in values if not np.isnan(v)])
+    assert len(values) > 800, "too many NaN draws to measure the null sd"
+    sd = float(values.std())
+    assert 0.05 < sd < 0.11, sd
+
+
+def test_hurst_random_walk_sd_within_caveat_at_enriched_column_frame_size():
+    """At n=101 -- the exact frame `regime_enriched_features` computes at -- the
+    null-distribution sd must stay close to the ~0.12 the docstring caveat cites.
+    A caveat claiming the tighter n=201 spread here would understate how often a
+    memoryless draw reads well above the 0.50-0.55 'no memory' band."""
+    values = [
+        hurst_exponent(_ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=20_000 + i))
+        for i in range(1000)
+    ]
+    values = np.array([v for v in values if not np.isnan(v)])
+    assert len(values) > 800, "too many NaN draws to measure the null sd"
+    sd = float(values.std())
+    assert 0.09 < sd < 0.16, sd
+
+
+def test_hurst_random_walk_high_percentile_exceeds_no_memory_band_at_enriched_column_frame_size():
+    """At n=101, the docstring warns a single reading above 0.55 -- even above
+    0.7 -- is not reliable evidence of persistence on its own. Pin that: the 95th
+    percentile of memoryless draws must sit meaningfully above 0.55, matching the
+    caveat's ~0.72 figure within a wide tolerance."""
+    values = [
+        hurst_exponent(_ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=30_000 + i))
+        for i in range(1000)
+    ]
+    values = np.array([v for v in values if not np.isnan(v)])
+    assert len(values) > 800, "too many NaN draws to measure the percentile"
+    p95 = float(np.percentile(values, 95))
+    assert 0.60 < p95 < 0.85, p95
+
+
 def test_hurst_dfa_fluctuation_vectorization_matches_naive_per_segment_polyfit():
     """#1419 review perf fix: `_hurst_dfa_fluctuation` now fits every segment at a
     scale with one batched pseudo-inverse product instead of one `np.polyfit` call
