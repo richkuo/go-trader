@@ -1,5 +1,6 @@
 """Tests for shared_tools/regime.py."""
 
+import json
 import math
 import inspect
 import importlib
@@ -28,6 +29,15 @@ regime_label_from_payload = _regime_mod.regime_label_from_payload
 required_ohlcv_limit = _regime_mod.required_ohlcv_limit
 parse_regime_windows_json = _regime_mod.parse_regime_windows_json
 ensure_regime_columns = _regime_mod.ensure_regime_columns
+
+# #1409: loaded the same way as regime.py itself, to check the DFA floor
+# constant regime.py's hurst wiring relies on.
+_indicators_core_spec = importlib.util.spec_from_file_location(
+    "_test_regime_indicators_core",
+    pathlib.Path(__file__).resolve().parents[1] / "shared_strategies" / "open" / "indicators_core.py",
+)
+_indicators_core_mod = importlib.util.module_from_spec(_indicators_core_spec)
+_indicators_core_spec.loader.exec_module(_indicators_core_mod)
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -518,3 +528,142 @@ def test_normalize_regime_gate_on_failure():
     import pytest as _pytest
     with _pytest.raises(ValueError, match="regime_gate_on_failure"):
         _regime_mod.normalize_regime_gate_on_failure("fail-closed")
+
+
+# --- #1409: Hurst exponent metric (advisory-only, composite path) ------------
+
+
+def test_latest_regime_composite_includes_hurst_when_data_sufficient():
+    """Full fetched frame >= the DFA floor (default 100 points) -> hurst present
+    and finite, even though `period` (the window used for return_eff/range_eff/
+    efficiency/adx) is far smaller than that floor."""
+    df = _make_uptrend(n=300)
+    snap = _regime_mod.latest_regime_composite(df, period=20)
+    assert "hurst" in snap["metrics"]
+    assert np.isfinite(snap["metrics"]["hurst"])
+
+
+def test_latest_regime_composite_omits_hurst_when_full_frame_too_short():
+    """Below the DFA floor even over the FULL frame (not just the `period`
+    window) -> `hurst` key absent, never a NaN placeholder in the dict (NaN
+    must never reach the JSON payload boundary -- Go's json.Unmarshal into
+    map[string]float64 rejects bare NaN)."""
+    df = _make_uptrend(n=60)
+    snap = _regime_mod.latest_regime_composite(df, period=20)
+    assert "hurst" not in snap["metrics"]
+    assert all(v == v for v in snap["metrics"].values())  # no NaN anywhere (v==v is False for NaN)
+
+
+def test_latest_regime_composite_period_window_alone_would_be_too_short():
+    """Regression guard for the 'per window' misreading: `period` here (20) is
+    below the DFA floor on its own, yet hurst is still present because the
+    estimator reads the FULL 300-bar frame, not the period-length slice."""
+    df = _make_uptrend(n=300)
+    assert 20 < _indicators_core_mod.HURST_DFA_MIN_POINTS
+    snap = _regime_mod.latest_regime_composite(df, period=20)
+    assert "hurst" in snap["metrics"]
+
+
+def test_latest_regime_composite_metrics_and_label_unchanged_by_hurst():
+    """Zero-behavior-change guard for #1409: independently recompute the label,
+    score, and every pre-existing metric via the same helper functions
+    `latest_regime_composite` itself calls, and assert byte-identical output.
+    Only `hurst` may appear as a new key -- map_composite_label, thresholds,
+    and every other metric value must be untouched by the hurst addition."""
+    n = 300
+    period = 50
+    idx = pd.date_range("2024-01-01", periods=n, freq="h")
+    rng = np.random.default_rng(11)
+    prices = 100 + 3 * np.sin(np.linspace(0, 6 * np.pi, n)) + rng.normal(0, 0.4, n)
+    df = pd.DataFrame(
+        {"open": prices, "high": prices * 1.004, "low": prices * 0.996, "close": prices},
+        index=idx,
+    )
+    th = _regime_mod.normalize_composite_thresholds(None)
+
+    window = _regime_mod._window_slice(df, period)
+    atr_val = _regime_mod._atr_at_end(df, period)
+    eff = _regime_mod._composite_efficiency_metrics(window, atr_val, period)
+    adx_period = min(period, _regime_mod.COMPOSITE_ADX_PERIOD_CAP)
+    reg_df = _regime_mod.compute_regime(df, period=adx_period, adx_threshold=th["adx"])
+    adx_val = float(reg_df["adx"].iloc[-1])
+    expected_label = _regime_mod.map_composite_label(
+        eff["return_eff"], adx_val, eff["range_eff"], eff["efficiency"], th
+    )
+    expected_score = min(adx_val / 100.0, 1.0)
+    expected_metrics = {
+        "adx": adx_val,
+        "return_eff": round(eff["return_eff"], 4),
+        "range_eff": round(eff["range_eff"], 4),
+        "efficiency": round(eff["efficiency"], 4),
+        "atr_pct": round(atr_val / eff["close_end"] * 100.0, 4) if eff["close_end"] else 0.0,
+    }
+
+    snap = _regime_mod.latest_regime_composite(df, period=period)
+    assert snap["regime"] == expected_label
+    assert snap["score"] == expected_score
+    for key, val in expected_metrics.items():
+        assert snap["metrics"][key] == val
+    # Only "hurst" is allowed to be a new key beyond the pre-#1409 tuple.
+    assert set(snap["metrics"]) - set(expected_metrics) <= {"hurst"}
+
+
+@pytest.mark.parametrize(
+    "fixture_fn,period,thresholds",
+    [
+        (_make_uptrend, 50, None),
+        (_make_downtrend, 50, None),
+        (_make_flat, 50, None),
+    ],
+)
+def test_latest_regime_composite_labels_stay_valid_with_hurst_present(fixture_fn, period, thresholds):
+    """Existing-fixture regression guard: adding `hurst` must not push any
+    label outside the pre-#1409 seven-label composite vocabulary."""
+    df = fixture_fn(n=300)
+    snap = _regime_mod.latest_regime_composite(df, period=period, thresholds=thresholds)
+    assert snap["regime"] in _regime_mod.VALID_LABELS_COMPOSITE
+
+
+def test_regime_from_injected_payload_without_hurst_key_still_works():
+    """#879 regression guard (not new tolerance work): regime_from_injected_payload
+    already passes metric keys through untouched, so a payload snapshot with no
+    `hurst` key keeps working exactly as before #1409."""
+    payload = json.dumps({
+        "medium": {
+            "regime": "trending_up_clean",
+            "score": 0.8,
+            "classifier": "composite",
+            "metrics": {
+                "adx": 30.0, "return_eff": 0.1, "range_eff": 0.1,
+                "efficiency": 0.7, "atr_pct": 1.2,
+            },
+        },
+    })
+    windows, live_atr, strategy_payload = _regime_mod.regime_from_injected_payload(payload)
+    assert strategy_payload["regime"] == "trending_up_clean"
+    assert "hurst" not in strategy_payload["metrics"]
+
+
+def test_regime_from_injected_payload_with_hurst_key_passes_through():
+    """A hurst-bearing injected payload round-trips unchanged (no filtering of
+    unknown/extra metric keys at the injection boundary)."""
+    payload = json.dumps({
+        "medium": {
+            "regime": "trending_up_clean",
+            "score": 0.8,
+            "classifier": "composite",
+            "metrics": {
+                "adx": 30.0, "return_eff": 0.1, "range_eff": 0.1,
+                "efficiency": 0.7, "atr_pct": 1.2, "hurst": 0.62,
+            },
+        },
+    })
+    windows, live_atr, strategy_payload = _regime_mod.regime_from_injected_payload(payload)
+    assert strategy_payload["metrics"]["hurst"] == 0.62
+
+
+def test_default_metrics_stays_hurst_free():
+    """#1409 hard constraint: _DEFAULT_METRICS must never carry a fabricated
+    hurst default (e.g. 0.0 would masquerade as a strong mean-reversion
+    reading) -- absence is the only correct 'unknown' signal."""
+    assert "hurst" not in _regime_mod._DEFAULT_METRICS

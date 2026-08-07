@@ -155,6 +155,51 @@ def test_volume_z_is_trailing_and_warmup_nan():
     assert vz[i] == pytest.approx(expected, rel=1e-9)
 
 
+def test_hurst_column_is_trailing_and_warmup_nan():
+    df = _synthetic_ohlcv(n=300)
+    mat = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"],
+                                      hurst_window=100)
+    h = mat["hurst"].to_numpy()
+    assert np.isnan(h[:100]).all()   # fewer than `hurst_window` observations -> NaN
+    assert np.isfinite(h[100])       # first full trailing window (101 closes) is defined
+    # recompute by hand from the SSoT estimator over the same trailing window
+    from indicators_core import hurst_exponent
+    close = df["close"].to_numpy()
+    i = 200
+    expected = hurst_exponent(pd.Series(close[i - 100: i + 1]), min_points=100)
+    assert h[i] == pytest.approx(expected, rel=1e-12)
+
+
+def test_hurst_column_uses_own_window_independent_of_period():
+    """#1409: hurst must NOT inherit `period` (14-50 bars live) as its window -- that would put it
+    below the ~100-point DFA floor and make it NaN almost every live cycle. Two calls with the
+    SAME hurst_window but different `period` must produce the identical hurst column."""
+    df = _synthetic_ohlcv(n=300)
+    mat_a = ref.enriched_feature_matrix(df, period=20, columns=ref.CANONICAL_COLUMNS + ["hurst"],
+                                        hurst_window=100)
+    mat_b = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"],
+                                        hurst_window=100)
+    pd.testing.assert_series_equal(mat_a["hurst"], mat_b["hurst"], check_exact=True)
+
+
+def test_hurst_column_is_causal_future_bars_do_not_change_past_rows():
+    df = _synthetic_ohlcv(n=300)
+    base = ref.enriched_feature_matrix(df, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"])
+    t = 200
+    mutated = df.copy()
+    mutated.iloc[t + 1:, mutated.columns.get_loc("close")] *= 3.0
+    after = ref.enriched_feature_matrix(mutated, period=48, columns=ref.CANONICAL_COLUMNS + ["hurst"])
+    a = base["hurst"].iloc[: t + 1].to_numpy()
+    b = after["hurst"].iloc[: t + 1].to_numpy()
+    assert np.array_equal(np.nan_to_num(a, nan=-7.0), np.nan_to_num(b, nan=-7.0))
+
+
+def test_hurst_extra_column_appended_after_canonical_block():
+    assert ref.ENRICHED_COLUMNS[-1] == "hurst"
+    assert ref.ENRICHED_COLUMNS[:4] == ref.CANONICAL_COLUMNS
+    assert "hurst" in ref.ENRICHED_EXTRA_COLUMNS
+
+
 # ---------------------------------------------------------------- fit / decode contract
 
 def test_fit_unsupervised_enriched_schema_and_decode():
@@ -215,7 +260,7 @@ def test_column_order_is_load_bearing_for_labels():
                                  canonical_indices=(0, 1, 2, 3))
     correct, _ = forward_filter_labels(mat.to_numpy(dtype=float), model)
     swapped = mat[["adx", "range_eff", "efficiency", "return_eff", "funding_rate",
-                   "volume_z", "htf_range_eff"]]  # return_eff <-> adx swapped (very different scale)
+                   "volume_z", "htf_range_eff", "hurst"]]  # return_eff <-> adx swapped (very different scale)
     wrong, _ = forward_filter_labels(swapped.to_numpy(dtype=float), model)
     valid = ~np.isnan(mat.to_numpy(dtype=float)).any(1)
     assert list(np.asarray(correct)[valid]) != list(np.asarray(wrong)[valid])

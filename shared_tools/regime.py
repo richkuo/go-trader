@@ -37,6 +37,24 @@ except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py
     _ADX_SPEC.loader.exec_module(_ADX_MODULE)
     _compute_adx_components = _ADX_MODULE._compute_adx_components
 
+try:
+    from shared_strategies.open.indicators_core import hurst_exponent
+except ImportError:  # pragma: no cover - supports direct shared_tools/regime.py imports
+    import importlib.util
+    from pathlib import Path
+
+    _INDICATORS_CORE_PATH = (
+        Path(__file__).resolve().parents[1] / "shared_strategies" / "open" / "indicators_core.py"
+    )
+    _HURST_SPEC = importlib.util.spec_from_file_location(
+        "_regime_indicators_core", _INDICATORS_CORE_PATH
+    )
+    if _HURST_SPEC is None or _HURST_SPEC.loader is None:
+        raise
+    _HURST_MODULE = importlib.util.module_from_spec(_HURST_SPEC)
+    _HURST_SPEC.loader.exec_module(_HURST_MODULE)
+    hurst_exponent = _HURST_MODULE.hurst_exponent
+
 CLASSIFIER_ADX = "adx"
 CLASSIFIER_COMPOSITE = "composite"
 
@@ -319,17 +337,29 @@ def latest_regime_composite(
     label = map_composite_label(eff["return_eff"], adx_val, eff["range_eff"], eff["efficiency"], th)
     score = min(adx_val / 100.0, 1.0)
     close_end = eff["close_end"]
+    metrics = {
+        "adx": adx_val,
+        "return_eff": round(eff["return_eff"], 4),
+        "range_eff": round(eff["range_eff"], 4),
+        "efficiency": round(eff["efficiency"], 4),
+        "atr_pct": round(atr_val / close_end * 100.0, 4) if close_end else 0.0,
+    }
+    # #1409: observability-only Hurst exponent, over the FULL fetched frame
+    # (not the period-length `window` slice above) — DFA needs ~100 points,
+    # well above the 14-50 bar composite window. Omit the key entirely on
+    # NaN (insufficient data / degenerate series) rather than serialize NaN:
+    # json.dumps writes bare NaN, and Go's json.Unmarshal into
+    # map[string]float64 rejects that token, which would fail the whole
+    # RegimePayload parse. Advisory metric only — never read by
+    # map_composite_label, gating, or sizing.
+    hurst_val = hurst_exponent(df["close"])
+    if pd.notna(hurst_val):
+        metrics["hurst"] = round(hurst_val, 4)
     return {
         "regime": label,
         "score": score,
         "classifier": CLASSIFIER_COMPOSITE,
-        "metrics": {
-            "adx": adx_val,
-            "return_eff": round(eff["return_eff"], 4),
-            "range_eff": round(eff["range_eff"], 4),
-            "efficiency": round(eff["efficiency"], 4),
-            "atr_pct": round(atr_val / close_end * 100.0, 4) if close_end else 0.0,
-        },
+        "metrics": metrics,
     }
 
 

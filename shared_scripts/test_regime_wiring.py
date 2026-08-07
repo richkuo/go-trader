@@ -21,7 +21,7 @@ _SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
 if str(_SHARED_TOOLS) not in sys.path:
     sys.path.insert(0, str(_SHARED_TOOLS))
 
-from regime import latest_regime
+from regime import latest_regime, latest_regime_composite
 
 _SHARED_STRATEGIES_TOOLS = str(_SHARED_TOOLS)
 
@@ -76,6 +76,32 @@ def test_latest_regime_output_json_serializable_flat():
     serialized = json.dumps(payload)
     parsed = json.loads(serialized)
     assert parsed["regime"] == "ranging"
+
+
+def test_composite_json_never_contains_nan_token_when_hurst_omitted():
+    """#1409: Go's json.Unmarshal into map[string]float64 rejects a bare NaN token, so a
+    below-the-DFA-floor hurst estimate must be OMITTED from the metrics dict, never serialized
+    as NaN. Python's json.dumps/loads are NaN-tolerant by default and would silently mask a
+    regression here, so this asserts on the raw serialized TEXT, not a round-tripped dict."""
+    df = _make_flat_df(n=60)  # full frame well below the ~100-point DFA floor
+    payload = latest_regime_composite(df, period=20)
+    assert "hurst" not in payload["metrics"]
+    serialized = json.dumps(payload)
+    assert "NaN" not in serialized
+    json.loads(serialized)  # still must be valid, permissive-parser JSON
+
+
+def test_composite_json_includes_finite_hurst_when_data_sufficient():
+    """#1409: with a full frame above the DFA floor, hurst is present, finite, and survives the
+    JSON boundary as an ordinary float (never the bare NaN token)."""
+    df = _make_uptrend_df(n=300)
+    payload = latest_regime_composite(df, period=20)
+    assert "hurst" in payload["metrics"]
+    serialized = json.dumps(payload)
+    assert "NaN" not in serialized
+    parsed = json.loads(serialized)
+    assert isinstance(parsed["metrics"]["hurst"], float)
+    assert np.isfinite(parsed["metrics"]["hurst"])
 
 
 def test_regime_label_string_is_safe_for_output_field():

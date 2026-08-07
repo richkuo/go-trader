@@ -15,6 +15,12 @@ canonical features (kept FIRST, in their canonical order) plus signals the hand-
                           higher-timeframe bar that has already CLOSED at or before the base bar's
                           open (strictly causal; conservatively staler than the canonical row,
                           never leaking).
+  * ``hurst``           — #1409 trailing DFA Hurst exponent (``indicators_core.hurst_exponent``,
+                          the SSoT — imported, never reimplemented). Uses its OWN trailing
+                          ``hurst_window`` (default 100 bars, independent of ``period``), because
+                          DFA needs ~100 points and the composite window (``period``, 14-50 bars
+                          live) is below that floor. Warmup (< ``hurst_window`` observations) or a
+                          degenerate segment -> NaN, same warmup convention as the other extras.
 
 Offline / research only. Live ``check_regime.py`` still builds only the canonical four-column
 matrix, so an enriched model is NOT drop-in for the live classifier — that delta is recorded for
@@ -32,7 +38,8 @@ import sys
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 for _p in (_THIS_DIR, os.path.abspath(os.path.join(_THIS_DIR, "..")),
-           os.path.abspath(os.path.join(_THIS_DIR, "..", "shared_tools"))):
+           os.path.abspath(os.path.join(_THIS_DIR, "..", "shared_tools")),
+           os.path.abspath(os.path.join(_THIS_DIR, "..", "shared_strategies", "open"))):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -40,23 +47,28 @@ import numpy as np
 import pandas as pd
 
 from regime import composite_feature_matrix, _DEFAULT_COMPOSITE_THRESHOLDS
+from indicators_core import hurst_exponent, HURST_DFA_MIN_POINTS
 
 # Canonical four, in the order composite_feature_matrix emits them. The naming path
 # (map_composite_label) consumes these by position; they MUST stay first and in this order.
 CANONICAL_COLUMNS = ["return_eff", "range_eff", "efficiency", "adx"]
 # Extra signals the hand-rule does not use. Appended AFTER the canonical block.
-ENRICHED_EXTRA_COLUMNS = ["funding_rate", "volume_z", "htf_range_eff"]
+ENRICHED_EXTRA_COLUMNS = ["funding_rate", "volume_z", "htf_range_eff", "hurst"]
 ENRICHED_COLUMNS = CANONICAL_COLUMNS + ENRICHED_EXTRA_COLUMNS
 # Position of (return_eff, range_eff, efficiency, adx) inside any canonical-first matrix.
 CANONICAL_INDICES = (0, 1, 2, 3)
+# #1409: hurst's own trailing window, independent of the composite `period`. Matches
+# indicators_core.HURST_DFA_MIN_POINTS (the DFA floor) so the column isn't NaN by construction.
+HURST_WINDOW_DEFAULT = HURST_DFA_MIN_POINTS
 
 # Recorded for #1074. An enriched model decodes from this column set on-cycle; live
 # check_regime.py builds only CANONICAL_COLUMNS, so live wiring would need to feed the same
-# enriched matrix (funding fetch + volume z-score + HTF resample) every cycle. Not solved here.
+# enriched matrix (funding fetch + volume z-score + HTF resample + hurst) every cycle. Not solved
+# here.
 LIVE_WIRING_DELTA = (
     "Enriched models decode from ENRICHED_COLUMNS; live check_regime.py builds only "
-    "CANONICAL_COLUMNS. Live wiring (#1074) must feed funding_rate + volume_z + htf_range_eff "
-    "on-cycle in this exact order, or forward_filter_labels reads garbage."
+    "CANONICAL_COLUMNS. Live wiring (#1074) must feed funding_rate + volume_z + htf_range_eff + "
+    "hurst on-cycle in this exact order, or forward_filter_labels reads garbage."
 )
 
 
@@ -121,18 +133,43 @@ def _htf_range_eff_column(df: pd.DataFrame, period: int, thresholds: dict,
     return merged["htf_range_eff"].to_numpy(dtype=float)
 
 
+def _hurst_column(df: pd.DataFrame, window: int) -> np.ndarray:
+    """Trailing per-bar Hurst exponent (DFA) over the last `window` closes, inclusive of the
+    current bar — same causal window convention as the other enriched columns.
+
+    `window` is independent of the composite `period`: DFA needs ~`indicators_core.
+    HURST_DFA_MIN_POINTS` points to produce a non-NaN estimate, well above the composite's
+    14-50 bar window, so this column intentionally does NOT reuse `period`/`vol_window`.
+    Estimator comes from ``indicators_core.hurst_exponent`` (the repo SSoT) — never
+    reimplemented here. `hurst_exponent` operates on LOG RETURNS internally, so a `window`-price
+    segment yields only `window - 1` returns — one short of `min_points=window` and NaN every
+    time. The segment therefore spans `window + 1` closes (`window` log returns), warming up one
+    bar later than the level-only extras above. Warmup or a degenerate segment -> NaN.
+    """
+    if window < 2:
+        raise ValueError("hurst_window must be >= 2")
+    closes = df["close"].astype(float).to_numpy()
+    n = len(closes)
+    out = np.full(n, np.nan, dtype=float)
+    for i in range(window, n):
+        seg = pd.Series(closes[i - window : i + 1])
+        out[i] = hurst_exponent(seg, min_points=window)
+    return out
+
+
 def enriched_feature_matrix(df: pd.DataFrame, period: int, thresholds: dict | None = None, *,
                             funding: pd.DataFrame | None = None, vol_window: int | None = None,
-                            htf_multiple: int = 4,
+                            htf_multiple: int = 4, hurst_window: int | None = None,
                             columns: list[str] | None = None) -> pd.DataFrame:
     """Per-bar enriched feature matrix (canonical four FIRST, then the enabled extras).
 
     All joins are causal — canonical window ends at the bar, funding/HTF use backward merges,
-    volume z-score uses a trailing window. Warmup and atr<=0 bars are NaN (dropped downstream by
-    the model's NaN mask). `funding` is the DataFrame(timestamp, rate) from
+    volume z-score and hurst use a trailing window. Warmup and atr<=0 bars are NaN (dropped
+    downstream by the model's NaN mask). `funding` is the DataFrame(timestamp, rate) from
     ``funding_fetcher.load_cached_funding``; when None/empty the funding column is all-NaN (the
     model mask then drops every row, so a funding-bearing subset is effectively unavailable — the
-    bake-off harness detects and reports that rather than fitting on nothing).
+    bake-off harness detects and reports that rather than fitting on nothing). `hurst_window`
+    defaults to `HURST_WINDOW_DEFAULT` (the DFA floor, NOT `period` — see `_hurst_column`).
 
     `columns` selects a subset for ablations; the result preserves ENRICHED_COLUMNS order so the
     canonical block stays first (canonical_indices == (0, 1, 2, 3)). Unknown names raise.
@@ -149,6 +186,7 @@ def enriched_feature_matrix(df: pd.DataFrame, period: int, thresholds: dict | No
     columns = [c for c in ENRICHED_COLUMNS if c in columns]
 
     vol_window = int(vol_window) if vol_window else int(period)
+    hurst_window = int(hurst_window) if hurst_window else HURST_WINDOW_DEFAULT
     out = pd.DataFrame(index=df.index)
     canon = composite_feature_matrix(df, period, thresholds)
     for col in CANONICAL_COLUMNS:
@@ -160,6 +198,8 @@ def enriched_feature_matrix(df: pd.DataFrame, period: int, thresholds: dict | No
         out["volume_z"] = _volume_z_column(df, vol_window)
     if "htf_range_eff" in columns:
         out["htf_range_eff"] = _htf_range_eff_column(df, period, thresholds, htf_multiple)
+    if "hurst" in columns:
+        out["hurst"] = _hurst_column(df, hurst_window)
     return out[columns]
 
 

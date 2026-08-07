@@ -18,9 +18,11 @@ import pandas as pd
 import pytest
 
 from indicators_core import (
+    HURST_DFA_MIN_POINTS,
     atr_from_true_range,
     atr_sma,
     atr_sma_series,
+    hurst_exponent,
     round_atr_large,
     true_range,
     true_range_series,
@@ -542,3 +544,82 @@ def test_standard_atr_reexport_threads_wilder():
     # latest_atr threads the method: on a >=100-ATR frame the simple value is
     # integer-rounded and the wilder one is not, so they must differ.
     assert atr_mod.latest_atr(df, method="wilder") != atr_mod.latest_atr(df)
+
+
+# --- Hurst exponent (#1409) ---------------------------------------------------
+
+
+def _ar1_log_price_series(n, phi, seed, drift=0.0, scale=100.0):
+    """Cumulative log-price walk from an AR(1) increment process.
+
+    phi > 0 makes increments positively autocorrelated (persistent/trending);
+    phi < 0 makes them negatively autocorrelated (mean-reverting); phi == 0
+    is a plain Gaussian random walk.
+    """
+    rng = np.random.RandomState(seed)
+    eps = rng.randn(n)
+    steps = np.zeros(n)
+    for i in range(1, n):
+        steps[i] = phi * steps[i - 1] + eps[i]
+    log_price = np.cumsum(steps) * 0.01 + np.linspace(0.0, drift, n)
+    return pd.Series(scale * np.exp(log_price))
+
+
+def test_hurst_random_walk_near_half():
+    close = _ar1_log_price_series(2000, phi=0.0, seed=1)
+    h = hurst_exponent(close)
+    assert 0.35 <= h <= 0.65, h
+
+
+def test_hurst_persistent_series_above_half():
+    close = _ar1_log_price_series(2000, phi=0.7, seed=2)
+    h = hurst_exponent(close)
+    assert h > 0.55, h
+
+
+def test_hurst_mean_reverting_series_below_half():
+    close = _ar1_log_price_series(2000, phi=-0.6, seed=3)
+    h = hurst_exponent(close)
+    assert h < 0.45, h
+
+
+def test_hurst_insufficient_data_returns_nan():
+    close = pd.Series(np.linspace(100.0, 110.0, HURST_DFA_MIN_POINTS))  # one short of the floor
+    assert np.isnan(hurst_exponent(close))
+
+
+def test_hurst_exactly_at_minimum_is_not_nan():
+    close = _ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=4)
+    h = hurst_exponent(close)
+    assert not np.isnan(h)
+
+
+def test_hurst_constant_price_returns_nan():
+    close = pd.Series(np.full(300, 100.0))
+    assert np.isnan(hurst_exponent(close))
+
+
+def test_hurst_non_positive_price_returns_nan():
+    close = pd.Series(np.concatenate([np.full(150, 100.0), [-1.0], np.full(150, 100.0)]))
+    assert np.isnan(hurst_exponent(close))
+
+
+def test_hurst_never_raises_on_degenerate_input():
+    for close in (
+        pd.Series([], dtype=float),
+        pd.Series([100.0]),
+        pd.Series(np.full(500, float("nan"))),
+    ):
+        h = hurst_exponent(close)
+        assert np.isnan(h)
+
+
+def test_hurst_deterministic():
+    close = _ar1_log_price_series(500, phi=0.3, seed=5)
+    assert hurst_exponent(close) == hurst_exponent(close)
+
+
+def test_hurst_custom_min_points():
+    close = _ar1_log_price_series(60, phi=0.0, seed=6)
+    assert np.isnan(hurst_exponent(close, min_points=100))
+    assert not np.isnan(hurst_exponent(close, min_points=50))
