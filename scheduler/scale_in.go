@@ -453,6 +453,15 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 			_, ratchetAlert = applyTrailingTPRatchetToPosition(sc, pos, result.Symbol, price, logger)
 		}
 	}
+	// Deliberate asymmetry with executeHyperliquidResultDeferredOpen, which
+	// re-seeds pos.StopLossHighWaterPx from the fill price: an ADD must NOT.
+	// The high-water belongs to the trail already in progress, and an add's fill
+	// price carries no information about it — stamping it would push the stored
+	// high-water backward whenever the add fills below the best price seen, and
+	// then hold the trail frozen until price climbs back through it. Leaving it
+	// alone is strictly safer, and the only zero case is covered: the walker
+	// seeds an unset high-water from riskAnchorPrice(), the FROZEN first entry
+	// rather than the blended average (#873). Do not "restore symmetry" here.
 	detail := ""
 	if trades > 0 {
 		prefix := ""

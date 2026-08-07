@@ -225,3 +225,55 @@ func TestExecuteHyperliquidScaleInDeferredOpen_AppliesRatchet(t *testing.T) {
 		t.Errorf("no tier cleared: PostTPTrailingATRMult must stay unstamped")
 	}
 }
+
+// A scale-in add must leave StopLossHighWaterPx alone. executeHyperliquidResultDeferredOpen
+// re-seeds it from the fill price; the add path deliberately does not, since an
+// add's fill price says nothing about the trail already in progress and could
+// push the stored high-water backward. Pins that asymmetry, and pins the only
+// zero case: an unset high-water seeds from the FROZEN entry, not the blended
+// average (#873).
+func TestExecuteHyperliquidScaleInDeferredOpen_LeavesHighWaterUntouched(t *testing.T) {
+	sc := scaleInRatchetStrategy()
+	sc.Args = []string{"x.py", "ETH", "1h"} // paper: execResult is nil
+	const establishedHighWater = 1990.0
+	st := &StrategyState{ID: sc.ID, Platform: "hyperliquid", Type: "perps", Cash: 10000,
+		Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Side: "long", Quantity: 0.2, InitialQuantity: 0.2,
+				AvgCost: ratchetTestAnchor, EntryATR: ratchetTestEntryATR, RiskAnchorPrice: ratchetTestAnchor,
+				StopLossHighWaterPx: establishedHighWater, SLAdjustedTiersProcessed: 1,
+			},
+		}}
+	// Add fills BELOW the established high-water — the case where re-seeding
+	// would walk the trail backward.
+	addPrice := ratchetTestAnchor + 1.5*ratchetTestEntryATR
+	if addPrice >= establishedHighWater {
+		t.Fatalf("fixture invalid: add price %v must be below the high-water %v", addPrice, establishedHighWater)
+	}
+	executeHyperliquidScaleInDeferredOpen(sc, st, &HyperliquidResult{Symbol: "ETH", Signal: 1},
+		nil, "BUY", addPrice, 0.1, newTestLogger(t))
+
+	if got := st.Positions["ETH"].StopLossHighWaterPx; !approxEq(got, establishedHighWater) {
+		t.Fatalf("StopLossHighWaterPx = %v, want %v untouched by the add", got, establishedHighWater)
+	}
+
+	// Zero case: the walker seeds from RiskAnchorPrice, so the blended AvgCost
+	// never becomes the trail base.
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	var gotTrigger float64
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotTrigger = triggerPx
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 6001, StopLossTriggerPx: triggerPx}, "", nil
+	}
+	pos := st.Positions["ETH"]
+	pos.StopLossHighWaterPx = 0
+	live := scaleInRatchetStrategy() // live args
+	// mark below the anchor so the anchor (not the mark) is the high-water base.
+	runHyperliquidTrailingStopUpdate(live, "ETH", "long", pos.Quantity, pos, ratchetTestAnchor-20,
+		0, 0, 0, trailingReplacePolicy{}, nil, newTestLogger(t))
+	if want := trailingTriggerFor("long", ratchetTestAnchor, 2.5); !approxEq(gotTrigger, want) {
+		t.Fatalf("trigger = %v, want %v (seeded from the frozen anchor %v, not the blended AvgCost %v)",
+			gotTrigger, want, ratchetTestAnchor, pos.AvgCost)
+	}
+}
