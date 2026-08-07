@@ -730,13 +730,24 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	newHighWater, newTrigger, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, policy.ratchetTightened)
 	if policy.forceResize && !replace {
 		// #873: a scale-in grew the position; the resting trailing SL still
-		// covers only the pre-add size. Force a cancel+replace at the EXISTING
-		// trigger so the reduce-only SL covers the new total. Keep the current
-		// trigger price (no trailing move yet); fall through to the computed
-		// trigger when nothing is resting (currentTrigger==0).
+		// covers only the pre-add size. Force a cancel+replace so the reduce-only
+		// SL covers the new total. Fall through to the computed trigger when
+		// nothing is resting (currentTrigger==0).
 		replace = true
 		if currentTrigger > 0 {
 			newTrigger = currentTrigger
+			// A forced resize cancels and re-places the order regardless, so it
+			// must never re-arm a trigger LOOSER than the current trail distance
+			// implies. Re-run the decision with the debounce off and adopt the
+			// result when it is strictly favorable: the debounce exists to avoid
+			// order churn, and there is no churn to avoid on a replace we are
+			// already making. This is what keeps a ratchet tighten that an
+			// earlier cycle stamped but could not place — e.g. deferred by the
+			// #621 capped-qty guard above — from being re-frozen at the old wide
+			// trigger (#1416).
+			if _, tighter, ok := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, true); ok && tighter > 0 {
+				newTrigger = tighter
+			}
 		}
 	}
 	if !replace {

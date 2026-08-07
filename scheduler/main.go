@@ -2625,20 +2625,28 @@ func main() {
 								var openTrade *Trade
 								var ratchetAlert *RatchetTriggerAlert
 								if scaleInAddQty > 0 {
-									trades, detail, openTrade = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
+									trades, detail, openTrade, ratchetAlert = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
 								} else {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
 								}
 								mu.Unlock()
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
-								// for the scale-in branch and when no tier tightened.
+								// when no tier tightened.
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
-								// #1416: scale-out ratchet tiers emit Signal!=0, so the
-								// manage-path walker never ran this cycle. Re-run it now
-								// that PostTPTrailingATRMult is stamped — live AND paper
-								// (outside the execResult gate; paper has nil execResult).
-								if ratchetAlert != nil {
+								// #1416: any execute cycle carries Signal != 0, so the manage-path
+								// walker never ran — the tighter PostTPTrailingATRMult stamped
+								// above would otherwise sit unenforced until a later Signal==0
+								// cycle. Exactly one owner moves the stop this cycle:
+								//   - a LIVE scale-in ADD routes through scaleInResizeTrailingSLNow
+								//     below, which alone knows the GROWN on-chain size; running the
+								//     helper here too would first rest an under-sized stop against
+								//     the stale pre-add snapshot and then replace it again.
+								//   - every other case (scale-out, paper add, no add) uses the
+								//     helper here — live AND paper, outside the execResult gate,
+								//     since paper has a nil execResult.
+								ratchetWalkerOwnedByScaleIn := scaleInAddQty > 0 && execResult != nil && trades > 0
+								if ratchetAlert != nil && !ratchetWalkerOwnedByScaleIn {
 									if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlOnChainAbsQty, &mu, notifier, logger); extraTrades > 0 {
 										trades += extraTrades
 										detail = slDetail
@@ -2660,7 +2668,10 @@ func main() {
 										if execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.TotalSz > 0 {
 											filledAddQty = execResult.Execution.Fill.TotalSz
 										}
-										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledAddQty, &mu, notifier, logger); extraTrades > 0 {
+										// #1416: when this add also cleared a ratchet tier, the same
+										// single pass must place the grown size at the NEW tighter
+										// trigger instead of re-placing the old wider one.
+										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledAddQty, ratchetAlert != nil, &mu, notifier, logger); extraTrades > 0 {
 											trades += extraTrades
 											detail = slDetail
 										}
