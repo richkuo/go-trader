@@ -237,6 +237,17 @@ func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedge
 		if qty <= hedgeQtyEpsilon {
 			return hedgeAction{Kind: hedgeActionNone, Reason: "computed hedge size is zero"}
 		}
+		// Same floor as the add/reduce branches: an order the exchange rejects
+		// as sub-minimum must be deferred, never submitted every cycle. The
+		// primary runs un-hedged (a deferral is a sizing decision, not an
+		// execution failure — no unwind); the decision is recomputed each
+		// cycle, so a later scale-in above the floor fires this open.
+		if qty*hedgePx < hedgeMinOrderNotionalUSD {
+			return hedgeAction{
+				Kind:   hedgeActionNone,
+				Reason: fmt.Sprintf("hedge open of $%.2f is below the $%.2f minimum order notional — deferring (primary runs un-hedged until it grows above the floor)", qty*hedgePx, hedgeMinOrderNotionalUSD),
+			}
+		}
 		return hedgeAction{
 			Kind:      hedgeActionOpen,
 			Qty:       qty,

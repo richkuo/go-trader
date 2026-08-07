@@ -90,6 +90,33 @@ func TestHedgeTargetDecisionAppliesRatio(t *testing.T) {
 	}
 }
 
+// An open the exchange would reject as sub-minimum must be deferred, never
+// submitted every cycle. Covers both a fresh sub-floor primary and the dust
+// remnant left after the residual-full-close branch flattens the leg.
+func TestHedgeTargetDecisionDefersOpenBelowMinNotional(t *testing.T) {
+	sc := hedgeTestConfig()
+	// 0.0045 ETH × $2000 = $9 hedge notional < $10 floor.
+	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 0.0045, PrimarySide: "long", HedgeSymbol: "BTC"}
+	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
+	if act.Kind != hedgeActionNone {
+		t.Fatalf("kind = %v (%s), want none — a sub-$%.0f open must be deferred, not submitted", act.Kind, act.Reason, hedgeMinOrderNotionalUSD)
+	}
+}
+
+// A deferred sub-floor open must fire once the primary scales in above the
+// floor — the decision is recomputed from the full primary quantity each cycle.
+func TestHedgeTargetDecisionDeferredOpenFiresAfterGrowth(t *testing.T) {
+	sc := hedgeTestConfig()
+	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 0.02, PrimarySide: "long", HedgeSymbol: "BTC"}
+	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
+	if act.Kind != hedgeActionOpen {
+		t.Fatalf("kind = %v (%s), want open — $%.2f notional is above the floor", act.Kind, act.Reason, 0.02*testPrimaryPx)
+	}
+	if act.NewBasis != 0.02 {
+		t.Fatalf("basis = %v, want 0.02", act.NewBasis)
+	}
+}
+
 // Mark drift alone must NOT re-trade the hedge. If it did, the leg would become
 // a continuous rebalancer paying taker fees on noise.
 func TestHedgeTargetDecisionIgnoresMarkDriftWhenQuantityUnchanged(t *testing.T) {
