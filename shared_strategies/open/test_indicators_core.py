@@ -623,3 +623,76 @@ def test_hurst_custom_min_points():
     close = _ar1_log_price_series(60, phi=0.0, seed=6)
     assert np.isnan(hurst_exponent(close, min_points=100))
     assert not np.isnan(hurst_exponent(close, min_points=50))
+
+
+# --- Short-scale null-distribution bias (#1419 review) ------------------------
+#
+# DFA carries a known small upward bias on memoryless (Gaussian random walk) data
+# at short segment scales -- see the caveat in `hurst_exponent`'s docstring. These
+# regression-test the mitigation (`_HURST_DFA_MIN_SCALE` raised from 4 to 8) rather
+# than any specific mean value, so they stay valid if the floor is tuned further.
+
+
+def test_hurst_random_walk_mean_near_half_at_live_frame_size():
+    """At n=200 (the live `check_regime.py --ohlcv-limit` default), the estimator's
+    OWN mean over many independent random walks must sit close to the true H=0.5 --
+    not the ~0.54 the review measured before the min-scale fix."""
+    values = [
+        hurst_exponent(_ar1_log_price_series(201, phi=0.0, seed=100 + i))
+        for i in range(200)
+    ]
+    values = [v for v in values if not np.isnan(v)]
+    assert len(values) > 150, "too many NaN draws to measure the null mean"
+    mean_h = float(np.mean(values))
+    assert abs(mean_h - 0.5) < 0.03, mean_h
+
+
+def test_hurst_random_walk_mean_near_half_at_enriched_column_frame_size():
+    """Same null-mean check at n=101 -- the exact per-bar segment length
+    `backtest/regime_enriched_features._hurst_column` uses (HURST_DFA_MIN_POINTS+1)."""
+    values = [
+        hurst_exponent(_ar1_log_price_series(HURST_DFA_MIN_POINTS + 1, phi=0.0, seed=200 + i))
+        for i in range(200)
+    ]
+    values = [v for v in values if not np.isnan(v)]
+    assert len(values) > 150, "too many NaN draws to measure the null mean"
+    mean_h = float(np.mean(values))
+    assert abs(mean_h - 0.5) < 0.03, mean_h
+
+
+def test_hurst_dfa_fluctuation_vectorization_matches_naive_per_segment_polyfit():
+    """#1419 review perf fix: `_hurst_dfa_fluctuation` now fits every segment at a
+    scale with one batched pseudo-inverse product instead of one `np.polyfit` call
+    per segment. Regression-pin it against the original naive per-segment-polyfit
+    reference implementation across a range of profile lengths and scales."""
+    from indicators_core import _hurst_dfa_fluctuation
+
+    def naive_fluctuation(profile, scale):
+        n = len(profile)
+        n_segments = n // scale
+        if n_segments < 1:
+            return float("nan")
+        t = np.arange(scale, dtype=float)
+        starts = [profile[: n_segments * scale]]
+        tail = profile[n - n_segments * scale:]
+        if not np.array_equal(tail, starts[0]):
+            starts.append(tail)
+        sq_residuals = []
+        for block in starts:
+            for seg in block.reshape(n_segments, scale):
+                coeffs = np.polyfit(t, seg, 1)
+                trend = np.polyval(coeffs, t)
+                sq_residuals.append(float(np.mean((seg - trend) ** 2)))
+        return float(np.sqrt(np.mean(sq_residuals)))
+
+    rng = np.random.default_rng(7)
+    for _ in range(50):
+        n = int(rng.integers(20, 400))
+        scale = int(rng.integers(4, max(5, n // 3)))
+        profile = np.cumsum(rng.normal(0, 1, n))
+        expected = naive_fluctuation(profile, scale)
+        actual = _hurst_dfa_fluctuation(profile, scale)
+        if np.isnan(expected):
+            assert np.isnan(actual)
+            continue
+        assert actual == pytest.approx(expected, rel=1e-9)

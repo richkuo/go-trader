@@ -194,7 +194,13 @@ def atr_sma(
 # returns NaN so "unknown" stays distinguishable from "measured random walk".
 
 HURST_DFA_MIN_POINTS = 100
-_HURST_DFA_MIN_SCALE = 4
+# #1419 review: segment scales below ~8 bars bias the estimate upward on memoryless
+# (Gaussian random walk) data — measured mean H ~= 0.54 at n=200 and ~= 0.55 at n=101
+# with min_scale=4, vs ~= 0.51 / ~= 0.52 with min_scale=8, matching the short-scale DFA
+# bias documented in "On the Validity of Detrended Fluctuation Analysis at Short Scales"
+# (Entropy 24(1):61) — the bias does not vanish with a longer fetch. 8 was verified to
+# keep AR(1) persistent/mean-reverting separation intact (regression: test_indicators_core.py).
+_HURST_DFA_MIN_SCALE = 8
 _HURST_DFA_NUM_SCALES = 12
 
 
@@ -213,6 +219,14 @@ def _hurst_dfa_fluctuation(profile: np.ndarray, scale: int) -> float:
     Non-overlapping segments from both the start and the end of the profile
     (the standard DFA convention) so short scales still get two independent
     passes over the leftover bars a single direction would drop.
+
+    #1419 review: every segment at a given ``scale`` shares the same
+    design matrix (``t = arange(scale)``), so the per-segment linear
+    detrend is one fixed-design least-squares fit applied to the whole
+    reshaped segment block via its pseudo-inverse, rather than one
+    ``np.polyfit`` call per segment (verified numerically equivalent to
+    the old per-segment-polyfit path to <1e-9 relative tolerance at the
+    scales this estimator actually uses, sub-1e-12 in fuzz testing).
     """
     n = len(profile)
     n_segments = n // scale
@@ -223,14 +237,15 @@ def _hurst_dfa_fluctuation(profile: np.ndarray, scale: int) -> float:
     tail = profile[n - n_segments * scale :]
     if not np.array_equal(tail, starts[0]):
         starts.append(tail)
-    sq_residuals: list[float] = []
+    design = np.column_stack([t, np.ones_like(t)])
+    pinv_design = np.linalg.pinv(design)  # (2, scale): shared by every segment at this scale
+    sq_residuals: list[np.ndarray] = []
     for block in starts:
-        segments = block.reshape(n_segments, scale)
-        for seg in segments:
-            coeffs = np.polyfit(t, seg, 1)
-            trend = np.polyval(coeffs, t)
-            sq_residuals.append(float(np.mean((seg - trend) ** 2)))
-    return float(np.sqrt(np.mean(sq_residuals)))
+        segments = block.reshape(n_segments, scale)  # (n_segments, scale)
+        coeffs = segments @ pinv_design.T  # (n_segments, 2) = [slope, intercept] per segment
+        trend = coeffs @ design.T  # (n_segments, scale)
+        sq_residuals.append(np.mean((segments - trend) ** 2, axis=1))
+    return float(np.sqrt(np.mean(np.concatenate(sq_residuals))))
 
 
 def hurst_exponent(close: pd.Series, *, min_points: int = HURST_DFA_MIN_POINTS) -> float:
@@ -252,6 +267,14 @@ def hurst_exponent(close: pd.Series, *, min_points: int = HURST_DFA_MIN_POINTS) 
 
     H > 0.5 marks a persistent/trending series; H < 0.5 marks a
     mean-reverting series; H ~= 0.5 marks a Gaussian random walk (no memory).
+
+    Null-distribution caveat: DFA carries a known small upward bias at short
+    sample sizes that a longer fetch does not remove. Measured at this scale
+    floor (``_HURST_DFA_MIN_SCALE``) on memoryless (Gaussian random walk)
+    data, the estimate's own mean is ~0.51 at n=200 points and ~0.52 at
+    n=101 (sd ~0.06-0.09) rather than the "true" 0.50 -- a reading in the
+    ~0.50-0.55 band near those sample sizes is consistent with no memory at
+    all, not confirmed persistence.
     """
     prices = close.astype(float).to_numpy()
     prices = prices[np.isfinite(prices)]
