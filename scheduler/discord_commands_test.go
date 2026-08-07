@@ -141,6 +141,48 @@ func TestFormatStatusResponse(t *testing.T) {
 	}
 }
 
+func TestFormatStatusResponseUsesWalletDedupedDisplayTotal(t *testing.T) {
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a", Platform: "hyperliquid", Cash: -10,
+				SharedWalletPoolBudget: true,
+			},
+			"hl-b": {
+				ID: "hl-b", Platform: "hyperliquid", Cash: 5,
+				SharedWalletPoolBudget: true,
+			},
+		},
+		LatestSharedWalletBalances: map[SharedWalletKey]float64{key: 1000},
+		LatestSharedWalletMembers:  map[SharedWalletKey][]string{key: {"hl-a", "hl-b"}},
+	}
+
+	allPooled := formatStatusResponse(state, nil)
+	if !strings.Contains(allPooled, "value=$1000.00") {
+		t.Fatalf("all-pooled Discord value must use real wallet equity: %s", allPooled)
+	}
+	if !strings.Contains(allPooled, "shared-wallet equity is counted once") {
+		t.Fatalf("pooled status must explain the cash basis: %s", allPooled)
+	}
+
+	state.Strategies["spot"] = &StrategyState{ID: "spot", Platform: "binanceus", Cash: 200}
+	mixed := formatStatusResponse(state, nil)
+	if !strings.Contains(mixed, "value=$1200.00") || !strings.Contains(mixed, "cash=$195.00") {
+		t.Fatalf("mixed Discord total must count wallet once plus allocated book: %s", mixed)
+	}
+
+	state.LatestSharedWalletBalances = nil
+	state.LatestSharedWalletMembers = nil
+	fallback := formatStatusResponse(state, nil)
+	if !strings.Contains(fallback, "value=$195.00") {
+		t.Fatalf("missing-balance Discord total must match modeled fallback: %s", fallback)
+	}
+	if strings.Contains(fallback, "shared-wallet equity is counted once") {
+		t.Fatalf("missing-balance fallback must not claim fresh pooled equity: %s", fallback)
+	}
+}
+
 func TestFormatStatusResponse_CashReconcileRequired(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"z-latched": {ID: "z-latched", Platform: "robinhood", Cash: 0, CashReconcileRequired: true,
@@ -202,6 +244,112 @@ func TestFormatPnLResponse(t *testing.T) {
 	}
 	if !strings.Contains(got, "Total") {
 		t.Errorf("expected a Total line, got: %s", got)
+	}
+}
+
+func TestFormatPnLResponsePooledReturnsAreUndefined(t *testing.T) {
+	allPooled := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {
+			ID: "hl-a", Platform: "hyperliquid", Cash: -200,
+			SharedWalletPoolBudget: true,
+			// Ephemeral flag deliberately false: fallback/save-failure paths
+			// must still honor the durable pool marker.
+			SharedWalletPerformanceOnly: false,
+		},
+		"hl-b": {
+			ID: "hl-b", Platform: "hyperliquid", Cash: 0,
+			SharedWalletPoolBudget:      true,
+			SharedWalletPerformanceOnly: true,
+		},
+	}}
+	got := formatPnLResponse(allPooled, nil)
+	for _, want := range []string{
+		"Total: $-200.00 (—)",
+		"hyperliquid: $-200.00 (—)",
+		"hl-a: $-200.00 (—)",
+		"hl-b: $+0.00 (—)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("all-pooled P&L missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "+0.00%") {
+		t.Fatalf("pooled P&L must never render a fabricated zero return:\n%s", got)
+	}
+}
+
+func TestFormatPnLResponseMixedPoolInvalidatesOnlyContainingAggregates(t *testing.T) {
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-pool": {
+			ID: "hl-pool", Platform: "hyperliquid", Cash: -20,
+			SharedWalletPoolBudget: true,
+		},
+		"hl-allocated": {
+			ID: "hl-allocated", Platform: "hyperliquid", Cash: 110, InitialCapital: 100,
+		},
+		"spot-allocated": {
+			ID: "spot-allocated", Platform: "binanceus", Cash: 220, InitialCapital: 200,
+		},
+	}}
+	got := formatPnLResponse(state, nil)
+	for _, want := range []string{
+		"Total: $+10.00 (—)",
+		"hyperliquid: $-10.00 (—)",
+		"hl-pool: $-20.00 (—)",
+		"hl-allocated: $+10.00 (+10.00%)",
+		"binanceus: $+20.00 (+10.00%)",
+		"spot-allocated: $+20.00 (+10.00%)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("mixed P&L missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatPnLResponseUsesWalletDedupedTotalWithoutChangingAttributedPnL(t *testing.T) {
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			"hl-a": {
+				ID: "hl-a", Platform: "hyperliquid", Cash: -10,
+				SharedWalletPoolBudget: true,
+			},
+			"hl-b": {
+				ID: "hl-b", Platform: "hyperliquid", Cash: 5,
+				SharedWalletPoolBudget: true,
+			},
+		},
+		LatestSharedWalletBalances: map[SharedWalletKey]float64{key: 1000},
+		LatestSharedWalletMembers:  map[SharedWalletKey][]string{key: {"hl-a", "hl-b"}},
+	}
+
+	allPooled := formatPnLResponse(state, nil)
+	if !strings.Contains(allPooled, "Total: $-5.00 (—) — value $1000.00 / capital $0.00") {
+		t.Fatalf("all-pooled /pnl must use real wallet equity while retaining attributed P&L:\n%s", allPooled)
+	}
+	if !strings.Contains(formatStatusResponse(state, nil), "value=$1000.00") {
+		t.Fatal("/pnl and /status test fixtures must share the same deduped total")
+	}
+
+	state.Strategies["spot"] = &StrategyState{
+		ID: "spot", Platform: "binanceus", Cash: 200, InitialCapital: 200,
+	}
+	mixed := formatPnLResponse(state, nil)
+	for _, want := range []string{
+		"Total: $-5.00 (—) — value $1200.00 / capital $200.00",
+		"hyperliquid: $-5.00 (—)",
+		"binanceus: $+0.00 (+0.00%)",
+	} {
+		if !strings.Contains(mixed, want) {
+			t.Fatalf("mixed /pnl missing %q:\n%s", want, mixed)
+		}
+	}
+
+	state.LatestSharedWalletBalances = nil
+	state.LatestSharedWalletMembers = nil
+	fallback := formatPnLResponse(state, nil)
+	if !strings.Contains(fallback, "Total: $-5.00 (—) — value $195.00 / capital $200.00") {
+		t.Fatalf("missing wallet balance must use latestDisplayTotal modeled fallback:\n%s", fallback)
 	}
 }
 

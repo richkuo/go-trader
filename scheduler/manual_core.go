@@ -116,7 +116,7 @@ func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol s
 	// kill-switch and pending-CB guards — instead of at the six
 	// pausedBlocksSignal sites (which never see type=manual entries).
 	if cfg != nil {
-		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC()); st.Tripped {
+		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
 			v.DailyLossHold = true
 			v.DailyLossNote = dailyLossHoldDetail(st)
 		}

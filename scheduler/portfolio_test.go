@@ -1845,6 +1845,65 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	}
 }
 
+func TestPerpsLiveOrderSize_SharedWalletPoolUsesReleasedMargin(t *testing.T) {
+	sizing := PerpsSizing{
+		ExchangeLeverage:    5,
+		MarginPerTradeUSD:   100,
+		SharedWalletPool:    true,
+		ReleasableMarginUSD: 200,
+	}
+	size, ok, reason := perpsLiveOrderSize(
+		-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
+	)
+	if !ok || reason != "" {
+		t.Fatalf("pooled flip rejected: ok=%v reason=%q", ok, reason)
+	}
+	// $200 released, capped to $100, then 5x = $500 = 0.25 ETH;
+	// the market order also carries the 0.5 ETH close leg.
+	if math.Abs(size-0.75) > 1e-9 {
+		t.Fatalf("pooled flip size=%v, want 0.75", size)
+	}
+}
+
+func TestPerpsLiveOrderSize_SharedWalletPoolUnknownBalanceFlipClosesOnly(t *testing.T) {
+	sizing := PerpsSizing{
+		ExchangeLeverage:  5,
+		MarginPerTradeUSD: 100,
+		SharedWalletPool:  true,
+		// ReleasableMarginUSD remains zero when the account balance is unknown.
+	}
+	size, ok, reason := perpsLiveOrderSize(
+		-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
+	)
+	if !ok || reason != "" {
+		t.Fatalf("unknown-balance pooled flip rejected instead of closing: ok=%v reason=%q", ok, reason)
+	}
+	if size != 0.5 {
+		t.Fatalf("unknown-balance pooled flip size=%v, want close-only 0.5", size)
+	}
+}
+
+func TestWithSharedWalletPoolSizingReleasesMarginOnlyWithKnownBalance(t *testing.T) {
+	sc := StrategyConfig{sharedWalletPoolBudget: true}
+	base := PerpsSizing{ExchangeLeverage: 5}
+	unknown := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, 4, false)
+	if !unknown.SharedWalletPool || unknown.ReleasableMarginUSD != 0 {
+		t.Fatalf("unknown balance must not expose released margin: %+v", unknown)
+	}
+	known := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, 4, true)
+	if !known.SharedWalletPool || known.ReleasableMarginUSD != 275 {
+		t.Fatalf("known balance released margin=%v, want 275", known.ReleasableMarginUSD)
+	}
+	winner := withSharedWalletPoolSizing(sc, base, 0.5, 2400, 2200, 4, true)
+	if winner.ReleasableMarginUSD != 300 {
+		t.Fatalf("winning position released margin=%v, want 300", winner.ReleasableMarginUSD)
+	}
+	legacy := withSharedWalletPoolSizing(sc, base, 0.5, 2000, 2200, 0, true)
+	if legacy.ReleasableMarginUSD != 220 {
+		t.Fatalf("legacy unstamped leverage must fall back to config: got %v, want 220", legacy.ReleasableMarginUSD)
+	}
+}
+
 // #330 (final review) — a catastrophically-losing flip must still close the
 // position even when post-close margin can't fund the new side. Without
 // this fallback, a deep-underwater bidirectional strategy would be worse

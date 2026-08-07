@@ -480,11 +480,38 @@ func effectiveTrailingStopMinMovePct(sc StrategyConfig) float64 {
 	return defaultTrailingStopMinMovePct
 }
 
-func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64) (float64, float64, bool) {
-	return computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, minMovePct, currentTrigger, false)
+// trailingReplacePolicy carries the per-call overrides to the walker's default
+// replacement rule ("replace only on a FAVORABLE trigger move that clears the
+// trailing_stop_min_move_pct debounce"). Both overrides are event-gated by the
+// caller, so neither can produce per-cycle cancel+replace churn.
+type trailingReplacePolicy struct {
+	// forceResize (#873) replaces at the EXISTING trigger when the walker would
+	// otherwise not replace, so the reduce-only SL covers the size a scale-in
+	// just added. Live-only; the paper walker rests no order to resize.
+	forceResize bool
+
+	// ratchetTightened (#1416) drops the min-move debounce for this one call.
+	//
+	// Why the debounce is wrong here: it exists to suppress churn from tiny
+	// high-water drifts at a CONSTANT trail distance. A ratchet tier instead
+	// shrinks the distance itself, and the resulting trigger shift is only
+	// Δmult × EntryATR / anchor — on a coin whose ATR is well under 1% of
+	// price, a whole tier step lands below the 0.5% default and the tightened
+	// stop silently never reaches the exchange, while the ratchet DM still
+	// reports the tighter trail. Worse, candidateTrigger is recomputed from the
+	// same high-water every later cycle, so the drop persists until price makes
+	// a materially new high — exactly the retrace the ratchet exists to cover.
+	//
+	// Direction is still gated: only a FAVORABLE candidate replaces, so a
+	// forced tighten can never widen the stop on either side.
+	ratchetTightened bool
 }
 
-func computeTrailingStopUpdateInternal(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64, allowOneShotWiden bool) (float64, float64, bool) {
+func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64) (float64, float64, bool) {
+	return computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, minMovePct, currentTrigger, false, false)
+}
+
+func computeTrailingStopUpdateInternal(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64, allowOneShotWiden, bypassMinMove bool) (float64, float64, bool) {
 	if mark <= 0 || trailingPct <= 0 {
 		return highWater, 0, false
 	}
@@ -530,6 +557,12 @@ func computeTrailingStopUpdateInternal(side string, mark, highWater, trailingPct
 			return candidateHighWater, candidateTrigger, true
 		}
 		return candidateHighWater, 0, false
+	}
+	// #1416: a ratchet tightened the trail distance this cycle — replace at the
+	// newly computed (strictly favorable) trigger no matter how small the shift.
+	// The epsilon keeps a float-noise "move" from costing a cancel+replace.
+	if bypassMinMove && math.Abs(candidateTrigger-currentTrigger) > 1e-9 {
+		return candidateHighWater, candidateTrigger, true
 	}
 	movePct := math.Abs(candidateTrigger-currentTrigger) / currentTrigger * 100.0
 	if movePct >= minMovePct {
@@ -584,7 +617,11 @@ func trailingStopBreached(side string, mark, currentTrigger float64) bool {
 // is isolated in scheduler state, so a single strategy's breach closes only
 // that strategy's virtual quantity. Peer strategies on the same coin retain
 // their independent virtual exposure and run their own trailing loops.
-func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Position, mark, highWater, currentTrigger float64) (newHighWater, newTrigger float64, breach bool, breachPx float64) {
+//
+// policy carries the #1416 ratchet-tighten bypass of the min-move debounce.
+// policy.forceResize is ignored here: paper rests no exchange order, so there
+// is nothing to re-size.
+func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Position, mark, highWater, currentTrigger float64, policy trailingReplacePolicy) (newHighWater, newTrigger float64, breach bool, breachPx float64) {
 	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || mark <= 0 {
 		return highWater, 0, false, 0
@@ -603,7 +640,7 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 		highWater = avgCost
 	}
 	allowOneShotWiden := pos != nil && pos.RatchetFallbackNormalizePending
-	nhw, nt, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden)
+	nhw, nt, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, policy.ratchetTightened)
 	if replace {
 		return nhw, nt, false, 0
 	}
@@ -672,7 +709,9 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 // outside the state mutex so the subprocess call below can run without
 // blocking other strategies). The pointer is taken by value semantics; the
 // helper only reads, never writes through it.
-func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, forceResize bool, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
+// policy selects the per-call overrides to the default replacement rule: the
+// #873 scale-in resize and the #1416 ratchet-tighten min-move bypass.
+func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qty float64, pos *Position, mark, highWater, currentTrigger float64, currentOID int64, policy trailingReplacePolicy, notifier *MultiNotifier, logger *StrategyLogger) (float64, *HyperliquidStopLossUpdateResult, bool) {
 	trailingPct := effectiveTrailingStopPct(sc, pos)
 	if trailingPct <= 0 || qty <= 0 || mark <= 0 {
 		return highWater, nil, true
@@ -688,16 +727,27 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		highWater = avgCost
 	}
 	allowOneShotWiden := pos != nil && pos.RatchetFallbackNormalizePending
-	newHighWater, newTrigger, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden)
-	if forceResize && !replace {
+	newHighWater, newTrigger, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, policy.ratchetTightened)
+	if policy.forceResize && !replace {
 		// #873: a scale-in grew the position; the resting trailing SL still
-		// covers only the pre-add size. Force a cancel+replace at the EXISTING
-		// trigger so the reduce-only SL covers the new total. Keep the current
-		// trigger price (no trailing move yet); fall through to the computed
-		// trigger when nothing is resting (currentTrigger==0).
+		// covers only the pre-add size. Force a cancel+replace so the reduce-only
+		// SL covers the new total. Fall through to the computed trigger when
+		// nothing is resting (currentTrigger==0).
 		replace = true
 		if currentTrigger > 0 {
 			newTrigger = currentTrigger
+			// A forced resize cancels and re-places the order regardless, so it
+			// must never re-arm a trigger LOOSER than the current trail distance
+			// implies. Re-run the decision with the debounce off and adopt the
+			// result when it is strictly favorable: the debounce exists to avoid
+			// order churn, and there is no churn to avoid on a replace we are
+			// already making. This is what keeps a ratchet tighten that an
+			// earlier cycle stamped but could not place — e.g. deferred by the
+			// #621 capped-qty guard above — from being re-frozen at the old wide
+			// trigger (#1416).
+			if _, tighter, ok := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, true); ok && tighter > 0 {
+				newTrigger = tighter
+			}
 		}
 	}
 	if !replace {

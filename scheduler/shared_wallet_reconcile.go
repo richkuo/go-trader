@@ -388,8 +388,16 @@ func reconcileSharedWalletDisplayValues(
 	for _, ss := range state.Strategies {
 		if ss != nil {
 			ss.SharedWalletValueSet = false
+			ss.SharedWalletPerformanceOnly = false
 		}
 	}
+	for _, sc := range strategies {
+		if ss := state.Strategies[sc.ID]; ss != nil {
+			ss.SharedWalletPerformanceOnly = effectiveSharedWalletPoolBook(sc, ss)
+		}
+	}
+	state.LatestSharedWalletBalances = make(map[SharedWalletKey]float64)
+	state.LatestSharedWalletMembers = make(map[SharedWalletKey][]string)
 	if len(sharedWallets) == 0 {
 		return nil
 	}
@@ -405,6 +413,13 @@ func reconcileSharedWalletDisplayValues(
 		if !ok {
 			continue // fetch failed this cycle → members fall back (Set stays false)
 		}
+
+		// The real wallet balance is independently authoritative for the
+		// operator TOTAL. Record it before position/ledger attribution, which
+		// may fail and leave per-member rows on modeled-book fallback.
+		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
+		state.LatestSharedWalletBalances[key] = bal
+		state.LatestSharedWalletMembers[key] = append([]string(nil), members...)
 
 		// On-chain positions for this wallet's platform, coin-normalized to
 		// upper-case so they match the virtualQty keys below.
@@ -437,11 +452,24 @@ func reconcileSharedWalletDisplayValues(
 			continue // no position source wired for this platform yet
 		}
 
-		members := sharedWalletMembersWithManual(key, memberIDs, strategies)
 		capitalByID, virtualQty := buildSharedWalletBooks(key, members, byID, state)
 
+		poolMode := false
+		for _, id := range memberIDs {
+			if effectiveSharedWalletPoolBook(byID[id], state.Strategies[id]) {
+				poolMode = true
+				break
+			}
+		}
+
 		var res sharedWalletReconcileResult
-		if key.Platform == "hyperliquid" {
+		if poolMode {
+			var reconciled bool
+			res, reconciled = reconcilePooledWalletPerformance(sdb, key, members, positions, virtualQty)
+			if !reconciled {
+				continue
+			}
+		} else if key.Platform == "hyperliquid" {
 			res = reconcileHLWalletViaLedger(sdb, key, members, capitalByID, positions, virtualQty, bal)
 		} else {
 			res = reconcileSharedWalletMemberValues(members, capitalByID, positions, virtualQty, bal)
@@ -454,6 +482,7 @@ func reconcileSharedWalletDisplayValues(
 			}
 			ss.SharedWalletValue = res.Values[id]
 			ss.SharedWalletValueSet = true
+			ss.SharedWalletPerformanceOnly = poolMode
 			memberSum += res.Values[id]
 		}
 		results = append(results, sharedWalletDriftResult{
@@ -465,6 +494,58 @@ func reconcileSharedWalletDisplayValues(
 		})
 	}
 	return results
+}
+
+// reconcilePooledWalletPerformance reports strategy-attributed performance
+// without assigning any wallet deposit or collateral to a member:
+//
+//	performance_i = trade-ledger net_i + owned unrealized PnL_i
+//
+// A missing ledger is fail-closed for the exchange-derived display. The caller
+// leaves SharedWalletValueSet false, falling back to the strategy's modeled
+// PnL book rather than inventing an equal slice of account equity.
+func reconcilePooledWalletPerformance(
+	sdb *StateDB,
+	key SharedWalletKey,
+	members []string,
+	positions []SharedWalletPosition,
+	virtualQty map[string]map[string]float64,
+) (sharedWalletReconcileResult, bool) {
+	if sdb == nil {
+		fmt.Printf("[WARN] shared-wallet %s: pooled performance unavailable (state db nil) — using modeled strategy books this cycle\n",
+			sharedWalletKeyLabel(key))
+		return sharedWalletReconcileResult{}, false
+	}
+	ledgerByID, err := sdb.LedgerNetByStrategy(members)
+	if err != nil {
+		fmt.Printf("[WARN] shared-wallet %s: pooled performance ledger unavailable: %v — using modeled strategy books this cycle\n",
+			sharedWalletKeyLabel(key), err)
+		return sharedWalletReconcileResult{}, false
+	}
+
+	memberSet := make(map[string]bool, len(members))
+	for _, id := range members {
+		memberSet[id] = true
+	}
+	uPnLByCoin := make(map[string]float64)
+	for _, pos := range positions {
+		uPnLByCoin[pos.Coin] += pos.UnrealizedPnL
+	}
+	ownedUPnL, _, orphanCoins := attributeSharedWalletUPnL(memberSet, uPnLByCoin, virtualQty)
+
+	values := make(map[string]float64, len(members))
+	for _, id := range members {
+		values[id] = roundCents(ledgerByID[id] + ownedUPnL[id])
+	}
+	orphanDrift := 0.0
+	for _, coin := range orphanCoins {
+		orphanDrift += uPnLByCoin[coin]
+	}
+	return sharedWalletReconcileResult{
+		Values:      values,
+		Drift:       orphanDrift,
+		OrphanCoins: orphanCoins,
+	}, true
 }
 
 // sharedWalletMembersWithManual folds same-account live HL manual strategies
@@ -637,6 +718,30 @@ func displayStrategyValue(s *StrategyState, prices map[string]float64) float64 {
 	return PortfolioValue(s, prices)
 }
 
+// latestDisplayTotal counts each freshly reconciled wallet balance once and
+// every remaining strategy's display value normally. For pooled wallets this
+// intentionally differs from summing member rows: those rows are attributed
+// performance, while the total is real account equity.
+func latestDisplayTotal(state *AppState, prices map[string]float64) float64 {
+	if state == nil {
+		return 0
+	}
+	deduped := make(map[string]bool)
+	total := 0.0
+	for key, balance := range state.LatestSharedWalletBalances {
+		total += balance
+		for _, id := range state.LatestSharedWalletMembers[key] {
+			deduped[id] = true
+		}
+	}
+	for id, ss := range state.Strategies {
+		if !deduped[id] {
+			total += displayStrategyValue(ss, prices)
+		}
+	}
+	return total
+}
+
 // computeSubsetDisplayValue returns the TOTAL value for a set of operator-facing
 // strategy rows so the TOTAL reconciles with the per-row displayStrategyValue.
 //
@@ -669,7 +774,7 @@ func computeSubsetDisplayValue(
 	gated := 0.0
 	var rest []StrategyConfig
 	for _, sc := range subset {
-		if s, ok := state.Strategies[sc.ID]; ok && s != nil && s.SharedWalletValueSet {
+		if s, ok := state.Strategies[sc.ID]; ok && s != nil && s.SharedWalletValueSet && !s.SharedWalletPerformanceOnly {
 			gated += s.SharedWalletValue
 			continue
 		}

@@ -125,7 +125,7 @@ func runManualOpen(args []string) int {
 				// #1269: a resting limit open is still a position-increasing
 				// entry — refuse while the daily loss limit is tripped, same
 				// as the market-order core path.
-				if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, time.Now().UTC()); st.Tripped {
+				if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}

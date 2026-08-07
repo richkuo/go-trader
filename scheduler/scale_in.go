@@ -24,6 +24,12 @@ import (
 // shared-coin reconcile lag), it leaves ScaleInResizePending set so the next
 // walker cycle still resizes — same-cycle coverage is best-effort, never worse
 // than the deferred path.
+//
+// ratchetTightened (#1416) is true when the SAME cycle's add also cleared a
+// ratchet tier. The single walker pass then both grows the size (forceResize)
+// and drops the min-move debounce, so the grown position rests at the NEW
+// tighter trigger after exactly one cancel+replace — never one replace per
+// concern, and never a resize that re-places the old wider trigger.
 func scaleInResizeTrailingSLNow(
 	sc StrategyConfig,
 	stratState *StrategyState,
@@ -31,6 +37,7 @@ func scaleInResizeTrailingSLNow(
 	mark float64,
 	preAddOnChainAbsQty map[string]float64,
 	filledAddQty float64,
+	ratchetTightened bool,
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
@@ -61,7 +68,7 @@ func scaleInResizeTrailingSLNow(
 		logger.Warn("scale-in eager SL resize: %s still capped (virtual %.6f > on-chain %.6f); deferring to next walker cycle", symbol, posSnap.Quantity, slEffectiveQty)
 		return 0, ""
 	}
-	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, true, notifier, logger)
+	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, trailingReplacePolicy{forceResize: true, ratchetTightened: ratchetTightened}, notifier, logger)
 	mu.Lock()
 	defer mu.Unlock()
 	trades := 0
@@ -407,7 +414,13 @@ func runHyperliquidScaleInOrder(sc StrategyConfig, result *HyperliquidResult, ad
 // fill price/qty/fee), nil for paper (use the modeled addQty at the mid). For
 // live, the scale_in trade is returned so the caller can run same-cycle
 // protection re-size before the single INSERT; for paper it is recorded here.
-func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price, addQty float64, logger *StrategyLogger) (int, string, *Trade) {
+//
+// #1416: an add cycle carries Signal != 0, so the manage path's ratchet never
+// runs — yet price on that same cycle can clear a ratchet tier. This applies
+// the ratchet here (mirroring executeHyperliquidResultDeferredOpen) and returns
+// the tighten alert, so the caller can DM the owner and move the resting stop
+// on the same cycle instead of waiting for the next Signal==0 cycle.
+func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price, addQty float64, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	fillPrice := price
 	fillAddQty := addQty
 	var fillOID string
@@ -429,6 +442,26 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		logger.Info("Live scale-in fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillAddQty, price)
 	}
 	trades, openTrade := applyPerpsScaleIn(s, sc, result.Symbol, fillPrice, fillAddQty, fillFee, fillOID, useFillFee, logger)
+	// #1416: apply the ratchet AFTER the add lands, so the tier test reads the
+	// post-add position. Tier geometry is unaffected by the add itself — #873
+	// freezes the ladder to RiskAnchorPrice, not the blended AvgCost.
+	var ratchetAlert *RatchetTriggerAlert
+	if trades > 0 {
+		if pos, ok := s.Positions[result.Symbol]; ok {
+			// Snapshot captured under the caller's lock; the caller DMs it after
+			// releasing mu (#1110).
+			_, ratchetAlert = applyTrailingTPRatchetToPosition(sc, pos, result.Symbol, price, logger)
+		}
+	}
+	// Deliberate asymmetry with executeHyperliquidResultDeferredOpen, which
+	// re-seeds pos.StopLossHighWaterPx from the fill price: an ADD must NOT.
+	// The high-water belongs to the trail already in progress, and an add's fill
+	// price carries no information about it — stamping it would push the stored
+	// high-water backward whenever the add fills below the best price seen, and
+	// then hold the trail frozen until price climbs back through it. Leaving it
+	// alone is strictly safer, and the only zero case is covered: the walker
+	// seeds an unset high-water from riskAnchorPrice(), the FROZEN first entry
+	// rather than the blended average (#873). Do not "restore symmetry" here.
 	detail := ""
 	if trades > 0 {
 		prefix := ""
@@ -448,5 +481,5 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 			openTrade = nil
 		}
 	}
-	return trades, detail, openTrade
+	return trades, detail, openTrade, ratchetAlert
 }

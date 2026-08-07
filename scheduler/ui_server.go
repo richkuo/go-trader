@@ -40,6 +40,7 @@ type UIStrategyOverview struct {
 	PnL                   float64                `json:"pnl"`
 	PortfolioValue        float64                `json:"portfolio_value"`
 	InitialCapital        float64                `json:"initial_capital"`
+	PoolBudget            bool                   `json:"pool_budget,omitempty"`
 	RegimeDivergence      *RegimeDivergenceState `json:"regime_divergence,omitempty"`       // #907: active window-divergence state; nil when none
 	Paused                bool                   `json:"paused,omitempty"`                  // #1150
 	RegimeGateFailClosed  bool                   `json:"regime_gate_fail_closed,omitempty"` // #1278: entry gate actively failing closed (opens held while regime unknown)
@@ -58,6 +59,7 @@ type UIStrategyStatus struct {
 	PortfolioValue        float64                    `json:"portfolio_value"`
 	PnL                   float64                    `json:"pnl"`
 	PnLPct                float64                    `json:"pnl_pct"`
+	PoolBudget            bool                       `json:"pool_budget,omitempty"`
 	TradeCount            int                        `json:"trade_count"`
 	WinRate               float64                    `json:"win_rate,omitempty"`
 	LifetimeStats         LifetimeTradeStats         `json:"lifetime_stats"`
@@ -514,6 +516,7 @@ func (ss *StatusServer) uiStrategyOverview(id string) (UIStrategyOverview, Lifet
 		PnL:                   pnl,
 		PortfolioValue:        pv,
 		InitialCapital:        initCap,
+		PoolBudget:            usesSharedWalletPoolBudget(sc),
 		RegimeDivergence:      snapshot.RegimeDivergence,
 		Paused:                sc.Paused,
 		RegimeGateFailClosed:  regimeGateFailClosedActive(sc, &snapshot, ss.regime),
@@ -561,6 +564,7 @@ func (ss *StatusServer) handleAPIStrategyStatus(w http.ResponseWriter, r *http.R
 		PortfolioValue:        overview.PortfolioValue,
 		PnL:                   overview.PnL,
 		PnLPct:                overview.PnLPct,
+		PoolBudget:            overview.PoolBudget,
 		TradeCount:            len(snapshot.TradeHistory),
 		WinRate:               overview.WinRate,
 		LifetimeStats:         lifetime,

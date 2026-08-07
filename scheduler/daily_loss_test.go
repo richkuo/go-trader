@@ -25,7 +25,7 @@ func TestEvaluateDailyLossLimitUnconfigured(t *testing.T) {
 	states := map[string]*StrategyState{
 		"a": dlState("a", 1000, -900, dlToday()),
 	}
-	st := evaluateDailyLossLimit(&PortfolioRiskConfig{MaxDrawdownPct: 25}, states, time.Now().UTC())
+	st := evaluateDailyLossLimit(&PortfolioRiskConfig{MaxDrawdownPct: 25}, states, nil, time.Now().UTC())
 	if st.Configured || st.Tripped {
 		t.Fatalf("unconfigured limit must never trip: %+v", st)
 	}
@@ -33,7 +33,7 @@ func TestEvaluateDailyLossLimitUnconfigured(t *testing.T) {
 		t.Fatalf("LossUSD = %g, want 900", st.LossUSD)
 	}
 	// nil PortfolioRisk must be safe too
-	st = evaluateDailyLossLimit(nil, states, time.Now().UTC())
+	st = evaluateDailyLossLimit(nil, states, nil, time.Now().UTC())
 	if st.Configured || st.Tripped {
 		t.Fatalf("nil portfolio risk must never trip: %+v", st)
 	}
@@ -44,19 +44,19 @@ func TestEvaluateDailyLossLimitUSDThreshold(t *testing.T) {
 	now := time.Now().UTC()
 
 	below := map[string]*StrategyState{"a": dlState("a", 0, -499.99, dlToday())}
-	if st := evaluateDailyLossLimit(pr, below, now); st.Tripped {
+	if st := evaluateDailyLossLimit(pr, below, nil, now); st.Tripped {
 		t.Fatalf("loss below threshold must not trip: %+v", st)
 	}
 	// Boundary: loss exactly at the threshold trips (>=, most protective).
 	atLimit := map[string]*StrategyState{"a": dlState("a", 0, -500, dlToday())}
-	if st := evaluateDailyLossLimit(pr, atLimit, now); !st.Tripped {
+	if st := evaluateDailyLossLimit(pr, atLimit, nil, now); !st.Tripped {
 		t.Fatalf("loss at threshold must trip: %+v", st)
 	}
 	beyond := map[string]*StrategyState{
 		"a": dlState("a", 0, -300, dlToday()),
 		"b": dlState("b", 0, -250, dlToday()),
 	}
-	st := evaluateDailyLossLimit(pr, beyond, now)
+	st := evaluateDailyLossLimit(pr, beyond, nil, now)
 	if !st.Tripped || st.LossUSD != 550 || st.ThresholdUSD != 500 {
 		t.Fatalf("multi-strategy aggregate: %+v, want tripped loss=550 threshold=500", st)
 	}
@@ -70,13 +70,40 @@ func TestEvaluateDailyLossLimitPctThreshold(t *testing.T) {
 		"a": dlState("a", 2000, -100, dlToday()),
 		"b": dlState("b", 3000, -160, dlToday()),
 	}
-	st := evaluateDailyLossLimit(pr, states, now)
+	st := evaluateDailyLossLimit(pr, states, nil, now)
 	if !st.Tripped || st.CapitalBasis != 5000 || st.ThresholdUSD != 250 {
 		t.Fatalf("pct arm: %+v, want tripped basis=5000 threshold=250", st)
 	}
 	states["b"].RiskState.DailyPnL = -140 // loss 240 < 250
-	if st := evaluateDailyLossLimit(pr, states, now); st.Tripped {
+	if st := evaluateDailyLossLimit(pr, states, nil, now); st.Tripped {
 		t.Fatalf("loss under pct threshold must not trip: %+v", st)
+	}
+}
+
+func TestEvaluateDailyLossLimitPctBasisExcludesSharedWalletPool(t *testing.T) {
+	pr := &PortfolioRiskConfig{DailyMaxLossPct: 5}
+	now := time.Now().UTC()
+	states := map[string]*StrategyState{
+		"pool-a":    dlState("pool-a", 1000, -100, dlToday()), // stale legacy baseline
+		"allocated": dlState("allocated", 2000, -20, dlToday()),
+	}
+	strategies := []StrategyConfig{
+		{ID: "pool-a", sharedWalletPoolBudget: true},
+		{ID: "allocated"},
+	}
+	st := evaluateDailyLossLimit(pr, states, strategies, now)
+	if st.CapitalBasis != 2000 || st.ThresholdUSD != 100 {
+		t.Fatalf("mixed pool basis=%v threshold=%v, want allocated-only 2000/100", st.CapitalBasis, st.ThresholdUSD)
+	}
+	if !st.Tripped {
+		t.Fatalf("loss $120 must trip allocated-only $100 threshold: %+v", st)
+	}
+
+	delete(states, "allocated")
+	strategies = strategies[:1]
+	st = evaluateDailyLossLimit(pr, states, strategies, now)
+	if st.CapitalBasis != 0 || !st.PctBasisMiss || st.Tripped {
+		t.Fatalf("all-pool pct arm must surface a basis miss: %+v", st)
 	}
 }
 
@@ -84,13 +111,13 @@ func TestEvaluateDailyLossLimitBothArmsLowerWins(t *testing.T) {
 	// usd=$400 vs pct 5% of $20k=$1000 → usd is lower and wins
 	pr := &PortfolioRiskConfig{DailyMaxLossUSD: 400, DailyMaxLossPct: 5}
 	states := map[string]*StrategyState{"a": dlState("a", 20000, -450, dlToday())}
-	st := evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if !st.Tripped || st.ThresholdUSD != 400 {
 		t.Fatalf("lower arm must win: %+v, want tripped threshold=400", st)
 	}
 	// pct lower: usd=$2000 vs 5% of $20k=$1000
 	pr = &PortfolioRiskConfig{DailyMaxLossUSD: 2000, DailyMaxLossPct: 5}
-	st = evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st = evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if st.Tripped || st.ThresholdUSD != 1000 {
 		t.Fatalf("pct arm lower: %+v, want not tripped threshold=1000", st)
 	}
@@ -106,7 +133,7 @@ func TestEvaluateDailyLossLimitStaleDayExcluded(t *testing.T) {
 		"stale": dlState("stale", 0, -5000, yesterday),
 		"fresh": dlState("fresh", 0, -50, dlToday()),
 	}
-	st := evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if st.Tripped || st.LossUSD != 50 {
 		t.Fatalf("stale day must count 0: %+v, want loss=50 not tripped", st)
 	}
@@ -118,13 +145,13 @@ func TestEvaluateDailyLossLimitWinsOffsetLosses(t *testing.T) {
 		"win":  dlState("win", 0, 400, dlToday()),
 		"loss": dlState("loss", 0, -450, dlToday()),
 	}
-	st := evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if st.Tripped || st.LossUSD != 50 {
 		t.Fatalf("net aggregate: %+v, want loss=50 not tripped", st)
 	}
 	// Net-positive day: LossUSD stays 0.
 	states["loss"].RiskState.DailyPnL = -100
-	st = evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st = evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if st.Tripped || st.LossUSD != 0 {
 		t.Fatalf("net-positive day: %+v, want loss=0 not tripped", st)
 	}
@@ -138,7 +165,7 @@ func TestEvaluateDailyLossLimitManualStrategyIncluded(t *testing.T) {
 		"hl-perps": {ID: "hl-perps", Type: "perps", RiskState: RiskState{DailyPnL: -200, DailyPnLDate: dlToday()}},
 		"manual":   {ID: "manual", Type: "manual", RiskState: RiskState{DailyPnL: -150, DailyPnLDate: dlToday()}},
 	}
-	st := evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if !st.Tripped || st.LossUSD != 350 {
 		t.Fatalf("manual PnL must count: %+v, want tripped loss=350", st)
 	}
@@ -150,13 +177,13 @@ func TestEvaluateDailyLossLimitPctBasisMiss(t *testing.T) {
 	// flagged so operators see the inert protection instead of assuming cover.
 	pr := &PortfolioRiskConfig{DailyMaxLossPct: 5}
 	states := map[string]*StrategyState{"a": dlState("a", 0, -10000, dlToday())}
-	st := evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if st.Tripped || !st.PctBasisMiss {
 		t.Fatalf("basis-less pct arm: %+v, want not tripped with PctBasisMiss", st)
 	}
 	// USD arm still enforces when both are set and basis is missing.
 	pr.DailyMaxLossUSD = 500
-	st = evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st = evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if !st.Tripped || st.ThresholdUSD != 500 {
 		t.Fatalf("usd arm with basis miss: %+v, want tripped threshold=500", st)
 	}
@@ -168,7 +195,7 @@ func TestEvaluateDailyLossLimitNilStateSkipped(t *testing.T) {
 		"nil": nil,
 		"a":   dlState("a", 0, -150, dlToday()),
 	}
-	st := evaluateDailyLossLimit(pr, states, time.Now().UTC())
+	st := evaluateDailyLossLimit(pr, states, nil, time.Now().UTC())
 	if !st.Tripped || st.LossUSD != 150 {
 		t.Fatalf("nil entries must be skipped: %+v", st)
 	}
@@ -193,23 +220,23 @@ func TestDailyLossStatusNote(t *testing.T) {
 	now := time.Now().UTC()
 	states := map[string]*StrategyState{"a": dlState("a", 1000, -600, dlToday())}
 
-	if note := dailyLossStatusNote(nil, states, now); note != "" {
+	if note := dailyLossStatusNote(nil, states, nil, now); note != "" {
 		t.Fatalf("unconfigured note = %q, want empty", note)
 	}
-	if note := dailyLossStatusNote(&PortfolioRiskConfig{MaxDrawdownPct: 25}, states, now); note != "" {
+	if note := dailyLossStatusNote(&PortfolioRiskConfig{MaxDrawdownPct: 25}, states, nil, now); note != "" {
 		t.Fatalf("unconfigured note = %q, want empty", note)
 	}
-	tripped := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 500}, states, now)
+	tripped := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 500}, states, nil, now)
 	if !strings.Contains(tripped, "TRIPPED") || !strings.Contains(tripped, "$600.00") {
 		t.Fatalf("tripped note = %q", tripped)
 	}
-	armed := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 5000}, states, now)
+	armed := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 5000}, states, nil, now)
 	if !strings.Contains(armed, "armed") || !strings.Contains(armed, "$5000.00") {
 		t.Fatalf("armed note = %q", armed)
 	}
 	miss := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossPct: 5}, map[string]*StrategyState{
 		"a": dlState("a", 0, -600, dlToday()),
-	}, now)
+	}, nil, now)
 	if !strings.Contains(miss, "initial_capital") || !strings.Contains(miss, "CANNOT evaluate") {
 		t.Fatalf("basis-miss note = %q", miss)
 	}
@@ -217,14 +244,14 @@ func TestDailyLossStatusNote(t *testing.T) {
 	// armed USD arm AND the inert pct arm — "armed" alone hides the gap.
 	both := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 5000, DailyMaxLossPct: 5}, map[string]*StrategyState{
 		"a": dlState("a", 0, -600, dlToday()),
-	}, now)
+	}, nil, now)
 	if !strings.Contains(both, "armed") || !strings.Contains(both, "CANNOT evaluate") {
 		t.Fatalf("both-arms basis-miss note = %q, want armed + pct warning", both)
 	}
 	// Tripped USD arm with inert pct arm: both lines too.
 	trippedMiss := dailyLossStatusNote(&PortfolioRiskConfig{DailyMaxLossUSD: 500, DailyMaxLossPct: 5}, map[string]*StrategyState{
 		"a": dlState("a", 0, -600, dlToday()),
-	}, now)
+	}, nil, now)
 	if !strings.Contains(trippedMiss, "TRIPPED") || !strings.Contains(trippedMiss, "CANNOT evaluate") {
 		t.Fatalf("tripped basis-miss note = %q, want TRIPPED + pct warning", trippedMiss)
 	}

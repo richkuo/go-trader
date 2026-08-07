@@ -985,16 +985,26 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing
 		}
 		effectiveCash := cash
 		if flipping {
-			// Close leg realizes PnL before the new side opens on-chain;
-			// size the new side against post-close margin so a losing flip
-			// at higher leverage doesn't exceed exchange capacity.
-			var closePnL float64
-			if isBuy { // short → long: profit when price < avgCost
-				closePnL = posQty * (avgCost - price)
-			} else { // long → short: profit when price > avgCost
-				closePnL = posQty * (price - avgCost)
+			if sizing.SharedWalletPool {
+				// cash is signed account equity minus deployed margin. Keep any
+				// negative headroom until this strategy's current-side margin
+				// is released: max(0, cash) + release would hide a wallet
+				// shortfall and could oversize the atomic close+open order,
+				// losing the close leg to an exchange margin rejection.
+				// Account equity already contains uPnL, so adding close PnL
+				// here would double count it.
+				effectiveCash += sizing.ReleasableMarginUSD
+			} else {
+				// Close leg realizes PnL before the new side opens on-chain;
+				// size the new side against post-close virtual cash.
+				var closePnL float64
+				if isBuy { // short → long: profit when price < avgCost
+					closePnL = posQty * (avgCost - price)
+				} else { // long → short: profit when price > avgCost
+					closePnL = posQty * (price - avgCost)
+				}
+				effectiveCash += closePnL
 			}
-			effectiveCash = cash + closePnL
 		}
 		budget := PerpsOpenNotionalSized(effectiveCash, price, sizing)
 		if budget < 1 || price <= 0 {
@@ -1517,7 +1527,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			return tradesExecuted, nil
 		}
 		// Open long
-		if s.Cash < 1 {
+		if s.Cash < 1 && fillQty <= 0 {
 			logger.Info("Insufficient cash ($%.2f) to open long %s perp", s.Cash, symbol)
 			return tradesExecuted, nil
 		}
@@ -1728,7 +1738,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			return tradesExecuted, nil
 		}
 		// Open short (direction="short" or "both").
-		if s.Cash < 1 {
+		if s.Cash < 1 && fillQty <= 0 {
 			logger.Info("Insufficient cash ($%.2f) to open short %s perp", s.Cash, symbol)
 			return tradesExecuted, nil
 		}

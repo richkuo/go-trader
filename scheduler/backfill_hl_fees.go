@@ -593,6 +593,9 @@ func runBackfillHLFees(args []string) int {
 			oldCash = ss.Cash
 			initialCapital = ss.InitialCapital
 		}
+		if usesSharedWalletPoolBudget(sc) {
+			initialCapital = 0
+		}
 		if initialCapital == 0 {
 			initialCapital = sc.Capital
 		}

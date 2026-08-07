@@ -290,7 +290,7 @@ func TestValidateStateDoesNotInferCashReconcileFromNegativeCash(t *testing.T) {
 		"hl-perp":    {ID: "hl-perp", Type: "perps", Cash: -120, Positions: map[string]*Position{}},
 		"ts-fut":     {ID: "ts-fut", Type: "futures", Cash: -5, Positions: map[string]*Position{}},
 	}}
-	ValidateState(state)
+	ValidateState(state, nil)
 	for id, wantLatch := range map[string]bool{"paper-spot": false, "live-spot": true, "hl-perp": false, "ts-fut": false} {
 		s := state.Strategies[id]
 		if s.Cash != 0 {
@@ -334,7 +334,7 @@ func TestPaperSpotFeeNegativeReloadDoesNotLatchCashReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ValidateState(loaded)
+	ValidateState(loaded, nil)
 	s := loaded.Strategies["bn-btc"]
 	if s == nil {
 		t.Fatal("bn-btc missing after LoadState")
@@ -353,7 +353,7 @@ func TestPaperSpotFeeNegativeReloadDoesNotLatchCashReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ValidateState(loaded2)
+	ValidateState(loaded2, nil)
 	if loaded2.Strategies["bn-btc"].CashReconcileRequired {
 		t.Fatal("second paper-spot restart must still leave CashReconcileRequired false")
 	}
@@ -508,7 +508,7 @@ func TestCashReconcileRequiredSaveLoadRoundTrip(t *testing.T) {
 
 	// Second restart simulation: clamp cash to 0 via ValidateState, save again,
 	// reload — latch must still be true (persisted column, not negative-cash re-derive).
-	ValidateState(loaded)
+	ValidateState(loaded, nil)
 	if loaded.Strategies["rh-btc"].Cash != 0.005 {
 		// 0.005 >= 0 so ValidateState does not clamp; okx clamps to 0 and keeps latch
 	}
@@ -528,7 +528,7 @@ func TestCashReconcileRequiredSaveLoadRoundTrip(t *testing.T) {
 	if !loaded2.Strategies["rh-btc"].CashReconcileRequired {
 		t.Fatal("second Save/Load with cash=0 must still restore CashReconcileRequired from SQLite")
 	}
-	ValidateState(loaded2)
+	ValidateState(loaded2, nil)
 	if !loaded2.Strategies["rh-btc"].CashReconcileRequired {
 		t.Fatal("ValidateState must not clear a persisted latch when cash is 0")
 	}
@@ -684,7 +684,7 @@ func TestRunOKXExecuteOrder_CashReconcileGate(t *testing.T) {
 
 	// (a) latched + buy → held
 	calls = nil
-	er, ok := runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, true, 0, "", 0, nil, logger)
+	er, ok := runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, true, 0, "", 0, 0, nil, logger)
 	if ok || er != nil {
 		t.Fatalf("latched buy: got ok=%v er=%v, want held", ok, er != nil)
 	}
@@ -694,7 +694,7 @@ func TestRunOKXExecuteOrder_CashReconcileGate(t *testing.T) {
 
 	// (b) latched + sell/close → proceeds
 	calls = nil
-	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: -1, Price: 100}, 100, 0, true, 0.5, "long", 100, nil, logger)
+	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: -1, Price: 100}, 100, 0, false, true, 0.5, "long", 100, 0, nil, logger)
 	if !ok || er == nil {
 		t.Fatalf("latched sell: got ok=%v er=%v, want proceed", ok, er != nil)
 	}
@@ -704,7 +704,7 @@ func TestRunOKXExecuteOrder_CashReconcileGate(t *testing.T) {
 
 	// (c) unlatched + buy → proceeds
 	calls = nil
-	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, 0, "", 0, nil, logger)
+	er, ok = runOKXExecuteOrder(sc, &OKXResult{Symbol: "BTC-USDT", Signal: 1, Price: 100}, 100, 50, false, false, 0, "", 0, 0, nil, logger)
 	if !ok || er == nil {
 		t.Fatalf("unlatched buy: got ok=%v er=%v, want proceed", ok, er != nil)
 	}

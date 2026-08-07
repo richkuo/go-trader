@@ -260,23 +260,41 @@ type PortfolioRiskState struct {
 // network or configuration failure.
 type SharedWalletBalanceFetcher func(platform string) (float64, error)
 
-// detectSharedWalletPlatforms returns the list of platforms that have more
-// than one strategy sharing the same wallet (capital_pct > 0). A single
-// strategy with capital_pct alone is not a "shared" wallet — there is no
-// double-counting risk to recover from. The result is sorted alphabetically
-// for deterministic iteration order (callers rely on this).
+// detectSharedWalletPlatforms returns actually detected live shared-wallet
+// platforms where every automated/manual risk-path member uses a legacy
+// percentage allocation that could have produced the inflated persisted peak
+// #244 repairs. One fixed-capital or zero-baseline pool member excludes the
+// entire wallet: its kill-switch latch may reflect a real loss, and a process
+// restart must never grant that account a fresh drawdown budget.
 func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
-	walletCount := make(map[string]int)
+	byID := make(map[string]StrategyConfig, len(strategies))
+	walletMembers := make(map[SharedWalletKey][]string)
 	for _, sc := range strategies {
-		if sc.CapitalPct > 0 {
-			walletCount[sc.Platform]++
+		byID[sc.ID] = sc
+		if key, ok := walletKeyFor(sc); ok && hasSharedWalletBalanceFetcher(key.Platform) {
+			walletMembers[key] = append(walletMembers[key], sc.ID)
+		}
+	}
+	platformSet := make(map[string]bool)
+	for key, memberIDs := range walletMembers {
+		memberIDs = riskPathWalletMemberIDs(key, memberIDs, strategies)
+		if len(memberIDs) < 2 {
+			continue
+		}
+		allLegacyPct := true
+		for _, id := range memberIDs {
+			if byID[id].CapitalPct <= 0 {
+				allLegacyPct = false
+				break
+			}
+		}
+		if allLegacyPct {
+			platformSet[key.Platform] = true
 		}
 	}
 	var platforms []string
-	for plat, n := range walletCount {
-		if n > 1 {
-			platforms = append(platforms, plat)
-		}
+	for platform := range platformSet {
+		platforms = append(platforms, platform)
 	}
 	sort.Strings(platforms)
 	return platforms
@@ -291,8 +309,8 @@ func detectSharedWalletPlatforms(strategies []StrategyConfig) []string {
 //
 // Guards (all must hold):
 //   - the kill switch must currently be active (otherwise no-op)
-//   - at least one platform must host a shared wallet (capital_pct > 0 with
-//     more than one strategy on the same platform)
+//   - at least one platform must host an account-detected shared wallet whose
+//     2+ risk-path members all use legacy capital_pct (the #244 fake-peak mode)
 //   - fetcher must successfully return a real balance for EVERY shared-wallet
 //     platform — any network/config failure preserves the kill switch so the
 //     re-baselined peak reflects the full portfolio-wide truth rather than a
@@ -359,6 +377,12 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	return true
 }
 
+// portfolioPeakRebaselineAvailable returns true only when the cycle's portfolio
+// total was computed without any missing-balance or stale-snapshot substitution.
+func portfolioPeakRebaselineAvailable(usedPVFallback, usedStaleRiskBalance, pooledEquityComplete bool) bool {
+	return !usedPVFallback && !usedStaleRiskBalance && pooledEquityComplete
+}
+
 // AutoResetConfirmedFlatKillSwitch clears a portfolio kill-switch latch after
 // live close planning has confirmed all automated venues are flat. This is used
 // only when no DM-capable owner is configured; owner-backed deployments keep the
@@ -367,6 +391,9 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 // rebaselineValue is the best available estimate for post-close portfolio
 // value. The hot loop typically passes the pre-close mark-to-market totalPV,
 // which closely approximates post-close cash apart from fees and slippage.
+// rebaselineAvailable must be false when that value includes a missing-balance
+// fallback or stale pooled-wallet snapshot. The latch still clears in that
+// case, but the prior real-equity peak is retained.
 //
 // Note: callers should suppress this auto-reset when the close plan has
 // operator-required gaps such as OKX spot or Robinhood options. Those venues do
@@ -376,7 +403,12 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 // CONCURRENCY: lock-free body — the caller must hold mu while invoking this
 // (hot-loop site in main does). Unlike ClearLatchedKillSwitchSharedWallet,
 // this helper is intended for post-startup use under the state lock.
-func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue float64, details string) bool {
+func AutoResetConfirmedFlatKillSwitch(
+	prs *PortfolioRiskState,
+	rebaselineValue float64,
+	rebaselineAvailable bool,
+	details string,
+) bool {
 	if prs == nil || !prs.KillSwitchActive {
 		return false
 	}
@@ -387,6 +419,10 @@ func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue f
 		details = fmt.Sprintf("%s (previous equity drawdown=%.2f%%, previous margin drawdown=%.2f%%)",
 			details, prevEquityDrawdownPct, prevMarginDrawdownPct)
 	}
+	if !rebaselineAvailable {
+		details = fmt.Sprintf("%s (portfolio peak retained at $%.2f because current equity is not trustworthy)",
+			details, prs.PeakValue)
+	}
 
 	prs.KillSwitchActive = false
 	prs.KillSwitchAt = time.Time{}
@@ -396,10 +432,12 @@ func AutoResetConfirmedFlatKillSwitch(prs *PortfolioRiskState, rebaselineValue f
 	prs.LastWarningMarginDDPct = 0
 	prs.WarningEquityDeltaPct = 0
 	prs.WarningMarginDeltaPct = 0
-	prs.PeakValue = rebaselineValue
+	if rebaselineAvailable {
+		prs.PeakValue = rebaselineValue
+	}
 	prs.CurrentDrawdownPct = 0
 	prs.CurrentMarginDrawdownPct = 0
-	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, rebaselineValue, details)
+	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, prs.PeakValue, details)
 	return true
 }
 
@@ -492,13 +530,22 @@ func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []
 // The emitted KillSwitchEvent.Source records whether equity or margin drove
 // the fire/warning so operators can tell at a glance which lever tripped.
 func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64) (allowed, notionalBlocked, warning bool, reason string) {
+	return checkPortfolioRiskWithEquityAvailability(prs, cfg, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin, true)
+}
+
+// checkPortfolioRiskWithEquityAvailability allows the shared-wallet risk path
+// to suppress only the equity-drawdown signal when a pooled wallet has neither
+// a current nor one-generation-old real balance. The perps margin signal and
+// notional cap remain active. Existing callers use CheckPortfolioRisk and
+// therefore retain the historical equity-available behavior.
+func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64, equityAvailable bool) (allowed, notionalBlocked, warning bool, reason string) {
 	if prs.KillSwitchActive {
 		return false, false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
 			prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"))
 	}
 
 	// Ratchet peak high-water mark upward only.
-	if totalValue > prs.PeakValue {
+	if equityAvailable && totalValue > prs.PeakValue {
 		prs.PeakValue = totalValue
 	}
 
@@ -506,7 +553,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	// own field so (PeakValue, CurrentDrawdownPct) stays internally consistent
 	// and operators can see both lenses at once.
 	var equityDD, marginDD float64
-	if prs.PeakValue > 0 {
+	if equityAvailable && prs.PeakValue > 0 {
 		equityDD = (prs.PeakValue - totalValue) / prs.PeakValue * 100
 		if equityDD < 0 {
 			equityDD = 0
@@ -526,7 +573,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	// account that blows up margin on bar 1 (before any equity snapshot) is
 	// still protected — equityDD is zero in that case and only the margin
 	// signal can fire.
-	if equityDD > cfg.MaxDrawdownPct || marginDD > cfg.MaxDrawdownPct {
+	if (equityAvailable && equityDD > cfg.MaxDrawdownPct) || marginDD > cfg.MaxDrawdownPct {
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = time.Now().UTC()
 		prs.WarningSent = false
@@ -540,11 +587,16 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 		// Tie-break to margin when the two signals are equal: the margin
 		// signal is the newer, more sensitive lens (#296) and surfacing it
 		// preferentially helps operators notice leveraged blow-ups.
-		if marginDD >= equityDD {
+		if !equityAvailable || marginDD >= equityDD {
 			source = "margin"
 			dd = marginDD
-			r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f, value=$%.2f, peak=$%.2f)",
-				marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, totalValue, prs.PeakValue)
+			if equityAvailable {
+				r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f, value=$%.2f, peak=$%.2f)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, totalValue, prs.PeakValue)
+			} else {
+				r = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f; equity unavailable)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin)
+			}
 		} else {
 			source = "equity"
 			dd = equityDD
@@ -558,7 +610,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 	// Warning check: approaching kill switch threshold on either signal.
 	if cfg.MaxDrawdownPct > 0 {
 		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
-		equityWarn := equityDD > warnDrawdownPct
+		equityWarn := equityAvailable && equityDD > warnDrawdownPct
 		marginWarn := marginDD > warnDrawdownPct
 		if equityWarn || marginWarn {
 			now := time.Now().UTC()
@@ -567,10 +619,16 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 				prs.WarningEquityDeltaPct = 0
 				prs.WarningMarginDeltaPct = 0
 			} else {
-				prs.WarningEquityDeltaPct = equityDD - prs.LastWarningEquityDDPct
+				if equityAvailable {
+					prs.WarningEquityDeltaPct = equityDD - prs.LastWarningEquityDDPct
+				} else {
+					prs.WarningEquityDeltaPct = 0
+				}
 				prs.WarningMarginDeltaPct = marginDD - prs.LastWarningMarginDDPct
 			}
-			prs.LastWarningEquityDDPct = equityDD
+			if equityAvailable {
+				prs.LastWarningEquityDDPct = equityDD
+			}
 			prs.LastWarningMarginDDPct = marginDD
 			prs.WarningSent = true
 			warning = true
@@ -588,7 +646,7 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 				reason = fmt.Sprintf("portfolio drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, value=$%.2f, peak=$%.2f)",
 					equityDD, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
 			}
-		} else {
+		} else if equityAvailable {
 			// Recovered below warning threshold — no active warning band.
 			prs.WarningSent = false
 			prs.WarnBandEnteredAt = time.Time{}
@@ -1482,8 +1540,12 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		circuitBreakerSuppressedWarned.Delete(s.ID)
 	}
 
-	// Update peak
-	if portfolioValue > r.PeakValue {
+	poolBudget := sc != nil && usesSharedWalletPoolBudget(*sc)
+
+	// A pooled strategy has no per-strategy equity baseline: its cash book is
+	// an attribution ledger, while solvency belongs to the account-level
+	// portfolio risk check. Do not manufacture a peak from that ledger.
+	if !poolBudget && portfolioValue > r.PeakValue {
 		r.PeakValue = portfolioValue
 	}
 
@@ -1507,29 +1569,29 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 	// leverage unset, or non-perps type), we fall back to the classic
 	// peak-relative drawdown so strategies without leverage behave identically
 	// to before.
-	if r.PeakValue > 0 {
-		loss := r.PeakValue - portfolioValue
-		denom := r.PeakValue
-		denomLabel := "peak"
-		if s.Type == "perps" {
-			var configLev float64
-			if sc != nil {
-				configLev = sc.Leverage
-			}
-			if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
-				loss = pnlLoss
-				denom = margin
-				denomLabel = "margin"
-			}
+	loss := 0.0
+	denom := 0.0
+	denomLabel := "peak"
+	if s.Type == "perps" {
+		var configLev float64
+		if sc != nil {
+			configLev = sc.Leverage
 		}
+		if pnlLoss, margin := perpsMarginDrawdownInputs(s, configLev, prices); margin > 0 {
+			loss = pnlLoss
+			denom = margin
+			denomLabel = "margin"
+		}
+	}
+	if denom <= 0 && !poolBudget && r.PeakValue > 0 {
+		loss = r.PeakValue - portfolioValue
+		denom = r.PeakValue
+	}
+	if denom > 0 {
 		if loss < 0 {
 			loss = 0
 		}
-		if denom > 0 {
-			r.CurrentDrawdownPct = (loss / denom) * 100
-		} else {
-			r.CurrentDrawdownPct = 0
-		}
+		r.CurrentDrawdownPct = (loss / denom) * 100
 		if r.CurrentDrawdownPct > r.MaxDrawdownPct && cbEnabled {
 			r.CircuitBreaker = true
 			r.CircuitBreakerUntil = now.Add(sc.CircuitBreakerDrawdownCooldown())
@@ -1544,6 +1606,8 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
 		}
+	} else {
+		r.CurrentDrawdownPct = 0
 	}
 
 	// Consecutive losses circuit breaker (default 5 in a row → pause 1h, close

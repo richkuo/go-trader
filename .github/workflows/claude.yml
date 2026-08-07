@@ -112,7 +112,7 @@ jobs:
             NONBLANK=$(printf '%s' "$STRIPPED" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d')
             NONBLANK_LINES=$(printf '%s' "$NONBLANK" | awk 'END{print NR}')
             if [ "$NONBLANK_LINES" -eq 1 ] && \
-               printf '%s' "$NONBLANK" | grep -qE '^@claude([[:space:]]+[a-z]+)?[[:space:]]+review([[:space:]]+effort:(low|medium|high|xhigh))?$'; then
+               printf '%s' "$NONBLANK" | grep -qE '^@claude([[:space:]]+[a-z]+[0-9]*)?[[:space:]]+review([[:space:]]+effort:(low|medium|high|xhigh))?$'; then
               echo "invoked=true" >> "$GITHUB_OUTPUT"
             else
               echo "invoked=false" >> "$GITHUB_OUTPUT"
@@ -140,15 +140,19 @@ jobs:
           # Empty when unset.
           DOCS_RELEASE_ENABLED: ${{ vars.DOCS_RELEASE_ENABLED }}
         run: |
-          # Extract optional model shorthand after @claude on a line boundary
-          # e.g. "@claude sonnet fix this" → "sonnet"
-          MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -oE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+' | head -1 | awk '{print $NF}' || true)
+          # Extract optional model shorthand after @claude on a line boundary,
+          # including an optional version digit. Case-insensitive match (-i),
+          # then lowercased, so "Opus"/"OPUS5" resolve the same as "opus5".
+          # e.g. "@claude sonnet fix this" → "sonnet", "@claude Opus5 …" → "opus5"
+          MODEL_SHORT=$(printf '%s' "$STRIPPED" | grep -ioE '(^|(\r?\n))[[:space:]]*@claude[[:space:]]+[a-z]+[0-9]*' | head -1 | awk '{print $NF}' | tr '[:upper:]' '[:lower:]' || true)
 
+          # Each family accepts a bare name and a "5" suffix — "opus"/"opus5" both
+          # select Opus 5. Only the no-shorthand default stays on Opus 4.8.
           case "$MODEL_SHORT" in
-            opus)    MODEL_ID="claude-opus-4-8[1m]" ;;
-            sonnet)  MODEL_ID="claude-sonnet-5" ;;
-            fable)   MODEL_ID="claude-fable-5" ;;
-            *)       MODEL_ID="claude-opus-4-8[1m]" ;;  # default (no model specified)
+            opus|opus5)     MODEL_ID="claude-opus-5" ;;
+            sonnet|sonnet5) MODEL_ID="claude-sonnet-5" ;;
+            fable|fable5)   MODEL_ID="claude-fable-5" ;;
+            *)              MODEL_ID="claude-opus-4-8[1m]" ;;  # default (no model specified)
           esac
 
           echo "model_id=$MODEL_ID" >> "$GITHUB_OUTPUT"
@@ -182,7 +186,7 @@ jobs:
           FLOW=""
           if [ "$EVENT_NAME" = "issue_comment" ] && [ "$DOCS_RELEASE_ENABLED" = "true" ]; then
             for cand in create-release sync-docs; do
-              if printf '%s' "$STRIPPED" | grep -qiE "(^|(\r?\n))[[:space:]]*@claude([[:space:]]+(opus|sonnet|fable))?[[:space:]]+${cand}([[:space:]]|\$)"; then
+              if printf '%s' "$STRIPPED" | grep -qiE "(^|(\r?\n))[[:space:]]*@claude([[:space:]]+(opus|opus5|sonnet|sonnet5|fable|fable5))?[[:space:]]+${cand}([[:space:]]|\$)"; then
                 FLOW="$cand"
                 break
               fi
@@ -214,7 +218,8 @@ jobs:
           PR_AUTHOR_LOGIN: ${{ github.event.issue.user.login }}
         run: |
           # Fail-closed routing keyed on the FIRST word after @claude (an
-          # optional model shorthand — opus/sonnet/fable — is skipped). Four
+          # optional model shorthand — opus/sonnet/fable, each also
+          # accepted with a "5" suffix — is skipped). Four
           # outcomes:
           #   - implement: a docs-sync/release FLOW, or a plain issue (an `issues`
           #     event, or an issue_comment whose issue is NOT a PR) — the
@@ -255,7 +260,7 @@ jobs:
                 # optional model shorthand.
                 KEYWORD=$(printf '%s' "$STRIPPED" | tr -d '\r' \
                   | sed -n 's/^[[:space:]]*@claude[[:space:]]\{1,\}//p' | head -n 1 \
-                  | awk '{ if ($1 == "opus" || $1 == "sonnet" || $1 == "fable") { print $2 } else { print $1 } }' \
+                  | awk '{ if (tolower($1) ~ /^(opus|opus5|sonnet|sonnet5|fable|fable5)$/) { print $2 } else { print $1 } }' \
                   | tr '[:upper:]' '[:lower:]')
 
                 PR_AUTHOR_TRUSTED=false

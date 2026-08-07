@@ -480,7 +480,7 @@ func TestValidateStateMigratesOwnership(t *testing.T) {
 		},
 	}
 
-	ValidateState(state)
+	ValidateState(state, nil)
 
 	pos := state.Strategies["hl-btc"].Positions["BTC"]
 	if pos.OwnerStrategyID != "hl-btc" {

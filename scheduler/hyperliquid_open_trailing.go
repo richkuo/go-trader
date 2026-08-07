@@ -87,7 +87,7 @@ func armTrailingStopAtOpenNow(
 
 	// currentTrigger==0 / currentOID==0: the primitive computes the initial
 	// trigger and rests a fresh SL (no forceResize needed).
-	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, 0, 0, 0, false, notifier, logger)
+	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, 0, 0, 0, trailingReplacePolicy{}, notifier, logger)
 	mu.Lock()
 	defer mu.Unlock()
 	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, 0, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {

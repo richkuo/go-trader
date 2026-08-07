@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -1182,5 +1183,353 @@ func TestComputeTotalPortfolioValue_PaperManualNotDeduped(t *testing.T) {
 	}
 	if fb {
 		t.Errorf("paper manual: expected usedFallback=false")
+	}
+}
+
+func TestSharedWalletPoolAvailableMarginReservesAllAccountPositions(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Leverage: 5, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}, Leverage: 10, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-manual", Platform: "hyperliquid", Type: "manual", Args: []string{"hold", "SOL", "1h", "--mode=live"}, Leverage: 2},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {Positions: map[string]*Position{
+			"BTC": {Quantity: 1, AvgCost: 100, Leverage: 5},
+		}},
+		"hl-b": {Positions: map[string]*Position{
+			"ETH": {Quantity: 2, AvgCost: 200, Leverage: 10},
+		}},
+		"hl-manual": {Positions: map[string]*Position{
+			"SOL": {Quantity: 1, AvgCost: 50, Leverage: 2},
+		}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	available, pooled, balanceKnown := sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state,
+		map[string]float64{"BTC": 100, "ETH": 200, "SOL": 50},
+		shared, map[SharedWalletKey]float64{key: 1000},
+	)
+	// Deployed margin: BTC 20 + ETH 40 + manual SOL 25.
+	if !pooled || !balanceKnown || available != 915 {
+		t.Fatalf("available=%v pooled=%v known=%v, want 915/true/true", available, pooled, balanceKnown)
+	}
+
+	available, pooled, balanceKnown = sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state, nil, shared,
+		map[SharedWalletKey]float64{key: 85},
+	)
+	if !pooled || !balanceKnown || available != 0 {
+		t.Fatalf("fully deployed wallet must remain known: available=%v pooled=%v known=%v", available, pooled, balanceKnown)
+	}
+
+	available, pooled, balanceKnown = sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state, nil, shared, nil,
+	)
+	if !pooled || balanceKnown || available != 0 {
+		t.Fatalf("missing balance must fail closed: available=%v pooled=%v known=%v", available, pooled, balanceKnown)
+	}
+}
+
+func TestSharedWalletPoolAvailableMarginMissingIdentityFailsClosed(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+	sc := StrategyConfig{
+		ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+		Args:                   []string{"sma", "BTC", "1h", "--mode=live"},
+		sharedWalletPoolBudget: true,
+	}
+	available, pooled, balanceKnown := sharedWalletPoolAvailableMargin(
+		sc, []StrategyConfig{sc}, NewAppState(), nil, nil, nil,
+	)
+	if available != 0 || !pooled || balanceKnown {
+		t.Fatalf("missing identity must fail closed: available=%v pooled=%v known=%v", available, pooled, balanceKnown)
+	}
+}
+
+func TestSharedWalletPoolAvailableMarginReservesUnderwaterEntryMargin(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Leverage: 5, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"tema", "ETH", "1h", "--mode=live"}, Leverage: 10, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {Positions: map[string]*Position{
+			"BTC": {Quantity: 1, AvgCost: 100, Leverage: 5},
+		}},
+		"hl-b": {Positions: map[string]*Position{
+			"ETH": {Quantity: 2, AvgCost: 200, Leverage: 10},
+		}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	available, pooled, balanceKnown := sharedWalletPoolAvailableMargin(
+		strategies[0], strategies, state,
+		map[string]float64{"BTC": 70, "ETH": 250},
+		shared, map[SharedWalletKey]float64{key: 1000},
+	)
+	// BTC is underwater, so reserve entry margin: 1*100/5 = 20.
+	// ETH is above entry, so reserve mark margin: 2*250/10 = 50.
+	if !pooled || !balanceKnown || available != 930 {
+		t.Fatalf("available=%v pooled=%v known=%v, want 930/true/true", available, pooled, balanceKnown)
+	}
+}
+
+func TestResolveSharedWalletRiskBalancesUsesOnlyPriorRiskGeneration(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+	}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	cache := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
+
+	current := map[SharedWalletKey]float64{key: 10000}
+	resolved, stale, complete := resolveSharedWalletRiskBalances(strategies, nil, shared, current, cache, 1)
+	if stale || !complete || resolved[key] != 10000 {
+		t.Fatalf("fresh snapshot: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+
+	resolved, stale, complete = resolveSharedWalletRiskBalances(strategies, nil, shared, nil, cache, 2)
+	if !stale || !complete || resolved[key] != 10000 {
+		t.Fatalf("single fetch miss must use prior risk generation: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+
+	resolved, stale, complete = resolveSharedWalletRiskBalances(strategies, nil, shared, nil, cache, 3)
+	if stale || complete {
+		t.Fatalf("second consecutive miss must expire snapshot: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+}
+
+func TestResolveSharedWalletRiskBalancesProtectsDeferredPoolExit(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}, CapitalPct: 50,
+		},
+		{
+			ID: "hl-b", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"rsi", "ETH", "1h", "--mode=live"}, CapitalPct: 50,
+		},
+	}
+	states := map[string]*StrategyState{
+		"hl-a": {SharedWalletPoolBudget: true},
+		"hl-b": {SharedWalletPoolBudget: true},
+	}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	cache := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
+
+	// The new config is allocated, but the durable marker proves the books have
+	// not been reseeded yet. With no current or prior balance the equity arm
+	// must be suppressed rather than evaluating the zero-baseline books.
+	resolved, stale, complete := resolveSharedWalletRiskBalances(
+		strategies, states, shared, nil, cache, 1)
+	if stale || complete || len(resolved) != 0 {
+		t.Fatalf("deferred exit miss: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+
+	// The process-local latch independently protects the interval between
+	// deferring the exit and any later state inspection.
+	deferredStrategies := append([]StrategyConfig(nil), strategies...)
+	deferredStrategies[0].sharedWalletModeDeferred = true
+	_, stale, complete = resolveSharedWalletRiskBalances(
+		deferredStrategies, nil, shared, nil, nil, 1)
+	if stale || complete {
+		t.Fatalf("process-local deferred exit must suppress equity: stale=%v complete=%v", stale, complete)
+	}
+
+	// If the exchange recovers before the first risk evaluation, normal equity
+	// evaluation resumes immediately from the real balance.
+	resolved, stale, complete = resolveSharedWalletRiskBalances(
+		strategies, states, shared, map[SharedWalletKey]float64{key: 8000}, cache, 2)
+	if stale || !complete || resolved[key] != 8000 {
+		t.Fatalf("deferred exit recovery: resolved=%v stale=%v complete=%v", resolved, stale, complete)
+	}
+}
+
+func TestResolveSharedWalletRiskBalancesCompletedPoolExitUsesAllocatedFallback(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	strategies := []StrategyConfig{
+		{
+			ID: "hl-a", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 500,
+		},
+		{
+			ID: "hl-b", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 500,
+		},
+	}
+	states := map[string]*StrategyState{
+		"hl-a": {Cash: 500, InitialCapital: 500},
+		"hl-b": {Cash: 500, InitialCapital: 500},
+	}
+
+	_, stale, complete := resolveSharedWalletRiskBalances(
+		strategies, states, detectSharedWallets(strategies), nil, nil, 1)
+	if stale || !complete {
+		t.Fatalf("completed exit must use allocated fallback: stale=%v complete=%v", stale, complete)
+	}
+}
+
+func TestPooledRiskFallbackPreservesMixedAllocatedDrawdown(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "spot", Platform: "binanceus", Type: "spot", Capital: 2000},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {Cash: 0, Positions: map[string]*Position{}},
+		"hl-b": {Cash: 0, Positions: map[string]*Position{}},
+		"spot": {Cash: 1000, Positions: map[string]*Position{}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+	cache := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
+	_, _, _ = resolveSharedWalletRiskBalances(
+		strategies, state.Strategies, shared, map[SharedWalletKey]float64{key: 10000}, cache, 1)
+
+	riskBalances, stale, complete := resolveSharedWalletRiskBalances(
+		strategies, state.Strategies, shared, nil, cache, 2)
+	if !stale || !complete {
+		t.Fatalf("single pooled fetch miss must retain complete equity: stale=%v complete=%v", stale, complete)
+	}
+	total, fallback := computeTotalPortfolioValue(strategies, state, nil, riskBalances, shared)
+	if total != 11000 || fallback {
+		t.Fatalf("mixed total=%v fallback=%v, want 11000/false", total, fallback)
+	}
+	prs := &PortfolioRiskState{PeakValue: 12000}
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 5, WarnThresholdPct: 80}
+	allowed, _, _, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, total, 0, 0, 0, complete)
+	if allowed || !prs.KillSwitchActive || !strings.Contains(reason, "portfolio drawdown") {
+		t.Fatalf("allocated strategy drawdown must remain detectable: allowed=%v state=%+v reason=%q", allowed, prs, reason)
+	}
+}
+
+func TestSharedWalletPoolFlipReleaseMatchesStoredLeverageReservation(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-pool")
+	marginCap := 500.0
+	sc := StrategyConfig{
+		ID: "okx-a", Platform: "okx", Type: "perps",
+		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+		Leverage: 5, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true,
+	}
+	peer := sc
+	peer.ID = "okx-b"
+	peer.Args = []string{"rsi", "ETH", "1h", "--mode=live"}
+	strategies := []StrategyConfig{sc, peer}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"okx-a": {Positions: map[string]*Position{
+			"BTC": {Quantity: 1, AvgCost: 100, Leverage: 10},
+		}},
+		"okx-b": {Positions: map[string]*Position{}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
+	available, pooled, known := sharedWalletPoolAvailableMargin(
+		sc, strategies, state, map[string]float64{"BTC": 100}, shared,
+		map[SharedWalletKey]float64{key: 1000},
+	)
+	if !pooled || !known || available != 990 {
+		t.Fatalf("reservation: available=%v pooled=%v known=%v, want 990/true/true", available, pooled, known)
+	}
+	sizing := withSharedWalletPoolSizing(sc, PerpsSizingFor(sc, 100, 0), 1, 100, 100, 10, true)
+	if sizing.ReleasableMarginUSD != 10 || available+sizing.ReleasableMarginUSD != 1000 {
+		t.Fatalf("release must exactly cancel stored-leverage reservation: available=%v sizing=%+v", available, sizing)
+	}
+}
+
+func TestSharedWalletPoolFlipPreservesSignedAccountHeadroom(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-pool")
+	marginCap := 100.0
+	sc := StrategyConfig{
+		ID: "okx-a", Platform: "okx", Type: "perps",
+		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+		Leverage: 1, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true,
+	}
+	peer := sc
+	peer.ID = "okx-b"
+	peer.Args = []string{"rsi", "ETH", "1h", "--mode=live"}
+	strategies := []StrategyConfig{sc, peer}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
+
+	tests := []struct {
+		name          string
+		flippingQty   float64
+		peerQty       float64
+		wantAvailable float64
+		wantSize      float64
+	}{
+		{
+			name: "deficit remains after release and closes only",
+			// Equity 100 - reservations 60 and 120 = -80; releasing 60
+			// still leaves -20, so the new side must be zero.
+			flippingQty: 6, peerQty: 12, wantAvailable: -80, wantSize: 6,
+		},
+		{
+			name: "deficit before release sizes within true remainder",
+			// Equity 100 - reservations 60 and 60 = -20; releasing 60
+			// leaves exactly 40 for the new side.
+			flippingQty: 6, peerQty: 6, wantAvailable: -20, wantSize: 10,
+		},
+		{
+			name: "only position can reuse full equity",
+			// Equity 100 - own reservation 60 = 40; releasing 60 leaves
+			// the full 100 for the new side.
+			flippingQty: 6, wantAvailable: 40, wantSize: 16,
+		},
+		{
+			name: "healthy wallet keeps existing sizing",
+			// Equity 100 - reservations 20 and 20 = 60; releasing 20
+			// leaves 80 for the new side.
+			flippingQty: 2, peerQty: 2, wantAvailable: 60, wantSize: 10,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &AppState{Strategies: map[string]*StrategyState{
+				"okx-a": {Positions: map[string]*Position{
+					"BTC": {Quantity: tt.flippingQty, AvgCost: 10, Leverage: 1, Side: "long"},
+				}},
+				"okx-b": {Positions: map[string]*Position{}},
+			}}
+			if tt.peerQty > 0 {
+				state.Strategies["okx-b"].Positions["ETH"] = &Position{
+					Quantity: tt.peerQty, AvgCost: 10, Leverage: 1, Side: "long",
+				}
+			}
+			prices := map[string]float64{"BTC": 10, "ETH": 10}
+			available, pooled, known := sharedWalletPoolAvailableMargin(
+				sc, strategies, state, prices, shared,
+				map[SharedWalletKey]float64{key: 100},
+			)
+			if !pooled || !known || available != tt.wantAvailable {
+				t.Fatalf("available=%v pooled=%v known=%v, want %v/true/true",
+					available, pooled, known, tt.wantAvailable)
+			}
+			sizing := withSharedWalletPoolSizing(
+				sc, PerpsSizingFor(sc, 10, 0), tt.flippingQty, 10, 10, 1, true,
+			)
+			size, ok, reason := perpsLiveOrderSize(
+				-1, 10, available, tt.flippingQty, 10, sizing, "long", DirectionBoth, 0,
+			)
+			if !ok || reason != "" {
+				t.Fatalf("flip sizing failed: ok=%v reason=%q", ok, reason)
+			}
+			if size != tt.wantSize {
+				t.Fatalf("flip size=%v, want %v", size, tt.wantSize)
+			}
+			if available <= 0 && PerpsOpenNotionalSized(available, 10, sizing) != 0 {
+				t.Fatal("fresh opens/adds must still clamp signed non-positive headroom to zero notional")
+			}
+		})
 	}
 }

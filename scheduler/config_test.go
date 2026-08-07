@@ -734,6 +734,20 @@ func TestEffectiveInitialCapital(t *testing.T) {
 	}
 }
 
+func TestEffectiveInitialCapital_SharedWalletPoolHasNoAllocationBaseline(t *testing.T) {
+	marginCap := 100.0
+	sc := StrategyConfig{
+		Platform: "hyperliquid", Type: "perps",
+		Args:                   []string{"sma", "BTC", "1h", "--mode=live"},
+		MarginPerTradeUSD:      &marginCap,
+		sharedWalletPoolBudget: true,
+	}
+	ss := &StrategyState{InitialCapital: 500}
+	if got := EffectiveInitialCapital(sc, ss); got != 0 {
+		t.Fatalf("pooled initial capital=%v, want 0 even with a legacy persisted baseline", got)
+	}
+}
+
 func TestConfigValidationInitialCapitalNegative(t *testing.T) {
 	cfg := &Config{
 		Strategies: []StrategyConfig{{

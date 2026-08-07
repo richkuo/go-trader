@@ -38,6 +38,15 @@ type PerpsSizing struct {
 	SizingLeverage    float64
 	ExchangeLeverage  float64
 	MarginPerTradeUSD float64
+	// SharedWalletPool says the cash input is remaining account margin, not a
+	// strategy cash book. On a flip, ReleasableMarginUSD is added back because
+	// the old side closes atomically before the new side consumes margin. Its
+	// basis must match sharedWalletPoolAvailableMargin's max(entry, mark)
+	// reservation so the old position cancels out exactly.
+	// Realized close PnL is already reflected in account equity and must not be
+	// added again.
+	SharedWalletPool    bool
+	ReleasableMarginUSD float64
 	// RiskPerTradePct opts into risk-per-trade sizing (#1268): the percent of
 	// strategy cash to lose if the stop is hit. 0 = notional mode.
 	RiskPerTradePct float64
@@ -48,6 +57,19 @@ type PerpsSizing struct {
 	// RiskStopUnresolved carries the resolver's reason when RiskStopDistance
 	// is 0 in risk mode, for skip-reason logging.
 	RiskStopUnresolved string
+}
+
+func withSharedWalletPoolSizing(sc StrategyConfig, sizing PerpsSizing, posQty, price, avgCost, posLeverage float64, balanceKnown bool) PerpsSizing {
+	if !usesSharedWalletPoolBudget(sc) {
+		return sizing
+	}
+	sizing.SharedWalletPool = true
+	marginPrice := sharedWalletPoolMarginBasisPrice(price, avgCost)
+	if balanceKnown && posQty > 0 && marginPrice > 0 {
+		leverage := sharedWalletPoolMarginLeverage(posLeverage, sizing.ExchangeLeverage)
+		sizing.ReleasableMarginUSD = posQty * marginPrice / leverage
+	}
+	return sizing
 }
 
 // riskUnresolvedLabel returns the resolver failure reason, defaulting to a

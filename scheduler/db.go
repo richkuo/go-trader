@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS strategies (
     -- #998: regime-profile allocation active profile (flat-switch persistence).
     active_profile TEXT NOT NULL DEFAULT '',
     -- #1394: live spot over-budget books still need operator reconciliation.
-    cash_reconcile_required INTEGER NOT NULL DEFAULT 0
+    cash_reconcile_required INTEGER NOT NULL DEFAULT 0,
+    -- #1408: durable pool-mode marker for one-time allocation transitions.
+    shared_wallet_pool_budget INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -628,6 +630,10 @@ func (sdb *StateDB) migrateSchema() error {
 		// second restart after ValidateState clamped cash to 0) cannot silently
 		// clear the "books still need reconciliation" guard.
 		"ALTER TABLE strategies ADD COLUMN cash_reconcile_required INTEGER NOT NULL DEFAULT 0",
+		// #1408: remember whether a strategy's cash book is currently a
+		// zero-baseline shared-wallet performance book. This makes pool entry
+		// and exit one-time transitions rather than restart-time reseeds.
+		"ALTER TABLE strategies ADD COLUMN shared_wallet_pool_budget INTEGER NOT NULL DEFAULT 0",
 		// #1395: composite index so LoadState's per-strategy trade query can
 		// satisfy filter (strategy_id) + order (timestamp DESC, rowid DESC) from
 		// one index instead of the single-column strategy/timestamp indexes.
@@ -1156,6 +1162,43 @@ func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	return nil
 }
 
+// PersistSharedWalletPoolStateTransition atomically stores the cash/baseline/
+// risk reset and durable mode marker produced by applySharedWalletPoolStateMode.
+// Immediate persistence prevents a crash between transition and the next
+// SaveState from applying the allocation change twice on restart.
+func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if s == nil {
+		return fmt.Errorf("strategy state is nil")
+	}
+	poolInt := 0
+	if s.SharedWalletPoolBudget {
+		poolInt = 1
+	}
+	res, err := sdb.db.Exec(
+		`UPDATE strategies
+		 SET cash = ?, initial_capital = ?, risk_peak_value = ?,
+		     risk_current_drawdown_pct = ?, shared_wallet_pool_budget = ?
+		 WHERE id = ?`,
+		s.Cash, s.InitialCapital, s.RiskState.PeakValue,
+		s.RiskState.CurrentDrawdownPct, poolInt, s.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("persist shared-wallet pool transition for %s: %w", s.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("shared-wallet pool transition rows affected for %s: %w", s.ID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("no strategy row for id=%q", s.ID)
+	}
+	initialCapitalGuardWarned.Delete(s.ID)
+	return nil
+}
+
 // SaveState writes the full AppState to SQLite within a single transaction.
 //
 // Side effect (#343): when the in-memory StrategyState carries an
@@ -1236,8 +1279,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
-		cash_reconcile_required)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		cash_reconcile_required, shared_wallet_pool_budget)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -1286,6 +1329,10 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		if s.CashReconcileRequired {
 			cashReconcileInt = 1
 		}
+		poolBudgetInt := 0
+		if s.SharedWalletPoolBudget {
+			poolBudgetInt = 1
+		}
 		if _, err := stmtStrat.Exec(
 			s.ID, s.Type, s.Platform, s.Cash, s.InitialCapital,
 			s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
@@ -1294,6 +1341,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			s.RiskState.MarshalPendingCircuitClosesJSON(),
 			strategyActiveProfile(s),
 			cashReconcileInt,
+			poolBudgetInt,
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -1700,7 +1748,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json,
 		COALESCE(active_profile, '') AS active_profile,
-		COALESCE(cash_reconcile_required, 0) AS cash_reconcile_required
+		COALESCE(cash_reconcile_required, 0) AS cash_reconcile_required,
+		COALESCE(shared_wallet_pool_budget, 0) AS shared_wallet_pool_budget
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -1711,13 +1760,14 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		var s StrategyState
 		var cbInt int
 		var cashReconcileInt int
+		var poolBudgetInt int
 		var cbUntilStr, pendingCircuitClosesJSON, activeProfile string
 		if err := rows.Scan(
 			&s.ID, &s.Type, &s.Platform, &s.Cash, &s.InitialCapital,
 			&s.RiskState.PeakValue, &s.RiskState.MaxDrawdownPct, &s.RiskState.CurrentDrawdownPct,
 			&s.RiskState.DailyPnL, &s.RiskState.DailyPnLDate, &s.RiskState.ConsecutiveLosses,
 			&cbInt, &cbUntilStr, &pendingCircuitClosesJSON, &activeProfile,
-			&cashReconcileInt,
+			&cashReconcileInt, &poolBudgetInt,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}
@@ -1725,6 +1775,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		s.RiskState.CircuitBreakerUntil = parseTime(cbUntilStr)
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
 		s.CashReconcileRequired = cashReconcileInt != 0
+		s.SharedWalletPoolBudget = poolBudgetInt != 0
+		s.SharedWalletPerformanceOnly = s.SharedWalletPoolBudget
 		// #998: restore the flat-switch active profile; the pending counter
 		// re-arms from zero on restart (a restart can only delay a switch).
 		if activeProfile != "" {

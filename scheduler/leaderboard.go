@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ type LeaderboardEntry struct {
 	Capital         float64 `json:"capital"`
 	PnL             float64 `json:"pnl"`
 	PnLPct          float64 `json:"pnl_pct"`
+	PoolBudget      bool    `json:"pool_budget,omitempty"`
 	Trades          int     `json:"trades"`
 	Sharpe          float64 `json:"sharpe"`           // #397 — annualized Sharpe; 0 = undefined/no data. Kept in the serialized form (no omitempty) so consumers can distinguish "present but zero" from "omitted".
 	Timeframe       string  `json:"timeframe"`        // #580 — candle timeframe (Args[2]) or "—".
@@ -94,11 +96,27 @@ func buildLeaderboardEntries(strategies []StrategyConfig, state *AppState, price
 // Discord command and /api/leaderboard.
 func sortLeaderboardEntriesByPnLPct(entries []LeaderboardEntry) {
 	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].PnLPct != entries[j].PnLPct {
-			return entries[i].PnLPct > entries[j].PnLPct
-		}
-		return entries[i].ID < entries[j].ID
+		return leaderboardEntryBefore(entries[i], entries[j], true)
 	})
+}
+
+// leaderboardEntryBefore keeps zero-baseline pool rows out of percentage
+// comparisons. Allocated strategies rank by PnL%; pooled strategies follow as
+// an explicitly unranked, deterministic ID-ordered block.
+func leaderboardEntryBefore(a, b LeaderboardEntry, descending bool) bool {
+	if a.PoolBudget != b.PoolBudget {
+		return !a.PoolBudget
+	}
+	if a.PoolBudget {
+		return a.ID < b.ID
+	}
+	if a.PnLPct != b.PnLPct {
+		if descending {
+			return a.PnLPct > b.PnLPct
+		}
+		return a.PnLPct < b.PnLPct
+	}
+	return a.ID < b.ID
 }
 
 // newLeaderboardEntry assembles a LeaderboardEntry, pulling timeframe/interval
@@ -118,6 +136,7 @@ func newLeaderboardEntry(sc StrategyConfig, ss *StrategyState, pv, initCap, pnl,
 		Capital:         initCap,
 		PnL:             pnl,
 		PnLPct:          pnlPct,
+		PoolBudget:      usesSharedWalletPoolBudget(sc),
 		Trades:          len(ss.TradeHistory),
 		Sharpe:          sharpeByStrategy[sc.ID],
 		Timeframe:       extractTimeframe(sc),
@@ -237,9 +256,9 @@ func leaderboardAdjustedTotal(
 }
 
 func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config, adjustedTotal float64) string {
-	// Sort by PnL% descending.
+	// Sort allocated strategies by PnL%; pooled rows remain unranked at end.
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].PnLPct > entries[j].PnLPct
+		return leaderboardEntryBefore(entries[i], entries[j], true)
 	})
 
 	dateStr := time.Now().Format("January 2, 2006")
@@ -253,13 +272,23 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	var totalValue, totalCapital float64
 	totalPositionsOpened, totalWins, totalLosses := 0, 0, 0
 	winning, losing, flat := 0, 0, 0
+	hasPoolBudget := false
 	for _, e := range entries {
 		totalValue += e.Value
 		totalCapital += e.Capital
 		totalPositionsOpened += e.PositionsOpened
 		totalWins += e.Wins
 		totalLosses += e.Losses
-		if e.PnLPct > 0 {
+		if e.PoolBudget {
+			hasPoolBudget = true
+			if e.PnL > 0 {
+				winning++
+			} else if e.PnL < 0 {
+				losing++
+			} else {
+				flat++
+			}
+		} else if e.PnLPct > 0 {
 			winning++
 		} else if e.PnLPct < 0 {
 			losing++
@@ -281,7 +310,10 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 	}
 	totalPnl := totalDisplayValue - totalCapital
 	totalPnlPct := 0.0
-	if totalCapital > 0 {
+	if hasPoolBudget {
+		totalPnl = math.NaN()
+		totalPnlPct = math.NaN()
+	} else if totalCapital > 0 {
 		totalPnlPct = (totalPnl / totalCapital) * 100
 	}
 
@@ -326,6 +358,10 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		valStr := "$" + fmtComma(e.Value)
 		pnlStr := fmtSignedDollar(e.PnL)
 		pctStr := fmtSignedPct(e.PnLPct)
+		if e.PoolBudget {
+			label += "*"
+			pctStr = "—"
+		}
 		tfStr := truncateRunes(e.Timeframe, 4)
 		intStr := truncateRunes(e.Interval, 4)
 		wlStr := fmtWinLossRatio(e.Wins, e.Losses)
@@ -352,6 +388,9 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		sb.WriteString(fmt.Sprintf(rowFmt, totalLabel, totValStr, totPnlStr, totPctStr, "", "", totalPositionsOpened, totWlStr, ""))
 	}
 	sb.WriteString("```\n")
+	if hasPoolBudget {
+		sb.WriteString("* POOL row: Value/PnL is attributed net performance; PnL% and TOTAL return are unavailable because wallet deposits are not strategy capital.\n")
+	}
 	sb.WriteString(fmt.Sprintf("🟢 %d winning · 🔴 %d losing · ⚪ %d flat\n", winning, losing, flat))
 
 	return sb.String()
@@ -367,11 +406,11 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 	copy(sorted, entries)
 	if isTop {
 		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].PnLPct > sorted[j].PnLPct
+			return leaderboardEntryBefore(sorted[i], sorted[j], true)
 		})
 	} else {
 		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].PnLPct < sorted[j].PnLPct
+			return leaderboardEntryBefore(sorted[i], sorted[j], false)
 		})
 	}
 
@@ -506,7 +545,7 @@ func BuildLeaderboardSummary(lc LeaderboardSummaryConfig, cfg *Config, state *Ap
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].PnLPct > entries[j].PnLPct
+		return leaderboardEntryBefore(entries[i], entries[j], true)
 	})
 	n := topN
 	if len(entries) < n {
@@ -541,6 +580,9 @@ func truncateRunes(s string, max int) string {
 
 // fmtSignedDollar formats a dollar value with +/- prefix.
 func fmtSignedDollar(v float64) string {
+	if math.IsNaN(v) {
+		return "—"
+	}
 	if v >= 0 {
 		return "$+" + fmtComma(v)
 	}
@@ -549,6 +591,9 @@ func fmtSignedDollar(v float64) string {
 
 // fmtSignedPct formats a percentage with +/- prefix.
 func fmtSignedPct(v float64) string {
+	if math.IsNaN(v) {
+		return "—"
+	}
 	if v >= 0 {
 		return fmt.Sprintf("+%.1f%%", v)
 	}

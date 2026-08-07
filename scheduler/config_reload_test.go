@@ -1892,6 +1892,46 @@ func TestValidateHotReloadCompatible_RegimeWindowOnlyChange(t *testing.T) {
 	}
 }
 
+func TestValidateHotReloadCompatible_SharedWalletPoolModeRequiresRestart(t *testing.T) {
+	base := StrategyConfig{
+		ID: "hl-a", Type: "perps", Platform: "hyperliquid",
+		Script: "shared_scripts/check_hyperliquid.py",
+		Args:   []string{"momentum", "BTC", "1h", "--mode=live"},
+	}
+	nextStrategy := base
+	nextStrategy.sharedWalletPoolBudget = true
+
+	cfg := minimalReloadConfig([]StrategyConfig{base})
+	next := minimalReloadConfig([]StrategyConfig{nextStrategy})
+	err := validateHotReloadCompatible(cfg, next)
+	if err == nil || !strings.Contains(err.Error(), "shared-wallet pool budgeting mode changed") {
+		t.Fatalf("expected pool-mode restart requirement, got %v", err)
+	}
+}
+
+func TestApplyHotReloadConfigPreservesDeferredPoolTransitionManageOnlyLatch(t *testing.T) {
+	strategy := StrategyConfig{
+		ID: "hl-a", Type: "perps", Platform: "hyperliquid",
+		Script:     "shared_scripts/check_hyperliquid.py",
+		Args:       []string{"momentum", "BTC", "1h", "--mode=live"},
+		CapitalPct: 0.5, MaxDrawdownPct: 10,
+		Paused: true, sharedWalletModeDeferred: true,
+	}
+	cfg := minimalReloadConfig([]StrategyConfig{strategy})
+	nextStrategy := strategy
+	nextStrategy.Paused = false
+	nextStrategy.sharedWalletModeDeferred = false
+	next := minimalReloadConfig([]StrategyConfig{nextStrategy})
+
+	if _, err := applyHotReloadConfig(cfg, next, NewAppState(), nil, nil); err != nil {
+		t.Fatalf("unrelated reload must not be rejected by process-local deferred latch: %v", err)
+	}
+	got := cfg.Strategies[0]
+	if !got.Paused || !got.sharedWalletModeDeferred {
+		t.Fatalf("SIGHUP must not resume a deferred pool transition before restart: %+v", got)
+	}
+}
+
 // #1048: the circuit-breaker toggle is hot-reloadable always, including while a
 // position is open — it must NOT be rejected by the reload validators, and the
 // new value must actually be applied to the running config.

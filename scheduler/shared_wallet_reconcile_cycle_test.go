@@ -160,6 +160,47 @@ func TestReconcileSharedWalletDisplayValues_OKXPositionsNotFetchedSkips(t *testi
 	}
 }
 
+func TestReconcileSharedWalletDisplayValues_OKXPoolShowsAttributedPerformance(t *testing.T) {
+	t.Setenv("OKX_API_KEY", "okx-pool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "okx-a", Platform: "okx", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "okx-b", Platform: "okx", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"okx-a": {ID: "okx-a", Platform: "okx", Type: "perps", Positions: map[string]*Position{}},
+		"okx-b": {ID: "okx-b", Platform: "okx", Type: "perps", Positions: map[string]*Position{}},
+	}}
+	db := newLedgerTestDB(t)
+	if err := db.InsertTrade("okx-a", Trade{
+		Timestamp: time.Now().UTC(), StrategyID: "okx-a", Symbol: "BTC",
+		Side: "buy", Quantity: 1, Price: 100, Value: 100,
+		TradeType: "perps", ExchangeFee: 2,
+	}); err != nil {
+		t.Fatalf("insert open fee: %v", err)
+	}
+
+	sharedWallets := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "okx", Account: "okx-pool"}
+	results := reconcileSharedWalletDisplayValues(
+		strategies, state, db, sharedWallets,
+		map[SharedWalletKey]float64{key: 1000},
+		nil, nil, true,
+	)
+	if len(results) != 1 {
+		t.Fatalf("expected one pooled reconcile result, got %+v", results)
+	}
+	if got := state.Strategies["okx-a"].SharedWalletValue; got != -2 {
+		t.Fatalf("okx-a performance = %v, want -2 open fee (not a wallet allocation)", got)
+	}
+	if got := state.Strategies["okx-b"].SharedWalletValue; got != 0 {
+		t.Fatalf("idle okx-b performance = %v, want 0", got)
+	}
+	if got := latestDisplayTotal(state, nil); got != 1000 {
+		t.Fatalf("operator total=%v, want real wallet equity 1000 counted once", got)
+	}
+}
+
 func TestReconcileSharedWalletDisplayValues_FetchFailedFallsBack(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	state, strategies := buildSharedWalletTestState()
@@ -181,6 +222,44 @@ func TestReconcileSharedWalletDisplayValues_FetchFailedFallsBack(t *testing.T) {
 	want := PortfolioValue(state.Strategies["hl-btc"], nil)
 	if got := displayStrategyValue(state.Strategies["hl-btc"], nil); got != want {
 		t.Errorf("display fallback = %v, want PortfolioValue %v", got, want)
+	}
+}
+
+func TestPooledReconcileFailureStillCountsFreshWalletBalanceInTotal(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xpool")
+	marginCap := 100.0
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, MarginPerTradeUSD: &marginCap, sharedWalletPoolBudget: true},
+		{ID: "spot", Platform: "binanceus", Type: "spot", Capital: 200},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {Cash: -10, Positions: map[string]*Position{}},
+		"hl-b": {Cash: 5, Positions: map[string]*Position{}},
+		"spot": {Cash: 200, Positions: map[string]*Position{}},
+	}}
+	shared := detectSharedWallets(strategies)
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
+
+	// A nil DB makes pooled ledger attribution fail, but the balance fetch
+	// itself succeeded and remains independently authoritative for TOTAL.
+	results := reconcileSharedWalletDisplayValues(
+		strategies, state, nil, shared,
+		map[SharedWalletKey]float64{key: 1000}, nil, nil, false,
+	)
+	if len(results) != 0 {
+		t.Fatalf("failed attribution must not emit a drift result: %+v", results)
+	}
+	if state.Strategies["hl-a"].SharedWalletValueSet || state.Strategies["hl-b"].SharedWalletValueSet {
+		t.Fatal("failed attribution must leave per-member rows on modeled fallback")
+	}
+	if got := latestDisplayTotal(state, nil); got != 1200 {
+		t.Fatalf("operator total=%v, want fresh wallet 1000 + allocated spot 200", got)
+	}
+
+	reconcileSharedWalletDisplayValues(strategies, state, nil, shared, nil, nil, nil, false)
+	if got := latestDisplayTotal(state, nil); got != 195 {
+		t.Fatalf("missing balance must retain modeled fallback without double count: got %v, want 195", got)
 	}
 }
 
