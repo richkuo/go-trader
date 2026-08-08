@@ -3,14 +3,26 @@ package main
 // hurst_gate.go — #1411 per-strategy Hurst entry gate and persistence-scaled
 // position sizing. DEFAULT-OFF; per-strategy opt-in only; never auto-enabled.
 //
-// CALIBRATION STATUS. The #1410 study (backtest/research/hurst_gate_calibration.md)
-// returned Recommendation INCONCLUSIVE: 0 of 30 tested configurations reached
-// Benjamini-Hochberg significance at alpha=0.05, and the report states "Do not
-// build a Hurst entry gate on this evidence. Re-run this study before revisiting
-// the question." This mechanism therefore ships with NO recommended thresholds
-// anywhere (config.example.json carries no hurst_gate block) and stays off until
-// an operator explicitly opts a strategy in. Nothing here reads a default
-// threshold, and nothing enables itself.
+// CALIBRATION STATUS. The live evidence is the #1422 POWER study
+// (backtest/research/hurst_gate_calibration.md — the contract path, now owned by
+// hurst_1422_gate_power.py; the superseded #1410 render lives beside it at
+// hurst_1410_gate_calibration.md). Recommendation: INCONCLUSIVE again, on ~5x
+// #1410's trade pool, with a correct cluster null and a MEASURED detection limit.
+//
+// The reason changed, and it is the part that matters here. #1410 could not tell
+// whether an edge existed. #1422 resolves ~0.08 pp per trade and finds the raw
+// H<0.5 split separating by ~0.45 pp — so a per-trade signal IS visible — yet no
+// swept hysteresis or sizing configuration converts it into a significant,
+// economically acceptable gate (best primary hypothesis: cluster p=0.061). The
+// failure is in the RULE, not in the sample, so more data would not settle it.
+//
+// This mechanism therefore still ships with NO recommended thresholds anywhere
+// (config.example.json carries no hurst_gate block) and stays off until an
+// operator explicitly opts a strategy in. Nothing here reads a default threshold,
+// and nothing enables itself. #1422 also answers #1412's Stage 0 gate:
+// NO JOINT SEPARATION on both families, so fusing H into the composite
+// classifier is not justified and this standalone gate remains the correct
+// amount of Hurst.
 //
 // LAYERING. This is a STANDALONE gate stacked ON TOP of the allowed_regimes
 // label gate. It never touches applyRegimeGate, regimeBlocksOpen,

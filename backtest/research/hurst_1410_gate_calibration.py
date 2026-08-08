@@ -5,7 +5,15 @@
 ``shared_strategies/open/indicators_core.py``) and surfaced it as an
 observability metric. Nothing measured whether entry outcomes actually vary
 with H at entry time, so any gate threshold would be a guess. This one-shot
-produces that evidence and renders ``backtest/research/hurst_gate_calibration.md``.
+produces that evidence and renders ``backtest/research/hurst_1410_gate_calibration.md``.
+
+REPORT-PATH CONTRACT (#1422). ``backtest/research/hurst_gate_calibration.md`` is
+the LIVE-EVIDENCE contract path — it is what ``scheduler/hurst_gate.go``,
+``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate cite, and it is owned by
+``hurst_1422_gate_power.py``. This study is a FROZEN negative-result artifact and
+must never write that file: a later ``--render-only`` here would silently revert
+the live evidence to this study's superseded verdict. Its own render lives beside
+its JSON at ``hurst_1410_gate_calibration.md``.
 
 ADVISORY-ONLY INVARIANT (#1409, stamped beside ``hurst_exponent``): no consumer
 of that estimator may feed gating, sizing, or config surfaces. This script is a
@@ -197,7 +205,10 @@ STAMP_LEAD_BARS = 4
 WARMUP_MARGIN_BARS = 2
 
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.json")
-_DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_gate_calibration.md")
+# NOT "hurst_gate_calibration.md" — that is the live-evidence contract path owned
+# by hurst_1422_gate_power.py (see the REPORT-PATH CONTRACT note in the module
+# docstring). A --render-only run here must never overwrite it.
+_DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.md")
 
 WINDOW_ORDER = tuple(
     sorted(WINDOWS, key=lambda w: (WINDOWS[w][0], w))
