@@ -94,6 +94,40 @@ func TestHurstGateNeverGatesManagementPaths(t *testing.T) {
 	}
 }
 
+func TestHurstGateSizesTheScaleInAddQuantity(t *testing.T) {
+	// #873 x #1411: a scale-in add INCREASES an open position, so both gate
+	// arms must reach it.
+	//
+	// The HOLD arm reaches it for free: pausedBlocksSignal classifies a
+	// same-side signal on an open position as position-increasing (asserted
+	// behaviourally in TestHurstHoldOnlyBlocksPositionIncreasingSignals), the
+	// dispatch arm zeroes result.Signal, and the scale-in block below only runs
+	// on a surviving signal.
+	//
+	// The SIZE arm is explicit, and is pinned here because
+	// backtest/backtester.py mirrors it inside _try_scale_in_add — the two
+	// engines must not drift apart, or a --config run reports adds the daemon
+	// would have shrunk or held.
+	src := readMainSource(t)
+	if !strings.Contains(src, "scaleInAddQty = q * hurstDecision.OpenSizeMult()") {
+		t.Fatal("the scale-in add quantity must be scaled by the Hurst multiplier — without it a mode=size gate shrinks fresh opens but leaves adds full-size (#1411)")
+	}
+	// The multiplier scales the DECIDED quantity, never the default notional:
+	// perpsScaleInDecision evaluates max_adds / max_added_notional_usd /
+	// add_spacing_atr on the UNSCALED intent (shrinking after can only leave
+	// those caps satisfied), and an explicit scale_in.add_notional_usd must be
+	// scaled too.
+	if regexp.MustCompile(`defOpenNotional\s*:?=[^\n]*OpenSizeMult`).MatchString(src) {
+		t.Fatal("the Hurst multiplier must scale the decided add quantity, not defOpenNotional — scaling the default would leave an explicit scale_in.add_notional_usd ungated and would move the caps off the unscaled intent (#1411)")
+	}
+	// The hold reaches the add path only because the scale-in block is gated on
+	// a surviving signal. Loosening that guard would let a disarmed gate keep
+	// adding.
+	if !strings.Contains(src, `if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {`) {
+		t.Fatal("the scale-in block must stay gated on result.Signal != 0 — that is what makes the Hurst hold reach a scale-in add (#1411)")
+	}
+}
+
 func TestLabelGateSemanticsUntouchedByHurstGate(t *testing.T) {
 	// The regime label gate must be byte-identical with and without a
 	// hurst_gate block: applyRegimeGate takes no Hurst input and

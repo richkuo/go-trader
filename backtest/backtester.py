@@ -663,6 +663,10 @@ class _ScaleInState:
     freezes the notional the position's FIRST leg committed, the backtest image
     of live's per-cycle ``PerpsOpenNotional`` default per-add sizing (live
     margin cash stays ≈ constant across an open; frozen here for determinism).
+    #1411: what is frozen is the UNGATED notional — live recomputes
+    ``defOpenNotional`` each cycle with no Hurst multiplier applied, so the
+    open bar's multiplier must not leak into later adds (see
+    ``_ungated_leg_notional``).
     One ``reset()`` shared by every full-close site so the reset list can't
     drift.
     """
@@ -783,6 +787,29 @@ def _scale_in_decision(scale_cfg: dict, side: str, quantity: float,
                 return 0.0, False, "scale-in spacing (average-down) not reached"
 
     return add_notional / price, True, ""
+
+
+def _ungated_leg_notional(leg_notional: float, hurst_size_mult: float) -> float:
+    """#1411: strip this bar's Hurst multiplier back out of a freshly opened
+    leg's notional, so ``_ScaleInState.base_open_notional`` freezes what an
+    UNGATED open would have committed.
+
+    Live never derives the per-add default from what the first leg actually
+    sized at: ``defOpenNotional`` is recomputed each cycle from cash/leverage
+    with no Hurst multiplier applied, and only the DECIDED add quantity is
+    scaled (``scaleInAddQty = q * hurstDecision.OpenSizeMult()``,
+    scheduler/main.go). Freezing the SCALED first-leg notional here would
+    instead bake the open bar's multiplier into every later add for the whole
+    life of the position — an open taken at m=0.25 would keep shrinking adds
+    by 0.25 long after H recovered, and would then be shrunk a second time by
+    the current bar's multiplier.
+
+    ``size_floor`` is validated to (0, 1] on both engines, so the multiplier is
+    never zero; the guard is defence in depth, not an expected path.
+    """
+    if hurst_size_mult > 0:
+        return leg_notional / hurst_size_mult
+    return leg_notional
 
 
 class Trade:
@@ -2302,9 +2329,32 @@ class Backtester:
             slippage + commission. Mutates position/cash/avg_cost/
             initial_quantity/current_trade/hold + the scale state — the
             Python image of live's perpsScaleInDecision + applyScaleIn.
-            Returns True when an add was applied."""
+            Returns True when an add was applied.
+
+            #1411: the Hurst gate reaches this path too, because an add is a
+            position-INCREASING action. Live applies BOTH arms to it:
+
+              * the hold — ``pausedBlocksSignal`` returns true for a same-side
+                signal on an open position (scheduler/pause.go), so a disarmed
+                gate zeroes ``result.Signal`` BEFORE the scale-in block runs
+                (scheduler/main.go), and ``perpsScaleInDecision`` then reports
+                "not a same-direction add". The label gate is deliberately NOT
+                folded in here (live ``regimeBlocksOpen`` passes posQty>0), but
+                the Hurst gate carries no such flat-only restriction outside
+                its fail-closed arm — see evaluateHurstGate's own note that
+                "adds and flips are held" (scheduler/hurst_gate.go).
+              * the size multiplier — ``scaleInAddQty = q *
+                hurstDecision.OpenSizeMult()`` (scheduler/main.go), applied to
+                the DECIDED quantity so an explicit ``add_notional_usd`` is
+                scaled too, and evaluated AFTER the caps/spacing gate so those
+                guardrails still see the unscaled intent.
+
+            Both arms live in this function rather than at its four call sites
+            so a future add site cannot silently bypass the gate."""
             nonlocal position, cash, avg_cost, initial_quantity
             nonlocal scale_in_adds_total, scale_in_added_notional_total
+            if hurst_blocked:
+                return False
             decision_price = float(prev_close_arr[i])
             if not (decision_price > 0):  # NaN on row 0
                 return False
@@ -2316,6 +2366,12 @@ class Backtester:
                 1 if side == "long" else -1, decision_price, default_notional,
             )
             if not ok or add_qty <= 0:
+                return False
+            # Scale the decided intent, exactly where live scales it. The
+            # caps/spacing above already passed on the unscaled quantity;
+            # shrinking it can only leave them satisfied.
+            add_qty *= hurst_size_mult
+            if add_qty <= 0:
                 return False
             if side == "long":
                 eff = fill_price * (1 + self.slippage_pct)
@@ -2485,7 +2541,11 @@ class Backtester:
             # does live. The multiplier scales the committed entry fraction —
             # i.e. the point where size is COMPUTED — and closes are never
             # touched, matching the live "never rescale after execution" rule.
+            # Both arms are read again by _try_scale_in_add below: a scale-in
+            # add is a position-INCREASING action, so live holds and sizes it
+            # on exactly these two values (see that function's docstring).
             hurst_size_mult = 1.0
+            hurst_blocked = False
             if hurst_runner is not None:
                 hurst_h = row.get("_hurst")
                 hurst_blocked, hurst_size_mult = hurst_runner.step(
@@ -2685,7 +2745,9 @@ class Backtester:
                     # first leg's committed notional as the default per-add
                     # size (the backtest image of live's PerpsOpenNotional).
                     scale.reset()
-                    scale.base_open_notional = shares * effective_price
+                    scale.base_open_notional = _ungated_leg_notional(
+                        shares * effective_price, hurst_size_mult,
+                    )  # #1411
                     stamp_open_from_label(_entry_stamp(row))
                     # Seed the SL trigger at open. sl_after configs seed only
                     # when usable tier thresholds exist (#716 item 3 — without
@@ -2752,7 +2814,9 @@ class Backtester:
                     hold.open(effective_price, "short", commission)
                     # #1276: fresh open — see the long-side comment.
                     scale.reset()
-                    scale.base_open_notional = shares * effective_price
+                    scale.base_open_notional = _ungated_leg_notional(
+                        shares * effective_price, hurst_size_mult,
+                    )  # #1411
                     stamp_open_from_label(_entry_stamp(row))
                     if sl_after_active and self._run_tp_tier_thresholds:
                         sl_trigger_px = self._initial_sl_trigger(
@@ -3090,7 +3154,9 @@ class Backtester:
                 # #1276: fresh open — clean scale-in state; freeze the first
                 # leg's committed notional as the default per-add size.
                 scale.reset()
-                scale.base_open_notional = shares * effective_price
+                scale.base_open_notional = _ungated_leg_notional(
+                    shares * effective_price, hurst_size_mult,
+                )  # #1411
 
                 # Standalone stop seeding — mirror of the long block below
                 # (fixed ATR mult > trailing ATR mult > fixed pct), triggers
@@ -3159,7 +3225,9 @@ class Backtester:
                 current_trade.shares = shares
                 # #1276: fresh open — see the short-side comment above.
                 scale.reset()
-                scale.base_open_notional = shares * effective_price
+                scale.base_open_notional = _ungated_leg_notional(
+                    shares * effective_price, hurst_size_mult,
+                )  # #1411
 
                 # Seed a standalone stop for the plain signal path (fixed ATR
                 # mult > trailing ATR mult > fixed pct). entry_atr is the

@@ -593,3 +593,235 @@ def test_run_single_backtest_accepts_the_hurst_gate_kwarg():
 
     rb = _load("bt_run_backtest_sig_check", "backtest/run_backtest.py")
     assert "hurst_gate" in inspect.signature(rb.run_single_backtest).parameters
+
+
+# ─── Scale-in parity (#1276 × #1411) ─────────────────────────────────────────
+#
+# A scale-in add INCREASES an open position, so live applies both gate arms to
+# it:
+#
+#   * the hold — pausedBlocksSignal classifies a same-side signal on an open
+#     position as position-increasing (scheduler/pause.go), so a disarmed gate
+#     zeroes result.Signal BEFORE the scale-in block runs (scheduler/main.go)
+#     and perpsScaleInDecision then reports "not a same-direction add";
+#   * the size multiplier — scaleInAddQty = q * hurstDecision.OpenSizeMult()
+#     (scheduler/main.go), applied to the DECIDED quantity so an explicit
+#     scale_in.add_notional_usd is scaled too.
+#
+# These tests drive a DETERMINISTIC H series so the arm/disarm transition and
+# the multiplier are exact rather than incidental to a random frame.
+
+
+@pytest.fixture()
+def hurst_module():
+    """Pin backtest/hurst_gate.py under the exact name backtester.py imports at
+    run time (``from hurst_gate import ...`` inside ``run``), so a test can
+    drive the H series deterministically. Registered by explicit path rather
+    than bare-imported — CI runs pytest with ``-n auto`` (CLAUDE.md)."""
+    previous = sys.modules.get("hurst_gate")
+    mod = _load("hurst_gate", "backtest/hurst_gate.py")
+    yield mod
+    if previous is not None:
+        sys.modules["hurst_gate"] = previous
+    else:
+        sys.modules.pop("hurst_gate", None)
+
+
+def _pin_hurst(monkeypatch, hurst_module, series_fn):
+    """Replace the rolling estimator with a caller-supplied H series.
+
+    The backtester still applies its own ``.shift(1)``, so ``series_fn``
+    returns the UNSHIFTED per-bar readings and the one-bar look-ahead lag stays
+    under test: a decision at bar N reads H through bar N-1.
+    """
+
+    def fake_rolling_hurst(close, window):
+        return pd.Series(series_fn(len(close)), index=close.index, dtype=float)
+
+    monkeypatch.setattr(hurst_module, "rolling_hurst", fake_rolling_hurst)
+
+
+def _run_scale_in(Backtester, df, signal, scale_in=None, **kwargs):
+    bt = Backtester(
+        initial_capital=1000.0,
+        platform="binanceus",
+        open_strategy={"name": "momentum", "params": {}},
+        allow_scale_in=True,
+        scale_in=dict(scale_in or {"add_notional_usd": 50.0, "max_adds": 500}),
+        **kwargs,
+    )
+    work = df.copy()
+    work["signal"] = signal
+    return bt.run(
+        work, strategy_name="momentum", symbol="BTC/USDT", timeframe="1h", save=False
+    )
+
+
+def _hold_then_add_signal(n: int, open_bar: int) -> np.ndarray:
+    """Open once, then re-assert the same direction on every later bar so each
+    of those bars is a scale-in add candidate."""
+    sig = np.zeros(n)
+    sig[open_bar:] = 1.0
+    return sig
+
+
+def test_gate_mode_holds_scale_in_adds_once_disarmed(Backtester, hurst_module, monkeypatch):
+    """Must survive (1): mode="gate" disarmed for the rest of the run with
+    allow_scale_in=True — the adds must STOP, not continue at the ungated rate.
+
+    Before #1411's scale-in arm the four ``_try_scale_in_add`` call sites were
+    gated only on ``allow_scale_in`` and the signal, so a permanently disarmed
+    gate reported the full ungated add stream while live would have held every
+    one of them.
+    """
+    df = _frame(n=400)
+    disarm_at = 200
+    _pin_hurst(
+        monkeypatch, hurst_module,
+        lambda n: [0.80] * disarm_at + [0.20] * (n - disarm_at),
+    )
+    sig = _hold_then_add_signal(len(df), open_bar=100)
+    gate = {"enabled": True, "mode": "gate", "min": 0.55, "disarm_min": 0.50}
+
+    gated = _run_scale_in(Backtester, df, sig, hurst_gate=gate)
+    ungated = _run_scale_in(Backtester, df, sig)
+
+    assert ungated["scale_in_adds"] > 0
+    assert gated["scale_in_adds"] > 0, "adds taken while ARMED must still fire"
+    assert gated["scale_in_adds"] < ungated["scale_in_adds"], (
+        "a disarmed gate must hold scale-in adds, exactly as pausedBlocksSignal "
+        "holds a same-side signal on an open position live (#1411)"
+    )
+    # Sharper than "fewer": pin exactly which bars still add. The engine
+    # shift(1)s the signal (a signal at bar N fills at N+1), so the OPEN fills
+    # at 101 and every later signalled bar is an add candidate. H is shifted
+    # once more, so bar i reads H[i-1]: the last armed decision is bar 200.
+    open_fill_bar = 100 + 1
+    last_armed_bar = disarm_at  # reads H[disarm_at - 1], still 0.80
+    assert gated["scale_in_adds"] == last_armed_bar - open_fill_bar
+    assert gated["scale_in_added_notional_usd"] < ungated["scale_in_added_notional_usd"]
+
+
+def test_size_mode_scales_scale_in_adds_by_the_multiplier(Backtester, hurst_module, monkeypatch):
+    """Must survive (2): mode="size" with a low size_floor and
+    allow_scale_in=True — the added notional must shrink by EXACTLY the
+    multiplier, and the same adds must still fire (size mode never gates).
+
+    Also pins that an explicit ``add_notional_usd`` is scaled, mirroring live's
+    decision to multiply the DECIDED quantity rather than defOpenNotional.
+    """
+    df = _frame(n=400)
+    _pin_hurst(monkeypatch, hurst_module, lambda n: [0.53] * n)
+    # clamp(|0.53 - 0.5| / 0.15, 0.05, 1.0) == 0.2
+    expected_mult = 0.2
+    sig = _hold_then_add_signal(len(df), open_bar=100)
+
+    gated = _run_scale_in(
+        Backtester, df, sig,
+        hurst_gate={"enabled": True, "mode": "size", "size_floor": 0.05},
+    )
+    ungated = _run_scale_in(Backtester, df, sig)
+
+    assert ungated["scale_in_adds"] > 0
+    assert gated["scale_in_adds"] == ungated["scale_in_adds"], (
+        "size mode must never change WHICH adds fire — only their size"
+    )
+    assert gated["scale_in_added_notional_usd"] == pytest.approx(
+        expected_mult * ungated["scale_in_added_notional_usd"], rel=1e-7,
+    )
+
+
+def test_open_bar_multiplier_never_leaks_into_later_adds(Backtester, hurst_module, monkeypatch):
+    """The DEFAULT per-add notional is the backtest image of live's
+    ``defOpenNotional``, which carries NO Hurst multiplier: live recomputes it
+    each cycle from cash/leverage and scales only the decided quantity.
+
+    Freezing the SCALED first leg would bake the OPEN bar's multiplier into
+    every later add for the whole life of the position, and then shrink it a
+    second time by the current bar's multiplier. Pin that an add taken at
+    m=1.0 is identical whether the position was opened at m=0.2 or at m=1.0.
+    """
+    df = _frame(n=400)
+    open_bar, recover_at = 100, 200
+    sig = np.zeros(len(df))
+    sig[open_bar] = 1.0                      # open only
+    sig[recover_at + 5: recover_at + 8] = 1.0  # adds, all after H recovered
+    gate = {"enabled": True, "mode": "size", "size_floor": 0.05}
+    scale_cfg = {"max_adds": 10}  # no add_notional_usd -> DEFAULT per-add size
+
+    # clamp(|0.53-0.5|/0.15, .05, 1) == 0.2 ; clamp(|0.80-0.5|/0.15, .05, 1) == 1.0
+    _pin_hurst(
+        monkeypatch, hurst_module,
+        lambda n: [0.53] * recover_at + [0.80] * (n - recover_at),
+    )
+    low_open = _run_scale_in(Backtester, df, sig, scale_in=scale_cfg, hurst_gate=gate)
+
+    _pin_hurst(monkeypatch, hurst_module, lambda n: [0.80] * n)
+    full_open = _run_scale_in(Backtester, df, sig, scale_in=scale_cfg, hurst_gate=gate)
+
+    assert low_open["scale_in_adds"] == full_open["scale_in_adds"] > 0
+    assert low_open["scale_in_added_notional_usd"] == pytest.approx(
+        full_open["scale_in_added_notional_usd"], rel=1e-7,
+    ), (
+        "the open bar's multiplier must not survive into the per-add default "
+        "notional — live's defOpenNotional is recomputed ungated every cycle"
+    )
+
+
+def test_armed_gate_leaves_scale_in_adds_byte_identical(Backtester, hurst_module, monkeypatch):
+    """Must survive (3), gate half: an ARMED gate must not touch adds at all.
+    ``mode="gate"`` never scales, so both the count and the notional match the
+    ungated run exactly."""
+    df = _frame(n=400)
+    _pin_hurst(monkeypatch, hurst_module, lambda n: [0.80] * n)
+    sig = _hold_then_add_signal(len(df), open_bar=100)
+
+    gated = _run_scale_in(
+        Backtester, df, sig,
+        hurst_gate={"enabled": True, "mode": "gate", "min": 0.55, "disarm_min": 0.50},
+    )
+    ungated = _run_scale_in(Backtester, df, sig)
+
+    assert gated["scale_in_adds"] == ungated["scale_in_adds"] > 0
+    assert gated["scale_in_added_notional_usd"] == ungated["scale_in_added_notional_usd"]
+    assert gated["total_return_pct"] == ungated["total_return_pct"]
+
+
+def test_absent_hurst_gate_leaves_the_scale_in_baseline_byte_identical(Backtester):
+    """Must survive (3), default-off half: with no gate (or a disabled block)
+    the scale-in path must be bit-for-bit what it was before #1411."""
+    df = _frame(n=400)
+    sig = _hold_then_add_signal(len(df), open_bar=100)
+    base = _run_scale_in(Backtester, df, sig)
+    off = _run_scale_in(Backtester, df, sig, hurst_gate=None)
+    disabled = _run_scale_in(
+        Backtester, df, sig, hurst_gate={"enabled": False, "min": 0.55},
+    )
+    for other in (off, disabled):
+        assert other["scale_in_adds"] == base["scale_in_adds"] > 0
+        assert other["scale_in_added_notional_usd"] == base["scale_in_added_notional_usd"]
+        assert other["total_return_pct"] == base["total_return_pct"]
+
+
+def test_scale_in_hurst_arms_live_inside_the_add_helper():
+    """Wiring inventory: both Hurst arms must sit INSIDE ``_try_scale_in_add``,
+    never at its call sites. There are four sites today (two on the open/close
+    registry path, two on the plain-signal path); centralising the arms means a
+    fifth site added later inherits the gate instead of silently bypassing it —
+    which is exactly how the adds escaped the gate in the first place.
+    """
+    source = (_ROOT / "backtest" / "backtester.py").read_text()
+    start = source.index("def _try_scale_in_add(")
+    body = source[start: source.index("\n        for i, (idx, row) in enumerate(", start)]
+    assert "if hurst_blocked:" in body, (
+        "the hold arm must be the add helper's own guard (#1411)"
+    )
+    assert "add_qty *= hurst_size_mult" in body, (
+        "the size arm must scale the DECIDED add quantity (#1411)"
+    )
+    call_lines = [ln for ln in source.splitlines() if "_try_scale_in_add(i, " in ln]
+    assert len(call_lines) == 4, call_lines
+    for line in call_lines:
+        assert "hurst" not in line, (
+            "call sites must stay gate-free so no site can be missed: " + line
+        )
