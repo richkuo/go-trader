@@ -205,7 +205,7 @@ _HURST_DFA_NUM_SCALES = 12
 
 
 def _hurst_dfa_scales(n_points: int) -> np.ndarray:
-    """Log-spaced integer segment sizes for DFA, from 4 bars to n/4 bars."""
+    """Log-spaced integer segment sizes for DFA, from ``_HURST_DFA_MIN_SCALE`` bars to n/4 bars."""
     max_scale = max(_HURST_DFA_MIN_SCALE, n_points // 4)
     if max_scale <= _HURST_DFA_MIN_SCALE:
         return np.array([max_scale], dtype=int)
