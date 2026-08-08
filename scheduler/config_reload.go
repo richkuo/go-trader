@@ -111,6 +111,13 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("regime.gate_on_failure: %q -> %q", cfg.Regime.GateOnFailure, next.Regime.GateOnFailure)
 		cfg.Regime.GateOnFailure = next.Regime.GateOnFailure
 	}
+	// #1411: global Hurst-gate absent-H policy default — same flat-only
+	// open-gating rationale as regime.gate_on_failure above.
+	if cfg.Regime != nil && next.Regime != nil &&
+		normalizeRegimeGateOnFailure(cfg.Regime.HurstGateOnFailure) != normalizeRegimeGateOnFailure(next.Regime.HurstGateOnFailure) {
+		addChange("regime.hurst_gate_on_failure: %q -> %q", cfg.Regime.HurstGateOnFailure, next.Regime.HurstGateOnFailure)
+		cfg.Regime.HurstGateOnFailure = next.Regime.HurstGateOnFailure
+	}
 
 	nextByID := strategyConfigByID(next.Strategies)
 	for i := range cfg.Strategies {
@@ -254,6 +261,19 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if normalizeRegimeGateOnFailure(sc.RegimeGateOnFailure) != normalizeRegimeGateOnFailure(ns.RegimeGateOnFailure) {
 			addChange("strategy[%s].regime_gate_on_failure: %q -> %q", sc.ID, sc.RegimeGateOnFailure, ns.RegimeGateOnFailure)
 			sc.RegimeGateOnFailure = ns.RegimeGateOnFailure
+		}
+		// #1411: the Hurst gate is hot-reloadable ALWAYS, including while a
+		// position is open — the same #1278 justification. Gate mode only ever
+		// holds position-increasing signals from the NEXT cycle (closes,
+		// trailing SL, ratchet, protection sync and paper SL/TP simulation are
+		// untouched), and size mode only scales an order at the moment it is
+		// placed; neither rewrites any persisted position or order state. A
+		// threshold edit changes hurstGateThresholdKey, so the hysteresis latch
+		// is DISCARDED rather than reinterpreted under the new band, and the
+		// gate re-derives from the next valid reading.
+		if !reflect.DeepEqual(sc.HurstGate, ns.HurstGate) {
+			addChange("strategy[%s].hurst_gate: %s -> %s", sc.ID, formatHurstGateForLog(sc.HurstGate), formatHurstGateForLog(ns.HurstGate))
+			sc.HurstGate = cloneHurstGateConfig(ns.HurstGate)
 		}
 		// #486: Margin mode is hot-reloadable when flat. The state-compat
 		// check above blocks the change when positions are open; if we got
@@ -489,6 +509,8 @@ func regimeConfigEqualIgnoringReloadableFields(a, b *RegimeConfig) bool {
 	bc.Transitions = nil
 	ac.GateOnFailure = "" // #1278: hot-reloadable — explicit apply path in applyHotReloadConfig
 	bc.GateOnFailure = ""
+	ac.HurstGateOnFailure = "" // #1411: hot-reloadable — explicit apply path in applyHotReloadConfig
+	bc.HurstGateOnFailure = ""
 	return reflect.DeepEqual(ac, bc)
 }
 
@@ -877,6 +899,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.closeStrategiesLegacy = nil
 	sc.AllowedRegimes = nil
 	sc.RegimeGateOnFailure = ""      // #1278: hot-reloadable always, including while open — flat-only open gating, never state-shifting. Applied in applyHotReloadConfig.
+	sc.HurstGate = nil               // #1411: hot-reloadable always, including while open — flat-only open gating plus order-time sizing, never state-shifting. A threshold edit discards the hysteresis latch via the threshold key. Applied in applyHotReloadConfig.
 	sc.MarginMode = ""               // #486: hot-reloadable when flat (state-compat check enforces flat-only change)
 	sc.TrailingStopPct = nil         // #501: hot-reloadable; state-compat allows pct changes but blocks mode switches while open
 	sc.TrailingStopATRMult = nil     // #505: hot-reloadable; same state-compat treatment as TrailingStopPct

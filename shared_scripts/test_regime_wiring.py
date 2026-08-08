@@ -104,6 +104,89 @@ def test_composite_json_includes_finite_hurst_when_data_sufficient():
     assert np.isfinite(parsed["metrics"]["hurst"])
 
 
+# ─── #1411 Hurst gate wiring inventory ───────────────────────────────────────
+#
+# The Go-side hurst_gate (scheduler/hurst_gate.go) reads metrics["hurst"] and
+# uses it to hold entries / scale open size. These tests pin the producer-side
+# contract that gate depends on. If any of them breaks, the gate silently loses
+# its input and hurst_gate.on_failure governs every cycle instead.
+
+
+def test_adx_classifier_never_emits_hurst_metric():
+    """#1411 (load-bearing): metrics["hurst"] is emitted ONLY by the composite
+    classifier. The default adx path must never emit it — that asymmetry is
+    exactly why validateHurstGateConfigs rejects a hurst_gate pointed at an
+    adx-classified window instead of running permanently on the failure policy.
+    Asserted on a frame LONG ENOUGH for the DFA estimator, so a present key
+    would mean the adx path started emitting it, not that data was too short."""
+    df = _make_uptrend_df(n=300)
+    payload = latest_regime(df, period=20)
+    assert "hurst" not in (payload.get("metrics") or {})
+    # ...and the composite path on the SAME frame does emit it.
+    assert "hurst" in latest_regime_composite(df, period=20)["metrics"]
+
+
+def test_composite_hurst_is_a_finite_float_but_is_NOT_bounded_to_zero_one():
+    """#1411: the emitted metric is a finite float rounded to 4 decimals — the
+    value the Go gate compares against its bounds.
+
+    It is deliberately NOT asserted to lie in (0, 1). DFA returns H well ABOVE
+    1 on a near-deterministic series (a perfectly smooth linear ramp measures
+    ~2.0 here), which is a real property of the estimator, not a bug. The
+    hurst_gate CONFIG bounds are validated to (0, 1) because that is the only
+    range an operator can sensibly gate on, but the RUNTIME metric is
+    unbounded above, so the Go state machine must stay correct for H > 1: such
+    a reading is above any configured max (disarm) and above any configured
+    min (arm), and the size multiplier clamps it to 1.0. That asymmetry is
+    pinned here so nobody "tightens" the estimator or the gate on the false
+    assumption that H is always in (0, 1)."""
+    saw_above_one = False
+    for df in (_make_uptrend_df(n=300), _make_flat_df(n=300)):
+        metrics = latest_regime_composite(df, period=20)["metrics"]
+        if "hurst" not in metrics:
+            continue  # degenerate series -> omitted, which is the NaN contract
+        h = metrics["hurst"]
+        assert isinstance(h, float)
+        assert np.isfinite(h), h
+        assert h > 0.0, h
+        assert round(h, 4) == h
+        saw_above_one = saw_above_one or h > 1.0
+    # The smooth ramp is the documented above-1 case; if this ever stops
+    # holding, the Go-side out-of-range handling has lost its motivating case.
+    assert saw_above_one
+
+
+def test_hurst_survives_the_go_metrics_map_contract():
+    """#1411: the gate reads RegimeSnapshot.Metrics, a Go map[string]float64.
+    Every metric the composite path emits must therefore serialize as a bare
+    JSON number — a string, null, or NaN token would fail the whole
+    RegimePayload parse and blind the gate along with the label."""
+    payload = latest_regime_composite(_make_uptrend_df(n=300), period=20)
+    parsed = json.loads(json.dumps(payload))
+    for key, value in parsed["metrics"].items():
+        assert isinstance(value, (int, float)), (key, type(value))
+        assert not isinstance(value, bool), key
+        assert np.isfinite(value), key
+
+
+def test_1409_advisory_only_comment_was_revoked_for_gating_and_sizing():
+    """#1411 revokes the #1409 advisory-only invariant for gating and sizing.
+    The source comment that declared the metric "never read by
+    map_composite_label, gating, or sizing" must no longer make that claim,
+    because a live entry gate now reads it. The classification half of the
+    invariant is still true and must still be stated."""
+    source = (_SHARED_TOOLS / "regime.py").read_text()
+    assert "never read by\n    # map_composite_label, gating, or sizing" not in source
+    assert "gating, or sizing" not in source
+    assert "#1411" in source
+    # map_composite_label must still be documented as blind to the metric, and
+    # must still actually be blind to it.
+    assert "map_composite_label" in source
+    label_fn_start = source.index("def map_composite_label")
+    label_fn = source[label_fn_start : source.index("\ndef ", label_fn_start + 1)]
+    assert "hurst" not in label_fn
+
+
 def test_regime_label_string_is_safe_for_output_field():
     """The regime label (just the string) is safe to embed directly in check script output."""
     df = _make_uptrend_df()

@@ -114,6 +114,13 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 		// covered by the reflective knownStrategyConfigKeys above; this walks
 		// one level deeper.
 		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hedge", knownHedgeConfigKeys(), prefix)...)
+		// #1411: the hurst_gate block gates live entries and scales live order
+		// size. A typo'd `"disarm": 0.5` would silently drop the hysteresis
+		// exit bound and leave a gate that latches disarmed on the arm bound —
+		// the same silent-misconfiguration class as the hedge block above. The
+		// top-level "hurst_gate" key is covered by the reflective
+		// knownStrategyConfigKeys; this walks one level deeper.
+		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hurst_gate", knownHurstGateKeys(), prefix)...)
 	}
 	return errs
 }
@@ -121,6 +128,11 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 // knownHedgeConfigKeys returns the JSON tag names declared on HedgeConfig.
 func knownHedgeConfigKeys() map[string]bool {
 	return knownJSONKeys(reflect.TypeOf(HedgeConfig{}))
+}
+
+// knownHurstGateKeys returns the JSON tag names declared on HurstGateConfig.
+func knownHurstGateKeys() map[string]bool {
+	return knownJSONKeys(reflect.TypeOf(HurstGateConfig{}))
 }
 
 // nestedObjectUnknownKeyErrors flags unknown keys inside a nested object field

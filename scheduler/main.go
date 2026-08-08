@@ -2092,6 +2092,19 @@ func main() {
 									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
+								// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
+								// label gate above (whose semantics are untouched). advanceHurstGate
+								// runs unconditionally and signal-independently so the hysteresis
+								// latch advances on EVERY cycle, including Signal==0 manage cycles.
+								// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
+								// #1269 / #1344 arms below: fresh opens, adds and flips are held;
+								// closes, pure-close directional exits, trailing SL, the ratchet,
+								// protection sync and paper SL/TP simulation all pass through.
+								hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, okxPosQty)
+								if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
+									logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
+									result.Signal = 0
+								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
 								// flip); position-reducing actions pass so open positions ride their
 								// natural exit. The Signal==0 manage path below keeps running.
@@ -2124,7 +2137,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, notifier, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -2133,7 +2146,7 @@ func main() {
 								if !liveExecFailed {
 									var cashAlert string
 									mu.Lock()
-									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 									mu.Unlock()
 									if cashAlert != "" {
 										notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -2156,6 +2169,19 @@ func main() {
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, rhPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
+									result.Signal = 0
+								}
+								// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
+								// label gate above (whose semantics are untouched). advanceHurstGate
+								// runs unconditionally and signal-independently so the hysteresis
+								// latch advances on EVERY cycle, including Signal==0 manage cycles.
+								// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
+								// #1269 / #1344 arms below: fresh opens, adds and flips are held;
+								// closes, pure-close directional exits, trailing SL, the ratchet,
+								// protection sync and paper SL/TP simulation all pass through.
+								hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, rhPosQty)
+								if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
+									logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 									result.Signal = 0
 								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2190,7 +2216,7 @@ func main() {
 								var execResult *RobinhoodExecuteResult
 								liveExecFailed := false
 								if robinhoodIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhCashReconcile, rhPosQty, rhPosSide, notifier, logger); ok2 {
+									if er, ok2 := runRobinhoodExecuteOrder(sc, result, price, rhCash, rhCashReconcile, rhPosQty, rhPosSide, hurstDecision, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -2199,7 +2225,7 @@ func main() {
 								if !liveExecFailed {
 									var cashAlert string
 									mu.Lock()
-									trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									trades, detail, cashAlert = executeRobinhoodResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 									mu.Unlock()
 									if cashAlert != "" {
 										notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -2220,6 +2246,19 @@ func main() {
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
+								result.Signal = 0
+							}
+							// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
+							// label gate above (whose semantics are untouched). advanceHurstGate
+							// runs unconditionally and signal-independently so the hysteresis
+							// latch advances on EVERY cycle, including Signal==0 manage cycles.
+							// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
+							// #1269 / #1344 arms below: fresh opens, adds and flips are held;
+							// closes, pure-close directional exits, trailing SL, the ratchet,
+							// protection sync and paper SL/TP simulation all pass through.
+							hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, spotPosCtx.Quantity)
+							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
+								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2250,7 +2289,7 @@ func main() {
 							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
-							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, cfg, logger)
+							trades, detail = executeSpotResult(sc, stratState, stateDB, result, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 							mu.Unlock()
 						}
 					case "options":
@@ -2339,6 +2378,19 @@ func main() {
 									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
+								// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
+								// label gate above (whose semantics are untouched). advanceHurstGate
+								// runs unconditionally and signal-independently so the hysteresis
+								// latch advances on EVERY cycle, including Signal==0 manage cycles.
+								// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
+								// #1269 / #1344 arms below: fresh opens, adds and flips are held;
+								// closes, pure-close directional exits, trailing SL, the ratchet,
+								// protection sync and paper SL/TP simulation all pass through.
+								hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, okxPosQty)
+								if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+									logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
+									result.Signal = 0
+								}
 								// #1150: paused — hold position-increasing signals (fresh open, add,
 								// flip); position-reducing actions pass so open positions ride their
 								// natural exit. The Signal==0 manage path below keeps running.
@@ -2371,7 +2423,7 @@ func main() {
 								var execResult *OKXExecuteResult
 								liveExecFailed := false
 								if okxIsLive(sc.Args) && result.Signal != 0 {
-									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, notifier, logger); ok2 {
+									if er, ok2 := runOKXExecuteOrder(sc, result, price, okxCash, okxPoolBalanceKnown, okxCashReconcile, okxPosQty, okxPosSide, okxAvgCost, okxPosLeverage, hurstDecision, notifier, logger); ok2 {
 										execResult = er
 									} else {
 										liveExecFailed = true
@@ -2380,7 +2432,7 @@ func main() {
 								if !liveExecFailed {
 									var cashAlert string
 									mu.Lock()
-									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									trades, detail, cashAlert = executeOKXResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 									mu.Unlock()
 									if cashAlert != "" {
 										notifySpotLiveCashOverBudget(notifier, cashAlert)
@@ -2411,6 +2463,19 @@ func main() {
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
+								result.Signal = 0
+							}
+							// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
+							// label gate above (whose semantics are untouched). advanceHurstGate
+							// runs unconditionally and signal-independently so the hysteresis
+							// latch advances on EVERY cycle, including Signal==0 manage cycles.
+							// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
+							// #1269 / #1344 arms below: fresh opens, adds and flips are held;
+							// closes, pure-close directional exits, trailing SL, the ratchet,
+							// protection sync and paper SL/TP simulation all pass through.
+							hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, hlPosQty)
+							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
 							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
@@ -2609,7 +2674,17 @@ func main() {
 								defOpenNotional := PerpsOpenNotional(hlScaleInCash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
 								snap := scaleInSnapshot{Side: hlPosSide, Quantity: hlPosQty, AvgCost: hlAvgCost, EntryATR: hlEntryATR, ScaleInCount: hlScaleInCount, AddedNotionalUSD: hlAddedNotionalUSD, LastAddPrice: hlLastAddPrice}
 								if q, okAdd, reason := perpsScaleInDecision(sc, snap, result.Signal, price, defOpenNotional); okAdd {
-									scaleInAddQty = q
+									// #1411: scale the ADD quantity by the current
+									// cycle's Hurst multiplier. Applied to the decided
+									// qty (not to defOpenNotional) so an explicit
+									// scale_in.add_notional_usd is scaled too. The
+									// max_adds / max_added_notional caps and the ATR
+									// spacing are evaluated on the UNSCALED intent —
+									// shrinking the add can only leave those caps
+									// satisfied, so the guardrail stays conservative.
+									// The frozen #873 RiskAnchorPrice geometry is
+									// untouched: the multiplier scales quantity only.
+									scaleInAddQty = q * hurstDecision.OpenSizeMult()
 								} else if reason != "" && reason != "not a same-direction add" {
 									logger.Info("Scale-in not taken for %s: %s", result.Symbol, reason)
 								}
@@ -2631,7 +2706,7 @@ func main() {
 										liveExecFailed = true
 									}
 								} else {
-									er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlPosLeverage, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, notifier, logger)
+									er, ok2 := runHyperliquidExecuteOrder(sc, result, price, hlCash, hlPoolBalanceKnown, hlPosQty, hlPosSide, hlAvgCost, hlPosLeverage, hlStopLossOID, hlTPOIDs, hlReconcileAll, walletSnapshot, hurstDecision, notifier, logger)
 									if ok2 {
 										execResult = er
 									} else {
@@ -2661,7 +2736,7 @@ func main() {
 								if scaleInAddQty > 0 {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidScaleInDeferredOpen(sc, stratState, result, execResult, signalStr, price, scaleInAddQty, logger)
 								} else {
-									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								}
 								mu.Unlock()
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
@@ -2793,6 +2868,19 @@ func main() {
 								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
+							// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
+							// label gate above (whose semantics are untouched). advanceHurstGate
+							// runs unconditionally and signal-independently so the hysteresis
+							// latch advances on EVERY cycle, including Signal==0 manage cycles.
+							// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
+							// #1269 / #1344 arms below: fresh opens, adds and flips are held;
+							// closes, pure-close directional exits, trailing SL, the ratchet,
+							// protection sync and paper SL/TP simulation all pass through.
+							hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, tsContracts)
+							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
+								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
+								result.Signal = 0
+							}
 							// #1150: paused — hold position-increasing signals (fresh open, add,
 							// flip); position-reducing actions pass so open positions ride their
 							// natural exit. The Signal==0 manage path below keeps running.
@@ -2829,7 +2917,7 @@ func main() {
 							var execResult *TopStepExecuteResult
 							liveExecFailed := false
 							if topstepIsLive(sc.Args) && result.Signal != 0 {
-								if er, ok2 := runTopStepExecuteOrder(sc, result, price, tsCash, tsContracts, tsPosSide, notifier, logger); ok2 {
+								if er, ok2 := runTopStepExecuteOrder(sc, result, price, tsCash, tsContracts, tsPosSide, hurstDecision, notifier, logger); ok2 {
 									execResult = er
 								} else {
 									liveExecFailed = true
@@ -2837,7 +2925,7 @@ func main() {
 							}
 							if !liveExecFailed {
 								mu.Lock()
-								trades, detail = executeTopStepResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, logger)
+								trades, detail = executeTopStepResult(sc, stratState, stateDB, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								mu.Unlock()
 							}
 						}
@@ -3114,6 +3202,13 @@ func main() {
 					mu.RUnlock()
 					if cashReconcile {
 						statusLine += " | CASH RECONCILE REQUIRED"
+					}
+					// #1411: surface the Hurst gate's live state on the status
+					// line so an operator can tell a disarmed gate from a quiet
+					// strategy. Display-only, rendered from the persisted latch;
+					// the authoritative decision stays at the dispatch sites.
+					if marker := hurstGateStatusMarkerForStrategy(sc, stratState, cfg.Regime, &mu); marker != "" {
+						statusLine += " | " + marker
 					}
 					logger.Info("%s", statusLine)
 
@@ -3534,8 +3629,8 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 }
 
 // executeSpotResult applies a spot signal to state. Must be called under Lock.
-func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *SpotResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
-	exec, err := ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, logger)
+func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *SpotResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string) {
+	exec, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, hurst.OpenSizeMult(), logger) // #1411
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -3545,6 +3640,10 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
+	// #1411: freeze the gate's H reading and applied multiplier for the
+	// close-time diagnostics row. Diagnostics-only; never read by any
+	// gating/sizing/close path afterwards.
+	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -3993,7 +4092,7 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 // Trade record, leaving state silently behind actual exchange holdings. See
 // issue #298 — 0.716 ETH of live fills were lost this way because the
 // "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
-func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
+func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	directionEnum := EffectiveDirection(sc)
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
@@ -4007,7 +4106,12 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// distance (ATR owners read the check payload's indicators.atr — the same
 	// value stampEntryATRIfOpened later freezes, so sizing and SL geometry
 	// agree) and fails closed on fresh opens when the distance is unresolvable.
-	sizing := withSharedWalletPoolSizing(
+	// #1411: the Hurst persistence multiplier rides on the sizing bundle so it
+	// lands inside PerpsOpenNotionalSized — the single point where an open's
+	// notional is computed. Fresh opens, bidirectional flips and the
+	// shared-wallet pool budget therefore all compose with it, and nothing
+	// rescales afterwards.
+	sizing := withEntrySizeMult(withSharedWalletPoolSizing(
 		sc,
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
 		posQty,
@@ -4015,7 +4119,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		avgCost,
 		posLeverage,
 		poolBalanceKnown,
-	)
+	), hurst.OpenSizeMult())
 	size, ok, reason := perpsLiveOrderSize(result.Signal, price, cash, posQty, avgCost, sizing, posSide, directionEnum, result.CloseFraction)
 	if !ok {
 		logger.Info("%s for %s", reason, result.Symbol)
@@ -4183,8 +4287,8 @@ func isHLOpenOrderCapRejection(errStr string) bool {
 	return strings.Contains(lower, "trigger order") || strings.Contains(lower, "open order") || strings.Contains(lower, "open orders")
 }
 
-func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
-	trades, detail, openTrade, _ := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, regime, cfg, logger)
+func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string) {
+	trades, detail, openTrade, _ := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, regime, cfg, hurst, logger)
 	if openTrade != nil {
 		var pos *Position
 		if p, ok := s.Positions[result.Symbol]; ok {
@@ -4199,7 +4303,7 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 // Must be called under Lock. execResult is non-nil for successful live orders;
 // nil for paper mode. Live open trades are returned so the caller can run
 // same-cycle protection sync before the single INSERT.
-func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
+func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	fillPrice := price
 	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {
@@ -4211,7 +4315,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	// #1268: sizing bundle resolved at the apply price; only consulted when
 	// this is a paper open (fillQty==0) — live orders were already sized in
 	// runHyperliquidExecuteOrder from the same config surface.
-	sizing := PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators))
+	sizing := withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult()) // #1411
 
 	// Thread exchange metadata into ExecutePerpsSignalWithLeverage so each Trade is built
 	// with the OID and fee before RecordTrade persists it (#289). Stamping the
@@ -4239,6 +4343,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, cfg)
+	stampHurstGateAtOpenIfOpened(s, result.Symbol, openTrade != nil, hurst) // #1411
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
 	}
@@ -4412,7 +4517,7 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 // posSide=="short" (Quantity is always positive so posQty<=0 cannot
 // distinguish short from flat) but ExecuteFuturesSignalWithFillFee is a no-op in that
 // state — producing a silent state drift identical in shape to #298/#300.
-func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
+func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
 	if reason := FuturesOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -4430,7 +4535,9 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
 		}
-		contracts = int(budget / margin)
+		// #1411: scale before the whole-contract floor; a scaled count that
+		// floors to 0 refuses the open below rather than rounding up to 1.
+		contracts = int(budget * hurst.OpenSizeMult() / margin)
 		if sc.FuturesConfig != nil && sc.FuturesConfig.MaxContracts > 0 && contracts > sc.FuturesConfig.MaxContracts {
 			contracts = sc.FuturesConfig.MaxContracts
 		}
@@ -4488,7 +4595,7 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 }
 
 // executeTopStepResult applies a TopStep futures result to state. Must be called under Lock.
-func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string) {
+func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillContracts int
 	var fillFee float64
@@ -4508,7 +4615,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 		maxContracts = sc.FuturesConfig.MaxContracts
 	}
 
-	exec, err := ExecuteFuturesSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, result.CloseFraction, logger)
+	exec, err := ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger) // #1411
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -4518,6 +4625,10 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
+	// #1411: freeze the gate's H reading and applied multiplier for the
+	// close-time diagnostics row. Diagnostics-only; never read by any
+	// gating/sizing/close path afterwards.
+	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -4619,7 +4730,7 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 var robinhoodExecuteFn = RunRobinhoodExecute
 var okxExecuteFn = RunOKXExecute
 
-func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
+func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price, cash float64, cashReconcileRequired bool, posQty float64, posSide string, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodExecuteResult, bool) {
 	if reason := SpotOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
 		return nil, false
@@ -4636,7 +4747,8 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 			return nil, false
 		}
 		// #518: removed hardcoded 0.95 buffer for spot live buy.
-		amountUSD = cash
+		// #1411: the Hurst persistence multiplier scales the live buy notional.
+		amountUSD = cash * hurst.OpenSizeMult()
 		if amountUSD < 1 || price <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
@@ -4683,7 +4795,7 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 // executeRobinhoodResult applies a Robinhood result to state. Must be called under Lock.
 // cashOverBudgetAlert is non-empty when a live spot buy was booked past virtual
 // cash (#1394); callers must notify AFTER releasing mu.
-func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string, string) {
+func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -4696,7 +4808,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	exec, err := ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
+	exec, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger) // #1411
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", ""
@@ -4706,6 +4818,10 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
+	// #1411: freeze the gate's H reading and applied multiplier for the
+	// close-time diagnostics row. Diagnostics-only; never read by any
+	// gating/sizing/close path afterwards.
+	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}
@@ -4816,7 +4932,7 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 // ExecutePerpsSignalWithLeverage that must be mirrored to avoid the #298 bug class
 // (live fill placed but no Trade recorded because the in-memory execution
 // returned 0). See #300.
-func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float64, poolBalanceKnown, cashReconcileRequired bool, posQty float64, posSide string, avgCost, posLeverage float64, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
+func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float64, poolBalanceKnown, cashReconcileRequired bool, posQty float64, posSide string, avgCost, posLeverage float64, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
 		skip = PerpsOrderSkipReason(result.Signal, posSide, EffectiveDirection(sc))
@@ -4840,7 +4956,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	// hardcoded 0.95 safety buffer. risk_per_trade_pct (#1268) is HL-only, so
 	// PerpsSizingFor resolves zero risk fields here (validation rejects it on
 	// OKX at load).
-	sizing := withSharedWalletPoolSizing(
+	sizing := withEntrySizeMult(withSharedWalletPoolSizing(
 		sc,
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
 		posQty,
@@ -4848,7 +4964,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		avgCost,
 		posLeverage,
 		poolBalanceKnown,
-	)
+	), hurst.OpenSizeMult()) // #1411
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool
@@ -4863,7 +4979,9 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		// does not apply to spot — SpotOrderSkipReason already blocked any
 		// signal=-1 without a long above.
 		if isBuy {
-			budget := cash
+			// #1411: scale the live spot buy budget before the $1 floor so a
+			// shrunk-to-nothing open is refused rather than placed.
+			budget := cash * hurst.OpenSizeMult()
 			if budget < 1 || price <= 0 {
 				logger.Info("Insufficient cash ($%.2f) for live buy %s", cash, result.Symbol)
 				return nil, false
@@ -4914,7 +5032,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 // executeOKXResult applies an OKX result to state. Must be called under Lock.
 // cashOverBudgetAlert is non-empty when a live spot buy was booked past virtual
 // cash (#1394); callers must notify AFTER releasing mu. Perps never set it.
-func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, logger *StrategyLogger) (int, string, string) {
+func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
 	var fillFee float64
@@ -4935,9 +5053,9 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	var exec SignalExecutionResult
 	var err error
 	if sc.Type == "perps" {
-		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
+		exec, err = ExecutePerpsSignalWithLeverageDeferredOpen(s, result.Signal, result.Symbol, fillPrice, withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult()), fillQty, fillOID, fillFee, EffectiveDirection(sc), result.CloseFraction, logger)
 	} else {
-		exec, err = ExecuteSpotSignalWithFillFeeDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, logger)
+		exec, err = ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger)
 	}
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
@@ -4948,6 +5066,10 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
+	// #1411: freeze the gate's H reading and applied multiplier for the
+	// close-time diagnostics row. Diagnostics-only; never read by any
+	// gating/sizing/close path afterwards.
+	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	}

@@ -189,6 +189,109 @@ def _primary_window_classifier(spec: Optional[dict]) -> str:
     return str(spec[primary_key].get("classifier") or CLASSIFIER_ADX).strip().lower()
 
 
+def _resolve_backtestable_hurst_gate(
+    hurst_cfg: dict,
+    sc: dict,
+    regime_cfg: dict,
+    strategy_id: str,
+    config_path: str,
+) -> dict:
+    """#1411: validate an ENABLED hurst_gate and reject what this engine cannot
+    model bar-for-bar. Returns the block to hand the Backtester.
+
+    Silently ignoring a live entry gate is the failure mode this exists to
+    prevent: the run would report entries the daemon would have held, and the
+    operator would reasonably trust the number. Every rejection below names the
+    exact reason and the fix, matching the established loud-rejection pattern.
+    """
+    from hurst_gate import validate_hurst_gate_config
+
+    prefix = f"{config_path}: strategy {strategy_id!r}"
+
+    try:
+        validate_hurst_gate_config(hurst_cfg)
+    except ValueError as exc:
+        raise ValueError(f"{prefix} {exc}") from exc
+
+    strategy_type = str(sc.get("type") or "").strip().lower()
+    if strategy_type in ("options", "manual"):
+        raise ValueError(
+            f"{prefix} configures a hurst_gate on type={strategy_type!r}, which the "
+            f"live daemon rejects at config load — the gate wires into the "
+            f"spot/perps/futures signal dispatch only (#1411)."
+        )
+
+    if not regime_cfg.get("enabled"):
+        raise ValueError(
+            f"{prefix} configures a hurst_gate but regime.enabled=false. The hurst "
+            f"metric is produced by the regime bundle, so the live daemon rejects "
+            f"this at config load (#1411)."
+        )
+
+    windows = regime_cfg.get("windows") or {}
+    if not isinstance(windows, dict) or not windows:
+        raise ValueError(
+            f"{prefix} configures a hurst_gate but regime.windows is empty. Only the "
+            f"composite classifier emits a hurst metric; the legacy single-lookback "
+            f"regime path never does (#1411)."
+        )
+
+    # Resolve the same window the live gate would read: explicit window_key,
+    # else regime_gate_window, else the primary (medium-first) window.
+    explicit = str(hurst_cfg.get("window_key") or "").strip().lower()
+    gate_window = str(sc.get("regime_gate_window") or "").strip().lower()
+    key = explicit if explicit not in ("", "default") else gate_window
+    normalized = {str(k).strip().lower(): (k, v) for k, v in windows.items()}
+    primary_key = "medium" if "medium" in normalized else sorted(normalized)[0]
+    if key in ("", "default"):
+        key = primary_key
+    if key not in normalized:
+        raise ValueError(
+            f"{prefix} configures a hurst_gate on window {key!r}, which is not in "
+            f"regime.windows (valid: {', '.join(sorted(normalized))}) (#1411)."
+        )
+
+    # This engine classifies only the PRIMARY window (#1058), the same
+    # limitation that makes a named regime_gate_window unbacktestable above.
+    if key != primary_key:
+        raise ValueError(
+            f"{prefix} gates hurst on window {key!r}, but the backtester classifies "
+            f"only the PRIMARY window ({primary_key!r}) — a named non-primary window "
+            f"has no bar-level parity path. Point hurst_gate.window_key at the "
+            f"primary window, or drop the gate for backtesting (#1411)."
+        )
+
+    spec = normalized[key][1]
+    classifier = ""
+    if isinstance(spec, dict):
+        classifier = str(spec.get("classifier") or "").strip().lower()
+    classifier = classifier or "adx"
+    if classifier != "composite":
+        raise ValueError(
+            f"{prefix} gates hurst on window {key!r}, whose classifier is "
+            f"{classifier!r}. The hurst metric is emitted ONLY by the "
+            f'"composite" classifier (shared_tools/regime.py '
+            f"latest_regime_composite), so the live daemon rejects this at config "
+            f"load (#1411)."
+        )
+
+    resolved = dict(hurst_cfg)
+    # Per-strategy on_failure wins, else the global regime.hurst_gate_on_failure,
+    # else "open" — the same single-accessor precedence as the Go side.
+    from hurst_gate import normalize_hurst_on_failure
+
+    per_raw = str(hurst_cfg.get("on_failure") or "").strip().lower()
+    try:
+        global_raw = normalize_hurst_on_failure(regime_cfg.get("hurst_gate_on_failure"))
+    except ValueError as exc:
+        raise ValueError(f"{config_path}: regime.{exc}") from exc
+    resolved["on_failure"] = (
+        normalize_hurst_on_failure(per_raw) if per_raw else global_raw
+    )
+    resolved["window_key"] = key
+    return resolved
+
+
 def _validate_allowed_regimes_vocabulary(
     allowed_regimes: Optional[List[str]],
     windows_spec: Optional[dict],
@@ -986,6 +1089,22 @@ def load_strategy_config(config_path: str, strategy_id: str,
                 f"parity path. Gate on the default lookback (remove "
                 f"regime_gate_window) or drop allowed_regimes for backtesting."
             )
+        # #1411: DEFAULT-OFF Hurst entry gate. Honor it when this engine can
+        # model it bar-for-bar, and reject LOUDLY otherwise — never silently
+        # ignore a live entry gate, which would report a strategy taking trades
+        # the daemon would have held (the tiered_tp_atr_live_regime_dynamic /
+        # regime_window_divergence rejection pattern above).
+        #
+        # An absent block, or an explicitly DISABLED one, changes nothing live
+        # and passes straight through: parking a disabled block on a strategy
+        # must not make it unbacktestable.
+        hurst_gate_cfg = sc.get("hurst_gate")
+        if isinstance(hurst_gate_cfg, dict) and hurst_gate_cfg.get("enabled"):
+            hurst_gate_cfg = _resolve_backtestable_hurst_gate(
+                hurst_gate_cfg, sc, regime_cfg, strategy_id, config_path
+            )
+        else:
+            hurst_gate_cfg = None
         # #1085 parity: resolve the certification verdict using the SAME
         # directional-window classifier the live daemon uses (not "composite if
         # any windows spec"), so a multi-window directional config keys on the
@@ -1189,6 +1308,8 @@ def load_strategy_config(config_path: str, strategy_id: str,
             "regime_windows_spec": _resolve_regime_windows_spec(regime_cfg),
             "allowed_regimes": allowed_regimes,
             "regime_gate_on_failure": regime_gate_on_failure,
+            # #1411: None (the default) leaves every baseline byte-identical.
+            "hurst_gate": hurst_gate_cfg,
             "profile_allocation": profile_allocation,
             # #1268: opt-in risk-per-trade sizing (None = legacy full-notional).
             "risk_per_trade_pct": risk_per_trade_pct,
@@ -1223,6 +1344,7 @@ def run_single_backtest(
     regime_adx_threshold: float = 20.0,
     regime_timeframe: Optional[str] = None,
     regime_windows_spec: Optional[dict] = None,
+    hurst_gate: Optional[dict] = None,
     allowed_regimes: Optional[List[str]] = None,
     regime_gate_on_failure: str = "open",
     stop_loss_atr_mult: Optional[float] = None,
@@ -1377,6 +1499,7 @@ def run_single_backtest(
         regime_period=regime_period,
         regime_adx_threshold=regime_adx_threshold,
         regime_windows_spec=regime_windows_spec,
+        hurst_gate=hurst_gate,  # #1411 (None = feature off, baseline unchanged)
         allowed_regimes=allowed_regimes,
         regime_gate_on_failure=regime_gate_on_failure,
         stop_loss_atr_mult=stop_loss_atr_mult,
@@ -1888,6 +2011,11 @@ def main():
             "scale_in",
             # #1277: resolved ATR smoothing method from the live config.
             "atr_method",
+            # #1411: resolved Hurst entry gate (None when absent/disabled).
+            # WITHOUT this entry the gate is silently dropped on the --config
+            # CLI path even though load_strategy_config resolved it, and the
+            # run would report entries the live daemon would have held.
+            "hurst_gate",
         )
         live_stop_kwargs = {k: live_kwargs[k] for k in stop_keys if k in live_kwargs}
         args.regime_enabled = live_kwargs.get("regime_enabled", args.regime_enabled)

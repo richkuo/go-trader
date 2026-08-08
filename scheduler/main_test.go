@@ -853,7 +853,7 @@ func TestExecuteHyperliquidResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeHyperliquidResult(sc, s, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _ := executeHyperliquidResult(sc, s, result, execResult, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -890,7 +890,7 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 	defer logger.Close()
 
 	// Paper mode: execResult is nil
-	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, nil, nil, logger)
+	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -933,7 +933,7 @@ func TestExecuteOKXResult_PerpsStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -972,7 +972,7 @@ func TestExecuteOKXResult_SpotStampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, _ := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1011,7 +1011,7 @@ func TestExecuteRobinhoodResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, _ := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}
@@ -1050,7 +1050,7 @@ func TestExecuteRobinhoodResult_LiveFillCashOverBudget(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _, cashAlert := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, cashAlert := executeRobinhoodResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1 — over-budget live fill must still book", trades)
 	}
@@ -1091,7 +1091,7 @@ func TestExecuteOKXResult_SpotLiveFillCashOverBudget(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _, cashAlert := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, logger)
+	trades, _, cashAlert := executeOKXResult(sc, s, nil, result, execResult, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1 — sub-dollar cash live fill must book (#1394)", trades)
 	}
@@ -1188,7 +1188,7 @@ func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	trades, _ := executeTopStepResult(sc, s, nil, result, execResult, "BUY", 5000, nil, nil, logger)
+	trades, _ := executeTopStepResult(sc, s, nil, result, execResult, "BUY", 5000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
 	}

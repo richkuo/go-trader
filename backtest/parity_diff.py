@@ -179,6 +179,11 @@ class ParityConfig:
     # the Backtester so it applies the SAME per-state sign gate the live daemon
     # does — a state whose config contradicts the certified sign resolves to base.
     regime_directional_certified_states: Optional[dict] = None
+    # #1411: the resolved hurst_gate block (None = off). When set, the parity
+    # frame carries the per-bar H, hysteresis state, hold flag and applied size
+    # multiplier so a live-vs-backtest disagreement on the GATE surfaces the
+    # same way a label disagreement already does.
+    hurst_gate: Optional[dict] = None
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
@@ -249,6 +254,9 @@ def config_from_live_config(config_path: str, strategy_id: str,
         invert_signal=bool(loaded.get("invert_signal")),
         regime_directional_policy=rdp,
         regime_directional_certified_states=rdp_cert_states,
+        # #1411: load_strategy_config already validated the block and rejected
+        # anything unbacktestable, so what it returns is safe to replay here.
+        hurst_gate=loaded.get("hurst_gate"),
     )
 
 
@@ -711,6 +719,25 @@ def compute_parity_frame(
     else:
         contexts, registry_fracs = [None] * len(df), [0.0] * len(df)
 
+    # #1411: replay the Hurst gate over the same bars. The DECISION series is
+    # the rolling estimate shifted one bar (a signal at bar N reads H through
+    # N-1), matching both the engine and the live gate's one-bar lag. The state
+    # machine is stepped on EVERY bar from the start of the frame — not only on
+    # compared bars — because hysteresis is path-dependent: sampling it at a
+    # stride would produce a state the engine never occupied.
+    hurst_series = None
+    hurst_states = None
+    if cfg.hurst_gate and cfg.hurst_gate.get("enabled"):
+        from hurst_gate import HurstGate, hurst_live_frame_bars, rolling_hurst
+
+        frame_bars = hurst_live_frame_bars(None, cfg.regime_period)
+        hurst_series = rolling_hurst(df["close"], frame_bars).shift(1)
+        runner = HurstGate(cfg.hurst_gate)
+        hurst_states = []
+        for j in range(len(df)):
+            blocked, mult = runner.step(hurst_series.iloc[j], True)
+            hurst_states.append((runner.state, bool(blocked), float(mult)))
+
     start = (window - 1) if window is not None else (LIVE_MIN_CANDLES - 1)
     rows = []
     for i in range(start, len(df), stride):
@@ -754,6 +781,13 @@ def compute_parity_frame(
             row["bt_regime"] = str(regime_full.iloc[i])
             row["live_regime"] = str(live["regime"])
             match = match and row["bt_regime"] == row["live_regime"]
+        if hurst_states is not None:
+            h = hurst_series.iloc[i]
+            state, blocked, mult = hurst_states[i]
+            row["bt_hurst"] = None if pd.isna(h) else float(h)
+            row["bt_hurst_state"] = state or "unknown"
+            row["bt_hurst_holds"] = blocked
+            row["bt_hurst_size_mult"] = mult
         # Post-shift(1) inputs the engine reads at bar i — informational.
         if i > 0:
             row["backtest_effective_signal"] = int(bt["signal"].iloc[i - 1])

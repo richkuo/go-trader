@@ -22,11 +22,12 @@ func (sdb *StateDB) InsertTradeDiagnostics(row *TradeDiagnosticsRow) error {
 	res, err := sdb.db.Exec(`INSERT INTO trade_diagnostics
 			(strategy_id, position_id, symbol, side, timeframe, regime_at_open, close_reason,
 			 entry_price, exit_price, quantity, realized_pnl, entry_atr, stop_loss_atr_mult,
-			 opened_at, closed_at, metrics_status, llm_verdict)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 opened_at, closed_at, metrics_status, llm_verdict, hurst_at_open, hurst_size_mult)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.StrategyID, row.PositionID, row.Symbol, row.Side, row.Timeframe, row.RegimeAtOpen, row.CloseReason,
 		row.EntryPrice, row.ExitPrice, row.Quantity, row.RealizedPnL, row.EntryATR, nullableFloat64(row.StopLossATRMult),
-		formatTime(row.OpenedAt), formatTime(row.ClosedAt), row.MetricsStatus, nullableString(row.LLMVerdict))
+		formatTime(row.OpenedAt), formatTime(row.ClosedAt), row.MetricsStatus, nullableString(row.LLMVerdict),
+		nullableFloat64(row.HurstAtOpen), nullableFloat64(row.HurstSizeMult))
 	if err != nil {
 		return fmt.Errorf("insert trade diagnostics for %s: %w", row.StrategyID, err)
 	}

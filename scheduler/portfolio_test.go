@@ -67,6 +67,7 @@ func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
 		100,
 		nil,
 		nil,
+		HurstGateDecision{},
 		silentStrategyLogger("spot-test"),
 	)
 	if trades != 1 {

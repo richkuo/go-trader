@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -122,6 +123,15 @@ type Position struct {
 	// compares this stamp to the live resolution once per boot to catch that
 	// gap. "" = pre-#1277 position, never stamped (drift check skips it).
 	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
+	// #1411 Hurst entry gate, diagnostics-only stamps. HurstAtOpen is the H
+	// reading the gate saw on the cycle that opened this position;
+	// HurstSizeMult is the applied mode=size multiplier. Both are 0 when the
+	// gate was off or H was unavailable — neither is a valid reading (H is in
+	// (0,1) exclusive and the multiplier in (0,1]), so 0 is an unambiguous
+	// "unstamped". They feed trade_diagnostics and are NEVER read by any
+	// gating, sizing, close, or protection path after the open.
+	HurstAtOpen   float64 `json:"hurst_at_open,omitempty"`
+	HurstSizeMult float64 `json:"hurst_size_mult,omitempty"`
 	// #1159 correlated hedge leg. HedgeFor names the PRIMARY position symbol
 	// this leg hedges ("" = an ordinary position, never a hedge). It is
 	// stamped once when the hedge fill is booked and is the ONLY source of
@@ -1843,15 +1853,25 @@ func perpsSizingLabel(sizing PerpsSizing) string {
 // leg reduces pos.Quantity (paper) or uses fillQty (live) without deleting
 // the position. closeFraction == 0 preserves the legacy full-close semantics.
 func ExecuteSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, 1.0, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
 	return out.TradesExecuted, err
 }
 
 func ExecuteSpotSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+	return ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, 1.0, logger)
+}
+
+// ExecuteSpotSignalWithFillFeeSizedDeferredOpen is the #1411 open-size-scaled
+// variant. openSizeMult multiplies the PAPER open budget only; a live fill
+// (fillQty > 0) books the quantity the venue actually filled, because the
+// multiplier was already applied when the live order was sized. Values outside
+// (0, 1] resolve to 1.0 — the gate can only shrink an open, never grow one.
+// Close and partial-close legs are never scaled.
+func ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+	out, err := executeSpotSignalWithFillFee(s, signal, symbol, price, fillQty, fillFee, fillOID, closeFraction, openSizeMult, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
@@ -1859,6 +1879,17 @@ func ExecuteSpotSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, symb
 	result.CashReconcileRequired = out.CashReconcileRequired
 	result.CashOverBudgetAlert = out.CashOverBudgetAlert
 	return result, err
+}
+
+// normalizeOpenSizeMult clamps a #1411 open-size multiplier into (0, 1].
+// The zero value, a negative, a NaN, or anything above 1.0 resolves to 1.0 so
+// a mis-threaded value can never GROW an open — the fail-safe direction on a
+// money path.
+func normalizeOpenSizeMult(m float64) float64 {
+	if m <= 0 || m > 1.0 || math.IsNaN(m) {
+		return 1.0
+	}
+	return m
 }
 
 // spotSignalExecOutcome is the internal return of executeSpotSignalWithFillFee
@@ -1870,7 +1901,7 @@ type spotSignalExecOutcome struct {
 	CashOverBudgetAlert   string
 }
 
-func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (spotSignalExecOutcome, error) {
+func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, fillQty float64, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, logger *StrategyLogger, recordOpen func(Trade)) (spotSignalExecOutcome, error) {
 	if signal == 0 {
 		return spotSignalExecOutcome{}, nil
 	}
@@ -1974,6 +2005,14 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		// fills are booked, then CRITICAL-alerted and marked reconcile-required.
 		budget := s.Cash
 		liveBuy := fillQty > 0
+		// #1411: scale the PAPER open budget by the Hurst persistence
+		// multiplier. A live buy books the venue's actual fill (the multiplier
+		// already shrank the order at sizing time), so it is never rescaled
+		// here. A scaled budget that falls under the $1 paper floor refuses the
+		// open — shrinking to nothing is the fail-safe outcome.
+		if !liveBuy {
+			budget *= normalizeOpenSizeMult(openSizeMult)
+		}
 		if !liveBuy && budget < 1 {
 			logger.Info("Insufficient cash ($%.2f) to buy %s", s.Cash, symbol)
 			out.TradesExecuted = tradesExecuted
@@ -2127,14 +2166,24 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 // remaining (a tier returning a fraction smaller than 1 contract is a no-op
 // rather than a full close).
 func ExecuteFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (int, error) {
-	return executeFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+	return executeFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, closeFraction, 1.0, logger, func(trade Trade) {
 		RecordTrade(s, trade)
 	})
 }
 
 func ExecuteFuturesSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger) (SignalExecutionResult, error) {
+	return ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, closeFraction, 1.0, logger)
+}
+
+// ExecuteFuturesSignalWithFillFeeSizedDeferredOpen is the #1411 open-size-scaled
+// variant. openSizeMult scales the PAPER contract count; whole-contract sizing
+// floors the result, and a scaled count that floors to 0 REFUSES the open
+// rather than rounding up to 1 — shrinking to nothing is the fail-safe
+// outcome for a gate that only ever reduces exposure. A live fill books the
+// contracts the venue actually filled.
+func ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, logger *StrategyLogger) (SignalExecutionResult, error) {
 	var result SignalExecutionResult
-	trades, err := executeFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, closeFraction, logger, func(trade Trade) {
+	trades, err := executeFuturesSignalWithFillFee(s, signal, symbol, price, spec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, closeFraction, openSizeMult, logger, func(trade Trade) {
 		t := trade
 		result.OpenTrade = &t
 	})
@@ -2142,7 +2191,7 @@ func ExecuteFuturesSignalWithFillFeeDeferredOpen(s *StrategyState, signal int, s
 	return result, err
 }
 
-func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
+func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string, price float64, spec ContractSpec, feePerContract float64, maxContracts int, fillContracts int, fillFee float64, fillOID string, closeFraction float64, openSizeMult float64, logger *StrategyLogger, recordOpen func(Trade)) (int, error) {
 	if signal == 0 {
 		return 0, nil
 	}
@@ -2259,7 +2308,10 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			if marginPerContract <= 0 {
 				marginPerContract = execPrice * multiplier
 			}
-			contracts = int(budget / marginPerContract)
+			// #1411: scale the paper contract count by the Hurst persistence
+			// multiplier BEFORE the whole-contract floor, so a shrunk size
+			// that floors to 0 refuses the open below rather than rounding up.
+			contracts = int(budget * normalizeOpenSizeMult(openSizeMult) / marginPerContract)
 			if maxContracts > 0 && contracts > maxContracts {
 				contracts = maxContracts
 			}

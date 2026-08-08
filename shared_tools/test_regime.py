@@ -530,7 +530,11 @@ def test_normalize_regime_gate_on_failure():
         _regime_mod.normalize_regime_gate_on_failure("fail-closed")
 
 
-# --- #1409: Hurst exponent metric (advisory-only, composite path) ------------
+# --- #1409/#1411: Hurst exponent metric (composite path only) ----------------
+# #1409 introduced this metric as advisory-only. #1411 REVOKES that for gating
+# and sizing: the Go-side hurst_gate reads it to hold entries and scale open
+# size on opt-in strategies. It remains advisory for CLASSIFICATION —
+# map_composite_label still never reads it.
 
 
 def test_latest_regime_composite_includes_hurst_when_data_sufficient():

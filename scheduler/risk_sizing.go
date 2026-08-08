@@ -57,6 +57,34 @@ type PerpsSizing struct {
 	// RiskStopUnresolved carries the resolver's reason when RiskStopDistance
 	// is 0 in risk mode, for skip-reason logging.
 	RiskStopUnresolved string
+	// EntrySizeMult is the #1411 Hurst persistence multiplier applied to the
+	// COMPUTED open notional, before the order is placed and therefore before
+	// any exposure-cap consequence. 0 (the zero value) means "not set" and
+	// resolves to 1.0, so every pre-#1411 construction of this struct is
+	// byte-identical. It is clamped to (0, 1] at read time — the gate can only
+	// shrink an open, never grow one — and it composes with whichever single
+	// sizing mode applies: it scales the risk-derived notional in
+	// risk_per_trade_pct mode (effective risk = pct × mult, with the
+	// cash × exchange_leverage cap still enforced afterward) and the notional
+	// formulas otherwise. It never applies to a close or a partial close.
+	EntrySizeMult float64
+}
+
+// entrySizeMult resolves the #1411 open-size multiplier. Unset (0) and any
+// out-of-range value resolve to 1.0, so sizing can never be grown by a bad
+// value — the fail-safe direction for a money path.
+func (s PerpsSizing) entrySizeMult() float64 {
+	if s.EntrySizeMult <= 0 || s.EntrySizeMult > 1.0 {
+		return 1.0
+	}
+	return s.EntrySizeMult
+}
+
+// withEntrySizeMult returns a copy of the bundle carrying the #1411 gate's
+// open-size multiplier.
+func withEntrySizeMult(sizing PerpsSizing, mult float64) PerpsSizing {
+	sizing.EntrySizeMult = mult
+	return sizing
 }
 
 func withSharedWalletPoolSizing(sc StrategyConfig, sizing PerpsSizing, posQty, price, avgCost, posLeverage float64, balanceKnown bool) PerpsSizing {
@@ -145,11 +173,21 @@ func PerpsRiskBasedNotional(cash, price, riskPct, stopDistance, exchangeLeverage
 // In risk mode with an unresolved stop distance it returns 0 — the sizers
 // turn that into a fail-closed refusal (fresh open) or a close-only degrade
 // (flip), never a silent notional fallback.
+// #1411: the Hurst persistence multiplier is applied HERE, at the single point
+// where an open's notional is computed, so every consumer downstream — the live
+// order size, the paper booking, the shared-wallet pool budget, the flip leg,
+// next cycle's exposure accounting and the diagnostics row — sees the SAME
+// scaled number. Nothing rescales after this point, and in particular nothing
+// rescales after the exposure-cap check or after execution. In risk mode the
+// multiplier scales the risk-derived notional (effective risk = pct × mult);
+// the cash × exchange_leverage cap inside PerpsRiskBasedNotional still applies,
+// and because mult ≤ 1 the scaled result can never breach a cap the unscaled
+// one satisfied.
 func PerpsOpenNotionalSized(cash, price float64, sizing PerpsSizing) float64 {
 	if sizing.RiskPerTradePct > 0 {
-		return PerpsRiskBasedNotional(cash, price, sizing.RiskPerTradePct, sizing.RiskStopDistance, sizing.ExchangeLeverage)
+		return PerpsRiskBasedNotional(cash, price, sizing.RiskPerTradePct, sizing.RiskStopDistance, sizing.ExchangeLeverage) * sizing.entrySizeMult()
 	}
-	return PerpsOpenNotional(cash, sizing.SizingLeverage, sizing.ExchangeLeverage, sizing.MarginPerTradeUSD)
+	return PerpsOpenNotional(cash, sizing.SizingLeverage, sizing.ExchangeLeverage, sizing.MarginPerTradeUSD) * sizing.entrySizeMult()
 }
 
 // riskStopOwner enumerates the stop owners risk-per-trade sizing can derive a

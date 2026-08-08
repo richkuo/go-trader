@@ -962,6 +962,7 @@ class Backtester:
                  regime_period: int = 14,
                  regime_adx_threshold: float = 20.0,
                  regime_windows_spec: Optional[dict] = None,
+                 hurst_gate: Optional[dict] = None,
                  allowed_regimes: Optional[list[str]] = None,
                  regime_gate_on_failure: str = "open",
                  stop_loss_atr_mult: Optional[float] = None,
@@ -1113,6 +1114,13 @@ class Backtester:
         # composite substates parse and resolve instead of being rejected or
         # silently falling back to the default stop. None = legacy ADX (canonical).
         self._regime_primary_labels = _regime_primary_labels(self.regime_windows_spec)
+        # #1411: DEFAULT-OFF Hurst entry gate / persistence-scaled sizing,
+        # layered ON TOP of the allowed_regimes label gate (whose semantics are
+        # untouched). None or enabled=false leaves every baseline
+        # byte-identical. run_backtest.load_strategy_config validates the block
+        # and rejects the configurations this engine cannot model, so anything
+        # reaching here is modellable.
+        self.hurst_gate = dict(hurst_gate) if hurst_gate else None
         self.allowed_regimes = list(allowed_regimes or [])
         # #1278: entry-gate failure policy for empty/unavailable regime labels
         # (warmup bar 0 after the #730 shift, mid-series NaN gaps), mirroring
@@ -1943,6 +1951,22 @@ class Backtester:
         if self.regime_enabled and "regime" in df.columns:
             df["regime"] = df["regime"].shift(1).fillna("")
 
+        # #1411: rolling Hurst DECISION series. Computed on the same frame the
+        # live regime bundle sees (hurst_live_frame_bars), then shifted one bar
+        # so a signal evaluated at bar N reads H through bar N-1 — the same lag
+        # the regime column above carries. Warm-up bars stay NaN (genuinely
+        # unknown, exactly like a live process before its fetch depth is
+        # covered); the NaN is never back-filled and never defaulted to 0.5.
+        hurst_runner = None
+        if self.hurst_gate and self.hurst_gate.get("enabled"):
+            from hurst_gate import HurstGate, hurst_live_frame_bars, rolling_hurst
+
+            hurst_runner = HurstGate(self.hurst_gate)
+            frame_bars = hurst_live_frame_bars(
+                self.regime_windows_spec, self.regime_period
+            )
+            df["_hurst"] = rolling_hurst(df["close"], frame_bars).shift(1)
+
         has_open = "open" in df.columns
 
         def _entry_stamp(row) -> str:
@@ -2451,6 +2475,26 @@ class Backtester:
                     self.allowed_regimes, bar_regime, self.regime_gate_on_failure
                 )
             )
+
+            # #1411: the Hurst gate is a STANDALONE layer on top of the label
+            # gate above — that gate's result is already computed and is never
+            # modified. The state machine advances on EVERY bar (signal or not),
+            # mirroring the live dispatch where advanceHurstGate runs
+            # unconditionally, so hysteresis cannot desynchronize between the
+            # two engines. `flat` scopes the fail-closed arm exactly as posQty
+            # does live. The multiplier scales the committed entry fraction —
+            # i.e. the point where size is COMPUTED — and closes are never
+            # touched, matching the live "never rescale after execution" rule.
+            hurst_size_mult = 1.0
+            if hurst_runner is not None:
+                hurst_h = row.get("_hurst")
+                hurst_blocked, hurst_size_mult = hurst_runner.step(
+                    hurst_h, position == 0
+                )
+                if hurst_blocked:
+                    regime_blocked = True
+                if hurst_size_mult != 1.0:
+                    entry_fraction *= hurst_size_mult
 
             if uses_open_close:
                 col_close_fraction = float(row.get("_close_fraction", 0.0))

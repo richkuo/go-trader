@@ -88,6 +88,7 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 | File | Purpose | Status | Origin |
 |------|---------|--------|--------|
 | `registry_loader.py` | Loads the spot/futures strategy registry by platform for backtest use. | active | core |
+| `hurst_gate.py` | #1411 Hurst entry-gate parity module — the hysteresis state machine, size formula, rolling-H series and config validation the Backtester and `parity_diff.py` share, mirroring `scheduler/hurst_gate.go` bar-for-bar. Non-executable; the estimator itself stays the #1409 `indicators_core.hurst_exponent` SSoT. | active | #1411 |
 
 (`regime_stats.py` is listed under the regime-promotion pipeline; it is also imported by `auto_suggest.py`.)
 

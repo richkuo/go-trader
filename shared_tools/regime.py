@@ -344,14 +344,24 @@ def latest_regime_composite(
         "efficiency": round(eff["efficiency"], 4),
         "atr_pct": round(atr_val / close_end * 100.0, 4) if close_end else 0.0,
     }
-    # #1409: observability-only Hurst exponent, over the FULL fetched frame
-    # (not the period-length `window` slice above) — DFA needs ~100 points,
-    # well above the 14-50 bar composite window. Omit the key entirely on
-    # NaN (insufficient data / degenerate series) rather than serialize NaN:
+    # #1409: Hurst exponent, over the FULL fetched frame (not the
+    # period-length `window` slice above) — DFA needs ~100 points, well above
+    # the 14-50 bar composite window. Omit the key entirely on NaN
+    # (insufficient data / degenerate series) rather than serialize NaN:
     # json.dumps writes bare NaN, and Go's json.Unmarshal into
     # map[string]float64 rejects that token, which would fail the whole
-    # RegimePayload parse. Advisory metric only — never read by
-    # map_composite_label, gating, or sizing.
+    # RegimePayload parse.
+    #
+    # #1411 REVOKES the #1409 advisory-only invariant for gating and sizing.
+    # This metric is now a DECLARED INPUT to the Go-side `hurst_gate`
+    # (scheduler/hurst_gate.go): it can hold position-increasing signals and
+    # scale open size on strategies that explicitly opt in. It stays advisory
+    # for classification — `map_composite_label` still never reads it, and no
+    # composite threshold, label, or score depends on it.
+    #
+    # ONLY this composite path emits the key. The default adx classifier
+    # (`latest_regime` below) never does, which is why the Go side rejects at
+    # config load any hurst_gate pointed at a non-composite window.
     hurst_val = hurst_exponent(df["close"])
     if pd.notna(hurst_val):
         metrics["hurst"] = round(hurst_val, 4)

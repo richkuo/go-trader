@@ -111,6 +111,12 @@ type RegimeConfig struct {
 	// overrides it. Hot-reloadable via SIGHUP (flat-only open gating, never
 	// state-shifting). Read via resolveRegimeGateOnFailure, never directly.
 	GateOnFailure string `json:"gate_on_failure,omitempty"`
+	// HurstGateOnFailure is the global default for the per-strategy
+	// hurst_gate.on_failure absent-H policy (#1411): "open" (default) or
+	// "closed". A per-strategy value overrides it. Hot-reloadable via SIGHUP
+	// (flat-only open gating, never state-shifting). Read via
+	// resolveHurstGateOnFailure, never directly.
+	HurstGateOnFailure string `json:"hurst_gate_on_failure,omitempty"`
 }
 
 var regimeTimeframeAllowSet = map[string]bool{
@@ -668,6 +674,7 @@ type StrategyConfig struct {
 	RegimeGateWindow            string                   `json:"regime_gate_window,omitempty"`        // window key for allowed_regimes gate; "" or "default" = legacy single lookback (#792)
 	RegimeATRWindow             string                   `json:"regime_atr_window,omitempty"`         // window key for *_atr_regime resolution (#792)
 	RegimeDirectionalWindow     string                   `json:"regime_directional_window,omitempty"` // window key for regime_directional_policy (#792)
+	HurstGate                   *HurstGateConfig         `json:"hurst_gate,omitempty"`                // #1411 — DEFAULT-OFF per-strategy Hurst entry gate / persistence-scaled sizing, layered as a STANDALONE gate on top of the allowed_regimes label gate (which stays byte-identical). mode="gate" holds position-increasing signals via pausedBlocksSignal while the hysteresis state machine is disarmed; mode="size" scales the COMPUTED open size by clamp(|H-0.5|/0.15, size_floor, 1.0) (never > 1.0). Reads metrics["hurst"] from a COMPOSITE regime window only — validateHurstGateConfigs rejects an adx/missing window at load. Closes, trailing SL, ratchet, protection sync, paper SL/TP simulation, hedge sync and kill-switch paths always pass. Hot-reloadable via SIGHUP always incl. while open (flat-only open gating + order-time sizing, never state-shifting). The #1410 calibration study is INCONCLUSIVE, so no thresholds are recommended anywhere. Read via evaluateHurstGate/resolveHurstGateOnFailure, never directly.
 	Capital                     float64                  `json:"capital"`
 	CapitalPct                  float64                  `json:"capital_pct,omitempty"`     // 0-1; dynamic capital = wallet_balance * capital_pct (overrides capital)
 	InitialCapital              float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
@@ -2685,6 +2692,10 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
 	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
+	// #1411: the Hurst entry gate reads metrics["hurst"], which only the
+	// composite classifier emits. Runs even for disabled blocks so a typo'd
+	// gate fails at edit time rather than the first time it is switched on.
+	errs = append(errs, validateHurstGateConfigs(cfg)...)
 
 	// Warn when allowed_regimes is configured but regime.enabled=false — the
 	// gate reads result.Regime from the check script output, which requires

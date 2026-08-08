@@ -78,6 +78,13 @@ type TradeDiagnosticsRow struct {
 
 	MetricsStatus string
 	LLMVerdict    *string
+
+	// #1411 Hurst entry gate. HurstAtOpen is the gate's H reading on the
+	// opening cycle; HurstSizeMult is the applied mode=size multiplier. Both
+	// nil when the gate was off or H was unavailable. Diagnostics-only: they
+	// are copied from the Position and never influence any decision.
+	HurstAtOpen   *float64
+	HurstSizeMult *float64
 }
 
 // captureTradeDiagnostics builds and eagerly persists the diagnostics row for
@@ -120,6 +127,18 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 	if pos.LLMVerdict != "" {
 		v := pos.LLMVerdict
 		row.LLMVerdict = &v
+	}
+	// #1411: carry the frozen Hurst gate stamps. 0 means unstamped (H is in
+	// (0,1) exclusive and the multiplier in (0,1]), so both stay NULL when the
+	// gate was off. This never touches llm_verdict, whose sole writer is the
+	// #1137 block above.
+	if pos.HurstAtOpen > 0 {
+		v := pos.HurstAtOpen
+		row.HurstAtOpen = &v
+	}
+	if pos.HurstSizeMult > 0 {
+		v := pos.HurstSizeMult
+		row.HurstSizeMult = &v
 	}
 	if err := tradeDiagnosticsRecorder(&row); err != nil {
 		log.Printf("[diagnostics] insert row for %s %s: %v", s.ID, pos.Symbol, err)
