@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.abspath(
 
 import hurst_1410_gate_calibration as study  # noqa: E402
 
+_UNSET = object()
+
 
 # ---------------------------------------------------------------------------
 # bucket_label
@@ -672,7 +674,7 @@ def test_recommendation_is_the_final_section_of_the_report():
     assert any(line.strip() == "INCONCLUSIVE" for line in lines[last_h2:])
 
 
-def _report_payload(verdict_configs=None):
+def _report_payload(verdict_configs=None, warmup=_UNSET):
     configs = verdict_configs or [
         _cfg(family=f, bh_reject=False, config_id=f"{f}/gate/W256/arm0.55/dis0.5")
         for f in study.FAMILIES
@@ -716,6 +718,8 @@ def _report_payload(verdict_configs=None):
             "legs": 1, "gated_arms": 3, "mirror_verified_legs": 1,
             "raw_trades": {f: 0 for f in study.FAMILIES},
             "pooled_trades": {f: 0 for f in study.FAMILIES},
+            "warmup": (study.warmup_audit({"BTC/USDT 1h": 5000}, [256])
+                       if warmup is _UNSET else warmup),
             "elapsed_sec": 1.0,
         },
         "buckets": {f: {"256": study.bucket_tables(pooled[f], 256)}
@@ -815,10 +819,142 @@ def test_every_rendered_table_row_has_a_consistent_cell_count():
         assert len(widths) == 1, f"ragged table rows: {tbl[:3]}"
 
 
-def test_report_explains_why_an_empty_nan_bucket_is_expected():
+def test_report_only_claims_an_empty_nan_bucket_from_a_measured_warmup():
+    """The emptiness claim must rest on the RECORDED audit, never on faith."""
     report = study.render_report(_report_payload())
-    assert "NaN` bucket is expected to be EMPTY" in report
+    assert "NaN` bucket is EMPTY here" in report
+    # The claim is qualified by the numbers the run measured.
+    assert "5000" in report and "258" in report
     assert "never 0.5" in report
+
+
+def test_report_says_the_nan_bucket_is_populated_when_warmup_is_short():
+    short = study.warmup_audit({"BTC/USDT 1h": 10}, [256])
+    report = study.render_report(_report_payload(warmup=short))
+    assert "NaN` bucket is POPULATED here" in report
+    assert "`BTC/USDT 1h`" in report
+    assert "NaN` bucket is EMPTY here" not in report
+    assert "never 0.5" in report
+
+
+def test_report_refuses_to_attest_the_nan_bucket_without_an_audit():
+    """An older JSON re-rendered with --render-only must not inherit the claim."""
+    report = study.render_report(_report_payload(warmup=None))
+    assert "NOT attested here" in report
+    assert "NaN` bucket is EMPTY here" not in report
+    assert "never 0.5" in report
+
+
+# ---------------------------------------------------------------------------
+# Warm-up audit (the NaN-bucket claim's evidence)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("hw,expected", [(128, 130), (256, 258), (512, 514)])
+def test_required_lead_is_the_hurst_window_plus_the_stamp_margin(hw, expected):
+    """Entry stamp at fill bar p reads rolling H at p-2, which needs p >= W+1;
+    the audit keeps one further bar of margin."""
+    assert study.required_lead_bars(hw) == expected
+    assert study.required_lead_bars(hw) >= hw + 1
+
+
+def test_warmup_lead_counts_only_bars_strictly_before_the_window_start():
+    idx = pd.date_range("2022-12-30", periods=10, freq="1D")
+    # Window starts on the 3rd bar: two bars of lead, and the start bar itself
+    # is a SCORED bar, never lead.
+    assert study.warmup_lead_bars(idx, "2023-01-01") == 2
+    assert study.warmup_lead_bars(idx, "2022-12-30") == 0
+    assert study.warmup_lead_bars(idx, "2030-01-01") == len(idx)
+
+
+def test_warmup_audit_flags_a_cache_that_starts_at_the_window_start():
+    """Reviewer case (1): zero lead must be recorded as insufficient."""
+    audit = study.warmup_audit({"BTC/USDT 1h": 0, "ETH/USDT 4h": 9000}, [128, 512])
+    assert audit["sufficient"] is False
+    assert audit["insufficient_datasets"] == ["BTC/USDT 1h"]
+    assert audit["required_bars"] == study.required_lead_bars(512)
+    assert audit["min_lead_bars"] == 0
+
+
+def test_warmup_audit_passes_when_every_dataset_clears_the_largest_window():
+    """Reviewer case (2): ample lead must not raise a false alarm."""
+    leads = {"BTC/USDT 1h": 26000, "SOL/USDT 4h": 5000}
+    audit = study.warmup_audit(leads, [128, 256, 512])
+    assert audit["sufficient"] is True
+    assert audit["insufficient_datasets"] == []
+    assert audit["lead_bars"] == dict(sorted(leads.items()))
+
+
+def test_warmup_audit_boundary_is_inclusive_at_exactly_the_requirement():
+    need = study.required_lead_bars(256)
+    assert study.warmup_audit({"d": need}, [256])["sufficient"] is True
+    assert study.warmup_audit({"d": need - 1}, [256])["sufficient"] is False
+
+
+def test_warmup_audit_requirement_follows_the_selected_hurst_windows():
+    """Reviewer case (3): a run over only W=128 must not be judged against 512."""
+    leads = {"d": 200}
+    assert study.warmup_audit(leads, [128])["sufficient"] is True
+    assert study.warmup_audit(leads, [128, 512])["sufficient"] is False
+
+
+# ---------------------------------------------------------------------------
+# Rolling-Hurst cache identity
+# ---------------------------------------------------------------------------
+
+def _idx(n=3000, start="2023-01-01"):
+    return pd.date_range(start, periods=n, freq="1h")
+
+
+def test_cache_hit_requires_coverage_at_least_as_deep_as_this_run_needs():
+    """A cache written for a LATE window must not serve an EARLIER one.
+
+    The stale array is same-length but nearly all NaN over the earlier span,
+    and because a NaN reading HOLDS the gate state every gated arm would
+    silently reproduce its ungated arm — a fake "no effect" result.
+    """
+    idx = _idx()
+    late = study.cache_meta(idx, "2026-01-01")
+    assert study.cache_entry_is_usable(late, idx, "2023-01-01") is False
+
+
+def test_cache_hit_allowed_when_the_cached_array_covers_more_than_needed():
+    idx = _idx()
+    early = study.cache_meta(idx, "2023-01-01")
+    assert study.cache_entry_is_usable(early, idx, "2026-01-01") is True
+
+
+def test_cache_hit_on_an_identical_repeat_run():
+    idx = _idx()
+    meta = study.cache_meta(idx, "2023-01-01")
+    assert study.cache_entry_is_usable(meta, idx, "2023-01-01") is True
+
+
+def test_cache_miss_when_the_dataset_gains_bars():
+    meta = study.cache_meta(_idx(3000), "2023-01-01")
+    assert study.cache_entry_is_usable(meta, _idx(3001), "2023-01-01") is False
+
+
+def test_cache_miss_when_the_series_shifts_without_changing_length():
+    """Equal length is not identity — the bars themselves must match."""
+    meta = study.cache_meta(_idx(3000, "2023-01-01"), "2023-01-01")
+    assert study.cache_entry_is_usable(
+        meta, _idx(3000, "2023-06-01"), "2023-01-01") is False
+
+
+def test_cache_miss_on_a_legacy_entry_with_no_metadata():
+    idx = _idx()
+    assert study.cache_entry_is_usable(None, idx, "2023-01-01") is False
+    assert study.cache_entry_is_usable(
+        np.array([1, 2], dtype=np.int64), idx, "2023-01-01") is False
+
+
+def test_cache_meta_round_trips_through_an_int64_npz_array():
+    """np.savez_compressed must be able to store it without pickling."""
+    idx = _idx()
+    meta = study.cache_meta(idx, "2023-01-01")
+    assert meta.dtype == np.int64 and meta.shape == (study.CACHE_META_FIELDS,)
+    assert study.cache_entry_is_usable(np.asarray(meta.tolist(), dtype=np.int64),
+                                       idx, "2023-01-01") is True
 
 
 def test_report_states_that_trading_less_is_not_trading_better():

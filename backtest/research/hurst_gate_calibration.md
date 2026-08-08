@@ -45,7 +45,7 @@ Estimator caveat (from the #1409 docstring): DFA carries a small upward bias at 
 
 Ungated legs only. Trades are pooled per family across datasets and windows and deduplicated on `(strategy, symbol, timeframe, entry_date)`, iterating windows in chronological start order with first occurrence winning. Drawdown here is TRADE-GRANULAR (the compounded trade sequence), not the bar-level engine drawdown used in Part B.
 
-The `NaN` bucket is expected to be EMPTY here and that is a property of the harness, not of the estimator. Every leg computes rolling H on a frame padded well before the window start, so H is defined on every scored bar. A live consumer has a bounded fetch depth and WILL see NaN at start-up and after a data gap, so the NaN policy still has to be decided: NaN is unknown, never 0.5, and it holds the gate state.
+The `NaN` bucket is EMPTY here because of the harness, not the estimator, and this run MEASURED the condition that makes it so. H at a scored bar needs 514 bars of history before the earliest window start; the thinnest dataset in this run carried 5006, so H is defined on every scored bar. On a thinner cache the run prints a warm-up warning and this bucket carries real trades. A live consumer has a bounded fetch depth and WILL see NaN at start-up and after a data gap, so the NaN policy still has to be decided: NaN is unknown, never 0.5, and it holds the gate state.
 
 ### momentum
 
@@ -203,7 +203,8 @@ Rule 2 is what separates a real edge from arithmetic. ANY gate that removes trad
 - Legs scored: 150 ungated + 1350 gated arms.
 - Pooled deduplicated trades: momentum 1419, mean_reversion 4556 (before dedup: momentum 1444, mean_reversion 7725).
 - Hypotheses tested: 30; BH-significant: 0.
-- Wall time: 133 s.
+- Warm-up lead before the earliest window start: min 5006 bars, required 514 — sufficient on every dataset.
+- Wall time: 376 s.
 
 ## Recommendation
 

@@ -188,6 +188,14 @@ SEED = ISSUE  # 1410 — fixed so a re-run reproduces every p-value
 # series is defined on the window's first bar (needs 2; 4 is margin).
 STAMP_LEAD_BARS = 4
 
+# Warm-up depth a DATASET must carry BEFORE the earliest window start for the
+# entry stamp to be defined on that window's first bar. Rolling H at bar i
+# needs bars [i-W+1, i], and the entry stamp at fill bar p reads the rolling
+# value at p-2 (decision_series shift 1 + fill shift 1), so p >= W+1 is the
+# exact requirement; WARMUP_MARGIN_BARS = 2 keeps one bar of margin and
+# matches the pre-registered "window start minus W+2 bars" convention.
+WARMUP_MARGIN_BARS = 2
+
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.json")
 _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_gate_calibration.md")
 
@@ -199,6 +207,77 @@ WINDOW_ORDER = tuple(
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested without data access).
 # ---------------------------------------------------------------------------
+
+def required_lead_bars(hurst_window: int) -> int:
+    """Bars a dataset must carry BEFORE the earliest window start so the entry
+    stamp is defined on that window's first bar. See ``WARMUP_MARGIN_BARS``."""
+    return int(hurst_window) + WARMUP_MARGIN_BARS
+
+
+def warmup_lead_bars(index, first_needed) -> int:
+    """Bars in ``index`` that fall strictly BEFORE ``first_needed``."""
+    return int(pd.Index(index).searchsorted(pd.Timestamp(first_needed),
+                                            side="left"))
+
+
+def warmup_audit(leads: dict, hurst_windows: Sequence[int]) -> dict:
+    """Record — never assume — the warm-up depth every scored bar rests on.
+
+    The report claims the ``NaN`` bucket is empty as a property of the harness.
+    That claim is only true when every dataset carries ``required_lead_bars``
+    of history before the earliest window start. This turns the claim into a
+    measurement the run stores, so a reader of the committed JSON can tell
+    which case produced the shipped tables.
+    """
+    required = max((required_lead_bars(hw) for hw in hurst_windows), default=0)
+    short = sorted(k for k, v in leads.items() if int(v) < required)
+    return {
+        "required_bars": required,
+        "lead_bars": {k: int(leads[k]) for k in sorted(leads)},
+        "min_lead_bars": min((int(v) for v in leads.values()), default=0),
+        "sufficient": not short,
+        "insufficient_datasets": short,
+    }
+
+
+# Metadata stored beside every cached rolling-Hurst array, so a cache HIT is
+# indistinguishable from a fresh recompute. Length alone is not enough: the
+# NaN coverage of an array depends on the ``first_needed`` it was computed
+# with, and two runs over one dataset with different --windows selections
+# produce same-length arrays with very different coverage.
+CACHE_META_FIELDS = 4  # first_needed_ns, index_first_ns, index_last_ns, length
+
+
+def cache_meta(index, first_needed) -> np.ndarray:
+    """Identity of one cached rolling-Hurst array."""
+    idx = pd.Index(index)
+    return np.array([
+        pd.Timestamp(first_needed).value,
+        pd.Timestamp(idx[0]).value,
+        pd.Timestamp(idx[-1]).value,
+        len(idx),
+    ], dtype=np.int64)
+
+
+def cache_entry_is_usable(meta, index, first_needed) -> bool:
+    """True only when reusing the cached array cannot change any read value.
+
+    Requires the SAME bar series (first bar, last bar, length) and a cached
+    ``first_needed`` no LATER than the one this run needs — an array computed
+    from further back is a superset of the requested coverage, while one
+    computed from later carries NaN on bars this run reads.
+    """
+    if meta is None:
+        return False
+    arr = np.asarray(meta)
+    if arr.shape != (CACHE_META_FIELDS,):
+        return False
+    want = cache_meta(index, first_needed)
+    if not (int(arr[1]) == int(want[1]) and int(arr[2]) == int(want[2])
+            and int(arr[3]) == int(want[3])):
+        return False
+    return int(arr[0]) <= int(want[0])
+
 
 def bucket_label(h) -> str:
     """Bucket for one H reading.
@@ -1076,6 +1155,45 @@ def render_recommendation(decision: dict, configs: Sequence[dict]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+_NAN_POLICY_NOTE = (
+    "A live consumer has a bounded fetch depth and WILL see NaN at start-up "
+    "and after a data gap, so the NaN policy still has to be decided: NaN is "
+    "unknown, never 0.5, and it holds the gate state.")
+
+
+def render_nan_bucket_note(warmup) -> str:
+    """The `NaN` bucket paragraph, rendered from the run's MEASURED warm-up.
+
+    The emptiness of the NaN bucket is a property of the warm-up depth the
+    datasets happened to carry, so the report states the measurement rather
+    than asserting the property. A payload with no recorded audit (an older
+    JSON re-rendered with ``--render-only``) says so instead of claiming it.
+    """
+    if not warmup:
+        return ("The `NaN` bucket's contents depend on warm-up depth, and this "
+                "run recorded no warm-up audit, so whether H was defined on "
+                "every scored bar is NOT attested here. Re-run the study to "
+                "record it. " + _NAN_POLICY_NOTE)
+    required = warmup["required_bars"]
+    if warmup["sufficient"]:
+        return (f"The `NaN` bucket is EMPTY here because of the harness, not "
+                f"the estimator, and this run MEASURED the condition that "
+                f"makes it so. H at a scored bar needs {required} bars of "
+                f"history before the earliest window start; the thinnest "
+                f"dataset in this run carried {warmup['min_lead_bars']}, so H "
+                f"is defined on every scored bar. On a thinner cache the run "
+                f"prints a warm-up warning and this bucket carries real "
+                f"trades. " + _NAN_POLICY_NOTE)
+    short = ", ".join(f"`{d}`" for d in warmup["insufficient_datasets"])
+    return (f"The `NaN` bucket is POPULATED here. H at a scored bar needs "
+            f"{required} bars of history before the earliest window start, "
+            f"and {len(warmup['insufficient_datasets'])} dataset(s) carried "
+            f"less ({short}; thinnest {warmup['min_lead_bars']} bars), so the "
+            f"first bars of the earliest window are unscored. Read the "
+            f"`NaN` rows below as a warm-up artefact of this cache, not as an "
+            f"estimator refusal. " + _NAN_POLICY_NOTE)
+
+
 def render_report(payload: dict) -> str:
     """Full Markdown report. `## Recommendation` is guaranteed to be last."""
     cfgs = payload["configs"]
@@ -1194,12 +1312,7 @@ def render_report(payload: dict) -> str:
       "is TRADE-GRANULAR (the compounded trade sequence), not the bar-level "
       "engine drawdown used in Part B.")
     a("")
-    a("The `NaN` bucket is expected to be EMPTY here and that is a property of "
-      "the harness, not of the estimator. Every leg computes rolling H on a "
-      "frame padded well before the window start, so H is defined on every "
-      "scored bar. A live consumer has a bounded fetch depth and WILL see NaN "
-      "at start-up and after a data gap, so the NaN policy still has to be "
-      "decided: NaN is unknown, never 0.5, and it holds the gate state.")
+    a(render_nan_bucket_note(payload["run_summary"].get("warmup")))
     a("")
     for family in FAMILIES:
         a(f"### {family}")
@@ -1311,6 +1424,11 @@ def render_report(payload: dict) -> str:
       ", ".join(f"{f} {rs['raw_trades'][f]}" for f in FAMILIES) + ").")
     a(f"- Hypotheses tested: {len(cfgs)}; BH-significant: "
       f"{sum(1 for c in cfgs if c['bh_reject'])}.")
+    wu = rs.get("warmup")
+    if wu:
+        a(f"- Warm-up lead before the earliest window start: min "
+          f"{wu['min_lead_bars']} bars, required {wu['required_bars']} — "
+          f"{'sufficient on every dataset' if wu['sufficient'] else 'SHORT on ' + ', '.join(wu['insufficient_datasets'])}.")
     a(f"- Wall time: {rs['elapsed_sec']:.0f} s.")
     a("")
 
@@ -1422,6 +1540,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     first_needed = min(pd.Timestamp(WINDOWS[w][0]) for w in window_names)
 
+    # Measure — do not assume — the warm-up depth every scored bar rests on.
+    # The report's "the NaN bucket is empty by construction" claim is only
+    # true when this audit says `sufficient`; on a thinner cache the run says
+    # so out loud and the rendered report names the shortfall.
+    warmup = warmup_audit(
+        {dataset_key(s, t): warmup_lead_bars(frames[(s, t)].index, first_needed)
+         for s, t in datasets},
+        hurst_windows)
+    if not warmup["sufficient"]:
+        print(f"[1410] WARNING: warm-up shortfall — "
+              f"{len(warmup['insufficient_datasets'])} dataset(s) carry fewer "
+              f"than {warmup['required_bars']} bars before "
+              f"{first_needed.date()}: "
+              f"{', '.join(warmup['insufficient_datasets'])}. H is UNDEFINED "
+              f"on the first scored bars there, so the NaN bucket will carry "
+              f"real trades. NaN stays its own bucket (never 0.5) and holds "
+              f"the gate state.")
+    else:
+        print(f"[1410] warm-up OK: min lead {warmup['min_lead_bars']} bars "
+              f"before {first_needed.date()} (need {warmup['required_bars']}).")
+
     # 2. Rolling Hurst per (dataset, W), computed once over the padded span.
     print(f"[1410] computing rolling Hurst for {len(datasets)}x"
           f"{len(hurst_windows)} (dataset, window) pairs...")
@@ -1439,7 +1578,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         (symbol, timeframe), hw = job
         key = f"{symbol}|{timeframe}|{hw}"
         frame = frames[(symbol, timeframe)]
-        if key in cached and len(cached[key]) == len(frame):
+        if key in cached and cache_entry_is_usable(
+                cached.get(f"meta|{key}"), frame.index, first_needed):
             return job, pd.Series(cached[key], index=frame.index)
         return job, rolling_hurst(frame["close"], hw, first_needed=first_needed)
 
@@ -1448,9 +1588,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for job, series in pool.map(_hurst_job, jobs):
             hurst[job] = series
     if cache_path:
-        np.savez_compressed(cache_path, **{
-            f"{ds[0]}|{ds[1]}|{hw}": hurst[(ds, hw)].to_numpy(dtype=float)
-            for ds, hw in jobs})
+        arrays = {}
+        for ds, hw in jobs:
+            key = f"{ds[0]}|{ds[1]}|{hw}"
+            arrays[key] = hurst[(ds, hw)].to_numpy(dtype=float)
+            arrays[f"meta|{key}"] = cache_meta(
+                frames[ds].index, first_needed)
+        np.savez_compressed(cache_path, **arrays)
 
     # 3. Fan out the legs.
     units = [(family, exemplar, symbol, timeframe, wname)
@@ -1529,6 +1673,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "mirror_verified_legs": sum(1 for lg in legs if lg["mirror_verified"]),
             "raw_trades": raw_counts,
             "pooled_trades": {f: len(pooled[f]) for f in FAMILIES},
+            "warmup": warmup,
             "elapsed_sec": round(time.time() - started, 2),
         },
         "buckets": buckets,

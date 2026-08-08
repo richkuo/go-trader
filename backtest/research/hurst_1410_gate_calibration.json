@@ -143,7 +143,21 @@
       "momentum": 1419,
       "mean_reversion": 4556
     },
-    "elapsed_sec": 133.04
+    "warmup": {
+      "required_bars": 514,
+      "lead_bars": {
+        "BTC/USDT 1h": 26270,
+        "BTC/USDT 4h": 6571,
+        "ETH/USDT 1h": 26270,
+        "ETH/USDT 4h": 6571,
+        "SOL/USDT 1h": 20017,
+        "SOL/USDT 4h": 5006
+      },
+      "min_lead_bars": 5006,
+      "sufficient": true,
+      "insufficient_datasets": []
+    },
+    "elapsed_sec": 376.34
   },
   "buckets": {
     "momentum": {
