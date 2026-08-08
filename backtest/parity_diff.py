@@ -184,6 +184,17 @@ class ParityConfig:
     # multiplier so a live-vs-backtest disagreement on the GATE surfaces the
     # same way a label disagreement already does.
     hurst_gate: Optional[dict] = None
+    # #1411: the resolved regime ``windows`` spec, threaded here for ONE
+    # purpose — ``hurst_live_frame_bars``. The live OHLCV fetch depth takes the
+    # MAX period over every configured window (scheduler/regime_multi_window.go
+    # regimeOHLCVLimit), and the Backtester passes its own
+    # ``regime_windows_spec`` to the same helper. Computing the depth from
+    # ``regime_period`` alone would make this tool read H over a different
+    # frame length than the two engines it compares whenever any window period
+    # exceeds 95 (2*p-1+10 > 200), turning the Hurst columns into spurious
+    # disagreements. NOT used for the ADX regime series below, which stays on
+    # ``regime_period`` exactly as before.
+    regime_windows_spec: Optional[dict] = None
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
@@ -257,6 +268,9 @@ def config_from_live_config(config_path: str, strategy_id: str,
         # #1411: load_strategy_config already validated the block and rejected
         # anything unbacktestable, so what it returns is safe to replay here.
         hurst_gate=loaded.get("hurst_gate"),
+        # #1411: the same resolved spec the Backtester receives, so the Hurst
+        # frame depth here matches the engine's and the live daemon's.
+        regime_windows_spec=loaded.get("regime_windows_spec"),
     )
 
 
@@ -730,7 +744,12 @@ def compute_parity_frame(
     if cfg.hurst_gate and cfg.hurst_gate.get("enabled"):
         from hurst_gate import HurstGate, hurst_live_frame_bars, rolling_hurst
 
-        frame_bars = hurst_live_frame_bars(None, cfg.regime_period)
+        # The depth MUST be the max period over every configured window, not
+        # just regime_period — that is what the live daemon fetches and what
+        # the Backtester passes to this same helper.
+        frame_bars = hurst_live_frame_bars(
+            cfg.regime_windows_spec, cfg.regime_period
+        )
         hurst_series = rolling_hurst(df["close"], frame_bars).shift(1)
         runner = HurstGate(cfg.hurst_gate)
         hurst_states = []
@@ -823,6 +842,15 @@ def extract_fills(df: pd.DataFrame, cfg: ParityConfig) -> list:
         regime_enabled=cfg.regime_enabled,
         regime_period=cfg.regime_period,
         regime_adx_threshold=cfg.regime_adx_threshold,
+        # #1411: the engine (run_backtest) hands the Backtester BOTH of these
+        # (run_backtest.py, the `regime_windows_spec=` / `hurst_gate=` kwargs).
+        # Omitting them here would make --fills report entries a hurst-gated
+        # engine holds, and would classify a composite config's regime by ADX
+        # — the opposite of what this tool exists to show. `hurst_gate` is None
+        # for every config that does not opt in, so the ungated baseline is
+        # byte-identical.
+        regime_windows_spec=cfg.regime_windows_spec,
+        hurst_gate=cfg.hurst_gate,
         direction=cfg.direction,
         invert_signal=cfg.invert_signal,
         regime_directional_policy=cfg.regime_directional_policy,

@@ -646,7 +646,11 @@ func (sdb *StateDB) migrateSchema() error {
 		"ALTER TABLE strategies ADD COLUMN hurst_gate_state TEXT NOT NULL DEFAULT ''",
 		// #1411: freeze the gate's H reading and applied size multiplier at
 		// open so a closed trade's diagnostics row can attribute its size.
-		// 0 = unstamped (H is in (0,1) exclusive, the multiplier in (0,1]).
+		// 0 = unstamped. The sentinel rests ONLY on the LOWER bound: every
+		// finite H is > 0 and the multiplier lands in [size_floor, 1.0].
+		// hurst_at_open is NOT capped at 1 (hurst_gate.go RANGE NOTE — the
+		// runtime metric reads ~2.0 on a near-smooth series), so a stored
+		// value above 1 is legal; never add a CHECK or a clamp against 1.
 		"ALTER TABLE positions ADD COLUMN hurst_at_open REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN hurst_size_mult REAL NOT NULL DEFAULT 0",
 		// #1411: diagnostics-only columns; nullable, matching the other

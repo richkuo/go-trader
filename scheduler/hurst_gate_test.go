@@ -694,6 +694,66 @@ func TestCaptureTradeDiagnosticsCarriesHurstAndNeverWritesLLMVerdict(t *testing.
 	}
 }
 
+// The 0-as-unstamped sentinel rests ONLY on the lower bound: a real H is always
+// > 0, and the multiplier is clamped into [size_floor, 1.0]. It does NOT rest on
+// an upper bound — the runtime metric is not capped at 1 (RANGE NOTE in
+// hurst_gate.go: DFA reads ~2.0 on a near-smooth series). This pins the whole
+// stamp -> position -> diagnostics -> SQLite path against a future edit that
+// "tightens" any of these columns to (0, 1) on the strength of a comment.
+func TestHurstStampsAcceptReadingsAboveOne(t *testing.T) {
+	const aboveOne = 2.0033
+
+	// (1) The open-time stamp stores a >1 reading verbatim.
+	s := &StrategyState{ID: "s1", Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1}}}
+	stampHurstGateAtOpenIfOpened(s, "BTC", true, HurstGateDecision{
+		Active: true, Mode: HurstGateModeGate, H: aboveOne, HKnown: true, SizeMult: 1.0,
+	})
+	if got := s.Positions["BTC"].HurstAtOpen; got != aboveOne {
+		t.Fatalf("a >1 reading must stamp verbatim, got %v", got)
+	}
+
+	// (2) It copies through to the diagnostics row rather than dropping to NULL.
+	var captured *TradeDiagnosticsRow
+	prevRecorder, prevEnqueue := tradeDiagnosticsRecorder, tradeDiagnosticsEnqueue
+	tradeDiagnosticsRecorder = func(row *TradeDiagnosticsRow) error { captured = row; return nil }
+	tradeDiagnosticsEnqueue = nil
+	defer func() { tradeDiagnosticsRecorder, tradeDiagnosticsEnqueue = prevRecorder, prevEnqueue }()
+	captureTradeDiagnostics(s, s.Positions["BTC"], 110, 10, "signal_close", time.Now().UTC())
+	if captured == nil || captured.HurstAtOpen == nil || *captured.HurstAtOpen != aboveOne {
+		t.Fatalf("a >1 hurst_at_open must reach trade_diagnostics unchanged, got %+v", captured)
+	}
+
+	// (3) It survives the SQLite round trip — no CHECK, no clamp.
+	db := openTestDB(t)
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"s1": {
+			ID: "s1", Type: "perps", Cash: 1000,
+			OptionPositions: map[string]*OptionPosition{},
+			Positions: map[string]*Position{"BTC": {
+				Symbol: "BTC", Quantity: 1, AvgCost: 100, Side: "long", Multiplier: 1,
+				OwnerStrategyID: "s1", HurstAtOpen: aboveOne, HurstSizeMult: 1.0,
+			}},
+		},
+	}}
+	if err := db.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := db.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if got := loaded.Strategies["s1"].Positions["BTC"].HurstAtOpen; got != aboveOne {
+		t.Fatalf("a >1 hurst_at_open must survive a restart, got %v", got)
+	}
+
+	// (4) The lower-bound half of the sentinel still holds: 0 means unstamped.
+	captured = nil
+	captureTradeDiagnostics(s, &Position{Symbol: "ETH", Side: "long", AvgCost: 10, Quantity: 1}, 11, 1, "signal_close", time.Now().UTC())
+	if captured.HurstAtOpen != nil || captured.HurstSizeMult != nil {
+		t.Fatal("0 must still read as unstamped")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Status marker (display-only)
 // ---------------------------------------------------------------------------

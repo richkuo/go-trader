@@ -126,10 +126,20 @@ type Position struct {
 	// #1411 Hurst entry gate, diagnostics-only stamps. HurstAtOpen is the H
 	// reading the gate saw on the cycle that opened this position;
 	// HurstSizeMult is the applied mode=size multiplier. Both are 0 when the
-	// gate was off or H was unavailable — neither is a valid reading (H is in
-	// (0,1) exclusive and the multiplier in (0,1]), so 0 is an unambiguous
-	// "unstamped". They feed trade_diagnostics and are NEVER read by any
-	// gating, sizing, close, or protection path after the open.
+	// gate was off or H was unavailable, and 0 is an unambiguous "unstamped"
+	// because both quantities are strictly POSITIVE whenever they are real:
+	// the multiplier is clamped into [size_floor, 1.0], and every finite H the
+	// DFA estimator returns is > 0 (measured floor ~0.007 on a maximally
+	// anti-persistent series; a degenerate series returns NaN, never 0).
+	//
+	// The sentinel rests on that lower bound ONLY. HurstAtOpen is NOT capped
+	// at 1 — see the RANGE NOTE in hurst_gate.go: the runtime metric reads
+	// ~2.0 on a near-smooth series, and stampHurstGateAtOpenIfOpened stores
+	// any known finite reading, so a stored value above 1 is legal and must
+	// never be clamped, rejected, or treated as corrupt.
+	//
+	// They feed trade_diagnostics and are NEVER read by any gating, sizing,
+	// close, or protection path after the open.
 	HurstAtOpen   float64 `json:"hurst_at_open,omitempty"`
 	HurstSizeMult float64 `json:"hurst_size_mult,omitempty"`
 	// #1159 correlated hedge leg. HedgeFor names the PRIMARY position symbol

@@ -128,10 +128,12 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 		v := pos.LLMVerdict
 		row.LLMVerdict = &v
 	}
-	// #1411: carry the frozen Hurst gate stamps. 0 means unstamped (H is in
-	// (0,1) exclusive and the multiplier in (0,1]), so both stay NULL when the
-	// gate was off. This never touches llm_verdict, whose sole writer is the
-	// #1137 block above.
+	// #1411: carry the frozen Hurst gate stamps. 0 means unstamped — every
+	// real reading is strictly positive (finite H > 0; the multiplier lands in
+	// [size_floor, 1.0]) — so both stay NULL when the gate was off. The upper
+	// side is deliberately untested: H is NOT capped at 1 (hurst_gate.go RANGE
+	// NOTE), so a reading above 1 must copy through unchanged. This never
+	// touches llm_verdict, whose sole writer is the #1137 block above.
 	if pos.HurstAtOpen > 0 {
 		v := pos.HurstAtOpen
 		row.HurstAtOpen = &v

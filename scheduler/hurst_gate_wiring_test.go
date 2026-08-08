@@ -378,3 +378,121 @@ func TestCloneHurstGateConfigDeepCopies(t *testing.T) {
 		t.Fatal("nil clones to nil")
 	}
 }
+
+// TestHurstGateIsHotReloadableIncludingWhileOpen proves the field is MASKED
+// from the restart shape. This drives the ADOPTION arm itself
+// (applyHotReloadConfig, config_reload.go) end to end, so a regression that
+// silently drops an operator's SIGHUP edit to a live entry gate fails here
+// rather than in production. Every case runs with a position OPEN, because the
+// stated while-open policy is "always adoptable" (#1278 precedent).
+func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
+	strat := func(hg *HurstGateConfig) StrategyConfig {
+		sc := hurstStrategy(hg)
+		sc.Script = "x.py"
+		sc.Args = []string{"a", "BTC", "1h"}
+		sc.Capital = 1000
+		sc.MaxDrawdownPct = 10
+		sc.Leverage = 2
+		sc.MarginMode = "isolated"
+		return sc
+	}
+	build := func(hg *HurstGateConfig, globalOnFailure string) *Config {
+		c := minimalReloadConfig([]StrategyConfig{strat(hg)})
+		c.Regime = hurstTestRegimeConfig(regimeClassifierComposite)
+		c.Regime.HurstGateOnFailure = globalOnFailure
+		return c
+	}
+	// A strategy holding an open position — the whole point of the policy.
+	openState := func(latch HurstGateState) *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"s1": {
+				ID: "s1", Type: "perps", Cash: 1000,
+				OptionPositions: map[string]*OptionPosition{},
+				Positions: map[string]*Position{"BTC": {
+					Symbol: "BTC", Quantity: 0.5, AvgCost: 30000,
+					Side: "long", Multiplier: 1, OwnerStrategyID: "s1",
+				}},
+				HurstGate: latch,
+			},
+		}}
+	}
+
+	// (1) A threshold edit lands on the live config while a position is open,
+	//     deep-copied rather than aliased into the freshly loaded config.
+	t.Run("threshold edit adopted with a position open", func(t *testing.T) {
+		cfg := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45)}, "open")
+		next := build(&HurstGateConfig{Enabled: true, Min: hfp(0.60), DisarmMin: hfp(0.50)}, "closed")
+		changes, err := applyHotReloadConfig(cfg, next, openState(HurstGateState{}), nil, nil)
+		if err != nil {
+			t.Fatalf("a hurst_gate edit must hot-reload while open, got: %v", err)
+		}
+		live := cfg.Strategies[0].HurstGate
+		if live == nil || live.Min == nil || *live.Min != 0.60 || live.DisarmMin == nil || *live.DisarmMin != 0.50 {
+			t.Fatalf("the edited hurst_gate was not adopted: %+v", live)
+		}
+		if normalizeRegimeGateOnFailure(cfg.Regime.HurstGateOnFailure) != HurstGateOnFailureClosed {
+			t.Fatalf("regime.hurst_gate_on_failure was not adopted: %q", cfg.Regime.HurstGateOnFailure)
+		}
+		joined := strings.Join(changes, " | ")
+		if !strings.Contains(joined, "hurst_gate:") || !strings.Contains(joined, "regime.hurst_gate_on_failure") {
+			t.Fatalf("both edits must be reported to the operator, got: %v", changes)
+		}
+		// cloneHurstGateConfig must have run: mutating the loaded config's
+		// pointer cannot reach through into the live one.
+		*next.Strategies[0].HurstGate.Min = 0.99
+		if *cfg.Strategies[0].HurstGate.Min != 0.60 {
+			t.Fatal("the adopted block must not alias the freshly loaded config's pointers")
+		}
+	})
+
+	// (2) An on_failure-only edit keeps the threshold tuple, so the persisted
+	//     hysteresis latch SURVIVES. Proven observably: an ARMED latch under an
+	//     H inside the hysteresis gap stays armed, whereas a discarded latch
+	//     would reset to unknown and disarm on that same reading.
+	t.Run("on_failure-only edit keeps the threshold key and the latch", func(t *testing.T) {
+		cfg := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45)}, "")
+		next := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45), OnFailure: "closed"}, "")
+		before := hurstGateThresholdKey(cfg.Strategies[0].HurstGate, resolveHurstGateWindow(cfg.Strategies[0], cfg.Regime))
+		state := openState(HurstGateState{Key: before, State: hurstGateStateArmed, LastH: 0.62, Observed: true})
+		if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
+			t.Fatalf("an on_failure-only edit must hot-reload while open, got: %v", err)
+		}
+		adopted := cfg.Strategies[0]
+		if resolveHurstGateOnFailure(adopted, cfg.Regime) != HurstGateOnFailureClosed {
+			t.Fatal("the per-strategy on_failure edit was not adopted")
+		}
+		after := hurstGateThresholdKey(adopted.HurstGate, resolveHurstGateWindow(adopted, cfg.Regime))
+		if after != before {
+			t.Fatalf("on_failure must NOT be part of the threshold key: %q -> %q", before, after)
+		}
+		// H=0.50 sits in the gap: below min (would not arm from unknown), above
+		// disarm_min (does not disarm an armed gate).
+		d := advanceHurstGate(adopted, hurstPayload("medium", 0.50, true), cfg.Regime, state.Strategies["s1"], nil, 0.5)
+		if d.State != hurstGateStateArmed || d.Holds {
+			t.Fatalf("the latch must survive an on_failure-only edit, got state=%q holds=%v", d.State, d.Holds)
+		}
+	})
+
+	// (3) A threshold edit rewrites the key, so the stale latch is DISCARDED on
+	//     the very next cycle rather than reinterpreted under the new band.
+	t.Run("threshold edit discards the stale latch on the next cycle", func(t *testing.T) {
+		cfg := build(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.45)}, "")
+		next := build(&HurstGateConfig{Enabled: true, Min: hfp(0.60), DisarmMin: hfp(0.50)}, "")
+		before := hurstGateThresholdKey(cfg.Strategies[0].HurstGate, resolveHurstGateWindow(cfg.Strategies[0], cfg.Regime))
+		state := openState(HurstGateState{Key: before, State: hurstGateStateArmed, LastH: 0.62, Observed: true})
+		if _, err := applyHotReloadConfig(cfg, next, state, nil, nil); err != nil {
+			t.Fatalf("a threshold edit must hot-reload while open, got: %v", err)
+		}
+		adopted := cfg.Strategies[0]
+		ss := state.Strategies["s1"]
+		// H=0.55 is in the NEW gap: an honored ARMED latch would stay armed;
+		// a discarded latch resolves from unknown and must disarm.
+		d := advanceHurstGate(adopted, hurstPayload("medium", 0.55, true), cfg.Regime, ss, nil, 0.5)
+		if d.State != hurstGateStateDisarmed || !d.Holds {
+			t.Fatalf("a threshold edit must discard the stale ARMED latch, got state=%q holds=%v", d.State, d.Holds)
+		}
+		if ss.HurstGate.Key == before {
+			t.Fatal("the persisted latch key must be rewritten to the new threshold tuple")
+		}
+	})
+}

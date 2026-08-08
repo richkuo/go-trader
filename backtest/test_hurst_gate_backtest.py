@@ -223,6 +223,88 @@ def test_live_frame_bars_matches_the_go_fetch_depth():
     assert hg.hurst_live_frame_bars({"a": {"period": 30}, "b": {"period": 200}}, 14) == 409
 
 
+# ─── parity_diff frame depth ─────────────────────────────────────────────────
+
+
+def _parity_frame_hurst(windows_spec, *, period: int = 150, n: int = 420):
+    """Run compute_parity_frame with a hurst_gate and return the H column."""
+    pdiff = _load("bt_parity_diff_under_test", "backtest/parity_diff.py")
+    df = _frame(n=n)
+    cfg = pdiff.ParityConfig(
+        strategy_name="momentum",
+        params={},
+        registry="spot",
+        hurst_gate={"enabled": True, "min": 0.55},
+        regime_windows_spec=windows_spec,
+    )
+    frame = pdiff.compute_parity_frame(df, cfg=cfg, window=200, stride=25)
+    return df, frame
+
+
+def test_parity_diff_reads_hurst_over_the_engines_frame_depth():
+    """The parity tool must read H over the SAME frame length as the engine.
+
+    The Backtester passes ``self.regime_windows_spec`` to
+    ``hurst_live_frame_bars``, and the live fetch depth is the max period over
+    ALL configured windows. Computing the depth from ``regime_period`` alone
+    would give 200 bars here instead of 309, so every ``bt_hurst`` value would
+    be measured over a window neither engine uses and the tool would report
+    disagreements that do not exist.
+    """
+    spec = {"long": {"period": 150, "classifier": "composite"}}
+    depth = hg.hurst_live_frame_bars(spec, 14)
+    assert depth == 309  # 2*150 - 1 + 10, above the 200 floor
+
+    df, frame = _parity_frame_hurst(spec)
+    expected = hg.rolling_hurst(df["close"], depth).shift(1)
+    stale = hg.rolling_hurst(df["close"], 200).shift(1)
+
+    compared = 0
+    for _, row in frame.iterrows():
+        want = expected.loc[row["ts"]]
+        got = row["bt_hurst"]
+        if pd.isna(want):
+            assert got is None or pd.isna(got), f"expected NaN at {row['ts']}, got {got}"
+        else:
+            assert got is not None and math.isclose(got, float(want), rel_tol=1e-12)
+            compared += 1
+    assert compared, "the fixture must produce at least one defined H"
+
+    # The two depths genuinely differ on this fixture, so the assertion above
+    # could not have passed against the regime_period-only depth.
+    warm = [ts for ts in frame["ts"] if pd.isna(expected.loc[ts]) and not pd.isna(stale.loc[ts])]
+    assert warm, "fixture must contain a bar where the two depths disagree"
+
+
+def test_parity_diff_single_window_default_stays_at_two_hundred_bars():
+    """The default period-14 case must not move off the 200-bar floor."""
+    assert hg.hurst_live_frame_bars(None, 14) == 200
+    df, frame = _parity_frame_hurst(None)
+    expected = hg.rolling_hurst(df["close"], 200).shift(1)
+    for _, row in frame.iterrows():
+        want = expected.loc[row["ts"]]
+        got = row["bt_hurst"]
+        if pd.isna(want):
+            assert got is None or pd.isna(got)
+        else:
+            assert got is not None and math.isclose(got, float(want), rel_tol=1e-12)
+
+
+def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
+    """A non-primary window with the largest period still sets the depth."""
+    pdiff = _load("bt_parity_diff_under_test", "backtest/parity_diff.py")
+    cfg = pdiff.ParityConfig(
+        strategy_name="momentum",
+        regime_windows_spec={
+            "medium": {"period": 20, "classifier": "composite"},
+            "long": {"period": 120, "classifier": "composite"},
+        },
+    )
+    assert hg.hurst_live_frame_bars(cfg.regime_windows_spec, cfg.regime_period) == 249
+    # Default construction leaves it absent, so the ungated baseline is unmoved.
+    assert pdiff.ParityConfig(strategy_name="momentum").regime_windows_spec is None
+
+
 # ─── Validation ──────────────────────────────────────────────────────────────
 
 
