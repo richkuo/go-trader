@@ -1011,7 +1011,6 @@ def joint_adx_hurst_table(trades: Sequence[dict], hurst_window: int) -> dict:
 
 def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
                              n_perm: int = N_PERM,
-                             n_perm_mde: int = N_PERM_MDE,
                              seed: int = SEED) -> dict:
     """#1412 Stage 0: does high-ADX + low-H separate beyond high-ADX alone?
 
@@ -1026,11 +1025,14 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
     rank-1 over the families). Borrowing a limit measured on a different pool
     sets the bar by how much data some OTHER test had.
 
-    One consequence follows from that and is deliberate: a contrast whose
-    UNINJECTED p already clears the bar has a measured limit of 0.0, so the
-    materiality condition is a FLOOR rather than a second hurdle. It still
-    fails closed when the limit is unreachable, when no rotation exists, and
-    when the pool cannot be rotated at all — the cases it was written for.
+    The uninjected p and the limit use the SAME permutation count and seed.
+    One consequence follows from that and is deliberate: a contrast whose p
+    already clears the bar has a measured limit of 0.0, so the materiality
+    condition is a FLOOR rather than a second hurdle. Different resolutions
+    could contradict each other at the boundary and make that otherwise-dead
+    branch reachable. The verdict still fails closed when the limit is
+    unreachable, when no rotation exists, and when the pool cannot be rotated
+    at all — the cases it was written for.
     """
     pool = [t for t in trades if joint_adx_bucket(t.get("adx")) == ">=25"]
     low = [t for t in pool
@@ -1076,7 +1078,7 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
     p = res.get("p")
     joint_mde = min_detectable_effect(sub, values, suppressed,
                                       family_size=len(FAMILIES), cluster=True,
-                                      n_perm=n_perm_mde, seed=seed)
+                                      n_perm=n_perm, seed=seed)
     base["mde_pp"] = joint_mde
     big_enough = (joint_mde is not None and abs(delta) >= float(joint_mde))
     separated = bool(p is not None and p <= JOINT_ALPHA and big_enough)
@@ -1248,12 +1250,18 @@ def symbol_return_correlations(frames: dict) -> dict:
     the overlapping span. This is the input the effective-N estimator credits
     between two different symbols; same-symbol pairs never consult it.
     """
-    daily = {}
+    finest = {}
     for (symbol, timeframe), frame in sorted(frames.items()):
         if frame is None or frame.empty:
             continue
-        if symbol in daily:
-            continue
+        rank = (timeframe_minutes(timeframe), timeframe)
+        current = finest.get(symbol)
+        if current is None or rank < current[0]:
+            finest[symbol] = (rank, frame)
+
+    daily = {}
+    for symbol in sorted(finest):
+        frame = finest[symbol][1]
         closes = frame["close"].astype(float)
         d = closes.resample("1D").last().dropna()
         if len(d) < 30:
@@ -1265,6 +1273,12 @@ def symbol_return_correlations(frames: dict) -> dict:
         for b in syms[i + 1:]:
             joined = pd.concat([daily[a], daily[b]], axis=1, join="inner").dropna()
             if len(joined) < 30:
+                continue
+            if (joined.iloc[:, 0].nunique() < 2
+                    or joined.iloc[:, 1].nunique() < 2):
+                # Pearson correlation is undefined for a constant return
+                # series. Skip it explicitly instead of relying on corr() to
+                # emit NaN (and a runtime warning) for the finite guard below.
                 continue
             rho = float(joined.iloc[:, 0].corr(joined.iloc[:, 1]))
             if math.isfinite(rho):
@@ -2083,7 +2097,12 @@ def render_report(payload: dict) -> str:
         f"{MDE_REFINE_STEP:g} pp refinement, scored against the rank-1 "
         f"Benjamini-Hochberg threshold with {pre['n_perm_mde']} draws.")
     out.append(f"- Joint table: ADX period {ADX_PERIOD} (Wilder), split at "
-               f"{ADX_SPLIT:g} (the composite classifier default).")
+               f"{ADX_SPLIT:g} (the composite classifier default). Its "
+               f"significance p and contrast-local detection limit both use "
+               f"the inference resolution of {pre['n_perm']} draws and seed "
+               f"{pre['seed']}; they cannot disagree at the boundary merely "
+               f"because one used the lower {pre['n_perm_mde']}-draw general "
+               f"MDE resolution.")
     out.append("")
 
     out.append("### Cohorts — why the primary set is trustworthy")
@@ -2737,7 +2756,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "table": joint_adx_hurst_table(pooled[family], joint_hw),
             "verdict": joint_separation_verdict(
                 pooled[family], joint_hw, n_perm=args.n_perm,
-                n_perm_mde=args.n_perm_mde, seed=args.seed),
+                seed=args.seed),
         }
 
     n_primary = sum(1 for c in configs if c["cohort"] == COHORT_PRIMARY)
@@ -2903,25 +2922,46 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
     )
     by_pool: dict = {}
     for label, cohort, only_1410, family_size in specs:
-        rows_all, vals_all, mask_all = [], [], []
-        pool_obs: dict = {}
+        rows_all, vals_all, mask_all, families_all = [], [], [], []
         for family in FAMILIES:
             rows, vals, mask = _split(_pool(family, cohort, only_1410), family)
             rows_all += rows
             vals_all += vals
             mask_all += mask
-            # The separation measured on the SAME rows as this pool's limit.
-            # Comparing a whole-pool separation against a sub-cohort's limit
-            # would compare two different samples and license a conclusion
-            # neither one supports.
-            sep = _separation(vals, mask)
+            families_all += [family] * len(rows)
+            if label == "primary":
+                # A family-specific limit has its own cluster-usable subset;
+                # filter before measuring it so no caller can accidentally
+                # pair that limit with a contrast that retained dropped rows.
+                fam_idx, _ = usable_cluster_rows(rows)
+                fam_rows = [rows[i] for i in fam_idx]
+                fam_vals = [vals[i] for i in fam_idx]
+                fam_mask = [mask[i] for i in fam_idx]
+                fam_mde = min_detectable_effect(
+                    fam_rows, fam_vals, fam_mask, family_size, cluster=True,
+                    n_perm=n_perm, seed=seed)
+                out["by_family_cluster"][family] = fam_mde
+
+        # The cluster null defines this pool's usable sample. Apply that sample
+        # ONCE to every number printed beside it: the family separations, both
+        # detection limits, and both zero-injection p-values. Letting the free
+        # columns or observed contrast retain rows the cluster null discarded
+        # would reintroduce the mismatched-sample inference this table exists
+        # to prevent.
+        idx, _ = usable_cluster_rows(rows_all)
+        rows_all = [rows_all[i] for i in idx]
+        vals_all = [vals_all[i] for i in idx]
+        mask_all = [mask_all[i] for i in idx]
+        families_all = [families_all[i] for i in idx]
+
+        pool_obs: dict = {}
+        for family in FAMILIES:
+            own = [i for i, value in enumerate(families_all)
+                   if value == family]
+            sep = _separation([vals_all[i] for i in own],
+                              [mask_all[i] for i in own])
             if sep is not None:
                 pool_obs[f"{family}|{hw}"] = sep
-            if label == "primary":
-                fam_mde = min_detectable_effect(rows, vals, mask, family_size,
-                                                cluster=True, n_perm=n_perm,
-                                                seed=seed)
-                out["by_family_cluster"][family] = fam_mde
         by_pool[label] = pool_obs
         out[f"pooled_{label}_cluster"] = min_detectable_effect(
             rows_all, vals_all, mask_all, family_size, cluster=True,
@@ -2946,7 +2986,10 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
 
     obs = {}
     for family in FAMILIES:
-        _, vals, mask = _split(_pool(family, None, False), family)
+        rows, vals, mask = _split(_pool(family, None, False), family)
+        idx, _ = usable_cluster_rows(rows)
+        vals = [vals[i] for i in idx]
+        mask = [mask[i] for i in idx]
         sep = _separation(vals, mask)
         if sep is not None:
             obs[f"{family}|{hw}"] = sep

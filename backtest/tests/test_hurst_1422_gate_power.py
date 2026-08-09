@@ -203,6 +203,52 @@ def test_pairwise_rho_is_symmetric_and_clipped():
     assert study.pairwise_trade_rho({("A", "B"): float("nan")}, "A", "B") == 1.0
 
 
+def _close_frame(log_returns, *, intraday=False):
+    closes = np.exp(np.r_[0.0, np.cumsum(np.asarray(log_returns, dtype=float))])
+    days = pd.date_range("2021-01-01", periods=len(closes), freq="1D")
+    if not intraday:
+        return pd.DataFrame({"close": closes}, index=days)
+    index, values = [], []
+    for i, (day, close) in enumerate(zip(days, closes)):
+        # The first observation is deliberately unrelated noise. A correct
+        # daily resample reads the LAST close and recovers `closes` exactly.
+        index.extend((day, day + pd.Timedelta(hours=23)))
+        values.extend((close * (1.7 if i % 2 else 0.4), close))
+    return pd.DataFrame({"close": values}, index=pd.DatetimeIndex(index))
+
+
+def test_symbol_return_correlations_uses_daily_last_from_finest_timeframe():
+    returns = np.linspace(-0.04, 0.04, 40)
+    frames = {
+        # Lexical ordering puts "1d" before "1h"; resolution ordering must
+        # still select the 1h tape, whose daily LAST closes match BBB.
+        ("AAA/USDT", "1d"): _close_frame(-returns),
+        ("AAA/USDT", "1h"): _close_frame(returns, intraday=True),
+        ("BBB/USDT", "4h"): _close_frame(returns),
+        ("CCC/USDT", "1h"): _close_frame(np.zeros_like(returns)),
+        ("DDD/USDT", "2h"): _close_frame(-returns),
+    }
+    rho = study.symbol_return_correlations(frames)
+    assert rho[("AAA/USDT", "BBB/USDT")] == pytest.approx(1.0)
+    # Preserve a legitimate negative value here; pairwise_trade_rho is the
+    # downstream layer that conservatively clips it to zero.
+    assert rho[("BBB/USDT", "DDD/USDT")] == pytest.approx(-1.0)
+    # A constant series produces NaN Pearson correlations, which must not leak
+    # into the effective-N input.
+    assert not any("CCC/USDT" in pair for pair in rho)
+    assert list(rho) == sorted(rho)
+
+
+def test_symbol_return_correlations_omits_short_overlap():
+    # Thirty closes yield only 29 daily returns, below the 30-return floor.
+    returns = np.linspace(-0.03, 0.03, 29)
+    frames = {
+        ("AAA/USDT", "1h"): _close_frame(returns),
+        ("BBB/USDT", "1h"): _close_frame(returns),
+    }
+    assert study.symbol_return_correlations(frames) == {}
+
+
 # ---------------------------------------------------------------------------
 # Cluster rotation null.
 # ---------------------------------------------------------------------------
@@ -661,8 +707,7 @@ def test_joint_verdict_says_no_separation_on_a_null_pool():
         t = _trade(day=i * 3, pnl=1.0 if i % 2 else -1.0,
                    h=0.3 if i % 2 else 0.7, adx=40.0)
         trades.append(t)
-    v = study.joint_separation_verdict(trades, 512, n_perm=200, n_perm_mde=200,
-                                       seed=1)
+    v = study.joint_separation_verdict(trades, 512, n_perm=200, seed=1)
     assert v["separated"] is False
 
 
@@ -675,10 +720,8 @@ def test_joint_verdict_measures_its_limit_on_its_own_rows():
     large = [_trade(day=i * 3, pnl=-5.0 if _blocky(i) else 5.0,
                     h=0.3 if _blocky(i) else 0.7, adx=40.0)
              for i in range(400)]
-    v_small = study.joint_separation_verdict(small, 512, n_perm=200,
-                                             n_perm_mde=200, seed=1)
-    v_large = study.joint_separation_verdict(large, 512, n_perm=200,
-                                             n_perm_mde=200, seed=1)
+    v_small = study.joint_separation_verdict(small, 512, n_perm=200, seed=1)
+    v_large = study.joint_separation_verdict(large, 512, n_perm=200, seed=1)
     assert v_small["mde_pp"] is not None and v_large["mde_pp"] is not None
     # More independent rows resolve a smaller effect.
     assert v_large["mde_pp"] <= v_small["mde_pp"]
@@ -689,8 +732,7 @@ def test_joint_verdict_separates_on_a_real_significant_effect():
     strong = [_trade(day=i * 3, pnl=-5.0 if _blocky(i) else 5.0,
                      h=0.3 if _blocky(i) else 0.7, adx=40.0)
               for i in range(300)]
-    v = study.joint_separation_verdict(strong, 512, n_perm=300, n_perm_mde=300,
-                                       seed=1)
+    v = study.joint_separation_verdict(strong, 512, n_perm=300, seed=1)
     assert v["separated"] is True
     assert abs(v["delta_mean_pp"]) >= v["mde_pp"]
 
@@ -700,8 +742,7 @@ def test_joint_verdict_fails_on_a_noisy_pool_before_it_reaches_the_limit():
     noisy = [_trade(day=i * 3, pnl=float(rng.normal(0, 5)),
                     h=0.3 if _blocky(i) else 0.7, adx=40.0)
              for i in range(300)]
-    v = study.joint_separation_verdict(noisy, 512, n_perm=300, n_perm_mde=300,
-                                       seed=1)
+    v = study.joint_separation_verdict(noisy, 512, n_perm=300, seed=1)
     assert v["separated"] is False
     assert "Bonferroni bar" in v["reason"]
 
@@ -715,16 +756,36 @@ def test_same_pool_limit_can_only_bind_when_the_contrast_is_untestable():
     strong = [_trade(day=i * 3, pnl=-5.0 if _blocky(i) else 5.0,
                      h=0.3 if _blocky(i) else 0.7, adx=40.0)
               for i in range(300)]
-    v = study.joint_separation_verdict(strong, 512, n_perm=300, n_perm_mde=300,
-                                       seed=1)
+    v = study.joint_separation_verdict(strong, 512, n_perm=300, seed=1)
     assert v["p_cluster"] <= study.JOINT_ALPHA
     assert v["mde_pp"] == 0.0
 
 
+def test_joint_verdict_uses_one_permutation_resolution_at_the_boundary(monkeypatch):
+    trades = [_trade(day=i * 3, pnl=-1.0 if i % 2 else 1.0,
+                     h=0.3 if i % 2 else 0.7, adx=40.0)
+              for i in range(100)]
+    seen = {}
+
+    def fake_cluster(*args, n_perm, seed):
+        seen["p"] = (n_perm, seed)
+        return {"p": study.JOINT_ALPHA - 0.000001}
+
+    def fake_mde(*args, n_perm, seed, **kwargs):
+        seen["mde"] = (n_perm, seed)
+        return 0.0
+
+    monkeypatch.setattr(study, "cluster_permutation_pvalue_group_diff",
+                        fake_cluster)
+    monkeypatch.setattr(study, "min_detectable_effect", fake_mde)
+    verdict = study.joint_separation_verdict(trades, 512, n_perm=137, seed=9)
+    assert seen == {"p": (137, 9), "mde": (137, 9)}
+    assert verdict["separated"] is True
+
+
 def test_joint_verdict_handles_an_empty_side():
     trades = [_trade(h=0.7, adx=40.0) for _ in range(10)]
-    v = study.joint_separation_verdict(trades, 512, n_perm=50, n_perm_mde=50,
-                                       seed=1)
+    v = study.joint_separation_verdict(trades, 512, n_perm=50, seed=1)
     assert v["separated"] is False and "empty" in v["reason"]
     assert v["mde_pp"] is None
 
@@ -733,8 +794,7 @@ def test_joint_verdict_never_separates_on_an_unrotatable_pool():
     # No admissible rotation means no evidence — never an unbounded pass.
     trades = [_trade(day=i, pnl=-5.0 if i % 2 else 5.0,
                      h=0.3 if i % 2 else 0.7, adx=40.0) for i in range(40)]
-    v = study.joint_separation_verdict(trades, 512, n_perm=300, n_perm_mde=300,
-                                       seed=1)
+    v = study.joint_separation_verdict(trades, 512, n_perm=300, seed=1)
     assert v["separated"] is False
     assert v["p_cluster"] is None and v["mde_pp"] is None
 
@@ -1434,6 +1494,83 @@ def test_every_pool_reports_the_separation_measured_on_its_own_rows():
         assert f"pooled_{label}_cluster" in out
 
 
+def test_detection_limit_pool_drops_short_rows_from_every_compared_number(
+        monkeypatch):
+    long = [
+        _trade(symbol="BTC/USDT", day=i * 3,
+               pnl=-2.0 if i % 2 else 2.0,
+               h=0.3 if i % 2 else 0.7,
+               cohort=study.COHORT_PRIMARY)
+        for i in range(120)
+    ]
+    short = [
+        _trade(symbol="DOGE/USDT", day=i, pnl=-50.0, h=0.3,
+               cohort=study.COHORT_PRIMARY)
+        for i in range(30)
+    ]
+    calls = []
+
+    def fake_mde(trades, values, suppressed, family_size, *, cluster,
+                 n_perm, seed, **kwargs):
+        calls.append(("cluster" if cluster else "free", list(trades),
+                      list(values), list(suppressed)))
+        return 0.5 if trades and any(suppressed) and not all(suppressed) else None
+
+    def fake_cluster(trades, values, suppressed, *, n_perm, seed):
+        calls.append(("cluster_p0", list(trades), list(values),
+                      list(suppressed)))
+        return {"p": 0.2}
+
+    def fake_free(values, suppressed, *, n_perm, seed):
+        calls.append(("free_p0", [], list(values), list(suppressed)))
+        return 0.3
+
+    monkeypatch.setattr(study, "min_detectable_effect", fake_mde)
+    monkeypatch.setattr(study, "cluster_permutation_pvalue_group_diff",
+                        fake_cluster)
+    monkeypatch.setattr(study, "permutation_pvalue_group_diff", fake_free)
+
+    with_short = study._measure_detection_limits(
+        {"momentum": long + short, "mean_reversion": []}, [512], "x.json",
+        800, 1)
+    without_short = study._measure_detection_limits(
+        {"momentum": long, "mean_reversion": []}, [512], "x.json", 800, 1)
+
+    assert with_short["observed_separation_pp_by_pool"]["primary"] == \
+        without_short["observed_separation_pp_by_pool"]["primary"] == \
+        {"momentum|512": 4.0}
+    for key in ("pooled_primary_cluster", "pooled_primary_free",
+                "pooled_primary_cluster_p0", "pooled_primary_free_p0"):
+        assert with_short[key] == without_short[key]
+    # Every non-empty statistical call sees the same usable BTC-only pool;
+    # DOGE cannot survive in a free limit or p0 after the cluster null drops it.
+    assert calls
+    assert all(t["symbol"] != "DOGE/USDT"
+               for _, trades, _, _ in calls for t in trades)
+    assert all(-50.0 not in values for _, _, values, _ in calls if values)
+
+
+def test_detection_limit_separation_is_absent_when_exclusion_removes_a_side(
+        monkeypatch):
+    kept = [
+        _trade(symbol="BTC/USDT", day=i * 3, pnl=2.0, h=0.7,
+               cohort=study.COHORT_PRIMARY)
+        for i in range(120)
+    ]
+    dropped_suppressed = [
+        _trade(symbol="DOGE/USDT", day=i, pnl=-50.0, h=0.3,
+               cohort=study.COHORT_PRIMARY)
+        for i in range(30)
+    ]
+    monkeypatch.setattr(study, "min_detectable_effect",
+                        lambda *args, **kwargs: None)
+    out = study._measure_detection_limits(
+        {"momentum": kept + dropped_suppressed, "mean_reversion": []},
+        [512], "x.json", 800, 1)
+    assert "momentum|512" not in \
+        out["observed_separation_pp_by_pool"]["primary"]
+
+
 def test_report_marks_a_sub_limit_pool_as_unresolvable():
     payload = _render_payload()
     payload["mde"] = dict(
@@ -1456,6 +1593,13 @@ def test_report_marks_a_resolvable_pool_as_resolvable():
                                         "exploratory": {"momentum|512": 9.0}})
     text = study.report_from_payload(payload)
     assert "| yes |" in text
+
+
+def test_report_states_the_joint_p_and_limit_share_one_resolution():
+    text = study.report_from_payload(_render_payload())
+    assert ("significance p and contrast-local detection limit both use the "
+            "inference resolution of 100 draws and seed 1422") in text
+    assert "lower 50-draw general MDE resolution" in text
 
 
 def test_detection_limit_split_orients_each_family_separately():
