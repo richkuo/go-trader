@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "issue": 1422,
   "pre_registered": {
     "families": {
@@ -183,6 +183,13 @@
     "capital": 1000.0
   },
   "run_summary": {
+    "scope": {
+      "only": null,
+      "datasets": null,
+      "windows": null,
+      "hurst_windows": null,
+      "complete": true
+    },
     "legs": 765,
     "gated_arms": 6885,
     "mirror_verified_legs": 765,
@@ -238,6 +245,7 @@
     "coverage": {
       "required_lead_bars": 514,
       "min_window_bar_fraction": 0.8,
+      "reference_last_bar": "2026-08-08 21:00:00",
       "n_cells": 168,
       "n_kept": 153,
       "n_dropped": 15,
@@ -528,28 +536,42 @@
       "LTC/USDT|XRP/USDT": 0.569329,
       "SOL/USDT|XRP/USDT": 0.483061
     },
-    "elapsed_sec": 922.13
+    "elapsed_sec": 1112.44
   },
   "mde": {
     "by_family_cluster": {
-      "momentum": 2.58,
-      "mean_reversion": 0.0
+      "momentum": 0.96,
+      "mean_reversion": 0.64
     },
-    "pooled_1410_cluster": 0.18,
-    "pooled_1410_free": 0.04,
-    "pooled_1410_cluster_p0": 0.013993,
-    "pooled_1410_free_p0": 0.003498,
-    "pooled_primary_cluster": 0.08,
-    "pooled_primary_free": 0.0,
-    "pooled_primary_cluster_p0": 0.02099,
-    "pooled_primary_free_p0": 0.005497,
-    "pooled_exploratory_cluster": 0.1,
-    "pooled_exploratory_free": 0.0,
-    "pooled_exploratory_cluster_p0": 0.014493,
-    "pooled_exploratory_free_p0": 0.0005,
+    "pooled_1410_cluster": 0.38,
+    "pooled_1410_free": 0.46,
+    "pooled_1410_cluster_p0": 0.458271,
+    "pooled_1410_free_p0": 0.395802,
+    "pooled_primary_cluster": 0.96,
+    "pooled_primary_free": 0.82,
+    "pooled_primary_cluster_p0": 1.0,
+    "pooled_primary_free_p0": 0.999,
+    "pooled_exploratory_cluster": 0.42,
+    "pooled_exploratory_free": 0.38,
+    "pooled_exploratory_cluster_p0": 0.492254,
+    "pooled_exploratory_free_p0": 0.413793,
     "observed_separation_pp": {
       "momentum|512": 0.452804,
-      "mean_reversion|512": 0.334012
+      "mean_reversion|512": -0.334012
+    },
+    "observed_separation_pp_by_pool": {
+      "1410": {
+        "momentum|512": 1.043496,
+        "mean_reversion|512": -0.240866
+      },
+      "primary": {
+        "momentum|512": 0.352195,
+        "mean_reversion|512": -0.371277
+      },
+      "exploratory": {
+        "momentum|512": 0.990143,
+        "mean_reversion|512": -0.280985
+      }
     },
     "json_1410": "hurst_1410_gate_calibration.json"
   },
@@ -934,11 +956,13 @@
         "n_high_adx": 3824,
         "n_low_h": 752,
         "n_high_h": 3072,
-        "mde_pp": 2.58,
+        "mde_pp": 1.8,
+        "cluster_excluded_datasets": [],
+        "n_scored": 3824,
         "separated": false,
-        "p_cluster": 0.750925,
+        "p_cluster": 0.810919,
         "delta_mean_pp": -0.493403,
-        "reason": "cluster p=0.750925 above the Bonferroni bar 0.025"
+        "reason": "cluster p=0.810919 above the Bonferroni bar 0.025"
       }
     },
     "mean_reversion": {
@@ -1033,11 +1057,13 @@
         "n_high_adx": 11426,
         "n_low_h": 2555,
         "n_high_h": 8871,
-        "mde_pp": 0.0,
+        "mde_pp": 0.06,
+        "cluster_excluded_datasets": [],
+        "n_scored": 11426,
         "separated": false,
-        "p_cluster": 0.038896,
+        "p_cluster": 0.062894,
         "delta_mean_pp": 0.218045,
-        "reason": "cluster p=0.038896 above the Bonferroni bar 0.025"
+        "reason": "cluster p=0.062894 above the Bonferroni bar 0.025"
       }
     }
   },
@@ -1139,13 +1165,15 @@
           "trades_ungated": 387
         }
       },
-      "p_cluster": 0.060894,
+      "p_cluster": 0.048495,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        2198
+        693
       ],
+      "cluster_distinct_offsets": 664,
       "cluster_reason": null,
       "n_pooled_trades": 6238,
       "n_suppressed": 3827,
@@ -1252,13 +1280,15 @@
           "trades_ungated": 387
         }
       },
-      "p_cluster": 0.166083,
+      "p_cluster": 0.19678,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        2198
+        693
       ],
+      "cluster_distinct_offsets": 664,
       "cluster_reason": null,
       "n_pooled_trades": 6238,
       "n_suppressed": 3791,
@@ -1365,13 +1395,15 @@
           "trades_ungated": 2730
         }
       },
-      "p_cluster": 0.429957,
+      "p_cluster": 0.680332,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        2197
+        675
       ],
+      "cluster_distinct_offsets": 646,
       "cluster_reason": null,
       "n_pooled_trades": 16968,
       "n_suppressed": 11202,
@@ -1478,13 +1510,15 @@
           "trades_ungated": 2730
         }
       },
-      "p_cluster": 0.237076,
+      "p_cluster": 0.229077,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        2197
+        675
       ],
+      "cluster_distinct_offsets": 646,
       "cluster_reason": null,
       "n_pooled_trades": 16968,
       "n_suppressed": 7296,
@@ -1570,13 +1604,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.874213,
+      "p_cluster": 0.873013,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1211,
@@ -1662,13 +1698,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.834617,
+      "p_cluster": 0.836916,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1486,
@@ -1754,13 +1792,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.920608,
+      "p_cluster": 0.916508,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1005,
@@ -1846,13 +1886,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.979502,
+      "p_cluster": 0.981202,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1002,
@@ -1938,13 +1980,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.988901,
+      "p_cluster": 0.989501,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1002,
@@ -2030,13 +2074,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.39546,
+      "p_cluster": 0.393261,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1305,
@@ -2122,13 +2168,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.572143,
+      "p_cluster": 0.567243,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1718,
@@ -2214,13 +2262,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.625337,
+      "p_cluster": 0.614039,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1007,
@@ -2306,13 +2356,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.753825,
+      "p_cluster": 0.745725,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 991,
@@ -2398,13 +2450,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.737826,
+      "p_cluster": 0.725627,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 991,
@@ -2490,13 +2544,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.222078,
+      "p_cluster": 0.20368,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1448,
@@ -2582,13 +2638,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.576942,
+      "p_cluster": 0.568343,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1905,
@@ -2674,13 +2732,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.082992,
+      "p_cluster": 0.084792,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1013,
@@ -2766,13 +2826,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.188181,
+      "p_cluster": 0.163684,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1003,
@@ -2858,13 +2920,15 @@
           "trades_ungated": 272
         }
       },
-      "p_cluster": 0.205979,
+      "p_cluster": 0.179782,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1284
+        1243
       ],
+      "cluster_distinct_offsets": 1214,
       "cluster_reason": null,
       "n_pooled_trades": 2064,
       "n_suppressed": 1003,
@@ -2950,13 +3014,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.209979,
+      "p_cluster": 0.19828,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3750,
@@ -3042,13 +3108,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.231177,
+      "p_cluster": 0.225377,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 4541,
@@ -3134,13 +3202,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.29757,
+      "p_cluster": 0.294471,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3144,
@@ -3226,13 +3296,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.283372,
+      "p_cluster": 0.276472,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3140,
@@ -3318,13 +3390,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.313269,
+      "p_cluster": 0.306369,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3140,
@@ -3410,13 +3484,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.790321,
+      "p_cluster": 0.790621,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3913,
@@ -3502,13 +3578,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.89681,
+      "p_cluster": 0.893311,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 5035,
@@ -3594,13 +3672,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.937406,
+      "p_cluster": 0.933707,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3013,
@@ -3686,13 +3766,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.970503,
+      "p_cluster": 0.968703,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3025,
@@ -3778,13 +3860,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.978002,
+      "p_cluster": 0.977502,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3025,
@@ -3870,13 +3954,15 @@
           "trades_ungated": 1741
         }
       },
-      "p_cluster": 0.983802,
+      "p_cluster": 0.980602,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 4213,
@@ -3965,10 +4051,12 @@
       "p_cluster": 1.0,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 5612,
@@ -4057,10 +4145,12 @@
       "p_cluster": 1.0,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 2932,
@@ -4149,10 +4239,12 @@
       "p_cluster": 1.0,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3005,
@@ -4241,10 +4333,12 @@
       "p_cluster": 1.0,
       "cluster_draws": 10000,
       "cluster_excluded_datasets": [],
+      "cluster_excluded_trades": 0,
       "cluster_offset_range": [
         30,
-        1281
+        1260
       ],
+      "cluster_distinct_offsets": 1231,
       "cluster_reason": null,
       "n_pooled_trades": 6230,
       "n_suppressed": 3005,
@@ -60104,7 +60198,7 @@
   ],
   "decision": {
     "verdict": "inconclusive",
-    "justification": "No configuration of the 4 primary hypotheses passed the pre-registered acceptance rule. 0 reached Benjamini-Hochberg significance on the cluster permutation at alpha=0.05; 0 were untestable. The strongest primary hypothesis reached cluster p=0.0609 (`momentum/gate/W512/arm0.52/dis0.48`). Measured detection limits under the cluster null: the #1410 design could resolve 0.18 pp per trade; this expanded design resolves 0.08 pp per trade. The raw H<0.5 split does separate by up to 0.45 pp per trade, ABOVE the 0.08 pp the design can resolve, and that contrast alone sits at cluster p=0.0210. So the per-trade signal is not absent \u2014 what fails is the conversion of it into an implementable gate: none of the pre-registered hysteresis or sizing configurations captures it into a significant, economically acceptable form. A future attempt should change the RULE, not gather more of the same data.",
+    "justification": "No configuration of the 4 primary hypotheses passed the pre-registered acceptance rule. 0 reached Benjamini-Hochberg significance on the cluster permutation at alpha=0.05; 0 were untestable. The strongest primary hypothesis reached cluster p=0.0485 (`momentum/gate/W512/arm0.52/dis0.48`). Measured detection limits under the cluster null: the #1410 design could resolve 0.38 pp per trade; this expanded design resolves 0.96 pp per trade. The largest raw anti-signal separation on that same cohort is 0.37 pp per trade, BELOW the 0.96 pp the design can resolve. A separation under the limit is INVISIBLE to this design, so the null result excludes an edge of 0.96 pp or larger and says nothing either way about one the size the buckets show. Power is the binding constraint here, not the absence of a signal.",
     "families": {
       "momentum": {
         "n_tested": 2,

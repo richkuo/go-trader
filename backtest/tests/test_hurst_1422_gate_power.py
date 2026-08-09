@@ -11,6 +11,7 @@ Imported the same way test_hurst_1410_gate_calibration.py imports its research
 module (explicit research/ on sys.path, unambiguous module name — safe under the
 #1304 `-n auto` parallel run).
 """
+import json
 import math
 import os
 import sys
@@ -314,6 +315,40 @@ def test_cluster_p_excludes_short_span_datasets():
     res = study.cluster_permutation_pvalue_group_diff(trades, vals, sup,
                                                       n_perm=50, seed=3)
     assert "DOGE/USDT 1h" in res["excluded_datasets"]
+    # "Excluded" must mean the rows LEFT, not merely that the name was printed.
+    assert res["n_scored"] == len(long)
+    assert res["n_excluded_trades"] == len(short)
+
+
+def test_excluded_dataset_leaves_the_observed_statistic():
+    # The excluded dataset carries nearly all the suppressed rows and a huge
+    # separation. If exclusion were a label only, dropping it would leave the
+    # p-value unchanged.
+    long = _spread_trades("BTC/USDT", 150, lambda i: 1.0, lambda i: bool(i % 2))
+    short = _spread_trades("DOGE/USDT", 40, lambda i: -50.0, lambda i: True,
+                           step_days=1)
+    with_short = long + short
+    vals = [t["pnl_pct_net"] for t in with_short]
+    sup = [t["_lab"] for t in with_short]
+    res_all = study.cluster_permutation_pvalue_group_diff(with_short, vals, sup,
+                                                          n_perm=200, seed=3)
+    res_long = study.cluster_permutation_pvalue_group_diff(
+        long, [t["pnl_pct_net"] for t in long], [t["_lab"] for t in long],
+        n_perm=200, seed=3)
+    assert res_all["n_scored"] == len(long)
+    assert res_all["p"] == res_long["p"]
+
+
+def test_excluded_rows_leave_the_config_counts_and_effective_n():
+    # A dataset the null cannot rotate must not help a config clear a volume
+    # floor it never contributed evidence to.
+    long = _spread_trades("BTC/USDT", 150, lambda i: 1.0, lambda i: bool(i % 2))
+    short = _spread_trades("DOGE/USDT", 40, lambda i: 1.0, lambda i: bool(i % 2),
+                           step_days=1)
+    idx, excluded = study.usable_cluster_rows(long + short)
+    assert excluded == ["DOGE/USDT 1h"]
+    assert len(idx) == len(long)
+    assert all(i < len(long) for i in idx)
 
 
 def test_cluster_p_is_none_when_no_dataset_can_rotate():
@@ -324,6 +359,138 @@ def test_cluster_p_is_none_when_no_dataset_can_rotate():
     res = study.cluster_permutation_pvalue_group_diff(trades, vals, sup,
                                                       n_perm=50, seed=3)
     assert res["p"] is None and res["reason"]
+    assert res["n_scored"] == 0 and res["n_excluded_trades"] == len(trades)
+
+
+def test_cluster_weighted_p_is_none_when_every_dataset_is_short():
+    trades = _spread_trades("BTC/USDT", 6, lambda i: 1.0, lambda i: False,
+                            step_days=1)
+    rets = [t["pnl_pct_net"] for t in trades]
+    res = study.cluster_permutation_pvalue_weighted(
+        trades, rets, [1.5 if i % 2 else 0.5 for i in range(len(trades))],
+        n_perm=50, seed=3)
+    assert res["p"] is None and res["n_scored"] == 0
+
+
+# --- the offset fold: no dataset may sit out a draw ------------------------
+
+def test_effective_offset_is_the_identity_on_the_longest_span():
+    # The draw range is [MIN_OFFSET_DAYS, span - MIN_OFFSET_DAYS], so a dataset
+    # holding the pool's longest span must fold to itself — that is what keeps
+    # an even-span pool byte-identical to the unfolded behaviour.
+    span = 900
+    for off in range(study.MIN_OFFSET_DAYS, span - study.MIN_OFFSET_DAYS + 1):
+        assert study.effective_offset_days(off, span) == off
+
+
+def test_effective_offset_folds_a_long_offset_into_a_short_span():
+    eff = study.effective_offset_days(1500, 913)
+    assert study.MIN_OFFSET_DAYS <= eff <= 913 - study.MIN_OFFSET_DAYS
+
+
+def test_effective_offset_never_returns_a_near_identity_shift():
+    for span in (91, 200, 913, 2198):
+        for off in (30, 31, span - 1, span, span + 1, 5000):
+            eff = study.effective_offset_days(off, span)
+            assert eff >= 1
+            assert eff <= span - study.MIN_OFFSET_DAYS or span <= 2 * study.MIN_OFFSET_DAYS
+
+
+def test_short_span_dataset_still_rotates_under_a_long_offset():
+    # The regression: a 900-day dataset beside a 2,200-day one, drawn at an
+    # offset above its own span. Before the fold, `searchsorted` ran off the end
+    # and the modulo made the shift exactly 0 — the dataset kept its observed
+    # label ordering inside the "null".
+    short = _spread_trades("ETH/USDT", 300, lambda i: 0.0, lambda i: False,
+                           step_days=3)                      # ~900 days
+    long = _spread_trades("BTC/USDT", 300, lambda i: 0.0, lambda i: False,
+                          step_days=7)                       # ~2,100 days
+    clusters = study.cluster_rotation_offsets(short + long)
+    for offset in (1000, 1500, 2000):
+        shifts = study.rotation_shift_counts(clusters, offset)
+        assert shifts["ETH/USDT 1h"] != 0
+        assert shifts["BTC/USDT 1h"] != 0
+
+
+def test_rotation_shift_is_never_the_identity_for_any_offset():
+    short = _spread_trades("ETH/USDT", 120, lambda i: 0.0, lambda i: False,
+                           step_days=3)
+    long = _spread_trades("BTC/USDT", 400, lambda i: 0.0, lambda i: False,
+                          step_days=7)
+    clusters = study.cluster_rotation_offsets(short + long)
+    for offset in range(study.MIN_OFFSET_DAYS, 2600, 37):
+        for key, shift in study.rotation_shift_counts(clusters, offset).items():
+            assert 1 <= shift <= len(clusters[key]["order"]) - 1
+
+
+def test_offset_range_is_capped_by_the_shortest_span():
+    # Co-movement is the null's whole purpose: every retained dataset must be
+    # able to host every drawn offset, so no draw shifts two concurrent datasets
+    # by different calendar amounts.
+    short = _spread_trades("ETH/USDT", 200, lambda i: 0.0, lambda i: False,
+                           step_days=3)                      # ~597 days
+    long = _spread_trades("BTC/USDT", 200, lambda i: 0.0, lambda i: False,
+                          step_days=9)                       # ~1,791 days
+    clusters = study.cluster_rotation_offsets(short + long)
+    lo, hi = study._admissible_offsets(clusters)
+    spans = [v["span_days"] for v in clusters.values()]
+    assert lo == study.MIN_OFFSET_DAYS
+    assert hi == min(spans) - study.MIN_OFFSET_DAYS
+    assert hi < max(spans) - study.MIN_OFFSET_DAYS
+
+
+def test_capped_range_makes_the_wrap_guard_dormant():
+    # Inside the capped range the fold must be the identity for every dataset,
+    # so the shared calendar offset really is shared.
+    short = _spread_trades("ETH/USDT", 200, lambda i: 0.0, lambda i: False,
+                           step_days=3)
+    long = _spread_trades("BTC/USDT", 200, lambda i: 0.0, lambda i: False,
+                          step_days=9)
+    clusters = study.cluster_rotation_offsets(short + long)
+    lo, hi = study._admissible_offsets(clusters)
+    for off in range(lo, hi + 1, 17):
+        for info in clusters.values():
+            assert study.effective_offset_days(off, info["span_days"]) == off
+
+
+def test_ragged_pool_null_no_longer_inherits_the_observed_alignment():
+    # Both datasets carry the same real, run-structured separation. When the
+    # short one is never rotated, its observed contrast rides into every null
+    # draw and inflates p. With the fold it is rotated like the long one.
+    short = _spread_trades("ETH/USDT", 200,
+                           lambda i: (-5.0 if _blocky(i) else 5.0), _blocky,
+                           step_days=3)
+    long = _spread_trades("BTC/USDT", 200,
+                          lambda i: (-5.0 if _blocky(i) else 5.0), _blocky,
+                          step_days=9)
+    trades = short + long
+    vals = [t["pnl_pct_net"] for t in trades]
+    sup = [t["_lab"] for t in trades]
+    res = study.cluster_permutation_pvalue_group_diff(trades, vals, sup,
+                                                      n_perm=500, seed=1)
+    assert res["p"] is not None and res["p"] < 0.05
+
+
+def test_equal_span_pool_is_unaffected_by_the_fold():
+    # Scoping guarantee: when every dataset shares the pool's longest span the
+    # fold is the identity, so the p-value is exactly what the unfolded code
+    # produced. The fix touches the ragged case only.
+    a = _spread_trades("BTC/USDT", 200, lambda i: (-4.0 if _blocky(i) else 4.0),
+                       _blocky, step_days=3)
+    b = [dict(t, symbol="ETH/USDT") for t in a]
+    trades = a + b
+    vals = [t["pnl_pct_net"] for t in trades]
+    sup = [t["_lab"] for t in trades]
+    clusters = study.cluster_rotation_offsets(trades)
+    span = max(v["span_days"] for v in clusters.values())
+    for off in (study.MIN_OFFSET_DAYS, span // 2, span - study.MIN_OFFSET_DAYS):
+        shifts = study.rotation_shift_counts(clusters, off)
+        ns = np.asarray(clusters["BTC/USDT 1h"]["ns"], dtype=np.int64)
+        unfolded = int(np.searchsorted(ns, ns[0] + off * DAY_NS, side="left"))
+        assert shifts["BTC/USDT 1h"] == unfolded % len(ns)
+    res = study.cluster_permutation_pvalue_group_diff(trades, vals, sup,
+                                                      n_perm=300, seed=1)
+    assert res["p"] is not None
 
 
 def test_cluster_p_is_none_without_a_contrast():
@@ -494,40 +661,82 @@ def test_joint_verdict_says_no_separation_on_a_null_pool():
         t = _trade(day=i * 3, pnl=1.0 if i % 2 else -1.0,
                    h=0.3 if i % 2 else 0.7, adx=40.0)
         trades.append(t)
-    v = study.joint_separation_verdict(trades, 512, 0.5, n_perm=200, seed=1)
+    v = study.joint_separation_verdict(trades, 512, n_perm=200, n_perm_mde=200,
+                                       seed=1)
     assert v["separated"] is False
 
 
-def test_joint_verdict_requires_the_effect_to_clear_the_detection_limit():
-    # A pool with a real, significant separation still fails when the measured
-    # detection limit is above it — an effect the design cannot resolve is not
-    # evidence.
-    trades = []
-    for i in range(300):
-        low = _blocky(i)
-        trades.append(_trade(day=i * 3, pnl=-5.0 if low else 5.0,
-                             h=0.3 if low else 0.7, adx=40.0))
-    strong = study.joint_separation_verdict(trades, 512, 1.0, n_perm=300, seed=1)
-    blocked = study.joint_separation_verdict(trades, 512, 50.0, n_perm=300, seed=1)
-    assert strong["separated"] is True
-    assert blocked["separated"] is False
-    assert "detection limit" in blocked["reason"]
+def test_joint_verdict_measures_its_limit_on_its_own_rows():
+    # The limit must come from the rows this contrast scores, at the bar this
+    # contrast is corrected by — never borrowed from a differently sized pool.
+    small = [_trade(day=i * 3, pnl=-5.0 if _blocky(i) else 5.0,
+                    h=0.3 if _blocky(i) else 0.7, adx=40.0)
+             for i in range(80)]
+    large = [_trade(day=i * 3, pnl=-5.0 if _blocky(i) else 5.0,
+                    h=0.3 if _blocky(i) else 0.7, adx=40.0)
+             for i in range(400)]
+    v_small = study.joint_separation_verdict(small, 512, n_perm=200,
+                                             n_perm_mde=200, seed=1)
+    v_large = study.joint_separation_verdict(large, 512, n_perm=200,
+                                             n_perm_mde=200, seed=1)
+    assert v_small["mde_pp"] is not None and v_large["mde_pp"] is not None
+    # More independent rows resolve a smaller effect.
+    assert v_large["mde_pp"] <= v_small["mde_pp"]
+    assert v_small["n_scored"] == len(small)
+
+
+def test_joint_verdict_separates_on_a_real_significant_effect():
+    strong = [_trade(day=i * 3, pnl=-5.0 if _blocky(i) else 5.0,
+                     h=0.3 if _blocky(i) else 0.7, adx=40.0)
+              for i in range(300)]
+    v = study.joint_separation_verdict(strong, 512, n_perm=300, n_perm_mde=300,
+                                       seed=1)
+    assert v["separated"] is True
+    assert abs(v["delta_mean_pp"]) >= v["mde_pp"]
+
+
+def test_joint_verdict_fails_on_a_noisy_pool_before_it_reaches_the_limit():
+    rng = np.random.default_rng(3)
+    noisy = [_trade(day=i * 3, pnl=float(rng.normal(0, 5)),
+                    h=0.3 if _blocky(i) else 0.7, adx=40.0)
+             for i in range(300)]
+    v = study.joint_separation_verdict(noisy, 512, n_perm=300, n_perm_mde=300,
+                                       seed=1)
+    assert v["separated"] is False
+    assert "Bonferroni bar" in v["reason"]
+
+
+def test_same_pool_limit_can_only_bind_when_the_contrast_is_untestable():
+    # A consequence of measuring the limit on the rows it gates, asserted so a
+    # reader does not mistake it for the check being dropped: a contrast whose
+    # UNINJECTED p already clears the bar has a measured limit of 0.0, so the
+    # materiality condition is a floor, not a second hurdle. It still fails
+    # closed when the limit is unreachable or no rotation exists.
+    strong = [_trade(day=i * 3, pnl=-5.0 if _blocky(i) else 5.0,
+                     h=0.3 if _blocky(i) else 0.7, adx=40.0)
+              for i in range(300)]
+    v = study.joint_separation_verdict(strong, 512, n_perm=300, n_perm_mde=300,
+                                       seed=1)
+    assert v["p_cluster"] <= study.JOINT_ALPHA
+    assert v["mde_pp"] == 0.0
 
 
 def test_joint_verdict_handles_an_empty_side():
     trades = [_trade(h=0.7, adx=40.0) for _ in range(10)]
-    v = study.joint_separation_verdict(trades, 512, 0.1, n_perm=50, seed=1)
+    v = study.joint_separation_verdict(trades, 512, n_perm=50, n_perm_mde=50,
+                                       seed=1)
     assert v["separated"] is False and "empty" in v["reason"]
+    assert v["mde_pp"] is None
 
 
-def test_joint_verdict_unreachable_mde_never_separates():
-    trades = []
-    for i in range(200):
-        low = i % 2 == 0
-        trades.append(_trade(day=i * 3, pnl=-5.0 if low else 5.0,
-                             h=0.3 if low else 0.7, adx=40.0))
-    v = study.joint_separation_verdict(trades, 512, None, n_perm=300, seed=1)
+def test_joint_verdict_never_separates_on_an_unrotatable_pool():
+    # No admissible rotation means no evidence — never an unbounded pass.
+    trades = [_trade(day=i, pnl=-5.0 if i % 2 else 5.0,
+                     h=0.3 if i % 2 else 0.7, adx=40.0) for i in range(40)]
+    v = study.joint_separation_verdict(trades, 512, n_perm=300, n_perm_mde=300,
+                                       seed=1)
     assert v["separated"] is False
+    assert v["p_cluster"] is None and v["mde_pp"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -582,9 +791,46 @@ def test_coverage_drops_an_empty_frame():
     assert cov["cells"]["NEW/USDT 1h|2021"] is False
 
 
-def test_expected_bars_caps_an_open_ended_window_at_the_last_bar():
+def test_expected_bars_closes_an_open_window_at_the_reference_bar():
     last = pd.Timestamp("2021-01-11")
     assert study.expected_bars(("2021-01-01", None), "1h", last) == 240
+
+
+def test_open_window_denominator_is_shared_across_datasets():
+    # A dataset that stops early inside the open-ended window must be measured
+    # against the run's latest bar, not its own — otherwise it scores 100%
+    # dense on a fraction of the period and is silently kept.
+    frames = {
+        ("BTC/USDT", "4h"): _frame("2024-01-01", "2026-06-01", "4h"),
+        ("STOP/USDT", "4h"): _frame("2024-01-01", "2026-01-20", "4h"),
+    }
+    cov = study.coverage_audit(frames, ["oos"], [512])
+    assert cov["cells"]["BTC/USDT 4h|oos"] is True
+    assert cov["cells"]["STOP/USDT 4h|oos"] is False
+    assert "data gap" in [d["reason"] for d in cov["dropped"]][0]
+    assert cov["reference_last_bar"] == str(frames[("BTC/USDT", "4h")].index[-1])
+
+
+def test_open_window_keeps_every_cell_when_all_datasets_end_together():
+    frames = {
+        ("BTC/USDT", "4h"): _frame("2024-01-01", "2026-06-01", "4h"),
+        ("ETH/USDT", "4h"): _frame("2024-01-01", "2026-06-01", "4h"),
+    }
+    cov = study.coverage_audit(frames, ["oos"], [512])
+    assert cov["cells"]["BTC/USDT 4h|oos"] is True
+    assert cov["cells"]["ETH/USDT 4h|oos"] is True
+    assert cov["n_dropped"] == 0
+
+
+def test_open_window_catches_a_mid_window_gap_plus_an_early_end():
+    head = _frame("2024-01-01", "2026-02-01", "4h")
+    gapped = _frame("2026-04-01", "2026-04-20", "4h")
+    frames = {
+        ("BTC/USDT", "4h"): _frame("2024-01-01", "2026-06-01", "4h"),
+        ("GAPPY/USDT", "4h"): pd.concat([head, gapped]),
+    }
+    cov = study.coverage_audit(frames, ["oos"], [512])
+    assert cov["cells"]["GAPPY/USDT 4h|oos"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -758,7 +1004,7 @@ def test_inconclusive_justification_carries_the_measured_power():
     decision = study.decide_recommendation(
         [_cfg(bh_reject=False)],
         {"pooled_1410_cluster": 3.25, "pooled_primary_cluster": 1.5,
-         "observed_separation_pp": {"momentum|512": 0.2}})
+         "observed_separation_pp_by_pool": {"primary": {"momentum|512": 0.2}}})
     assert decision["verdict"] == "inconclusive"
     assert "3.25" in decision["justification"]
     assert "1.50" in decision["justification"]
@@ -768,18 +1014,51 @@ def test_inconclusive_justification_states_an_unreachable_limit():
     decision = study.decide_recommendation(
         [_cfg(bh_reject=False)],
         {"pooled_1410_cluster": None, "pooled_primary_cluster": None,
-         "observed_separation_pp": {}})
+         "observed_separation_pp_by_pool": {"primary": {}}})
     assert "nothing below" in decision["justification"]
 
 
-def test_justification_says_no_edge_when_separation_is_below_the_limit():
+def test_a_sub_limit_separation_is_reported_as_unresolvable_not_as_absent():
+    # A separation UNDER the design's own detection limit is invisible to the
+    # design. Reading that null as "no edge exists" inverts the inference: it
+    # turns a power failure into a claim about the market, which is the one
+    # error that would make this report worse than silence.
     decision = study.decide_recommendation(
         [_cfg(bh_reject=False)],
         {"pooled_1410_cluster": 3.0, "pooled_primary_cluster": 2.0,
-         "observed_separation_pp": {"momentum|512": 0.5}})
+         "observed_separation_pp_by_pool": {"primary": {"momentum|512": 0.5}}})
     text = decision["justification"]
-    assert "BELOW" in text and "no edge of a size that would matter" in text
+    assert "BELOW" in text
+    assert "INVISIBLE" in text
+    assert "Power is the binding constraint" in text
+    assert "no edge" not in text
     assert "ABOVE" not in text
+
+
+def test_an_unreachable_limit_draws_no_conclusion_about_an_edge():
+    decision = study.decide_recommendation(
+        [_cfg(bh_reject=False)],
+        {"pooled_1410_cluster": 3.0, "pooled_primary_cluster": None,
+         "observed_separation_pp_by_pool": {"primary": {"momentum|512": 0.5}}})
+    text = decision["justification"]
+    assert "resolves no edge of any size" in text
+    assert "Nothing about the presence or absence of an edge follows" in text
+
+
+def test_the_limit_is_compared_against_its_own_pool_s_separation():
+    # The limit is measured on the PRIMARY cohort, so it may only be read
+    # against the separation on that same cohort. A large separation elsewhere
+    # in the study is a different sample and must not flip this branch.
+    mde = {"pooled_1410_cluster": 3.0, "pooled_primary_cluster": 2.0,
+           "observed_separation_pp": {"momentum|512": 9.0},
+           "observed_separation_pp_by_pool": {
+               "primary": {"momentum|512": 0.5},
+               "exploratory": {"momentum|512": 9.0}}}
+    text = study.decide_recommendation([_cfg(bh_reject=False)],
+                                       mde)["justification"]
+    assert "0.50" in text
+    assert "9.00" not in text
+    assert "change the RULE" not in text
 
 
 def test_justification_says_the_rule_failed_when_separation_exceeds_the_limit():
@@ -790,18 +1069,18 @@ def test_justification_says_the_rule_failed_when_separation_exceeds_the_limit():
         [_cfg(bh_reject=False)],
         {"pooled_1410_cluster": 0.2, "pooled_primary_cluster": 0.1,
          "pooled_primary_cluster_p0": 0.03,
-         "observed_separation_pp": {"momentum|512": 0.45}})
+         "observed_separation_pp_by_pool": {"primary": {"momentum|512": 0.45}}})
     text = decision["justification"]
     assert "ABOVE" in text
     assert "change the RULE" in text
-    assert "no edge of a size that would matter" not in text
+    assert "INVISIBLE" not in text
 
 
 def test_justification_reports_the_strongest_primary_hypothesis():
     decision = study.decide_recommendation(
         [_cfg(bh_reject=False, p_cluster=0.061),
          _cfg(config_id="other", bh_reject=False, p_cluster=0.4)],
-        {"observed_separation_pp": {}})
+        {"observed_separation_pp_by_pool": {"primary": {}}})
     assert "0.0610" in decision["justification"]
 
 
@@ -912,10 +1191,11 @@ def test_recommendation_is_the_final_section():
     assert text.rstrip().split("## ")[-1].startswith("Recommendation")
 
 
-def test_inconclusive_report_closes_the_question_when_no_edge_is_resolvable():
-    text = study.report_from_payload(_render_payload())
+def test_inconclusive_report_blames_its_own_power_when_the_edge_is_unresolvable():
+    text = study.report_from_payload(_render_payload()).replace("\n", " ")
     assert "INCONCLUSIVE" in text
-    assert "Treat the question as closed" in text.replace("\n", " ")
+    assert "not about the market" in text
+    assert "Do not read it as evidence that no edge exists" in text
     assert "change the RULE" not in text
 
 
@@ -924,15 +1204,49 @@ def test_inconclusive_report_blames_the_rule_when_the_edge_is_resolvable():
     # fixed "no edge exists" sign-off over a run that measured a resolvable
     # separation would tell the reader the opposite of the report's own table.
     payload = _render_payload()
-    payload["mde"] = dict(payload["mde"], pooled_primary_cluster=0.08,
-                          pooled_primary_cluster_p0=0.021,
-                          observed_separation_pp={"momentum|512": 0.45})
+    payload["mde"] = dict(
+        payload["mde"], pooled_primary_cluster=0.08,
+        pooled_primary_cluster_p0=0.021,
+        observed_separation_pp_by_pool={"primary": {"momentum|512": 0.45}})
     payload["decision"] = study.decide_recommendation(
         payload["configs"], payload["mde"])
     text = study.report_from_payload(payload)
     assert "change the RULE" in text
-    assert "Treat the question as closed" not in text
+    assert "not about the market" not in text
     assert "re-register its hypotheses" in text
+
+
+def test_report_reads_a_resolvable_pool_s_uninjected_p_as_exploratory():
+    # A better-powered pool outside the confirmatory cohort carries real
+    # information the primary test cannot supply. Reporting it is right;
+    # letting it read as confirmatory would defeat the cohort split.
+    payload = _render_payload()
+    payload["mde"] = dict(
+        payload["mde"], pooled_exploratory_cluster=0.4,
+        pooled_exploratory_cluster_p0=0.49,
+        observed_separation_pp_by_pool={"primary": {"momentum|512": 0.1},
+                                        "exploratory": {"momentum|512": 0.99}})
+    payload["decision"] = study.decide_recommendation(
+        payload["configs"], payload["mde"])
+    text = study.report_from_payload(payload).replace("\n", " ")
+    assert "EXPLORATORY" in text
+    assert "0.4900" in text
+    assert "licenses no gate" in text
+
+
+def test_report_omits_the_exploratory_reading_when_no_pool_resolves():
+    payload = _render_payload()
+    payload["mde"] = dict(
+        payload["mde"], pooled_1410_cluster=9.0, pooled_primary_cluster=9.0,
+        pooled_exploratory_cluster=9.0,
+        observed_separation_pp_by_pool={"1410": {"momentum|512": 0.1},
+                                        "primary": {"momentum|512": 0.1},
+                                        "exploratory": {"momentum|512": 0.1}})
+    payload["decision"] = study.decide_recommendation(
+        payload["configs"], payload["mde"])
+    text = study.report_from_payload(payload)
+    assert "EXPLORATORY" not in text
+    assert "stays DEFAULT-OFF" in text
 
 
 def test_inconclusive_report_never_licenses_shipping_a_threshold():
@@ -956,6 +1270,18 @@ def test_report_prints_both_p_values():
     assert "free p" in text and "cluster p" in text
 
 
+def test_report_states_whether_any_rows_left_the_cluster_contrast():
+    clean = _render_payload()
+    assert "no rows were dropped from any cluster contrast" in \
+        study.report_from_payload(clean)
+    dirty = _render_payload()
+    for cfg in dirty["configs"]:
+        cfg["cluster_excluded_datasets"] = ["DOGE/USDT 1h"]
+        cfg["cluster_excluded_trades"] = 42
+    text = study.report_from_payload(dirty)
+    assert "`DOGE/USDT 1h`" in text and "42 rows" in text
+
+
 def test_report_prints_the_no_joint_separation_token():
     text = study.report_from_payload(_render_payload())
     assert study.NO_JOINT_SEPARATION in text
@@ -971,6 +1297,180 @@ def test_1410_no_longer_defaults_to_the_contract_path():
     assert os.path.basename(study._DEFAULT_REPORT_OUT) == "hurst_gate_calibration.md"
 
 
+# ---------------------------------------------------------------------------
+# The committed JSON and the contract report belong to the full design.
+# ---------------------------------------------------------------------------
+
+def test_scoped_run_may_not_overwrite_the_committed_json():
+    with pytest.raises(SystemExit) as exc:
+        study.main(["--only", "momentum"])
+    assert "committed aggregate" in str(exc.value)
+
+
+@pytest.mark.parametrize("flag,value", [("--only", "momentum"),
+                                        ("--datasets", "BTC/USDT:1h"),
+                                        ("--windows", "2021"),
+                                        ("--hurst-windows", "128")])
+def test_every_scoping_flag_protects_the_contract_report(tmp_path, flag, value):
+    with pytest.raises(SystemExit) as exc:
+        study.main([flag, value, "--json-out", str(tmp_path / "scoped.json")])
+    assert "contract path" in str(exc.value)
+
+
+def test_scoped_run_is_allowed_on_explicit_paths(tmp_path, monkeypatch):
+    # The guard must protect the two committed paths, never block scoped work.
+    # A sentinel raised at the first step past the guard proves it let the run
+    # through, without starting a real scoring run.
+    class _Reached(Exception):
+        pass
+
+    def _boom(raw):
+        raise _Reached()
+
+    monkeypatch.setattr(study, "_parse_datasets", _boom)
+    with pytest.raises(_Reached):
+        study.main(["--only", "momentum",
+                    "--json-out", str(tmp_path / "scoped.json"),
+                    "--report-out", str(tmp_path / "scoped.md")])
+
+
+def test_render_only_refuses_an_unstamped_payload_on_the_contract_path(tmp_path):
+    payload = _render_payload()
+    payload["run_summary"].pop("scope", None)
+    src = tmp_path / "unstamped.json"
+    src.write_text(json.dumps(payload))
+    with pytest.raises(SystemExit) as exc:
+        study.main(["--render-only", "--write-report", "--json-out", str(src)])
+    assert "not stamped as a complete run" in str(exc.value)
+
+
+def test_render_only_refuses_a_scoped_payload_on_the_contract_path(tmp_path):
+    payload = _render_payload()
+    payload["run_summary"]["scope"] = {"complete": False, "only": "momentum"}
+    src = tmp_path / "scoped.json"
+    src.write_text(json.dumps(payload))
+    with pytest.raises(SystemExit) as exc:
+        study.main(["--render-only", "--write-report", "--json-out", str(src)])
+    assert "not stamped as a complete run" in str(exc.value)
+
+
+def test_render_only_needs_write_report_for_the_contract_path(tmp_path):
+    payload = _render_payload()
+    payload["run_summary"]["scope"] = {"complete": True}
+    src = tmp_path / "complete.json"
+    src.write_text(json.dumps(payload))
+    with pytest.raises(SystemExit) as exc:
+        study.main(["--render-only", "--json-out", str(src)])
+    assert "--write-report" in str(exc.value)
+
+
+def test_render_only_writes_a_non_contract_path_freely(tmp_path):
+    payload = _render_payload()
+    payload["run_summary"]["scope"] = {"complete": False, "only": "momentum"}
+    src = tmp_path / "scoped.json"
+    src.write_text(json.dumps(payload))
+    out = tmp_path / "scoped.md"
+    assert study.main(["--render-only", "--json-out", str(src),
+                       "--report-out", str(out)]) == 0
+    assert out.read_text().startswith("# Hurst gate power study")
+
+
+# ---------------------------------------------------------------------------
+# Per-family anti-signal orientation.
+# ---------------------------------------------------------------------------
+
+def test_anti_signal_side_follows_the_family_sense():
+    # momentum arms on high H, so its gate suppresses LOW H; mean_reversion is
+    # the mirror. A single split for both would inject the edge backwards for
+    # one of them.
+    assert study.anti_signal_side(0.3, study.SENSE_HIGH) is True
+    assert study.anti_signal_side(0.7, study.SENSE_HIGH) is False
+    assert study.anti_signal_side(0.3, study.SENSE_LOW) is False
+    assert study.anti_signal_side(0.7, study.SENSE_LOW) is True
+    assert study.anti_signal_side(0.5, study.SENSE_HIGH) is False
+    assert study.anti_signal_side(0.5, study.SENSE_LOW) is True
+
+
+def test_anti_signal_side_covers_every_declared_family():
+    for family in study.FAMILIES:
+        sense = study.FAMILY_SENSE[family]
+        assert study.anti_signal_side(0.2, sense) != study.anti_signal_side(0.8, sense)
+
+
+def test_anti_signal_side_rejects_an_unknown_sense():
+    # A silent default would invert an injected contrast without a trace.
+    with pytest.raises(ValueError):
+        study.anti_signal_side(0.4, "arms_on_tuesdays")
+
+
+def test_separation_is_kept_minus_suppressed():
+    # Same orientation as the injected edge in `min_detectable_effect`, so a
+    # separation and a limit measured on the same rows are comparable at all.
+    sep = study._separation([10.0, 10.0, 4.0, 4.0], [False, False, True, True])
+    assert sep == 6.0
+
+
+def test_separation_is_none_when_the_split_is_one_sided():
+    assert study._separation([1.0, 2.0], [False, False]) is None
+    assert study._separation([1.0, 2.0], [True, True]) is None
+    assert study._separation([], []) is None
+
+
+def test_every_pool_reports_the_separation_measured_on_its_own_rows():
+    # The primary and exploratory cohorts are DISJOINT samples, so each one's
+    # detection limit may only be read against its own separation. Publishing a
+    # single whole-study separation beside three per-pool limits invites exactly
+    # the mismatched comparison this field exists to prevent.
+    pooled = {"momentum": [], "mean_reversion": []}
+    for i in range(240):
+        bad = _blocky(i)
+        pooled["mean_reversion"].append(
+            _trade(day=i * 3, pnl=-4.0 if bad else 4.0,
+                   h=0.7 if bad else 0.3, adx=40.0))
+    out = study._measure_detection_limits(pooled, [512], "x.json", 800, 1)
+    by_pool = out["observed_separation_pp_by_pool"]
+    assert set(by_pool) == {"1410", "primary", "exploratory"}
+    for label in by_pool:
+        assert f"pooled_{label}_cluster" in out
+
+
+def test_report_marks_a_sub_limit_pool_as_unresolvable():
+    payload = _render_payload()
+    payload["mde"] = dict(
+        payload["mde"], pooled_primary_cluster=2.0,
+        observed_separation_pp_by_pool={"1410": {"momentum|512": 0.1},
+                                        "primary": {"momentum|512": 0.1},
+                                        "exploratory": {"momentum|512": 0.1}})
+    text = study.report_from_payload(payload)
+    assert "Largest separation ON THAT POOL" in text
+    assert "| NO |" in text
+    assert "the design cannot see an effect that small" in text
+
+
+def test_report_marks_a_resolvable_pool_as_resolvable():
+    payload = _render_payload()
+    payload["mde"] = dict(
+        payload["mde"], pooled_primary_cluster=0.05,
+        observed_separation_pp_by_pool={"1410": {"momentum|512": 9.0},
+                                        "primary": {"momentum|512": 9.0},
+                                        "exploratory": {"momentum|512": 9.0}})
+    text = study.report_from_payload(payload)
+    assert "| yes |" in text
+
+
+def test_detection_limit_split_orients_each_family_separately():
+    # mean_reversion alone: its suppressed side is H >= 0.5, so a pool where the
+    # HIGH-H trades are the bad ones must show a POSITIVE observed separation.
+    pooled = {"momentum": [], "mean_reversion": []}
+    for i in range(240):
+        bad = _blocky(i)
+        pooled["mean_reversion"].append(
+            _trade(day=i * 3, pnl=-4.0 if bad else 4.0,
+                   h=0.7 if bad else 0.3, adx=40.0))
+    out = study._measure_detection_limits(pooled, [512], "x.json", 800, 1)
+    assert out["observed_separation_pp"]["mean_reversion|512"] > 0
+
+
 def _render_payload() -> dict:
     cfg_p = _cfg(bh_reject=False, p_cluster=0.4)
     cfg_e = _cfg(config_id="momentum/gate/W128/arm0.55/dis0.5",
@@ -980,7 +1480,8 @@ def _render_payload() -> dict:
                  held_out_windows=list(study.EXPLORATORY_HELD_OUT_WINDOWS))
     decision = study.decide_recommendation(
         [cfg_p, cfg_e], {"pooled_1410_cluster": 3.0, "pooled_primary_cluster": 2.0,
-                         "observed_separation_pp": {"momentum|512": 0.1}})
+                         "observed_separation_pp_by_pool": {
+                             "primary": {"momentum|512": 0.1}}})
     empty_bucket = {b: {"trades": 0, "win_rate_pct": None,
                         "mean_pnl_pct_net": None, "median_pnl_pct_net": None,
                         "compounded_return_pct": 0.0, "trade_seq_max_dd_pct": 0.0,
@@ -1023,7 +1524,11 @@ def _render_payload() -> dict:
                 "pooled_exploratory_cluster_p0": None,
                 "pooled_exploratory_free_p0": None,
                 "by_family_cluster": {f: 2.0 for f in study.FAMILIES},
-                "observed_separation_pp": {"momentum|512": 0.1}},
+                "observed_separation_pp": {"momentum|512": 0.1},
+                "observed_separation_pp_by_pool": {
+                    "1410": {"momentum|512": 0.1},
+                    "primary": {"momentum|512": 0.1},
+                    "exploratory": {"momentum|512": 0.1}}},
         "buckets": {f: {"512": dict(empty_bucket)} for f in study.FAMILIES},
         "joint": {f: {"table": study.joint_adx_hurst_table([], 512),
                       "verdict": {"separated": False, "reason": "no contrast",

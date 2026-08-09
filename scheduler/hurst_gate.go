@@ -9,12 +9,19 @@ package main
 // hurst_1410_gate_calibration.md). Recommendation: INCONCLUSIVE again, on ~5x
 // #1410's trade pool, with a correct cluster null and a MEASURED detection limit.
 //
-// The reason changed, and it is the part that matters here. #1410 could not tell
-// whether an edge existed. #1422 resolves ~0.08 pp per trade and finds the raw
-// H<0.5 split separating by ~0.45 pp — so a per-trade signal IS visible — yet no
-// swept hysteresis or sizing configuration converts it into a significant,
-// economically acceptable gate (best primary hypothesis: cluster p=0.061). The
-// failure is in the RULE, not in the sample, so more data would not settle it.
+// The reason is a MEASURED bound rather than an open question. On the primary
+// (confirmatory) cohort the design resolves 0.96 pp per trade, and that cohort's
+// own anti-signal split separates by 0.37 pp — under the limit, so an edge that
+// size is invisible here. The null therefore excludes an edge of 0.96 pp or
+// larger and says nothing either way about a smaller one; the binding constraint
+// is power, not an absent signal. Best primary hypothesis: cluster p=0.0485.
+//
+// The better-powered EXPLORATORY pools do resolve their separations and the
+// separations do not survive the cluster null (exploratory grid 0.99 pp against
+// a 0.42 pp limit, cluster p=0.4923; #1410's cells 1.04 pp against 0.38 pp,
+// cluster p=0.4583). That contrast is not pre-registered and licenses no gate,
+// but it is consistent with whole datasets moving together rather than with H
+// sorting trades within them.
 //
 // This mechanism therefore still ships with NO recommended thresholds anywhere
 // (config.example.json carries no hurst_gate block) and stays off until an

@@ -134,6 +134,8 @@ FAMILY_SENSE = study1410.FAMILY_SENSE
 GATE_INITIAL_ARMED = study1410.GATE_INITIAL_ARMED
 GATE_PAIRS = study1410.GATE_PAIRS
 HURST_WINDOWS = study1410.HURST_WINDOWS
+SENSE_HIGH = study1410.SENSE_HIGH
+SENSE_LOW = study1410.SENSE_LOW
 SIZING_CLAMP_HI = study1410.SIZING_CLAMP_HI
 SIZING_CLAMP_LO = study1410.SIZING_CLAMP_LO
 SIZING_GAINS = study1410.SIZING_GAINS
@@ -145,7 +147,7 @@ _MIRRORED_LEG_KEYS = study1410._MIRRORED_LEG_KEYS
 # verbatim into the JSON and the report so a reader can tell the Recommendation
 # was not tuned after seeing the numbers.
 # ---------------------------------------------------------------------------
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3   # v3: pool-matched observed separations (mde.observed_separation_pp_by_pool)
 ISSUE = 1422
 SEED = ISSUE  # 1422 — fixed so a re-run reproduces every p-value
 
@@ -337,6 +339,20 @@ def joint_adx_bucket(adx) -> str:
     return ">=25" if value >= ADX_SPLIT else "<25"
 
 
+def anti_signal_side(h: float, sense: str) -> bool:
+    """True when H sits on the side that family's gate SUPPRESSES.
+
+    Keyed on the sense, never on the family, so a new family that reuses an
+    existing sense needs no edit here. An unknown sense raises rather than
+    defaulting — a silent default would invert an injected contrast.
+    """
+    if sense == SENSE_HIGH:      # arms on high H -> suppresses low H
+        return float(h) < 0.5
+    if sense == SENSE_LOW:       # arms on low H  -> suppresses high H
+        return float(h) >= 0.5
+    raise ValueError(f"unknown gate sense {sense!r}")
+
+
 def count_overlapping_pairs(a_start, a_end, b_start, b_end) -> int:
     """Ordered pairs (i, j) whose intervals overlap: a_start_i < b_end_j and
     b_start_j < a_end_i.
@@ -440,20 +456,68 @@ def cluster_rotation_offsets(trades: Sequence[dict]) -> dict:
     return out
 
 
+def effective_offset_days(offset_days: int, span_days: int) -> int:
+    """The shared calendar offset folded into ONE dataset's rotatable band.
+
+    Each dataset rotates on its own circular calendar, so an offset longer than
+    a dataset's span HAS to wrap. Leaving it unwrapped is not a harmless edge
+    case: ``searchsorted`` would run off the end, the modulo would turn the
+    shift into exactly 0, and that dataset would hand the null draw its OBSERVED
+    label ordering. Unrotated rows carry the observed contrast into the null
+    statistic, so the bias is one-directional — every cluster p comes out too
+    high. Because the draw range is the POOL's longest span, a ragged pool
+    (a ~900-day dataset beside a ~2,200-day one) hits that path on most draws.
+
+    The fold lands in ``[MIN_OFFSET_DAYS, span - MIN_OFFSET_DAYS]``, the same
+    band ``_admissible_offsets`` draws from.
+
+    In this study it is a DORMANT guard: the draw range is capped at the
+    pool's SHORTEST span (see ``_admissible_offsets``), so every drawn offset
+    already fits every retained dataset and this function returns its argument
+    unchanged. It exists so a direct caller, or a future range that is not
+    capped, still cannot produce the identity rotation.
+    """
+    span = int(span_days)
+    lo = MIN_OFFSET_DAYS
+    hi = span - MIN_OFFSET_DAYS
+    if hi <= lo:
+        # Too short to host the guard band at all; such a dataset is dropped by
+        # `usable_cluster_rows` before it reaches a null, and this stays only so
+        # a direct caller still gets a real rotation instead of the identity.
+        return max(1, span // 2)
+    width = hi - lo + 1
+    return lo + ((int(offset_days) - lo) % width)
+
+
 def rotation_shift_counts(clusters: dict, offset_days: int) -> dict:
     """Trades-per-dataset falling inside the first ``offset_days`` of its span.
 
     Rotating a dataset's chronological label vector by THIS many positions is
     the discrete stand-in for shifting it ``offset_days`` in calendar time. The
     offset is shared across datasets, so two concurrent datasets shift by the
-    same calendar amount and their labels stay aligned under the null.
+    same calendar amount and their labels stay aligned under the null; a dataset
+    whose span cannot hold the whole offset folds it (``effective_offset_days``)
+    rather than declining to rotate.
+
+    The returned shift is always in ``[1, len-1]`` for a dataset with two or
+    more trades, so no dataset can contribute its observed label ordering to a
+    null draw.
     """
-    ns_offset = int(offset_days) * 86_400_000_000_000
     out = {}
     for key, info in clusters.items():
         ns = np.asarray(info["ns"], dtype=np.int64)
-        cut = int(np.searchsorted(ns, ns[0] + ns_offset, side="left"))
-        out[key] = cut % max(1, len(ns))
+        n = len(ns)
+        if n < 2:
+            out[key] = 0
+            continue
+        eff = effective_offset_days(int(offset_days), int(info["span_days"]))
+        cut = int(np.searchsorted(ns, ns[0] + eff * 86_400_000_000_000,
+                                  side="left"))
+        cut %= n
+        # `eff >= 1` puts at least ns[0] inside the cut, so this only fires on a
+        # dataset whose whole span is under a day — belt and braces, never the
+        # identity.
+        out[key] = cut or 1
     return out
 
 
@@ -470,23 +534,52 @@ def _rotate_values(values: np.ndarray, clusters: dict, shifts: dict) -> np.ndarr
     return out
 
 
-def _admissible_offsets(clusters: dict) -> tuple:
-    """(offsets, excluded_datasets) — the calendar offsets a draw may use.
+def usable_cluster_rows(trades: Sequence[dict]) -> tuple:
+    """(row_indices, excluded_datasets) — rows the cluster null can rotate.
 
-    A dataset whose scored span is shorter than ``MIN_CLUSTER_SPAN_DAYS``
-    cannot host a meaningful rotation and is excluded loudly rather than
-    silently rotated by nearly its whole span.
+    A dataset whose scored span is shorter than ``MIN_CLUSTER_SPAN_DAYS`` cannot
+    host a meaningful rotation, so its rows leave the CONTRAST as well as the
+    null. Excluding it from the offset range alone would be a label, not an
+    exclusion: its rows would still be scored, still sit in the observed
+    statistic, and still enter every draw carrying their observed alignment.
     """
+    clusters = cluster_rotation_offsets(trades)
     excluded = sorted(k for k, v in clusters.items()
                       if v["span_days"] < MIN_CLUSTER_SPAN_DAYS)
-    usable = {k: v for k, v in clusters.items() if k not in excluded}
-    if not usable:
-        return (), excluded
-    span = max(v["span_days"] for v in usable.values())
+    dropped = set(excluded)
+    idx = [i for i, t in enumerate(trades)
+           if dataset_key(t["symbol"], t["timeframe"]) not in dropped]
+    return idx, excluded
+
+
+def _admissible_offsets(clusters: dict) -> tuple:
+    """``(lo, hi)`` calendar offsets a draw may use, or ``()`` when none can.
+
+    The range is bounded by the SHORTEST span in the pool, not the longest.
+    That is what keeps the null's whole purpose intact: every retained dataset
+    can host every drawn offset without wrapping, so two concurrent datasets
+    shift by the SAME calendar amount in every draw and their correlated labels
+    move together. Drawing against the longest span instead would send offsets
+    past a shorter dataset's end — and whichever way that is handled it costs
+    something. Leaving it unrotated hands the null that dataset's observed
+    alignment (p too high). Wrapping it into its own band rotates it, but by a
+    different calendar amount than its neighbours, which understates the
+    cross-dataset correlation the null is supposed to preserve and makes p too
+    LOW. A false positive is the worse failure, so the shared range is capped
+    and the wrap (``effective_offset_days``) stays only as a dormant guard.
+
+    ``MIN_OFFSET_DAYS`` still trims both ends. The offsets it leaves are long
+    against a hysteresis run's autocorrelation, which is what a rotation has to
+    break — so a long dataset rotating by a small FRACTION of its span still
+    has its label alignment destroyed.
+    """
+    if not clusters:
+        return ()
+    span = min(v["span_days"] for v in clusters.values())
     lo, hi = MIN_OFFSET_DAYS, span - MIN_OFFSET_DAYS
     if hi < lo:
-        return (), excluded
-    return (lo, hi), excluded
+        return ()
+    return (lo, hi)
 
 
 def cluster_permutation_pvalue_group_diff(trades: Sequence[dict],
@@ -504,23 +597,40 @@ def cluster_permutation_pvalue_group_diff(trades: Sequence[dict],
     the #1410 free shuffle.
 
     Returns ``{"p": float|None, "n_draws": int, "excluded_datasets": [...],
-    "offset_range": [lo, hi]|None}``. ``p`` is None when the pool cannot host a
-    rotation at all; the caller must treat that as untestable, never as
-    "not significant".
+    "n_scored": int, "n_excluded_trades": int, "offset_range": [lo, hi]|None}``.
+    ``p`` is None when the pool cannot host a rotation at all; the caller must
+    treat that as untestable, never as "not significant".
     """
     vals = np.asarray(values, dtype=float)
     mask = np.asarray(suppressed, dtype=bool)
     if vals.shape != mask.shape or len(trades) != vals.size:
         raise ValueError("trades/values/suppressed length mismatch")
+    n_in = vals.size
+    if n_in == 0:
+        return {"p": None, "n_draws": 0, "excluded_datasets": [], "n_scored": 0,
+                "n_excluded_trades": 0, "offset_range": None,
+                "reason": "no testable contrast"}
+    idx, excluded = usable_cluster_rows(trades)
+    n_excluded = n_in - len(idx)
+    if not idx:
+        return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": 0, "n_excluded_trades": n_excluded,
+                "offset_range": None,
+                "reason": "no dataset spans enough calendar time to rotate"}
+    trades = [trades[i] for i in idx]
+    vals = vals[idx]
+    mask = mask[idx]
     n = vals.size
     k = int(mask.sum())
-    if n == 0 or k == 0 or k == n:
-        return {"p": None, "n_draws": 0, "excluded_datasets": [],
+    if k == 0 or k == n:
+        return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": n, "n_excluded_trades": n_excluded,
                 "offset_range": None, "reason": "no testable contrast"}
     clusters = cluster_rotation_offsets(trades)
-    bounds, excluded = _admissible_offsets(clusters)
+    bounds = _admissible_offsets(clusters)
     if not bounds:
         return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": n, "n_excluded_trades": n_excluded,
                 "offset_range": None,
                 "reason": "no dataset spans enough calendar time to rotate"}
     lo, hi = bounds
@@ -541,10 +651,14 @@ def cluster_permutation_pvalue_group_diff(trades: Sequence[dict],
             ge += 1
     if draws == 0:
         return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": n, "n_excluded_trades": n_excluded,
                 "offset_range": [int(lo), int(hi)],
                 "reason": "every rotation collapsed the split"}
     return {"p": round((1.0 + ge) / (draws + 1.0), 6), "n_draws": draws,
-            "excluded_datasets": excluded, "offset_range": [int(lo), int(hi)]}
+            "excluded_datasets": excluded, "n_scored": n,
+            "n_excluded_trades": n_excluded,
+            "n_distinct_offsets": int(hi) - int(lo) + 1,
+            "offset_range": [int(lo), int(hi)]}
 
 
 def cluster_permutation_pvalue_weighted(trades: Sequence[dict],
@@ -562,13 +676,32 @@ def cluster_permutation_pvalue_weighted(trades: Sequence[dict],
     mults = np.asarray(multipliers, dtype=float)
     if rets.shape != mults.shape or len(trades) != rets.size:
         raise ValueError("trades/returns/multipliers length mismatch")
-    if rets.size == 0 or float(np.ptp(mults)) == 0.0:
-        return {"p": None, "n_draws": 0, "excluded_datasets": [],
+    n_in = rets.size
+    if n_in == 0:
+        return {"p": None, "n_draws": 0, "excluded_datasets": [], "n_scored": 0,
+                "n_excluded_trades": 0, "offset_range": None,
+                "reason": "multipliers carry no variation"}
+    idx, excluded = usable_cluster_rows(trades)
+    n_excluded = n_in - len(idx)
+    if not idx:
+        return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": 0, "n_excluded_trades": n_excluded,
+                "offset_range": None,
+                "reason": "no dataset spans enough calendar time to rotate"}
+    trades = [trades[i] for i in idx]
+    rets = rets[idx]
+    mults = mults[idx]
+    # Checked AFTER the exclusion: variation the dropped rows carried is not
+    # variation this test can use.
+    if float(np.ptp(mults)) == 0.0:
+        return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": rets.size, "n_excluded_trades": n_excluded,
                 "offset_range": None, "reason": "multipliers carry no variation"}
     clusters = cluster_rotation_offsets(trades)
-    bounds, excluded = _admissible_offsets(clusters)
+    bounds = _admissible_offsets(clusters)
     if not bounds:
         return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": rets.size, "n_excluded_trades": n_excluded,
                 "offset_range": None,
                 "reason": "no dataset spans enough calendar time to rotate"}
     lo, hi = bounds
@@ -585,9 +718,13 @@ def cluster_permutation_pvalue_weighted(trades: Sequence[dict],
             ge += 1
     if draws == 0:
         return {"p": None, "n_draws": 0, "excluded_datasets": excluded,
+                "n_scored": rets.size, "n_excluded_trades": n_excluded,
                 "offset_range": [int(lo), int(hi)], "reason": "no valid draw"}
     return {"p": round((1.0 + ge) / (draws + 1.0), 6), "n_draws": draws,
-            "excluded_datasets": excluded, "offset_range": [int(lo), int(hi)]}
+            "excluded_datasets": excluded, "n_scored": rets.size,
+            "n_excluded_trades": n_excluded,
+            "n_distinct_offsets": int(hi) - int(lo) + 1,
+            "offset_range": [int(lo), int(hi)]}
 
 
 def _rank1_threshold(family_size: int, alpha: float = ALPHA) -> float:
@@ -801,15 +938,22 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
     # asserting a direction. Getting this backwards would be the study's worst
     # possible failure: a "no edge" claim on a design that simply could not see
     # one, or the reverse.
-    obs = mde.get("observed_separation_pp") or {}
+    obs = (mde.get("observed_separation_pp_by_pool") or {}).get("primary") or {}
     limit = mde.get("pooled_primary_cluster")
     p0 = mde.get("pooled_primary_cluster_p0")
     detail = ""
-    if obs and limit is not None:
+    if obs and limit is None:
+        detail = (
+            f"The primary cohort's detection limit is above {MDE_GRID_MAX:.1f} "
+            f"pp per trade, so this design resolves no edge of any size the "
+            f"injection grid covers. Nothing about the presence or absence of "
+            f"an edge follows from its null result.")
+    elif obs and limit is not None:
         largest = max(abs(float(v)) for v in obs.values())
         if largest >= limit:
             detail = (
-                f"The raw H<0.5 split does separate by up to {largest:.2f} pp per "
+                f"The raw anti-signal split — each family's own suppressed side "
+                f"— does separate by up to {largest:.2f} pp per "
                 f"trade, ABOVE the {limit:.2f} pp the design can resolve"
                 + (f", and that contrast alone sits at cluster p={p0:.4f}"
                    if p0 is not None else "")
@@ -820,10 +964,13 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
                 "attempt should change the RULE, not gather more of the same data.")
         else:
             detail = (
-                f"The largest raw H<0.5 separation is {largest:.2f} pp per trade, "
-                f"BELOW the {limit:.2f} pp the design can resolve, so no edge of a "
-                f"size that would matter is present. The question is not open "
-                f"pending more of the same evidence.")
+                f"The largest raw anti-signal separation on that same cohort is "
+                f"{largest:.2f} pp per trade, BELOW the {limit:.2f} pp the "
+                f"design can resolve. A separation under the limit is INVISIBLE "
+                f"to this design, so the null result excludes an edge of "
+                f"{limit:.2f} pp or larger and says nothing either way about "
+                f"one the size the buckets show. Power is the binding "
+                f"constraint here, not the absence of a signal.")
     best_text = (f" The strongest primary hypothesis reached cluster "
                  f"p={best[0]:.4f} (`{best[1]}`)." if best else "")
     return {
@@ -863,16 +1010,27 @@ def joint_adx_hurst_table(trades: Sequence[dict], hurst_window: int) -> dict:
 
 
 def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
-                             family_mde: Optional[float],
                              n_perm: int = N_PERM,
+                             n_perm_mde: int = N_PERM_MDE,
                              seed: int = SEED) -> dict:
     """#1412 Stage 0: does high-ADX + low-H separate beyond high-ADX alone?
 
     Restricted to ``ADX >= 25`` trades, contrasts ``H < 0.45`` against
     ``H >= 0.45`` under the cluster rotation. Material separation requires BOTH
     a Bonferroni-corrected significant cluster p AND an effect at least as
-    large as the family's measured detection limit — an effect the design
-    cannot resolve is not evidence, however large the point estimate looks.
+    large as the detection limit — an effect the design cannot resolve is not
+    evidence, however large the point estimate looks.
+
+    That limit is measured HERE, on the rows this contrast actually scores and
+    at the bar this contrast is actually corrected by (``JOINT_ALPHA``, i.e.
+    rank-1 over the families). Borrowing a limit measured on a different pool
+    sets the bar by how much data some OTHER test had.
+
+    One consequence follows from that and is deliberate: a contrast whose
+    UNINJECTED p already clears the bar has a measured limit of 0.0, so the
+    materiality condition is a FLOOR rather than a second hurdle. It still
+    fails closed when the limit is unreachable, when no rotation exists, and
+    when the pool cannot be rotated at all — the cases it was written for.
     """
     pool = [t for t in trades if joint_adx_bucket(t.get("adx")) == ">=25"]
     low = [t for t in pool
@@ -885,7 +1043,7 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
         "n_high_adx": len(pool),
         "n_low_h": len(low),
         "n_high_h": len(high),
-        "mde_pp": family_mde,
+        "mde_pp": None,
     }
     if not low or not high:
         return {**base, "separated": False, "p_cluster": None,
@@ -894,12 +1052,33 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
     sub = low + high
     values = [float(t["pnl_pct_net"]) for t in sub]
     suppressed = [True] * len(low) + [False] * len(high)
-    delta = float(np.mean([float(t["pnl_pct_net"]) for t in high])
-                  - np.mean([float(t["pnl_pct_net"]) for t in low]))
+    # Score the delta on the same rows the null keeps, so the effect and the
+    # p-value describe one pool.
+    idx, excluded = usable_cluster_rows(sub)
+    base["cluster_excluded_datasets"] = excluded
+    base["n_scored"] = len(idx)
+    if not idx:
+        return {**base, "separated": False, "p_cluster": None,
+                "delta_mean_pp": None,
+                "reason": "no dataset spans enough calendar time to rotate"}
+    sub = [sub[i] for i in idx]
+    values = [values[i] for i in idx]
+    suppressed = [suppressed[i] for i in idx]
+    if not any(suppressed) or all(suppressed):
+        return {**base, "separated": False, "p_cluster": None,
+                "delta_mean_pp": None,
+                "reason": "one side of the ADX>=25 contrast is empty"}
+    v = np.asarray(values, dtype=float)
+    m = np.asarray(suppressed, dtype=bool)
+    delta = float(v[~m].mean() - v[m].mean())
     res = cluster_permutation_pvalue_group_diff(sub, values, suppressed,
                                                 n_perm=n_perm, seed=seed)
     p = res.get("p")
-    big_enough = (family_mde is not None and abs(delta) >= float(family_mde))
+    joint_mde = min_detectable_effect(sub, values, suppressed,
+                                      family_size=len(FAMILIES), cluster=True,
+                                      n_perm=n_perm_mde, seed=seed)
+    base["mde_pp"] = joint_mde
+    big_enough = (joint_mde is not None and abs(delta) >= float(joint_mde))
     separated = bool(p is not None and p <= JOINT_ALPHA and big_enough)
     reason = ""
     if p is None:
@@ -910,7 +1089,7 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
     elif not big_enough:
         reason = (f"separation {abs(delta):.2f} pp is below the measured "
                   f"detection limit "
-                  f"{'unreachable' if family_mde is None else f'{family_mde:.2f} pp'}")
+                  f"{'unreachable' if joint_mde is None else f'{joint_mde:.2f} pp'}")
     return {**base, "separated": separated, "p_cluster": p,
             "delta_mean_pp": round(delta, 6), "reason": reason}
 
@@ -953,23 +1132,23 @@ def timeframe_minutes(timeframe: str) -> int:
     return value * scale[unit]
 
 
-def expected_bars(window: tuple, timeframe: str, last_cached) -> int:
+def expected_bars(window: tuple, timeframe: str, reference_last) -> int:
     """Bars a COMPLETE cache would hold inside a window.
 
-    ``end=None`` (the ``oos`` window) means "latest cached bar", so the
-    expectation is capped at what the dataset can possibly reach.
+    ``reference_last`` closes an open-ended window and MUST be a run-level
+    reference — the latest bar any dataset in the run reached — never the
+    cell's own last bar. A per-cell cap lets a dataset that stops early inside
+    the window define its own denominator and score 100% dense, which is the
+    exact failure this density check exists to catch.
     """
     start = pd.Timestamp(window[0])
     if window[1] is not None:
-        # A CLOSED window's expectation is its own span. Capping it at the last
-        # cached bar would let a dataset that simply stops mid-window define its
-        # own denominator and always score 100% dense — exactly the delisting
-        # case this check exists to catch.
+        # A CLOSED window's expectation is its own span, for the same reason.
         end = pd.Timestamp(window[1])
     else:
-        if last_cached is None:
+        if reference_last is None:
             return 0
-        end = pd.Timestamp(last_cached)
+        end = pd.Timestamp(reference_last)
     if end <= start:
         return 0
     minutes = (end - start).total_seconds() / 60.0
@@ -989,11 +1168,16 @@ def coverage_audit(frames: dict, window_names: Sequence[str],
     never scored on partial history and never silently absent.
     """
     need_lead = max((required_lead_bars(hw) for hw in hurst_windows), default=0)
+    # ONE reference bar for every open-ended cell in the run. Measuring each
+    # dataset against its own last bar would make a dataset that stopped early
+    # score 100% dense and contribute weeks against other datasets' months.
+    last_bars = [f.index[-1] for f in frames.values()
+                 if f is not None and not f.empty]
+    reference_last = max(last_bars) if last_bars else None
     cells = {}
     dropped = []
     for (symbol, timeframe), frame in sorted(frames.items()):
         key = dataset_key(symbol, timeframe)
-        last_cached = None if frame is None or frame.empty else frame.index[-1]
         for wname in window_names:
             start, end = WINDOWS[wname]
             ok = True
@@ -1003,7 +1187,7 @@ def coverage_audit(frames: dict, window_names: Sequence[str],
             else:
                 lead = warmup_lead_bars(frame.index, pd.Timestamp(start))
                 in_window = len(slice_window(frame, WINDOWS[wname]))
-                want = expected_bars(WINDOWS[wname], timeframe, last_cached)
+                want = expected_bars(WINDOWS[wname], timeframe, reference_last)
                 if lead < need_lead:
                     ok = False
                     reason = (f"lead {lead} bars before {start} < required "
@@ -1023,6 +1207,7 @@ def coverage_audit(frames: dict, window_names: Sequence[str],
     return {
         "required_lead_bars": need_lead,
         "min_window_bar_fraction": MIN_WINDOW_BAR_FRACTION,
+        "reference_last_bar": None if reference_last is None else str(reference_last),
         "n_cells": len(cells),
         "n_kept": int(sum(1 for v in cells.values() if v)),
         "n_dropped": len(dropped),
@@ -1499,6 +1684,13 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
             cid = cfg["config_id"]
             if mode == "gate":
                 sub = [t for t in trades if cid in t["armed"]]
+                # ONE pool for everything downstream. A dataset the cluster null
+                # cannot rotate leaves the free p, the counts and the effective-N
+                # floors too, so no config can clear a volume floor on rows that
+                # never entered the significance test.
+                idx, excluded = usable_cluster_rows(sub)
+                n_excluded = len(sub) - len(idx)
+                sub = [sub[i] for i in idx]
                 values = [t["pnl_pct_net"] for t in sub]
                 suppressed = [not t["armed"][cid] for t in sub]
                 cfg["p_raw"] = permutation_pvalue_group_diff(
@@ -1510,6 +1702,9 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
                 cfg["windows"] = _window_rows_gate(legs, family, cohort, cid)
             else:
                 sub = list(trades)
+                idx, excluded = usable_cluster_rows(sub)
+                n_excluded = len(sub) - len(idx)
+                sub = [sub[i] for i in idx]
                 rets = [t["pnl_pct_net"] for t in sub]
                 mults = [size_multiplier((t.get("h") or {}).get(hw), sense, gain)
                          for t in sub]
@@ -1524,8 +1719,10 @@ def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[in
                 cfg["windows"] = _window_rows_size(legs, family, cohort, hw, gain)
             cfg["p_cluster"] = cluster.get("p")
             cfg["cluster_draws"] = cluster.get("n_draws")
-            cfg["cluster_excluded_datasets"] = cluster.get("excluded_datasets") or []
+            cfg["cluster_excluded_datasets"] = excluded
+            cfg["cluster_excluded_trades"] = n_excluded
             cfg["cluster_offset_range"] = cluster.get("offset_range")
+            cfg["cluster_distinct_offsets"] = cluster.get("n_distinct_offsets")
             cfg["cluster_reason"] = cluster.get("reason")
             cfg["n_pooled_trades"] = len(sub)
             cfg["n_suppressed"] = len(sup_rows)
@@ -1590,7 +1787,8 @@ def render_recommendation(decision: dict, mde: dict) -> str:
         # took. A fixed "no edge exists" sign-off under a run that measured a
         # resolvable separation would be the report telling a reader the
         # opposite of its own table.
-        obs = mde.get("observed_separation_pp") or {}
+        obs = ((mde.get("observed_separation_pp_by_pool") or {})
+               .get("primary") or {})
         limit = mde.get("pooled_primary_cluster")
         rule_failed = bool(
             obs and limit is not None
@@ -1613,12 +1811,49 @@ def render_recommendation(decision: dict, mde: dict) -> str:
                 "to avoid.")
         else:
             lines.append(
-                "This run could resolve an edge smaller than any the data "
-                "shows, so the absence is measured rather than assumed. Treat "
-                "the question as closed unless the mechanism itself changes — a "
-                "different estimator, a different horizon, or a genuinely new "
-                "data regime. Another re-run of this design would answer the "
-                "same question with the same evidence.")
+                "This run did NOT resolve the separation its own buckets show, "
+                "so its null is a statement about the design's power and not "
+                "about the market. Do not read it as evidence that no edge "
+                "exists. What the run does establish is an upper bound: an edge "
+                "at or above the primary cohort's detection limit would have "
+                "been caught, and none was. Settling the smaller effect needs a "
+                "design that can see it — a sharper contrast, a larger primary "
+                "cohort, or fewer pre-registered hypotheses sharing the "
+                "correction — and it must re-register those hypotheses BEFORE "
+                "looking at these numbers, or it inherits exactly the selection "
+                "problem this design was built to avoid.")
+        # The pools OUTSIDE the confirmatory cohort can be better powered than
+        # it is, because they carry more rows. Where one of them resolves its
+        # own separation, its uninjected p is evidence the primary cohort is
+        # too underpowered to supply — reported as the exploratory context it
+        # is, never as a substitute for the pre-registered test.
+        resolved = []
+        for key, label in (("1410", "the #1410 design's cells"),
+                           ("primary", "the primary cohort"),
+                           ("exploratory", "this study's exploratory grid")):
+            c = mde.get(f"pooled_{key}_cluster")
+            seps = ((mde.get("observed_separation_pp_by_pool") or {})
+                    .get(key) or {})
+            p0 = mde.get(f"pooled_{key}_cluster_p0")
+            if not seps or c is None or p0 is None:
+                continue
+            largest = max(abs(float(v)) for v in seps.values())
+            if largest >= c:
+                resolved.append(
+                    f"{label} ({largest:.2f} pp separation against a "
+                    f"{c:.2f} pp limit, cluster p={p0:.4f})")
+        if resolved:
+            lines.append("")
+            lines.append(
+                "One reading the table supports and the pre-registered test "
+                "cannot: pools outside the confirmatory cohort carry more rows, "
+                "so they resolve a separation this design can see, and it does "
+                "not survive the cluster null — " + "; ".join(resolved) + ". "
+                "That contrast is EXPLORATORY: it was not pre-registered, and "
+                "on those rows the split is chosen after seeing them. It "
+                "licenses no gate. What it does show is that the visible "
+                "separation there is consistent with whole datasets moving "
+                "together, rather than with H sorting trades within them.")
         lines.append("")
         lines.append(
             "#1411's `hurst_gate` stays DEFAULT-OFF with no recommended "
@@ -1821,9 +2056,30 @@ def render_report(payload: dict) -> str:
         f"verdict reads). {pre['n_perm']} draws, seed {pre['seed']}, minimum "
         f"offset {MIN_OFFSET_DAYS} days. Benjamini-Hochberg at alpha={ALPHA}, "
         f"applied SEPARATELY to the primary and exploratory cohorts.")
+    offs = [c.get("cluster_distinct_offsets") for c in cfgs
+            if c.get("cluster_distinct_offsets")]
+    out.append(
+        f"- Rotation on ragged spans: offsets are drawn against the pool's "
+        f"SHORTEST span, so every retained dataset hosts every offset and two "
+        f"concurrent datasets always shift by the same calendar amount. "
+        f"Drawing against the longest span instead would push offsets past a "
+        f"shorter dataset's end, and both ways out of that cost something: "
+        f"leaving it unrotated hands the null its observed alignment (p too "
+        f"high), and wrapping it rotates it by a different calendar amount than "
+        f"its neighbours, which understates the correlation the null exists to "
+        f"preserve (p too LOW). The false positive is the worse failure, so the "
+        f"range is capped and the wrap survives only as a dormant guard. "
+        + (f"Narrowest shared range in this run: {min(offs)} distinct offsets. "
+           if offs else "")
+        + f"A dataset under {MIN_CLUSTER_SPAN_DAYS} days cannot host the "
+          f"`[{MIN_OFFSET_DAYS}, span-{MIN_OFFSET_DAYS}]` band at all and leaves "
+          f"the contrast, the counts and the effective-N floors together, never "
+          f"just the offset range.")
     out.append(
         f"- Minimum detectable effect: deterministic shift of the suppressed "
-        f"group, grid {MDE_GRID_STEP:g} pp to {MDE_GRID_MAX:g} pp then a "
+        f"group — each family's OWN anti-signal side, so the injection runs in "
+        f"the direction that family's gate would exploit — grid "
+        f"{MDE_GRID_STEP:g} pp to {MDE_GRID_MAX:g} pp then a "
         f"{MDE_REFINE_STEP:g} pp refinement, scored against the rank-1 "
         f"Benjamini-Hochberg threshold with {pre['n_perm_mde']} draws.")
     out.append(f"- Joint table: ADX period {ADX_PERIOD} (Wilder), split at "
@@ -1873,8 +2129,12 @@ def render_report(payload: dict) -> str:
         f"{float(cov.get('min_window_bar_fraction') or 0) * 100:.0f}% of the bars a "
         f"complete cache would hold inside the window. That density floor is what "
         f"catches a delisting gap — a year present as a few hundred bars is not a "
-        f"year. {cov.get('n_dropped', 0)} cells were DROPPED, listed below; nothing "
-        f"is silently scored on partial data.")
+        f"year. An open-ended window is closed at ONE run-level reference bar "
+        f"(`{cov.get('reference_last_bar') or '-'}`, the latest bar any dataset "
+        f"reached), never at each dataset's own last bar — otherwise a dataset "
+        f"that stopped early would define its own denominator and always score "
+        f"100% dense. {cov.get('n_dropped', 0)} cells were DROPPED, listed below; "
+        f"nothing is silently scored on partial data.")
     out.append("")
     dropped = cov.get("dropped") or []
     if dropped:
@@ -1896,6 +2156,22 @@ def render_report(payload: dict) -> str:
         "feeds a p-value, and the volume floors are applied to it — a pool of "
         "correlated rows cannot buy its way past them.")
     out.append("")
+    ex_names = sorted({d for c in cfgs
+                       for d in (c.get("cluster_excluded_datasets") or [])})
+    ex_rows = max((int(c.get("cluster_excluded_trades") or 0) for c in cfgs),
+                  default=0)
+    if ex_names:
+        out.append(
+            f"Datasets too short to host a calendar rotation, and therefore "
+            f"dropped from the contrast, the counts and the effective-N floors "
+            f"alike (up to {ex_rows} rows on a single config): "
+            + ", ".join(f"`{d}`" for d in ex_names) + ".")
+    else:
+        out.append(
+            "Every dataset spans enough calendar time to host a rotation, so no "
+            "rows were dropped from any cluster contrast.")
+    out.append("")
+
     rho = run.get("symbol_correlations") or {}
     if rho:
         syms = sorted({s for pair in rho for s in pair.split("|")})
@@ -1922,31 +2198,47 @@ def render_report(payload: dict) -> str:
         "Benjamini-Hochberg threshold. This is the number that turns "
         "\"inconclusive\" from a mystery into a bound.")
     out.append("")
+    by_pool = mde.get("observed_separation_pp_by_pool") or {}
     out.append("| Pool | Cluster MDE (pp/trade) | Free MDE (pp/trade) | "
+               "Largest separation ON THAT POOL (pp/trade) | Resolvable? | "
                "Cluster p at zero injection | Free p at zero injection |")
     out.append("|------|-----------------------:|--------------------:|"
+               "------------------------------------------:|:-----------:|"
                "----------------------------:|-------------------------:|")
     for key, label in (("1410", "#1410 design (its 30-hypothesis grid)"),
                        ("primary", "this study, primary cohort"),
                        ("exploratory", "this study, exploratory grid")):
         c = mde.get(f"pooled_{key}_cluster")
         f = mde.get(f"pooled_{key}_free")
+        seps = by_pool.get(key) or {}
+        largest = (max(abs(float(v)) for v in seps.values()) if seps else None)
+        if largest is None or c is None:
+            resolvable = "-"
+        else:
+            resolvable = "yes" if largest >= c else "NO"
         out.append(f"| {label} | "
                    f"{'> ' + f'{MDE_GRID_MAX:g}' if c is None else _fmt(c)} | "
                    f"{'> ' + f'{MDE_GRID_MAX:g}' if f is None else _fmt(f)} | "
+                   f"{_fmt(largest)} | {resolvable} | "
                    f"{_fmt_p(mde.get(f'pooled_{key}_cluster_p0'))} | "
                    f"{_fmt_p(mde.get(f'pooled_{key}_free_p0'))} |")
     out.append("")
     out.append(
         "The \"p at zero injection\" columns are the SAME contrast with no "
-        "injected edge — the raw `H < 0.5` vs `H >= 0.5` split. Read them beside "
-        "the limit: a limit below the observed separation means the design can "
-        "see an edge of that size, and the p at zero says whether the real one "
-        "clears the bar.")
+        "injected edge: each family's suppressed side against its kept side — "
+        "`H < 0.5` for a family that arms on high H, `H >= 0.5` for one that "
+        "arms on low H. The separation column is that same contrast measured on "
+        "the SAME rows as that pool's limit, so the two are comparable; a "
+        "whole-study separation read against a sub-cohort's limit would not be. "
+        "`Resolvable? = NO` means the separation sits under the limit and the "
+        "design cannot see an effect that small — such a pool's null bounds the "
+        "edge from above and says nothing about whether a smaller one exists.")
     out.append("")
     obs = mde.get("observed_separation_pp") or {}
     if obs:
-        out.append("Observed per-family bucket separations, for comparison:")
+        out.append(
+            "Observed per-family bucket separations across ALL cohorts pooled "
+            "(context for Part A; not the like-for-like comparison above):")
         out.append("")
         out.append("| Family | Hurst window | Observed separation (pp/trade) |")
         out.append("|--------|-------------:|-------------------------------:|")
@@ -2006,7 +2298,10 @@ def render_report(payload: dict) -> str:
         "low-Hurst (a strong move on anti-persistent tape) materially worse for "
         "momentum-style entries than high-ADX alone? Material separation "
         "requires BOTH a Bonferroni-corrected significant cluster p AND an "
-        "effect at least as large as the measured detection limit.")
+        "effect at least as large as the measured detection limit — and that "
+        "limit is measured on THIS contrast's own rows, at the same Bonferroni "
+        "bar, so the size an effect must reach is set by the evidence the test "
+        "actually has.")
     out.append("")
     joint = payload.get("joint") or {}
     for family in FAMILIES:
@@ -2209,9 +2504,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "runs no backtests")
     args = p.parse_args(argv)
 
+    # The committed JSON and the contract report describe the PRE-REGISTERED
+    # design. A scoped debug run produces a different study, so it may not
+    # occupy either path — the same hazard this PR closed for #1410's report
+    # default, approached from the JSON side.
+    scope = {
+        "only": args.only,
+        "datasets": args.datasets,
+        "windows": args.windows,
+        "hurst_windows": args.hurst_windows,
+    }
+    scope["complete"] = not any(v for v in scope.values())
+    if not scope["complete"]:
+        narrowed = ", ".join(f"--{k.replace('_', '-')} {v}"
+                             for k, v in scope.items() if k != "complete" and v)
+        if os.path.abspath(args.json_out) == os.path.abspath(_DEFAULT_JSON_OUT):
+            raise SystemExit(
+                f"[1422] refusing to overwrite the committed aggregate "
+                f"{_DEFAULT_JSON_OUT} from a scoped run ({narrowed}). Pass an "
+                f"explicit --json-out.")
+        if os.path.abspath(args.report_out) == os.path.abspath(_DEFAULT_REPORT_OUT):
+            raise SystemExit(
+                f"[1422] refusing to target the live-evidence contract path "
+                f"{_DEFAULT_REPORT_OUT} from a scoped run ({narrowed}). Pass an "
+                f"explicit --report-out.")
+
     if args.render_only:
         with open(args.json_out) as fh:
             payload = json.load(fh)
+        is_contract = (os.path.abspath(args.report_out)
+                       == os.path.abspath(_DEFAULT_REPORT_OUT))
+        if is_contract:
+            # Fail closed: a payload with no scope stamp predates this guard and
+            # cannot prove it came from a complete run.
+            stamped = ((payload.get("run_summary") or {}).get("scope")
+                       or {}).get("complete")
+            if not stamped:
+                raise SystemExit(
+                    f"[1422] {args.json_out} is not stamped as a complete run, "
+                    f"so it may not be rendered to the contract path "
+                    f"{_DEFAULT_REPORT_OUT}.")
+            if not args.write_report:
+                raise SystemExit(
+                    "[1422] writing the contract report needs --write-report, "
+                    "on --render-only exactly as on a scoring run.")
         report = report_from_payload(payload)
         with open(args.report_out, "w") as fh:
             fh.write(report)
@@ -2397,11 +2733,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     joint_hw = max(hurst_windows)
     joint = {}
     for family in FAMILIES:
-        fam_mde = mde.get("by_family_cluster", {}).get(family)
         joint[family] = {
             "table": joint_adx_hurst_table(pooled[family], joint_hw),
-            "verdict": joint_separation_verdict(pooled[family], joint_hw, fam_mde,
-                                                n_perm=args.n_perm, seed=args.seed),
+            "verdict": joint_separation_verdict(
+                pooled[family], joint_hw, n_perm=args.n_perm,
+                n_perm_mde=args.n_perm_mde, seed=args.seed),
         }
 
     n_primary = sum(1 for c in configs if c["cohort"] == COHORT_PRIMARY)
@@ -2446,6 +2782,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "capital": DEFAULT_CAPITAL,
         },
         "run_summary": {
+            "scope": scope,
             "legs": len(legs),
             "gated_arms": sum(len(lg["gated"]) for lg in legs),
             "mirror_verified_legs": sum(1 for lg in legs if lg["mirror_verified"]),
@@ -2503,6 +2840,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
+def _separation(values: Sequence[float],
+                suppressed: Sequence[bool]) -> Optional[float]:
+    """Mean(kept) - mean(suppressed), in pp per trade, or None if one-sided.
+
+    Returned in the same orientation as the injected edge in
+    `min_detectable_effect`, so a separation and a detection limit measured on
+    the same rows are directly comparable.
+    """
+    if not values or all(suppressed) or not any(suppressed):
+        return None
+    v = np.asarray(values, dtype=float)
+    m = np.asarray(suppressed, dtype=bool)
+    return round(float(v[~m].mean() - v[m].mean()), 6)
+
+
 def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                               json_1410_path: str, n_perm: int, seed: int) -> dict:
     """Stage A: what each design could have detected.
@@ -2527,10 +2879,13 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
             rows.append(t)
         return rows
 
-    def _split(rows):
-        # The suppressed side is the family's own anti-signal bucket, so the
-        # injected edge sits exactly where a gate claims one lives.
-        sense = None
+    def _split(rows, family: str):
+        # The suppressed side is the FAMILY'S OWN anti-signal bucket, so the
+        # injected edge sits exactly where that family's gate claims one lives.
+        # A single `h < 0.5` split for both would run the injection backwards
+        # for `arms_on_low_h`, and the two families would partly cancel in the
+        # pooled row set.
+        sense = FAMILY_SENSE[family]
         values, mask, keep = [], [], []
         for t in rows:
             h = (t.get("h") or {}).get(hw)
@@ -2538,26 +2893,36 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                 continue
             keep.append(t)
             values.append(float(t["pnl_pct_net"]))
-            mask.append(float(h) < 0.5)
-        return keep, values, mask, sense
+            mask.append(anti_signal_side(float(h), sense))
+        return keep, values, mask
 
     specs = (
         ("1410", None, True, 30),
         ("primary", COHORT_PRIMARY, False, len(PRIMARY_CONFIG_IDS)),
         ("exploratory", COHORT_EXPLORATORY, False, 30),
     )
+    by_pool: dict = {}
     for label, cohort, only_1410, family_size in specs:
         rows_all, vals_all, mask_all = [], [], []
+        pool_obs: dict = {}
         for family in FAMILIES:
-            rows, vals, mask, _ = _split(_pool(family, cohort, only_1410))
+            rows, vals, mask = _split(_pool(family, cohort, only_1410), family)
             rows_all += rows
             vals_all += vals
             mask_all += mask
+            # The separation measured on the SAME rows as this pool's limit.
+            # Comparing a whole-pool separation against a sub-cohort's limit
+            # would compare two different samples and license a conclusion
+            # neither one supports.
+            sep = _separation(vals, mask)
+            if sep is not None:
+                pool_obs[f"{family}|{hw}"] = sep
             if label == "primary":
                 fam_mde = min_detectable_effect(rows, vals, mask, family_size,
                                                 cluster=True, n_perm=n_perm,
                                                 seed=seed)
                 out["by_family_cluster"][family] = fam_mde
+        by_pool[label] = pool_obs
         out[f"pooled_{label}_cluster"] = min_detectable_effect(
             rows_all, vals_all, mask_all, family_size, cluster=True,
             n_perm=n_perm, seed=seed)
@@ -2581,13 +2946,12 @@ def _measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
 
     obs = {}
     for family in FAMILIES:
-        rows, vals, mask, _ = _split(_pool(family, None, False))
-        if not vals or all(mask) or not any(mask):
-            continue
-        v = np.asarray(vals, dtype=float)
-        m = np.asarray(mask, dtype=bool)
-        obs[f"{family}|{hw}"] = round(float(v[~m].mean() - v[m].mean()), 6)
+        _, vals, mask = _split(_pool(family, None, False), family)
+        sep = _separation(vals, mask)
+        if sep is not None:
+            obs[f"{family}|{hw}"] = sep
     out["observed_separation_pp"] = obs
+    out["observed_separation_pp_by_pool"] = by_pool
     out["json_1410"] = os.path.basename(json_1410_path)
     return out
 
