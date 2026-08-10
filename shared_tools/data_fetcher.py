@@ -72,6 +72,7 @@ def fetch_full_history(
     since: str = "2020-01-01",
     exchange_id: str = "binanceus",
     store: bool = True,
+    limit: int = 500,
 ) -> pd.DataFrame:
     """
     Fetch complete historical data by paginating through exchange API.
@@ -83,6 +84,13 @@ def fetch_full_history(
         since: Start date as ISO string
         exchange_id: Exchange name
         store: Whether to persist to SQLite
+        limit: Candles requested per page. Venues differ (Coinbase Exchange
+            caps a granularity request at 300 candles, Bitstamp serves 1000),
+            and the loop advances by the LAST RETURNED candle rather than by a
+            fixed step, so a page shorter than `limit` is already safe. Callers
+            that know a venue's cap pass it so a rejected oversized request
+            never truncates a backfill. Default 500 keeps every existing
+            caller byte-identical.
 
     Returns:
         Complete DataFrame of OHLCV data
@@ -100,7 +108,6 @@ def fetch_full_history(
         "1h": 3_600_000, "4h": 14_400_000,
         "1d": 86_400_000, "1w": 604_800_000,
     }
-    step = tf_ms.get(timeframe, 86_400_000) * 500  # 500 candles per request
 
     print(f"Fetching {symbol} {timeframe} from {since}...")
 
@@ -108,7 +115,8 @@ def fetch_full_history(
     network_retries = 0
     while current_since < now_ts:
         try:
-            candles = exchange.fetch_ohlcv(symbol, timeframe, since=current_since, limit=500)
+            candles = exchange.fetch_ohlcv(symbol, timeframe, since=current_since,
+                                           limit=limit)
             rate_limit_retries = 0
             network_retries = 0
         except ccxt.RateLimitExceeded:

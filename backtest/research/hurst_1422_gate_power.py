@@ -29,10 +29,16 @@ An ``INCONCLUSIVE`` verdict WITH a measured power ceiling is a legitimate and
 valuable outcome: it converts #1412 Stage 0 from "maybe" into a defensible "no"
 and closes the question, instead of licensing a third re-run.
 
-REPORT-PATH CONTRACT. This study OWNS ``backtest/research/hurst_gate_calibration.md``
-— the live-evidence path cited by ``scheduler/hurst_gate.go``,
-``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate. #1410's own render lives at
-``hurst_1410_gate_calibration.md`` and that study must never write this path.
+REPORT-PATH CONTRACT (#1424). ``backtest/research/hurst_gate_calibration.md`` is
+the live-evidence path cited by ``scheduler/hurst_gate.go``,
+``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate. This study OWNED it until
+#1424 superseded it; the owner is now ``hurst_1424_gate_resolution.py``. This
+study is a SUPERSEDED artifact and must never write the contract path again —
+its own render lives beside it at ``hurst_1422_gate_power.md``, exactly as this
+study did to #1410's render. #1424 inherits this design wholesale and changes
+three things: one pre-registered primary hypothesis instead of four, pre-2020
+calendar clusters from two additional venues, and a bounded-variance primary
+target. Read #1424's report for the live verdict.
 
 REPORT-ONLY. Zero scheduler, config, gating, sizing, or live-path changes. The
 gate and size arms are OFFLINE SIMULATIONS. #1411's ``hurst_gate`` ships
@@ -273,9 +279,11 @@ NO_JOINT_SEPARATION = "NO JOINT SEPARATION"
 JOINT_ALPHA = ALPHA / 2.0
 
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1422_gate_power.json")
-# The live-evidence contract path. #1412 Stage 0, scheduler/hurst_gate.go and
-# docs/ARCHITECTURE.md all read this file.
-_DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_gate_calibration.md")
+# NOT "hurst_gate_calibration.md" — that is the live-evidence contract path, and
+# #1424 owns it now (see the REPORT-PATH CONTRACT note in the module docstring).
+# A --render-only here must never be able to revert the live evidence to this
+# superseded study.
+_DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1422_gate_power.md")
 
 
 # ---------------------------------------------------------------------------
@@ -2002,12 +2010,22 @@ def render_report(payload: dict) -> str:
     out.append("# Hurst gate power study (#1422)")
     out.append("")
     out.append(
+        "**SUPERSEDED by the #1424 resolution study.** This file is NOT the "
+        "live-evidence contract path. `backtest/research/hurst_gate_calibration.md` "
+        "is that path — `scheduler/hurst_gate.go`, `docs/ARCHITECTURE.md` and "
+        "#1412's Stage 0 gate all read it — and "
+        "`research/hurst_1424_gate_resolution.py` owns it now. #1424 keeps this "
+        "design and changes three things: ONE pre-registered primary hypothesis "
+        "instead of four, pre-2020 calendar clusters from two additional venues, "
+        "and a bounded-variance primary target. Read #1424's report for the live "
+        "verdict; read this one for the design it inherits and for the interim "
+        "look #1424 discloses.")
+    out.append("")
+    out.append(
         "Report-only evidence on whether a Hurst-based entry gate is worth "
         "building. Nothing here is wired to the scheduler, to config, or to any "
-        "live path. This file is the LIVE-EVIDENCE CONTRACT PATH: "
-        "`scheduler/hurst_gate.go`, `docs/ARCHITECTURE.md` and #1412's Stage 0 "
-        "gate all read it. It supersedes the #1410 study, whose own render now "
-        "lives at `hurst_1410_gate_calibration.md`.")
+        "live path. It supersedes the #1410 study, whose own render lives at "
+        "`hurst_1410_gate_calibration.md`.")
     out.append("")
     out.append(
         "#1410 returned INCONCLUSIVE on a single re-used sample, a 30-hypothesis "
@@ -2522,6 +2540,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help="re-render the report from an existing --json-out; "
                         "runs no backtests")
     args = p.parse_args(argv)
+
+    # #1424: this study is superseded and may never write the live-evidence
+    # contract path again — not from a complete run, not from --render-only,
+    # not from an explicit --report-out. Changing the default alone would leave
+    # `--report-out .../hurst_gate_calibration.md` as a one-flag revert of the
+    # live evidence to a study a better-powered successor replaced.
+    if (os.path.abspath(args.report_out)
+            == os.path.abspath(os.path.join(_THIS_DIR,
+                                            "hurst_gate_calibration.md"))):
+        raise SystemExit(
+            "[1422] this study is SUPERSEDED and may not write the "
+            "live-evidence contract path hurst_gate_calibration.md; "
+            "hurst_1424_gate_resolution.py owns it. Its own render belongs at "
+            f"{_DEFAULT_REPORT_OUT}.")
 
     # The committed JSON and the contract report describe the PRE-REGISTERED
     # design. A scoped debug run produces a different study, so it may not

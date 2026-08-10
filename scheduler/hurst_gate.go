@@ -3,33 +3,41 @@ package main
 // hurst_gate.go — #1411 per-strategy Hurst entry gate and persistence-scaled
 // position sizing. DEFAULT-OFF; per-strategy opt-in only; never auto-enabled.
 //
-// CALIBRATION STATUS. The live evidence is the #1422 POWER study
+// CALIBRATION STATUS. The live evidence is the #1424 RESOLUTION study
 // (backtest/research/hurst_gate_calibration.md — the contract path, now owned by
-// hurst_1422_gate_power.py; the superseded #1410 render lives beside it at
-// hurst_1410_gate_calibration.md). Recommendation: INCONCLUSIVE again, on ~5x
-// #1410's trade pool, with a correct cluster null and a MEASURED detection limit.
+// hurst_1424_gate_resolution.py; the superseded #1422 and #1410 renders live
+// beside it at hurst_1422_gate_power.md and hurst_1410_gate_calibration.md, and
+// neither of those scripts may write the contract path any more).
+// Recommendation: INCONCLUSIVE, and the study's own VALIDITY GATE FAILED.
 //
-// The reason is a MEASURED bound rather than an open question. On the primary
-// (confirmatory) cohort the design resolves 0.96 pp per trade, and that cohort's
-// own anti-signal split separates by 0.37 pp — under the limit, so an edge that
-// size is invisible here. The null therefore excludes an edge of 0.96 pp or
-// larger and says nothing either way about a smaller one; the binding constraint
-// is power, not an absent signal. Best primary hypothesis: cluster p=0.0485.
+// #1424 attacked #1422's power shortfall three ways at once: ONE pre-registered
+// hypothesis instead of four (so the rank-1 Benjamini-Hochberg bar is alpha, not
+// alpha/4), eight added pre-2020 calendar clusters from two venues the binanceus
+// cache cannot reach (Bitstamp and Coinbase Exchange, 2013-2020H1), and a
+// bounded-variance primary target (signed efficiency over a fixed 96-hour
+// horizon). Pool: 860 legs, 26 datasets, 16 windows, ~29.0k primary-cohort rows.
 //
-// The better-powered EXPLORATORY pools do resolve their separations and the
-// separations do not survive the cluster null (exploratory grid 0.99 pp against
-// a 0.42 pp limit, cluster p=0.4923; #1410's cells 1.04 pp against 0.38 pp,
-// cluster p=0.4583). That contrast is not pre-registered and licenses no gate,
-// but it is consistent with whole datasets moving together rather than with H
-// sorting trades within them.
+// It still cannot see what it needs to see. On the primary cohort the design
+// resolves 0.008 efficiency units and that cohort separates by only 0.005 —
+// BELOW the limit, so the null bounds the edge from above and says nothing about
+// a smaller one. On net return the same cohort resolves 0.84 pp against a 0.23 pp
+// separation (#1422 read 0.96 pp against 0.37 pp: the limit fell, the separation
+// fell faster). The verdict is therefore a POWER statement again, NOT evidence
+// that no edge exists. The pre-registered key-risk prediction is UNRESOLVED.
+//
+// The pinned hypothesis (momentum/gate/W512/arm0.52/dis0.48) reached cluster
+// p=0.3557 on the primary target and p=0.3387 on net return. #1422's disclosed
+// interim look on a SUBSET of these rows read p=0.0485; it did not reproduce on
+// the superset.
 //
 // This mechanism therefore still ships with NO recommended thresholds anywhere
 // (config.example.json carries no hurst_gate block) and stays off until an
 // operator explicitly opts a strategy in. Nothing here reads a default threshold,
-// and nothing enables itself. #1422 also answers #1412's Stage 0 gate:
-// NO JOINT SEPARATION on both families, so fusing H into the composite
-// classifier is not justified and this standalone gate remains the correct
-// amount of Hurst.
+// and nothing enables itself. #1424 re-answers #1412's Stage 0 gate on a larger
+// pool: NO JOINT SEPARATION on both families (cluster p=0.9696 momentum, 0.7061
+// mean_reversion, against a Bonferroni bar of 0.025), so fusing H into the
+// composite classifier is not justified and this standalone gate remains the
+// correct amount of Hurst.
 //
 // LAYERING. This is a STANDALONE gate stacked ON TOP of the allowed_regimes
 // label gate. It never touches applyRegimeGate, regimeBlocksOpen,

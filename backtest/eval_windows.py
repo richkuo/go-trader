@@ -338,8 +338,18 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
             commission_pct: Optional[float] = None,
             slippage_pct: Optional[float] = None,
             keep_trades: bool = False,
-            intrabar_resolution: str = "ohlc_walk") -> Optional[dict]:
+            intrabar_resolution: str = "ohlc_walk",
+            exchange_id: Optional[str] = None) -> Optional[dict]:
     """Run one (strategy, dataset, window) leg on the audit-identical harness.
+
+    ``exchange_id`` (keyword-only, default ``None``) selects the DATA-SOURCE
+    exchange whose cached OHLCV this leg loads. ``None`` keeps
+    ``load_cached_data``'s own default, so every existing caller stays
+    byte-identical and the M1 bar remains a ``PLATFORM``-sourced series. A
+    research harness that scores tape another venue carries (the #1424 Hurst
+    study reads pre-2020 Bitstamp and Coinbase history) passes it explicitly;
+    it is the DATA axis and never the fee model (see the PLATFORM /
+    FEE_PLATFORM note above).
 
     ``commission_pct`` / ``slippage_pct`` are keyword-only friction overrides
     (default ``None``): with both ``None`` the harness is byte-identical to the
@@ -380,7 +390,9 @@ def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
                               _build_profile_label_series)
 
     start, end = window
-    df = load_cached_data(symbol, timeframe, start_date=start, end_date=end)
+    load_kwargs = {} if exchange_id is None else {"exchange_id": exchange_id}
+    df = load_cached_data(symbol, timeframe, start_date=start, end_date=end,
+                          **load_kwargs)
     if df.empty:
         return None
     # load_ohlcv's end bound is INCLUSIVE (timestamp <= end_ts), but M1 windows

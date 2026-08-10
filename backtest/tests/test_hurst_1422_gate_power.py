@@ -1347,14 +1347,37 @@ def test_report_prints_the_no_joint_separation_token():
     assert study.NO_JOINT_SEPARATION in text
 
 
-def test_1410_no_longer_defaults_to_the_contract_path():
-    # The regression this guards: a --render-only run of the superseded study
-    # silently reverting the live evidence file to its old verdict.
+def test_no_superseded_study_defaults_to_the_contract_path():
+    # The regression this guards: a --render-only run of a superseded study
+    # silently reverting the live evidence file to its old verdict. #1424 owns
+    # the contract path now, so BOTH #1410 and #1422 must point elsewhere.
     assert os.path.basename(study1410._DEFAULT_REPORT_OUT) == \
         "hurst_1410_gate_calibration.md"
+    assert os.path.basename(study._DEFAULT_REPORT_OUT) == \
+        "hurst_1422_gate_power.md"
     assert os.path.basename(study1410._DEFAULT_REPORT_OUT) != \
         os.path.basename(study._DEFAULT_REPORT_OUT)
-    assert os.path.basename(study._DEFAULT_REPORT_OUT) == "hurst_gate_calibration.md"
+    for module in (study1410, study):
+        assert os.path.basename(module._DEFAULT_REPORT_OUT) != \
+            "hurst_gate_calibration.md"
+
+
+def test_1422_refuses_to_write_the_contract_path_even_when_asked(tmp_path):
+    # Changing the default alone leaves `--report-out <contract path>` as a
+    # one-flag revert of the live evidence. The refusal must fire before any
+    # scoping check, so a COMPLETE run is refused too.
+    contract = os.path.join(os.path.dirname(study._DEFAULT_REPORT_OUT),
+                            "hurst_gate_calibration.md")
+    with pytest.raises(SystemExit) as exc:
+        study.main(["--report-out", contract,
+                    "--json-out", str(tmp_path / "scoped.json")])
+    assert "SUPERSEDED" in str(exc.value)
+
+
+def test_1422_render_marks_itself_superseded():
+    text = study.report_from_payload(_render_payload())
+    assert "SUPERSEDED by the #1424 resolution study" in text
+    assert "hurst_1424_gate_resolution.py" in text
 
 
 # ---------------------------------------------------------------------------
