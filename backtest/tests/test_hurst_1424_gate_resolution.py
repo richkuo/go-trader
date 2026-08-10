@@ -619,76 +619,151 @@ def test_economics_still_read_net_return():
 # The validity gate — the mechanism that decides what a null MEANS.
 # ---------------------------------------------------------------------------
 
+_MR = "mean_reversion"
+
+
+def _mde(mom_limit=0.05, mom_sep=0.09, mr_limit=0.05, mr_sep=0.02,
+         pooled=None, **extra):
+    """An `mde` payload shaped like the real one.
+
+    `pooled` defaults to something the gate must IGNORE, so any test that
+    passes only because the gate read the pooled number fails loudly.
+    """
+    out = {
+        "by_family_cluster": {study.PRIMARY_FAMILY: mom_limit, _MR: mr_limit},
+        "by_family_separation": {study.PRIMARY_FAMILY: mom_sep, _MR: mr_sep},
+        "by_family_n": {study.PRIMARY_FAMILY: 100, _MR: 100},
+        "pooled_primary_cluster": (0.001 if pooled is None else pooled),
+        "observed_separation_by_pool": {
+            "primary": {f"{study.PRIMARY_FAMILY}|512": mom_sep,
+                        f"{_MR}|512": mr_sep}},
+    }
+    out.update(extra)
+    return out
+
+
 def test_validity_gate_passes_when_the_limit_sits_below_the_separation():
-    gate = study.validity_gate({
-        "pooled_primary_cluster": 0.05,
-        "observed_separation_by_pool": {"primary": {"momentum|512": 0.09}},
-    })
+    gate = study.validity_gate(_mde(mom_limit=0.05, mom_sep=0.09))
     assert gate["passed"] is True
     assert gate["limit"] == pytest.approx(0.05)
     assert gate["largest_separation"] == pytest.approx(0.09)
+    assert gate["family"] == study.PRIMARY_FAMILY
 
 
 def test_validity_gate_fails_when_the_separation_sits_under_the_limit():
-    gate = study.validity_gate({
-        "pooled_primary_cluster": 0.20,
-        "observed_separation_by_pool": {"primary": {"momentum|512": 0.09}},
-    })
+    assert study.validity_gate(_mde(mom_limit=0.20, mom_sep=0.09))["passed"] \
+        is False
+
+
+def test_validity_gate_reads_the_confirmatory_familys_own_rows_not_the_pool():
+    # #1425 review, finding 1. The pooled primary limit spans BOTH families, so
+    # it resolves a smaller effect purely by holding more trades. Reading it
+    # against one family's separation makes the gate easier to pass than its own
+    # row-matched rule allows. Here the pooled limit (0.004) sits under the
+    # largest per-family separation (0.009) while EVERY family's own limit stays
+    # above its own separation — the gate must FAIL.
+    gate = study.validity_gate(_mde(mom_limit=0.05, mom_sep=0.009,
+                                    mr_limit=0.05, mr_sep=0.008, pooled=0.004))
     assert gate["passed"] is False
+    assert gate["limit"] == pytest.approx(0.05)
 
 
-def test_validity_gate_reads_the_magnitude_of_a_negative_separation():
-    # `mean_reversion` separates in the opposite direction by construction;
-    # its magnitude is what the limit has to beat.
-    gate = study.validity_gate({
+def test_validity_gate_is_unchanged_when_the_pool_holds_one_family():
+    # When the pool contains only the confirmatory family, pooled and
+    # per-family rows coincide and the verdict must be identical to the
+    # two-family case carrying the same confirmatory numbers.
+    both = study.validity_gate(_mde(mom_limit=0.05, mom_sep=0.09))
+    alone = study.validity_gate({
+        "by_family_cluster": {study.PRIMARY_FAMILY: 0.05},
+        "by_family_separation": {study.PRIMARY_FAMILY: 0.09},
+        "by_family_n": {study.PRIMARY_FAMILY: 100},
         "pooled_primary_cluster": 0.05,
         "observed_separation_by_pool": {
-            "primary": {"momentum|512": 0.01, "mean_reversion|512": -0.30}},
+            "primary": {f"{study.PRIMARY_FAMILY}|512": 0.09}},
     })
+    assert alone["passed"] == both["passed"] is True
+    assert alone["limit"] == both["limit"]
+    assert alone["largest_separation"] == both["largest_separation"]
+
+
+def test_validity_gate_never_borrows_the_other_familys_limit():
+    # The confirmatory family's limit is unresolvable while the other family's
+    # resolves comfortably. Borrowing it would publish a limit measured on rows
+    # the confirmatory hypothesis was never scored on.
+    gate = study.validity_gate(_mde(mom_limit=None, mom_sep=0.09,
+                                    mr_limit=0.001, mr_sep=0.5))
+    assert gate["passed"] is False
+    assert gate["limit"] is None
+    assert "detection limit above" in gate["reason"]
+
+
+def test_validity_gate_refuses_a_separation_pointing_the_untested_way():
+    # #1425 review, finding 2. Both nulls and the injection are one-sided in the
+    # mean(kept) - mean(suppressed) orientation, so a NEGATIVE separation is an
+    # effect the design cannot detect at ANY magnitude. A large one must not
+    # pass the gate just because a small limit sits under its absolute value.
+    gate = study.validity_gate(_mde(mom_limit=0.01, mom_sep=-0.30))
+    assert gate["passed"] is False
+    assert gate["largest_separation"] == pytest.approx(-0.30)
+    assert "OPPOSITE" in gate["reason"]
+
+
+def test_validity_gate_refuses_when_every_family_points_the_untested_way():
+    gate = study.validity_gate(_mde(mom_limit=0.005, mom_sep=-0.05,
+                                    mr_limit=0.005, mr_sep=-0.08))
+    assert gate["passed"] is False
+    assert "OPPOSITE" in gate["reason"]
+
+
+def test_validity_gate_decides_on_direction_not_the_larger_magnitude():
+    # momentum is positive and clears its own limit; mean_reversion is negative
+    # and larger in magnitude. The gate belongs to the confirmatory family, so
+    # it PASSES on momentum's directional separation.
+    gate = study.validity_gate(_mde(mom_limit=0.02, mom_sep=0.05,
+                                    mr_limit=0.02, mr_sep=-0.40))
     assert gate["passed"] is True
-    assert gate["largest_separation"] == pytest.approx(0.30)
+    assert gate["largest_separation"] == pytest.approx(0.05)
 
 
 def test_validity_gate_fails_closed_on_an_unreachable_limit():
-    gate = study.validity_gate({
-        "pooled_primary_cluster": None,
-        "observed_separation_by_pool": {"primary": {"momentum|512": 0.09}},
-    })
+    gate = study.validity_gate(_mde(mom_limit=None, mom_sep=0.09))
     assert gate["passed"] is False
-    assert "detection limit is above" in gate["reason"]
+    assert "detection limit above" in gate["reason"]
 
 
 def test_validity_gate_fails_closed_with_no_separation_at_all():
-    gate = study.validity_gate({"pooled_primary_cluster": 0.05,
-                                "observed_separation_by_pool": {}})
+    gate = study.validity_gate({"by_family_cluster": {study.PRIMARY_FAMILY: 0.05},
+                                "by_family_separation": {}})
     assert gate["passed"] is False
+    assert "no measurable separation" in gate["reason"]
 
 
 def test_gate_is_never_read_against_a_mismatched_pool():
     # Reading the exploratory pool's larger separation against the primary
     # pool's limit is the exact mistake the pool-matched table exists to stop.
-    mde = {
-        "pooled_primary_cluster": 0.20,
-        "observed_separation_by_pool": {
-            "primary": {"momentum|512": 0.09},
-            "exploratory": {"momentum|512": 0.90},
-        },
-    }
+    mde = _mde(mom_limit=0.20, mom_sep=0.09)
+    mde["observed_separation_by_pool"]["exploratory"] = {
+        f"{study.PRIMARY_FAMILY}|512": 0.90}
     assert study.validity_gate(mde)["passed"] is False
+
+
+def test_a_reversed_separation_never_closes_the_question():
+    # The end-to-end version of finding 2: a reversed effect must not reach the
+    # RESOLVED-NULL verdict or its "closes the question" language.
+    decision = study.decide_recommendation(
+        [], _mde(mom_limit=0.001, mom_sep=-0.40))
+    assert decision["verdict"] == study.VERDICT_INCONCLUSIVE
+    assert decision["key_risk_held"] is False
+    assert "closes the question" not in decision["justification"]
+    assert "OPPOSITE" in decision["justification"]
 
 
 # ---------------------------------------------------------------------------
 # decide_recommendation — the verdict word is itself mechanical.
 # ---------------------------------------------------------------------------
 
-_PASSING_MDE = {
-    "pooled_primary_cluster": 0.05,
-    "observed_separation_by_pool": {"primary": {"momentum|512": 0.09}},
-}
-_FAILING_MDE = {
-    "pooled_primary_cluster": 0.20,
-    "observed_separation_by_pool": {"primary": {"momentum|512": 0.09}},
-}
+_PASSING_MDE = _mde(mom_limit=0.05, mom_sep=0.09)
+_FAILING_MDE = _mde(mom_limit=0.20, mom_sep=0.09)
 
 
 def test_a_resolved_null_is_named_differently_from_an_underpowered_one():
@@ -734,6 +809,10 @@ def _render_payload(decision=None, mde=None, configs=None):
     mde = dict(mde or _FAILING_MDE)
     mde.setdefault("observed_separation_pp_by_pool",
                    {"primary": {"momentum|512": 0.4}})
+    mde.setdefault("by_family_cluster_return",
+                   {study.PRIMARY_FAMILY: 0.9, _MR: 0.5})
+    mde.setdefault("by_family_separation_return",
+                   {study.PRIMARY_FAMILY: 0.4, _MR: -0.2})
     cfgs = list(configs if configs is not None else [_cfg(bh_reject=False,
                                                           p_cluster=0.4)])
     decision = decision or study.decide_recommendation(cfgs, mde)
@@ -751,7 +830,7 @@ def _render_payload(decision=None, mde=None, configs=None):
             "feasibility_probes": [dict(p) for p in study.FEASIBILITY_PROBES],
         },
         "run_summary": {
-            "scope": {"complete": True},
+            "scope": {"complete": True, "pre_registered_inference": True},
             "legs": 1, "gated_arms": 9, "mirror_verified_legs": 1,
             "pooled_trades": {f: 1 for f in study.FAMILIES},
             "pooled_primary": {f: 1 for f in study.FAMILIES},
@@ -807,6 +886,74 @@ def test_report_pairs_each_pools_limit_with_its_own_separation():
     assert "Resolvable?" in text
 
 
+# ---------------------------------------------------------------------------
+# Signed separations. #1425 review, optional finding 1: a magnitude-only render
+# hides a hypothesis pointing backwards behind a number that reads like a weak
+# confirmation of it.
+# ---------------------------------------------------------------------------
+
+def test_equal_magnitudes_of_opposite_sign_render_differently():
+    assert study._fmt_signed(0.005, 3) != study._fmt_signed(-0.005, 3)
+    assert study._fmt_signed(0.005, 3) == "+0.005"
+    assert study._fmt_signed(-0.005, 3) == "-0.005"
+
+
+def test_a_missing_separation_renders_as_a_dash_never_as_zero():
+    assert study._fmt_signed(None, 3) == "-"
+    assert study._fmt_signed(float("nan"), 3) == "-"
+    assert study._fmt_signed(0.0, 3) == "+0.000"
+
+
+def test_largest_signed_prefers_the_tested_direction():
+    # max on the SIGNED values: a big reversed effect is not the pool's most
+    # detectable one, it is the one the design cannot detect at all.
+    assert study._largest_signed({"a|512": 0.01, "b|512": -0.30}) == \
+        pytest.approx(0.01)
+    assert study._largest_signed({"a|512": -0.05, "b|512": -0.30}) == \
+        pytest.approx(-0.05)
+    assert study._largest_signed({}) is None
+    assert study._largest_signed({"a|512": None}) is None
+
+
+def test_the_pool_tables_print_every_family_with_its_sign():
+    mde = _mde(mom_limit=0.20, mom_sep=0.009, mr_limit=0.20, mr_sep=-0.024)
+    text = study.report_from_payload(_render_payload(mde=mde))
+    assert "By family (signed)" in text
+    assert "momentum +0.009" in text
+    assert "mean_reversion -0.024" in text
+
+
+def test_the_pool_tables_flag_a_reversed_pool_rather_than_resolving_it():
+    mde = _mde(mom_limit=0.20, mom_sep=-0.05, mr_limit=0.20, mr_sep=-0.08,
+               pooled=0.001)
+    text = study.report_from_payload(_render_payload(mde=mde))
+    assert "n/a (reversed)" in text
+
+
+def test_the_key_risk_paragraph_matches_the_reason_the_gate_failed():
+    # A reversed separation and a merely-too-small one fail the gate for
+    # different reasons and license different claims. The "would have been
+    # caught, and none was" bound is only true of the second, so publishing it
+    # under a reversed result would state a bound the run never measured.
+    reversed_text = study.report_from_payload(
+        _render_payload(mde=_mde(mom_limit=0.01, mom_sep=-0.30)))
+    assert "points the OTHER WAY" in reversed_text
+    assert "would have been caught, and none was" not in reversed_text
+    small_text = study.report_from_payload(
+        _render_payload(mde=_mde(mom_limit=0.20, mom_sep=0.09)))
+    assert "would have been caught, and none was" in small_text
+    assert "points the OTHER WAY" not in small_text
+
+
+def test_the_report_names_the_two_numbers_the_gate_actually_reads():
+    text = study.report_from_payload(_render_payload())
+    assert "The two numbers the validity gate actually reads" in text
+    assert "Reads the gate?" in text
+    # The pooled row and the confirmatory-family row must both be visible, so a
+    # reader can see they are different samples.
+    assert "this study, primary cohort" in text
+
+
 def test_report_records_the_feasibility_probes():
     text = study.report_from_payload(_render_payload())
     assert "Route 2 — data feasibility, recorded" in text
@@ -852,6 +999,32 @@ def test_render_only_raises_when_a_named_winner_is_absent():
 # The committed JSON and the contract report belong to the full design.
 # ---------------------------------------------------------------------------
 
+def test_the_committed_decision_is_what_the_current_rule_produces():
+    # The verdict, the validity gate and the justification are a PURE function
+    # of (configs, mde), both of which the committed payload carries. Pinning
+    # that equality is what stops a stale or hand-edited JSON from publishing a
+    # verdict today's acceptance rule would not reach — the failure mode is
+    # silent, because `--render-only` renders the STORED decision.
+    with open(study._DEFAULT_JSON_OUT) as fh:
+        payload = json.load(fh)
+    fresh = study.decision_payload(
+        study.decide_recommendation(payload["configs"], payload["mde"]))
+    assert payload["decision"] == fresh
+
+
+def test_the_committed_run_reports_a_reversed_confirmatory_separation():
+    # The live evidence's headline fact, pinned so a future edit cannot quietly
+    # turn a reversed separation back into a magnitude.
+    with open(study._DEFAULT_JSON_OUT) as fh:
+        payload = json.load(fh)
+    gate = payload["decision"]["validity_gate"]
+    assert gate["family"] == study.PRIMARY_FAMILY
+    assert gate["passed"] is False
+    assert gate["largest_separation"] < 0
+    assert payload["decision"]["verdict"] == study.VERDICT_INCONCLUSIVE
+    assert payload["decision"]["key_risk_held"] is False
+
+
 def test_1424_owns_the_contract_path():
     assert os.path.basename(study._DEFAULT_REPORT_OUT) == \
         "hurst_gate_calibration.md"
@@ -892,6 +1065,66 @@ def test_every_scoping_flag_protects_the_contract_report(tmp_path, flag, value):
     with pytest.raises(SystemExit) as exc:
         study.main([flag, value, "--json-out", str(tmp_path / "scoped.json")])
     assert "contract path" in str(exc.value)
+
+
+@pytest.mark.parametrize("argv,needle", [
+    # #1425 review, optional finding 3. Narrowing the DATA is only one way to
+    # produce a different study; weakening the inference or skipping the
+    # verification is worse, because the report still looks complete.
+    (["--n-perm-mde", "200"], "--n-perm-mde 200"),
+    (["--n-perm", "200"], "--n-perm 200"),
+    (["--seed", "7"], "--seed 7"),
+    (["--no-mirror-check"], "--no-mirror-check"),
+])
+def test_a_deviating_run_may_not_write_the_committed_artifacts(tmp_path, argv,
+                                                               needle):
+    with pytest.raises(SystemExit) as exc:
+        study.main(argv)
+    assert "committed aggregate" in str(exc.value)
+    assert needle in str(exc.value)
+    with pytest.raises(SystemExit) as exc:
+        study.main(argv + ["--json-out", str(tmp_path / "debug.json")])
+    assert "contract path" in str(exc.value)
+
+
+class _Args:
+    def __init__(self, **kw):
+        self.n_perm = kw.get("n_perm", study.N_PERM)
+        self.n_perm_mde = kw.get("n_perm_mde", study.N_PERM_MDE)
+        self.seed = kw.get("seed", study.SEED)
+        self.no_mirror_check = kw.get("no_mirror_check", False)
+
+
+def test_stating_the_pre_registered_settings_explicitly_is_not_a_deviation():
+    # The same run, spelled out, must stay allowed — otherwise the guard
+    # punishes being explicit about the pre-registration.
+    assert study.inference_deviations(_Args()) == []
+    assert study.inference_deviations(
+        _Args(seed=study.SEED, n_perm=study.N_PERM,
+              n_perm_mde=study.N_PERM_MDE)) == []
+
+
+@pytest.mark.parametrize("kw,needle", [
+    ({"n_perm_mde": study.N_PERM_MDE - 1}, "--n-perm-mde"),
+    ({"n_perm_mde": study.N_PERM_MDE + 1}, "--n-perm-mde"),
+    ({"n_perm": 200}, "--n-perm "),
+    ({"seed": study.SEED + 1}, "--seed"),
+    ({"no_mirror_check": True}, "--no-mirror-check"),
+])
+def test_every_inference_deviation_is_named(kw, needle):
+    found = study.inference_deviations(_Args(**kw))
+    assert len(found) == 1
+    assert needle in found[0]
+
+
+def test_render_only_refuses_a_payload_not_stamped_pre_registered(tmp_path):
+    payload = _render_payload()
+    payload["run_summary"]["scope"] = {"complete": True}
+    path = tmp_path / "deviating.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(SystemExit) as exc:
+        study.main(["--render-only", "--json-out", str(path), "--write-report"])
+    assert "pre-registered inference" in str(exc.value)
 
 
 def test_render_only_refuses_an_unstamped_payload_on_the_contract_path(tmp_path):

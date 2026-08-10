@@ -7,10 +7,12 @@ observability metric. Nothing measured whether entry outcomes actually vary
 with H at entry time, so any gate threshold would be a guess. This one-shot
 produces that evidence and renders ``backtest/research/hurst_1410_gate_calibration.md``.
 
-REPORT-PATH CONTRACT (#1422). ``backtest/research/hurst_gate_calibration.md`` is
+REPORT-PATH CONTRACT (#1424). ``backtest/research/hurst_gate_calibration.md`` is
 the LIVE-EVIDENCE contract path — it is what ``scheduler/hurst_gate.go``,
-``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate cite, and it is owned by
-``hurst_1422_gate_power.py``. This study is a FROZEN negative-result artifact and
+``docs/ARCHITECTURE.md`` and #1412's Stage 0 gate cite, and it is owned by the
+CURRENT live-evidence study, today ``hurst_1424_gate_resolution.py`` (#1422 held
+it before and now refuses to write it). This study is a FROZEN negative-result
+artifact and
 must never write that file: a later ``--render-only`` here would silently revert
 the live evidence to this study's superseded verdict. Its own render lives beside
 its JSON at ``hurst_1410_gate_calibration.md``.
@@ -205,9 +207,9 @@ STAMP_LEAD_BARS = 4
 WARMUP_MARGIN_BARS = 2
 
 _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.json")
-# NOT "hurst_gate_calibration.md" — that is the live-evidence contract path owned
-# by hurst_1422_gate_power.py (see the REPORT-PATH CONTRACT note in the module
-# docstring). A --render-only run here must never overwrite it.
+# NOT "hurst_gate_calibration.md" — that is the live-evidence contract path, owned
+# by whichever study is the current live evidence (see the REPORT-PATH CONTRACT
+# note in the module docstring). A --render-only run here must never overwrite it.
 _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.md")
 
 WINDOW_ORDER = tuple(

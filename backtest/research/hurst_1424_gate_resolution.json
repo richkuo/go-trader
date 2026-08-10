@@ -628,7 +628,8 @@
       "datasets": null,
       "windows": null,
       "hurst_windows": null,
-      "complete": true
+      "complete": true,
+      "pre_registered_inference": true
     },
     "legs": 860,
     "gated_arms": 7740,
@@ -1059,7 +1060,7 @@
       "LTC/USDT|XRP/USDT": 0.569335,
       "SOL/USDT|XRP/USDT": 0.483022
     },
-    "elapsed_sec": 4457.78
+    "elapsed_sec": 1878.66
   },
   "mde": {
     "by_family_cluster": {
@@ -1069,6 +1070,18 @@
     "by_family_cluster_return": {
       "momentum": 0.94,
       "mean_reversion": 0.46
+    },
+    "by_family_separation": {
+      "momentum": -0.005098,
+      "mean_reversion": -0.002781
+    },
+    "by_family_separation_return": {
+      "momentum": -0.123947,
+      "mean_reversion": -0.233705
+    },
+    "by_family_n": {
+      "momentum": 7992,
+      "mean_reversion": 21006
     },
     "pooled_1410_cluster": 0.032,
     "pooled_1410_free": 0.031,
@@ -71760,12 +71773,15 @@
   ],
   "decision": {
     "verdict": "inconclusive",
-    "justification": "No configuration of the 1 primary hypothesis set passed the pre-registered acceptance rule. 0 reached Benjamini-Hochberg significance on the cluster permutation at alpha=0.05; 0 were untestable. The primary hypothesis reached cluster p=0.3557 (`momentum/gate/W512/arm0.52/dis0.48`) on the primary target. The validity gate FAILED: the primary cohort's detection limit is 0.008 efficiency units while that cohort separates by only 0.005, BELOW the limit. A separation under the limit is INVISIBLE to this design, so this null bounds the edge from above and says nothing either way about a smaller one. The verdict stays a POWER statement. Do not read it as evidence that no edge exists.",
+    "justification": "No configuration of the 1 primary hypothesis set passed the pre-registered acceptance rule. 0 reached Benjamini-Hochberg significance on the cluster permutation at alpha=0.05; 0 were untestable. The primary hypothesis reached cluster p=0.3557 (`momentum/gate/W512/arm0.52/dis0.48`) on the primary target. The validity gate FAILED: the confirmatory family (`momentum`) separates by -0.005 \u2014 the suppressed side did BETTER, which is the OPPOSITE of the one-sided hypothesis this study's null and its injection both test, so no detection limit can make this null a statement about the market. An effect pointing that way is one this one-sided design could not have detected at any size, so the run carries no bound on a Hurst edge in either direction. The verdict stays a POWER statement. Do not read it as evidence that no edge exists.",
     "validity_gate": {
+      "family": "momentum",
+      "n_rows": 7992,
       "passed": false,
-      "limit": 0.008,
-      "largest_separation": 0.005098,
-      "reason": ""
+      "limit": 0.013,
+      "largest_separation": -0.005098,
+      "mode": "reversed",
+      "reason": "the confirmatory family (`momentum`) separates by -0.005 \u2014 the suppressed side did BETTER, which is the OPPOSITE of the one-sided hypothesis this study's null and its injection both test, so no detection limit can make this null a statement about the market"
     },
     "key_risk_held": false,
     "families": {

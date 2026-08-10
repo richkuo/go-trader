@@ -17,13 +17,20 @@ package main
 // bounded-variance primary target (signed efficiency over a fixed 96-hour
 // horizon). Pool: 860 legs, 26 datasets, 16 windows, ~29.0k primary-cohort rows.
 //
-// It still cannot see what it needs to see. On the primary cohort the design
-// resolves 0.008 efficiency units and that cohort separates by only 0.005 —
-// BELOW the limit, so the null bounds the edge from above and says nothing about
-// a smaller one. On net return the same cohort resolves 0.84 pp against a 0.23 pp
-// separation (#1422 read 0.96 pp against 0.37 pp: the limit fell, the separation
-// fell faster). The verdict is therefore a POWER statement again, NOT evidence
-// that no edge exists. The pre-registered key-risk prediction is UNRESOLVED.
+// The gate is read ROW-MATCHED and DIRECTIONALLY on the CONFIRMATORY family
+// (momentum, 7,992 rows — the family the single pre-registered hypothesis
+// belongs to). Those rows resolve 0.013 efficiency units and 0.94 pp of net
+// return, and they separate by -0.005 and -0.12 pp. The sign is the finding:
+// every null and injection here is one-sided on mean(kept) - mean(suppressed),
+// so a NEGATIVE separation means the trades this gate would have SUPPRESSED did
+// BETTER, which is the direction the design cannot detect at any magnitude. The
+// run therefore carries no bound on the confirmatory family in either
+// direction. It is NOT evidence that no edge exists, and it is not the null the
+// key risk described; the pre-registered key-risk prediction is UNRESOLVED.
+// (The POOLED primary limit is 0.008 over both families' 28,998 rows. It is
+// printed in the report but the gate must never read it: a larger pool resolves
+// a smaller effect, so pairing it with one family's separation compares two
+// samples and biases the gate toward passing.)
 //
 // The pinned hypothesis (momentum/gate/W512/arm0.52/dis0.48) reached cluster
 // p=0.3557 on the primary target and p=0.3387 on net return. #1422's disclosed

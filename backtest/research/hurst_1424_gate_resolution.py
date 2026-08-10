@@ -394,6 +394,17 @@ VERDICT_LABELS = {
     VERDICT_INCONCLUSIVE: "INCONCLUSIVE",
 }
 
+# WHY the validity gate landed where it did. The Recommendation's wording keys
+# on this, because the failure modes carry DIFFERENT claims: a separation that
+# is merely too small leaves a bound from above, while one pointing the way the
+# one-sided design cannot test leaves no bound at all. Gluing one mode's
+# sentence onto the other would publish a bound the run never measured.
+MODE_OK = "ok"
+MODE_BELOW_LIMIT = "below_limit"
+MODE_REVERSED = "reversed"
+MODE_UNRESOLVABLE = "unresolvable"
+MODE_NO_SEPARATION = "no_separation"
+
 PRIMARY_TARGET = "signed_fixed_horizon_efficiency"
 CONTINUITY_TARGET = "pnl_pct_net"
 HORIZON_HOURS = 96            # four days, the same order as a held position
@@ -823,35 +834,64 @@ def validity_gate(mde: dict) -> dict:
     """The pre-registered validity gate, in efficiency units.
 
     This study is VALID only when the measured cluster-null detection limit on
-    the primary cohort falls BELOW that same cohort's pool-matched observed
-    separation on the same statistic. Both numbers come from the SAME rows —
-    reading a whole-study separation against a sub-cohort's limit compares two
-    different samples and is the exact mistake #1422's pool-matched table exists
-    to prevent.
+    the CONFIRMATORY FAMILY's own rows falls at or below that same family's
+    observed separation on the same statistic.
+
+    Two properties are load-bearing and neither is optional:
+
+    ROW-MATCHED. Both numbers come from `by_family_*`, measured on the identical
+    row set (`PRIMARY_FAMILY`'s slice of the primary cohort, after the cluster
+    null's own usability filter). The pooled primary limit is measured on BOTH
+    families' rows and is therefore a different sample: reading it against one
+    family's separation is exactly the whole-study-vs-sub-cohort mismatch the
+    pool-matched tables exist to prevent, and it biases the gate toward passing
+    because a larger pool resolves a smaller effect.
+
+    DIRECTIONAL. `_separation` is `mean(kept) - mean(suppressed)` and both the
+    permutation nulls and the injection in `min_detectable_effect_on_grid` are
+    ONE-SIDED in that same orientation — they can only ever reject "suppressed
+    trades are WORSE". A NEGATIVE separation means the suppressed side did
+    BETTER, which is the direction the test cannot detect at any magnitude. The
+    gate therefore compares the SIGNED separation and never its magnitude;
+    crediting `abs()` would let a reversed effect upgrade the verdict from a
+    power statement to a market statement on evidence that does not exist.
+
+    The gate is evaluated on `PRIMARY_FAMILY` alone because that is the family
+    the single pre-registered hypothesis belongs to. Another family's larger
+    separation is not evidence about the confirmatory test's power.
 
     When the gate fails, no null this study measures is a statement about the
     market, and the Recommendation must say so.
     """
-    limit = mde.get("pooled_primary_cluster")
-    seps = ((mde.get("observed_separation_by_pool") or {}).get("primary") or {})
-    largest = (max(abs(float(v)) for v in seps.values()) if seps else None)
-    if limit is None or largest is None:
-        return {
-            "passed": False,
-            "limit": limit,
-            "largest_separation": largest,
-            "reason": ("the primary cohort's detection limit is above "
-                       f"{MDE_EFF_GRID_MAX:g} efficiency units, so no effect on "
-                       f"the injection grid is resolvable"
-                       if largest is not None else
-                       "the primary cohort carries no measurable separation"),
-        }
-    return {
-        "passed": bool(largest >= limit),
-        "limit": round(float(limit), 6),
-        "largest_separation": round(float(largest), 6),
-        "reason": "",
-    }
+    family = PRIMARY_FAMILY
+    limit = (mde.get("by_family_cluster") or {}).get(family)
+    sep = (mde.get("by_family_separation") or {}).get(family)
+    base = {"family": family, "n_rows": (mde.get("by_family_n") or {}).get(family)}
+    if sep is None:
+        return dict(base, passed=False, limit=limit, largest_separation=None,
+                    mode=MODE_NO_SEPARATION,
+                    reason=(f"the confirmatory family (`{family}`) carries no "
+                            f"measurable separation"))
+    sep = round(float(sep), 6)
+    if sep < 0:
+        return dict(base, passed=False, limit=limit, largest_separation=sep,
+                    mode=MODE_REVERSED,
+                    reason=(f"the confirmatory family (`{family}`) separates by "
+                            f"{sep:+.3f} — the suppressed side did BETTER, which "
+                            f"is the OPPOSITE of the one-sided hypothesis this "
+                            f"study's null and its injection both test, so no "
+                            f"detection limit can make this null a statement "
+                            f"about the market"))
+    if limit is None:
+        return dict(base, passed=False, limit=None, largest_separation=sep,
+                    mode=MODE_UNRESOLVABLE,
+                    reason=(f"the confirmatory family (`{family}`) has a detection "
+                            f"limit above {MDE_EFF_GRID_MAX:g} efficiency units, "
+                            f"so no effect on the injection grid is resolvable"))
+    passed = bool(sep >= float(limit))
+    return dict(base, passed=passed, limit=round(float(limit), 6),
+                largest_separation=sep, reason="",
+                mode=MODE_OK if passed else MODE_BELOW_LIMIT)
 
 
 def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
@@ -899,9 +939,10 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
 
     if gate["passed"]:
         detail = (
-            f"The validity gate PASSED: the primary cohort's detection limit is "
-            f"{gate['limit']:.3f} efficiency units and that same cohort separates "
-            f"by {gate['largest_separation']:.3f}, so an effect of the size these "
+            f"The validity gate PASSED: on the confirmatory family "
+            f"(`{gate.get('family', PRIMARY_FAMILY)}`) the detection limit is "
+            f"{gate['limit']:.3f} efficiency units and those SAME rows separate "
+            f"by {gate['largest_separation']:+.3f}, so an effect of the size these "
             f"buckets show IS resolvable here. The null is therefore a statement "
             f"about the market and not about the design: there is NO usable Hurst "
             f"edge at or above this limit, and the pre-registered key risk — that "
@@ -909,16 +950,32 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
             f"rather than H sorting trades within them — is what the run found. "
             f"This closes the question rather than licensing a fourth study.")
     else:
+        # The trailing clause has to FOLLOW from the reason. A separation that
+        # is merely too small and one that points the untested way fail the
+        # gate for different reasons, and gluing the size sentence onto the
+        # direction sentence would state a bound the run never measured.
+        if gate["reason"]:
+            head = gate["reason"]
+            tail = (
+                ". An effect pointing that way is one this one-sided design "
+                "could not have detected at any size, so the run carries no "
+                "bound on a Hurst edge in either direction."
+                if gate.get("mode") == MODE_REVERSED else
+                ". Without a resolvable limit on those rows the run carries no "
+                "bound at all.")
+        else:
+            head = (f"on the confirmatory family "
+                    f"(`{gate.get('family', PRIMARY_FAMILY)}`) the detection "
+                    f"limit is {gate['limit']:.3f} efficiency units while those "
+                    f"SAME rows separate by only "
+                    f"{gate['largest_separation']:+.3f}, BELOW the limit")
+            tail = (". Nothing at or below that limit is VISIBLE to this "
+                    "design, so this null bounds the edge from above and says "
+                    "nothing either way about a smaller one.")
         detail = (
-            f"The validity gate FAILED: "
-            + (gate["reason"] or
-               f"the primary cohort's detection limit is "
-               f"{gate['limit']:.3f} efficiency units while that cohort separates "
-               f"by only {gate['largest_separation']:.3f}, BELOW the limit")
-            + ". A separation under the limit is INVISIBLE to this design, so "
-              "this null bounds the edge from above and says nothing either way "
-              "about a smaller one. The verdict stays a POWER statement. Do not "
-              "read it as evidence that no edge exists.")
+            "The validity gate FAILED: " + head + tail
+            + " The verdict stays a POWER statement. Do not read it as evidence "
+              "that no edge exists.")
 
     return {
         # The verdict WORD is itself mechanical. A null measured by a design
@@ -1605,7 +1662,9 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
     (30). Each pool's separations, limits and zero-injection p-values are
     measured on the SAME rows, so the validity gate compares like with like.
     """
-    out: dict = {"by_family_cluster": {}, "by_family_cluster_return": {}}
+    out: dict = {"by_family_cluster": {}, "by_family_cluster_return": {},
+                 "by_family_separation": {}, "by_family_separation_return": {},
+                 "by_family_n": {}}
     hw = max(hurst_windows)
 
     def _pool(family: str, cohort: Optional[str], only_1410_cells: bool):
@@ -1664,6 +1723,19 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                 out["by_family_cluster_return"][family] = min_detectable_effect_pp(
                     fam_rows, fam_rets, fam_mask, family_size, cluster=True,
                     n_perm=n_perm, seed=seed)
+                # The separation the validity gate reads must come from the
+                # EXACT rows its limit was measured on. `usable_cluster_rows`
+                # is applied per family here and pool-wide below, and the two
+                # need not agree: a dataset whose trades span enough calendar
+                # time inside the COMBINED pool can fall short inside one
+                # family's slice. Storing the family's own separation is what
+                # makes the gate's comparison row-matched by construction
+                # rather than by coincidence.
+                out["by_family_separation"][family] = _separation(
+                    fam_vals, fam_mask)
+                out["by_family_separation_return"][family] = _separation(
+                    fam_rets, fam_mask)
+                out["by_family_n"][family] = len(fam_rows)
 
         # The cluster null defines this pool's usable sample. Apply it ONCE to
         # every number printed beside it.
@@ -1735,6 +1807,43 @@ def _fmt(value, digits: int = 2, suffix: str = "") -> str:
     return f"{value:.{digits}f}{suffix}"
 
 
+def _fmt_signed(value, digits: int = 2) -> str:
+    """Render a separation WITH its sign, or `-` when it does not exist.
+
+    The sign is not cosmetic. `_separation` is `mean(kept) - mean(suppressed)`
+    and every null and injection in this study is one-sided in that same
+    orientation, so a negative value is an effect pointing the way the design
+    cannot detect. Printing the magnitude alone hides a reversed hypothesis
+    behind a number that reads like a weak confirmation of it. None must never
+    collapse to `0`, which would read as a measured absence of separation.
+    """
+    if value is None:
+        return "-"
+    if isinstance(value, float) and not math.isfinite(value):
+        return "-"
+    return f"{float(value):+.{digits}f}"
+
+
+def _fmt_family_seps(seps: dict, digits: int = 2) -> str:
+    if not seps:
+        return "-"
+    parts = []
+    for key in sorted(seps):
+        parts.append(f"{key.split('|')[0]} {_fmt_signed(seps[key], digits)}")
+    return ", ".join(parts)
+
+
+def _largest_signed(seps: dict):
+    """The most favourable separation in the TESTED direction, or None.
+
+    `max` on the signed values, never on their magnitudes: the pool's power
+    question is whether the design could have detected the largest effect
+    pointing the way its one-sided null can reject.
+    """
+    values = [float(v) for v in (seps or {}).values() if v is not None]
+    return max(values) if values else None
+
+
 def _fmt_p(value) -> str:
     return "-" if value is None else f"{value:.4f}"
 
@@ -1780,6 +1889,22 @@ def render_recommendation(decision: dict, mde: dict,
                 "Anyone reopening it must bring a different MECHANISM — a "
                 "different statistic of H, a different decision rule — and must "
                 "pre-register it before reading these numbers.")
+        elif gate.get("mode") == MODE_REVERSED:
+            lines.append(
+                "The prediction is UNRESOLVED, and it is unresolved for a "
+                f"reason the issue did not anticipate. On the confirmatory "
+                f"family (`{gate.get('family', PRIMARY_FAMILY)}`) the "
+                "separation does not merely fail to clear the detection limit "
+                "— it points the OTHER WAY. The trades this gate would have "
+                "suppressed did BETTER than the ones it would have kept, which "
+                "is the direction a one-sided design built to reject "
+                "\"suppressed trades are worse\" can never detect at any "
+                "magnitude. So this run carries no bound at all on the "
+                "confirmatory family, in either direction, and it certainly "
+                "does not confirm the null the key risk described. Reading "
+                "this as \"no edge\" would be wrong twice over: the design "
+                "could not have seen one, and what it did see argues against "
+                "the gate's own hypothesis rather than for its absence.")
         else:
             lines.append(
                 "The prediction is UNRESOLVED, because the validity gate did "
@@ -1875,10 +2000,13 @@ def render_recommendation(decision: dict, mde: dict,
 def _render_gate_sentence(gate: dict) -> str:
     if gate.get("limit") is None or gate.get("largest_separation") is None:
         return gate.get("reason") or "the gate could not be evaluated."
+    if gate.get("reason"):
+        return gate["reason"] + "."
     relation = "BELOW" if gate["passed"] else "ABOVE"
-    return (f"the primary cohort's detection limit is "
+    return (f"on the confirmatory family "
+            f"(`{gate.get('family', PRIMARY_FAMILY)}`) the detection limit is "
             f"{gate['limit']:.3f} efficiency units, {relation} the "
-            f"{gate['largest_separation']:.3f} that same cohort separates by.")
+            f"{gate['largest_separation']:+.3f} those SAME rows separate by.")
 
 
 def _render_bucket_table(table: dict) -> list:
@@ -2098,13 +2226,26 @@ def render_report(payload: dict) -> str:
     out.append("")
     out.append(
         "This study is VALID only when the measured cluster-null detection "
-        "limit on its primary cohort falls BELOW that same cohort's "
-        "pool-matched observed separation, both in efficiency units and both "
-        "measured on the same rows. When it does, a null result is a statement "
-        "about the market: no usable edge at or above the limit. When it does "
-        "not, the null is a statement about the design and nothing more, and "
-        "the report says exactly that rather than dressing a power shortfall as "
-        "a finding.")
+        f"limit on the CONFIRMATORY family (`{PRIMARY_FAMILY}`, the family the "
+        "single pre-registered hypothesis belongs to) falls at or below that "
+        "same family's observed separation, both in efficiency units and both "
+        "measured on the IDENTICAL rows. When it does, a null result is a "
+        "statement about the market: no usable edge at or above the limit. When "
+        "it does not, the null is a statement about the design and nothing more, "
+        "and the report says exactly that rather than dressing a power shortfall "
+        "as a finding.")
+    out.append("")
+    out.append(
+        "Two things the gate deliberately does NOT do. It does not read the "
+        "POOLED primary limit, which is measured across both families and would "
+        "resolve a smaller effect purely by holding more trades — comparing it "
+        "with one family's separation is the whole-study-vs-sub-cohort mismatch "
+        "this report's pool-matched tables exist to prevent, and it biases the "
+        "gate toward passing. And it does not credit a separation's MAGNITUDE: "
+        "the nulls and the injection are one-sided in the `mean(kept) - "
+        "mean(suppressed)` orientation, so a NEGATIVE separation is an effect in "
+        "the direction this design cannot detect at any size, and it can never "
+        "upgrade the verdict from a power statement to a market statement.")
     out.append("")
     out.append(f"**Outcome: {'PASSED' if gate['passed'] else 'FAILED'}** — "
                + _render_gate_sentence(gate))
@@ -2270,13 +2411,27 @@ def render_report(payload: dict) -> str:
         "design cannot see an effect that small — such a pool's null bounds the "
         "edge from above and says nothing about whether a smaller one exists.")
     out.append("")
+    out.append(
+        "**Separations carry their SIGN, and the sign decides the question.** A "
+        "separation is `mean(kept) - mean(suppressed)`, and every null and every "
+        "injection here is ONE-SIDED in that same orientation: they can reject "
+        "only \"the suppressed trades were WORSE\". A POSITIVE value is therefore "
+        "an effect pointing the way the gate's hypothesis claims, and the limit "
+        "beside it says whether this design could have seen it. A NEGATIVE value "
+        "means the suppressed side did BETTER — the opposite of the hypothesis, "
+        "and a direction no detection limit in this study speaks to at any "
+        "magnitude. The `Largest separation` column is the largest SIGNED value "
+        "on that pool, so `Resolvable?` answers the question the test can "
+        "actually ask; the per-family column beside it prints every family so a "
+        "reversed one is never hidden behind another's magnitude.")
+    out.append("")
     by_pool = mde.get("observed_separation_by_pool") or {}
     out.append("| Pool | Rows | BH denominator | Cluster MDE (eff) | Free MDE (eff) | "
-               "Largest separation ON THAT POOL (eff) | Resolvable? | "
-               "Cluster p at zero injection |")
+               "Largest separation ON THAT POOL (eff) | By family (signed) | "
+               "Resolvable? | Cluster p at zero injection |")
     out.append("|------|-----:|---------------:|------------------:|---------------:|"
-               "-------------------------------------:|:-----------:|"
-               "----------------------------:|")
+               "-------------------------------------:|--------------------|"
+               ":-----------:|----------------------------:|")
     for key, label, denom in (
             ("1410", "#1410 design (its 30-hypothesis grid)", 30),
             ("primary", "this study, primary cohort", PRIMARY_FAMILY_SIZE),
@@ -2284,15 +2439,18 @@ def render_report(payload: dict) -> str:
         c = mde.get(f"pooled_{key}_cluster")
         f = mde.get(f"pooled_{key}_free")
         seps = by_pool.get(key) or {}
-        largest = (max(abs(float(v)) for v in seps.values()) if seps else None)
+        largest = _largest_signed(seps)
         if largest is None or c is None:
             resolvable = "-"
+        elif largest < 0:
+            resolvable = "n/a (reversed)"
         else:
             resolvable = "yes" if largest >= c else "NO"
         out.append(f"| {label} | {mde.get(f'pooled_{key}_n', 0)} | {denom} | "
                    f"{'> ' + f'{MDE_EFF_GRID_MAX:g}' if c is None else _fmt(c, 3)} | "
                    f"{'> ' + f'{MDE_EFF_GRID_MAX:g}' if f is None else _fmt(f, 3)} | "
-                   f"{_fmt(largest, 3)} | {resolvable} | "
+                   f"{_fmt_signed(largest, 3)} | {_fmt_family_seps(seps, 3)} | "
+                   f"{resolvable} | "
                    f"{_fmt_p(mde.get(f'pooled_{key}_cluster_p0'))} |")
     out.append("")
     out.append(
@@ -2302,24 +2460,58 @@ def render_report(payload: dict) -> str:
     out.append("")
     by_pool_pp = mde.get("observed_separation_pp_by_pool") or {}
     out.append("| Pool | Cluster MDE (pp/trade) | Largest separation ON THAT POOL "
-               "(pp/trade) | Resolvable? | Cluster p at zero injection |")
+               "(pp/trade) | By family (signed) | Resolvable? | "
+               "Cluster p at zero injection |")
     out.append("|------|-----------------------:|"
-               "------------------------------------------:|:-----------:|"
-               "----------------------------:|")
+               "------------------------------------------:|--------------------|"
+               ":-----------:|----------------------------:|")
     for key, label in (("1410", "#1410 design (its 30-hypothesis grid)"),
                        ("primary", "this study, primary cohort"),
                        ("exploratory", "this study, exploratory grid")):
         c = mde.get(f"pooled_{key}_cluster_return")
         seps = by_pool_pp.get(key) or {}
-        largest = (max(abs(float(v)) for v in seps.values()) if seps else None)
+        largest = _largest_signed(seps)
         if largest is None or c is None:
             resolvable = "-"
+        elif largest < 0:
+            resolvable = "n/a (reversed)"
         else:
             resolvable = "yes" if largest >= c else "NO"
         out.append(f"| {label} | "
                    f"{'> ' + f'{MDE_PP_GRID_MAX:g}' if c is None else _fmt(c)} | "
-                   f"{_fmt(largest)} | {resolvable} | "
+                   f"{_fmt_signed(largest)} | {_fmt_family_seps(seps)} | "
+                   f"{resolvable} | "
                    f"{_fmt_p(mde.get(f'pooled_{key}_cluster_return_p0'))} |")
+    out.append("")
+    out.append(
+        "**The two numbers the validity gate actually reads** are neither of the "
+        "pooled rows above. The gate is evaluated on the CONFIRMATORY family "
+        f"(`{PRIMARY_FAMILY}`) alone, because that is the family the single "
+        "pre-registered hypothesis belongs to, and both of its numbers are "
+        "measured on that family's own rows. The pooled primary limit spans BOTH "
+        "families and would resolve a smaller effect purely because it holds more "
+        "trades, so reading it against one family's separation would make the "
+        "gate easier to pass than its own row-matched rule allows.")
+    out.append("")
+    fam_lim = mde.get("by_family_cluster") or {}
+    fam_sep = mde.get("by_family_separation") or {}
+    fam_lim_ret = mde.get("by_family_cluster_return") or {}
+    fam_sep_ret = mde.get("by_family_separation_return") or {}
+    fam_n = mde.get("by_family_n") or {}
+    out.append("| Family | Rows | Cluster MDE (eff) | Separation (eff, signed) | "
+               "Cluster MDE (pp) | Separation (pp, signed) | Reads the gate? |")
+    out.append("|--------|-----:|------------------:|-------------------------:|"
+               "----------------:|------------------------:|:---------------:|")
+    for family in FAMILIES:
+        lim = fam_lim.get(family)
+        lim_ret = fam_lim_ret.get(family)
+        out.append(
+            f"| `{family}` | {fam_n.get(family, 0)} | "
+            f"{'> ' + f'{MDE_EFF_GRID_MAX:g}' if lim is None else _fmt(lim, 3)} | "
+            f"{_fmt_signed(fam_sep.get(family), 3)} | "
+            f"{'> ' + f'{MDE_PP_GRID_MAX:g}' if lim_ret is None else _fmt(lim_ret)} | "
+            f"{_fmt_signed(fam_sep_ret.get(family))} | "
+            f"{'YES' if family == PRIMARY_FAMILY else 'no'} |")
     out.append("")
 
     out.append("## Part A - outcomes bucketed by H at entry")
@@ -2573,6 +2765,56 @@ def resolve_primary_config_id(json_path: str) -> str:
     return best[1]
 
 
+def decision_payload(decision: dict) -> dict:
+    """The committed JSON's `decision` block, from a live decision dict.
+
+    The live dict carries full config dicts under `families[*].winner`; the
+    committed shape stores the winner's id and `--render-only` rehydrates it.
+    One function owns the projection so the committed block is always exactly
+    `decision_payload(decide_recommendation(configs, mde))` — a test pins that
+    equality, which is what keeps a hand-edited or stale JSON from publishing a
+    verdict the current rule would not produce.
+    """
+    return {
+        "verdict": decision["verdict"],
+        "justification": decision["justification"],
+        "validity_gate": decision["validity_gate"],
+        "key_risk_held": decision["key_risk_held"],
+        "families": {f: {"n_tested": d["n_tested"], "n_passing": d["n_passing"],
+                         "winner": ((d["winner"] or {}).get("config_id")
+                                    if isinstance(d["winner"], dict)
+                                    else d["winner"])}
+                     for f, d in decision["families"].items()},
+    }
+
+
+def inference_deviations(args) -> list:
+    """Every way this run's INFERENCE differs from the pre-registered design.
+
+    Narrowing the data is only one way to produce a different study, and it is
+    the visible one — a scoped report is obviously partial. A run that keeps
+    every dataset but weakens the inference (fewer permutation draws, a
+    different seed) or skips the harness-identity verification is just as far
+    from the pre-registration and far more dangerous, because the report's
+    shape reveals nothing: the tables are full and the numbers look complete.
+
+    A value stated EXPLICITLY at its pre-registered setting is not a deviation.
+    It is the same run, spelled out.
+    """
+    out = []
+    if args.n_perm != N_PERM:
+        out.append(f"--n-perm {args.n_perm} (pre-registered {N_PERM})")
+    if args.n_perm_mde != N_PERM_MDE:
+        out.append(f"--n-perm-mde {args.n_perm_mde} "
+                   f"(pre-registered {N_PERM_MDE})")
+    if args.seed != SEED:
+        out.append(f"--seed {args.seed} (pre-registered {SEED})")
+    if args.no_mirror_check:
+        out.append("--no-mirror-check (the pre-registered design verifies every "
+                   "leg against eval_windows.run_leg)")
+    return out
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--jobs", type=int, default=4, help="worker threads")
@@ -2614,20 +2856,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "hurst_windows": args.hurst_windows,
     }
     scope["complete"] = not any(v for v in scope.values())
+    # NARROWING the data is only one way to produce a different study. A run
+    # that keeps every dataset but weakens the INFERENCE (fewer permutation
+    # draws, a different seed) or skips the harness-identity VERIFICATION is
+    # just as far from the pre-registered design, and it is worse than a scoped
+    # run because nothing in the report's shape reveals it: the numbers still
+    # look complete. `--seed` stated explicitly at its pre-registered value is
+    # not a deviation — it is the same run, spelled out.
+    deviations = inference_deviations(args)
+    scope["pre_registered_inference"] = not deviations
     # --fetch-only writes neither artifact, so scoping it to the venues that
     # actually need a backfill must not be refused.
-    if not scope["complete"] and not args.fetch_only:
-        narrowed = ", ".join(f"--{k.replace('_', '-')} {v}"
-                             for k, v in scope.items() if k != "complete" and v)
+    if (not scope["complete"] or deviations) and not args.fetch_only:
+        narrowed = ", ".join(
+            [f"--{k.replace('_', '-')} {v}" for k, v in scope.items()
+             if k not in ("complete", "pre_registered_inference") and v]
+            + deviations)
+        kind = ("a scoped run" if not scope["complete"]
+                else "a run that deviates from the pre-registered design")
         if os.path.abspath(args.json_out) == os.path.abspath(_DEFAULT_JSON_OUT):
             raise SystemExit(
                 f"[1424] refusing to overwrite the committed aggregate "
-                f"{_DEFAULT_JSON_OUT} from a scoped run ({narrowed}). Pass an "
+                f"{_DEFAULT_JSON_OUT} from {kind} ({narrowed}). Pass an "
                 f"explicit --json-out.")
         if os.path.abspath(args.report_out) == os.path.abspath(_DEFAULT_REPORT_OUT):
             raise SystemExit(
                 f"[1424] refusing to target the live-evidence contract path "
-                f"{_DEFAULT_REPORT_OUT} from a scoped run ({narrowed}). Pass an "
+                f"{_DEFAULT_REPORT_OUT} from {kind} ({narrowed}). Pass an "
                 f"explicit --report-out.")
 
     if args.render_only:
@@ -2638,12 +2893,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if is_contract:
             # Fail closed: a payload with no scope stamp cannot prove it came
             # from a complete run.
-            stamped = ((payload.get("run_summary") or {}).get("scope")
-                       or {}).get("complete")
-            if not stamped:
+            stamp = ((payload.get("run_summary") or {}).get("scope") or {})
+            if not stamp.get("complete"):
                 raise SystemExit(
                     f"[1424] {args.json_out} is not stamped as a complete run, "
                     f"so it may not be rendered to the contract path "
+                    f"{_DEFAULT_REPORT_OUT}.")
+            if not stamp.get("pre_registered_inference"):
+                raise SystemExit(
+                    f"[1424] {args.json_out} is not stamped as having run the "
+                    f"pre-registered inference settings and verification, so it "
+                    f"may not be rendered to the contract path "
                     f"{_DEFAULT_REPORT_OUT}.")
             if not args.write_report:
                 raise SystemExit(
@@ -2949,15 +3209,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "joint": joint,
         "configs": configs,
         "legs": [{k: v for k, v in lg.items() if k != "trades"} for lg in legs],
-        "decision": {
-            "verdict": decision["verdict"],
-            "justification": decision["justification"],
-            "validity_gate": decision["validity_gate"],
-            "key_risk_held": decision["key_risk_held"],
-            "families": {f: {"n_tested": d["n_tested"], "n_passing": d["n_passing"],
-                             "winner": (d["winner"] or {}).get("config_id")}
-                         for f, d in decision["families"].items()},
-        },
+        "decision": decision_payload(decision),
     }
 
     with open(args.json_out, "w") as fh:
