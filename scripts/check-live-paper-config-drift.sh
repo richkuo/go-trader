@@ -28,9 +28,11 @@
 # --mode=paper; anything else is "unset" and never forms a pair.
 #
 # Exit codes:
-#   0 — every live/paper pair in sync on cadence/sizing (SKIP-only flags do
-#       not gate: those pairs are deliberately left alone)
-#   1 — cadence/sizing drift found, or a deployment unreadable/missing
+#   0 — every live/paper pair in sync on cadence/sizing (a SKIP flag on
+#       other-field differences alone does not gate: those pairs are
+#       deliberately left alone)
+#   1 — cadence/sizing drift found on any pair (CANDIDATE or SKIP), or a
+#       deployment unreadable/missing
 #   2 — nothing to audit (an empty audit is NOT a verified fleet)
 set -euo pipefail
 
@@ -235,7 +237,10 @@ for sid in sorted(by_id):
             for k, lv, pv in other_diffs:
                 print("  OTHER  %-22s live=%-14s paper=%s" % (k, fmt(lv), fmt(pv)))
             if watched_diffs and other_diffs:
+                # SKIP label (leave the pair alone), but the cadence/sizing
+                # drift still gates: any watched difference fails the audit.
                 skip_pairs += 1
+                drift_pairs += 1
                 print("  VERDICT: SKIP — cadence/sizing drift present, but other fields differ; leave this pair alone")
             elif watched_diffs:
                 drift_pairs += 1
@@ -252,7 +257,7 @@ if bad:
     print("VERDICT: FAIL — %d deployment(s) unreadable; cannot certify the fleet" % bad)
     sys.exit(1)
 if drift_pairs:
-    print("VERDICT: DRIFT — %d live/paper pair(s) with syncable cadence/sizing drift, %d SKIP, %d in sync"
+    print("VERDICT: DRIFT — %d live/paper pair(s) with cadence/sizing drift, %d flagged SKIP (left alone), %d in sync"
           % (drift_pairs, skip_pairs, sync_pairs))
     sys.exit(1)
 total = drift_pairs + skip_pairs + sync_pairs

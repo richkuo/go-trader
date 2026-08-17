@@ -287,7 +287,7 @@ rm -rf "$fleet"
 # --- #1430: live/paper config drift audit ----------------------------------
 drift=$(mktemp -d)
 mkdir -p "$drift/live/scheduler" "$drift/paper/scheduler" "$drift/paper2/scheduler" \
-    "$drift/synced/scheduler" "$drift/broken/scheduler"
+    "$drift/paper3/scheduler" "$drift/synced/scheduler" "$drift/broken/scheduler"
 
 # Live twin: 5-minute cadence, leveraged, margin-sized.
 cat > "$drift/live/scheduler/config.json" <<'JSON'
@@ -321,6 +321,19 @@ cat > "$drift/paper2/scheduler/config.json" <<'JSON'
    "args": ["vwap", "ETH", "15m", "--mode=paper"],
    "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
    "capital": 100, "close_strategy": "trailing_tp_ratchet_regime"}
+]}
+JSON
+
+# Paper twin with BOTH cadence drift AND an other-field difference -> SKIP
+# flag, but the cadence/sizing drift must still gate (exit 1) even when this
+# is the only pair audited.
+cat > "$drift/paper3/scheduler/config.json" <<'JSON'
+{"config_version": 17, "strategies": [
+  {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_strategy.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "tiered_tp_atr"}
 ]}
 JSON
 
@@ -383,6 +396,20 @@ audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" 
 assert_eq "$audit_rc" "1" "drift audit: any cadence/sizing drift gates the runbook"
 if [[ "$audit_out" != *"CANDIDATE"* || "$audit_out" != *"SKIP"* ]]; then
     echo "FAIL: expected both CANDIDATE and SKIP verdicts across pairs, got: $audit_out" >&2
+    exit 1
+fi
+
+# Single watched+other pair: the cadence/sizing drift must gate (exit 1) even
+# though the pair is flagged SKIP — no second CANDIDATE pair may be needed to
+# trip the exit code (PR #1434 review).
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper3") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: a single watched+other pair still gates on its cadence/sizing drift"
+if [[ "$audit_out" != *"SKIP"* ]]; then
+    echo "FAIL: expected SKIP verdict for watched+other pair, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" != *"DRIFT"* || "$audit_out" == *"VERDICT: OK"* ]]; then
+    echo "FAIL: expected overall DRIFT verdict for watched+other pair, got: $audit_out" >&2
     exit 1
 fi
 
