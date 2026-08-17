@@ -25,7 +25,11 @@
 # The script never writes anything — no config rewrite, no daemon
 # interaction. Mode classification mirrors the daemon: a strategy is live
 # when its args carry --mode=live (or "--mode live"), paper when they carry
-# --mode=paper; anything else is "unset" and never forms a pair.
+# --mode=paper; anything else is "unset" — and since the daemon runs a
+# no-mode strategy as paper (!isLiveArgs), an unset block whose id has a
+# live twin pairs as the paper twin when no explicit --mode=paper block
+# exists, or is flagged UNPAIRED (never silently dropped, never
+# double-reported) when one does.
 #
 # Exit codes:
 #   0 — every live/paper pair in sync on cadence/sizing (a SKIP flag on
@@ -201,7 +205,22 @@ for sid in sorted(by_id):
     group = by_id[sid]
     lives = sorted((e for e in group if e[2] == "live"), key=lambda e: e[1])
     papers = sorted((e for e in group if e[2] == "paper"), key=lambda e: e[1])
-    if not lives or not papers:
+    unsets = sorted((e for e in group if e[2] == "unset"), key=lambda e: e[1])
+    if not lives:
+        continue
+    if not papers and unsets:
+        # The daemon runs a no-mode strategy as paper (!isLiveArgs,
+        # scheduler/config.go:517), so with no explicit --mode=paper twin the
+        # unset blocks ARE the paper twins — pair them, never drop them.
+        papers = unsets
+        unsets = []
+    for u in unsets:
+        # An explicit --mode=paper twin already pairs this id; a second pair
+        # per unset block would double-report, so flag it instead.
+        print()
+        print("UNPAIRED (unset mode) %s at %s — no --mode token; the daemon runs it as paper but an explicit --mode=paper twin exists. Add --mode=paper to audit it directly."
+              % (sid, u[1]))
+    if not papers:
         continue
     for live in lives:
         for paper in papers:
@@ -231,7 +250,8 @@ for sid in sorted(by_id):
             print()
             print("PAIR %s" % sid)
             print("  live : %s" % live[1])
-            print("  paper: %s" % paper[1])
+            note = " (no --mode token — daemon default is paper)" if paper[2] == "unset" else ""
+            print("  paper: %s%s" % (paper[1], note))
             for k, lv, pv in watched_diffs:
                 print("  DRIFT  %-22s live=%-14s paper=%s" % (k, fmt(lv), fmt(pv)))
             for k, lv, pv in other_diffs:

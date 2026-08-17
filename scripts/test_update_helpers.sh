@@ -298,7 +298,9 @@ cat > "$drift/live/scheduler/config.json" <<'JSON'
    "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
    "capital": 100, "close_strategy": "trailing_tp_ratchet_regime"},
   {"id": "solo-live", "type": "perps",
-   "args": ["sma", "BTC", "1h", "--mode=live"], "interval_seconds": 300}
+   "args": ["sma", "BTC", "1h", "--mode=live"], "interval_seconds": 300},
+  {"id": "solo-unset", "type": "perps",
+   "args": ["sma", "DOGE", "1h"], "interval_seconds": 600}
 ]}
 JSON
 
@@ -349,6 +351,20 @@ cat > "$drift/synced/scheduler/config.json" <<'JSON'
 JSON
 
 printf 'not json\n' > "$drift/broken/scheduler/config.json"
+
+# Paper twin with NO --mode token (daemon runs no-mode as paper) and drifted
+# cadence -> must pair with the live twin and gate, not be silently dropped
+# (PR #1434 review).
+mkdir -p "$drift/paper4/scheduler"
+cat > "$drift/paper4/scheduler/config.json" <<'JSON'
+{"config_version": 17, "strategies": [
+  {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_strategy.py",
+   "args": ["vwap", "ETH", "1h"],
+   "interval_seconds": 3600, "leverage": 1,
+   "capital": 10000, "close_strategy": "trailing_tp_ratchet_regime"}
+]}
+JSON
 
 # Drifted pair: exit 1, per-field drift lines, CANDIDATE verdict.
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper") && audit_rc=0 || audit_rc=$?
@@ -410,6 +426,41 @@ if [[ "$audit_out" != *"SKIP"* ]]; then
 fi
 if [[ "$audit_out" != *"DRIFT"* || "$audit_out" == *"VERDICT: OK"* ]]; then
     echo "FAIL: expected overall DRIFT verdict for watched+other pair, got: $audit_out" >&2
+    exit 1
+fi
+
+# Unset-mode (no --mode token) paper twin: the daemon runs no-mode as paper
+# (!isLiveArgs, scheduler/config.go:517), so the audit must pair it with the
+# live twin and gate on its drift — never silently drop it (PR #1434 review).
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper4") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: no-mode paper twin pairs with live and gates on drift"
+if [[ "$audit_out" != *"PAIR hl-vwap-eth-60"* || "$audit_out" != *"interval_seconds"* ]]; then
+    echo "FAIL: expected drift pair for no-mode paper twin, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" != *"--mode"* ]]; then
+    echo "FAIL: expected a no-mode annotation on the pair, got: $audit_out" >&2
+    exit 1
+fi
+
+# Inverse: an unset block with a unique id (no live twin) must NOT produce a
+# spurious pair or phantom drift.
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/synced") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: in-sync pair plus unique-id unset block exits 0"
+if [[ "$audit_out" == *"PAIR solo-unset"* || "$audit_out" == *"UNPAIRED solo-unset"* ]]; then
+    echo "FAIL: unique-id unset block must not be paired or flagged, got: $audit_out" >&2
+    exit 1
+fi
+
+# Live id with BOTH an explicit --mode=paper twin and a no-mode block: pair the
+# explicit twin once, flag the no-mode block UNPAIRED — never double-report.
+# The explicit pair here is in sync, so nothing gates (exit 0).
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/synced" "$drift/paper4") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: in-sync explicit pair + UNPAIRED no-mode block exits 0"
+pair_count=$(printf '%s\n' "$audit_out" | grep -c '^PAIR ')
+assert_eq "$pair_count" "1" "drift audit: exactly one pair when explicit paper and no-mode blocks coexist"
+if [[ "$audit_out" != *"UNPAIRED"* ]]; then
+    echo "FAIL: expected UNPAIRED note for the no-mode block, got: $audit_out" >&2
     exit 1
 fi
 
