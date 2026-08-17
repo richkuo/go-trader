@@ -284,4 +284,127 @@ assert_eq "$audit_rc" "1" "fleet audit: missing config is a FAIL (cannot verify)
 assert_eq "$(cat "$fleet/old/scheduler/config.json")" '{"config_version": 12}' "fleet audit is read-only"
 rm -rf "$fleet"
 
+# --- #1430: live/paper config drift audit ----------------------------------
+drift=$(mktemp -d)
+mkdir -p "$drift/live/scheduler" "$drift/paper/scheduler" "$drift/paper2/scheduler" \
+    "$drift/synced/scheduler" "$drift/broken/scheduler"
+
+# Live twin: 5-minute cadence, leveraged, margin-sized.
+cat > "$drift/live/scheduler/config.json" <<'JSON'
+{"config_version": 17, "strategies": [
+  {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_strategy.py",
+   "args": ["vwap", "ETH", "1h", "--mode=live"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "trailing_tp_ratchet_regime"},
+  {"id": "solo-live", "type": "perps",
+   "args": ["sma", "BTC", "1h", "--mode=live"], "interval_seconds": 300}
+]}
+JSON
+
+# Paper twin with drifted cadence + sizing (the #1430 worked example shape).
+cat > "$drift/paper/scheduler/config.json" <<'JSON'
+{"config_version": 17, "strategies": [
+  {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_strategy.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 1,
+   "capital": 10000, "close_strategy": "trailing_tp_ratchet_regime"}
+]}
+JSON
+
+# Paper twin synced on cadence/sizing but differing elsewhere -> SKIP flag.
+cat > "$drift/paper2/scheduler/config.json" <<'JSON'
+{"config_version": 17, "strategies": [
+  {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_strategy.py",
+   "args": ["vwap", "ETH", "15m", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "trailing_tp_ratchet_regime"}
+]}
+JSON
+
+# Paper twin fully in sync (only --mode differs).
+cat > "$drift/synced/scheduler/config.json" <<'JSON'
+{"config_version": 17, "strategies": [
+  {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_strategy.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 300, "leverage": 20, "margin_per_trade_usd": 50,
+   "capital": 100, "close_strategy": "trailing_tp_ratchet_regime"}
+]}
+JSON
+
+printf 'not json\n' > "$drift/broken/scheduler/config.json"
+
+# Drifted pair: exit 1, per-field drift lines, CANDIDATE verdict.
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: drifted live/paper pair exits 1"
+if [[ "$audit_out" != *"hl-vwap-eth-60"* ]]; then
+    echo "FAIL: expected pair header for hl-vwap-eth-60, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" != *"interval_seconds"* || "$audit_out" != *"3600"* ]]; then
+    echo "FAIL: expected interval_seconds drift line (300 vs 3600), got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" != *"leverage"* || "$audit_out" != *"margin_per_trade_usd"* || "$audit_out" != *"capital"* ]]; then
+    echo "FAIL: expected leverage/margin/capital drift lines, got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" != *"CANDIDATE"* ]]; then
+    echo "FAIL: expected CANDIDATE verdict (differences limited to cadence/sizing/--mode), got: $audit_out" >&2
+    exit 1
+fi
+if [[ "$audit_out" == *"solo-live"* && "$audit_out" == *"PAIR solo-live"* ]]; then
+    echo "FAIL: live-only strategy must not form a pair, got: $audit_out" >&2
+    exit 1
+fi
+
+# In-sync pair: exit 0, IN SYNC verdict.
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/synced") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: in-sync pair exits 0"
+if [[ "$audit_out" != *"IN SYNC"* ]]; then
+    echo "FAIL: expected IN SYNC verdict, got: $audit_out" >&2
+    exit 1
+fi
+
+# Other-fields-differ pair (sizing synced): SKIP flag, and NOT a hard failure —
+# the runbook gate fails only on syncable cadence/sizing drift.
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper2") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "0" "drift audit: other-fields-only drift flags SKIP but does not gate"
+if [[ "$audit_out" != *"SKIP"* || "$audit_out" != *"OTHER"* ]]; then
+    echo "FAIL: expected SKIP verdict with OTHER lines, got: $audit_out" >&2
+    exit 1
+fi
+
+# Watched drift AND other drift together: still exit 1, flagged SKIP (leave alone).
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper" "$drift/paper2") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: any cadence/sizing drift gates the runbook"
+if [[ "$audit_out" != *"CANDIDATE"* || "$audit_out" != *"SKIP"* ]]; then
+    echo "FAIL: expected both CANDIDATE and SKIP verdicts across pairs, got: $audit_out" >&2
+    exit 1
+fi
+
+# Unreadable config: exit 1 (cannot certify the fleet).
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/broken") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: unreadable config exits 1"
+
+# Missing config: exit 1.
+audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/no-such-dir") && audit_rc=0 || audit_rc=$?
+assert_eq "$audit_rc" "1" "drift audit: missing config exits 1"
+
+# The audit must never mutate a config it reads.
+assert_eq "$(cat "$drift/paper/scheduler/config.json")" "$(cat <<'JSON'
+{"config_version": 17, "strategies": [
+  {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
+   "script": "shared_scripts/check_strategy.py",
+   "args": ["vwap", "ETH", "1h", "--mode=paper"],
+   "interval_seconds": 3600, "leverage": 1,
+   "capital": 10000, "close_strategy": "trailing_tp_ratchet_regime"}
+]}
+JSON
+)" "drift audit is read-only"
+rm -rf "$drift"
+
 echo "OK: update_helpers tests passed"
