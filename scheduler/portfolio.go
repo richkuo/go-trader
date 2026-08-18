@@ -274,7 +274,7 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 	// hedge from the replayed primary. Zero-qty residuals (phantom cleanups)
 	// carry no mirrorable exposure and are skipped too.
 	if pos.Quantity > 0 && !pos.isHedgeLeg() {
-		recordReplayDecision(s, ReplayDecisionFullClose, pos.Symbol, pos.Side, pos.Quantity, closePrice, reason, closedAt)
+		recordReplayDecision(s, ReplayDecisionFullClose, pos.Symbol, pos.Side, pos.Quantity, closePrice, reason, closedAt, 0, "")
 	}
 }
 
@@ -545,7 +545,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		// full_close row instead. Post-RecordTrade, own transaction; hedge
 		// legs are mirrored by the paper side's state-derived reconciler.
 		if !pos.isHedgeLeg() {
-			recordReplayDecision(s, ReplayDecisionPartialClose, symbol, side, qty, closePx, reason, now)
+			recordReplayDecision(s, ReplayDecisionPartialClose, symbol, side, qty, closePx, reason, now, 0, "")
 		}
 	}
 	if logger != nil {
@@ -1545,7 +1545,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				// (post-RecordTrade, own transaction; full closes funnel
 				// through recordClosedPosition instead).
 				if !pos.isHedgeLeg() {
-					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now)
+					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now, 0, "")
 				}
 				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
 			} else {
@@ -1764,7 +1764,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				// (post-RecordTrade, own transaction; full closes funnel
 				// through recordClosedPosition instead).
 				if !pos.isHedgeLeg() {
-					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now)
+					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now, 0, "")
 				}
 				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
 			} else {

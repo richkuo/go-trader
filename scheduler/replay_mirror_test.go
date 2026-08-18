@@ -220,3 +220,118 @@ func TestMirrorSuppressionWiring(t *testing.T) {
 		t.Fatal("HL perps dispatch missing the #1431 replay application call")
 	}
 }
+
+// ─── review-round-1 regression tests (atomicity, stamps, index) ─────────────
+
+func TestMirrorReplayPersistedWatermarkSurvivesRestart(t *testing.T) {
+	// Review finding 1, must-survive case (2)+(3): the process crashed AFTER
+	// SaveState persisted the open (row 1) + scale-in (row 2) and the
+	// watermark, but BEFORE MarkDecisionsApplied flipped the shared rows. On
+	// restart the in-memory high-water is empty; rows 1-2 come back pending.
+	// The persisted watermark must re-mark them WITHOUT re-applying — a
+	// repeated scale_in would double the book — while the genuinely new row 3
+	// still applies.
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1905, Side: "long", Multiplier: 1}
+	s.ReplayMirrorWatermark = 2
+	pending := []ReplayDecision{
+		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+		{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
+		{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1920},
+	}
+	applied, trades, _ := applyReplayedLiveDecisions(sc, s, pending, 1920.0, replayTestResult(), &Config{}, logger)
+	if trades != 1 {
+		t.Fatalf("trades = %d, want 1 (only row 3 re-applied)", trades)
+	}
+	if len(applied) != 3 {
+		t.Fatalf("applied = %v, want all three rows (re-)marked", applied)
+	}
+	if pos := s.Positions["ETH"]; pos.Quantity != 1.5 {
+		t.Fatalf("position qty = %.4f, want 1.5 (no double add of rows 1-2)", pos.Quantity)
+	}
+	if s.ReplayMirrorWatermark != 3 {
+		t.Fatalf("watermark = %d, want 3", s.ReplayMirrorWatermark)
+	}
+}
+
+func TestMirrorReplayWatermarkAdvancesOnApply(t *testing.T) {
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	pending := []ReplayDecision{
+		{DecisionID: 7, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, replayTestResult(), &Config{}, logger); trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	if s.ReplayMirrorWatermark != 7 {
+		t.Fatalf("watermark = %d, want 7", s.ReplayMirrorWatermark)
+	}
+}
+
+func TestMirrorReplayOpenSeedsLiveStamps(t *testing.T) {
+	// Review optional 1: live's open-time EntryATR/regime ride the row, and the
+	// mirror seeds them even when paper's own payload disagrees on the bar.
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	result := replayTestResult()
+	result.Indicators["atr"] = 99.0 // paper disagrees with live's 42.5
+	pending := []ReplayDecision{
+		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 42.5, Regime: "trending_up"},
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, result, &Config{}, logger); trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	pos := s.Positions["ETH"]
+	if pos.EntryATR != 42.5 {
+		t.Errorf("EntryATR = %v, want live's 42.5 (not paper's 99)", pos.EntryATR)
+	}
+	if pos.Regime != "trending_up" {
+		t.Errorf("Regime = %q, want live's trending_up", pos.Regime)
+	}
+}
+
+func TestMirrorReplayOpenFallsBackToPaperStamps(t *testing.T) {
+	// Rows written before the entry_atr/regime columns existed (0/"") keep the
+	// paper-payload stamps.
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	result := replayTestResult()
+	result.Indicators["atr"] = 33.0
+	pending := []ReplayDecision{
+		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, result, &Config{}, logger); trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	if pos := s.Positions["ETH"]; pos.EntryATR != 33.0 {
+		t.Errorf("EntryATR = %v, want paper's 33 (no live stamp on the row)", pos.EntryATR)
+	}
+}
+
+func TestMirrorSaveBeforeMarkWiring(t *testing.T) {
+	// Structural lock for review finding 1's invariant: inside the HL perps
+	// replay block the state save (book + watermark, one transaction) must run
+	// BEFORE the shared log's mark-applied.
+	src := string(mustReadFile(t, "main.go"))
+	applyIdx := strings.Index(src, "applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)")
+	if applyIdx < 0 {
+		t.Fatal("replay application call not found")
+	}
+	saveIdx := strings.Index(src[applyIdx:], "SaveStateWithDB(state, cfg, stateDB)")
+	markIdx := strings.Index(src[applyIdx:], "decisionLog.MarkDecisionsApplied(appliedIDs)")
+	if saveIdx < 0 || markIdx < 0 {
+		t.Fatalf("replay block missing save (%d) or mark (%d) after apply", saveIdx, markIdx)
+	}
+	if saveIdx > markIdx {
+		t.Fatal("MarkDecisionsApplied runs BEFORE SaveStateWithDB — a kill in the gap drops a mirrored trade")
+	}
+}
+
+func TestSystemdTemplateGrantsSharedReplayDir(t *testing.T) {
+	// Review finding 2: two template instances must both be able to write the
+	// shared replay_log_path under ProtectSystem=strict.
+	src := string(mustReadFile(t, "../systemd/go-trader@.service"))
+	if !strings.Contains(src, "StateDirectory=go-trader/%i go-trader/shared") {
+		t.Fatal("template unit StateDirectory missing go-trader/shared — template instances cannot write the shared replay log path")
+	}
+	if !strings.Contains(src, "ProtectSystem=strict") {
+		t.Fatal("template unit lost ProtectSystem=strict")
+	}
+}

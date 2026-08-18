@@ -66,7 +66,14 @@ type ReplayDecision struct {
 	Quantity       float64
 	ReferencePrice float64
 	CloseReason    string // close decisions only; "" for open/scale_in
-	ReplayStatus   string
+	// EntryATR/Regime carry live's open-time stamps on open/scale_in rows so
+	// the paper mirror seeds the SAME stop geometry and regime label live
+	// booked (paper's own check payload can disagree with live's on the same
+	// bar). 0/"" on close rows and on rows written before the columns
+	// existed — the mirror falls back to its own payload stamps then.
+	EntryATR     float64
+	Regime       string
+	ReplayStatus string
 }
 
 const replayLogSchemaDDL = `
@@ -80,10 +87,24 @@ CREATE TABLE IF NOT EXISTS decisions (
 	quantity REAL NOT NULL,
 	reference_price REAL NOT NULL,
 	close_reason TEXT NOT NULL DEFAULT '',
-	replay_status TEXT NOT NULL DEFAULT 'pending'
+	replay_status TEXT NOT NULL DEFAULT 'pending',
+	entry_atr REAL NOT NULL DEFAULT 0,
+	regime TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_strategy_decided ON decisions(strategy_id, decided_at);
+-- Covering index for the per-cycle pending read: filter (strategy_id,
+-- replay_status) + order (decision_id) resolve from the index alone, so the
+-- lookup stays O(pending) instead of scanning every applied row the strategy
+-- ever wrote.
+CREATE INDEX IF NOT EXISTS idx_decisions_strategy_status_id ON decisions(strategy_id, replay_status, decision_id);
 `
+
+// replayLogColumnMigrations brings pre-column databases forward. Idempotent:
+// a "duplicate column name" error means the column already exists.
+var replayLogColumnMigrations = []string{
+	"ALTER TABLE decisions ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
+	"ALTER TABLE decisions ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
+}
 
 // DecisionLogDB wraps the shared decision-log SQLite database. Live and paper
 // deployments on the same host open the same path concurrently, so WAL +
@@ -117,6 +138,12 @@ func OpenDecisionLogDB(path string) (*DecisionLogDB, error) {
 		db.Close()
 		return nil, fmt.Errorf("create replay log schema: %w", err)
 	}
+	for _, migration := range replayLogColumnMigrations {
+		if _, err := db.Exec(migration); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("replay log migration %q: %w", migration, err)
+		}
+	}
 	return &DecisionLogDB{db: db}, nil
 }
 
@@ -136,10 +163,10 @@ func (d *DecisionLogDB) InsertDecision(dec ReplayDecision) error {
 		return fmt.Errorf("replay log db unavailable")
 	}
 	_, err := d.db.Exec(`INSERT INTO decisions
-		(strategy_id, decision_type, decided_at, symbol, side, quantity, reference_price, close_reason, replay_status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(strategy_id, decision_type, decided_at, symbol, side, quantity, reference_price, close_reason, replay_status, entry_atr, regime)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		dec.StrategyID, dec.DecisionType, formatTime(dec.DecidedAt), dec.Symbol, dec.Side,
-		dec.Quantity, dec.ReferencePrice, dec.CloseReason, replayStatusPending)
+		dec.Quantity, dec.ReferencePrice, dec.CloseReason, replayStatusPending, dec.EntryATR, dec.Regime)
 	if err != nil {
 		return fmt.Errorf("insert replay decision for %s: %w", dec.StrategyID, err)
 	}
@@ -152,7 +179,7 @@ func (d *DecisionLogDB) PendingDecisions(strategyID string) ([]ReplayDecision, e
 	if d == nil || d.db == nil {
 		return nil, fmt.Errorf("replay log db unavailable")
 	}
-	rows, err := d.db.Query(`SELECT decision_id, strategy_id, decision_type, decided_at, symbol, side, quantity, reference_price, close_reason, replay_status
+	rows, err := d.db.Query(`SELECT decision_id, strategy_id, decision_type, decided_at, symbol, side, quantity, reference_price, close_reason, entry_atr, regime, replay_status
 		FROM decisions WHERE strategy_id = ? AND replay_status = ? ORDER BY decision_id ASC`, strategyID, replayStatusPending)
 	if err != nil {
 		return nil, fmt.Errorf("query pending replay decisions for %s: %w", strategyID, err)
@@ -162,7 +189,7 @@ func (d *DecisionLogDB) PendingDecisions(strategyID string) ([]ReplayDecision, e
 	for rows.Next() {
 		var dec ReplayDecision
 		var decidedAt string
-		if err := rows.Scan(&dec.DecisionID, &dec.StrategyID, &dec.DecisionType, &decidedAt, &dec.Symbol, &dec.Side, &dec.Quantity, &dec.ReferencePrice, &dec.CloseReason, &dec.ReplayStatus); err != nil {
+		if err := rows.Scan(&dec.DecisionID, &dec.StrategyID, &dec.DecisionType, &decidedAt, &dec.Symbol, &dec.Side, &dec.Quantity, &dec.ReferencePrice, &dec.CloseReason, &dec.EntryATR, &dec.Regime, &dec.ReplayStatus); err != nil {
 			return nil, fmt.Errorf("scan replay decision: %w", err)
 		}
 		dec.DecidedAt = parseTime(decidedAt)
@@ -295,7 +322,7 @@ const decisionLogAlertThreshold = 3
 // write commits, never before — the insert is its own transaction, so a
 // failure here can never roll back trade state; failures surface via stderr
 // plus a throttled owner DM at decisionLogAlertThreshold consecutive failures.
-func recordReplayDecision(s *StrategyState, decisionType, symbol, side string, qty, referencePrice float64, closeReason string, decidedAt time.Time) {
+func recordReplayDecision(s *StrategyState, decisionType, symbol, side string, qty, referencePrice float64, closeReason string, decidedAt time.Time, entryATR float64, regime string) {
 	if s == nil || decisionLogWriter == nil || !replaySourceActive(s.ID) {
 		return
 	}
@@ -308,6 +335,8 @@ func recordReplayDecision(s *StrategyState, decisionType, symbol, side string, q
 		Quantity:       qty,
 		ReferencePrice: referencePrice,
 		CloseReason:    closeReason,
+		EntryATR:       entryATR,
+		Regime:         regime,
 	}
 	if err := decisionLogWriter(dec); err != nil {
 		msg := fmt.Sprintf("replay decision log insert failed for %s (%s %s %.6f @ %.4f): %v",

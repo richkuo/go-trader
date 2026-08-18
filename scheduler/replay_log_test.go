@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -132,11 +133,11 @@ func TestRecordReplayDecisionGating(t *testing.T) {
 	other := replayTestStrategyState("hl-other-eth")
 	now := time.Now().UTC()
 
-	recordReplayDecision(other, ReplayDecisionFullClose, "ETH", "long", 1, 100, "signal", now)
+	recordReplayDecision(other, ReplayDecisionFullClose, "ETH", "long", 1, 100, "signal", now, 0, "")
 	if len(*captured) != 0 {
 		t.Fatalf("non-source strategy wrote %d rows, want 0", len(*captured))
 	}
-	recordReplayDecision(live, ReplayDecisionFullClose, "ETH", "long", 1.5, 100.5, "signal", now)
+	recordReplayDecision(live, ReplayDecisionFullClose, "ETH", "long", 1.5, 100.5, "signal", now, 0, "")
 	if len(*captured) != 1 {
 		t.Fatalf("source strategy wrote %d rows, want 1", len(*captured))
 	}
@@ -147,7 +148,7 @@ func TestRecordReplayDecisionGating(t *testing.T) {
 
 	// Nil writer disables logging entirely (replay_log_path unset / tests).
 	decisionLogWriter = nil
-	recordReplayDecision(live, ReplayDecisionFullClose, "ETH", "long", 1, 100, "signal", now)
+	recordReplayDecision(live, ReplayDecisionFullClose, "ETH", "long", 1, 100, "signal", now, 0, "")
 	if len(*captured) != 1 {
 		t.Fatalf("nil writer still wrote; captured=%d", len(*captured))
 	}
@@ -170,14 +171,14 @@ func TestRecordReplayDecisionFailureAlerting(t *testing.T) {
 
 	// Two consecutive failures: no DM yet (threshold is 3).
 	for i := 0; i < decisionLogAlertThreshold-1; i++ {
-		recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now)
+		recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	}
 	if len(warns) != 0 {
 		t.Fatalf("warns after %d failures = %d, want 0", decisionLogAlertThreshold-1, len(warns))
 	}
 	// Third consecutive failure fires exactly one DM for the streak.
-	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now)
-	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now)
+	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
+	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	if len(warns) != 1 {
 		t.Fatalf("warns = %d, want 1 (one per streak)", len(warns))
 	}
@@ -186,10 +187,10 @@ func TestRecordReplayDecisionFailureAlerting(t *testing.T) {
 	}
 	// A success resets the streak; the next streak re-alerts.
 	fail = false
-	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now)
+	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	fail = true
 	for i := 0; i < decisionLogAlertThreshold; i++ {
-		recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now)
+		recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	}
 	if len(warns) != 2 {
 		t.Fatalf("warns after second streak = %d, want 2", len(warns))
@@ -431,5 +432,122 @@ func TestReplaySourceAndMirrorPredicates(t *testing.T) {
 	}
 	if replayMirrorPaperActive(off) {
 		t.Error("flag-less strategy never mirrors")
+	}
+}
+
+// ─── review-round-1 regression tests (stamps, index, legacy migration) ──────
+
+func TestDecisionLogEntryATRRegimeRoundTrip(t *testing.T) {
+	// Review optional 1: open/scale_in rows persist live's open-time stamps.
+	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
+	if err != nil {
+		t.Fatalf("OpenDecisionLogDB: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	if err := db.InsertDecision(ReplayDecision{
+		StrategyID: "s1", DecisionType: ReplayDecisionOpen, DecidedAt: now,
+		Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1908.25,
+		EntryATR: 42.5, Regime: "trending_up",
+	}); err != nil {
+		t.Fatalf("InsertDecision: %v", err)
+	}
+	pending, err := db.PendingDecisions("s1")
+	if err != nil {
+		t.Fatalf("PendingDecisions: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+	if pending[0].EntryATR != 42.5 || pending[0].Regime != "trending_up" {
+		t.Errorf("stamps round-trip = (%v, %q), want (42.5, trending_up)", pending[0].EntryATR, pending[0].Regime)
+	}
+}
+
+func TestDecisionLogMigratesLegacySchema(t *testing.T) {
+	// A replay DB created before the entry_atr/regime columns existed must be
+	// brought forward by OpenDecisionLogDB (idempotent ALTERs), not fail.
+	path := filepath.Join(t.TempDir(), "replay.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE decisions (
+		decision_id INTEGER PRIMARY KEY,
+		strategy_id TEXT NOT NULL,
+		decision_type TEXT NOT NULL,
+		decided_at TEXT NOT NULL,
+		symbol TEXT NOT NULL,
+		side TEXT NOT NULL,
+		quantity REAL NOT NULL,
+		reference_price REAL NOT NULL,
+		close_reason TEXT NOT NULL DEFAULT '',
+		replay_status TEXT NOT NULL DEFAULT 'pending'
+	)`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	legacy.Close()
+
+	db, err := OpenDecisionLogDB(path)
+	if err != nil {
+		t.Fatalf("OpenDecisionLogDB on legacy schema: %v", err)
+	}
+	defer db.Close()
+	if err := db.InsertDecision(ReplayDecision{
+		StrategyID: "s1", DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(),
+		Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 10, Regime: "ranging",
+	}); err != nil {
+		t.Fatalf("InsertDecision after migration: %v", err)
+	}
+	pending, err := db.PendingDecisions("s1")
+	if err != nil {
+		t.Fatalf("PendingDecisions after migration: %v", err)
+	}
+	if len(pending) != 1 || pending[0].EntryATR != 10 || pending[0].Regime != "ranging" {
+		t.Fatalf("post-migration row = %+v", pending)
+	}
+}
+
+func TestDecisionLogPendingIndexExists(t *testing.T) {
+	// Review optional 2: the per-cycle pending read must be index-covered.
+	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
+	if err != nil {
+		t.Fatalf("OpenDecisionLogDB: %v", err)
+	}
+	defer db.Close()
+	var name string
+	err = db.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_decisions_strategy_status_id'`).Scan(&name)
+	if err != nil {
+		t.Fatalf("covering index idx_decisions_strategy_status_id missing: %v", err)
+	}
+}
+
+func TestReplayMirrorWatermarkStateRoundTrip(t *testing.T) {
+	// Review finding 1: the watermark persists with the strategy row so a
+	// post-crash reload re-marks instead of re-applying.
+	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer sdb.Close()
+
+	state := NewAppState()
+	s := replayTestStrategyState("hl-paper-eth")
+	s.ReplayMirrorWatermark = 41
+	state.Strategies[s.ID] = s
+	if err := sdb.SaveState(state); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+	loaded, err := sdb.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	got := loaded.Strategies["hl-paper-eth"]
+	if got == nil {
+		t.Fatal("strategy missing after reload")
+	}
+	if got.ReplayMirrorWatermark != 41 {
+		t.Fatalf("ReplayMirrorWatermark = %d, want 41", got.ReplayMirrorWatermark)
 	}
 }

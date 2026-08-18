@@ -17,7 +17,13 @@ WorkingDirectory=/opt/go-trader-%i
 # rewrites config in place (config migration, UI tuner, Discord /config), so the
 # config DIRECTORY (for the atomic temp+rename), not just the file, must be
 # writable. Migrate with: scripts/migrate-config-out-of-tree.sh --instance %i
-StateDirectory=go-trader/%i
+# #1431: go-trader/shared is the cross-instance writable dir for the live→paper
+# decision replay log (replay_log_path, e.g. /var/lib/go-trader/shared/replay.db).
+# Every template instance gets write access to it; without this entry
+# ProtectSystem=strict mounts it read-only and OpenDecisionLogDB fails at boot.
+# (The single-instance go-trader.service needs no entry — its StateDirectory
+# already covers all of /var/lib/go-trader.)
+StateDirectory=go-trader/%i go-trader/shared
 ExecStart=/opt/go-trader-%i/go-trader --config /var/lib/go-trader/%i/config.json
 Restart=always
 RestartSec=10

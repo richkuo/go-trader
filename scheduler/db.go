@@ -644,6 +644,11 @@ func (sdb *StateDB) migrateSchema() error {
 		// survives a restart instead of silently re-arming on the next cycle;
 		// the embedded key discards the latch whenever a threshold changes.
 		"ALTER TABLE strategies ADD COLUMN hurst_gate_state TEXT NOT NULL DEFAULT ''",
+		// #1431: paper replay mirror's durable cursor (highest applied decision
+		// ID), saved in the same transaction as the book mutation it records so
+		// a crash between save and the shared log's mark-applied can never
+		// re-apply (or drop) a mirrored decision on restart.
+		"ALTER TABLE strategies ADD COLUMN replay_mirror_watermark INTEGER NOT NULL DEFAULT 0",
 		// #1411: freeze the gate's H reading and applied size multiplier at
 		// open so a closed trade's diagnostics row can attribute its size.
 		// 0 = unstamped. The sentinel rests ONLY on the LOWER bound: every
@@ -1303,8 +1308,8 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
 		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
-		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare strategy insert: %w", err)
 	}
@@ -1367,6 +1372,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 			cashReconcileInt,
 			poolBudgetInt,
 			marshalHurstGateStateJSON(s.HurstGate),
+			s.ReplayMirrorWatermark,
 		); err != nil {
 			return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 		}
@@ -1775,7 +1781,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		COALESCE(active_profile, '') AS active_profile,
 		COALESCE(cash_reconcile_required, 0) AS cash_reconcile_required,
 		COALESCE(shared_wallet_pool_budget, 0) AS shared_wallet_pool_budget,
-		COALESCE(hurst_gate_state, '') AS hurst_gate_state
+		COALESCE(hurst_gate_state, '') AS hurst_gate_state,
+		COALESCE(replay_mirror_watermark, 0) AS replay_mirror_watermark
 		FROM strategies`)
 	if err != nil {
 		return nil, fmt.Errorf("load strategies: %w", err)
@@ -1795,6 +1802,7 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 			&s.RiskState.DailyPnL, &s.RiskState.DailyPnLDate, &s.RiskState.ConsecutiveLosses,
 			&cbInt, &cbUntilStr, &pendingCircuitClosesJSON, &activeProfile,
 			&cashReconcileInt, &poolBudgetInt, &hurstGateJSON,
+			&s.ReplayMirrorWatermark,
 		); err != nil {
 			return nil, fmt.Errorf("scan strategy: %w", err)
 		}

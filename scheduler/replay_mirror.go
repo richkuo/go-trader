@@ -22,11 +22,15 @@ import (
 // primary, exactly as it does for a natively-opened one.
 
 // replayMirrorProgress tracks the highest decision ID each mirrored strategy
-// has applied this process lifetime. The DB's replay_status is the durable
-// record; this in-memory high-water covers the narrow window where a row was
-// applied to state but MarkDecisionsApplied failed — without it the next
-// cycle would double-apply a scale_in (opens/closes self-heal via the
-// flat/open guards; an add does not).
+// has applied this process lifetime. The durable record is TWO-layered: the
+// shared log's replay_status (what the live writer sees) and the paper state
+// DB's strategies.replay_mirror_watermark (persisted in the SAME SaveState
+// transaction as the book mutation). This in-memory high-water covers the
+// window where a row was applied to state but neither durable record has it
+// yet — without all three, a restart in the apply→save→mark gap would either
+// drop a mirrored trade (marked but never saved) or double-book a scale_in
+// (saved but never marked; opens/closes self-heal via the flat/open guards,
+// an add does not).
 var replayMirrorProgress = struct {
 	sync.Mutex
 	last map[string]int64
@@ -60,7 +64,15 @@ func replayMirrorSetLastApplied(strategyID string, id int64) {
 // no rows and paper holds its last replayed state until the next decision
 // appears (resume policy (c) from the issue).
 func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []ReplayDecision, price float64, result *HyperliquidResult, cfg *Config, logger *StrategyLogger) (appliedIDs []int64, trades int, details []string) {
+	// The skip threshold is the max of the process-lifetime high-water and the
+	// PERSISTED watermark: after a restart the in-memory map is empty and the
+	// watermark is the only record that a row's book mutation already hit disk
+	// (a crash between SaveState and MarkDecisionsApplied leaves such rows
+	// pending in the shared log — they are re-marked below, never re-applied).
 	lastApplied := replayMirrorLastApplied(sc.ID)
+	if s.ReplayMirrorWatermark > lastApplied {
+		lastApplied = s.ReplayMirrorWatermark
+	}
 	markApplied := func(id int64) {
 		appliedIDs = append(appliedIDs, id)
 		if id > lastApplied {
@@ -68,8 +80,9 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 		}
 	}
 	for _, row := range pending {
-		if row.DecisionID <= replayMirrorLastApplied(sc.ID) {
-			// Applied earlier this process but the DB mark failed — skip the
+		if row.DecisionID <= lastApplied {
+			// Already applied to the persisted book (watermark) or earlier this
+			// process (high-water) but the shared-log mark failed — skip the
 			// state mutation, re-mark only.
 			markApplied(row.DecisionID)
 			continue
@@ -154,6 +167,12 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 		}
 	}
 	replayMirrorSetLastApplied(sc.ID, lastApplied)
+	if lastApplied > s.ReplayMirrorWatermark {
+		// Advance the durable cursor IN MEMORY; the caller's SaveStateWithDB
+		// persists it in the same transaction as the book mutations above,
+		// BEFORE the shared log's MarkDecisionsApplied runs.
+		s.ReplayMirrorWatermark = lastApplied
+	}
 	return appliedIDs, trades, details
 }
 
@@ -193,6 +212,19 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 	stampEntryATRIfOpened(s, row.Symbol, indicators)
 	if result != nil {
 		stampPositionRegimeIfOpened(s, row.Symbol, regimePayloadValue(result.Regime), sc, regime)
+	}
+	// Live's open-time stamps win over paper's own payload when the row
+	// carries them: the mirror reproduces live's stop geometry (EntryATR is
+	// the frozen basis every ATR stop/tier derives from) and regime label
+	// even when the two deployments' payloads disagree on the same bar.
+	// Rows written before the columns existed (0/"") keep the paper stamps.
+	if pos := s.Positions[row.Symbol]; pos != nil {
+		if row.EntryATR > 0 {
+			pos.EntryATR = row.EntryATR
+		}
+		if row.Regime != "" {
+			pos.Regime = row.Regime
+		}
 	}
 	var pos *Position
 	if p, ok := s.Positions[row.Symbol]; ok {

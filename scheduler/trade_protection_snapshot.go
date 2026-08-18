@@ -137,7 +137,7 @@ func recordPositionOpen(s *StrategyState, sc StrategyConfig, trade *Trade, pos *
 		if pos.Quantity > trade.Quantity+1e-9 {
 			decisionType = ReplayDecisionScaleIn
 		}
-		recordReplayDecision(s, decisionType, trade.Symbol, pos.Side, trade.Quantity, trade.Price, "", trade.Timestamp)
+		recordReplayDecision(s, decisionType, trade.Symbol, pos.Side, trade.Quantity, trade.Price, "", trade.Timestamp, pos.EntryATR, pos.Regime)
 	}
 	return true
 }

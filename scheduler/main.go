@@ -2886,18 +2886,37 @@ func main() {
 								case len(pending) > 0:
 									mu.Lock()
 									appliedIDs, replayTrades, replayDetails := applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)
+									// Crash-atomicity (review finding): the applied
+									// book mutations + watermark must hit the state DB
+									// BEFORE the shared log marks the rows applied.
+									// Marking first would drop a mirrored trade on a
+									// kill between mark and the cycle-end save; saving
+									// first is safe because the persisted watermark
+									// makes the post-restart re-mark idempotent.
+									var saveErr error
+									if len(appliedIDs) > 0 {
+										saveErr = SaveStateWithDB(state, cfg, stateDB)
+									}
 									mu.Unlock()
 									if replayTrades > 0 {
 										trades += replayTrades
 										detail = strings.Join(replayDetails, "; ")
 									}
 									if len(appliedIDs) > 0 {
-										if err := decisionLog.MarkDecisionsApplied(appliedIDs); err != nil {
-											// Not fatal: the in-memory high-water in
-											// applyReplayedLiveDecisions prevents a
-											// double-apply within this process; rows are
-											// re-marked next cycle.
-											logger.Error("Replay mirror: failed to mark %d decision(s) applied: %v (#1431)", len(appliedIDs), err)
+										switch {
+										case saveErr != nil:
+											// Rows stay pending; the in-memory
+											// high-water prevents a double-apply in
+											// THIS process, and nothing was marked, so
+											// a restart re-applies cleanly.
+											logger.Error("Replay mirror: state save failed after applying %d decision(s): %v — rows stay pending for retry (#1431)", len(appliedIDs), saveErr)
+										default:
+											if err := decisionLog.MarkDecisionsApplied(appliedIDs); err != nil {
+												// Not fatal: the persisted watermark +
+												// in-memory high-water make the
+												// re-mark next cycle idempotent.
+												logger.Error("Replay mirror: failed to mark %d decision(s) applied: %v (#1431)", len(appliedIDs), err)
+											}
 										}
 									}
 								}

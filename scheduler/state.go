@@ -170,6 +170,17 @@ type StrategyState struct {
 	// buys routinely end fee-negative (cash=-fee), and perps/futures can go
 	// negative from leveraged PnL.
 	CashReconcileRequired bool `json:"cash_reconcile_required,omitempty"`
+
+	// ReplayMirrorWatermark is the #1431 paper mirror's durable cursor: the
+	// highest decision-log row ID whose state mutation has been persisted to
+	// THIS strategy's book. Persisted (strategies.replay_mirror_watermark)
+	// inside the same SaveState transaction as the book mutation itself, so a
+	// crash between the save and the shared log's MarkDecisionsApplied can
+	// never re-apply a row on restart — the mirror skips rows <= the
+	// watermark and only re-marks them in the log. Complements the in-memory
+	// replayMirrorProgress high-water, which covers the same gap within one
+	// process lifetime.
+	ReplayMirrorWatermark int64 `json:"replay_mirror_watermark,omitempty"`
 }
 
 func NewStrategyState(cfg StrategyConfig) *StrategyState {
