@@ -2887,12 +2887,16 @@ func main() {
 									mu.Lock()
 									appliedIDs, replayTrades, replayDetails := applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)
 									// Crash-atomicity (review finding): the applied
-									// book mutations + watermark must hit the state DB
-									// BEFORE the shared log marks the rows applied.
-									// Marking first would drop a mirrored trade on a
-									// kill between mark and the cycle-end save; saving
-									// first is safe because the persisted watermark
-									// makes the post-restart re-mark idempotent.
+									// book mutations + watermark + trade rows must
+									// hit the state DB BEFORE the shared log marks
+									// the rows applied. Apply suspends eager
+									// InsertTrade so those rows join this tx; a
+									// kill during the save rolls them back with
+									// the watermark. Marking first would drop a
+									// mirrored trade on a kill between mark and
+									// the cycle-end save; saving first is safe
+									// because the persisted watermark makes the
+									// post-restart re-mark idempotent.
 									var saveErr error
 									if len(appliedIDs) > 0 {
 										saveErr = SaveStateWithDB(state, cfg, stateDB)

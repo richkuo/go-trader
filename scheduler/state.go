@@ -23,6 +23,20 @@ const maxTradeHistory = 1000
 // instead of keeping them global.
 var tradeRecorder func(strategyID string, trade Trade) error
 
+// suspendEagerTradePersist disables the #289 eager InsertTrade hook until the
+// returned restore function runs. RecordTrade still appends to TradeHistory
+// with persisted=false, so the next SaveStateWithDB inserts those rows in the
+// SAME transaction as positions and replay_mirror_watermark. The paper replay
+// mirror uses this so a kill during that save cannot leave a committed trade
+// row while rolling back the watermark — which would re-apply and duplicate
+// the trade (#1435 review). Same test caveat as tradeRecorder: not safe under
+// t.Parallel().
+func suspendEagerTradePersist() func() {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	return func() { tradeRecorder = prev }
+}
+
 // tradePersistWarn is the operator-visible warning hook for RecordTrade failures
 // (#289 observability follow-up). main.go sets this after MultiNotifier is
 // constructed to route warnings to owner DM. When nil, RecordTrade falls back

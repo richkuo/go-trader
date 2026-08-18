@@ -30,7 +30,9 @@ import (
 // yet — without all three, a restart in the apply→save→mark gap would either
 // drop a mirrored trade (marked but never saved) or double-book a scale_in
 // (saved but never marked; opens/closes self-heal via the flat/open guards,
-// an add does not).
+// an add does not). Eager InsertTrade is suspended during apply so the
+// trade rows join the SaveState transaction; otherwise a kill mid-save
+// would leave a committed trade while rolling back the watermark.
 var replayMirrorProgress = struct {
 	sync.Mutex
 	last map[string]int64
@@ -64,6 +66,16 @@ func replayMirrorSetLastApplied(strategyID string, id int64) {
 // no rows and paper holds its last replayed state until the next decision
 // appears (resume policy (c) from the issue).
 func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []ReplayDecision, price float64, result *HyperliquidResult, cfg *Config, logger *StrategyLogger) (appliedIDs []int64, trades int, details []string) {
+	// Replay bookings must not eager-InsertTrade. recordPositionOpen /
+	// bookPerpsClose / bookPerpsPartialCloseWithFillFee all call RecordTrade,
+	// which otherwise commits a trades row immediately. A kill during the
+	// caller's SaveStateWithDB would then leave that row on disk while
+	// rolling back positions + replay_mirror_watermark, and the next start
+	// would re-apply and insert a second copy (#1435). RecordTrade still
+	// appends in-memory (persisted=false); SaveState inserts those rows in
+	// the same transaction as the book and watermark.
+	defer suspendEagerTradePersist()()
+
 	// The skip threshold is the max of the process-lifetime high-water and the
 	// PERSISTED watermark: after a restart the in-memory map is empty and the
 	// watermark is the only record that a row's book mutation already hit disk
