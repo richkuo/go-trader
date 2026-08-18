@@ -196,6 +196,34 @@ func TestCaptureTradeDiagnosticsNilRecorderNoop(t *testing.T) {
 
 	s := &StrategyState{ID: "x", Positions: map[string]*Position{}}
 	recordClosedPosition(s, &Position{Symbol: "BTC", AvgCost: 1, Quantity: 1}, 1, 0, "signal", time.Now().UTC())
+	if len(s.pendingTradeDiagnostics) != 0 {
+		t.Fatalf("nil recorder buffered %d pending rows; defer only happens under suspendEagerDiagnosticsPersist", len(s.pendingTradeDiagnostics))
+	}
+}
+
+func TestCaptureTradeDiagnosticsDeferredBuffersUntilSave(t *testing.T) {
+	prevRec, prevEnq, prevDef := tradeDiagnosticsRecorder, tradeDiagnosticsEnqueue, tradeDiagnosticsPersistDeferred
+	defer func() {
+		tradeDiagnosticsRecorder, tradeDiagnosticsEnqueue = prevRec, prevEnq
+		tradeDiagnosticsPersistDeferred = prevDef
+	}()
+	var inserts int
+	tradeDiagnosticsRecorder = func(*TradeDiagnosticsRow) error {
+		inserts++
+		return nil
+	}
+	tradeDiagnosticsEnqueue = func(TradeDiagnosticsRow) { t.Fatal("must not enqueue while deferred") }
+	restore := suspendEagerDiagnosticsPersist()
+	defer restore()
+
+	s := &StrategyState{ID: "hl-test", Positions: map[string]*Position{}}
+	recordClosedPosition(s, &Position{Symbol: "ETH", TradePositionID: "pos-1", AvgCost: 1, Quantity: 1}, 1, 0, "signal", time.Now().UTC())
+	if inserts != 0 {
+		t.Fatalf("eager insert ran %d time(s) while deferred, want 0", inserts)
+	}
+	if len(s.pendingTradeDiagnostics) != 1 || s.pendingTradeDiagnostics[0].PositionID != "pos-1" {
+		t.Fatalf("pending = %+v, want one pos-1 row", s.pendingTradeDiagnostics)
+	}
 }
 
 type diagWorkerFixture struct {

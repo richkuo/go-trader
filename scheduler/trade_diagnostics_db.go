@@ -16,10 +16,21 @@ func (sdb *StateDB) InsertTradeDiagnostics(row *TradeDiagnosticsRow) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
 	}
+	return insertTradeDiagnosticsRow(sdb.db, row)
+}
+
+type sqlExecer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+func insertTradeDiagnosticsRow(exec sqlExecer, row *TradeDiagnosticsRow) error {
+	if exec == nil {
+		return fmt.Errorf("state db unavailable")
+	}
 	if row == nil {
 		return fmt.Errorf("nil diagnostics row")
 	}
-	res, err := sdb.db.Exec(`INSERT INTO trade_diagnostics
+	res, err := exec.Exec(`INSERT INTO trade_diagnostics
 			(strategy_id, position_id, symbol, side, timeframe, regime_at_open, close_reason,
 			 entry_price, exit_price, quantity, realized_pnl, entry_atr, stop_loss_atr_mult,
 			 opened_at, closed_at, metrics_status, llm_verdict, hurst_at_open, hurst_size_mult)

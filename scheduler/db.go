@@ -1338,16 +1338,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		// position closes. A baseline change requires an explicit override
 		// via StateDB.SetInitialCapital.
 		if prev, ok := existingInitCaps[s.ID]; ok && prev > 0 && s.InitialCapital != prev {
-			attempted := s.InitialCapital
-			s.InitialCapital = prev
-			if _, alreadyWarned := initialCapitalGuardWarned.LoadOrStore(s.ID, struct{}{}); !alreadyWarned {
-				msg := fmt.Sprintf("blocking initial_capital change for %s ($%.2f → $%.2f); baseline preserved. Use StateDB.SetInitialCapital or set initial_capital in config to change the baseline (#343)",
-					s.ID, prev, attempted)
-				fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
-				if initialCapitalGuardWarn != nil {
-					initialCapitalGuardWarn(msg)
-				}
-			}
+			applyInitialCapitalGuard(s, prev)
 		}
 
 		cbInt := 0
@@ -1521,6 +1512,18 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
+	// 4d. Flush deferred trade_diagnostics rows (#1435 replay path). Native
+	// closes still eager-insert; replayed full-closes buffer here so the row
+	// commits with the close, not before it.
+	var flushedDiags []TradeDiagnosticsRow
+	for _, s := range state.Strategies {
+		rows, err := flushPendingDiagnosticsFor(tx, s)
+		if err != nil {
+			return err
+		}
+		flushedDiags = append(flushedDiags, rows...)
+	}
+
 	// 6. Upsert portfolio_risk singleton.
 	ksActive := 0
 	if state.PortfolioRisk.KillSwitchActive {
@@ -1582,6 +1585,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	for _, s := range state.Strategies {
 		s.ClosedPositions = nil
 		s.ClosedOptionPositions = nil
+		s.pendingTradeDiagnostics = nil
 	}
 	// Mark flushed trades as persisted only after the tx has committed —
 	// otherwise a rollback would leave the flag claiming rows are in DB when
@@ -1589,6 +1593,260 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	for _, f := range flushed {
 		f.strat.TradeHistory[f.index].persisted = true
 	}
+	enqueueFlushedDiagnostics(flushedDiags)
+	return nil
+}
+
+func applyInitialCapitalGuard(s *StrategyState, existing float64) {
+	if s == nil || existing <= 0 || s.InitialCapital == existing {
+		return
+	}
+	attempted := s.InitialCapital
+	s.InitialCapital = existing
+	if _, alreadyWarned := initialCapitalGuardWarned.LoadOrStore(s.ID, struct{}{}); !alreadyWarned {
+		msg := fmt.Sprintf("blocking initial_capital change for %s ($%.2f → $%.2f); baseline preserved. Use StateDB.SetInitialCapital or set initial_capital in config to change the baseline (#343)",
+			s.ID, existing, attempted)
+		fmt.Fprintf(os.Stderr, "[state] WARN: %s\n", msg)
+		if initialCapitalGuardWarn != nil {
+			initialCapitalGuardWarn(msg)
+		}
+	}
+}
+
+func flushPendingDiagnosticsFor(tx *sql.Tx, s *StrategyState) ([]TradeDiagnosticsRow, error) {
+	if tx == nil || s == nil || len(s.pendingTradeDiagnostics) == 0 {
+		return nil, nil
+	}
+	flushed := make([]TradeDiagnosticsRow, 0, len(s.pendingTradeDiagnostics))
+	for i := range s.pendingTradeDiagnostics {
+		row := &s.pendingTradeDiagnostics[i]
+		if err := insertTradeDiagnosticsRow(tx, row); err != nil {
+			return nil, err
+		}
+		flushed = append(flushed, *row)
+	}
+	return flushed, nil
+}
+
+func enqueueFlushedDiagnostics(rows []TradeDiagnosticsRow) {
+	if tradeDiagnosticsEnqueue == nil {
+		return
+	}
+	for _, row := range rows {
+		tradeDiagnosticsEnqueue(row)
+	}
+}
+
+// SaveStrategyBook persists one strategy's book without rewriting the rest of
+// the fleet. Positions and option_positions are replaced via INSERT OR REPLACE
+// on the strategy row (FK CASCADE); trades, closed_positions, and deferred
+// diagnostics are append-only in the same transaction. Used by the paper
+// replay mirror so persisting one replayed decision does not DELETE/reinsert
+// every unrelated strategy (#1435).
+func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	if s == nil {
+		return fmt.Errorf("strategy state is nil")
+	}
+
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// LoadState returns (nil, nil) when app_state is missing. A first-cycle
+	// replay save that wrote only the strategy row would then be invisible on
+	// restart and the pending log would re-apply into an empty book. Seed a
+	// default singleton without clobbering an existing cycle-end snapshot.
+	if _, err := tx.Exec(`INSERT INTO app_state (id, cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries, last_summary_post)
+		VALUES (1, 0, '', '', '', '')
+		ON CONFLICT(id) DO NOTHING`); err != nil {
+		return fmt.Errorf("ensure app_state: %w", err)
+	}
+
+	var existingInitCap float64
+	err = tx.QueryRow("SELECT initial_capital FROM strategies WHERE id = ?", s.ID).Scan(&existingInitCap)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("read existing initial_capital for %s: %w", s.ID, err)
+	}
+	if err == nil {
+		applyInitialCapitalGuard(s, existingInitCap)
+	}
+
+	cbInt := 0
+	if s.RiskState.CircuitBreaker {
+		cbInt = 1
+	}
+	cashReconcileInt := 0
+	if s.CashReconcileRequired {
+		cashReconcileInt = 1
+	}
+	poolBudgetInt := 0
+	if s.SharedWalletPoolBudget {
+		poolBudgetInt = 1
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
+		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
+		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
+		risk_circuit_breaker, risk_circuit_breaker_until, risk_pending_circuit_closes_json, active_profile,
+		cash_reconcile_required, shared_wallet_pool_budget, hurst_gate_state, replay_mirror_watermark)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.Type, s.Platform, s.Cash, s.InitialCapital,
+		s.RiskState.PeakValue, s.RiskState.MaxDrawdownPct, s.RiskState.CurrentDrawdownPct,
+		s.RiskState.DailyPnL, s.RiskState.DailyPnLDate, s.RiskState.ConsecutiveLosses,
+		cbInt, formatTime(s.RiskState.CircuitBreakerUntil),
+		s.RiskState.MarshalPendingCircuitClosesJSON(),
+		strategyActiveProfile(s),
+		cashReconcileInt,
+		poolBudgetInt,
+		marshalHurstGateStateJSON(s.HurstGate),
+		s.ReplayMirrorWatermark,
+	); err != nil {
+		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
+	}
+
+	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare position insert: %w", err)
+	}
+	defer stmtPos.Close()
+	for _, pos := range s.Positions {
+		positionID := ensurePositionTradeID(s.ID, pos.Symbol, pos)
+		tp1OID, tp2OID := firstTwoTPOIDs(pos.TPOIDs)
+		scaleInResizePending := 0
+		if pos.ScaleInResizePending {
+			scaleInResizePending = 1
+		}
+		ratchetFallbackNormalizePending := 0
+		if pos.RatchetFallbackNormalizePending {
+			ratchetFallbackNormalizePending = 1
+		}
+		directionCertifiedAtOpen := 0
+		if pos.DirectionCertifiedAtOpen {
+			directionCertifiedAtOpen = 1
+		}
+		llmAnalysisRequested := 0
+		if pos.LLMAnalysisRequested {
+			llmAnalysisRequested = 1
+		}
+		if _, err := stmtPos.Exec(s.ID, pos.Symbol, positionID, pos.Quantity, pos.InitialQuantity, pos.AvgCost, pos.EntryATR, pos.Side, pos.Multiplier, pos.OwnerStrategyID, formatTime(pos.OpenedAt), pos.StopLossOID, pos.StopLossTriggerPx, pos.StopLossHighWaterPx, tp1OID, tp2OID, marshalTPOIDsJSON(pos.TPOIDs), marshalTPArmedTiersJSON(pos.TPArmedTiers), nullableFloat64(pos.StopLossATRMult), pos.TPTiersJSON, pos.SLAdjustedTiersProcessed, nullableFloat64(pos.PostTPTrailingATRMult), pos.Regime, marshalRegimeWindowsJSON(pos.RegimeWindows), pos.RegimePendingLabel, pos.RegimePendingCount, pos.RegimeAppliedLabel, pos.ScaleInCount, pos.LastAddPrice, pos.AddedNotionalUSD, pos.RiskAnchorPrice, scaleInResizePending, ratchetFallbackNormalizePending, pos.OpenProfile, directionCertifiedAtOpen, marshalStringMapJSON(pos.DirectionCertifiedStatesAtOpen), llmAnalysisRequested, pos.LLMVerdict, pos.ATRMethodAtOpen, pos.HedgeFor, pos.HedgePrimaryQtyBasis, pos.HurstAtOpen, pos.HurstSizeMult); err != nil {
+			return fmt.Errorf("insert position %s/%s: %w", s.ID, pos.Symbol, err)
+		}
+	}
+
+	if len(s.OptionPositions) > 0 {
+		stmtOpt, err := tx.Prepare(`INSERT INTO option_positions (strategy_id, id, position_id, underlying, option_type, strike, expiry, dte,
+			action, quantity, entry_premium, entry_premium_usd, current_value_usd,
+			delta, gamma, theta, vega, opened_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare option_position insert: %w", err)
+		}
+		defer stmtOpt.Close()
+		for key, opt := range s.OptionPositions {
+			positionID := ensureOptionTradeID(s.ID, opt)
+			if _, err := stmtOpt.Exec(
+				s.ID, key, positionID, opt.Underlying, opt.OptionType, opt.Strike, opt.Expiry, opt.DTE,
+				opt.Action, opt.Quantity, opt.EntryPremium, opt.EntryPremiumUSD, opt.CurrentValueUSD,
+				opt.Greeks.Delta, opt.Greeks.Gamma, opt.Greeks.Theta, opt.Greeks.Vega,
+				formatTime(opt.OpenedAt),
+			); err != nil {
+				return fmt.Errorf("insert option_position %s/%s: %w", s.ID, key, err)
+			}
+		}
+	}
+
+	type trackedFlush struct {
+		index int
+	}
+	var flushed []trackedFlush
+	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, pnl_gross, fee_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("prepare trade insert: %w", err)
+	}
+	defer stmtTrade.Close()
+	for i := range s.TradeHistory {
+		if s.TradeHistory[i].persisted {
+			continue
+		}
+		t := s.TradeHistory[i]
+		isClose := 0
+		if t.IsClose {
+			isClose = 1
+		}
+		isManual := 0
+		if t.Manual {
+			isManual = 1
+		}
+		if _, err := stmtTrade.Exec(s.ID, formatTime(t.Timestamp), t.Symbol, t.PositionID, t.Side, t.Quantity, t.Price, t.Value, t.TradeType, t.Details, t.ExchangeOrderID, t.ExchangeFee, isClose, t.RealizedPnL, t.Regime, t.EntryATR, t.StopLossOID, t.StopLossTriggerPx, marshalTPOIDsJSON(t.TPOIDs), isManual, nullableFloat64(t.StopLossATRMult), t.TPTiersJSON, boolToInt(t.PnLGross), t.FeeSource); err != nil {
+			return fmt.Errorf("insert trade for %s: %w", s.ID, err)
+		}
+		flushed = append(flushed, trackedFlush{index: i})
+	}
+
+	if len(s.ClosedPositions) > 0 {
+		stmtClosed, err := tx.Prepare(`INSERT INTO closed_positions
+			(strategy_id, symbol, quantity, avg_cost, side, multiplier,
+			 opened_at, closed_at, close_price, realized_pnl, close_reason, duration_seconds)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare closed_position insert: %w", err)
+		}
+		defer stmtClosed.Close()
+		for _, cp := range s.ClosedPositions {
+			if _, err := stmtClosed.Exec(
+				cp.StrategyID, cp.Symbol, cp.Quantity, cp.AvgCost, cp.Side, cp.Multiplier,
+				formatTime(cp.OpenedAt), formatTime(cp.ClosedAt),
+				cp.ClosePrice, cp.RealizedPnL, cp.CloseReason, cp.DurationSeconds,
+			); err != nil {
+				return fmt.Errorf("insert closed_position %s/%s: %w", cp.StrategyID, cp.Symbol, err)
+			}
+		}
+	}
+
+	if len(s.ClosedOptionPositions) > 0 {
+		stmtClosedOpt, err := tx.Prepare(`INSERT INTO closed_option_positions
+			(strategy_id, position_id, underlying, option_type, strike, expiry,
+			 action, quantity, entry_premium_usd, close_price_usd, realized_pnl,
+			 opened_at, closed_at, close_reason, duration_seconds)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		if err != nil {
+			return fmt.Errorf("prepare closed_option_position insert: %w", err)
+		}
+		defer stmtClosedOpt.Close()
+		for _, cop := range s.ClosedOptionPositions {
+			if _, err := stmtClosedOpt.Exec(
+				cop.StrategyID, cop.PositionID, cop.Underlying, cop.OptionType,
+				cop.Strike, cop.Expiry, cop.Action, cop.Quantity,
+				cop.EntryPremiumUSD, cop.ClosePriceUSD, cop.RealizedPnL,
+				formatTime(cop.OpenedAt), formatTime(cop.ClosedAt),
+				cop.CloseReason, cop.DurationSeconds,
+			); err != nil {
+				return fmt.Errorf("insert closed_option_position %s/%s: %w", cop.StrategyID, cop.PositionID, err)
+			}
+		}
+	}
+
+	flushedDiags, err := flushPendingDiagnosticsFor(tx, s)
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.ClosedPositions = nil
+	s.ClosedOptionPositions = nil
+	s.pendingTradeDiagnostics = nil
+	for _, f := range flushed {
+		s.TradeHistory[f.index].persisted = true
+	}
+	enqueueFlushedDiagnostics(flushedDiags)
 	return nil
 }
 

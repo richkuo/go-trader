@@ -146,6 +146,12 @@ type StrategyState struct {
 	// ClosedOptionPositions mirrors ClosedPositions for option-position
 	// lifecycle tracking; flushed to closed_option_positions table. (#288)
 	ClosedOptionPositions []ClosedOptionPosition `json:"-"`
+	// pendingTradeDiagnostics is the deferred #1147 identity-insert buffer.
+	// captureTradeDiagnostics appends here when eager persist is suspended
+	// (paper replay apply); SaveState / SaveStrategyBook insert the rows in
+	// the same transaction as the close and then enqueue the metrics worker.
+	// Cleared only after a successful commit. (#1435)
+	pendingTradeDiagnostics []TradeDiagnosticsRow `json:"-"`
 
 	// SharedWalletValue is the exchange-authoritative display value for this
 	// strategy when it is a member of a shared on-exchange wallet (#918). It is
@@ -605,4 +611,13 @@ func LoadStateWithDB(cfg *Config, sdb *StateDB) (*AppState, error) {
 // SaveStateWithDB saves state to SQLite.
 func SaveStateWithDB(state *AppState, cfg *Config, sdb *StateDB) error {
 	return sdb.SaveState(state)
+}
+
+// SaveStrategyBookWithDB persists ONE strategy's book (strategy row including
+// replay_mirror_watermark, positions, option positions, unpersisted trades,
+// closed-position buffers, and deferred diagnostics) without rewriting the
+// rest of the fleet. The paper replay mirror uses this so the cost of
+// persisting one replayed decision does not grow with unrelated strategies.
+func SaveStrategyBookWithDB(s *StrategyState, sdb *StateDB) error {
+	return sdb.SaveStrategyBook(s)
 }

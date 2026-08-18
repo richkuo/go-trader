@@ -24,15 +24,16 @@ import (
 // replayMirrorProgress tracks the highest decision ID each mirrored strategy
 // has applied this process lifetime. The durable record is TWO-layered: the
 // shared log's replay_status (what the live writer sees) and the paper state
-// DB's strategies.replay_mirror_watermark (persisted in the SAME SaveState
-// transaction as the book mutation). This in-memory high-water covers the
-// window where a row was applied to state but neither durable record has it
-// yet — without all three, a restart in the apply→save→mark gap would either
-// drop a mirrored trade (marked but never saved) or double-book a scale_in
-// (saved but never marked; opens/closes self-heal via the flat/open guards,
-// an add does not). Eager InsertTrade is suspended during apply so the
-// trade rows join the SaveState transaction; otherwise a kill mid-save
-// would leave a committed trade while rolling back the watermark.
+// DB's strategies.replay_mirror_watermark (persisted in the SAME
+// SaveStrategyBook transaction as the book mutation). This in-memory
+// high-water covers the window where a row was applied to state but neither
+// durable record has it yet — without all three, a restart in the
+// apply→save→mark gap would either drop a mirrored trade (marked but never
+// saved) or double-book a scale_in (saved but never marked; opens/closes
+// self-heal via the flat/open guards, an add does not). Eager InsertTrade
+// and diagnostics inserts are suspended during apply so those rows join the
+// SaveStrategyBook transaction; otherwise a kill mid-save would leave a
+// committed trade or orphaned diagnostics row while rolling back the watermark.
 var replayMirrorProgress = struct {
 	sync.Mutex
 	last map[string]int64
@@ -69,12 +70,16 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 	// Replay bookings must not eager-InsertTrade. recordPositionOpen /
 	// bookPerpsClose / bookPerpsPartialCloseWithFillFee all call RecordTrade,
 	// which otherwise commits a trades row immediately. A kill during the
-	// caller's SaveStateWithDB would then leave that row on disk while
+	// caller's SaveStrategyBook would then leave that row on disk while
 	// rolling back positions + replay_mirror_watermark, and the next start
 	// would re-apply and insert a second copy (#1435). RecordTrade still
-	// appends in-memory (persisted=false); SaveState inserts those rows in
-	// the same transaction as the book and watermark.
+	// appends in-memory (persisted=false); SaveStrategyBook inserts those
+	// rows in the same transaction as the book and watermark.
 	defer suspendEagerTradePersist()()
+	// Same for #1147 diagnostics: recordClosedPosition otherwise eager-inserts
+	// a trade_diagnostics row outside the save tx. A kill between that insert
+	// and the save commit would leave an orphan that the retry duplicates.
+	defer suspendEagerDiagnosticsPersist()()
 
 	// The skip threshold is the max of the process-lifetime high-water and the
 	// PERSISTED watermark: after a restart the in-memory map is empty and the
@@ -180,7 +185,7 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 	}
 	replayMirrorSetLastApplied(sc.ID, lastApplied)
 	if lastApplied > s.ReplayMirrorWatermark {
-		// Advance the durable cursor IN MEMORY; the caller's SaveStateWithDB
+		// Advance the durable cursor IN MEMORY; the caller's SaveStrategyBook
 		// persists it in the same transaction as the book mutations above,
 		// BEFORE the shared log's MarkDecisionsApplied runs.
 		s.ReplayMirrorWatermark = lastApplied

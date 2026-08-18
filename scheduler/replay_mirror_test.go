@@ -308,30 +308,36 @@ func TestMirrorReplayOpenFallsBackToPaperStamps(t *testing.T) {
 
 func TestMirrorSaveBeforeMarkWiring(t *testing.T) {
 	// Structural lock for review finding 1's invariant: inside the HL perps
-	// replay block the state save (book + watermark, one transaction) must run
-	// BEFORE the shared log's mark-applied.
+	// replay block the strategy-scoped state save (book + watermark + trades +
+	// diagnostics, one transaction) must run BEFORE the shared log's mark-applied.
 	src := string(mustReadFile(t, "main.go"))
 	applyIdx := strings.Index(src, "applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)")
 	if applyIdx < 0 {
 		t.Fatal("replay application call not found")
 	}
-	saveIdx := strings.Index(src[applyIdx:], "SaveStateWithDB(state, cfg, stateDB)")
+	saveIdx := strings.Index(src[applyIdx:], "SaveStrategyBookWithDB(stratState, stateDB)")
 	markIdx := strings.Index(src[applyIdx:], "decisionLog.MarkDecisionsApplied(appliedIDs)")
 	if saveIdx < 0 || markIdx < 0 {
 		t.Fatalf("replay block missing save (%d) or mark (%d) after apply", saveIdx, markIdx)
 	}
 	if saveIdx > markIdx {
-		t.Fatal("MarkDecisionsApplied runs BEFORE SaveStateWithDB — a kill in the gap drops a mirrored trade")
+		t.Fatal("MarkDecisionsApplied runs BEFORE SaveStrategyBookWithDB — a kill in the gap drops a mirrored trade")
+	}
+	if strings.Contains(src[applyIdx:applyIdx+markIdx+len("decisionLog.MarkDecisionsApplied(appliedIDs)")], "SaveStateWithDB(state, cfg, stateDB)") {
+		t.Fatal("replay block still calls full-fleet SaveStateWithDB — persist cost would grow with unrelated strategies")
 	}
 }
 
 func TestMirrorReplaySuspendsEagerTradePersist(t *testing.T) {
 	// Review optional (PR #1435 round 2): apply must not InsertTrade before
-	// SaveState, so a kill during the save cannot leave a trade row while
+	// SaveStrategyBook, so a kill during the save cannot leave a trade row while
 	// rolling back the watermark.
 	src := string(mustReadFile(t, "replay_mirror.go"))
 	if !strings.Contains(src, "defer suspendEagerTradePersist()()") {
 		t.Fatal("applyReplayedLiveDecisions missing suspendEagerTradePersist — replayed trades would eager-insert before the watermark save")
+	}
+	if !strings.Contains(src, "defer suspendEagerDiagnosticsPersist()()") {
+		t.Fatal("applyReplayedLiveDecisions missing suspendEagerDiagnosticsPersist — replayed full-closes would eager-insert diagnostics before the watermark save")
 	}
 
 	var inserts int
@@ -469,5 +475,174 @@ func TestSystemdTemplateGrantsSharedReplayDir(t *testing.T) {
 	}
 	if !strings.Contains(src, "ProtectSystem=strict") {
 		t.Fatal("template unit lost ProtectSystem=strict")
+	}
+}
+
+func TestSaveStrategyBookDoesNotRewriteUnrelatedStrategies(t *testing.T) {
+	// Review optional (PR #1435 round 3): persisting one replayed decision
+	// must not grow with unrelated strategies or their trade history.
+	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer sdb.Close()
+
+	unrelated := NewStrategyState(StrategyConfig{ID: "hl-other", Type: "perps", Platform: "hyperliquid", Capital: 50000})
+	unrelated.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 1, InitialQuantity: 1, AvgCost: 60000, Side: "long", Multiplier: 1}
+	for i := 0; i < 50; i++ {
+		unrelated.TradeHistory = append(unrelated.TradeHistory, Trade{
+			StrategyID: unrelated.ID, Symbol: "BTC", Quantity: 0.01, Price: 60000, persisted: true,
+		})
+	}
+	fleet := NewAppState()
+	fleet.Strategies[unrelated.ID] = unrelated
+	if err := sdb.SaveState(fleet); err != nil {
+		t.Fatalf("seed SaveState: %v", err)
+	}
+
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	pending := []ReplayDecision{
+		{DecisionID: 7, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc, s, pending, 1900.0, replayTestResult(), &Config{}, logger); trades != 1 {
+		t.Fatalf("trades = %d, want 1", trades)
+	}
+	if err := sdb.SaveStrategyBook(s); err != nil {
+		t.Fatalf("SaveStrategyBook: %v", err)
+	}
+
+	loaded, err := sdb.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	other := loaded.Strategies[unrelated.ID]
+	if other == nil {
+		t.Fatal("SaveStrategyBook deleted the unrelated strategy — it used a fleet rewrite")
+	}
+	if other.Cash != 50000 {
+		t.Fatalf("unrelated cash = %v, want 50000", other.Cash)
+	}
+	if pos := other.Positions["BTC"]; pos == nil || pos.Quantity != 1 {
+		t.Fatalf("unrelated position = %+v, want BTC qty 1", pos)
+	}
+	got := loaded.Strategies[sc.ID]
+	if got == nil || got.ReplayMirrorWatermark != 7 {
+		t.Fatalf("mirrored strategy = %+v, want watermark 7", got)
+	}
+	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.5 {
+		t.Fatalf("mirrored position = %+v, want ETH qty 0.5", pos)
+	}
+}
+
+func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
+	// Review optional (PR #1435 round 3): a replayed full-close must not
+	// eager-insert trade_diagnostics. Kill before SaveStrategyBook, restart,
+	// re-apply, then save — exactly one diagnostics row, matching the
+	// persisted close. Must-survive: two aborted attempts, then one commit;
+	// same position_id across abort and retry.
+	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer sdb.Close()
+
+	var inserts int
+	prevRec := tradeDiagnosticsRecorder
+	tradeDiagnosticsRecorder = func(row *TradeDiagnosticsRow) error {
+		inserts++
+		return sdb.InsertTradeDiagnostics(row)
+	}
+	t.Cleanup(func() { tradeDiagnosticsRecorder = prevRec })
+
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	s.Positions["ETH"] = &Position{
+		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1,
+		TradePositionID: "pos-replay-eth", OpenedAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+	}
+	pending := []ReplayDecision{
+		{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900.5, CloseReason: "signal"},
+	}
+
+	// Aborted attempt 1: apply, no save (kill during SaveStrategyBook).
+	if _, trades, _ := applyReplayedLiveDecisions(sc, s, pending, 1902.0, replayTestResult(), &Config{}, logger); trades != 1 {
+		t.Fatalf("first apply trades = %d, want 1", trades)
+	}
+	if inserts != 0 {
+		t.Fatalf("eager diagnostics insert ran %d time(s) during apply, want 0", inserts)
+	}
+	if len(s.pendingTradeDiagnostics) != 1 {
+		t.Fatalf("pending diagnostics = %d, want 1 buffered for the save tx", len(s.pendingTradeDiagnostics))
+	}
+	if s.pendingTradeDiagnostics[0].PositionID != "pos-replay-eth" {
+		t.Fatalf("pending position_id = %q, want pos-replay-eth (identity reused on retry)", s.pendingTradeDiagnostics[0].PositionID)
+	}
+
+	rows, err := sdb.TradeDiagnosticsRows(sc.ID)
+	if err != nil {
+		t.Fatalf("TradeDiagnosticsRows after unsaved apply: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("diagnostics in DB after unsaved apply = %d, want 0", len(rows))
+	}
+
+	// Aborted attempt 2: restart, re-apply, still no save.
+	sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
+	s2.Positions["ETH"] = &Position{
+		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1,
+		TradePositionID: "pos-replay-eth", OpenedAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc2, s2, pending, 1902.0, replayTestResult(), &Config{}, logger2); trades != 1 {
+		t.Fatalf("second apply trades = %d, want 1", trades)
+	}
+	rows, err = sdb.TradeDiagnosticsRows(sc.ID)
+	if err != nil {
+		t.Fatalf("TradeDiagnosticsRows after second unsaved apply: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("diagnostics in DB after second unsaved apply = %d, want 0", len(rows))
+	}
+
+	if err := sdb.SaveStrategyBook(s2); err != nil {
+		t.Fatalf("SaveStrategyBook: %v", err)
+	}
+	rows, err = sdb.TradeDiagnosticsRows(sc.ID)
+	if err != nil {
+		t.Fatalf("TradeDiagnosticsRows after save: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("diagnostics after save = %d, want 1", len(rows))
+	}
+	if rows[0].PositionID != "pos-replay-eth" || rows[0].CloseReason != "replay_live_mirror" {
+		t.Fatalf("diagnostics row = %+v, want pos-replay-eth / replay_live_mirror", rows[0])
+	}
+	if len(s2.pendingTradeDiagnostics) != 0 {
+		t.Fatalf("pending diagnostics after commit = %d, want 0", len(s2.pendingTradeDiagnostics))
+	}
+
+	// Retry after success: watermark skips re-apply; must not insert a second row.
+	sc3, s3, logger3 := replayMirrorTestSetup(t, "hl-paper-eth")
+	loaded, err := sdb.LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("LoadState returned nil after SaveStrategyBook — app_state seed missing")
+	}
+	s3 = loaded.Strategies[sc.ID]
+	if s3 == nil {
+		t.Fatal("mirrored strategy missing after save")
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc3, s3, pending, 1902.0, replayTestResult(), &Config{}, logger3); trades != 0 {
+		t.Fatalf("watermark skip re-applied %d trades", trades)
+	}
+	if err := sdb.SaveStrategyBook(s3); err != nil {
+		t.Fatalf("second SaveStrategyBook: %v", err)
+	}
+	rows, err = sdb.TradeDiagnosticsRows(sc.ID)
+	if err != nil {
+		t.Fatalf("TradeDiagnosticsRows after watermark skip: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("diagnostics after watermark skip = %d, want 1 (not a duplicate)", len(rows))
 	}
 }

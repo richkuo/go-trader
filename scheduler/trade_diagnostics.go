@@ -38,6 +38,23 @@ var tradeDiagnosticsRecorder func(row *TradeDiagnosticsRow) error
 // 'pending' — still fully usable by the report, just without MFE/MAE.
 var tradeDiagnosticsEnqueue func(row TradeDiagnosticsRow)
 
+// tradeDiagnosticsPersistDeferred, when true, makes captureTradeDiagnostics
+// buffer the row on StrategyState.pendingTradeDiagnostics instead of inserting
+// immediately. The paper replay mirror sets this so a replayed full-close's
+// diagnostics row joins the same SaveStrategyBook / SaveState transaction as
+// the position, trades, and watermark — a kill during that save cannot leave
+// an orphaned diagnostics row that the retry would duplicate (#1435).
+// Same test caveat as tradeRecorder: not safe under t.Parallel().
+var tradeDiagnosticsPersistDeferred bool
+
+// suspendEagerDiagnosticsPersist defers #1147 diagnostics inserts until the
+// next SaveState / SaveStrategyBook. Native closes keep the eager path.
+func suspendEagerDiagnosticsPersist() func() {
+	prev := tradeDiagnosticsPersistDeferred
+	tradeDiagnosticsPersistDeferred = true
+	return func() { tradeDiagnosticsPersistDeferred = prev }
+}
+
 // Metrics status values for trade_diagnostics.metrics_status.
 const (
 	diagMetricsPending         = "pending"          // inserted; worker hasn't resolved it yet
@@ -87,13 +104,16 @@ type TradeDiagnosticsRow struct {
 	HurstSizeMult *float64
 }
 
-// captureTradeDiagnostics builds and eagerly persists the diagnostics row for
-// a just-closed position, then queues it for async metric enrichment. Called
-// from recordClosedPosition under the caller's state lock — the insert is a
-// local SQLite write (same cost class as the InsertTrade that already runs on
-// every close path); the OHLCV fetch never happens here.
+// captureTradeDiagnostics builds and persists the diagnostics row for a
+// just-closed position, then queues it for async metric enrichment. Called
+// from recordClosedPosition under the caller's state lock. Native closes
+// insert eagerly (same cost class as InsertTrade). When
+// tradeDiagnosticsPersistDeferred is set, the row is buffered on the
+// strategy and flushed inside the next SaveState / SaveStrategyBook
+// transaction instead — the paper replay path, so a kill during that save
+// cannot leave an orphaned diagnostics row (#1435).
 func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realizedPnL float64, reason string, closedAt time.Time) {
-	if tradeDiagnosticsRecorder == nil || s == nil || pos == nil {
+	if s == nil || pos == nil {
 		return
 	}
 	// #1159: a correlated hedge leg is not an independent trade. Its exit is
@@ -102,6 +122,9 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 	// own — recording it would pollute every per-strategy trade-quality
 	// aggregate with a mirror-image row for each real trade.
 	if pos.isHedgeLeg() {
+		return
+	}
+	if !tradeDiagnosticsPersistDeferred && tradeDiagnosticsRecorder == nil {
 		return
 	}
 	row := TradeDiagnosticsRow{
@@ -141,6 +164,10 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 	if pos.HurstSizeMult > 0 {
 		v := pos.HurstSizeMult
 		row.HurstSizeMult = &v
+	}
+	if tradeDiagnosticsPersistDeferred {
+		s.pendingTradeDiagnostics = append(s.pendingTradeDiagnostics, row)
+		return
 	}
 	if err := tradeDiagnosticsRecorder(&row); err != nil {
 		log.Printf("[diagnostics] insert row for %s %s: %v", s.ID, pos.Symbol, err)
