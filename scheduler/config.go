@@ -196,9 +196,10 @@ type Config struct {
 	ConfigVersion            int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
 	IntervalSeconds          int                        `json:"interval_seconds"`
 	LogDir                   string                     `json:"log_dir"`
-	DBFile                   string                     `json:"db_file,omitempty"`     // SQLite state DB path (default: "scheduler/state.db")
-	StatusPort               int                        `json:"status_port,omitempty"` // HTTP status server port (default: 8099; auto-fallback if taken)
-	StatusToken              string                     `json:"-"`                     // loaded from STATUS_AUTH_TOKEN env var only
+	DBFile                   string                     `json:"db_file,omitempty"`         // SQLite state DB path (default: "scheduler/state.db")
+	ReplayLogPath            string                     `json:"replay_log_path,omitempty"` // #1431 — shared live→paper decision-log SQLite path. MUST live outside every deploy tree (e.g. under a shared StateDirectory such as /var/lib/go-trader/shared/): instances run ProtectSystem=strict with a read-only checkout (#1056). Required when any strategy sets replay_sharing="live_mirror"; empty disables the feature. Restart-required (both deployments open the path at startup).
+	StatusPort               int                        `json:"status_port,omitempty"`     // HTTP status server port (default: 8099; auto-fallback if taken)
+	StatusToken              string                     `json:"-"`                         // loaded from STATUS_AUTH_TOKEN env var only
 	Discord                  DiscordConfig              `json:"discord"`
 	Telegram                 TelegramConfig             `json:"telegram,omitempty"`
 	AutoUpdate               string                     `json:"auto_update,omitempty"`           // "off", "daily", "heartbeat" (default: "off")
@@ -714,6 +715,7 @@ type StrategyConfig struct {
 	RegimeWindowDivergence      *RegimeWindowDivergence  `json:"regime_window_divergence,omitempty"`  // HL perps live only: detect divergence between two regime windows (short vs medium) and optionally override effective direction when they hard-diverge. Builds on regime_directional_policy surface (#907).
 	RegimeProfileAllocation     *RegimeProfileAllocation `json:"regime_profile_allocation,omitempty"` // HL perps only: slow regime switch between two validated open_strategy param profiles. A long-window regime label (from the #879 store) selects the active profile; switching is hysteretic (confirm_bars closed bars) and flat-only. Requires regime.enabled=true. Backtester replays the switch. (#998)
 	AllowScaleIn                bool                     `json:"allow_scale_in,omitempty"`            // HL perps/manual only: opt in to scale-in / pyramiding — a same-direction signal on an open position ADDS size (blends price+size, freezes EntryATR/regime/TP geometry) instead of being skipped. Default false preserves the legacy skip-on-same-direction behavior for every strategy that does not opt in. Gated by ScaleIn caps + spacing. (#873)
+	ReplaySharing               string                   `json:"replay_sharing,omitempty"`            // #1431 — live→paper decision replay. "none" (default) = today's behavior. "live_mirror" on a HL perps strategy: a LIVE (--mode=live) deployment writes every exposure-changing decision (open/scale_in/partial_close/full_close, actual filled qty+VWAP) to the shared replay_log_path SQLite DB; a PAPER deployment with the same strategy_id suppresses its own position-increasing signals and replays those rows against its virtual book (closes booked with reason replay_live_mirror at paper's current mark; paper's own close re-evaluation and trailing SL still run as a backstop). Requires the root replay_log_path. Go-only flag — never forwarded to check scripts (same class as paused). Hot-reloadable while FLAT only (toggling under an open position would desync paper's book from the log). Hedge legs need no replay: paper's state-derived hedge reconciler (#1159) converges from the replayed primary.
 	ScaleIn                     *ScaleInConfig           `json:"scale_in,omitempty"`                  // scale-in tuning; only consulted when AllowScaleIn is true. Nil = defaults (unlimited adds/notional, no spacing, per-add size = standard open notional). (#873)
 	Hedge                       *HedgeConfig             `json:"hedge,omitempty"`                     // #1159 phase 1 — opt-in auto-managed correlated hedge leg on a DIFFERENT HL perps coin, strictly coupled to the primary position's quantity events (open/add/partial/full close). No independent SL/TP, close evaluator, or check script for the hedge coin. HL perps only (live + paper). Nil/disabled = unchanged behavior. Hot-reloadable only while flat (state-shifting). Read via HedgeEnabled/hedgeCoin/hedgeRatio/hedgeLeverage/hedgeMarginMode, never directly.
 }
@@ -2054,6 +2056,23 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		// the exact misconfiguration the field exists to prevent.
 		if _, err := parseRegimeGateOnFailure(sc.RegimeGateOnFailure); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", prefix, err))
+		}
+
+		// #1431: replay_sharing vocabulary + scope. "live_mirror" is HL perps
+		// only (the write path reads the HL fill resolver's actual fills) and
+		// requires the root replay_log_path so both deployments open the same
+		// shared decision log. A typo'd value must fail loudly — silently
+		// falling back to "none" would leave paper computing its own signals
+		// while the operator believes it is shadowing live.
+		if !validReplaySharing(sc.ReplaySharing) {
+			errs = append(errs, fmt.Sprintf("%s: replay_sharing must be %q or %q, got %q", prefix, ReplaySharingNone, ReplaySharingLiveMirror, sc.ReplaySharing))
+		} else if normalizeReplaySharing(sc.ReplaySharing) == ReplaySharingLiveMirror {
+			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
+				errs = append(errs, fmt.Sprintf("%s: replay_sharing=%q is supported for HL perps strategies only (type=perps, platform=hyperliquid)", prefix, ReplaySharingLiveMirror))
+			}
+			if strings.TrimSpace(cfg.ReplayLogPath) == "" {
+				errs = append(errs, fmt.Sprintf("%s: replay_sharing=%q requires the root replay_log_path to be set", prefix, ReplaySharingLiveMirror))
+			}
 		}
 
 		// #569: manual strategies require symbol + timeframe + leverage.

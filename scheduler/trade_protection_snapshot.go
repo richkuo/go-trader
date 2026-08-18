@@ -125,6 +125,20 @@ func recordPositionOpen(s *StrategyState, sc StrategyConfig, trade *Trade, pos *
 	stampPositionProtectionSnapshot(pos, sc)
 	copyPositionOpenSnapshotToTrade(trade, pos)
 	RecordTrade(s, *trade)
+	// #1431: decision-log open/scale_in choke point — every perps open-side
+	// booking (fresh open, flip open leg, scale-in add) is deferred to this
+	// single insert, so one hook covers all three. Runs AFTER RecordTrade
+	// committed; the decision insert is its own transaction. An add is
+	// distinguished from a fresh open by the position already holding more
+	// than this trade's quantity. Hedge legs are skipped (the paper mirror's
+	// state-derived hedge reconciler converges from the replayed primary).
+	if pos != nil && !pos.isHedgeLeg() {
+		decisionType := ReplayDecisionOpen
+		if pos.Quantity > trade.Quantity+1e-9 {
+			decisionType = ReplayDecisionScaleIn
+		}
+		recordReplayDecision(s, decisionType, trade.Symbol, pos.Side, trade.Quantity, trade.Price, "", trade.Timestamp)
+	}
 	return true
 }
 

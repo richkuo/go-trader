@@ -2,6 +2,7 @@
   "config_version": 17,
   "interval_seconds": 300,
   "db_file": "scheduler/state.db",
+  "replay_log_path": "",
   "status_port": 8099,
   "tuning": {
     "max_retained_runs": 0

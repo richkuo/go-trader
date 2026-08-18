@@ -266,6 +266,16 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 	// diagnostics capture choke point. Eager identity insert only — the
 	// hold-window OHLCV fetch happens in the async worker, outside mu.
 	captureTradeDiagnostics(s, pos, closePrice, realizedPnL, reason, closedAt)
+	// #1431: same funnel property makes this the decision-log full-close choke
+	// point. Runs after the caller's RecordTrade already committed (its own
+	// transaction), and the insert itself is a separate transaction — a log
+	// failure can never roll back trade state. Hedge legs are skipped: the
+	// paper mirror's own state-derived hedge reconciler (#1159) converges the
+	// hedge from the replayed primary. Zero-qty residuals (phantom cleanups)
+	// carry no mirrorable exposure and are skipped too.
+	if pos.Quantity > 0 && !pos.isHedgeLeg() {
+		recordReplayDecision(s, ReplayDecisionFullClose, pos.Symbol, pos.Side, pos.Quantity, closePrice, reason, closedAt)
+	}
 }
 
 // closePositionIsCorrupt reports whether a position's structural fields make a
@@ -530,6 +540,13 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
 	} else {
 		pos.Quantity = remaining
+		// #1431: a true partial close is its own decision type; the
+		// remaining<=eps branch above funnels into recordClosedPosition's
+		// full_close row instead. Post-RecordTrade, own transaction; hedge
+		// legs are mirrored by the paper side's state-derived reconciler.
+		if !pos.isHedgeLeg() {
+			recordReplayDecision(s, ReplayDecisionPartialClose, symbol, side, qty, closePx, reason, now)
+		}
 	}
 	if logger != nil {
 		remainingForLog := remaining
@@ -554,6 +571,9 @@ func stopLossCloseDetailsPrefix(reason string) string {
 		return "Trailing SL close"
 	case "stop_loss_atr_paper":
 		return "Paper SL close"
+	case "replay_live_mirror":
+		// #1431: close booked by the paper mirror replaying a live decision.
+		return "Live mirror replay close"
 	}
 	return "Stop loss close"
 }
@@ -1521,6 +1541,12 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
 				pos.Quantity -= closeQty
+				// #1431: signal/registry partial close — own decision row
+				// (post-RecordTrade, own transaction; full closes funnel
+				// through recordClosedPosition instead).
+				if !pos.isHedgeLeg() {
+					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now)
+				}
 				logger.Info("Partial-close short %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
@@ -1734,6 +1760,12 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
 				pos.Quantity -= closeQty
+				// #1431: signal/registry partial close — own decision row
+				// (post-RecordTrade, own transaction; full closes funnel
+				// through recordClosedPosition instead).
+				if !pos.isHedgeLeg() {
+					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now)
+				}
 				logger.Info("Partial-close long %s: %.6f (remaining %.6f) @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, pos.Quantity, execPrice, fee, pnl)
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)

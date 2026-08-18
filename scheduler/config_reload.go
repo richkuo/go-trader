@@ -400,6 +400,14 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.Hedge = nil
 			}
 		}
+		// #1431: replay_sharing is hot-reloadable only when flat (state-compat
+		// gate above); reaching here means the strategy is flat, so the next
+		// cycle starts/stops writing (live) or mirroring (paper) cleanly. The
+		// live-source registry is rebuilt from cfg after the loop below.
+		if normalizeReplaySharing(sc.ReplaySharing) != normalizeReplaySharing(ns.ReplaySharing) {
+			addChange("strategy[%s].replay_sharing: %q -> %q", sc.ID, normalizeReplaySharing(sc.ReplaySharing), normalizeReplaySharing(ns.ReplaySharing))
+			sc.ReplaySharing = ns.ReplaySharing
+		}
 	}
 
 	if portfolioRiskMaxDrawdown(cfg.PortfolioRisk) != portfolioRiskMaxDrawdown(next.PortfolioRisk) {
@@ -476,6 +484,11 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 	cfg.ConfigVersion = next.ConfigVersion
 	cfg.Platforms = next.Platforms
 
+	// #1431: rebuild the decision-log live-source set from the just-applied
+	// config. Toggles reached here flat-only (state-compat gate), so a live
+	// strategy starts/stops writing between positions and never mid-trade.
+	rebuildReplayLiveSources(cfg)
+
 	if notifier != nil {
 		notifier.ReloadConfig(cfg)
 	}
@@ -518,6 +531,12 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	var errs []string
 	if cfg.DBFile != next.DBFile {
 		errs = append(errs, fmt.Sprintf("db_file changed (%q -> %q; restart required)", cfg.DBFile, next.DBFile))
+	}
+	// #1431: the decision-log path is opened once at startup by both the live
+	// writer and the paper mirror; swapping it mid-run would strand pending
+	// rows in the old DB. Same restart-required class as db_file.
+	if cfg.ReplayLogPath != next.ReplayLogPath {
+		errs = append(errs, fmt.Sprintf("replay_log_path changed (%q -> %q; restart required)", cfg.ReplayLogPath, next.ReplayLogPath))
 	}
 	if cfg.LogDir != next.LogDir {
 		errs = append(errs, fmt.Sprintf("log_dir changed (%q -> %q; restart required)", cfg.LogDir, next.LogDir))
@@ -694,6 +713,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] hedge block changed with open positions (flatten both the primary and the hedge leg first, or restart after close)",
 				sc.ID))
+		}
+		// #1431: toggling replay_sharing mid-position desyncs paper's open book
+		// from live's decision log (a mirrored open would never be replayed, or
+		// a natively-opened paper position would collide with the next replayed
+		// close). Flat-only, same shape as the direction/hedge guards.
+		if normalizeReplaySharing(sc.ReplaySharing) != normalizeReplaySharing(ns.ReplaySharing) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
+			errs = append(errs, fmt.Sprintf("strategy[%s] replay_sharing changed with open positions (%q -> %q; flatten first or restart after close)",
+				sc.ID, normalizeReplaySharing(sc.ReplaySharing), normalizeReplaySharing(ns.ReplaySharing)))
 		}
 		// #1268: switching between risk-per-trade and notional sizing while a
 		// position is open changes what the NEXT flip/re-entry sizing means
@@ -919,6 +946,7 @@ func strategyRestartShape(sc StrategyConfig) StrategyConfig {
 	sc.ScaleIn = nil                 // #873: hot-reloadable when flat; state-compat blocks change while open
 	sc.ATRMethod = ""                // #1277: hot-reloadable when flat; state-compat blocks the effective-method flip while open
 	sc.Hedge = nil                   // #1159: hot-reloadable when flat; state-compat blocks any hedge-block change while a hedge leg (or the primary) is open
+	sc.ReplaySharing = ""            // #1431: hot-reloadable when flat; state-compat blocks the toggle while open (paper's book would desync from the log mid-trade)
 	return sc
 }
 

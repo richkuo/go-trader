@@ -182,6 +182,26 @@ func main() {
 	// survives mid-cycle crashes that would otherwise lose the in-memory batch.
 	tradeRecorder = stateDB.InsertTrade
 
+	// #1431: open the shared live→paper decision log when configured. Both
+	// the live writer deployment and the paper mirror deployment open the
+	// same path (WAL + busy_timeout cover the cross-process sharing). A
+	// configured-but-unopenable path is a startup-fatal misconfiguration —
+	// running on without it would silently desync every mirrored pair.
+	if strings.TrimSpace(cfg.ReplayLogPath) != "" {
+		dl, dlErr := OpenDecisionLogDB(cfg.ReplayLogPath)
+		if dlErr != nil {
+			fmt.Fprintf(os.Stderr, "Failed to open replay decision log: %v\n", dlErr)
+			os.Exit(1)
+		}
+		decisionLog = dl
+		defer decisionLog.Close()
+		decisionLogWriter = decisionLog.InsertDecision
+	}
+	// Register which strategies write live decisions to the log (HL perps +
+	// --mode=live + replay_sharing=live_mirror). Rebuilt on every SIGHUP by
+	// applyHotReloadConfig.
+	rebuildReplayLiveSources(cfg)
+
 	// Load state: SQLite primary, JSON fallback with auto-migration.
 	state, err := LoadStateWithDB(cfg, stateDB)
 	if err != nil {
@@ -520,6 +540,12 @@ func main() {
 	if notifier.HasOwner() {
 		tradePersistWarn = func(msg string) {
 			notifier.SendOwnerDM("[state] " + msg)
+		}
+		// #1431: decision-log insert failures (consecutive streak ≥ 3) to the
+		// owner DM — the live trade always stands, but the paper mirror is
+		// silently stale until the log recovers without this alert.
+		decisionLogPersistWarn = func(msg string) {
+			notifier.SendOwnerDM("[replay] " + msg)
 		}
 		// #343: Forward baseline-guard warnings (a SaveState caller tried to
 		// rewrite initial_capital) to the owner DM. Dedup is handled inside
@@ -2506,6 +2532,16 @@ func main() {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
+							// #1431: replay mirror — paper mirrors the live decision log, so
+							// the check script's own position-INCREASING signals (fresh opens,
+							// scale-in adds, flips) are suppressed exactly like a #1150 pause;
+							// closes, close-registry actions, trailing SL, the ratchet, and
+							// protection sync keep running as the paper-side backstop. The
+							// replayed decisions are applied below, before the hedge sync.
+							if replayMirrorPaperActive(sc) && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
+								logger.Info("Replay mirror: %s signal suppressed — entries mirror the live decision log (#1431)", signalStr)
+								result.Signal = 0
+							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							// #907: update per-strategy divergence state after regime sync.
@@ -2832,6 +2868,39 @@ func main() {
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
+							}
+							// #1431: replay mirror — apply the live deployment's pending
+							// decisions (open/scale_in/partial_close/full_close) to the
+							// paper book. Placed after every native close/manage path above
+							// (paper's own close evaluation and SL loops run FIRST as the
+							// backstop) and before the hedge sync so the hedge converges on
+							// the replayed primary this same cycle. The pending-rows fetch
+							// runs outside mu; the apply runs under it. Live downtime simply
+							// yields no rows — paper holds its last replayed state and
+							// resumes on the next live decision (issue policy (c)).
+							if replayMirrorPaperActive(sc) && decisionLog != nil {
+								pending, perr := decisionLog.PendingDecisions(sc.ID)
+								switch {
+								case perr != nil:
+									logger.Error("Replay mirror: failed to read decision log: %v — holding last replayed state (#1431)", perr)
+								case len(pending) > 0:
+									mu.Lock()
+									appliedIDs, replayTrades, replayDetails := applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)
+									mu.Unlock()
+									if replayTrades > 0 {
+										trades += replayTrades
+										detail = strings.Join(replayDetails, "; ")
+									}
+									if len(appliedIDs) > 0 {
+										if err := decisionLog.MarkDecisionsApplied(appliedIDs); err != nil {
+											// Not fatal: the in-memory high-water in
+											// applyReplayedLiveDecisions prevents a
+											// double-apply within this process; rows are
+											// re-marked next cycle.
+											logger.Error("Replay mirror: failed to mark %d decision(s) applied: %v (#1431)", len(appliedIDs), err)
+										}
+									}
+								}
 							}
 							// #1159: converge the correlated hedge leg to the target
 							// derived from the primary position. Placed here — after every
