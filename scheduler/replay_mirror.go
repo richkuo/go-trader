@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -249,4 +250,22 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 	}
 	recordPositionOpen(s, sc, exec.OpenTrade, pos)
 	return exec.TradesExecuted, fmt.Sprintf("[%s] REPLAY OPEN %s %s %.6f @ $%.2f", sc.ID, row.Side, row.Symbol, row.Quantity, row.ReferencePrice)
+}
+
+// mergeTradeDetails concatenates operator-facing per-cycle digest fragments
+// so a later booked action cannot silently drop an earlier one. Empty
+// fragments are skipped. Used by the paper replay arm, which runs AFTER
+// paper's own close/SL backstop in the same iteration and must not overwrite
+// that earlier detail (#1435).
+func mergeTradeDetails(existing string, parts ...string) string {
+	out := make([]string, 0, 1+len(parts))
+	if existing != "" {
+		out = append(out, existing)
+	}
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "; ")
 }

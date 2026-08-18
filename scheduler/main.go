@@ -2908,7 +2908,7 @@ func main() {
 									mu.Unlock()
 									if replayTrades > 0 {
 										trades += replayTrades
-										detail = strings.Join(replayDetails, "; ")
+										detail = mergeTradeDetails(detail, replayDetails...)
 									}
 									if len(appliedIDs) > 0 {
 										switch {

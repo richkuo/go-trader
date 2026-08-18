@@ -220,6 +220,53 @@ func TestMirrorSuppressionWiring(t *testing.T) {
 	if !strings.Contains(src, "applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)") {
 		t.Fatal("HL perps dispatch missing the #1431 replay application call")
 	}
+	if !strings.Contains(src, "detail = mergeTradeDetails(detail, replayDetails...)") {
+		t.Fatal("replay block overwrites detail instead of merging — a same-cycle paper SL close would vanish from the digest")
+	}
+	if strings.Contains(src, "detail = strings.Join(replayDetails, \"; \")") {
+		t.Fatal("replay block still last-wins overwrites detail with joined replay text")
+	}
+}
+
+func TestMergeTradeDetailsPreservesEarlierNativeAction(t *testing.T) {
+	// Review optional (PR #1435 round 4): a same-cycle paper SL close must
+	// still appear in the digest after the mirror books a later action.
+	sl := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
+	replay := []string{"[hl-paper-eth] REPLAY OPEN long ETH 0.500000 @ $1908.25"}
+	got := mergeTradeDetails(sl, replay...)
+	want := sl + "; " + replay[0]
+	if got != want {
+		t.Fatalf("merge = %q, want %q", got, want)
+	}
+}
+
+func TestMergeTradeDetailsJoinsMultipleReplayRowsWithoutDroppingNative(t *testing.T) {
+	native := "[hl-paper-eth] PAPER FIXED ATR SL ETH @ $1890.00"
+	got := mergeTradeDetails(native,
+		"[hl-paper-eth] REPLAY SCALE-IN ETH +0.500000 @ $1910.00",
+		"[hl-paper-eth] REPLAY CLOSE ETH @ $1905.00 (live reason: signal)",
+	)
+	if !strings.HasPrefix(got, native+"; ") {
+		t.Fatalf("native detail was eclipsed: %q", got)
+	}
+	if !strings.Contains(got, "REPLAY SCALE-IN") || !strings.Contains(got, "REPLAY CLOSE") {
+		t.Fatalf("missing a replay fragment: %q", got)
+	}
+}
+
+func TestMergeTradeDetailsEmptyReplayKeepsNative(t *testing.T) {
+	// Must-survive (3): replayTrades==0 does not call merge, but if it did
+	// with empty parts the native detail must survive.
+	native := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
+	if got := mergeTradeDetails(native); got != native {
+		t.Fatalf("empty parts dropped native: %q", got)
+	}
+	if got := mergeTradeDetails(native, "", ""); got != native {
+		t.Fatalf("blank parts dropped native: %q", got)
+	}
+	if got := mergeTradeDetails("", "[hl-paper-eth] REPLAY OPEN long ETH 0.5 @ $1900"); !strings.Contains(got, "REPLAY OPEN") || strings.HasPrefix(got, "; ") {
+		t.Fatalf("empty existing produced %q", got)
+	}
 }
 
 // ─── review-round-1 regression tests (atomicity, stamps, index) ─────────────
