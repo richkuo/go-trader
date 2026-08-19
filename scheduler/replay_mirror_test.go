@@ -693,3 +693,113 @@ func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
 		t.Fatalf("diagnostics after watermark skip = %d, want 1 (not a duplicate)", len(rows))
 	}
 }
+
+func TestSaveStrategyBookReplacesOpenPositionAcrossCycles(t *testing.T) {
+	// Review Needs Fixing (PR #1435 round 5): a second SaveStrategyBook while
+	// the same symbol stays open must not UNIQUE-fail, and a later close must
+	// not resurrect the old row.
+	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer sdb.Close()
+
+	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
+	open := []ReplayDecision{
+		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900},
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc, s, open, 1900.0, replayTestResult(), &Config{}, logger); trades != 1 {
+		t.Fatalf("open trades = %d, want 1", trades)
+	}
+	if err := sdb.SaveStrategyBook(s); err != nil {
+		t.Fatalf("SaveStrategyBook after open: %v", err)
+	}
+
+	add := []ReplayDecision{
+		{DecisionID: 2, StrategyID: sc.ID, DecisionType: ReplayDecisionScaleIn, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1910},
+	}
+	if _, trades, _ := applyReplayedLiveDecisions(sc, s, add, 1910.0, replayTestResult(), &Config{}, logger); trades != 1 {
+		t.Fatalf("scale-in trades = %d, want 1", trades)
+	}
+	if err := sdb.SaveStrategyBook(s); err != nil {
+		t.Fatalf("SaveStrategyBook after scale-in: %v", err)
+	}
+	loaded, err := sdb.LoadState()
+	if err != nil || loaded == nil {
+		t.Fatalf("LoadState after scale-in: loaded=%v err=%v", loaded, err)
+	}
+	got := loaded.Strategies[sc.ID]
+	if got == nil {
+		t.Fatal("strategy missing after scale-in save")
+	}
+	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 1.0 {
+		t.Fatalf("after scale-in position = %+v, want ETH qty 1.0", pos)
+	}
+
+	partial := []ReplayDecision{
+		{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionPartialClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.25, ReferencePrice: 1912},
+	}
+	sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
+	s2 = got
+	if _, trades, _ := applyReplayedLiveDecisions(sc2, s2, partial, 1911.0, replayTestResult(), &Config{}, logger2); trades != 1 {
+		t.Fatalf("partial-close trades = %d, want 1", trades)
+	}
+	if err := sdb.SaveStrategyBook(s2); err != nil {
+		t.Fatalf("SaveStrategyBook after partial-close: %v", err)
+	}
+	loaded, err = sdb.LoadState()
+	if err != nil || loaded == nil {
+		t.Fatalf("LoadState after partial-close: loaded=%v err=%v", loaded, err)
+	}
+	got = loaded.Strategies[sc.ID]
+	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.75 {
+		t.Fatalf("after partial-close position = %+v, want ETH qty 0.75", pos)
+	}
+
+	full := []ReplayDecision{
+		{DecisionID: 4, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.75, ReferencePrice: 1905, CloseReason: "signal"},
+	}
+	sc3, s3, logger3 := replayMirrorTestSetup(t, "hl-paper-eth")
+	s3 = got
+	if _, trades, _ := applyReplayedLiveDecisions(sc3, s3, full, 1905.0, replayTestResult(), &Config{}, logger3); trades != 1 {
+		t.Fatalf("full-close trades = %d, want 1", trades)
+	}
+	if err := sdb.SaveStrategyBook(s3); err != nil {
+		t.Fatalf("SaveStrategyBook after full-close: %v", err)
+	}
+	loaded, err = sdb.LoadState()
+	if err != nil || loaded == nil {
+		t.Fatalf("LoadState after full-close: loaded=%v err=%v", loaded, err)
+	}
+	got = loaded.Strategies[sc.ID]
+	if pos := got.Positions["ETH"]; pos != nil && pos.Quantity > 0 {
+		t.Fatalf("after full-close resurrected position = %+v, want flat", pos)
+	}
+	var posRows int
+	if err := sdb.db.QueryRow(`SELECT COUNT(*) FROM positions WHERE strategy_id = ?`, sc.ID).Scan(&posRows); err != nil {
+		t.Fatalf("count positions after full-close: %v", err)
+	}
+	if posRows != 0 {
+		t.Fatalf("positions rows after full-close = %d, want 0 (stale row would resurrect on LoadState)", posRows)
+	}
+
+	reopen := []ReplayDecision{
+		{DecisionID: 5, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.2, ReferencePrice: 1920},
+	}
+	sc4, s4, logger4 := replayMirrorTestSetup(t, "hl-paper-eth")
+	s4 = got
+	if _, trades, _ := applyReplayedLiveDecisions(sc4, s4, reopen, 1920.0, replayTestResult(), &Config{}, logger4); trades != 1 {
+		t.Fatalf("reopen trades = %d, want 1", trades)
+	}
+	if err := sdb.SaveStrategyBook(s4); err != nil {
+		t.Fatalf("SaveStrategyBook after reopen: %v", err)
+	}
+	loaded, err = sdb.LoadState()
+	if err != nil || loaded == nil {
+		t.Fatalf("LoadState after reopen: loaded=%v err=%v", loaded, err)
+	}
+	got = loaded.Strategies[sc.ID]
+	if pos := got.Positions["ETH"]; pos == nil || pos.Quantity != 0.2 {
+		t.Fatalf("after reopen position = %+v, want ETH qty 0.2", pos)
+	}
+}

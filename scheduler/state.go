@@ -614,10 +614,11 @@ func SaveStateWithDB(state *AppState, cfg *Config, sdb *StateDB) error {
 }
 
 // SaveStrategyBookWithDB persists ONE strategy's book (strategy row including
-// replay_mirror_watermark, positions, option positions, unpersisted trades,
-// closed-position buffers, and deferred diagnostics) without rewriting the
-// rest of the fleet. The paper replay mirror uses this so the cost of
-// persisting one replayed decision does not grow with unrelated strategies.
+// replay_mirror_watermark, live positions DELETE-then-INSERT, option
+// positions, unpersisted trades, closed-position buffers, and deferred
+// diagnostics) without rewriting the rest of the fleet. The paper replay
+// mirror uses this so the cost of persisting one replayed decision does
+// not grow with unrelated strategies.
 func SaveStrategyBookWithDB(s *StrategyState, sdb *StateDB) error {
 	return sdb.SaveStrategyBook(s)
 }

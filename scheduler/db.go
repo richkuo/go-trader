@@ -1638,8 +1638,9 @@ func enqueueFlushedDiagnostics(rows []TradeDiagnosticsRow) {
 }
 
 // SaveStrategyBook persists one strategy's book without rewriting the rest of
-// the fleet. Positions and option_positions are replaced via INSERT OR REPLACE
-// on the strategy row (FK CASCADE); trades, closed_positions, and deferred
+// the fleet. Live positions and option_positions are deleted then rewritten
+// for this strategy only (do not rely on INSERT OR REPLACE of the parent
+// firing ON DELETE CASCADE). Trades, closed_positions, and deferred
 // diagnostics are append-only in the same transaction. Used by the paper
 // replay mirror so persisting one replayed decision does not DELETE/reinsert
 // every unrelated strategy (#1435).
@@ -1706,6 +1707,18 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		s.ReplayMirrorWatermark,
 	); err != nil {
 		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
+	}
+
+	// Wipe this strategy's live book before rewrite. A second persist of the
+	// same still-open symbol must not UNIQUE-fail on (strategy_id, symbol),
+	// and a full close (zero inserts) must not leave a stale row for
+	// LoadState to resurrect. INSERT OR REPLACE on strategies can CASCADE
+	// the children, but that is not the persist contract — delete explicitly.
+	if _, err := tx.Exec(`DELETE FROM positions WHERE strategy_id = ?`, s.ID); err != nil {
+		return fmt.Errorf("delete positions for %s: %w", s.ID, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM option_positions WHERE strategy_id = ?`, s.ID); err != nil {
+		return fmt.Errorf("delete option_positions for %s: %w", s.ID, err)
 	}
 
 	stmtPos, err := tx.Prepare(`INSERT INTO positions (strategy_id, symbol, position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, tp1_oid, tp2_oid, tp_oids_json, tp_armed_tiers_json, stop_loss_atr_mult, tp_tiers_json, sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, regime, regime_windows_json, regime_pending_label, regime_pending_count, regime_applied_label, scale_in_count, last_add_price, added_notional_usd, risk_anchor_price, scale_in_resize_pending, ratchet_fallback_normalize_pending, open_profile, direction_certified_at_open, direction_certified_states_json, llm_analysis_requested, llm_verdict, atr_method_at_open, hedge_for, hedge_primary_qty_basis, hurst_at_open, hurst_size_mult)
