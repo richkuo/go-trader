@@ -1407,7 +1407,7 @@ func TestPooledRiskFallbackPreservesMixedAllocatedDrawdown(t *testing.T) {
 	}
 	prs := &PortfolioRiskState{PeakValue: 12000}
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 5, WarnThresholdPct: 80}
-	allowed, _, _, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, total, 0, 0, 0, complete)
+	allowed, _, _, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, total, 0, 0, 0, complete, complete)
 	if allowed || !prs.KillSwitchActive || !strings.Contains(reason, "portfolio drawdown") {
 		t.Fatalf("allocated strategy drawdown must remain detectable: allowed=%v state=%+v reason=%q", allowed, prs, reason)
 	}

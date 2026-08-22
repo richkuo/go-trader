@@ -2563,7 +2563,7 @@ func TestCheckPortfolioRiskMissingPooledEquitySuppressesOnlyEquityArm(t *testing
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 7}
 
-	allowed, _, warning, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, 0, 0, 0, 0, false)
+	allowed, _, warning, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, 0, 0, 0, 0, false, false)
 	if !allowed || warning || reason != "" || prs.KillSwitchActive {
 		t.Fatalf("missing equity must not false-fire: allowed=%v warning=%v reason=%q state=%+v", allowed, warning, reason, prs)
 	}
@@ -2571,7 +2571,7 @@ func TestCheckPortfolioRiskMissingPooledEquitySuppressesOnlyEquityArm(t *testing
 		t.Fatalf("missing equity must preserve the last valid equity tuple: %+v", prs)
 	}
 
-	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(prs, cfg, 0, 0, 300, 1000, false)
+	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(prs, cfg, 0, 0, 300, 1000, false, false)
 	if allowed || !prs.KillSwitchActive || !strings.Contains(reason, "equity unavailable") {
 		t.Fatalf("margin blow-up must still fire without equity: allowed=%v reason=%q state=%+v", allowed, reason, prs)
 	}

@@ -921,19 +921,48 @@ func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []
 //   - equity guard armed (equityAvailable && PeakValue > 0): the latch trips
 //     on equity drawdown ONLY. Margin drawdown stays a warning lens.
 //   - equity guard NOT armed (pooled shared wallet with no trustworthy
-//     balance, or a cold start that has never recorded a positive
-//     valuation): margin drawdown trips the latch, because it is then the
-//     only signal that can protect the account.
+//     balance, or no positive valuation has EVER been recorded): margin
+//     drawdown trips the latch, because it is then the only signal that can
+//     protect the account.
+//
+// equityTrusted (#1449 review) is a THIRD state, distinct from both: the
+// equity total exists but this cycle substituted or aged it —
+// computeSubsetPortfolioValue replaced a failed shared-wallet balance fetch
+// with sum(member PV), or resolveSharedWalletRiskBalances reused a
+// one-generation-old balance. Both leave equityAvailable true. The latch
+// STAYS with equity on those cycles on purpose: sum(member PV) prices every
+// position at the same live marks, and a one-generation-old balance is a real
+// balance, so the equity signal still measures real book loss — and handing
+// the whole book to the margin signal over a transient balance-fetch blip is
+// exactly the failure #1448 exists to remove. What an untrusted total must
+// never do is make a drawdown DISAPPEAR, so two things are gated on
+// equityTrusted instead: the peak ratchet does not run (the caller also rolls
+// the peak back, so the two agree instead of leaving CurrentDrawdownPct
+// written off a peak that was undone), and the measured equity drawdown is
+// floored at the last recorded reading. The floor can never itself latch —
+// any stored reading came from a cycle that did not latch, so it is at or
+// below the limit — it can only stop an overstated substitute total from
+// masking a loss that was already visible.
 //
 // Per-POSITION margin protection is unaffected and lives where it belongs:
 // the #292 per-strategy circuit breaker measures the same margin-drawdown
 // ratio and force-closes that one strategy on a cooldown, without latching
 // the book (see CheckRisk).
 //
+// CAVEAT — circuit_breaker:false (#1449 review): that per-strategy breaker is
+// opt-outable (#1048), and an explicit false suppresses BOTH of its firing
+// arms. A perps strategy with the breaker disabled therefore has no automatic
+// margin protection at any level once the portfolio latch belongs to equity,
+// and where the breaker IS enabled its perps max_drawdown_pct default is 50
+// against the portfolio default of 25, so the handover is to a LOOSER limit.
+// That gap is made loud rather than silent: recordCircuitBreakerSuppression
+// raises a throttled owner DM (not only a log line) on the cycle a disabled
+// breaker crosses a halt threshold.
+//
 // The emitted KillSwitchEvent.Source records whether equity or margin drove
 // the fire/warning so operators can tell at a glance which lever tripped.
 func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64) (allowed, notionalBlocked, warning bool, reason string) {
-	return checkPortfolioRiskWithEquityAvailability(prs, cfg, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin, true)
+	return checkPortfolioRiskWithEquityAvailability(prs, cfg, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin, true, true)
 }
 
 // checkPortfolioRiskWithEquityAvailability allows the shared-wallet risk path
@@ -943,14 +972,31 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 // latch (#1448) rather than only a warning; the notional cap is unaffected.
 // Existing callers use CheckPortfolioRisk and therefore retain the historical
 // equity-available behavior.
-func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64, equityAvailable bool) (allowed, notionalBlocked, warning bool, reason string) {
+//
+// equityTrusted (#1449 review) is a separate, weaker signal: totalValue is
+// usable but this cycle SUBSTITUTED or AGED it (sum(member PV) after a failed
+// shared-wallet balance fetch, or a one-generation-old cached balance). The
+// equity guard stays armed and keeps the latch; the peak ratchet is skipped
+// and the measured drawdown is floored at the last recorded reading so an
+// overstated substitute cannot mask a loss. See the #1448 block above for why
+// the latch does not fall back to margin here. Pass equityTrusted=false
+// whenever equityAvailable is false — an unavailable total is never trusted.
+func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64, equityAvailable, equityTrusted bool) (allowed, notionalBlocked, warning bool, reason string) {
 	if prs.KillSwitchActive {
 		return false, false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
 			prs.KillSwitchAt.Format("2006-01-02 15:04:05 UTC"))
 	}
 
-	// Ratchet peak high-water mark upward only.
-	if equityAvailable && totalValue > prs.PeakValue {
+	// #1449 review: the last recorded equity drawdown, read BEFORE anything
+	// this cycle overwrites it. It is the floor applied on an untrusted cycle.
+	priorEquityDD := prs.CurrentDrawdownPct
+
+	// Ratchet peak high-water mark upward only. equityTrusted gates it so a
+	// substituted or one-generation-stale total cannot move the high-water
+	// mark. The caller also rolls an untrusted ratchet back; doing it here too
+	// means equityDD below is computed against the peak that actually
+	// survives, instead of against one the caller is about to undo.
+	if equityAvailable && equityTrusted && totalValue > prs.PeakValue {
 		prs.PeakValue = totalValue
 	}
 
@@ -962,6 +1008,15 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 		equityDD = (prs.PeakValue - totalValue) / prs.PeakValue * 100
 		if equityDD < 0 {
 			equityDD = 0
+		}
+		// #1449 review: an untrusted total may raise the measured drawdown but
+		// never lower it. Monotone across a run of untrusted cycles; the first
+		// trusted cycle overwrites it with a real measurement. This closes the
+		// fail-open direction (a substitute that overstates equity understates
+		// the drawdown) without letting the floor alone fire the latch — every
+		// stored reading came from a cycle that did not latch.
+		if !equityTrusted && equityDD < priorEquityDD {
+			equityDD = priorEquityDD
 		}
 		prs.CurrentDrawdownPct = equityDD
 	}
@@ -982,7 +1037,17 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 	// has been non-positive on every cycle so far), which is the same
 	// condition as equityAvailable == false: the equity guard is not
 	// operative, and margin is the only signal that can protect the account.
-	// A cold-start account that blows up margin on bar 1 stays protected.
+	//
+	// #1449 review — the exact reach of that clause: it is NOT "a cold-start
+	// account that blows up margin on bar 1". A first cycle carrying any
+	// positive total arms the guard through the ratchet above, so from that
+	// cycle on the latch belongs to equity and margin can no longer fire it.
+	// The margin arm on the equityAvailable path is reachable only while
+	// totalValue has been non-positive on EVERY cycle, which is what
+	// TestCheckPortfolioRisk_PeakZero_MarginCanStillFire pins with
+	// totalValue = 0. Margin's real standing backstop is the equityAvailable
+	// == false path (pooled wallet with no trustworthy balance), plus the #292
+	// per-strategy circuit breaker on every path.
 	equityGuardArmed := equityAvailable && prs.PeakValue > 0
 	if (equityGuardArmed && equityDD > cfg.MaxDrawdownPct) || (!equityGuardArmed && marginDD > cfg.MaxDrawdownPct) {
 		prs.KillSwitchActive = true
@@ -1020,8 +1085,12 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 	// Warning check: approaching kill switch threshold on either signal.
 	if cfg.MaxDrawdownPct > 0 {
 		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
-		equityWarn := equityAvailable && equityDD > warnDrawdownPct
-		marginWarn := marginDD > warnDrawdownPct
+		// Both persisted fields are already written above, so the shared
+		// helper sees exactly the values this cycle measured. The caller reads
+		// the same helper for the #1449 warn-DM throttle — one implementation,
+		// so the throttle's idea of "which signal is in band" can never drift
+		// from the one that produced the warning.
+		equityWarn, marginWarn := portfolioWarnBandSignals(cfg, prs, equityAvailable)
 		if equityWarn || marginWarn {
 			now := time.Now().UTC()
 			if !prs.WarningSent {
@@ -1086,6 +1155,26 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 	}
 
 	return true, false, warning, reason
+}
+
+// portfolioWarnBandSignals reports which drawdown lenses sit in the portfolio
+// warn band, reading the same persisted fields the kill-switch path just wrote.
+//
+// It is the SINGLE definition of warn-band membership: the warn-reason switch
+// inside checkPortfolioRiskWithEquityAvailability and the #1449 warn-DM
+// throttle in the main loop both call it, so a signal that "newly entered the
+// band" means the same thing on both sides. equityAvailable must be the same
+// value passed to the risk check for the cycle; the PeakValue > 0 guard
+// mirrors the drawdown computation, which leaves CurrentDrawdownPct untouched
+// (possibly holding a stale non-zero reading) when no peak exists.
+func portfolioWarnBandSignals(cfg *PortfolioRiskConfig, prs *PortfolioRiskState, equityAvailable bool) (equityInBand, marginInBand bool) {
+	if cfg == nil || prs == nil || cfg.MaxDrawdownPct <= 0 {
+		return false, false
+	}
+	warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
+	equityInBand = equityAvailable && prs.PeakValue > 0 && prs.CurrentDrawdownPct > warnDrawdownPct
+	marginInBand = prs.CurrentMarginDrawdownPct > warnDrawdownPct
+	return equityInBand, marginInBand
 }
 
 // PortfolioNotional computes gross market exposure across all strategies.
@@ -2108,6 +2197,13 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 		logger.Warn("WARNING: circuit breaker is DISABLED (circuit_breaker:false) and a halt threshold was crossed (%s) — NO circuit breaker fired. This strategy is trading WITHOUT the drawdown/consecutive-loss auto-halt and positions are NOT being auto-closed on this condition. This is a warning only (nothing was closed); re-enable circuit_breaker to restore protection.",
 			strings.Join(reasons, "; "))
 	}
+	// #1449 review: escalate to the owner, not only to the strategy log. Since
+	// #1448 this breaker owns margin protection whenever the portfolio latch
+	// belongs to equity, so a disabled one crossing a halt threshold is an
+	// absent auto-protective mechanism. Queued rather than sent because
+	// CheckRisk holds mu (#880); the main loop drains it after mu.Unlock().
+	// The LoadOrStore above already made this once per suppression episode.
+	queueCircuitBreakerSuppressionAlert(s.ID, reasons)
 }
 
 // RecordTradeResult updates risk state with realized PnL for daily limits and
