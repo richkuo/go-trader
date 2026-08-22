@@ -30,14 +30,33 @@ Run (needs the OHLCV cache reachable from shared_tools/):
     uv run --no-sync python backtest/research/regime_1076_certify.py \
         --symbols "BTC/USDT,ETH/USDT,SOL/USDT,HYPE/USDC:USDC@hyperliquid"
 
-#1443 — two hard rules this producer now ENFORCES rather than merely documents:
+#1443 — hard rules this producer now ENFORCES rather than merely documents. Every one
+of them guards the same thing: a REPO-TRACKED output (the artifact the live daemon reads,
+and the committed run report that is this issue's evidence) may only be written by a run
+that was actually capable of certifying, over the baseline universe, on the baseline data.
 
 1. FAMILY INTEGRITY. certify() applies global BH over only the rows of the CURRENT
    invocation, so a narrowed run (fewer symbols/timeframes/windows/classifiers/horizons)
    shrinks the correction family and inflates every cell's pass probability — the pooled-
-   limit trap #1424 documents for the Hurst gate. Writing the repo artifact from a run
+   limit trap #1424 documents for the Hurst gate. Writing a repo-tracked output from a run
    whose universe is not a SUPERSET of the default universe is refused outright
    (``--allow-narrowed-family`` overrides, and warns loudly either way).
+1b. BASELINE SOURCES (review). family_is_superset compares BARE symbols, so it cannot see
+   a DEFAULT symbol repointed at another venue. baseline_source_violations checks that
+   separately: a default symbol must resolve to eval_windows.PLATFORM, because every
+   committed regime baseline was computed on that series (#1315). ADDED symbols stay free
+   to carry any ``@exchange``. Same refusal, same override flag.
+1c. ONE ASSET, ONE SERIES (review). certify() keys a cell by normalize_cert_asset, so two
+   screened symbols reducing to the same asset would blend into ONE certified entry whose
+   provenance ``criteria.data_sources`` (keyed by full symbol) cannot disentangle.
+   Refused at parse time; premise.parse_symbols_arg separately refuses a repeated symbol.
+1d. DEGENERATE RUNS (review). An empty ``certified`` list is a publishable negative result
+   only when the run COULD have found something. A run with no directional rows measured
+   nothing, and a run whose permutation p-floor sits above the rank-1 BH critical value
+   cannot reject at any effect size; either one is refused for repo-tracked outputs
+   (``--allow-degenerate-run`` — deliberately a SEPARATE flag, so unlocking a narrowed
+   research family never also unlocks erasing the live artifact). ``--n-perm`` therefore
+   defaults to 30000, the resolution the committed artifact was produced at.
 2. PROVENANCE. The artifact ``criteria`` records the actual screened family size, the
    per-symbol data sources, the universe axes and the permutation count, so a narrowed or
    mis-sourced artifact is detectable by inspection after the fact. All new metadata nests
@@ -48,7 +67,10 @@ Run (needs the OHLCV cache reachable from shared_tools/):
 
 The per-cell verdict surface (cell_verdicts) reports, for every screened cell, the FIRST
 criterion it fails — so "why is (ETH, 1h, composite) not certified?" is answered by the run
-itself instead of being inferred from an empty ``certified`` list.
+itself instead of being inferred from an empty ``certified`` list. Its ``bh_threshold`` is
+the bar the VERDICT was decided against: BH is a step-up procedure, so once the family
+rejects anything the operative bar is the step-up cutoff, not each row's per-rank critical
+value (both are reported, as ``bh_step_up_cutoff`` and ``bh_rank_threshold``).
 """
 from __future__ import annotations
 
@@ -121,6 +143,39 @@ def family_is_superset(symbols, timeframes, windows, classifiers,
     return ok
 
 
+def baseline_source_violations(sources, platform) -> dict:
+    """``{symbol: exchange}`` for DEFAULT_SYMBOLS entries NOT loaded from the
+    baseline venue.
+
+    #1443 review: family_is_superset compares BARE symbols on purpose (a default
+    symbol still covers its axis value whatever venue it came from), so the width
+    check alone cannot see a repointed baseline. It has to be checked separately,
+    because the repo artifact is what the live daemon reads to enable
+    regime_directional_policy short entries, and every committed regime baseline
+    was computed on the ``eval_windows.PLATFORM`` series (#1315 axis separation).
+    Symbols ADDED beyond the defaults are free to carry any source — that is the
+    whole point of ``SYMBOL[@exchange]``. Pure; unit-tested without data access."""
+    return {sym: src for sym, src in sorted(sources.items())
+            if sym in set(premise.DEFAULT_SYMBOLS) and src != platform}
+
+
+def cert_asset_collisions(symbols) -> dict:
+    """``{cert_asset: [symbol, ...]}`` for normalized assets backed by more than
+    one screened symbol.
+
+    #1443 review: certify() keys a cell by ``normalize_cert_asset(symbol)``, so
+    ``BTC/USDT`` and ``BTC/USDC:USDC@hyperliquid`` collapse into ONE certified
+    entry whose rows come from two venues, while ``criteria.data_sources`` (keyed
+    by full symbol) cannot say which venue backed which state. Screening the same
+    asset from two venues in one run is therefore refused at parse time rather
+    than silently blended. Pure; unit-tested without data access."""
+    by_asset: dict = {}
+    for symbol, _exchange in premise.normalize_symbol_specs(symbols):
+        by_asset.setdefault(normalize_cert_asset(symbol), []).append(symbol)
+    return {asset: sorted(syms) for asset, syms in sorted(by_asset.items())
+            if len(syms) > 1}
+
+
 def _bh_ranks(pvals, fdr_q):
     """``[(rank, critical_value)]`` aligned with ``pvals``: each p-value's 1-based
     ascending rank in the family and the BH critical value ``fdr_q * rank / m``
@@ -139,6 +194,34 @@ def _bh_ranks(pvals, fdr_q):
             prev = pvals[i]
         ranks[i] = rank
     return [(ranks[i], fdr_q * ranks[i] / m) for i in range(m)]
+
+
+def bh_step_up_cutoff(pvals, fdr_q):
+    """The critical value the family ACTUALLY cleared, or ``None`` when the
+    procedure rejected nothing.
+
+    #1443 review: Benjamini-Hochberg is a STEP-UP procedure
+    (backtest/regime_stats.py) — it finds the largest rank k with
+    ``p_(k) <= q*k/m`` and rejects every p-value at or below ``p_(k)``. So a row
+    whose OWN per-rank bar ``q*rank/m`` it missed can still be rejected on the
+    back of a higher-ranked survivor. Reporting the per-rank bar as "the bar it
+    needed" can therefore contradict the verdict beside it.
+
+    ``q*k_max/m`` is exactly equivalent to the procedure for every row in the
+    family: no p-value can lie in ``(p_(k_max), q*k_max/m]`` — one there would
+    itself satisfy the rank-``k_max+1`` bar and contradict k_max's maximality.
+    Pure; unit-tested without data access."""
+    m = len(pvals)
+    if m == 0:
+        return None
+    ordered = sorted(float(p) for p in pvals)
+    k_max = 0
+    for k, p in enumerate(ordered, start=1):
+        if p <= fdr_q * k / m:
+            k_max = k
+    if not k_max:
+        return None
+    return fdr_q * k_max / m
 
 
 # Gate order, mirroring certify(): a cell is reported against the FIRST criterion
@@ -178,6 +261,7 @@ def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
     pvals = [float(r["p_value"]) for r in directional]
     global_bh = benjamini_hochberg(pvals, alpha=fdr_q) if pvals else []
     ranked = _bh_ranks(pvals, fdr_q)
+    step_up = bh_step_up_cutoff(pvals, fdr_q)
     family_size = len(directional)
     cell_idx: dict = {}
     for i, r in enumerate(directional):
@@ -199,6 +283,9 @@ def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
             entry["best_row"] = None
             entry["bh_rank"] = None
             entry["bh_threshold"] = None
+            entry["bh_rank_threshold"] = None
+            entry["bh_step_up_cutoff"] = (
+                None if step_up is None else float(step_up))
             out[key] = entry
             continue
 
@@ -207,7 +294,14 @@ def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
         rank, thresh = ranked[best_i]
         entry["min_p_value"] = float(best["p_value"])
         entry["bh_rank"] = int(rank)
-        entry["bh_threshold"] = float(thresh)
+        # #1443 review: `bh_threshold` is the bar the VERDICT was decided against,
+        # so it must be the step-up cutoff whenever the family rejected anything —
+        # a row can be rejected on a higher-ranked survivor's back while missing
+        # its own per-rank bar. With nothing rejected there is no cutoff, and the
+        # row's own per-rank bar is the honest "how far short did it fall".
+        entry["bh_rank_threshold"] = float(thresh)
+        entry["bh_step_up_cutoff"] = None if step_up is None else float(step_up)
+        entry["bh_threshold"] = float(thresh if step_up is None else step_up)
         entry["best_row"] = {
             "window": str(best["window"]), "horizon": int(best["horizon"]),
             "state": str(best["state"]), "gap": float(best["gap"]),
@@ -342,7 +436,12 @@ def build_parser():
     p.add_argument("--windows", default=",".join(premise.DEFAULT_WINDOWS))
     p.add_argument("--horizons", default=",".join(str(h) for h in premise.DEFAULT_HORIZONS))
     p.add_argument("--classifiers", default=",".join(premise.DEFAULT_CLASSIFIERS))
-    p.add_argument("--n-perm", type=int, default=500)
+    # #1443 review: the default matches the committed artifact's run. At the full
+    # default universe (m in the low thousands) the rank-1 BH bar q/m sits around
+    # 4e-05, while n_perm=500 floors every p-value at 1/501 ~ 2e-03 — ~53x ABOVE
+    # it. The old default therefore made the documented refresh command incapable
+    # of certifying anything at any effect size.
+    p.add_argument("--n-perm", type=int, default=30000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--fdr-q", type=float, default=0.05)
     p.add_argument("--ttl-days", type=int, default=DEFAULT_TTL_DAYS)
@@ -352,9 +451,19 @@ def build_parser():
                    help="path for the per-cell run report JSON (empty string to skip)")
     p.add_argument("--allow-narrowed-family", action="store_true",
                    help="permit a run whose universe is NOT a superset of the default "
-                        "screen. Narrowing shrinks the BH correction family and inflates "
-                        "every cell's pass probability (#1424); without this flag such a "
-                        "run refuses to write the repo artifact.")
+                        "screen, or whose baseline symbols are sourced off-PLATFORM. "
+                        "Narrowing shrinks the BH correction family and inflates every "
+                        "cell's pass probability (#1424); a repointed baseline screens a "
+                        "series no committed baseline used. Without this flag such a run "
+                        "refuses to write ANY repo-tracked output.")
+    p.add_argument("--allow-degenerate-run", action="store_true",
+                   help="permit a run that is structurally incapable of certifying "
+                        "anything — no directional rows screened at all, or a permutation "
+                        "p-floor above the rank-1 BH critical value — to overwrite a "
+                        "repo-tracked output. Deliberately SEPARATE from "
+                        "--allow-narrowed-family: narrowing a research family must not "
+                        "also unlock the erasure of a live artifact from a run that "
+                        "measured nothing.")
     return p
 
 
@@ -364,10 +473,12 @@ def _format_verdict_line(v) -> str:
             f"{v['verdict']:22s}")
     if not best:
         return head + f"rows={v['n_screened_rows']} directional=0"
+    bar_kind = "step-up cutoff" if v.get("bh_step_up_cutoff") is not None \
+        else "per-rank bar"
     return (head
             + f"min_p={v['min_p_value']:.6g} "
-            + f"needed<={v['bh_threshold']:.3e} (BH rank {v['bh_rank']}/"
-            + f"{v['global_bh_family_size']}) "
+            + f"needed<={v['bh_threshold']:.3e} ({bar_kind}; BH rank "
+            + f"{v['bh_rank']}/{v['global_bh_family_size']}) "
             + f"best={best['state']}@{best['window']}/h{best['horizon']} "
             + f"gap={best['gap']:+.5f} aligned={'Y' if best['sign_aligned'] else 'N'} "
             + f"src={best['source']}")
@@ -391,27 +502,61 @@ def main(argv=None) -> int:
     horizons = tuple(int(h) for h in args.horizons.split(","))
     classifiers = tuple(c.strip() for c in args.classifiers.split(",") if c.strip())
 
-    # FAMILY-INTEGRITY GATE — before any data is touched, so a narrowed run costs
-    # nothing and can never leave a half-written artifact behind.
+    # ONE-ASSET-ONE-SERIES GATE (#1443 review). certify() keys a cell by the
+    # NORMALIZED asset, so two symbols reducing to the same asset blend into one
+    # certified entry whose provenance cannot be told apart. Refuse before any
+    # data is touched.
+    collisions = cert_asset_collisions(symbols)
+    if collisions:
+        detail = "; ".join(f"{asset} <- {syms}" for asset, syms in collisions.items())
+        raise SystemExit(
+            f"--symbols: two screened symbols normalize to the same certification "
+            f"asset ({detail}). certify() keys a cell by the normalized asset, so their "
+            "rows would blend into ONE certified entry while criteria.data_sources "
+            "(keyed by full symbol) could not say which venue backed which state. "
+            "Screen one series per asset per run.")
+
+    sources = premise.resolve_data_sources(symbols)
+
+    # REPO-OUTPUT INTEGRITY GATE — before any data is touched, so a refused run
+    # costs nothing and can never leave a half-written file behind. EVERY
+    # repo-tracked output the producer can write is protected, not just --out:
+    # the run report is this issue's committed evidence for the negative result.
+    repo_targets = []
+    if os.path.abspath(args.out) == os.path.abspath(DEFAULT_ARTIFACT):
+        repo_targets.append(args.out)
+    if args.report_out and (os.path.abspath(args.report_out)
+                            == os.path.abspath(DEFAULT_RUN_REPORT)):
+        repo_targets.append(args.report_out)
+
+    integrity_problems = []
     if not family_is_superset(symbols, timeframes, windows, classifiers, horizons):
-        msg = (
+        integrity_problems.append((
             "narrowed family: this run's universe is NOT a superset of the default "
             "screen (symbols {s} / timeframes {t} / windows {w} / classifiers {c} / "
             "horizons {h}). certify() corrects across the rows of ONE invocation, so a "
             "narrowed run shrinks the Benjamini-Hochberg family and inflates every "
-            "cell's pass probability — the pooled-limit trap #1424 records. Re-run over "
-            "the full default universe (adding symbols is fine), or pass "
-            "--allow-narrowed-family for a research-only artifact."
+            "cell's pass probability — the pooled-limit trap #1424 records."
         ).format(s=list(premise.DEFAULT_SYMBOLS), t=list(premise.DEFAULT_TIMEFRAMES),
                  w=list(premise.DEFAULT_WINDOWS), c=list(premise.DEFAULT_CLASSIFIERS),
-                 h=list(premise.DEFAULT_HORIZONS))
-        writes_repo_artifact = (os.path.abspath(args.out)
-                                == os.path.abspath(DEFAULT_ARTIFACT))
-        if writes_repo_artifact and not args.allow_narrowed_family:
-            raise SystemExit(f"REFUSING to write {args.out}: {msg}")
+                 h=list(premise.DEFAULT_HORIZONS)))
+    repointed = baseline_source_violations(sources, PLATFORM)
+    if repointed:
+        integrity_problems.append(
+            "repointed baseline: default symbols "
+            + ", ".join(f"{sym}@{src}" for sym, src in repointed.items())
+            + f" are not loaded from the baseline venue {PLATFORM!r}. Every committed "
+            "regime baseline was computed on that series (#1315 axis separation), so a "
+            "substituted source screens a series no baseline used. Adding NEW symbols "
+            "from any venue stays free.")
+    if integrity_problems:
+        msg = " ALSO: ".join(integrity_problems) + (
+            " Re-run over the full default universe on the baseline sources (adding "
+            "symbols is fine), or pass --allow-narrowed-family and write elsewhere.")
+        if repo_targets and not args.allow_narrowed_family:
+            raise SystemExit(
+                f"REFUSING to write repo-tracked output {repo_targets}: {msg}")
         print(f"[WARN] {msg}")
-
-    sources = premise.resolve_data_sources(symbols)
     universe = {"symbols": sorted(sources), "timeframes": list(timeframes),
                 "windows": list(windows), "horizons": [int(h) for h in horizons],
                 "classifiers": list(classifiers)}
@@ -423,11 +568,10 @@ def main(argv=None) -> int:
 
     rows = premise.run(symbols, timeframes, windows, horizons, classifiers, th,
                        args.n_perm, args.seed)
+    # certify() is pure — nothing is written until the degenerate-run gate below
+    # has passed, so a refusal leaves every existing file byte-identical.
     artifact = certify(rows, fdr_q=args.fdr_q, ttl_days=args.ttl_days,
                        universe=universe, data_sources=sources, n_perm=args.n_perm)
-    with open(args.out, "w") as fh:
-        json.dump(artifact, fh, indent=2)
-        fh.write("\n")
 
     family_size = artifact["criteria"]["screened_family_size"]
     p_floor = permutation_p_floor(args.n_perm)
@@ -471,6 +615,37 @@ def main(argv=None) -> int:
           "certified cells):")
     for key in sorted(verdicts):
         print("  " + _format_verdict_line(verdicts[key]))
+
+    # DEGENERATE-RUN GATE (#1443 review). An empty ``certified`` list is a
+    # publishable negative result ONLY when the run could have found something.
+    # A run with no directional rows measured nothing, and a run whose p-floor
+    # sits above the rank-1 BH bar cannot reject at any effect size — either one
+    # overwriting a repo-tracked file republishes "nothing certified" as evidence
+    # and would silently erase a future non-empty certified list.
+    degenerate = []
+    if not family_size:
+        degenerate.append(
+            "the screen produced NO directional rows at all, so there was nothing to "
+            "correct — a coverage failure (unreachable OHLCV cache, or every window "
+            "too short), not a negative result")
+    elif p_floor > rank1:
+        degenerate.append(
+            f"the permutation p-floor {p_floor:.3e} (n_perm={args.n_perm}) sits ABOVE "
+            f"the rank-1 global-BH critical value {rank1:.3e} (q={args.fdr_q}, "
+            f"m={family_size}), so no single row can certify at any effect size — an "
+            "empty artifact from this run is not evidence of absence. Raise --n-perm")
+    if degenerate and repo_targets and not args.allow_degenerate_run:
+        raise SystemExit(
+            f"REFUSING to write repo-tracked output {repo_targets}: "
+            + "; ".join(degenerate)
+            + ". Pass --allow-degenerate-run to overwrite anyway, or write elsewhere "
+              "with --out/--report-out.")
+    if degenerate:
+        print(f"[WARN] degenerate run: {'; '.join(degenerate)}")
+
+    with open(args.out, "w") as fh:
+        json.dump(artifact, fh, indent=2)
+        fh.write("\n")
 
     n = len(artifact["certified"])
     print()

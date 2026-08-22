@@ -226,3 +226,21 @@ def test_coverage_table_omits_windows_that_contributed_nothing():
     # report diffs the table against the requested grid to name it.
     cov = premise.coverage_table([_row(window="oos")])
     assert [e["window"] for e in cov] == ["oos"]
+
+
+def test_parse_symbols_arg_rejects_a_repeated_symbol():
+    # Every symbol-keyed surface downstream is a dict, so the two entries would
+    # merge — resolve_data_sources keeping only the last exchange, coverage_table
+    # blending both series into one cell — while both still inflate the family.
+    with pytest.raises(ValueError, match="duplicate symbol"):
+        premise.parse_symbols_arg("BTC/USDT,ETH/USDT,BTC/USDT@kraken")
+
+
+def test_parse_symbols_arg_rejects_an_exact_repeat():
+    with pytest.raises(ValueError, match="duplicate symbol"):
+        premise.parse_symbols_arg("BTC/USDT,BTC/USDT")
+
+
+def test_parse_symbols_arg_allows_distinct_symbols_on_one_venue():
+    assert premise.parse_symbols_arg("BTC/USDT@kraken,ETH/USDT@kraken") == (
+        ("BTC/USDT", "kraken"), ("ETH/USDT", "kraken"))

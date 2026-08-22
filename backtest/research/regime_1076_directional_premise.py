@@ -110,11 +110,28 @@ def parse_symbol_spec(spec: str) -> tuple[str, str | None]:
 def parse_symbols_arg(raw: str) -> tuple[tuple[str, str | None], ...]:
     """Parse a comma-separated ``--symbols`` value into ``(symbol, exchange)``
     pairs. Shared by this script and regime_1076_certify.py so both CLIs honor
-    one contract."""
+    one contract.
+
+    #1443 review: a repeated symbol STRING is rejected outright. Every
+    symbol-keyed surface downstream is a dict — resolve_data_sources keeps only
+    the last exchange for a repeated key, coverage_table blends both series into
+    one (symbol, timeframe, window) cell — so the same symbol listed twice under
+    two exchanges would double the correction family while recording the
+    provenance of only one of them. Refusing at parse time is the only place the
+    two entries are still distinguishable."""
     specs = tuple(parse_symbol_spec(part) for part in (raw or "").split(",")
                   if part.strip())
     if not specs:
         raise ValueError("--symbols resolved to no symbols")
+    seen: dict = {}
+    for symbol, exchange in specs:
+        if symbol in seen:
+            raise ValueError(
+                f"duplicate symbol {symbol!r} in --symbols (sources "
+                f"{seen[symbol] or 'default'} and {exchange or 'default'}); "
+                "every symbol-keyed surface downstream is a dict, so the two "
+                "entries would merge into one recorded series")
+        seen[symbol] = exchange
     return specs
 
 

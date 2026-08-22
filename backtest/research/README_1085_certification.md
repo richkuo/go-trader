@@ -137,6 +137,48 @@ REFUSING to write .../regime_directional_certifications.json: narrowed family: .
 written elsewhere; the warning prints either way. Adding symbols is always fine —
 a superset only raises the bar.
 
+**The refusal covers every repo-tracked output, not just `--out`.** `--report-out`
+defaults to the committed `regime_1443_run_report.json`, which is this issue's
+evidence for the negative result, so a narrowed run that redirects `--out` but
+leaves `--report-out` at its default is refused too, naming the report. Redirect
+both (or pass `--report-out ""` to skip the report) for a research run.
+
+**Baseline sources are checked separately.** `family_is_superset` compares *bare*
+symbols on purpose — a default symbol still covers its axis value whatever venue
+it came from — so it cannot see a default symbol repointed at another exchange.
+`baseline_source_violations` checks that on its own: every `DEFAULT_SYMBOLS` entry
+must resolve to `PLATFORM`, because every committed regime baseline was computed
+on that series (#1315). Symbols *added* beyond the defaults stay free to carry any
+`@exchange`. Same refusal, same `--allow-narrowed-family` override.
+
+**One asset, one series.** `certify()` keys a cell by `normalize_cert_asset`, so
+`BTC/USDT` and `BTC/USDC:USDC@hyperliquid` in one run would blend into a single
+certified entry whose provenance `criteria.data_sources` (keyed by full symbol)
+cannot disentangle. Two `--symbols` entries that normalize to the same asset are
+refused at parse time, as is a repeated symbol string.
+
+## Degenerate runs — the resolution refusal (#1443)
+
+An empty `certified` list is a publishable negative result **only when the run
+could have found something**. Two runs cannot:
+
+| Case | Why it certifies nothing regardless of the data |
+|---|---|
+| `screened_family_size == 0` | no directional rows at all — an unreachable OHLCV cache or windows too short. Nothing was measured. |
+| `permutation_p_floor > fdr_q / m` | the smallest p-value the block-shuffle test can emit sits above the rank-1 BH critical value, so no single row can reject at any effect size. |
+
+Either one **refuses to write a repo-tracked output**, so neither can republish
+"nothing certified" as evidence or erase a future non-empty `certified` list.
+`--allow-degenerate-run` overrides. It is deliberately a **separate** flag from
+`--allow-narrowed-family`: unlocking a narrowed research family must not also
+unlock overwriting the live artifact from a run that measured nothing.
+
+`--n-perm` therefore defaults to **30000**, the resolution the committed artifact
+was produced at. At the full default universe (`m` in the low thousands) the
+rank-1 bar `q/m` is around `4e-05`, while the old `n_perm=500` default floored
+every p-value at `1/501` — about 53x above it, making the documented refresh
+command incapable of certifying anything.
+
 Note the producer's default universe (BTC/ETH/SOL × 1h/4h) is narrower than the
 full #1076 battery, which also covered BTC 15m/30m/2h and BNB/XRP 4h through
 `regime_1076_aggregate.py`. The guard pins the *producer's* own default axes; it
@@ -187,6 +229,25 @@ needed, plus per-`(symbol, timeframe, window)` coverage and the windows that
 contributed nothing. The artifact schema is unchanged and still lists only
 certified cells.
 
+**The reported bar matches the procedure that decided the verdict.** BH is a
+*step-up* procedure: it finds the largest rank `k` with `p_(k) <= q*k/m` and
+rejects every p-value at or below `p_(k)`, so a row can be rejected on a
+higher-ranked survivor's back while missing its own per-rank bar `q*rank/m`.
+Reporting the per-rank bar alone could therefore print `certified` beside a
+p-value that "failed". Each entry now carries all three:
+
+| Field | Meaning |
+|---|---|
+| `bh_rank_threshold` | the row's own per-rank critical value `q*rank/m` |
+| `bh_step_up_cutoff` | the bar the family actually cleared (`q*k_max/m`), `null` when nothing was rejected |
+| `bh_threshold` | the bar the verdict was decided against — the step-up cutoff when there is one, else the per-rank value |
+
+`q*k_max/m` is exactly equivalent to the procedure for every row: no p-value can
+lie in `(p_(k_max), q*k_max/m]`, since one there would satisfy the rank-`k_max+1`
+bar and contradict `k_max`'s maximality. The committed run report is unaffected —
+that family rejected nothing, so `bh_step_up_cutoff` is `null` throughout and
+`bh_threshold` keeps its per-rank values.
+
 ## Expiry / refresh
 
 Each certified entry carries `expires_at` (`generated_at + default_ttl_days`,
@@ -201,10 +262,11 @@ uv run --no-sync python backtest/research/regime_1076_certify.py \
     --symbols "BTC/USDT,ETH/USDT,SOL/USDT,HYPE/USDC:USDC@hyperliquid" \
     --n-perm 30000 --seed 0
 
-# Research-only, narrowed, written elsewhere:
+# Research-only, narrowed, written elsewhere. BOTH outputs must be redirected —
+# --report-out defaults to the committed run report, which is repo-tracked:
 uv run --no-sync python backtest/research/regime_1076_certify.py \
     --symbols BTC/USDT --timeframes 1h --allow-narrowed-family \
-    --out /tmp/research_cert.json
+    --out /tmp/research_cert.json --report-out /tmp/research_report.json
 ```
 
 The live daemon reloads the artifact at startup and on SIGHUP (path overridable

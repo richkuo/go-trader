@@ -472,6 +472,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.0037998733375554147,
       "bh_rank": 8,
+      "bh_rank_threshold": 0.00030326004548900684,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.00030326004548900684,
       "best_row": {
         "window": "2023",
@@ -498,6 +500,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.006966434452184927,
       "bh_rank": 13,
+      "bh_rank_threshold": 0.0004927975739196361,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.0004927975739196361,
       "best_row": {
         "window": "2024",
@@ -524,6 +528,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.020132662244591846,
       "bh_rank": 43,
+      "bh_rank_threshold": 0.0016300227445034117,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.0016300227445034117,
       "best_row": {
         "window": "is",
@@ -550,6 +556,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.006433118896036798,
       "bh_rank": 10,
+      "bh_rank_threshold": 0.0003790750568612585,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.0003790750568612585,
       "best_row": {
         "window": "oos",
@@ -576,6 +584,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.028765707809739676,
       "bh_rank": 62,
+      "bh_rank_threshold": 0.002350265352539803,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.002350265352539803,
       "best_row": {
         "window": "oos",
@@ -602,6 +612,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.0021665944468517717,
       "bh_rank": 3,
+      "bh_rank_threshold": 0.00011372251705837758,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.00011372251705837758,
       "best_row": {
         "window": "2025H1",
@@ -628,6 +640,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.06276457451418287,
       "bh_rank": 119,
+      "bh_rank_threshold": 0.004510993176648976,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.004510993176648976,
       "best_row": {
         "window": "oos",
@@ -654,6 +668,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.0028332388920369322,
       "bh_rank": 6,
+      "bh_rank_threshold": 0.00022744503411675516,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.00022744503411675516,
       "best_row": {
         "window": "2024",
@@ -680,6 +696,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.16822772574247524,
       "bh_rank": 261,
+      "bh_rank_threshold": 0.009893858984078848,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.009893858984078848,
       "best_row": {
         "window": "oos",
@@ -706,6 +724,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.07263091230292323,
       "bh_rank": 132,
+      "bh_rank_threshold": 0.005003790750568613,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.005003790750568613,
       "best_row": {
         "window": "oos",
@@ -732,6 +752,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.0006999766674444185,
       "bh_rank": 2,
+      "bh_rank_threshold": 7.581501137225171e-05,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 7.581501137225171e-05,
       "best_row": {
         "window": "2025H1",
@@ -758,6 +780,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.006899770007666411,
       "bh_rank": 11,
+      "bh_rank_threshold": 0.0004169825625473844,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.0004169825625473844,
       "best_row": {
         "window": "is",
@@ -784,6 +808,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.03366554448185061,
       "bh_rank": 69,
+      "bh_rank_threshold": 0.002615617892342684,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.002615617892342684,
       "best_row": {
         "window": "2023",
@@ -810,6 +836,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.0005333155561481284,
       "bh_rank": 1,
+      "bh_rank_threshold": 3.7907505686125855e-05,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 3.7907505686125855e-05,
       "best_row": {
         "window": "2024",
@@ -836,6 +864,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.014132862237925403,
       "bh_rank": 30,
+      "bh_rank_threshold": 0.0011372251705837756,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.0011372251705837756,
       "best_row": {
         "window": "2023",
@@ -862,6 +892,8 @@
       "fdr_q": 0.05,
       "min_p_value": 0.009066364454518182,
       "bh_rank": 17,
+      "bh_rank_threshold": 0.0006444275966641396,
+      "bh_step_up_cutoff": null,
       "bh_threshold": 0.0006444275966641396,
       "best_row": {
         "window": "2023",
