@@ -236,3 +236,117 @@ func TestProtectionPlanShortSideClamp(t *testing.T) {
 		t.Error("a clamped short SL must force the cancel+replace")
 	}
 }
+
+// #1450 review (2a): a LONG whose liquidation price sits at or above the frozen
+// anchor — reachable in cross margin, where account-wide losses push
+// liquidationPx up. The clamped price lands on the FAR side of the anchor, so
+// no positive multiple can reproduce it. The rewrite must REFUSE rather than
+// mirror the distance back across the anchor: a mirrored trigger is itself past
+// liquidation, and forcing a replace at it would cancel and re-place the same
+// unfillable order every cycle forever.
+func TestProtectionPlanRefusesFarSideLongRewrite(t *testing.T) {
+	mult := 2.5
+	sc := StrategyConfig{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args:            []string{"x.py", "ETH", "1h", "--mode=live"},
+		StopLossATRMult: &mult,
+		MarginMode:      "cross",
+	}
+	pos := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1.0,
+		AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+		StopLossOID: 4242, StopLossTriggerPx: 2325,
+	}
+	const liqPx = 2400.0 // at the anchor: 2400 * 1.005 = 2412 > anchor
+
+	newMult, clamped := hlClampProtectionSLMult("long", 2400, 30, 2.5, liqPx)
+	if clamped {
+		t.Fatalf("far-side long clamp must be refused, got mult %g", newMult)
+	}
+	if !approxEqLiq(newMult, 2.5) {
+		t.Errorf("a refused rewrite must return the configured multiple, got %g", newMult)
+	}
+
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, liqPx)
+	if !ok {
+		t.Fatal("expected a plan")
+	}
+	if !approxEqLiq(plan.StopLossATRMult, 2.5) {
+		t.Errorf("plan mult = %g, want the configured 2.5 — no mirrored rewrite", plan.StopLossATRMult)
+	}
+	if plan.ForceSLReplace {
+		t.Fatal("an unclampable geometry must NOT force a replace — that is the unbounded per-cycle cancel+replace loop")
+	}
+}
+
+// #1450 review (2b): the mirrored case on the short side.
+func TestProtectionPlanRefusesFarSideShortRewrite(t *testing.T) {
+	mult := 2.5
+	sc := StrategyConfig{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args:            []string{"x.py", "ETH", "1h", "--mode=live"},
+		StopLossATRMult: &mult,
+		MarginMode:      "cross",
+	}
+	pos := &Position{
+		Symbol: "ETH", Side: "short", Quantity: 1.0,
+		AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+		StopLossOID: 4242, StopLossTriggerPx: 2475,
+	}
+	const liqPx = 2400.0 // at the anchor: 2400 * 0.995 = 2388 < anchor
+
+	if newMult, clamped := hlClampProtectionSLMult("short", 2400, 30, 2.5, liqPx); clamped {
+		t.Fatalf("far-side short clamp must be refused, got mult %g", newMult)
+	}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, liqPx)
+	if !ok {
+		t.Fatal("expected a plan")
+	}
+	if plan.ForceSLReplace {
+		t.Fatal("an unclampable short geometry must NOT force a replace")
+	}
+}
+
+// #1450 review (2c): a clamp that DOES reproduce correctly still returns true,
+// and once the tightened trigger is resting the next cycle must not force
+// another cancel+replace at the same price.
+func TestProtectionPlanClampConvergesAfterOneReplace(t *testing.T) {
+	mult := 2.5
+	sc := StrategyConfig{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args:            []string{"x.py", "ETH", "1h", "--mode=live"},
+		StopLossATRMult: &mult,
+	}
+	const liqPx = 2340.5
+	wantTrigger := liqPx * (1 + hlLiquidationStopBufferPct/100.0)
+
+	pos := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1.0,
+		AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+		StopLossOID: 4242, StopLossTriggerPx: 2325,
+	}
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, liqPx)
+	if !ok {
+		t.Fatal("expected a plan")
+	}
+	if !plan.ForceSLReplace {
+		t.Fatal("cycle 1 must force the replace: the resting trigger is past liquidation")
+	}
+	got := plan.AvgCost - plan.StopLossATRMult*plan.EntryATR
+	if !approxEqLiq(got, wantTrigger) {
+		t.Fatalf("cycle 1 derives %g, want %g", got, wantTrigger)
+	}
+
+	// Cycle 2: the replacement is resting at the clamped trigger.
+	pos.StopLossTriggerPx = wantTrigger
+	plan2, ok := buildHyperliquidProtectionPlan(sc, pos, liqPx)
+	if !ok {
+		t.Fatal("expected a plan")
+	}
+	if plan2.ForceSLReplace {
+		t.Fatal("cycle 2 must NOT force another replace — the resting trigger already equals the clamped one")
+	}
+	if got2 := plan2.AvgCost - plan2.StopLossATRMult*plan2.EntryATR; !approxEqLiq(got2, wantTrigger) {
+		t.Errorf("cycle 2 derives %g, want the same clamped %g (no state drift)", got2, wantTrigger)
+	}
+}

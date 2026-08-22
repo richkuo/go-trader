@@ -204,11 +204,14 @@ func validateHLStopWithinBankruptcyBound(sc StrategyConfig) []string {
 type hlLiquidationAlertState struct {
 	Notified       bool
 	LastNotifiedAt time.Time
-	// ReplaceFailed records whether the LAST notification reported a deferred
-	// replace. A transition from "handled" to "deferred" re-notifies
-	// immediately: an operator who was told the stop was clamped needs to know
-	// when that stops being true.
-	ReplaceFailed bool
+	// LastAction is the action reported by the LAST notification. ANY change
+	// re-notifies immediately, in both directions: an operator told the stop was
+	// clamped needs to know when that stops being true, and one told the
+	// replacement was merely deferred (the old stop still resting) needs to know
+	// when it escalates to protection lost (no stop resting at all). A boolean
+	// "did it fail" cannot express the second transition, because both states
+	// are failures.
+	LastAction hlLiquidationAlertAction
 }
 
 // hlLiquidationAlerts is keyed by hlLiquidationAlertKey. A sync.Map mirrors
@@ -225,13 +228,13 @@ func hlLiquidationAlertKey(strategyID, symbol string) string {
 // mirror portfolioWarningShouldNotify: the first observation of a condition
 // always notifies, a newly-deferred replace always notifies, and otherwise the
 // alert_throttle_interval floor applies.
-func hlLiquidationShouldNotify(prev hlLiquidationAlertState, replaceFailed bool, now time.Time) (bool, hlLiquidationAlertState) {
+func hlLiquidationShouldNotify(prev hlLiquidationAlertState, action hlLiquidationAlertAction, now time.Time) (bool, hlLiquidationAlertState) {
 	notify := false
 	switch {
 	case !prev.Notified:
 		notify = true // first observation for this (strategy, symbol)
-	case replaceFailed && !prev.ReplaceFailed:
-		notify = true // the clamp stopped landing — escalate immediately
+	case action != prev.LastAction:
+		notify = true // what the scheduler is doing about it changed — say so
 	case now.Sub(prev.LastNotifiedAt) >= effectiveAlertThrottleInterval():
 		notify = true // periodic reminder while the geometry stays impossible
 	}
@@ -241,13 +244,13 @@ func hlLiquidationShouldNotify(prev hlLiquidationAlertState, replaceFailed bool,
 	return true, hlLiquidationAlertState{
 		Notified:       true,
 		LastNotifiedAt: now,
-		ReplaceFailed:  replaceFailed,
+		LastAction:     action,
 	}
 }
 
 // hlLiquidationAlertDue applies the throttle to the live sync.Map and reports
 // whether this observation should be sent.
-func hlLiquidationAlertDue(strategyID, symbol string, replaceFailed bool, now time.Time) bool {
+func hlLiquidationAlertDue(strategyID, symbol string, action hlLiquidationAlertAction, now time.Time) bool {
 	key := hlLiquidationAlertKey(strategyID, symbol)
 	var prev hlLiquidationAlertState
 	if v, ok := hlLiquidationAlerts.Load(key); ok {
@@ -255,7 +258,7 @@ func hlLiquidationAlertDue(strategyID, symbol string, replaceFailed bool, now ti
 			prev = s
 		}
 	}
-	send, next := hlLiquidationShouldNotify(prev, replaceFailed, now)
+	send, next := hlLiquidationShouldNotify(prev, action, now)
 	if send {
 		hlLiquidationAlerts.Store(key, next)
 	}
@@ -302,38 +305,128 @@ const (
 	// hlLiquidationActionClamped — the trigger was tightened to just inside
 	// liquidation and the placement landed.
 	hlLiquidationActionClamped hlLiquidationAlertAction = "clamped"
-	// hlLiquidationActionReplaceDeferred — the cancel+replace failed; the OLD
-	// (inert but resting) stop is still there and the scheduler will retry.
+	// hlLiquidationActionReplaceDeferred — the cancel+replace failed BEFORE the
+	// cancel landed; the OLD (inert but resting) stop is still there and the
+	// scheduler retries next cycle.
 	hlLiquidationActionReplaceDeferred hlLiquidationAlertAction = "replace deferred"
-	// hlLiquidationActionObserved — the owner heals itself on its own path
-	// (trailing walker / protection plan); this cycle only reports it.
-	hlLiquidationActionObserved hlLiquidationAlertAction = "observed"
+	// hlLiquidationActionProtectionLost — the cancel landed but the replacement
+	// did NOT rest. The position has no exchange-side stop at all right now.
+	// This is strictly worse than "deferred" and must never be reported as a
+	// successful clamp.
+	hlLiquidationActionProtectionLost hlLiquidationAlertAction = "protection lost"
+	// hlLiquidationActionRearmed — a static scalar owner that had lost its stop
+	// was re-armed by the audit at its configured distance.
+	hlLiquidationActionRearmed hlLiquidationAlertAction = "re-armed"
+	// hlLiquidationActionRearmFailed — the re-arm placement did not rest; the
+	// position is still without an exchange-side stop.
+	hlLiquidationActionRearmFailed hlLiquidationAlertAction = "re-arm failed"
+	// hlLiquidationActionUnreconciled — the audit REFUSED to touch the order
+	// because this coin's book does not match the on-chain snapshot (a phantom
+	// virtual position on a shared coin). Acting could move a reduce-only
+	// trigger that would close a peer strategy's real size.
+	hlLiquidationActionUnreconciled hlLiquidationAlertAction = "not reconciled"
 )
+
+// hlLiquidationActionUnprotected reports whether the action leaves the position
+// with NO exchange-side stop resting. Used only for message severity — the
+// throttle keys on the action itself.
+func hlLiquidationActionUnprotected(a hlLiquidationAlertAction) bool {
+	return a == hlLiquidationActionProtectionLost || a == hlLiquidationActionRearmFailed
+}
 
 // notifyHLStopPastLiquidation emits the throttled owner alert. Callers MUST
 // invoke it with no state lock held: it sends to the notifier.
 func notifyHLStopPastLiquidation(sc StrategyConfig, symbol, side string, triggerPx, clampedPx, liqPx float64, action hlLiquidationAlertAction, notifier *MultiNotifier, logger *StrategyLogger, now time.Time) {
-	if !hlLiquidationAlertDue(sc.ID, symbol, action == hlLiquidationActionReplaceDeferred, now) {
+	if !hlLiquidationAlertDue(sc.ID, symbol, action, now) {
 		return
 	}
-	detail := fmt.Sprintf("configured trigger $%.4f is past the exchange liquidation price $%.4f", triggerPx, liqPx)
+	headline := "**HL STOP PAST LIQUIDATION**"
+	var detail string
+	switch action {
+	case hlLiquidationActionRearmed:
+		headline = "**HL STOP RE-ARMED**"
+		detail = fmt.Sprintf("the position had NO exchange-side stop; re-armed at $%.4f (liquidation $%.4f)", clampedPx, liqPx)
+	case hlLiquidationActionRearmFailed:
+		headline = "**HL POSITION UNPROTECTED**"
+		detail = fmt.Sprintf("the position has NO exchange-side stop and the re-arm at $%.4f did not rest; the scheduler retries every cycle", clampedPx)
+	default:
+		detail = fmt.Sprintf("configured trigger $%.4f is past the exchange liquidation price $%.4f", triggerPx, liqPx)
+	}
 	switch action {
 	case hlLiquidationActionClamped:
 		detail += fmt.Sprintf(" — tightened to $%.4f (%.2f%% inside liquidation)", clampedPx, hlLiquidationStopBufferPct)
 	case hlLiquidationActionReplaceDeferred:
 		detail += fmt.Sprintf(" — could not re-place at $%.4f; the ORIGINAL stop is still resting and the scheduler will retry next cycle", clampedPx)
-	case hlLiquidationActionObserved:
-		detail += " — the owning stop mechanism will tighten it on its own path this cycle"
+	case hlLiquidationActionProtectionLost:
+		headline = "**HL POSITION UNPROTECTED**"
+		detail += fmt.Sprintf(" — the old trigger was CANCELLED but the replacement at $%.4f did NOT rest: the position has no exchange-side stop right now. The scheduler re-arms it on the next cycle.", clampedPx)
+	case hlLiquidationActionUnreconciled:
+		detail += " — the audit did NOT touch the order: this coin's recorded size does not match the on-chain snapshot, so moving a reduce-only trigger could close a peer strategy's real position. Reconcile the coin, then the audit heals it."
 	}
 	if logger != nil {
-		logger.Warn("SL past liquidation for %s (%s): %s", symbol, side, detail)
+		if hlLiquidationActionUnprotected(action) {
+			logger.Error("CRITICAL: %s (%s) has no exchange-side stop: %s", symbol, side, detail)
+		} else {
+			logger.Warn("SL past liquidation for %s (%s): %s", symbol, side, detail)
+		}
 	}
 	if notifier != nil && notifier.HasBackends() {
-		msg := fmt.Sprintf("**HL STOP PAST LIQUIDATION** [%s] %s %s — %s. A stop past liquidation can never fill: Hyperliquid force-closes first, at liquidation-engine pricing. Lower the leverage or tighten the stop distance so the configured geometry is reachable.",
-			sc.ID, symbol, side, detail)
+		msg := fmt.Sprintf("%s [%s] %s %s — %s. A stop past liquidation can never fill: Hyperliquid force-closes first, at liquidation-engine pricing. Lower the leverage or tighten the stop distance so the configured geometry is reachable.",
+			headline, sc.ID, symbol, side, detail)
 		notifier.SendToAllChannels(msg)
 		notifier.SendOwnerDM(msg)
 	}
+}
+
+// hlTriggerRoundingTolerancePct absorbs exchange tick rounding when comparing a
+// freshly derived trigger against the one actually resting. Hyperliquid rounds
+// a perps trigger price on placement, so the value stored back in state is the
+// ROUNDED one; re-deriving it next cycle produces a marginally different
+// number. Without this slack that difference alone would read as "tighter" and
+// force a cancel+replace every cycle. It is two orders of magnitude below
+// hlLiquidationStopBufferPct, so a genuine tighten is never absorbed.
+const hlTriggerRoundingTolerancePct = 0.05
+
+// hlTriggerStrictlyTighter reports whether candidate is a MEANINGFULLY tighter
+// stop than resting for a position on the given side — higher for a long, lower
+// for a short — beyond tick-rounding noise.
+//
+// Returns false when nothing is resting: there is no order to improve on, and
+// the placement path handles a fresh arm on its own.
+func hlTriggerStrictlyTighter(side string, candidate, resting float64) bool {
+	if candidate <= 0 || resting <= 0 {
+		return false
+	}
+	slack := resting * (hlTriggerRoundingTolerancePct / 100.0)
+	switch side {
+	case "long":
+		return candidate > resting+slack
+	case "short":
+		return candidate < resting-slack
+	}
+	return false
+}
+
+// hlProtectionSLTriggerPx reproduces, in Go, the trigger price Python derives
+// from a protection plan's SL ATR multiple: anchor - mult*atr for a long,
+// anchor + mult*atr for a short (check_hyperliquid.py, run_protection_sync).
+//
+// It is the SINGLE place that formula is mirrored. Every #1450 decision about a
+// protection-plan SL — is the derived trigger past liquidation, would a rewrite
+// reproduce the clamped price, is a force-replace worth issuing — reads it from
+// here, so a change to the Python geometry has exactly one Go counterpart to
+// follow. Returns 0 when the inputs cannot produce a trigger.
+func hlProtectionSLTriggerPx(side string, anchor, entryATR, slMult float64) float64 {
+	if slMult <= 0 || entryATR <= 0 || anchor <= 0 {
+		return 0
+	}
+	switch side {
+	case "long":
+		return anchor - slMult*entryATR
+	case "short":
+		return anchor + slMult*entryATR
+	}
+	return 0
 }
 
 // hlClampProtectionSLMult clamps a protection plan's SL ATR multiple so that
@@ -354,15 +447,13 @@ func hlClampProtectionSLMult(side string, anchor, entryATR, slMult, liqPx float6
 	if liqPx <= 0 || slMult <= 0 || entryATR <= 0 || anchor <= 0 {
 		return slMult, false
 	}
-	var wouldBe float64
-	switch side {
-	case "long":
-		wouldBe = anchor - slMult*entryATR
-	case "short":
-		wouldBe = anchor + slMult*entryATR
-	default:
+	if side != "long" && side != "short" {
 		return slMult, false
 	}
+	// hlProtectionSLTriggerPx is the single mirror of the Python formula; for a
+	// long it can legitimately return <= 0 under an extreme multiple, which the
+	// branch below handles explicitly.
+	wouldBe := hlProtectionSLTriggerPx(side, anchor, entryATR, slMult)
 	clamped, ok := clampStopInsideLiquidation(side, wouldBe, liqPx)
 	if !ok {
 		if side == "long" && wouldBe <= 0 {
@@ -375,11 +466,63 @@ func hlClampProtectionSLMult(side string, anchor, entryATR, slMult, liqPx float6
 			return slMult, false
 		}
 	}
-	newMult := math.Abs(anchor-clamped) / entryATR
+	// The multiple must be DIRECTIONAL: Python reproduces the trigger as
+	// anchor - mult*atr (long) / anchor + mult*atr (short), so an unsigned
+	// distance would mirror a clamped price that landed on the FAR side of the
+	// anchor back across it. That mirrored trigger is itself past liquidation,
+	// which would report a successful clamp and then force a cancel+replace at
+	// the same unreachable price every cycle. The far-side case is reachable in
+	// CROSS margin, where account-wide losses can push liquidationPx above a
+	// long's frozen entry (and below a short's).
+	var delta float64
+	switch side {
+	case "long":
+		delta = anchor - clamped
+	case "short":
+		delta = clamped - anchor
+	}
+	newMult := delta / entryATR
 	if newMult <= 0 || math.IsNaN(newMult) || math.IsInf(newMult, 0) {
+		// The clamped trigger cannot be expressed as a positive multiple on the
+		// correct side of the anchor. Report NO clamp rather than a wrong one:
+		// the caller then leaves the resolved multiple alone, sets no
+		// force-replace, and the per-cycle audit tightens the RESTING trigger
+		// directly instead.
+		return slMult, false
+	}
+	if newMult > slMult {
+		// One-way tighten, belt-and-braces. A clamp derived from a trigger that
+		// was past liquidation is always strictly closer to the anchor than the
+		// original, so this is unreachable; a widening rewrite would loosen
+		// protection and must never ship.
 		return slMult, false
 	}
 	return newMult, true
+}
+
+// hlProtectionSLTriggerReachable reports whether the trigger Python derives
+// from slMult lands on the fillable side of the liquidation price.
+//
+// This is what keeps a force-replace honest: a replace is only worth issuing
+// when the price it would rest at is actually reachable. Forcing a replace at a
+// trigger that is still past liquidation re-places the SAME unfillable order
+// every cycle, against the live account, forever.
+//
+// Returns false when the inputs are incomplete or slMult is non-positive (no
+// SL is being placed at all), and true when the liquidation price is unknown —
+// an unknown never blocks the pre-existing replace behavior.
+func hlProtectionSLTriggerReachable(side string, anchor, entryATR, slMult, liqPx float64) bool {
+	if slMult <= 0 || entryATR <= 0 || anchor <= 0 {
+		return false
+	}
+	if liqPx <= 0 {
+		return true
+	}
+	wouldBe := hlProtectionSLTriggerPx(side, anchor, entryATR, slMult)
+	if wouldBe <= 0 {
+		return false
+	}
+	return !stopPastLiquidation(side, wouldBe, liqPx)
 }
 
 // --- per-cycle audit -------------------------------------------------------
@@ -398,43 +541,105 @@ type hlLiquidationAuditCandidate struct {
 	StopLossTriggerPx float64
 	LiquidationPx     float64
 	// StaticScalarOwner is !scaleInLiveProtectionResizable(sc): the stop was
-	// placed once at open by a scalar owner with no re-place mechanism, so the
-	// audit itself must cancel+replace it. Every other owner heals on its own
-	// path this cycle and the audit only reports.
+	// placed once at open by a scalar owner with no re-place mechanism. Only
+	// these owners are RE-ARMED by the audit when nothing is resting; every
+	// other owner re-arms on its own path (walker, fixed-ATR arm, protection
+	// sync). The past-liquidation TIGHTEN below applies to every owner.
 	StaticScalarOwner bool
+	// RearmTriggerPx is the trigger a static scalar owner's configured distance
+	// resolves to, already clamped inside liquidation. 0 for every other owner
+	// and whenever the geometry cannot be resolved.
+	RearmTriggerPx float64
+	// Unprotected is true when the position carries NO exchange-side stop at
+	// all (no OID and no trigger).
+	Unprotected bool
+	// BookConsistent is true when this coin's TOTAL recorded size across every
+	// live HL strategy fits inside the on-chain size reported by this cycle's
+	// snapshot. False means at least one strategy holds a phantom position on
+	// the coin, so a reduce-only trigger placed from here could close a PEER
+	// strategy's real size. The audit refuses to act and alerts instead.
+	BookConsistent bool
 }
+
+// hlLiquidationAuditActionKind distinguishes the jobs the audit performs.
+type hlLiquidationAuditActionKind int
+
+const (
+	// hlAuditTighten — a stop is resting past liquidation; cancel it and
+	// re-place just inside.
+	hlAuditTighten hlLiquidationAuditActionKind = iota
+	// hlAuditRearm — a static scalar owner has NO stop resting; place one at
+	// its configured distance.
+	hlAuditRearm
+	// hlAuditRefuse — the condition is real but the coin's book does not match
+	// the on-chain snapshot; report only.
+	hlAuditRefuse
+)
 
 // hlLiquidationAuditAction is one decided unit of work.
 type hlLiquidationAuditAction struct {
-	Candidate        hlLiquidationAuditCandidate
+	Candidate hlLiquidationAuditCandidate
+	Kind      hlLiquidationAuditActionKind
+	// ClampedTriggerPx is the price to place: the clamped trigger for a
+	// tighten, the re-derived scalar trigger for a re-arm.
 	ClampedTriggerPx float64
-	// Replace is true only for static scalar owners — the audit issues the
-	// cancel+replace itself. False means alert-only: the trailing walker or the
-	// protection plan tightens this owner on its own path.
-	Replace bool
 }
 
 // planHyperliquidLiquidationAudit is the PURE audit decision: no locks, no
 // globals, no IO. Candidates whose geometry is fine, whose liquidation price is
 // unknown, or whose clamp would not move the trigger produce no action.
 //
+// The audit tightens for EVERY owner, not only the static scalar ones. The
+// trailing walker and the protection sync do heal their own owners, but both
+// run only inside the dispatch over the strategies that are DUE this cycle and
+// only when that cycle's signal check returned Signal == 0. A 4h strategy on a
+// non-due cycle, a cycle whose signal check errored, and a signal cycle that
+// executed no trade all leave the unreachable stop resting for up to a full
+// strategy interval — which is exactly the state #1450 exists to prevent. The
+// audit runs every cycle, pre-dispatch, holding lockHyperliquidTrailingUpdate,
+// so it cannot race the walker; and because the clamp is one-way tightening,
+// the owner's own path finds a reachable trigger afterwards and leaves it
+// alone (the walker never widens, and the protection plan force-replaces only
+// when its own trigger is strictly tighter than what rests).
+//
 // Output order is deterministic (strategy id, then symbol) so operator output
 // and tests are stable.
 func planHyperliquidLiquidationAudit(candidates []hlLiquidationAuditCandidate) []hlLiquidationAuditAction {
 	var actions []hlLiquidationAuditAction
 	for _, c := range candidates {
-		if c.Qty <= 0 || c.StopLossTriggerPx <= 0 || c.LiquidationPx <= 0 {
+		if c.Qty <= 0 {
 			continue
 		}
-		clamped, ok := clampStopInsideLiquidation(c.Side, c.StopLossTriggerPx, c.LiquidationPx)
-		if !ok {
-			continue
+		switch {
+		case c.Unprotected:
+			// Only a static scalar owner is re-armed here; anything else has a
+			// re-place path of its own that runs when the strategy next does.
+			if !c.StaticScalarOwner || c.RearmTriggerPx <= 0 {
+				continue
+			}
+			kind := hlAuditRearm
+			if !c.BookConsistent {
+				kind = hlAuditRefuse
+			}
+			actions = append(actions, hlLiquidationAuditAction{
+				Candidate: c, Kind: kind, ClampedTriggerPx: c.RearmTriggerPx,
+			})
+		default:
+			if c.StopLossTriggerPx <= 0 || c.LiquidationPx <= 0 {
+				continue
+			}
+			clamped, ok := clampStopInsideLiquidation(c.Side, c.StopLossTriggerPx, c.LiquidationPx)
+			if !ok {
+				continue
+			}
+			kind := hlAuditTighten
+			if !c.BookConsistent {
+				kind = hlAuditRefuse
+			}
+			actions = append(actions, hlLiquidationAuditAction{
+				Candidate: c, Kind: kind, ClampedTriggerPx: clamped,
+			})
 		}
-		actions = append(actions, hlLiquidationAuditAction{
-			Candidate:        c,
-			ClampedTriggerPx: clamped,
-			Replace:          c.StaticScalarOwner,
-		})
 	}
 	sort.SliceStable(actions, func(i, j int) bool {
 		if actions[i].Candidate.StrategyID != actions[j].Candidate.StrategyID {
@@ -445,8 +650,63 @@ func planHyperliquidLiquidationAudit(candidates []hlLiquidationAuditCandidate) [
 	return actions
 }
 
+// hlLiquidationScalarRearmTriggerPx resolves the trigger a STATIC SCALAR owner
+// would have been armed at, anchored on the frozen entry (#873 riskAnchorPrice)
+// exactly like the order-time placement, and clamped inside liquidation.
+//
+// Returns 0 for any owner that is not a static scalar one, or when the geometry
+// cannot be resolved — the caller then places nothing.
+func hlLiquidationScalarRearmTriggerPx(sc StrategyConfig, side string, anchor, liqPx float64) float64 {
+	if anchor <= 0 {
+		return 0
+	}
+	pct := EffectiveStopLossPct(sc)
+	if pct <= 0 {
+		return 0
+	}
+	var trigger float64
+	switch side {
+	case "long":
+		trigger = anchor * (1.0 - pct/100.0)
+	case "short":
+		trigger = anchor * (1.0 + pct/100.0)
+	default:
+		return 0
+	}
+	if trigger <= 0 {
+		return 0
+	}
+	if clamped, ok := clampStopInsideLiquidation(side, trigger, liqPx); ok {
+		return clamped
+	}
+	return trigger
+}
+
+// hlLiquidationCoinBookConsistent reports, per coin, whether the TOTAL recorded
+// size across every live HL perps/manual strategy fits inside the on-chain
+// absolute size from this cycle's clearinghouseState snapshot.
+//
+// This is the audit's stand-in for per-strategy reconciliation, which shared
+// coins deliberately never get (#258: reconciling per strategy on a shared coin
+// collapses a peer's position and trips its circuit breaker). Without it the
+// audit could cancel a phantom position's orphaned trigger and rest a new
+// reduce-only one sized off stale virtual state — and that order, if it fired,
+// would reduce a PEER strategy's real position.
+//
+// A coin missing from the snapshot is inconsistent by definition: nothing
+// on-chain backs the recorded size. Comparison carries the same 1e-9 slack the
+// #621 size cap uses.
+func hlLiquidationCoinBookConsistent(virtualByCoin, onChainAbsQty map[string]float64) map[string]bool {
+	out := make(map[string]bool, len(virtualByCoin))
+	for coin, virtual := range virtualByCoin {
+		onChain, ok := onChainAbsQty[coin]
+		out[coin] = ok && onChain > 1e-9 && virtual <= onChain+1e-9
+	}
+	return out
+}
+
 // collectHLLiquidationAuditCandidates snapshots every live HL perps/manual
-// position with a resting stop, under a single RLock.
+// position the audit could act on, under a single RLock.
 //
 // Gating on hyperliquidIsLive is load-bearing: a PAPER strategy sharing a coin
 // with a live position must never match a map entry — paper has no account and
@@ -458,12 +718,12 @@ func collectHLLiquidationAuditCandidates(
 	hlOnChainAbsQty map[string]float64,
 	mu *sync.RWMutex,
 ) []hlLiquidationAuditCandidate {
-	if state == nil || len(hlLiquidationPx) == 0 {
+	if state == nil {
 		return nil
 	}
 	var out []hlLiquidationAuditCandidate
+	virtualByCoin := make(map[string]float64)
 	mu.RLock()
-	defer mu.RUnlock()
 	for _, sc := range strategies {
 		if sc.Platform != "hyperliquid" {
 			continue
@@ -479,7 +739,7 @@ func collectHLLiquidationAuditCandidates(
 			continue
 		}
 		for symbol, pos := range ss.Positions {
-			if pos == nil || pos.Quantity <= 0 || pos.StopLossTriggerPx <= 0 {
+			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
 			if pos.Side != "long" && pos.Side != "short" {
@@ -491,12 +751,34 @@ func collectHLLiquidationAuditCandidates(
 			if pos.HedgeFor != "" {
 				continue
 			}
+			// Every live recorded position on the coin counts toward the
+			// consistency check, including the ones that produce no candidate.
+			virtualByCoin[symbol] += pos.Quantity
+
+			staticScalar := !scaleInLiveProtectionResizable(sc)
+			armed := pos.StopLossTriggerPx > 0
+			unprotected := pos.StopLossOID == 0 && pos.StopLossTriggerPx <= 0
+			if !armed && !unprotected {
+				// An OID with no recorded trigger: something rests on-chain but
+				// its geometry is unknown, so neither a tighten nor a re-arm can
+				// be justified. Leave it to the owner's own path.
+				continue
+			}
+			if unprotected && !staticScalar {
+				// The walker / fixed-ATR arm / protection sync re-arms these.
+				continue
+			}
 			liqPx := hlLiquidationPx[symbol]
-			if liqPx <= 0 {
+			if armed && liqPx <= 0 {
+				// Unknown liquidation price — never derive a band; skip.
 				continue
 			}
 			// #621: never place a stop larger than the on-chain size.
 			slQty, _ := hlSLEffectiveQty(symbol, pos.Quantity, hlOnChainAbsQty)
+			rearmPx := 0.0
+			if unprotected {
+				rearmPx = hlLiquidationScalarRearmTriggerPx(sc, pos.Side, pos.riskAnchorPrice(), liqPx)
+			}
 			out = append(out, hlLiquidationAuditCandidate{
 				StrategyID:        sc.ID,
 				Script:            sc.Script,
@@ -506,25 +788,53 @@ func collectHLLiquidationAuditCandidates(
 				StopLossOID:       pos.StopLossOID,
 				StopLossTriggerPx: pos.StopLossTriggerPx,
 				LiquidationPx:     liqPx,
-				StaticScalarOwner: !scaleInLiveProtectionResizable(sc),
+				StaticScalarOwner: staticScalar,
+				RearmTriggerPx:    rearmPx,
+				Unprotected:       unprotected,
 			})
 		}
+	}
+	mu.RUnlock()
+
+	consistent := hlLiquidationCoinBookConsistent(virtualByCoin, hlOnChainAbsQty)
+	for i := range out {
+		out[i].BookConsistent = consistent[out[i].Symbol]
 	}
 	return out
 }
 
-// hlLiquidationClampReplace runs the cancel+replace for one static-scalar
-// candidate and interprets the result.
+// hlLiquidationReplaceOutcome is what actually happened on the exchange.
+//
+// The distinction the bool it replaced could not make: a cancel that LANDED
+// followed by a placement that did NOT rest leaves the position with no
+// exchange-side stop. Reporting that as a successful clamp told the operator
+// the stop was tightened while it had in fact been deleted.
+type hlLiquidationReplaceOutcome int
+
+const (
+	// hlReplaceDeferred — nothing was cancelled; the ORIGINAL stop is still
+	// resting exactly where it was.
+	hlReplaceDeferred hlLiquidationReplaceOutcome = iota
+	// hlReplacePlaced — a replacement is resting at the requested trigger.
+	hlReplacePlaced
+	// hlReplaceFilled — the trigger filled at submit; the position is flat.
+	hlReplaceFilled
+	// hlReplaceProtectionLost — the cancel landed, the replacement did not
+	// rest. NOTHING is protecting the position.
+	hlReplaceProtectionLost
+)
+
+// hlLiquidationClampReplace runs one cancel+replace (or, with
+// candidate.StopLossOID == 0, one fresh placement) and interprets the result.
 //
 // It deliberately reuses runHyperliquidUpdateStopLossFunc — the SAME placement
 // primitive the trailing walker and the open-cycle arm use — so there is only
 // one stop-placement implementation that can drift. The result interpretation
 // is spelled out here rather than shared with the walker because the walker's
-// operator messages are trailing-specific; the failure semantics are identical:
-// on any failure the OLD order keeps resting and the caller retries next cycle.
-func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTriggerPx float64, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, bool) {
+// operator messages are trailing-specific.
+func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTriggerPx float64, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
 	if clampedTriggerPx <= 0 || candidate.Qty <= 0 {
-		return nil, false
+		return nil, hlReplaceDeferred
 	}
 	// Serialize against the trailing walker on the same coin so an audit
 	// cancel+replace can never interleave with a walker cancel+replace.
@@ -539,37 +849,37 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace failed for %s: %v", candidate.Symbol, err)
 		}
-		return result, false
+		return result, hlReplaceDeferred
 	}
 	if result == nil {
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace returned no result for %s", candidate.Symbol)
 		}
-		return nil, false
+		return nil, hlReplaceDeferred
 	}
 	if result.Error != "" {
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace returned error for %s: %s", candidate.Symbol, result.Error)
 		}
-		return result, false
+		return result, hlReplaceDeferred
 	}
 	if result.OpenOrderCheckError != "" {
 		if logger != nil {
 			logger.Warn("Liquidation-clamp SL replace deferred for %s (open-order lookup failed): %s", candidate.Symbol, result.OpenOrderCheckError)
 		}
-		return result, false
+		return result, hlReplaceDeferred
 	}
 	if result.StopLossFilledExternally {
 		if logger != nil {
 			logger.Warn("Liquidation-clamp: SL OID=%d for %s already filled on-chain — reconciler will book the close", candidate.StopLossOID, candidate.Symbol)
 		}
-		return result, false
+		return result, hlReplaceDeferred
 	}
 	if result.CancelStopLossError != "" {
 		if logger != nil {
 			logger.Warn("Liquidation-clamp SL cancel failed for %s; original stop still resting: %s", candidate.Symbol, result.CancelStopLossError)
 		}
-		return result, false
+		return result, hlReplaceDeferred
 	}
 	if result.StopLossError != "" {
 		if isHLOpenOrderCapRejection(result.StopLossError) {
@@ -580,15 +890,25 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 			logger.Warn("Liquidation-clamp SL placement failed (non-fatal) for %s: %s", candidate.Symbol, result.StopLossError)
 		}
 	}
-	if result.StopLossFilledImmediately && logger != nil {
+	switch {
+	case result.StopLossFilledImmediately && result.StopLossTriggerPx > 0:
 		// This is protection working: the clamp landed inside the mark, so the
 		// position exits NOW at a better price than liquidation would give.
-		logger.Warn("Liquidation-clamp SL filled at submit for %s — position exited inside the liquidation price", candidate.Symbol)
+		if logger != nil {
+			logger.Warn("Liquidation-clamp SL filled at submit for %s — position exited inside the liquidation price", candidate.Symbol)
+		}
+		return result, hlReplaceFilled
+	case result.StopLossOID > 0:
+		return result, hlReplacePlaced
+	case result.CancelStopLossSucceeded:
+		// The ONLY branch that must never read as success. The old trigger is
+		// gone from the book and nothing replaced it.
+		if logger != nil {
+			logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s but the replacement did not rest — the position has NO exchange-side stop", candidate.StopLossOID, candidate.Symbol)
+		}
+		return result, hlReplaceProtectionLost
 	}
-	confirmed := (result.StopLossOID > 0) ||
-		(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0) ||
-		result.CancelStopLossSucceeded
-	return result, confirmed
+	return result, hlReplaceDeferred
 }
 
 // hlLiquidationPendingAlert defers one operator alert until every lock is
@@ -604,18 +924,32 @@ type hlLiquidationPendingAlert struct {
 	logger    *StrategyLogger
 }
 
+// hlLiquidationAuditResult is what the driver reports back to the main loop.
+type hlLiquidationAuditResult struct {
+	// ImmediateFills counts positions that ended the cycle flat because a
+	// clamped trigger filled at submit (booked as stop-loss closes).
+	ImmediateFills int
+	// CloseDetails carries one operator-facing line per booked close, so the
+	// audit's exits reach the same trade notification every other close path
+	// produces instead of only a stdout line.
+	CloseDetails []hlLiquidationCloseDetail
+}
+
+// hlLiquidationCloseDetail is one booked close awaiting its trade alert.
+type hlLiquidationCloseDetail struct {
+	SC     StrategyConfig
+	Symbol string
+	FillPx float64
+	Detail string
+}
+
 // runHyperliquidLiquidationAudit is the per-cycle driver. Sequence:
 //
 //	RLock snapshot → release → unlocked subprocesses → Lock re-validated apply
 //	→ release → drain alerts.
 //
 // It runs on the main loop goroutine, before per-strategy dispatch, so it
-// cannot interleave with a walker cancel+replace on the same OID. It touches
-// only static scalar owners; the walker and the protection plan own the rest.
-//
-// Returns the number of positions that ended the cycle flat because a clamped
-// trigger filled at submit (booked as stop-loss closes), for the caller's
-// cycle counters.
+// cannot interleave with a walker cancel+replace on the same OID.
 func runHyperliquidLiquidationAudit(
 	strategies []StrategyConfig,
 	state *AppState,
@@ -624,19 +958,20 @@ func runHyperliquidLiquidationAudit(
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	now time.Time,
-) int {
+) hlLiquidationAuditResult {
+	var res hlLiquidationAuditResult
 	candidates := collectHLLiquidationAuditCandidates(strategies, state, hlLiquidationPx, hlOnChainAbsQty, mu)
 	// Clear the throttle for every live candidate whose geometry is now fine,
 	// so a recurrence re-alerts on its first cycle instead of being suppressed
 	// by a stale key.
 	for _, c := range candidates {
-		if !stopPastLiquidation(c.Side, c.StopLossTriggerPx, c.LiquidationPx) {
+		if !c.Unprotected && !stopPastLiquidation(c.Side, c.StopLossTriggerPx, c.LiquidationPx) {
 			clearHLLiquidationAlert(c.StrategyID, c.Symbol)
 		}
 	}
 	actions := planHyperliquidLiquidationAudit(candidates)
 	if len(actions) == 0 {
-		return 0
+		return res
 	}
 	byID := make(map[string]StrategyConfig, len(strategies))
 	for _, sc := range strategies {
@@ -644,7 +979,6 @@ func runHyperliquidLiquidationAudit(
 	}
 
 	var pending []hlLiquidationPendingAlert
-	immediateFills := 0
 	for _, act := range actions {
 		c := act.Candidate
 		sc, ok := byID[c.StrategyID]
@@ -652,36 +986,56 @@ func runHyperliquidLiquidationAudit(
 			continue
 		}
 		logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
-		if !act.Replace {
-			// The trailing walker / protection plan tightens this owner on its
-			// own path this cycle. Report only — a second cancel+replace from
-			// here would race that path's OID.
+		if act.Kind == hlAuditRefuse {
+			// A phantom position on this coin: acting could move a reduce-only
+			// trigger that closes a PEER strategy's real size. Report only.
+			logger.Error("CRITICAL: #1450 audit refused to touch %s — recorded size across live strategies exceeds the on-chain snapshot", c.Symbol)
 			pending = append(pending, hlLiquidationPendingAlert{
 				sc: sc, symbol: c.Symbol, side: c.Side,
 				triggerPx: c.StopLossTriggerPx, clampedPx: act.ClampedTriggerPx, liqPx: c.LiquidationPx,
-				action: hlLiquidationActionObserved, logger: logger,
+				action: hlLiquidationActionUnreconciled, logger: logger,
 			})
 			continue
 		}
-		result, confirmed := hlLiquidationClampReplace(c, act.ClampedTriggerPx, logger)
+		result, outcome := hlLiquidationClampReplace(c, act.ClampedTriggerPx, logger)
 		action := hlLiquidationActionClamped
-		if !confirmed {
-			// On ANY failure the original (inert but resting) stop stays where
-			// it was — the position never ends the cycle without an
-			// exchange-side stop.
+		if act.Kind == hlAuditRearm {
+			action = hlLiquidationActionRearmed
+		}
+		switch outcome {
+		case hlReplaceDeferred:
+			// Nothing was cancelled — the ORIGINAL stop is still resting (or,
+			// for a re-arm, there was nothing to lose). No state change.
 			action = hlLiquidationActionReplaceDeferred
-		} else {
+			if act.Kind == hlAuditRearm {
+				action = hlLiquidationActionRearmFailed
+			}
+		case hlReplaceProtectionLost:
+			// The cancel landed and the replacement did not rest. State MUST be
+			// updated so it stops pointing at an OID that no longer exists —
+			// that is also what makes this position an Unprotected re-arm
+			// candidate on the very next cycle.
+			action = hlLiquidationActionProtectionLost
+			mu.Lock()
+			applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, result, logger)
+			mu.Unlock()
+		case hlReplacePlaced, hlReplaceFilled:
 			mu.Lock()
 			ss := state.Strategies[c.StrategyID]
 			// applyTrailingStopUpdateResult re-validates side and quantity
 			// under the lock and handles all three outcomes (immediate fill,
 			// resting replacement, cancel-without-rest). newHighWater=0 leaves
-			// StopLossHighWaterPx untouched — a scalar owner has none.
-			if immediateFill, fillPx := applyTrailingStopUpdateResult(ss, c.Symbol, c.Side, c.StopLossOID, 0, true, result, logger); immediateFill {
-				immediateFills++
-				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
-			}
+			// StopLossHighWaterPx untouched — the audit never moves a trail.
+			immediateFill, fillPx := applyTrailingStopUpdateResult(ss, c.Symbol, c.Side, c.StopLossOID, 0, true, result, logger)
 			mu.Unlock()
+			if immediateFill {
+				res.ImmediateFills++
+				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
+				res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
+					SC: sc, Symbol: c.Symbol, FillPx: fillPx,
+					Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
+				})
+			}
 		}
 		pending = append(pending, hlLiquidationPendingAlert{
 			sc: sc, symbol: c.Symbol, side: c.Side,
@@ -694,5 +1048,5 @@ func runHyperliquidLiquidationAudit(
 	for _, p := range pending {
 		notifyHLStopPastLiquidation(p.sc, p.symbol, p.side, p.triggerPx, p.clampedPx, p.liqPx, p.action, notifier, p.logger, now)
 	}
-	return immediateFills
+	return res
 }

@@ -2022,8 +2022,22 @@ func main() {
 				// — so it cannot interleave with a walker cancel+replace on the
 				// same OID. This is also what catches a stop armed on the OPEN
 				// cycle, where the snapshot predated the position.
-				if slFills := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlOnChainAbsQty, &mu, notifier, time.Now().UTC()); slFills > 0 {
-					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", slFills)
+				if auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlOnChainAbsQty, &mu, notifier, time.Now().UTC()); auditRes.ImmediateFills > 0 {
+					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
+					// A close booked here is a realized close like any other, so
+					// it gets the SAME operator notification the walker path
+					// produces — the channel trade line plus the per-strategy DM
+					// alert. Without this the only signal was the stdout line
+					// above and a throttled "tightened to $X" DM that does not
+					// say the position is now flat (and can be suppressed).
+					for _, cd := range auditRes.CloseDetails {
+						if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type); chKey != "" {
+							channelTrades[chKey]++
+							channelTradeDetails[chKey+"|"+extractAsset(cd.SC)] = append(channelTradeDetails[chKey+"|"+extractAsset(cd.SC)], cd.Detail)
+						}
+						sendTradeAlerts(cd.SC, state.Strategies[cd.SC.ID], 1, &mu, notifier)
+					}
+					totalTrades += len(auditRes.CloseDetails)
 				}
 
 				// #879: the dispatch loop below is the first regime-store

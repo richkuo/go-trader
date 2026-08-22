@@ -85,11 +85,24 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 	if liquidationPx > 0 {
 		if clampedMult, clamped := hlClampProtectionSLMult(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult, liquidationPx); clamped {
 			slMult = clampedMult
-			forceSLPastLiquidation = true
+			// Force the replace only when the clamped trigger is strictly
+			// TIGHTER than what is already resting. A clamp that merely
+			// reproduces the resting trigger (the audit tightened it earlier in
+			// this same cycle) needs no order churn, and forcing on the clamp
+			// alone is what made an unclampable geometry cancel+replace forever.
+			if clampedPx := hlProtectionSLTriggerPx(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult); hlTriggerStrictlyTighter(pos.Side, clampedPx, pos.StopLossTriggerPx) {
+				forceSLPastLiquidation = true
+			}
 		}
-		// A resting trigger past liquidation must be replaced even when the
-		// resolved multiple itself is fine — that is the open-cycle heal.
-		if stopPastLiquidation(pos.Side, pos.StopLossTriggerPx, liquidationPx) {
+		// A resting trigger past liquidation must be replaced — that is the
+		// open-cycle heal. Gate it on the trigger this plan would actually rest
+		// at being REACHABLE: when the clamp had to refuse (a far-side
+		// liquidation price that no positive multiple can express), forcing the
+		// replace would cancel and re-place the same unfillable order every
+		// cycle forever. The per-cycle audit tightens the resting trigger
+		// directly in that case.
+		if stopPastLiquidation(pos.Side, pos.StopLossTriggerPx, liquidationPx) &&
+			hlProtectionSLTriggerReachable(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult, liquidationPx) {
 			forceSLPastLiquidation = true
 		}
 	}
