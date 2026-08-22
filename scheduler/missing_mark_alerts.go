@@ -2,17 +2,23 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
 
 // #1444 (PR review): owner-DM escalation for the missing-mark tripwire.
 //
-// A missing mark on a LIVE position disables an auto-protective mechanism —
-// the Hyperliquid trailing stop-loss walker and the take-profit ratchet both
-// return early behind their own `mark > 0` guard. The repo's convention for
+// A missing mark on a LIVE position degrades an auto-protective mechanism. On
+// Hyperliquid perps and manual it stops two outright — the trailing stop-loss
+// walker and the take-profit ratchet both return early behind their own
+// `mark > 0` guard. On every venue it also reverts the position to AvgCost
+// inside the portfolio kill switch's drawdown input. The repo's convention for
 // that class of silent failure is a throttled owner DM (script_failure_alerts,
 // the #1431 book-drift path), not a stdout line nobody reads.
+//
+// #1445 review: which mechanisms the DM may name is venue-dependent — see
+// markGatedManagers in risk.go.
 
 type missingMarkKey struct {
 	strategyID string
@@ -96,7 +102,33 @@ func (t *missingMarkTracker) reset() {
 // formatMissingMarkDM is the owner-DM text for a live missing mark. It names
 // the disabled protection explicitly — the operator's decision is whether to
 // manage the position by hand until the mark returns.
+//
+// #1445 review: the mechanism bullets come from miss.DisabledManagers, which
+// markGatedManagers derives from the position's type and venue. The text used
+// to assert the Hyperliquid walker and ratchet for every live miss, so a
+// BinanceUS spot or TopStep futures outage claimed a stop-loss had stopped
+// when that venue never ran one. On a venue with no mark-gated manager the DM
+// says so and rests on the valuation claim below, which holds everywhere:
+// PortfolioValue falls back to pos.AvgCost on a missing key, understating this
+// position inside the portfolio kill switch's drawdown input.
 func formatMissingMarkDM(miss missingMarkPosition) string {
-	return fmt.Sprintf("⚠️ **No live mark: %s / %s**\nA live position is open and no mark resolved this cycle.\n• Trailing stop-loss walker: NOT running\n• Take-profit ratchet: NOT running\n• Portfolio value for this position falls back to entry cost\nManage this position manually until marks resume.",
-		miss.StrategyID, miss.Symbol)
+	venue := miss.Platform
+	if venue == "" {
+		venue = "unknown platform"
+	}
+	kind := miss.Type
+	if kind == "" {
+		kind = "position"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️ **No live mark: %s / %s**\nA live %s position on %s is open and no mark resolved this cycle.\n", miss.StrategyID, miss.Symbol, kind, venue)
+	for _, mech := range miss.DisabledManagers {
+		fmt.Fprintf(&b, "• %s: NOT running\n", mech)
+	}
+	if len(miss.DisabledManagers) == 0 {
+		b.WriteString("• No mark-gated position manager runs on this venue, so no stop-loss or take-profit automation changed state\n")
+	}
+	b.WriteString("• Portfolio value for this position falls back to entry cost, so the portfolio kill switch reads its drawdown from a stale valuation\n")
+	b.WriteString("Manage this position manually until marks resume.")
+	return b.String()
 }

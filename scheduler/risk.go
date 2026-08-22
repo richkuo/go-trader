@@ -180,6 +180,52 @@ type missingMarkPosition struct {
 	StrategyID string
 	Symbol     string
 	Live       bool
+	// Platform and Type name the venue the position lives on, so the operator
+	// alert can describe the right management surface instead of assuming
+	// Hyperliquid.
+	Platform string
+	Type     string
+	// DisabledManagers names the mark-gated auto-protective mechanisms that
+	// actually exist for this position's type and venue — empty on venues that
+	// run none. See markGatedManagers.
+	DisabledManagers []string
+}
+
+// markGatedManagers names the Go-side mark-gated auto-protective mechanisms
+// that exist for a position of this TYPE on this VENUE, i.e. the managers a
+// missing mark actually stops.
+//
+// Scoped to Hyperliquid perps and manual because that is where those managers
+// are dispatched: the trailing stop-loss walker (hyperliquid_trailing_stop.go,
+// whose own effectiveTrailingStopPct returns 0 for any other platform or type)
+// and the take-profit ratchet (main.go's HL perps manage path and the manual
+// dispatch). The OKX perps branch runs runOKXCheck / runOKXExecuteOrder and
+// neither of them; spot and TopStep futures likewise.
+//
+// #1445 review: the owner DM used to assert both mechanisms unconditionally,
+// so a live BinanceUS spot or TopStep futures mark outage told the operator a
+// stop-loss walker had stopped when no walker existed. An alert that names a
+// specific protection must only name one that applies. The valuation
+// consequence — PortfolioValue falling back to AvgCost inside the portfolio
+// kill switch's drawdown input — is universal and is stated separately by
+// formatMissingMarkDM, so a venue with no managers still carries a true claim.
+//
+// Deliberately keyed on type+venue rather than on individual close-strategy
+// knobs: the knob-level gates are position-dependent (effectiveTrailingStopPct
+// reads pos.EntryATR, and a post-TP `sl_after: trail_from_here` stamp arms the
+// walker on a strategy that configures no trailing field at all), so a
+// config-only test would under-report a genuinely disabled protection. Over-
+// reporting inside the venue that owns the mechanism is safe; claiming it on a
+// venue that has none is not.
+func markGatedManagers(sc StrategyConfig) []string {
+	if sc.Platform != "hyperliquid" {
+		return nil
+	}
+	switch sc.Type {
+	case "perps", "manual":
+		return []string{"Trailing stop-loss walker", "Take-profit ratchet"}
+	}
+	return nil
 }
 
 // collectMissingMarkPositions reports every open position whose symbol carries
@@ -240,7 +286,14 @@ func collectMissingMarkPositions(strategies []StrategyConfig, openSymbols map[st
 			if prices[sym] > 0 {
 				continue
 			}
-			out = append(out, missingMarkPosition{StrategyID: sc.ID, Symbol: sym, Live: live})
+			out = append(out, missingMarkPosition{
+				StrategyID:       sc.ID,
+				Symbol:           sym,
+				Live:             live,
+				Platform:         sc.Platform,
+				Type:             sc.Type,
+				DisabledManagers: markGatedManagers(sc),
+			})
 		}
 	}
 	return out
@@ -326,6 +379,62 @@ func manualOnlyMarkSymbols(strategies []StrategyConfig) []string {
 	out := make([]string, 0, len(set))
 	for s := range set {
 		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// missingManualOnlyMarks returns the manual-only coins that are held open this
+// cycle but carry no positive mark, sorted.
+//
+// This is the exact precondition of the one-shot #1444 valuation-basis peak
+// migration, and it is deliberately NARROWER than "every open position has a
+// mark". The migration measures
+//
+//	delta = totalPV(prices) - totalPV(pricesWithoutSymbols(prices, manualOnly))
+//
+// and computeSubsetPortfolioValue is additive over PortfolioValue plus
+// price-independent real wallet balances, so only positions held under a
+// manual-only coin can contribute to that difference. A missing mark on a
+// spot / OKX-perps / futures coin is absent from BOTH maps, falls back to
+// pos.AvgCost in both, and cancels out of the delta exactly.
+//
+// Gating the migration on those unrelated coins would defer it during a
+// transient non-manual mark outage — and every deferred cycle is a cycle where
+// an underwater manual position is already live-priced in totalPV while the
+// peak is still on the cost basis, which is precisely the spurious first-cycle
+// kill-switch fire the migration exists to prevent.
+//
+// The walk is over the open-position map rather than the strategy configs, so
+// a manual-only coin held by a strategy that no longer declares it still
+// counts: it is its VALUATION that moved, whoever holds it.
+//
+// Pure by design (no state, no locks, no subprocess) per the CLAUDE.md testing
+// rule.
+func missingManualOnlyMarks(strategies []StrategyConfig, openSymbols map[string][]string, prices map[string]float64) []string {
+	manualOnly := manualOnlyMarkSymbols(strategies)
+	if len(manualOnly) == 0 || len(openSymbols) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(manualOnly))
+	for _, sym := range manualOnly {
+		want[sym] = true
+	}
+	missing := make(map[string]bool)
+	for _, syms := range openSymbols {
+		for _, sym := range syms {
+			if sym == "" || !want[sym] || prices[sym] > 0 {
+				continue
+			}
+			missing[sym] = true
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(missing))
+	for sym := range missing {
+		out = append(out, sym)
 	}
 	sort.Strings(out)
 	return out

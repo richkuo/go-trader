@@ -99,12 +99,75 @@ func TestMissingMarkTracker_RetainKeepsOtherSlots(t *testing.T) {
 // TestFormatMissingMarkDM_NamesDisabledProtections keeps the operator-facing
 // text actionable: it must say which auto-protective mechanisms stopped, not
 // merely that a price is missing.
+//
+// #1445 review must-survive (a): a live HL perps/manual miss still names the
+// walker and the ratchet.
 func TestFormatMissingMarkDM_NamesDisabledProtections(t *testing.T) {
-	got := formatMissingMarkDM(missingMarkPosition{StrategyID: "hl-live", Symbol: "BTC", Live: true})
+	miss := missingMarkPosition{
+		StrategyID: "hl-live", Symbol: "BTC", Live: true,
+		Platform: "hyperliquid", Type: "perps",
+		DisabledManagers: markGatedManagers(StrategyConfig{Type: "perps", Platform: "hyperliquid"}),
+	}
+	got := formatMissingMarkDM(miss)
 	for _, want := range []string{"hl-live", "BTC", "Trailing stop-loss walker", "Take-profit ratchet"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("DM missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// TestFormatMissingMarkDM_ManualNamesDisabledProtections is the manual half of
+// must-survive (a) — manual runs the same two HL mechanisms.
+func TestFormatMissingMarkDM_ManualNamesDisabledProtections(t *testing.T) {
+	miss := missingMarkPosition{
+		StrategyID: "manual-hl", Symbol: "HYPE", Live: true,
+		Platform: "hyperliquid", Type: "manual",
+		DisabledManagers: markGatedManagers(StrategyConfig{Type: "manual", Platform: "hyperliquid"}),
+	}
+	got := formatMissingMarkDM(miss)
+	for _, want := range []string{"manual-hl", "HYPE", "Trailing stop-loss walker", "Take-profit ratchet"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("DM missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestFormatMissingMarkDM_NonHLVenuesClaimNoHLMechanism is must-survive (b)
+// and (c): a live BinanceUS spot or OKX-perps miss must not tell the operator
+// that a Hyperliquid walker or ratchet stopped — those managers do not exist
+// on those venues, so the claim would be false. The DM must still carry the
+// one consequence that IS true everywhere: the portfolio kill switch reads a
+// stale valuation for this position.
+func TestFormatMissingMarkDM_NonHLVenuesClaimNoHLMechanism(t *testing.T) {
+	cases := []struct {
+		name string
+		sc   StrategyConfig
+		id   string
+		sym  string
+	}{
+		{"binanceus spot", StrategyConfig{Type: "spot", Platform: "binanceus"}, "sma-eth", "ETH/USDT"},
+		{"okx perps", StrategyConfig{Type: "perps", Platform: "okx"}, "okx-sol", "SOL"},
+		{"topstep futures", StrategyConfig{Type: "futures", Platform: "topstep"}, "ts-es", "ES"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			miss := missingMarkPosition{
+				StrategyID: tc.id, Symbol: tc.sym, Live: true,
+				Platform: tc.sc.Platform, Type: tc.sc.Type,
+				DisabledManagers: markGatedManagers(tc.sc),
+			}
+			got := formatMissingMarkDM(miss)
+			for _, banned := range []string{"Trailing stop-loss walker", "Take-profit ratchet"} {
+				if strings.Contains(got, banned) {
+					t.Errorf("DM claims %q on %s, which never runs it:\n%s", banned, tc.sc.Platform, got)
+				}
+			}
+			for _, want := range []string{tc.id, tc.sym, tc.sc.Platform, "falls back to entry cost"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("DM missing %q:\n%s", want, got)
+				}
+			}
+		})
 	}
 }
 

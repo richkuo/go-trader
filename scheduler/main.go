@@ -1372,14 +1372,21 @@ func main() {
 			// exactly the pre-#1444 basis) and move the peak by that delta
 			// alone. Any real drawdown already accumulated survives untouched.
 			//
-			// Gated on a complete mark set: a missing mark would make the
-			// legacy total and the live total agree for the wrong reason and
-			// migrate the peak by too little. The latch is only stamped once
-			// the measurement actually happened, so an incomplete cycle simply
-			// defers to the next one.
+			// Gated on the MANUAL-ONLY marks alone, not on a complete mark set
+			// across every position type (#1445 review). A missing mark on a
+			// manual-only coin would make the legacy total and the live total
+			// agree for the wrong reason and migrate the peak by too little, so
+			// that case still defers. A missing spot / OKX-perps / futures mark
+			// does not: it is absent from both prices and legacyPrices, falls
+			// back to pos.AvgCost in both, and cancels out of the delta exactly.
+			// Deferring on one would leave an underwater manual position
+			// live-priced in totalPV against a cost-basis peak for the whole
+			// outage — the exact spurious first-cycle fire this migration
+			// exists to prevent. The latch is only stamped once the measurement
+			// actually happened, so a deferred cycle simply retries next cycle.
 			if !state.PortfolioRisk.ManualMarkBasisRebaselined {
-				if len(collectMissingMarkPositions(cfg.Strategies, riskOpenSymbols, prices)) > 0 {
-					fmt.Println("[INFO] manual mark valuation-basis peak migration deferred: at least one open position has no live mark this cycle")
+				if unmarked := missingManualOnlyMarks(cfg.Strategies, riskOpenSymbols, prices); len(unmarked) > 0 {
+					fmt.Printf("[INFO] manual mark valuation-basis peak migration deferred: no live mark this cycle for open manual-only coin(s) %s\n", strings.Join(unmarked, ", "))
 				} else {
 					legacyPrices := pricesWithoutSymbols(prices, manualOnlyMarkSymbols(cfg.Strategies))
 					legacyPV, _ := computeTotalPortfolioValue(cfg.Strategies, state, legacyPrices, riskWalletBalances, sharedWallets)
@@ -3394,10 +3401,12 @@ func main() {
 		mu.RUnlock()
 		misses := collectMissingMarkPositions(cfg.Strategies, openSymbolsByStrategy, prices)
 		// #1444 (PR review): a stdout [WARN] is the same silent channel as the
-		// bug it was added to catch. A LIVE miss disables an auto-protective
-		// mechanism (the HL trailing stop-loss walker and the TP ratchet both
-		// return early behind `mark > 0`), so it escalates to a throttled owner
-		// DM. A record-only miss breaks no management path — it only reverts
+		// bug it was added to catch. A LIVE miss degrades an auto-protective
+		// mechanism — on HL perps/manual it stops the trailing stop-loss walker
+		// and the TP ratchet outright, and on every venue it reverts the
+		// position to AvgCost inside the portfolio kill switch's drawdown input
+		// — so it escalates to a throttled owner DM. A record-only miss breaks
+		// no management path — it only reverts
 		// that position to AvgCost inside the portfolio drawdown input — so it
 		// stays a log line and raises no live-protection alarm.
 		//
@@ -3408,7 +3417,14 @@ func main() {
 		var missingMarkDMs []string
 		for _, miss := range misses {
 			if miss.Live {
-				fmt.Printf("[WARN] No live mark for %s/%s while a LIVE position is open — portfolio value falls back to entry cost and mark-gated management (trailing SL walker, TP ratchet) cannot run this cycle\n", miss.StrategyID, miss.Symbol)
+				// #1445 review: name only the managers this venue actually
+				// runs (markGatedManagers); the valuation fallback is the one
+				// consequence that holds everywhere.
+				disabled := "no mark-gated manager runs on this venue"
+				if len(miss.DisabledManagers) > 0 {
+					disabled = strings.Join(miss.DisabledManagers, ", ") + " cannot run this cycle"
+				}
+				fmt.Printf("[WARN] No live mark for %s/%s while a LIVE %s position on %s is open — portfolio value falls back to entry cost and %s\n", miss.StrategyID, miss.Symbol, miss.Type, miss.Platform, disabled)
 				if missingMarkAlerts.Record(miss, alertNow) {
 					missingMarkDMs = append(missingMarkDMs, formatMissingMarkDM(miss))
 				}
