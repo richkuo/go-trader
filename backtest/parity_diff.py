@@ -41,6 +41,16 @@ diff of the decision surface:
                           trailing window (the per-bar generalization of
                           the last-bar parity test in
                           ``test_backtester_regime.py``).
+  • ``batched``         — opt-in via ``--batched`` (#1442). Each compared
+                          bar is evaluated twice through the Hyperliquid
+                          signal evaluator: once alone, and once as one
+                          slot of a multi-slot batch that shares the
+                          candle frame, the ATR base and the fetch memos.
+                          ``solo_*`` vs ``batch_*`` must agree on every
+                          bar — that is the claim the batched check lane
+                          rests on. Off by default; without the flag the
+                          frame, the summary and the exit code are
+                          unchanged.
 
 The live side is not a re-implementation: it calls the same helpers the
 live check script calls — ``prepare_check_regime`` → ``params["regime"]``
@@ -195,6 +205,12 @@ class ParityConfig:
     # disagreements. NOT used for the ADX regime series below, which stays on
     # ``regime_period`` exactly as before.
     regime_windows_spec: Optional[dict] = None
+    # #1442: when true, every compared bar is ALSO evaluated through the
+    # Hyperliquid batched signal evaluator twice — once as a slot inside a
+    # multi-slot batch, once alone — and the two decisions are diffed. That is
+    # the dimension proving the batched lane decides exactly what the
+    # unbatched lane decides, bar after bar, on real candles.
+    batched: bool = False
 
     def __post_init__(self):
         self.regime_directional_policy = _normalize_regime_directional_policy(
@@ -454,6 +470,103 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
     else:
         decision["close_fraction"] = 0.0
     return decision
+
+
+# --- #1442 batched dimension -------------------------------------------------
+
+HL_CHECK_SCRIPT = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "shared_scripts", "check_hyperliquid.py"))
+
+_HL_BATCH_MODULE = None
+
+
+def _load_hl_batch_module():
+    """Load check_hyperliquid.py for its #1442 shared-state evaluator.
+
+    Loaded by path under a private module name (the repo's
+    spec_from_file_location convention) so the script's own sys.path setup
+    runs without this tool importing an ambiguous top-level name.
+    """
+    global _HL_BATCH_MODULE
+    if _HL_BATCH_MODULE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_parity_diff_check_hyperliquid", HL_CHECK_SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _HL_BATCH_MODULE = mod
+    return _HL_BATCH_MODULE
+
+
+def _hl_batch_slot(cfg: ParityConfig, slot_id: str, position_side: str,
+                   position_ctx: Optional[dict]) -> dict:
+    """Build one batch slot for cfg, mirroring the scheduler's slot builder."""
+    refs = {"open": {"name": cfg.strategy_name,
+                     "params": dict(cfg.params or {})}}
+    if cfg.close_refs:
+        refs["closes"] = [
+            {"name": ref["name"], "params": dict(ref.get("params") or {})}
+            for ref in cfg.close_refs
+        ]
+    return {
+        "id": slot_id,
+        "strategy": cfg.strategy_name,
+        "mode": "paper",
+        "htf_filter": False,
+        "strategy_refs": refs,
+        "position_side": position_side,
+        "position_ctx": dict(position_ctx or {}) or None,
+    }
+
+
+def _hl_shared_state(mod, window: pd.DataFrame, cfg: ParityConfig):
+    return mod.build_shared_signal_state(
+        cfg.symbol, cfg.timeframe,
+        df=window.copy(),
+        regime_enabled=cfg.regime_enabled,
+        regime_period=cfg.regime_period,
+        regime_adx_threshold=cfg.regime_adx_threshold,
+        regime_windows_spec=cfg.regime_windows_spec,
+    )
+
+
+def _hl_decision_fields(result: dict) -> dict:
+    signal = int(result.get("signal", 0))
+    return {
+        "signal": signal,
+        "open_action": str(result.get("open_action", "")
+                           or open_action_from_signal(signal)),
+        "close_fraction": float(result.get("close_fraction", 0.0) or 0.0),
+    }
+
+
+def _batched_bar_decisions(window: pd.DataFrame, cfg: ParityConfig,
+                           position_side: str = "",
+                           position_ctx: Optional[dict] = None) -> tuple:
+    """Evaluate one bar solo and as a batch slot; return both decisions.
+
+    The batch carries a peer slot ahead of the compared one, so the run
+    exercises the real multi-slot path — shared frame, shared ATR base,
+    per-slot frame copies, shared fetch memos. A batch of one would share
+    nothing with anybody and prove nothing.
+    """
+    mod = _load_hl_batch_module()
+    solo_shared = _hl_shared_state(mod, window, cfg)
+    solo = mod.evaluate_signal_slot(
+        solo_shared, _hl_batch_slot(cfg, "solo", position_side, position_ctx))
+
+    batch_shared = _hl_shared_state(mod, window, cfg)
+    deps = mod._signal_check_deps()
+    batched = None
+    for slot_id in ("peer", "batched"):
+        out = mod.evaluate_signal_slot(
+            batch_shared,
+            _hl_batch_slot(cfg, slot_id, position_side, position_ctx),
+            deps=deps,
+        )
+        if slot_id == "batched":
+            batched = out
+    return _hl_decision_fields(solo), _hl_decision_fields(batched)
 
 
 def _bt_close_evaluator_fraction(cfg: ParityConfig, i: int,
@@ -800,6 +913,25 @@ def compute_parity_frame(
             row["bt_regime"] = str(regime_full.iloc[i])
             row["live_regime"] = str(live["regime"])
             match = match and row["bt_regime"] == row["live_regime"]
+        if cfg.batched:
+            # #1442: the batched Hyperliquid lane must decide exactly what the
+            # unbatched lane decides. Both sides run the SAME evaluator; the
+            # only difference is whether the market state was shared with a
+            # peer slot, which is precisely what this dimension tests.
+            solo_dec, batch_dec = _batched_bar_decisions(
+                win, cfg, position_side=side, position_ctx=ctx)
+            row["solo_signal"] = solo_dec["signal"]
+            row["batch_signal"] = batch_dec["signal"]
+            row["solo_open_action"] = solo_dec["open_action"]
+            row["batch_open_action"] = batch_dec["open_action"]
+            row["solo_close_fraction"] = solo_dec["close_fraction"]
+            row["batch_close_fraction"] = batch_dec["close_fraction"]
+            match = (
+                match
+                and row["solo_signal"] == row["batch_signal"]
+                and row["solo_open_action"] == row["batch_open_action"]
+                and abs(row["solo_close_fraction"] - row["batch_close_fraction"]) < 1e-9
+            )
         if hurst_states is not None:
             h = hurst_series.iloc[i]
             state, blocked, mult = hurst_states[i]
@@ -902,6 +1034,18 @@ def summarize(frame: pd.DataFrame) -> dict:
     if not mismatched.empty:
         summary["first_mismatch"] = str(mismatched.iloc[0]["ts"])
         summary["last_mismatch"] = str(mismatched.iloc[-1]["ts"])
+    if "batch_signal" in frame.columns:
+        # #1442: report the batched-vs-solo disagreement on its own, so a
+        # backtest-vs-live mismatch is never mistaken for a batching defect.
+        batch_diff = frame[
+            (frame["solo_signal"] != frame["batch_signal"])
+            | (frame["solo_open_action"] != frame["batch_open_action"])
+            | ((frame["solo_close_fraction"] - frame["batch_close_fraction"]).abs() >= 1e-9)
+        ]
+        summary["batch_mismatches"] = int(len(batch_diff))
+        summary["batch_clean"] = bool(batch_diff.empty)
+        if not batch_diff.empty:
+            summary["first_batch_mismatch"] = str(batch_diff.iloc[0]["ts"])
     return summary
 
 
@@ -955,6 +1099,12 @@ def main(argv: Optional[list] = None) -> int:
                         help="Also diff the regime label per bar")
     parser.add_argument("--regime-period", type=int, default=14)
     parser.add_argument("--regime-adx-threshold", type=float, default=20.0)
+    parser.add_argument("--batched", action="store_true",
+                        help="#1442: also evaluate each bar through the "
+                             "Hyperliquid batched signal evaluator (as one "
+                             "slot of a multi-slot batch) and diff it against "
+                             "the same evaluator run alone. Off by default; "
+                             "the frame and exit code are unchanged without it.")
     parser.add_argument("--fills", action="store_true",
                         help="Also run the full Backtester and report "
                              "simulated entry/exit fills")
@@ -981,6 +1131,7 @@ def main(argv: Optional[list] = None) -> int:
             print(f"--config: {e}", file=sys.stderr)
             return 2
         cfg.regime_enabled = cfg.regime_enabled or args.regime
+        cfg.batched = args.batched
         symbol, timeframe = cfg.symbol, cfg.timeframe
     else:
         if not args.strategy:
@@ -1013,6 +1164,7 @@ def main(argv: Optional[list] = None) -> int:
             regime_enabled=args.regime,
             regime_period=args.regime_period,
             regime_adx_threshold=args.regime_adx_threshold,
+            batched=args.batched,
         )
         symbol, timeframe = args.symbol, args.timeframe
 
@@ -1056,6 +1208,9 @@ def main(argv: Optional[list] = None) -> int:
           f"stride={args.stride})")
     print(f"  Bars compared: {result['bars_compared']}")
     print(f"  Mismatches:    {result['mismatches']}")
+    if "batch_mismatches" in result:
+        print(f"  Batch diffs:   {result['batch_mismatches']} "
+              f"(batched slot vs solo evaluation, #1442)")
     if args.fills:
         print(f"  Fills:         {len(fills)}")
     if result["clean"]:

@@ -157,6 +157,8 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 				mode = "limit-status"
 			case "--cancel-order":
 				mode = "cancel-order"
+			case "--batch-check":
+				mode = "batch-check"
 			}
 			if mode != "signal" {
 				break
@@ -175,7 +177,7 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 		t.Fatalf("probe failed: %v", err)
 	}
 	hl := calls["shared_scripts/check_hyperliquid.py"]
-	wantHL := []string{"signal", "signal", "fetch-atr", "execute", "limit-open", "limit-status", "cancel-order"}
+	wantHL := []string{"signal", "signal", "fetch-atr", "execute", "limit-open", "limit-status", "cancel-order", "batch-check"}
 	if len(hl) != len(wantHL) {
 		t.Errorf("HL should be probed %v, got %v", wantHL, hl)
 	} else {

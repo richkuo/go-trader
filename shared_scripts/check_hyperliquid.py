@@ -6,6 +6,20 @@ Fetches OHLCV from Hyperliquid, runs strategy, outputs JSON to stdout, exits.
 Signal check mode (paper or live):
     check_hyperliquid.py <strategy> <symbol> <timeframe> [--mode=paper|live]
 
+Batched signal check mode (read-only, #1442) — N strategies that share one
+(symbol, timeframe, ohlcv-limit, atr-method) key evaluated in one process:
+    check_hyperliquid.py --batch-check --symbol=BTC --timeframe=1h \
+        --ohlcv-limit 200 --atr-method=simple [--mark-price=MID] \
+        [--regime-enabled --regime-windows-spec-json JSON] \
+        [--regime-payload-json JSON]
+    stdin:  {"v": 1, "slots": [{"id": ..., "strategy": ..., "mode": ...,
+                                "htf_filter": bool, "strategy_refs": {...},
+                                "regime_atr_window": ..., "position_side": ...,
+                                "position_ctx": {...}}, ...]}
+    stdout: {"platform","symbol","timeframe","timestamp","error","error_scope",
+             "results": [{"id", ...single-mode decision fields...}, ...]}
+    Exit 0 when every slot succeeds, 1 otherwise; JSON is always printed.
+
 Execution mode (live only, called by Go as phase 2):
     check_hyperliquid.py --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live]
         [--stop-loss-pct=3.0]         # optional: place a reduce-only SL trigger after fill (#412)
@@ -94,6 +108,389 @@ def _position_ctx_from_args(args):
     return ctx
 
 
+# --- #1442: shared-market-state signal evaluation -------------------------
+# The signal check is split into a shared part (fetch, DataFrame build, ATR
+# base, display-price resolution) and a per-strategy part (regime prep,
+# strategy params, open/close evaluation, indicator extraction). The
+# single-strategy entry point runs one slot through the pair; --batch-check
+# runs N slots that share one (symbol, timeframe, ohlcv-limit, atr-method)
+# key through the same code, so batched and unbatched decisions come from one
+# implementation rather than two.
+
+BATCH_PROTOCOL_VERSION = 1
+
+
+class SharedSignalStateError(Exception):
+    """Shared market state could not be built (fetch failure, short history).
+
+    Distinct from a per-strategy fault: every slot in a batch is affected, so
+    the batch reports it once under error_scope="shared_state".
+    """
+
+
+class InsufficientCandlesError(SharedSignalStateError):
+    """Fewer than 30 candles came back for the shared key."""
+
+    def __init__(self, count):
+        self.count = int(count)
+        super().__init__(f"Insufficient data: {self.count} candles")
+
+
+FUTURES_STRATEGIES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "shared_strategies", "open", "futures", "strategies.py")
+
+
+def _futures_strategies_module():
+    """Resolve the futures open-strategy registry module.
+
+    `strategies` is an ambiguous top-level name — the spot, futures and options
+    registries all use it. In a subprocess the sys.path order above settles it,
+    but when this file is loaded IN-PROCESS (the batch unit tests, the backtest
+    parity tool) another module may already own the name, and a bare import
+    would silently bind the wrong registry. Try the fast path, then fall back
+    to loading the futures registry by path.
+    """
+    try:
+        import strategies as mod
+        if hasattr(mod, "apply_strategy"):
+            return mod
+    except ImportError:
+        pass
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_check_hyperliquid_futures_strategies", FUTURES_STRATEGIES_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _signal_check_deps():
+    """Resolve the strategy/composition callables the signal path needs.
+
+    Imports stay function-local because sys.path is patched at module import
+    time; both entry points call this so they bind the same implementations.
+    """
+    from types import SimpleNamespace
+
+    _strategies = _futures_strategies_module()
+    apply_strategy = _strategies.apply_strategy
+    get_strategy = _strategies.get_strategy
+    list_strategies = _strategies.list_strategies
+    from close_registry_loader import (
+        evaluate as close_evaluate,
+        get_strategy as get_close_strategy,
+        list_strategies as list_close_strategies,
+    )
+    from strategy_composition import (
+        evaluate_open_close,
+        finalize_decision,
+        normalize_signal,
+        parse_close_strategies,
+        reject_backtest_only_strategies,
+        validate_close_strategy_names,
+    )
+
+    return SimpleNamespace(
+        apply_strategy=apply_strategy,
+        get_strategy=get_strategy,
+        list_strategies=list_strategies,
+        close_evaluate=close_evaluate,
+        get_close_strategy=get_close_strategy,
+        list_close_strategies=list_close_strategies,
+        evaluate_open_close=evaluate_open_close,
+        finalize_decision=finalize_decision,
+        normalize_signal=normalize_signal,
+        parse_close_strategies=parse_close_strategies,
+        reject_backtest_only_strategies=reject_backtest_only_strategies,
+        validate_close_strategy_names=validate_close_strategy_names,
+    )
+
+
+def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies):
+    configured_names = [open_strategy or strategy_name]
+    deps.reject_backtest_only_strategies(configured_names, deps.get_strategy)
+    deps.validate_close_strategy_names(
+        deps.parse_close_strategies(close_strategies),
+        deps.get_strategy,
+        deps.get_close_strategy,
+        deps.list_strategies,
+        deps.list_close_strategies,
+    )
+
+
+def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
+                              ohlcv_limit=200, atr_method="simple", mark_price=0.0,
+                              regime_enabled=False, regime_windows_spec=None,
+                              regime_payload_json=None, mode="paper",
+                              regime_period=14, regime_adx_threshold=20.0):
+    """Build the market state every slot on one batch key shares (#1442).
+
+    adapter is required unless df is supplied prebuilt (the backtest parity
+    tool drives the evaluator fetch-free). Raises SharedSignalStateError when
+    the shared data is unusable, so the caller can report one batch-level
+    sentinel instead of N identical per-strategy errors.
+    """
+    if df is None:
+        if adapter is None:
+            raise SharedSignalStateError("no adapter and no prebuilt DataFrame")
+        print(f"Fetching {symbol} {timeframe} from Hyperliquid ({mode})...", file=sys.stderr)
+        candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
+        if not candles or len(candles) < 30:
+            raise InsufficientCandlesError(len(candles) if candles else 0)
+        df = _make_dataframe(candles)
+
+    # Display-price freshening, resolved once. Go forwards its cycle-local
+    # allMids snapshot via --mark-price so this subprocess can skip its own
+    # /info call (#768 fix #3); the adapter fallback is used only when the
+    # flag is absent.
+    price_override = 0.0
+    if mark_price and mark_price > 0:
+        price_override = float(mark_price)
+    elif adapter is not None:
+        try:
+            mid = adapter.get_spot_price(symbol)
+            if mid > 0:
+                price_override = float(mid)
+        except Exception:
+            pass
+
+    return {
+        "adapter": adapter,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "mode": mode,
+        "df": df,
+        "atr_method": atr_method,
+        "atr": latest_atr(df, method=atr_method),
+        "price_override": price_override,
+        "regime_enabled": regime_enabled,
+        "regime_windows_spec": regime_windows_spec,
+        "regime_payload_json": regime_payload_json,
+        # Classifier defaults match prepare_check_regime's, so the daemon's
+        # behavior is unchanged; the backtest parity tool overrides them to
+        # compare against its own configured classifier.
+        "regime_period": regime_period,
+        "regime_adx_threshold": regime_adx_threshold,
+        # Memos: identical inputs for every slot on this key, so they are
+        # fetched at most once per batch instead of once per strategy.
+        "htf_cache": {},
+        "funding_scalar": None,
+        "funding_records": None,
+    }
+
+
+def _shared_funding_scalar(shared, symbol):
+    """Current + 7d-average funding rate for delta_neutral_funding, memoized."""
+    if shared.get("funding_scalar") is not None:
+        return shared["funding_scalar"]
+    adapter = shared.get("adapter")
+    params = {}
+    if adapter is not None:
+        try:
+            current_rate = adapter.get_funding_rate(symbol)
+            history = adapter.get_funding_history(symbol, days=7)
+            avg_rate = (sum(r["rate"] for r in history) / len(history)) if history else 0.0
+            params = {
+                "current_funding_rate": current_rate,
+                "avg_funding_rate_7d": avg_rate,
+            }
+            print(f"Funding rate {symbol}: current={current_rate:.6f} avg7d={avg_rate:.6f}", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: failed to fetch funding rate: {e}", file=sys.stderr)
+    shared["funding_scalar"] = params
+    return params
+
+
+def _shared_funding_records(shared, symbol):
+    """Per-bar funding history aligned to the OHLCV window, memoized.
+
+    Paginated range fetch: the OHLCV window can exceed the single-call
+    funding_history cap (~500 hourly records), e.g. 200 4h bars.
+    """
+    if shared.get("funding_records") is not None:
+        return shared["funding_records"]
+    adapter = shared.get("adapter")
+    records = None
+    if adapter is not None:
+        try:
+            start_ms = int(shared["df"]["timestamp"].iloc[0])
+            records = adapter.get_funding_history_range(symbol, start_ms)
+            print(f"Funding history {symbol}: {len(records)} records since bar0",
+                  file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: failed to fetch funding history: {e}", file=sys.stderr)
+    shared["funding_records"] = records if records is not None else []
+    return shared["funding_records"]
+
+
+def _shared_htf_frame(shared, sym, tf, limit):
+    """Memoized higher-timeframe frame fetch for the HTF trend filter.
+
+    Every slot on one batch key asks for the same (sym, tf, limit); the memo
+    returns a copy so a filter that annotates the frame cannot leak columns
+    into a peer slot.
+    """
+    cache = shared["htf_cache"]
+    key = (sym, tf, limit)
+    if key not in cache:
+        adapter = shared.get("adapter")
+        candles = adapter.get_ohlcv(sym, interval=tf, limit=limit) if adapter is not None else None
+        cache[key] = _make_dataframe(candles) if candles else None
+    frame = cache[key]
+    return frame.copy() if frame is not None else None
+
+
+def evaluate_signal_slot(shared, slot, deps=None):
+    """Evaluate one strategy against the shared market state (#1442).
+
+    Returns the decision dict the single-strategy mode prints. The frame is
+    copied per slot so a strategy that annotates its input cannot change what
+    a peer slot sees — which is also what makes a batched slot's output equal
+    its solo run by construction.
+    """
+    if deps is None:
+        deps = _signal_check_deps()
+
+    strategy_name = slot["strategy"]
+    mode = slot.get("mode") or shared.get("mode") or "paper"
+    open_strategy = slot.get("open_strategy") or None
+    close_strategies = slot.get("close_strategies") or None
+    close_params_by_name = slot.get("close_params_by_name") or None
+    strategy_params_override = slot.get("params") or None
+    position_side = slot.get("position_side") or ""
+    position_ctx = slot.get("position_ctx") or None
+    htf_filter_enabled = bool(slot.get("htf_filter"))
+    regime_atr_window = slot.get("regime_atr_window") or ""
+
+    _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
+
+    symbol = shared["symbol"]
+    timeframe = shared["timeframe"]
+    atr_method = shared["atr_method"]
+    df = shared["df"].copy()
+
+    open_close_enabled = bool(open_strategy or close_strategies)
+    funding_aware_name = open_strategy or strategy_name
+
+    strategy_params = {}
+    if strategy_name == "delta_neutral_funding":
+        strategy_params.update(_shared_funding_scalar(shared, symbol))
+    if funding_aware_name == "funding_skew":
+        records = _shared_funding_records(shared, symbol)
+        if records:
+            strategy_params["funding_records"] = records
+
+    stdout_regime, live_regime, strategy_regime = prepare_check_regime(
+        df,
+        regime_enabled=shared["regime_enabled"],
+        period=shared.get("regime_period", 14),
+        adx_threshold=shared.get("regime_adx_threshold", 20.0),
+        windows_spec=shared["regime_windows_spec"],
+        atr_window=regime_atr_window,
+        injected_payload_json=shared["regime_payload_json"],
+    )
+    strategy_params["regime"] = strategy_regime
+    if strategy_params_override:
+        merged = {**strategy_params_override, **strategy_params}
+        strategy_params = merged
+    decision = None
+    if open_close_enabled:
+        market_ctx = {"mark_price": float(df["close"].iloc[-1])}
+        atr_now = shared["atr"]
+        if atr_now > 0:
+            market_ctx["atr"] = atr_now
+        # #733: live regime label for tiered_tp_atr_live_regime evaluator.
+        # Falls back to the position's frozen regime via the evaluator if
+        # this is empty (e.g. regime detection disabled mid-position).
+        if live_regime:
+            market_ctx["regime"] = live_regime
+        evaluation = deps.evaluate_open_close(
+            deps.apply_strategy,
+            deps.get_strategy,
+            df,
+            strategy_name,
+            open_strategy,
+            deps.parse_close_strategies(close_strategies),
+            position_side,
+            strategy_params or None,
+            position_ctx,
+            close_evaluate=deps.close_evaluate,
+            market_ctx=market_ctx,
+            close_params_by_name=close_params_by_name,
+        )
+        result_df = evaluation.open_result_df
+        signal = evaluation.open_signal
+    else:
+        result_df = deps.apply_strategy(strategy_name, df, strategy_params or None)
+        signal = deps.normalize_signal(result_df.iloc[-1].get("signal", 0))
+
+    ensure_atr_indicator(result_df, method=atr_method)
+    last = result_df.iloc[-1]
+    price = float(last["close"])
+
+    # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
+    htf_info = {}
+    htf_strategy_name = open_strategy or strategy_name
+    if htf_filter_enabled and htf_strategy_name not in ("delta_neutral_funding", "funding_skew"):
+        from htf_filter import htf_trend_filter, apply_htf_filter
+
+        def _fetch_htf(sym, tf, limit):
+            return _shared_htf_frame(shared, sym, tf, limit)
+
+        htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
+        original_signal = signal
+        signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
+        if signal != original_signal:
+            print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
+
+    if open_close_enabled:
+        decision = deps.finalize_decision(evaluation, position_side, signal)
+        signal = decision["signal"]
+
+    if shared["price_override"] > 0:
+        price = shared["price_override"]
+
+    indicators = {}
+    skip_cols = {
+        "open", "high", "low", "close", "volume",
+        "timestamp", "signal", "position", "datetime",
+    }
+    for col in result_df.columns:
+        if col in skip_cols:
+            continue
+        val = last.get(col)
+        if val is not None:
+            try:
+                fval = float(val)
+                if math.isfinite(fval):
+                    indicators[col] = round(fval, 6)
+            except (ValueError, TypeError):
+                pass
+
+    # Merge HTF indicators
+    if htf_info:
+        for k, v in htf_info.items():
+            if isinstance(v, (int, float)):
+                indicators[k] = v
+
+    output = {
+        "strategy": strategy_name,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "signal": signal,
+        "price": round(price, 2),
+        "indicators": indicators,
+        "regime": stdout_regime,
+        "mode": mode,
+        "platform": "hyperliquid",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if decision:
+        output.update(decision)
+    return output
+
+
 def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
                      strategy_params_override=None, open_strategy=None,
                      close_strategies=None,
@@ -106,205 +503,52 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
     """Run strategy signal check using Hyperliquid OHLCV data."""
     try:
         from adapter import HyperliquidExchangeAdapter
-        from strategies import apply_strategy, get_strategy, list_strategies
-        from close_registry_loader import (
-            evaluate as close_evaluate,
-            get_strategy as get_close_strategy,
-            list_strategies as list_close_strategies,
-        )
-        from strategy_composition import (
-            evaluate_open_close,
-            finalize_decision,
-            normalize_signal,
-            parse_close_strategies,
-            reject_backtest_only_strategies,
-            validate_close_strategy_names,
-        )
 
-        open_close_enabled = bool(open_strategy or close_strategies)
-        configured_names = [open_strategy or strategy_name]
-        reject_backtest_only_strategies(configured_names, get_strategy)
-        validate_close_strategy_names(
-            parse_close_strategies(close_strategies),
-            get_strategy,
-            get_close_strategy,
-            list_strategies,
-            list_close_strategies,
-        )
+        deps = _signal_check_deps()
+        _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
 
         adapter = HyperliquidExchangeAdapter()
 
-        # Fetch funding rate data for funding-aware strategies. delta_neutral
-        # gets the scalar current/7d-avg pair; funding_skew needs per-bar
-        # history aligned to the OHLCV window, fetched after the candles below.
-        strategy_params = {}
-        funding_aware_name = open_strategy or strategy_name
-        if strategy_name == "delta_neutral_funding":
-            try:
-                current_rate = adapter.get_funding_rate(symbol)
-                history = adapter.get_funding_history(symbol, days=7)
-                avg_rate = (sum(r["rate"] for r in history) / len(history)) if history else 0.0
-                strategy_params = {
-                    "current_funding_rate": current_rate,
-                    "avg_funding_rate_7d": avg_rate,
-                }
-                print(f"Funding rate {symbol}: current={current_rate:.6f} avg7d={avg_rate:.6f}", file=sys.stderr)
-            except Exception as e:
-                print(f"Warning: failed to fetch funding rate: {e}", file=sys.stderr)
-
-        print(f"Fetching {symbol} {timeframe} from Hyperliquid ({mode})...", file=sys.stderr)
-        candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
-
-        if not candles or len(candles) < 30:
-            print(json.dumps({
-                "strategy": strategy_name,
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "signal": 0,
-                "price": 0,
-                "indicators": {},
-                "mode": mode,
-                "platform": "hyperliquid",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": f"Insufficient data: {len(candles) if candles else 0} candles",
-            }, cls=SafeEncoder))
-            sys.exit(1)
-
-        df = _make_dataframe(candles)
-
-        if funding_aware_name == "funding_skew":
-            # Paginated range fetch: the OHLCV window can exceed the single-call
-            # funding_history cap (~500 hourly records), e.g. 200 4h bars.
-            try:
-                start_ms = int(df["timestamp"].iloc[0])
-                records = adapter.get_funding_history_range(symbol, start_ms)
-                strategy_params["funding_records"] = records
-                print(f"Funding history {symbol}: {len(records)} records since bar0",
-                      file=sys.stderr)
-            except Exception as e:
-                print(f"Warning: failed to fetch funding history: {e}", file=sys.stderr)
-
-        stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-            df,
+        shared = build_shared_signal_state(
+            symbol, timeframe,
+            adapter=adapter,
+            ohlcv_limit=ohlcv_limit,
+            atr_method=atr_method,
+            mark_price=mark_price,
             regime_enabled=regime_enabled,
-            windows_spec=regime_windows_spec,
-            atr_window=regime_atr_window,
-            injected_payload_json=regime_payload_json,
+            regime_windows_spec=regime_windows_spec,
+            regime_payload_json=regime_payload_json,
+            mode=mode,
         )
-        strategy_params["regime"] = strategy_regime
-        if strategy_params_override:
-            merged = {**strategy_params_override, **strategy_params}
-            strategy_params = merged
-        decision = None
-        if open_close_enabled:
-            market_ctx = {"mark_price": float(df["close"].iloc[-1])}
-            atr_now = latest_atr(df, method=atr_method)
-            if atr_now > 0:
-                market_ctx["atr"] = atr_now
-            # #733: live regime label for tiered_tp_atr_live_regime evaluator.
-            # Falls back to the position's frozen regime via the evaluator if
-            # this is empty (e.g. regime detection disabled mid-position).
-            if live_regime:
-                market_ctx["regime"] = live_regime
-            evaluation = evaluate_open_close(
-                apply_strategy,
-                get_strategy,
-                df,
-                strategy_name,
-                open_strategy,
-                parse_close_strategies(close_strategies),
-                position_side,
-                strategy_params or None,
-                position_ctx,
-                close_evaluate=close_evaluate,
-                market_ctx=market_ctx,
-                close_params_by_name=close_params_by_name,
-            )
-            result_df = evaluation.open_result_df
-            signal = evaluation.open_signal
-        else:
-            result_df = apply_strategy(strategy_name, df, strategy_params or None)
-            signal = normalize_signal(result_df.iloc[-1].get("signal", 0))
+        output = evaluate_signal_slot(shared, {
+            "id": strategy_name,
+            "strategy": strategy_name,
+            "mode": mode,
+            "htf_filter": htf_filter_enabled,
+            "params": strategy_params_override,
+            "open_strategy": open_strategy,
+            "close_strategies": close_strategies,
+            "close_params_by_name": close_params_by_name,
+            "position_side": position_side,
+            "position_ctx": position_ctx,
+            "regime_atr_window": regime_atr_window,
+        }, deps=deps)
+        print(json.dumps(output, cls=SafeEncoder))
 
-        ensure_atr_indicator(result_df, method=atr_method)
-        last = result_df.iloc[-1]
-        price = float(last["close"])
-
-        # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
-        htf_info = {}
-        htf_strategy_name = open_strategy or strategy_name
-        if htf_filter_enabled and htf_strategy_name not in ("delta_neutral_funding", "funding_skew"):
-            from htf_filter import htf_trend_filter, apply_htf_filter
-
-            def _fetch_htf(sym, tf, limit):
-                candles = adapter.get_ohlcv(sym, interval=tf, limit=limit)
-                return _make_dataframe(candles) if candles else None
-
-            htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
-            original_signal = signal
-            signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
-            if signal != original_signal:
-                print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
-
-        if open_close_enabled:
-            decision = finalize_decision(evaluation, position_side, signal)
-            signal = decision["signal"]
-
-        # Freshen price with live mid if available. Go fetches /info allMids
-        # once per cycle (fetchHyperliquidMids) and forwards the mid via
-        # --mark-price so this subprocess can skip its own /info call (#768
-        # fix #3). Zero staleness risk: same source, seconds old, used only
-        # to freshen the display price in the output JSON. Fall back to
-        # adapter.get_spot_price when the flag is absent.
-        if mark_price and mark_price > 0:
-            price = mark_price
-        else:
-            try:
-                mid = adapter.get_spot_price(symbol)
-                if mid > 0:
-                    price = mid
-            except Exception:
-                pass
-
-        indicators = {}
-        skip_cols = {
-            "open", "high", "low", "close", "volume",
-            "timestamp", "signal", "position", "datetime",
-        }
-        for col in result_df.columns:
-            if col in skip_cols:
-                continue
-            val = last.get(col)
-            if val is not None:
-                try:
-                    fval = float(val)
-                    if math.isfinite(fval):
-                        indicators[col] = round(fval, 6)
-                except (ValueError, TypeError):
-                    pass
-
-        # Merge HTF indicators
-        if htf_info:
-            for k, v in htf_info.items():
-                if isinstance(v, (int, float)):
-                    indicators[k] = v
-
-        output = {
+    except InsufficientCandlesError as e:
+        print(json.dumps({
             "strategy": strategy_name,
             "symbol": symbol,
             "timeframe": timeframe,
-            "signal": signal,
-            "price": round(price, 2),
-            "indicators": indicators,
-            "regime": stdout_regime,
+            "signal": 0,
+            "price": 0,
+            "indicators": {},
             "mode": mode,
             "platform": "hyperliquid",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        if decision:
-            output.update(decision)
-        print(json.dumps(output, cls=SafeEncoder))
-
+            "error": str(e),
+        }, cls=SafeEncoder))
+        sys.exit(1)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         print(json.dumps({
@@ -321,6 +565,116 @@ def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=
             "error": str(e),
         }, cls=SafeEncoder))
         sys.exit(1)
+
+
+def parse_batch_slots(raw_stdin):
+    """Parse the --batch-check stdin envelope into a slot list (#1442)."""
+    payload = json.loads(raw_stdin)
+    if not isinstance(payload, dict):
+        raise ValueError("batch payload must be a JSON object")
+    version = payload.get("v", BATCH_PROTOCOL_VERSION)
+    if int(version) != BATCH_PROTOCOL_VERSION:
+        raise ValueError(f"unsupported batch protocol version {version}")
+    slots = payload.get("slots")
+    if not isinstance(slots, list) or not slots:
+        raise ValueError("batch payload must carry a non-empty 'slots' array")
+    seen = set()
+    out = []
+    for idx, slot in enumerate(slots):
+        if not isinstance(slot, dict):
+            raise ValueError(f"slot {idx} must be a JSON object")
+        slot_id = str(slot.get("id") or "").strip()
+        if not slot_id:
+            raise ValueError(f"slot {idx} is missing 'id'")
+        if slot_id in seen:
+            raise ValueError(f"duplicate slot id {slot_id!r}")
+        seen.add(slot_id)
+        refs = slot.get("strategy_refs")
+        if refs:
+            from strategy_composition import parse_strategy_refs_arg
+            parsed = parse_strategy_refs_arg(refs if isinstance(refs, str) else json.dumps(refs))
+            if parsed:
+                slot = dict(slot)
+                slot["open_strategy"] = parsed["open_name"]
+                slot["close_strategies"] = parsed["close_csv"]
+                slot["params"] = parsed["open_params"]
+                slot["close_params_by_name"] = parsed["close_params_by_name"]
+        if not str(slot.get("strategy") or "").strip():
+            raise ValueError(f"slot {slot_id!r} is missing 'strategy'")
+        out.append(slot)
+    return out
+
+
+def _batch_slot_error(slot, symbol, timeframe, message):
+    return {
+        "id": slot.get("id", ""),
+        "strategy": slot.get("strategy", ""),
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "signal": 0,
+        "price": 0,
+        "indicators": {},
+        "regime": None,
+        "mode": slot.get("mode") or "paper",
+        "platform": "hyperliquid",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "error": message,
+    }
+
+
+def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_method="simple",
+                           mark_price=0.0, regime_enabled=False, regime_windows_spec=None,
+                           regime_payload_json=None, adapter=None, df=None):
+    """Evaluate N strategy slots that share one market-data key (#1442).
+
+    Shared-state failure emits one batch-level sentinel with
+    error_scope="shared_state" and no results, so the operator can tell it
+    apart from a per-strategy fault. Each slot is wrapped in its own handler:
+    one failing strategy returns an error for that slot only.
+    """
+    envelope = {
+        "platform": "hyperliquid",
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "error": "",
+        "error_scope": "",
+        "results": [],
+    }
+    try:
+        deps = _signal_check_deps()
+        if adapter is None and df is None:
+            from adapter import HyperliquidExchangeAdapter
+            adapter = HyperliquidExchangeAdapter()
+        shared = build_shared_signal_state(
+            symbol, timeframe,
+            adapter=adapter,
+            df=df,
+            ohlcv_limit=ohlcv_limit,
+            atr_method=atr_method,
+            mark_price=mark_price,
+            regime_enabled=regime_enabled,
+            regime_windows_spec=regime_windows_spec,
+            regime_payload_json=regime_payload_json,
+        )
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        envelope["error"] = str(e)
+        envelope["error_scope"] = "shared_state"
+        return envelope, 1
+
+    failed = False
+    for slot in slots:
+        try:
+            output = evaluate_signal_slot(shared, slot, deps=deps)
+            output["id"] = slot.get("id", "")
+            envelope["results"].append(output)
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            failed = True
+            envelope["results"].append(
+                _batch_slot_error(slot, symbol, timeframe, str(e)))
+    return envelope, (1 if failed else 0)
 
 
 def _classify_sl_response(sdk_response: dict):
@@ -1454,6 +1808,60 @@ def run_cancel_order(symbol, oid, mode):
 
 
 def main():
+    if "--batch-check" in sys.argv:
+        # Batched signal check (#1442): N strategy slots that share one
+        # (symbol, timeframe, ohlcv-limit, atr-method) key are evaluated in one
+        # process against one candle fetch and one indicator base. Shared flags
+        # ride argv; the per-slot arguments ride a JSON envelope on stdin
+        # because N x strategy-refs JSON outgrows a comfortable argv. The Go
+        # scheduler owns the decision to batch — this script never re-dispatches
+        # itself.
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--batch-check", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--timeframe", required=True)
+        parser.add_argument("--ohlcv-limit", type=int, default=200)
+        parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
+        parser.add_argument("--mark-price", type=float, default=0.0)
+        parser.add_argument("--regime-enabled", action="store_true", default=False)
+        parser.add_argument("--regime-windows-spec-json", default="")
+        parser.add_argument("--regime-payload-json", default=None)
+        parser.add_argument("--probe-only", action="store_true",
+            help="Startup compatibility probe (#1442): validate argv shape and exit 0 before reading stdin.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        symbol = args.symbol
+        timeframe = args.timeframe
+        try:
+            slots = parse_batch_slots(sys.stdin.read())
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            print(json.dumps({
+                "platform": "hyperliquid",
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "error": f"invalid batch payload: {e}",
+                "error_scope": "shared_state",
+                "results": [],
+            }, cls=SafeEncoder))
+            sys.exit(1)
+        regime_windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json or None)
+        envelope, exit_code = run_batch_signal_check(
+            symbol, timeframe, slots,
+            ohlcv_limit=args.ohlcv_limit,
+            atr_method=args.atr_method,
+            mark_price=args.mark_price,
+            regime_enabled=args.regime_enabled,
+            regime_windows_spec=regime_windows_spec,
+            regime_payload_json=args.regime_payload_json,
+        )
+        print(json.dumps(envelope, cls=SafeEncoder))
+        if exit_code:
+            sys.exit(exit_code)
+        return
     if "--fetch-atr" in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()

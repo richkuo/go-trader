@@ -1872,6 +1872,16 @@ func main() {
 				// alert on cross-window reversals. Sequential main loop,
 				// outside mu; fail-open — never blocks the dispatch below.
 				processRegimeTransitionAlerts(stateDB, globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
+				// #1442 pre-pass: evaluate the due HL perps strategies that
+				// share one market-data key in a single Python call. Placed
+				// HERE — after the HL account reconciler at the top of this
+				// block, so the slot snapshot sees post-reconcile positions,
+				// and after regimeStoreReady() so the injected regime payload
+				// is populated. A group of one produces nothing; a map miss in
+				// the loop below is the untouched per-strategy path.
+				hlBatchResults := runHyperliquidBatchPrePass(dueStrategies, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
+					fmt.Printf(format+"\n", a...)
+				})
 				for _, sc := range dueStrategies {
 					stratState := state.Strategies[sc.ID]
 					if stratState == nil {
@@ -2478,7 +2488,7 @@ func main() {
 									}
 								}
 							}
-						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
+						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults); ok {
 							prices[result.Symbol] = price
 							// #1046: circuit breaker latched — force hold so no entry/
 							// add/flip/close executes (every execution path below gates
@@ -4015,7 +4025,32 @@ func isHLLiveReconcilable(sc StrategyConfig) bool {
 // result.Regime is known, so downstream EffectiveDirection / perpsLiveOrderSize
 // / PerpsOrderSkipReason calls in execute paths see the effective values.
 // Mutation is scoped to the loop-local sc; cfg.Strategies is never touched.
-func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidResult, string, float64, bool) {
+//
+// batch is the cycle-local #1442 batched-check result map, or nil. A map HIT
+// skips the spawn and runs the identical post-parse pipeline on the cached
+// slot; a map MISS takes the per-strategy spawn path unchanged. Everything
+// after this function is therefore blind to whether the decision came from a
+// batched call.
+func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger, batch *hlBatchCycleResults) (*HyperliquidResult, string, float64, bool) {
+	if outcome, ok := batch.lookup(sc.ID); ok {
+		// The cached slot is only usable when this strategy's check inputs are
+		// still exactly what the pre-pass snapshotted. Anything that moved
+		// since — position context, close refs, profile-merged params, or the
+		// cycle's mark price — falls through to this strategy's own check
+		// rather than deciding on a stale snapshot.
+		var markPrice float64
+		if sym := hyperliquidSymbol(sc.Args); sym != "" {
+			if mid, ok := prices[sym]; ok && mid > 0 {
+				markPrice = mid
+			}
+		}
+		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime, markPrice)
+		if fpErr == nil && fp == outcome.Fingerprint {
+			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger,
+				outcome.Result, outcome.Stderr, outcome.Err, outcome.Mode, outcome.SharedFailure)
+		}
+		logger.Warn("Batched check inputs changed since the pre-pass snapshot; running this strategy's own check (#1442)")
+	}
 	args := append([]string{}, sc.Args...)
 	// Suppress in-process close evaluators that overlap on-chain reduce-only
 	// protection — running both races on the shared on-chain position
@@ -4046,21 +4081,50 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	logger.Info("Running: python3 %s %v", sc.Script, args)
 
 	result, stderr, err := RunHyperliquidCheck(sc.Script, args)
-	if err != nil {
-		logger.Error("Script failed: %v", err)
-		if stderr != "" {
-			logger.Error("stderr: %s", stderr)
+	errMsg, mode := "", scriptFailureCrash
+	switch {
+	case err != nil:
+		errMsg, result = err.Error(), nil
+	case result.Error != "":
+		errMsg, mode, result = result.Error, scriptFailureError, nil
+	}
+	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, false)
+}
+
+// finishHyperliquidCheck is everything runHyperliquidCheck does AFTER the
+// decision JSON exists: failure branches, the #779 directional policy, the
+// #907 divergence override, signal inversion, and the price fallback. Shared
+// verbatim by the per-strategy spawn and the #1442 batched slot, so a batched
+// decision cannot diverge from an unbatched one downstream of the subprocess.
+//
+// sharedFailure marks a batch-level outage: the member fails this cycle but
+// its OWN failure trackers are neither recorded nor cleared, because the
+// member's script did not fail — the group identity carries that alert.
+func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sharedFailure bool) (*HyperliquidResult, string, float64, bool) {
+	if errMsg != "" {
+		switch {
+		case sharedFailure:
+			logger.Error("Batched check shared state failed: %s", errMsg)
+			if stderr != "" {
+				logger.Error("stderr: %s", stderr)
+			}
+		case mode == scriptFailureCrash:
+			logger.Error("Script failed: %v", errMsg)
+			if stderr != "" {
+				logger.Error("stderr: %s", stderr)
+			}
+			notifyScriptFailure(notifier, *sc, scriptFailureCrash, errMsg)
+		default:
+			if stderr != "" {
+				logger.Info("stderr: %s", stderr)
+			}
+			logger.Error("Script returned error: %s", errMsg)
+			notifyScriptFailure(notifier, *sc, scriptFailureError, errMsg)
 		}
-		notifyScriptFailure(notifier, *sc, scriptFailureCrash, err.Error())
 		return nil, "", 0, false
 	}
 	if stderr != "" {
 		logger.Info("stderr: %s", stderr)
-	}
-	if result.Error != "" {
-		logger.Error("Script returned error: %s", result.Error)
-		notifyScriptFailure(notifier, *sc, scriptFailureError, result.Error)
-		return nil, "", 0, false
 	}
 	clearScriptFailure(notifier, *sc)
 	// #779: resolve regime-aware directional policy BEFORE applySignalInversion

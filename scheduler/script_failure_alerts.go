@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,14 +63,23 @@ const (
 	// non-empty result.Error. Surfaced as the run*Check
 	// "Script returned error: %s" branch.
 	scriptFailureError scriptFailureMode = "error"
+	// scriptFailureSharedState is a #1442 batched-check outage: the shared
+	// market state (candle fetch, adapter init, short history) failed, so every
+	// strategy in the batch is affected and none of them individually failed.
+	// Tracked on the synthetic group identity, never on a member.
+	scriptFailureSharedState scriptFailureMode = "shared_state"
 )
 
 // scriptFailureModeLabel renders a scriptFailureMode for operator messages.
 func scriptFailureModeLabel(mode scriptFailureMode) string {
-	if mode == scriptFailureCrash {
+	switch mode {
+	case scriptFailureCrash:
 		return "hard crash"
+	case scriptFailureSharedState:
+		return "shared market state"
+	default:
+		return "script error"
 	}
-	return "script error"
 }
 
 // scriptFailureEntry is one slot in the in-memory per-strategy tracker.
@@ -227,6 +237,75 @@ func notifyScriptFailure(notifier *MultiNotifier, sc StrategyConfig, mode script
 		return
 	}
 	msg := formatScriptFailureAlert(sc, mode, errMsg, count)
+	notifier.SendToAllChannels(msg)
+	notifier.SendOwnerDM(msg)
+}
+
+// formatBatchSharedStateFailureAlert builds the operator message for a #1442
+// batched check whose SHARED market state failed. Deliberately worded and
+// prefixed differently from formatScriptFailureAlert: no member strategy is
+// failing, so an operator reading the DM must not go hunting one. The affected
+// member IDs are listed so the blast radius is explicit.
+func formatBatchSharedStateFailureAlert(sc StrategyConfig, errMsg string, memberIDs []string, count int) string {
+	members := "none"
+	if len(memberIDs) > 0 {
+		members = strings.Join(memberIDs, ", ")
+	}
+	return fmt.Sprintf("**HL BATCH SHARED STATE FAILED** [%s] %s (pid=%d, %d consecutive failures, %d strategies affected: %s): %s",
+		sc.ID, sc.Script, os.Getpid(), count, len(memberIDs), members, errMsg)
+}
+
+// formatBatchSharedStateRecoveredAlert is the matching recovery notice.
+func formatBatchSharedStateRecoveredAlert(sc StrategyConfig, priorCount int) string {
+	return fmt.Sprintf("**HL BATCH SHARED STATE RECOVERED** [%s] %s (pid=%d): succeeded after %d consecutive failures",
+		sc.ID, sc.Script, os.Getpid(), priorCount)
+}
+
+// notifyBatchSharedStateFailure records ONE shared-state failure under the
+// synthetic group identity and fires a throttled operator alert. The member
+// strategies' own trackers are deliberately untouched by the caller: a shared
+// outage is not a member script failing, so recording it per member would both
+// storm N duplicate DMs and fake N recoveries once the outage clears.
+func notifyBatchSharedStateFailure(notifier *MultiNotifier, sc StrategyConfig, errMsg string, memberIDs []string) {
+	now := time.Now().UTC()
+	if scriptFailureErrorIsTransient(errMsg) {
+		fmt.Printf("[WARN] transient hl-batch shared-state failure [%s]: %s\n", sc.ID, errMsg)
+		shouldNotify, count := recordScriptFailureAtThreshold(
+			scriptFailureTransientTracker, sc.ID, errMsg, now,
+			scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration)
+		if !shouldNotify || notifier == nil || !notifier.HasBackends() {
+			return
+		}
+		msg := formatBatchSharedStateFailureAlert(sc, errMsg, memberIDs, count)
+		notifier.SendToAllChannels(msg)
+		notifier.SendOwnerDM(msg)
+		return
+	}
+	shouldNotify, count := scriptFailureTracker.Record(sc.ID, errMsg, now)
+	if !shouldNotify || notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	msg := formatBatchSharedStateFailureAlert(sc, errMsg, memberIDs, count)
+	notifier.SendToAllChannels(msg)
+	notifier.SendOwnerDM(msg)
+}
+
+// clearBatchSharedStateFailure resets the group's streak after a clean batched
+// call and fires a one-shot recovery notice if it had alerted.
+func clearBatchSharedStateFailure(notifier *MultiNotifier, sc StrategyConfig) {
+	recovered, priorCount := scriptFailureTracker.Clear(sc.ID)
+	transientRecovered, transientPrior := scriptFailureTransientTracker.Clear(sc.ID)
+	if !recovered && !transientRecovered {
+		return
+	}
+	if notifier == nil || !notifier.HasBackends() {
+		return
+	}
+	prior := priorCount
+	if transientPrior > prior {
+		prior = transientPrior
+	}
+	msg := formatBatchSharedStateRecoveredAlert(sc, prior)
 	notifier.SendToAllChannels(msg)
 	notifier.SendOwnerDM(msg)
 }

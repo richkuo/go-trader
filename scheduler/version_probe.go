@@ -110,6 +110,19 @@ var cancelOrderProbeArgv = []string{
 	"--cancel-order", "--symbol=BTC", "--oid=1", "--probe-only",
 }
 
+// hyperliquidBatchProbeArgv probes the #1442 batched signal-check mode. The
+// scheduler dispatches it whenever two due strategies share a market-data key,
+// so a stale Python without --batch-check must fail at startup rather than
+// blinding every strategy on that coin mid-cycle. --probe-only short-circuits
+// before the stdin read, so the probe needs no envelope.
+var hyperliquidBatchProbeArgv = []string{
+	"--batch-check", "--symbol=BTC", "--timeframe=1h",
+	"--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=0",
+	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
+	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0}}}`,
+	"--probe-only",
+}
+
 // fetchCandlesProbeArgv probes the dashboard's on-demand OHLCV helper. The
 // helper is not a configured strategy script, so it needs its own argv shape to
 // catch stale Python deploys before the dashboard starts returning 500s.
@@ -182,6 +195,11 @@ func probeCheckScripts(cfg *Config) error {
 				return err
 			}
 			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {
+				return err
+			}
+			// #1442: probe the batched signal-check mode so a stale Python
+			// fails at startup instead of failing every batched group.
+			if err := probeOneCheckScriptFn(script, hyperliquidBatchProbeArgv); err != nil {
 				return err
 			}
 		}

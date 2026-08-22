@@ -97,6 +97,8 @@ func TestRunProbeHappyPath(t *testing.T) {
 				mode = "limit-status"
 			case "--cancel-order":
 				mode = "cancel-order"
+			case "--batch-check":
+				mode = "batch-check"
 			}
 			if mode != "signal" {
 				break
@@ -146,14 +148,14 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-	// Expect 13 invocations: HL signal-check (adx+composite), HL --fetch-atr (#689),
+	// Expect 14 invocations: HL signal-check (adx+composite), HL --fetch-atr (#689),
 	// HL --execute (PR #769), spot signal-check (adx+composite), dashboard helpers,
-	// 3 #883 limit-order shapes (limit-open/limit-status/cancel-order), and the
-	// #879 check_regime.py bundle helper.
-	if len(probed) != 13 {
-		t.Fatalf("expected 13 probe invocations, got %d: %v", len(probed), probed)
+	// 3 #883 limit-order shapes (limit-open/limit-status/cancel-order), the
+	// #879 check_regime.py bundle helper, and the #1442 --batch-check mode.
+	if len(probed) != 14 {
+		t.Fatalf("expected 14 probe invocations, got %d: %v", len(probed), probed)
 	}
-	var hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper int
+	var hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, hlBatchCheck, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper int
 	for _, p := range probed {
 		switch {
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "signal":
@@ -168,6 +170,8 @@ func TestRunProbeHappyPath(t *testing.T) {
 			hlLimitStatus++
 		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "cancel-order":
 			hlCancelOrder++
+		case p.script == "shared_scripts/check_hyperliquid.py" && p.mode == "batch-check":
+			hlBatchCheck++
 		case p.script == "shared_scripts/check_strategy.py" && p.mode == "signal":
 			spotSignal++
 		case p.script == "shared_scripts/fetch_candles.py" && p.mode == "signal":
@@ -180,9 +184,9 @@ func TestRunProbeHappyPath(t *testing.T) {
 			regimeHelper++
 		}
 	}
-	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || hlLimitOpen != 1 || hlLimitStatus != 1 || hlCancelOrder != 1 || spotSignal != 2 || candleHelper != 1 || schemaHelper != 1 || simulateHelper != 1 || regimeHelper != 1 {
-		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, hl-limit-open=1, hl-limit-status=1, hl-cancel-order=1, spot-signal=2, candle-helper=1, schema=1, simulate=1, regime=1; got %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d (probed=%v)",
-			hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper, probed)
+	if hlSignal != 2 || hlFetchATR != 1 || hlExecute != 1 || hlLimitOpen != 1 || hlLimitStatus != 1 || hlCancelOrder != 1 || hlBatchCheck != 1 || spotSignal != 2 || candleHelper != 1 || schemaHelper != 1 || simulateHelper != 1 || regimeHelper != 1 {
+		t.Fatalf("expected hl-signal=2, hl-fetch-atr=1, hl-execute=1, hl-limit-open=1, hl-limit-status=1, hl-cancel-order=1, hl-batch-check=1, spot-signal=2, candle-helper=1, schema=1, simulate=1, regime=1; got %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d (probed=%v)",
+			hlSignal, hlFetchATR, hlExecute, hlLimitOpen, hlLimitStatus, hlCancelOrder, hlBatchCheck, spotSignal, candleHelper, schemaHelper, simulateHelper, regimeHelper, probed)
 	}
 }
 
