@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 )
 
 const defaultTrailingStopMinMovePct = 0.5
@@ -505,6 +506,19 @@ type trailingReplacePolicy struct {
 	// Direction is still gated: only a FAVORABLE candidate replaces, so a
 	// forced tighten can never widen the stop on either side.
 	ratchetTightened bool
+
+	// liquidationPx (#1450) is the exchange-reported liquidation price for this
+	// coin from the CURRENT cycle's clearinghouseState snapshot, or 0 when
+	// unknown. When positive, the walker clamps a candidate (or an unchanged
+	// resting) trigger that sits past liquidation to just inside it, and
+	// bypasses the min-move debounce so the tighten actually lands — the same
+	// rationale as ratchetTightened. Direction is favorable-only, so the clamp
+	// can never widen a stop.
+	//
+	// LIVE ONLY. The paper walker ignores this field: paper has no real account
+	// and no liquidation price, so every live call site threads the map value
+	// while paper call sites leave it 0.
+	liquidationPx float64
 }
 
 func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64) (float64, float64, bool) {
@@ -750,6 +764,43 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			}
 		}
 	}
+	// #1450: a stop past the exchange liquidation price can never fill — HL
+	// force-closes first. Clamp it to just INSIDE liquidation and place it,
+	// bypassing the min-move debounce so the tighten actually reaches the
+	// exchange. Two cases are covered:
+	//
+	//   - replace==true: the walker's own candidate is past liquidation.
+	//   - replace==false: the walker sees no reason to move, but the RESTING
+	//     trigger is itself past liquidation (e.g. armed on the open cycle,
+	//     before the exchange reported a liquidation price). This is the heal.
+	//
+	// The clamp is strictly tightening in both cases, so it can never widen a
+	// stop, and it never returns 0 for a positive input — protection is never
+	// removed by this path.
+	placementConfirmed := false
+	if policy.liquidationPx > 0 {
+		offending := newTrigger
+		if !replace {
+			offending = currentTrigger
+		}
+		if clamped, clampedOK := clampStopInsideLiquidation(side, offending, policy.liquidationPx); clampedOK {
+			newTrigger = clamped
+			replace = true
+			// The alert is deferred so it reports what ACTUALLY happened
+			// (clamped vs. replace deferred), and so it drains after
+			// lockHyperliquidTrailingUpdate releases — defers run LIFO and that
+			// lock is taken below. placementConfirmed is set on the one success
+			// path at the end of this function.
+			defer func() {
+				action := hlLiquidationActionReplaceDeferred
+				if placementConfirmed {
+					action = hlLiquidationActionClamped
+				}
+				notifyHLStopPastLiquidation(sc, symbol, side, offending, clamped, policy.liquidationPx, action, notifier, logger, time.Now().UTC())
+			}()
+		}
+	}
+
 	if !replace {
 		return newHighWater, nil, true
 	}
@@ -821,5 +872,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if !updateConfirmed {
 		return highWater, result, false
 	}
+	placementConfirmed = true
 	return newHighWater, result, true
 }

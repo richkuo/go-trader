@@ -684,7 +684,10 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			o.FillFee = st.Fee
 			// Arm protection immediately so the filled coin is never unprotected,
 			// regardless of whether this strategy is "due" this cycle.
-			runHyperliquidProtectionSync(sc, state.Strategies[o.StrategyID], stateDB, o.Symbol, mu, notifier, logger, "HL limit-fill protection synced", nil)
+			runHyperliquidProtectionSync(sc, state.Strategies[o.StrategyID], stateDB, o.Symbol, mu, notifier, logger, "HL limit-fill protection synced", nil, 0)
+			// #1450 liquidationPx=0: this fill just happened, so the cycle
+			// snapshot predates the position and the exchange has not reported
+			// a liquidation price for it yet. The next cycle audit covers it.
 			if ma := applied[o.StrategyID]; ma == nil {
 				applied[o.StrategyID] = &manualAlert{sc: sc, ss: state.Strategies[o.StrategyID], trades: tradesBooked}
 				order = append(order, o.StrategyID)

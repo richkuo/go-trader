@@ -2482,6 +2482,16 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_pct is mutually exclusive with stop_loss_pct and stop_loss_margin_pct", prefix))
 			}
 		}
+
+		// #1450: a percentage stop at or beyond the isolated-margin bankruptcy
+		// distance (100 / leverage) can never fill — Hyperliquid force-closes
+		// first. Errors only on provably impossible values, mirroring the
+		// derived stop_loss_margin_pct bound above; the ATR-derived owners
+		// depend on a per-position EntryATR and are checked at arm time by the
+		// runtime clamp instead.
+		for _, msg := range validateHLStopWithinBankruptcyBound(sc) {
+			errs = append(errs, fmt.Sprintf("%s: %s", prefix, msg))
+		}
 		// #505: ATR-derived trailing stops. The price % is resolved per-position
 		// at runtime from EntryATR / AvgCost, so validation only enforces shape:
 		// HL perps only, > 0, mutually exclusive with the fixed-distance stops.

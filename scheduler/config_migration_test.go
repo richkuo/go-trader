@@ -1101,7 +1101,7 @@ func TestLoadConfigMigratesVersionlessEndToEnd(t *testing.T) {
 	// End-to-end check: tiers reach buildHyperliquidProtectionPlan via the
 	// close ref's params, exactly the path that was broken pre-#640.
 	pos := &Position{Symbol: "BTC", Quantity: 1, AvgCost: 50000, EntryATR: 500, Side: "long"}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
 	}

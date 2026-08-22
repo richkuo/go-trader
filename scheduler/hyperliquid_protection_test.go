@@ -26,7 +26,7 @@ func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
 		Side:     "long",
 		TPOIDs:   []int64{101, 202},
 	}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
 	}
@@ -62,7 +62,7 @@ func TestBuildHyperliquidProtectionPlanManualStrategy(t *testing.T) {
 		StopLossOID: 123,
 		TPOIDs:      []int64{456, 789},
 	}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("buildHyperliquidProtectionPlan returned ok=false for manual strategy")
 	}
@@ -380,7 +380,7 @@ func TestBuildHyperliquidProtectionPlanCustomTiers(t *testing.T) {
 		}},
 	}
 	pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2500, EntryATR: 25, Side: "short"}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
 	}
@@ -412,7 +412,7 @@ func TestBuildHyperliquidProtectionPlanThreeTiers(t *testing.T) {
 		Side:     "long",
 		TPOIDs:   []int64{101, 202, 303},
 	}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
 	}
@@ -520,7 +520,7 @@ func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if !runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil) {
+	if !runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, 0) {
 		t.Fatal("expected runHyperliquidProtectionSync to apply")
 	}
 	if calls != 1 {
@@ -554,7 +554,7 @@ func TestRunHyperliquidProtectionSyncSkipsWhenNoPlan(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil) {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, 0) {
 		t.Fatal("expected runHyperliquidProtectionSync to skip when no plan")
 	}
 	if called {
@@ -588,7 +588,7 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil) {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, 0) {
 		t.Fatal("expected apply to be skipped after position closed externally")
 	}
 	pos := state.Positions["ETH"]
@@ -637,7 +637,7 @@ func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if !runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil) {
+	if !runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, 0) {
 		t.Fatal("expected runHyperliquidProtectionSync to apply")
 	}
 
@@ -674,7 +674,7 @@ func TestBuildHyperliquidProtectionPlanPadsTPArmedTiers(t *testing.T) {
 		TPOIDs:       []int64{0, 300},
 		TPArmedTiers: []bool{true, true},
 	}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("expected plan ok=true")
 	}
@@ -687,7 +687,7 @@ func TestBuildHyperliquidProtectionPlanPadsTPArmedTiers(t *testing.T) {
 	}
 	// Shorter TPArmedTiers slice pads with false (#749 / #716 contract).
 	pos.TPArmedTiers = []bool{true}
-	plan, ok = buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok = buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("expected plan ok=true (padded armed tiers)")
 	}
@@ -904,7 +904,7 @@ func TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice(t *testing.T) {
 		EntryATR:        50,
 		Side:            "long",
 	}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatal("buildHyperliquidProtectionPlan returned ok=false")
 	}

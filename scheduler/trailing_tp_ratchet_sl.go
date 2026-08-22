@@ -43,6 +43,9 @@ func runTrailingStopUpdateAfterRatchetTighten(
 	symbol string,
 	mark float64,
 	hlOnChainAbsQty map[string]float64,
+	// #1450: coin -> current-cycle exchange liquidation price; a missing or
+	// non-positive entry means "unknown" and the walker skips the clamp.
+	hlLiquidationPx map[string]float64,
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
@@ -73,8 +76,13 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		if capped && logger != nil {
 			logger.Warn("ratchet same-cycle trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", qty, slEffectiveQty, symbol)
 		}
+		// #1450: the shared ratchetTightenReplacePolicy is a package-level var;
+		// copy it per call so the coin's liquidation price never leaks across
+		// strategies.
+		livePolicy := ratchetTightenReplacePolicy
+		livePolicy.liquidationPx = hlLiquidationPx[symbol]
 		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(
-			sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, ratchetTightenReplacePolicy, notifier, logger)
+			sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, livePolicy, notifier, logger)
 		mu.Lock()
 		defer mu.Unlock()
 		if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
