@@ -375,7 +375,7 @@ func TestProtectionPlanFreezesTriggersAtRiskAnchor(t *testing.T) {
 		AvgCost: 2100, RiskAnchorPrice: 2000, EntryATR: 50, StopLossATRMult: &mult,
 	}
 	sc := StrategyConfig{Type: "perps", Platform: "hyperliquid", StopLossATRMult: &mult}
-	plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+	plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
 		t.Fatalf("expected a protection plan")
 	}

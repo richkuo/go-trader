@@ -2000,6 +2000,32 @@ func main() {
 					}
 				}
 
+				// #1450: coin -> exchange-reported liquidation price from the
+				// SAME Phase-1 clearinghouseState snapshot. Only positive
+				// entries are recorded; a missing coin means "unknown" and
+				// every consumer skips the comparison (never derive a band
+				// from 1/leverage). Immutable after construction, so the
+				// per-strategy phases below read it lock-free exactly like
+				// hlOnChainAbsQty.
+				hlLiquidationPx := make(map[string]float64, len(hlPositions))
+				for _, p := range hlPositions {
+					if p.LiquidationPx > 0 {
+						hlLiquidationPx[p.Coin] = p.LiquidationPx
+					}
+				}
+
+				// #1450 audit: heal stops that sit past the liquidation price
+				// for the STATIC SCALAR owners (stop_loss_pct,
+				// stop_loss_margin_pct, the max_drawdown_pct fallback), which
+				// have no re-place mechanism of their own, and report the
+				// self-healing owners. Runs here — post-reconcile, pre-dispatch
+				// — so it cannot interleave with a walker cancel+replace on the
+				// same OID. This is also what catches a stop armed on the OPEN
+				// cycle, where the snapshot predated the position.
+				if slFills := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlOnChainAbsQty, &mu, notifier, time.Now().UTC()); slFills > 0 {
+					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", slFills)
+				}
+
 				// #879: the dispatch loop below is the first regime-store
 				// consumer — wait (bounded by regimeStorePhaseBudget) for the
 				// population kicked off before the risk phase.
@@ -2784,7 +2810,7 @@ func main() {
 								// on-chain size (!capped) so the trailing SL covers the
 								// new total without waiting for a trailing trigger move.
 								forceResize := hlScaleInResizePending && !capped
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened}, notifier, logger)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened, liquidationPx: hlLiquidationPx[result.Symbol]}, notifier, logger)
 								mu.Lock()
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
 									trades++
@@ -2831,6 +2857,16 @@ func main() {
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 {
 								triggerPx := fixedStopLossATRTriggerPx(sc, hlPosSide, hlPosSnapshot)
+								// #1450: a one-shot fixed-ATR arm has no
+								// re-place path of its own, so clamp BEFORE
+								// placement rather than healing it later.
+								// Tighten-only; 0 (unknown) leaves it alone.
+								if clamped, wasClamped := clampStopInsideLiquidation(hlPosSide, triggerPx, hlLiquidationPx[result.Symbol]); wasClamped {
+									logger.Warn("#1450 fixed ATR SL for %s would rest past liquidation $%.4f; tightening $%.4f -> $%.4f",
+										result.Symbol, hlLiquidationPx[result.Symbol], triggerPx, clamped)
+									notifyHLStopPastLiquidation(sc, result.Symbol, hlPosSide, triggerPx, clamped, hlLiquidationPx[result.Symbol], hlLiquidationActionClamped, notifier, logger, time.Now().UTC())
+									triggerPx = clamped
+								}
 								if triggerPx > 0 {
 									slEffectiveQty, capped := hlSLEffectiveQty(result.Symbol, hlPosQty, hlOnChainAbsQty)
 									if capped {
@@ -2857,7 +2893,7 @@ func main() {
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON)
+								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx[result.Symbol])
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
 							// #873 scale-in: a same-direction signal on an open HL
@@ -2957,13 +2993,13 @@ func main() {
 								//     since paper has a nil execResult.
 								ratchetWalkerOwnedByScaleIn := scaleInAddQty > 0 && execResult != nil && trades > 0
 								if ratchetAlert != nil && !ratchetWalkerOwnedByScaleIn {
-									if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlOnChainAbsQty, &mu, notifier, logger); extraTrades > 0 {
+									if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, &mu, notifier, logger); extraTrades > 0 {
 										trades += extraTrades
 										detail = slDetail
 									}
 								}
 								if execResult != nil && trades > 0 {
-									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON)
+									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON, hlLiquidationPx[result.Symbol])
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									// #873/#882: for a trailing-SL owner the post-trade sync
 									// re-sized only the on-chain TPs (the walker owns the SL).
@@ -2986,7 +3022,7 @@ func main() {
 										// #1416: when this add also cleared a ratchet tier, the same
 										// single pass must place the grown size at the NEW tighter
 										// trigger instead of re-placing the old wider one.
-										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, filledAddQty, ratchetAlert != nil, &mu, notifier, logger); extraTrades > 0 {
+										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, filledAddQty, ratchetAlert != nil, &mu, notifier, logger); extraTrades > 0 {
 											trades += extraTrades
 											detail = slDetail
 										}
@@ -3206,7 +3242,7 @@ func main() {
 							// the latter sees on-chain-reconciled qty. Post-TP SL
 							// adjustment is deferred to the post-stamp block below so
 							// regime-keyed *_atr_regime SL sees pos.Regime (#878 review).
-							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON)
+							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx[sc.Symbol])
 						}
 						// #872: run the close evaluator and stamp the regime BEFORE
 						// arming the post-TP SL / ratchet / trailing walker below. The
@@ -3299,7 +3335,7 @@ func main() {
 								// position (the trailing SL otherwise covers only the
 								// pre-add size until the next trigger move).
 								forceResize := pos.ScaleInResizePending && !capped
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manualRatchetTightened}, notifier, logger)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manualRatchetTightened, liquidationPx: hlLiquidationPx[sc.Symbol]}, notifier, logger)
 								mu.Lock()
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest

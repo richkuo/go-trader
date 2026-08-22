@@ -197,22 +197,22 @@ func TestScaleInResizeTrailingSLNowGuards(t *testing.T) {
 
 	// not live → no-op
 	sc, st := mk([]string{"x.py", "ETH", "1h"}, nil, &trail, true, 2)
-	if n, d := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, 1, false, &mu, nil, newTestLogger(t)); n != 0 || d != "" {
+	if n, d := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, nil, 1, false, &mu, nil, newTestLogger(t)); n != 0 || d != "" {
 		t.Errorf("not-live: got (%d,%q), want (0,\"\")", n, d)
 	}
 	// flag unset → no-op
 	sc, st = mk(liveArgs, nil, &trail, false, 2)
-	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, 1, false, &mu, nil, newTestLogger(t)); n != 0 {
+	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, nil, 1, false, &mu, nil, newTestLogger(t)); n != 0 {
 		t.Errorf("flag-unset: got %d, want 0", n)
 	}
 	// non-trailing SL owner (fixed ATR) → sync already handled it, no-op
 	sc, st = mk(liveArgs, &fixed, nil, true, 2)
-	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, 1, false, &mu, nil, newTestLogger(t)); n != 0 {
+	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, nil, 1, false, &mu, nil, newTestLogger(t)); n != 0 {
 		t.Errorf("non-trailing: got %d, want 0", n)
 	}
 	// still capped after correcting on-chain qty (preAdd 0.5 + fill 0.25 < virtual 2) → defer, no-op
 	sc, st = mk(liveArgs, nil, &trail, true, 2)
-	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 0.5}, 0.25, false, &mu, nil, newTestLogger(t)); n != 0 {
+	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 0.5}, nil, 0.25, false, &mu, nil, newTestLogger(t)); n != 0 {
 		t.Errorf("capped: got %d, want 0 (deferred)", n)
 	}
 	// flag must remain set for the deferred walker when capped

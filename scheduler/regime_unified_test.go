@@ -199,7 +199,7 @@ func TestUnifiedRegimeSLFolding(t *testing.T) {
 		regime string
 		wantSL float64
 	}{{"trending_up", 1.5}, {"ranging", 0.8}} {
-		plan, ok := buildHyperliquidProtectionPlan(sc, mkPos(tc.regime))
+		plan, ok := buildHyperliquidProtectionPlan(sc, mkPos(tc.regime), 0)
 		if !ok {
 			t.Fatalf("%s: protection plan not built", tc.regime)
 		}
@@ -402,7 +402,7 @@ func TestUnifiedRegimeSLFolding_SubLabelStampPlacesSL(t *testing.T) {
 	}
 	for _, stamp := range []string{"ranging_directional_up", "ranging_directional_down"} {
 		pos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 100, EntryATR: 5, Side: "long", Regime: stamp}
-		plan, ok := buildHyperliquidProtectionPlan(sc, pos)
+		plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0)
 		if !ok {
 			t.Fatalf("%s: protection plan not built (naked position)", stamp)
 		}

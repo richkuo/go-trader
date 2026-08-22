@@ -362,7 +362,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		recordPositionTradeResult(s, pos, 0)
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
-		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+		clearHLPerpsPositionAlertThrottles(s, symbol)
 		return true
 	}
 	// #954 one-fill-one-row: a FULL close whose OID already produced a close
@@ -378,7 +378,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		recordClosedPosition(s, pos, closePx, 0, reason+"_dup_oid", time.Now().UTC())
 		delete(s.Positions, symbol)
-		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+		clearHLPerpsPositionAlertThrottles(s, symbol)
 		return true
 	}
 
@@ -450,7 +450,7 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	recordPositionTradeResult(s, pos, pnl)
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
-	clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+	clearHLPerpsPositionAlertThrottles(s, symbol)
 	if logger != nil {
 		logger.Warn("%s @ $%.4f, PnL: $%.2f (fee $%.2f)", logPrefix, closePx, pnl, fee)
 	}
@@ -537,7 +537,7 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	if remaining <= 1e-9 {
 		recordClosedPosition(s, pos, closePx, pnl, reason, now)
 		delete(s.Positions, symbol)
-		clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+		clearHLPerpsPositionAlertThrottles(s, symbol)
 	} else {
 		pos.Quantity = remaining
 		// #1431: a true partial close is its own decision type; the
@@ -1551,7 +1551,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 				delete(s.Positions, symbol)
-				clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+				clearHLPerpsPositionAlertThrottles(s, symbol)
 				logger.Info("Closed short %s @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, execPrice, fee, pnl)
 			}
 			tradesExecuted++
@@ -1770,7 +1770,7 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			} else {
 				recordClosedPosition(s, pos, execPrice, pnl, "signal", now)
 				delete(s.Positions, symbol)
-				clearATRMultMissingEntryATRWarningOnHLPerpsClose(s, symbol)
+				clearHLPerpsPositionAlertThrottles(s, symbol)
 				logger.Info("SELL %s: %.6f @ $%.2f (fee $%.2f) | PnL: $%.2f", symbol, closeQty, execPrice, fee, pnl)
 			}
 			tradesExecuted++

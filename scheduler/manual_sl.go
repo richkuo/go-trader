@@ -40,7 +40,9 @@ func manualActionRecordsTrade(action string) bool {
 // by the multiplier the label happens to resolve to at the instant the command
 // runs.
 func manualSLAutoManaged(sc StrategyConfig, pos *Position) (bool, string) {
-	if plan, ok := buildHyperliquidProtectionPlan(sc, pos); ok && plan.StopLossATRMult > 0 {
+	// #1450 liquidationPx=0: this is a read-only "is an ATR stop armed?"
+	// question, not a placement, so no clamp applies.
+	if plan, ok := buildHyperliquidProtectionPlan(sc, pos, 0); ok && plan.StopLossATRMult > 0 {
 		return true, fmt.Sprintf("an ATR stop-loss is armed (effective stop_loss_atr_mult=%g)", plan.StopLossATRMult)
 	}
 	if effectiveTrailingStopPct(sc, pos) > 0 {

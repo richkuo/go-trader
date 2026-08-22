@@ -31,7 +31,20 @@ type hlProtectionPlan struct {
 	CancelTPOIDs []int64
 }
 
-func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtectionPlan, bool) {
+// buildHyperliquidProtectionPlan resolves the per-cycle reduce-only SL/TP plan.
+//
+// liquidationPx (#1450) is the CURRENT-cycle exchange-reported liquidation
+// price for this coin, or 0 when unknown (paper, no snapshot, HL reported
+// null). When positive it does two things, both one-way tightening:
+//
+//   - clamps the resolved SL ATR multiple so the derived trigger lands just
+//     inside liquidation instead of past it; and
+//   - sets ForceSLReplace when the RESTING trigger is past liquidation, which
+//     is what heals a stop armed on the OPEN cycle (inline scalar SL at order
+//     time, manual open) where no liquidation price existed yet.
+//
+// liquidationPx == 0 leaves the plan byte-identical to the pre-#1450 behavior.
+func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidationPx float64) (hlProtectionPlan, bool) {
 	if (sc.Type != "perps" && sc.Type != "manual") || sc.Platform != "hyperliquid" || pos == nil {
 		return hlProtectionPlan{}, false
 	}
@@ -65,11 +78,27 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position) (hlProtect
 	if slMult <= 0 && len(tiers) == 0 {
 		return hlProtectionPlan{}, false
 	}
+	// #1450: keep the derived SL trigger reachable. Both effects are one-way
+	// tightening — a clamp never widens a stop, and ForceSLReplace only causes
+	// a cancel+replace at an already-safe trigger.
+	forceSLPastLiquidation := false
+	if liquidationPx > 0 {
+		if clampedMult, clamped := hlClampProtectionSLMult(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult, liquidationPx); clamped {
+			slMult = clampedMult
+			forceSLPastLiquidation = true
+		}
+		// A resting trigger past liquidation must be replaced even when the
+		// resolved multiple itself is fine — that is the open-cycle heal.
+		if stopPastLiquidation(pos.Side, pos.StopLossTriggerPx, liquidationPx) {
+			forceSLPastLiquidation = true
+		}
+	}
 	tierCount := len(tiers)
 	return hlProtectionPlan{
-		Symbol: pos.Symbol,
-		Side:   pos.Side,
-		Size:   pos.Quantity,
+		ForceSLReplace: forceSLPastLiquidation,
+		Symbol:         pos.Symbol,
+		Side:           pos.Side,
+		Size:           pos.Quantity,
 		// #873: SL/TP triggers anchor to the FROZEN entry (riskAnchorPrice), not
 		// the blended AvgCost — so a scale-in re-sizes protection to the new
 		// total at the unchanged trigger geometry. Equals AvgCost for a position
@@ -556,6 +585,9 @@ func runHyperliquidProtectionSync(
 	logger *StrategyLogger,
 	logTag string,
 	reconcileFillHintsJSON []byte,
+	// liquidationPx (#1450) is this coin's CURRENT-cycle exchange-reported
+	// liquidation price, or 0 when unknown. Threaded straight into the plan.
+	liquidationPx float64,
 ) bool {
 	if stratState == nil || symbol == "" {
 		return false
@@ -569,13 +601,16 @@ func runHyperliquidProtectionSync(
 		if pos, ok := stratState.Positions[symbol]; ok {
 			oldAppliedRegime := pos.RegimeAppliedLabel
 			regimeChanged := advanceDynamicCloseRegime(pos, stratState, sc)
-			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos)
+			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, liquidationPx)
 			if syncOK {
 				plan.CancelTPOIDs = dynamicProtectionSurplusTPOIDs(pos.TPOIDs, len(plan.Tiers))
 				if regimeChanged {
 					forceSL, forceTP := dynamicProtectionForceReplace(sc, pos, plan, oldAppliedRegime, true)
-					plan.ForceSLReplace = forceSL
-					plan.ForceTPReplace = forceTP
+					// OR, never assign: the plan may already carry the #1450
+					// past-liquidation force-replace, and dropping it would
+					// leave an unreachable stop resting.
+					plan.ForceSLReplace = plan.ForceSLReplace || forceSL
+					plan.ForceTPReplace = orForceReplace(plan.ForceTPReplace, forceTP)
 				}
 				if pos.ScaleInResizePending {
 					// #873: a scale-in grew the size at the frozen triggers —
@@ -591,11 +626,15 @@ func runHyperliquidProtectionSync(
 	} else {
 		mu.RLock()
 		if pos, ok := stratState.Positions[symbol]; ok {
-			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos)
+			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, liquidationPx)
 			if syncOK && pos.ScaleInResizePending {
 				// #873: re-size SL + un-cleared TP tiers to the grown total at
 				// the frozen trigger geometry; the watermark is not reset.
-				plan.ForceSLReplace, plan.ForceTPReplace = scaleInProtectionForceReplace(pos, plan)
+				// OR, never assign — the plan may already carry the #1450
+				// past-liquidation force-replace.
+				fSL, fTP := scaleInProtectionForceReplace(pos, plan)
+				plan.ForceSLReplace = plan.ForceSLReplace || fSL
+				plan.ForceTPReplace = orForceReplace(plan.ForceTPReplace, fTP)
 			}
 		}
 		mu.RUnlock()

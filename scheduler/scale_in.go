@@ -36,6 +36,9 @@ func scaleInResizeTrailingSLNow(
 	symbol string,
 	mark float64,
 	preAddOnChainAbsQty map[string]float64,
+	// #1450: coin -> current-cycle exchange liquidation price; a missing or
+	// non-positive entry means "unknown" and the walker skips the clamp.
+	hlLiquidationPx map[string]float64,
 	filledAddQty float64,
 	ratchetTightened bool,
 	mu *sync.RWMutex,
@@ -68,7 +71,7 @@ func scaleInResizeTrailingSLNow(
 		logger.Warn("scale-in eager SL resize: %s still capped (virtual %.6f > on-chain %.6f); deferring to next walker cycle", symbol, posSnap.Quantity, slEffectiveQty)
 		return 0, ""
 	}
-	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, trailingReplacePolicy{forceResize: true, ratchetTightened: ratchetTightened}, notifier, logger)
+	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, trailingReplacePolicy{forceResize: true, ratchetTightened: ratchetTightened, liquidationPx: hlLiquidationPx[symbol]}, notifier, logger)
 	mu.Lock()
 	defer mu.Unlock()
 	trades := 0
