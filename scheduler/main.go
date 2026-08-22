@@ -3322,6 +3322,32 @@ func main() {
 			} // end if !killSwitchFired
 		}
 
+		// #1444: missing-mark regression guard. A mark miss is silent by
+		// construction — prices[sym] reads 0.0, PortfolioValue falls back to
+		// pos.AvgCost, and every mark-gated manager (the HL trailing stop-loss
+		// walker, the TP ratchet) returns early behind its own `mark > 0` gate.
+		// Runs here, after the strategy loop, because perps strategies publish
+		// their own mark during the loop; an init-time guard would warn for them
+		// spuriously. The decision itself is the pure collectMissingMarkPositions
+		// so it stays testable without spawning Python.
+		mu.RLock()
+		openSymbolsByStrategy := make(map[string][]string, len(state.Strategies))
+		for sid, s := range state.Strategies {
+			if s == nil {
+				continue
+			}
+			for sym, pos := range s.Positions {
+				if pos == nil || pos.Quantity <= 0 {
+					continue
+				}
+				openSymbolsByStrategy[sid] = append(openSymbolsByStrategy[sid], sym)
+			}
+		}
+		mu.RUnlock()
+		for _, miss := range collectMissingMarkPositions(cfg.Strategies, openSymbolsByStrategy, prices) {
+			fmt.Printf("[WARN] No live mark for %s/%s while a position is open — portfolio value falls back to entry cost and mark-gated management (trailing SL walker, TP ratchet) cannot run this cycle\n", miss.StrategyID, miss.Symbol)
+		}
+
 		// #1394/#1400: emit a throttled reminder for every strategy still
 		// needing cash reconciliation (covers DM-miss / restart). The latch
 		// clears only via /go-trader-clear-cash-reconcile — maybeClear below

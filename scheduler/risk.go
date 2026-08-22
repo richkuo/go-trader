@@ -59,22 +59,59 @@ func collectPriceSymbols(strategies []StrategyConfig) []string {
 // for which the scheduler should fetch venue-native perps marks this cycle.
 // hlCoins contains coins traded on Hyperliquid; okxCoins contains coins
 // traded on OKX — each slice is deduplicated and sorted for deterministic
-// iteration. Strategies with Type != "perps" are ignored.
+// iteration. Types other than "perps" and "manual" are ignored.
 //
 // The returned coins are used as inputs to fetchHyperliquidMids and
 // fetchOKXPerpsMids respectively. This is the correct oracle for perps
 // positions; see issue #263 for why BinanceUS spot is wrong.
+//
+// #1444: type=manual is a first-class HL perps position, so it belongs on this
+// rail too. Before this it belonged to no rail at all — collectPriceSymbols
+// filters on "spot" and collectFuturesMarkSymbols on "futures"+topstep — so a
+// manual coin with no perps or hedge donor never entered the prices map. The
+// per-cycle mark then read 0.0, and the `mark > 0` gates in the manual dispatch
+// killed both the trailing stop-loss walker and the take-profit ratchet on
+// every cycle, with no error and no warning.
+//
+// A manual strategy contributes sc.Symbol, NOT Args[1]. The manual dispatch,
+// the position map and the walker all key off sc.Symbol, and loadConfig only
+// derives Args from Symbol when Args was left empty — a hand-written args list
+// may name a different coin, which would park the mark under a key nobody
+// reads. Validation guarantees a non-empty Symbol and platform=hyperliquid for
+// every manual strategy, so a manual entry on any other platform is skipped
+// rather than routed to the OKX rail.
+//
+// collectFuturesMarkSymbols is deliberately NOT relaxed the same way: manual is
+// rejected at load for any platform other than hyperliquid, and that collector
+// also filters on platform=topstep, so the edit would be dead code.
+//
+// Named side effect: manual coins now join PortfolioValue, the exposure and
+// drawdown inputs and the status page at live mids instead of a frozen
+// AvgCost. That is the wanted direction, and it is the same reason the #1159
+// hedge-coin block below exists.
 func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []string) {
 	hlSet := make(map[string]bool)
 	okxSet := make(map[string]bool)
 	for _, sc := range strategies {
-		if sc.Type != "perps" {
+		var coin string
+		switch sc.Type {
+		case "perps":
+			if len(sc.Args) < 2 {
+				continue
+			}
+			coin = sc.Args[1]
+		case "manual":
+			// #1444: key off Symbol — the key the manual dispatch, the position
+			// map and the trailing walker all read. Manual is hyperliquid-only
+			// at load, so anything else contributes nothing (it must not fall
+			// through to the OKX rail below).
+			if sc.Platform != "hyperliquid" {
+				continue
+			}
+			coin = sc.Symbol
+		default:
 			continue
 		}
-		if len(sc.Args) < 2 {
-			continue
-		}
-		coin := sc.Args[1]
 		if coin == "" {
 			continue
 		}
@@ -126,6 +163,74 @@ func mergePerpsMarks(prices map[string]float64, marks map[string]float64) {
 		}
 		prices[sym] = p
 	}
+}
+
+// missingMarkPosition names one open position that reached the end of a cycle
+// with no usable live mark in the shared prices map.
+type missingMarkPosition struct {
+	StrategyID string
+	Symbol     string
+}
+
+// collectMissingMarkPositions reports every open position whose symbol carries
+// no positive price in the cycle's prices map. A missing mark is silent by
+// construction — a map[string]float64 miss reads 0.0, PortfolioValue falls back
+// to pos.AvgCost, and every mark-gated manager (the Hyperliquid trailing
+// stop-loss walker, the take-profit ratchet) returns early behind its own
+// `mark > 0` guard. #1444: a whole strategy type sat outside the mark rails for
+// as long as it existed and nothing said so. This guard is the regression
+// tripwire, so a future type cannot repeat that silently.
+//
+// Pure by design (no state, no locks, no subprocess) per the CLAUDE.md testing
+// rule; the caller snapshots openSymbols under mu and prints the result.
+//
+// openSymbols maps strategy ID to the symbols that strategy currently holds an
+// open position in. Strategies absent from the map are treated as flat.
+//
+// Two exclusions, both deliberate:
+//   - Options strategies. Their value comes from OptionPositions
+//     (CurrentValueUSD, marked in Phase 5), and any spot/perps leg parked in
+//     Positions has no collector feeding it, so including them would emit a
+//     standing warning about a pre-existing valuation path rather than a
+//     regression.
+//   - Record-only (non-live) manual strategies. The manual ratchet and walker
+//     are gated on hyperliquidIsLive by design (main.go manual block), so a
+//     missing mark there breaks no management path.
+//
+// Output order is strategy order (config order) then symbol order, so operator
+// logs stay stable across cycles.
+func collectMissingMarkPositions(strategies []StrategyConfig, openSymbols map[string][]string, prices map[string]float64) []missingMarkPosition {
+	if len(openSymbols) == 0 {
+		return nil
+	}
+	var out []missingMarkPosition
+	for _, sc := range strategies {
+		switch sc.Type {
+		case "spot", "perps", "futures":
+		case "manual":
+			if !hyperliquidIsLive(sc.Args) {
+				continue
+			}
+		default:
+			continue
+		}
+		syms := openSymbols[sc.ID]
+		if len(syms) == 0 {
+			continue
+		}
+		sorted := append([]string(nil), syms...)
+		sort.Strings(sorted)
+		for _, sym := range sorted {
+			if sym == "" {
+				continue
+			}
+			if prices[sym] > 0 {
+				continue
+			}
+			out = append(out, missingMarkPosition{StrategyID: sc.ID, Symbol: sym})
+		}
+	}
+	return out
 }
 
 // collectFuturesMarkSymbols returns the list of CME futures contract
