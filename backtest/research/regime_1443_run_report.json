@@ -1,0 +1,883 @@
+{
+  "issue": 1443,
+  "generator": "backtest/research/regime_1076_certify.py",
+  "generated_at": "2026-08-22T10:06:41Z",
+  "universe": {
+    "symbols": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "HYPE/USDC:USDC",
+      "SOL/USDT"
+    ],
+    "timeframes": [
+      "1h",
+      "4h"
+    ],
+    "windows": [
+      "is",
+      "oos",
+      "2023",
+      "2024",
+      "2025H1"
+    ],
+    "horizons": [
+      1,
+      4,
+      8,
+      12,
+      24,
+      48,
+      72
+    ],
+    "classifiers": [
+      "adx",
+      "composite"
+    ]
+  },
+  "data_sources": {
+    "BTC/USDT": "binanceus",
+    "ETH/USDT": "binanceus",
+    "HYPE/USDC:USDC": "hyperliquid",
+    "SOL/USDT": "binanceus"
+  },
+  "seed": 0,
+  "n_perm": 30000,
+  "fdr_q": 0.05,
+  "screened_family_size": 1319,
+  "permutation_p_floor": 3.333222225925803e-05,
+  "global_bh_rank1_threshold": 3.7907505686125855e-05,
+  "single_row_certifiable": true,
+  "coverage": [
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "window": "2023",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 8740,
+        "composite": 8706
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "window": "2024",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 8771,
+        "composite": 8737
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "window": "2025H1",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 4331,
+        "composite": 4297
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "window": "is",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 4907,
+        "composite": 4873
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "1h",
+      "window": "oos",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 3683,
+        "composite": 3649
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "window": "2023",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 2176,
+        "composite": 2142
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "window": "2024",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 2183,
+        "composite": 2149
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "window": "2025H1",
+      "source": "binanceus",
+      "rows": 56,
+      "bars": {
+        "adx": 1073,
+        "composite": 1039
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "window": "is",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 1217,
+        "composite": 1183
+      }
+    },
+    {
+      "symbol": "BTC/USDT",
+      "timeframe": "4h",
+      "window": "oos",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 914,
+        "composite": 880
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "window": "2023",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 8740,
+        "composite": 8706
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "window": "2024",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 8771,
+        "composite": 8737
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "window": "2025H1",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 4331,
+        "composite": 4297
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "window": "is",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 4907,
+        "composite": 4873
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "1h",
+      "window": "oos",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 3894,
+        "composite": 3860
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "window": "2023",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 2176,
+        "composite": 2142
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "window": "2024",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 2183,
+        "composite": 2149
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "window": "2025H1",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 1073,
+        "composite": 1039
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "window": "is",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 1217,
+        "composite": 1183
+      }
+    },
+    {
+      "symbol": "ETH/USDT",
+      "timeframe": "4h",
+      "window": "oos",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 914,
+        "composite": 880
+      }
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "1h",
+      "window": "oos",
+      "source": "hyperliquid",
+      "rows": 77,
+      "bars": {
+        "adx": 4988,
+        "composite": 4955
+      }
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "4h",
+      "window": "2024",
+      "source": "hyperliquid",
+      "rows": 43,
+      "bars": {
+        "adx": 147,
+        "composite": 113
+      }
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "4h",
+      "window": "2025H1",
+      "source": "hyperliquid",
+      "rows": 56,
+      "bars": {
+        "adx": 1073,
+        "composite": 1039
+      }
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "4h",
+      "window": "is",
+      "source": "hyperliquid",
+      "rows": 63,
+      "bars": {
+        "adx": 1217,
+        "composite": 1183
+      }
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "4h",
+      "window": "oos",
+      "source": "hyperliquid",
+      "rows": 63,
+      "bars": {
+        "adx": 1386,
+        "composite": 1353
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "window": "2023",
+      "source": "binanceus",
+      "rows": 77,
+      "bars": {
+        "adx": 8740,
+        "composite": 8706
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "window": "2024",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 8771,
+        "composite": 8737
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "window": "2025H1",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 4331,
+        "composite": 4297
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "window": "is",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 4907,
+        "composite": 4873
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "1h",
+      "window": "oos",
+      "source": "binanceus",
+      "rows": 77,
+      "bars": {
+        "adx": 3894,
+        "composite": 3860
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "window": "2023",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 2176,
+        "composite": 2142
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "window": "2024",
+      "source": "binanceus",
+      "rows": 56,
+      "bars": {
+        "adx": 2183,
+        "composite": 2149
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "window": "2025H1",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 1073,
+        "composite": 1039
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "window": "is",
+      "source": "binanceus",
+      "rows": 63,
+      "bars": {
+        "adx": 1217,
+        "composite": 1183
+      }
+    },
+    {
+      "symbol": "SOL/USDT",
+      "timeframe": "4h",
+      "window": "oos",
+      "source": "binanceus",
+      "rows": 70,
+      "bars": {
+        "adx": 914,
+        "composite": 880
+      }
+    }
+  ],
+  "empty_windows": [
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "1h",
+      "window": "is"
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "1h",
+      "window": "2023"
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "1h",
+      "window": "2024"
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "1h",
+      "window": "2025H1"
+    },
+    {
+      "symbol": "HYPE/USDC:USDC",
+      "timeframe": "4h",
+      "window": "2023"
+    }
+  ],
+  "cell_verdicts": [
+    {
+      "asset": "BTC",
+      "timeframe": "1h",
+      "classifier": "adx",
+      "n_screened_rows": 105,
+      "n_directional_rows": 70,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.0037998733375554147,
+      "bh_rank": 8,
+      "bh_threshold": 0.00030326004548900684,
+      "best_row": {
+        "window": "2023",
+        "horizon": 72,
+        "state": "trending_up",
+        "gap": 0.012189507593874514,
+        "p_value": 0.0037998733375554147,
+        "policy_dir": 1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "BTC",
+      "timeframe": "1h",
+      "classifier": "composite",
+      "n_screened_rows": 231,
+      "n_directional_rows": 126,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.006966434452184927,
+      "bh_rank": 13,
+      "bh_threshold": 0.0004927975739196361,
+      "best_row": {
+        "window": "2024",
+        "horizon": 24,
+        "state": "trending_up_choppy",
+        "gap": 0.005127412241029497,
+        "p_value": 0.006966434452184927,
+        "policy_dir": 1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "BTC",
+      "timeframe": "4h",
+      "classifier": "adx",
+      "n_screened_rows": 105,
+      "n_directional_rows": 70,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.020132662244591846,
+      "bh_rank": 43,
+      "bh_threshold": 0.0016300227445034117,
+      "best_row": {
+        "window": "is",
+        "horizon": 72,
+        "state": "trending_up",
+        "gap": -0.03915440383233747,
+        "p_value": 0.020132662244591846,
+        "policy_dir": 1,
+        "sign_aligned": false,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "BTC",
+      "timeframe": "4h",
+      "classifier": "composite",
+      "n_screened_rows": 210,
+      "n_directional_rows": 105,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.006433118896036798,
+      "bh_rank": 10,
+      "bh_threshold": 0.0003790750568612585,
+      "best_row": {
+        "window": "oos",
+        "horizon": 1,
+        "state": "trending_down_clean",
+        "gap": -0.006466346099703586,
+        "p_value": 0.006433118896036798,
+        "policy_dir": -1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "ETH",
+      "timeframe": "1h",
+      "classifier": "adx",
+      "n_screened_rows": 105,
+      "n_directional_rows": 70,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.028765707809739676,
+      "bh_rank": 62,
+      "bh_threshold": 0.002350265352539803,
+      "best_row": {
+        "window": "oos",
+        "horizon": 8,
+        "state": "trending_down",
+        "gap": -0.0035237425568513656,
+        "p_value": 0.028765707809739676,
+        "policy_dir": -1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "ETH",
+      "timeframe": "1h",
+      "classifier": "composite",
+      "n_screened_rows": 245,
+      "n_directional_rows": 140,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.0021665944468517717,
+      "bh_rank": 3,
+      "bh_threshold": 0.00011372251705837758,
+      "best_row": {
+        "window": "2025H1",
+        "horizon": 1,
+        "state": "trending_down_clean",
+        "gap": 0.009231095213637103,
+        "p_value": 0.0021665944468517717,
+        "policy_dir": -1,
+        "sign_aligned": false,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "ETH",
+      "timeframe": "4h",
+      "classifier": "adx",
+      "n_screened_rows": 105,
+      "n_directional_rows": 70,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.06276457451418287,
+      "bh_rank": 119,
+      "bh_threshold": 0.004510993176648976,
+      "best_row": {
+        "window": "oos",
+        "horizon": 1,
+        "state": "trending_down",
+        "gap": -0.001698825849144466,
+        "p_value": 0.06276457451418287,
+        "policy_dir": -1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "ETH",
+      "timeframe": "4h",
+      "classifier": "composite",
+      "n_screened_rows": 231,
+      "n_directional_rows": 126,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.0028332388920369322,
+      "bh_rank": 6,
+      "bh_threshold": 0.00022744503411675516,
+      "best_row": {
+        "window": "2024",
+        "horizon": 1,
+        "state": "trending_down_clean",
+        "gap": 0.022842698267352878,
+        "p_value": 0.0028332388920369322,
+        "policy_dir": -1,
+        "sign_aligned": false,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "HYPE",
+      "timeframe": "1h",
+      "classifier": "adx",
+      "n_screened_rows": 21,
+      "n_directional_rows": 14,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.16822772574247524,
+      "bh_rank": 261,
+      "bh_threshold": 0.009893858984078848,
+      "best_row": {
+        "window": "oos",
+        "horizon": 72,
+        "state": "trending_down",
+        "gap": 0.01356913774259042,
+        "p_value": 0.16822772574247524,
+        "policy_dir": -1,
+        "sign_aligned": false,
+        "source": "hyperliquid"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "HYPE",
+      "timeframe": "1h",
+      "classifier": "composite",
+      "n_screened_rows": 56,
+      "n_directional_rows": 28,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.07263091230292323,
+      "bh_rank": 132,
+      "bh_threshold": 0.005003790750568613,
+      "best_row": {
+        "window": "oos",
+        "horizon": 48,
+        "state": "trending_up_clean",
+        "gap": -0.06573183132992963,
+        "p_value": 0.07263091230292323,
+        "policy_dir": 1,
+        "sign_aligned": false,
+        "source": "hyperliquid"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "HYPE",
+      "timeframe": "4h",
+      "classifier": "adx",
+      "n_screened_rows": 84,
+      "n_directional_rows": 56,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.0006999766674444185,
+      "bh_rank": 2,
+      "bh_threshold": 7.581501137225171e-05,
+      "best_row": {
+        "window": "2025H1",
+        "horizon": 1,
+        "state": "trending_up",
+        "gap": -0.006130564157924708,
+        "p_value": 0.0006999766674444185,
+        "policy_dir": 1,
+        "sign_aligned": false,
+        "source": "hyperliquid"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "HYPE",
+      "timeframe": "4h",
+      "classifier": "composite",
+      "n_screened_rows": 141,
+      "n_directional_rows": 66,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.006899770007666411,
+      "bh_rank": 11,
+      "bh_threshold": 0.0004169825625473844,
+      "best_row": {
+        "window": "is",
+        "horizon": 1,
+        "state": "trending_down_clean",
+        "gap": 0.06325226122582024,
+        "p_value": 0.006899770007666411,
+        "policy_dir": -1,
+        "sign_aligned": false,
+        "source": "hyperliquid"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "SOL",
+      "timeframe": "1h",
+      "classifier": "adx",
+      "n_screened_rows": 105,
+      "n_directional_rows": 70,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.03366554448185061,
+      "bh_rank": 69,
+      "bh_threshold": 0.002615617892342684,
+      "best_row": {
+        "window": "2023",
+        "horizon": 72,
+        "state": "trending_down",
+        "gap": -0.018606247563357,
+        "p_value": 0.03366554448185061,
+        "policy_dir": -1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "SOL",
+      "timeframe": "1h",
+      "classifier": "composite",
+      "n_screened_rows": 259,
+      "n_directional_rows": 140,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.0005333155561481284,
+      "bh_rank": 1,
+      "bh_threshold": 3.7907505686125855e-05,
+      "best_row": {
+        "window": "2024",
+        "horizon": 1,
+        "state": "trending_down_clean",
+        "gap": 0.03569811073271726,
+        "p_value": 0.0005333155561481284,
+        "policy_dir": -1,
+        "sign_aligned": false,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "SOL",
+      "timeframe": "4h",
+      "classifier": "adx",
+      "n_screened_rows": 105,
+      "n_directional_rows": 70,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.014132862237925403,
+      "bh_rank": 30,
+      "bh_threshold": 0.0011372251705837756,
+      "best_row": {
+        "window": "2023",
+        "horizon": 12,
+        "state": "trending_up",
+        "gap": 0.02363288979185363,
+        "p_value": 0.014132862237925403,
+        "policy_dir": 1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    },
+    {
+      "asset": "SOL",
+      "timeframe": "4h",
+      "classifier": "composite",
+      "n_screened_rows": 210,
+      "n_directional_rows": 98,
+      "global_bh_family_size": 1319,
+      "fdr_q": 0.05,
+      "min_p_value": 0.009066364454518182,
+      "bh_rank": 17,
+      "bh_threshold": 0.0006444275966641396,
+      "best_row": {
+        "window": "2023",
+        "horizon": 12,
+        "state": "trending_up_choppy",
+        "gap": 0.023600006915014626,
+        "p_value": 0.009066364454518182,
+        "policy_dir": 1,
+        "sign_aligned": true,
+        "source": "binanceus"
+      },
+      "n_survive_global_bh": 0,
+      "n_survive_and_aligned": 0,
+      "n_survive_aligned_held_out": 0,
+      "verdict": "fails_global_bh"
+    }
+  ],
+  "certified": []
+}

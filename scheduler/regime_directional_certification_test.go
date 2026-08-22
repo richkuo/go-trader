@@ -104,6 +104,68 @@ func TestParseRejectsBadDirectionAndSchema(t *testing.T) {
 	}
 }
 
+// #1443: the producer records run provenance (screened family size, per-symbol
+// data sources, universe axes, permutation count) so a narrowed or mis-sourced
+// artifact is detectable by inspection. parseDirectionalCertSet uses
+// DisallowUnknownFields, and Criteria is the ONLY free-form map in the schema —
+// so that metadata must nest inside `criteria`. These two cases pin both halves
+// of that contract; no production Go change is involved.
+func TestParseToleratesNestedCriteriaProvenance(t *testing.T) {
+	art := []byte(`{
+		"schema_version": 1,
+		"generated_at": "2026-08-22T00:00:00Z",
+		"generator": "backtest/research/regime_1076_certify.py",
+		"source_evidence": "backtest/research/README_1076_directional_premise.md",
+		"criteria": {
+			"global_correction": "benjamini-hochberg",
+			"fdr_q": 0.05,
+			"held_out_windows": ["is", "oos"],
+			"screened_family_size": 2436,
+			"n_perm": 30000,
+			"permutation_p_floor": 3.333e-05,
+			"data_sources": {"BTC/USDT": "binanceus", "HYPE/USDC:USDC": "hyperliquid"},
+			"universe": {
+				"symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "HYPE/USDC:USDC"],
+				"timeframes": ["1h", "4h"],
+				"windows": ["is", "oos", "2023", "2024", "2025H1"],
+				"classifiers": ["adx", "composite"],
+				"horizons": [1, 4, 8, 12, 24, 48, 72]
+			}
+		},
+		"default_ttl_days": 90,
+		"certified": [
+			{"asset":"HYPE","timeframe":"1h","classifier":"composite",
+			 "generated_at":"2026-08-22T00:00:00Z","expires_at":"2026-11-20T00:00:00Z",
+			 "states":{"trending_down":"short"}}]}`)
+	set, err := parseDirectionalCertSet(art)
+	if err != nil {
+		t.Fatalf("nested criteria provenance must parse, got %v", err)
+	}
+	if got := set.Criteria["screened_family_size"]; got != float64(2436) {
+		t.Fatalf("screened_family_size not preserved: %v", got)
+	}
+	entry, ok := set.Certified("HYPE/USDC:USDC", "1h", "composite",
+		time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
+	if !ok {
+		t.Fatal("HYPE cell must certify through the normalized asset key")
+	}
+	if entry["trending_down"] != DirectionShort {
+		t.Fatalf("unexpected states: %v", entry)
+	}
+}
+
+func TestParseRejectsProvenanceAtTopLevel(t *testing.T) {
+	// The same metadata one level up. DisallowUnknownFields rejects it, which is
+	// exactly why the producer must never promote these keys out of `criteria`:
+	// doing so would make the live daemon fail closed on a valid screen.
+	for _, key := range []string{"screened_family_size", "data_sources", "universe", "n_perm"} {
+		art := []byte(`{"schema_version":1,"` + key + `":{},"certified":[]}`)
+		if _, err := parseDirectionalCertSet(art); err == nil {
+			t.Fatalf("top-level %q must be rejected by DisallowUnknownFields", key)
+		}
+	}
+}
+
 func TestLoadFailClosedOnMissingAndMalformed(t *testing.T) {
 	// Missing file -> empty set, no warn, no error.
 	set, err := LoadDirectionalCertSet("/nonexistent/regime_directional_certifications.json")

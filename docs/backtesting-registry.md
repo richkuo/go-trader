@@ -62,14 +62,14 @@ its row here in the same PR. A new row is part of the change, not a follow-up.
 | `directional_certification.py` | Evidence-gated directional-certification backtest consumer — parity mirror of the Go path. | active | #1085 |
 | `research/regime_1081_economic_gate.py` | Economic walk-forward gate for regime-conditioned ATR sizing (money-side complement to separation gates). | active | #1081 |
 | `research/regime_1083_multi_asset_gate.py` | Multi-asset breadth gate orchestrating the single-cell separation/economic gates. | active | #1083 |
-| `research/regime_1076_certify.py` | Producer for the directional-certification artifact (SSoT for the regime→direction gate). | active | #1085 |
+| `research/regime_1076_certify.py` | Producer for the directional-certification artifact (SSoT for the regime→direction gate). Refuses to write the repo artifact from a narrowed BH family; records run provenance in `criteria` and per-cell verdicts in `--report-out` (#1443). | active | #1085 |
 
 ## Research one-shots (reproducible evidence, tied to a closed issue)
 
 | File | Purpose | Status | Origin |
 |------|---------|--------|--------|
 | `research/regime_1073_directional_negative_result.py` | Evidence the 7-state composite has no real forward-*return* separation (but strong forward-vol). | one-shot | #1073 |
-| `research/regime_1076_directional_premise.py` | Scope-1: does the regime label predict forward *direction*? | one-shot | #1076 |
+| `research/regime_1076_directional_premise.py` | Scope-1: does the regime label predict forward *direction*? Also the screen re-run by the #1085 producer; `--symbols` takes an optional per-symbol data source (`SYMBOL[@exchange]`, #1443). | one-shot | #1076 |
 | `research/regime_1076_economic_sim.py` | Scope-2: does picking trade side by regime label earn risk-adjusted PnL over base? | one-shot | #1076 |
 | `research/regime_1076_aggregate.py` | Aggregates the #1076 battery under one global multiple-comparisons correction. | one-shot | #1076 |
 | `research/regime_1080_unsupervised_vol_model.py` | Evidence run for the unsupervised vol-state bake-off. | one-shot | #1080 |

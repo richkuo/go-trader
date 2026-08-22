@@ -30,6 +30,16 @@ Run (needs the trading_bot.db OHLCV cache reachable from shared_tools/):
     uv run --no-sync python backtest/research/regime_1076_directional_premise.py
     uv run --no-sync python backtest/research/regime_1076_directional_premise.py \
         --symbols BTC/USDT,ETH/USDT,SOL/USDT --timeframes 1h,4h --classifiers adx,composite
+
+#1443: ``--symbols`` accepts an optional per-symbol data source, ``SYMBOL[@exchange]``.
+A bare symbol keeps the ``eval_windows.PLATFORM`` default ("binanceus"); an ``@exchange``
+suffix loads that symbol's OHLCV from that exchange's cache namespace instead. This exists
+because assets that do not trade on the default venue (HYPE, an HL perp) are otherwise
+unreachable by the screen. ``PLATFORM`` itself is NEVER repointed — the #1315 axis
+separation pins it, because every committed regime baseline was computed on that series.
+
+    uv run --no-sync python backtest/research/regime_1076_directional_premise.py \
+        --symbols "BTC/USDT,ETH/USDT,SOL/USDT,HYPE/USDC:USDC@hyperliquid"
 """
 from __future__ import annotations
 import os
@@ -43,6 +53,7 @@ for _p in (_BACKTEST, _ROOT, os.path.join(_ROOT, "shared_tools")):
         sys.path.insert(0, _p)
 
 import numpy as np
+import pandas as pd
 
 from regime import (
     compute_regime,
@@ -72,6 +83,106 @@ ADX_PERIOD = 14              # Wilder standard for the 3-state directional class
 ADX_THRESHOLD = 20.0         # compute_regime / _normalize_spec default
 
 
+def parse_symbol_spec(spec: str) -> tuple[str, str | None]:
+    """Split a ``SYMBOL[@exchange]`` CLI spec into ``(symbol, exchange_or_None)``.
+
+    Splits on the LAST ``@`` so ccxt symbols carrying ``/`` and ``:`` parse
+    correctly: ``"HYPE/USDC:USDC@hyperliquid"`` -> ``("HYPE/USDC:USDC",
+    "hyperliquid")``. A bare symbol returns ``(symbol, None)``, meaning "use the
+    PLATFORM default". An empty symbol or an empty exchange raises loudly rather
+    than silently falling back — a typo must never quietly screen the wrong
+    series. Pure; unit-tested without data access."""
+    raw = (spec or "").strip()
+    if not raw:
+        raise ValueError("empty symbol spec")
+    head, sep, tail = raw.rpartition("@")
+    if not sep:
+        return (raw, None)
+    symbol = head.strip()
+    exchange = tail.strip()
+    if not symbol:
+        raise ValueError(f"symbol spec {spec!r} has an empty symbol before '@'")
+    if not exchange:
+        raise ValueError(f"symbol spec {spec!r} has an empty exchange after '@'")
+    return (symbol, exchange)
+
+
+def parse_symbols_arg(raw: str) -> tuple[tuple[str, str | None], ...]:
+    """Parse a comma-separated ``--symbols`` value into ``(symbol, exchange)``
+    pairs. Shared by this script and regime_1076_certify.py so both CLIs honor
+    one contract."""
+    specs = tuple(parse_symbol_spec(part) for part in (raw or "").split(",")
+                  if part.strip())
+    if not specs:
+        raise ValueError("--symbols resolved to no symbols")
+    return specs
+
+
+def normalize_symbol_specs(symbols) -> tuple[tuple[str, str | None], ...]:
+    """Accept either bare symbol strings or ``(symbol, exchange)`` pairs and
+    return pairs. A bare ``str`` entry is NOT re-parsed for ``@`` — callers that
+    want spec parsing use parse_symbols_arg; run() stays tolerant of the plain
+    tuple-of-strings form its existing callers and tests pass."""
+    out = []
+    for entry in symbols:
+        if isinstance(entry, str):
+            out.append((entry, None))
+            continue
+        symbol, exchange = entry
+        out.append((str(symbol), None if exchange is None else str(exchange)))
+    return tuple(out)
+
+
+def resolve_data_sources(symbols) -> dict:
+    """``{symbol: exchange_id}`` for the resolved run, PLATFORM where unset.
+    Recorded in the run banner, the ``--out`` dump and (via the certify
+    producer) the artifact ``criteria`` so a screen's data provenance is
+    inspectable after the fact."""
+    return {symbol: (exchange or PLATFORM)
+            for symbol, exchange in normalize_symbol_specs(symbols)}
+
+
+def _clip_window(df, start, end):
+    """Clip a loaded OHLCV frame to the eval window on its datetime index.
+
+    load_cached_data's CACHED path already filters to [start, end], but its
+    empty-cache fallback fetches from ``since=start_date`` and returns the whole
+    fetched history UNSLICED (shared_tools/data_fetcher.py). For an asset whose
+    listing post-dates a window (HYPE, listed Nov 2024, against the "2023"
+    window) that fallback would hand back later data mislabeled as the requested
+    window — a silent statistical corruption. Clipping here defuses it and is a
+    no-op on the cached path, so every already-screened cell stays identical.
+    End is inclusive, matching storage.load_ohlcv's ``timestamp <= end_ts``.
+    Pure; unit-tested without data access."""
+    if df is None or len(df) == 0:
+        return df
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError(
+            "OHLCV frame must carry a DatetimeIndex to clip to an eval window; "
+            f"got {type(df.index).__name__}")
+    if start is not None:
+        df = df[df.index >= pd.Timestamp(start)]
+    if end is not None:
+        df = df[df.index <= pd.Timestamp(end)]
+    return df
+
+
+def coverage_table(rows) -> list:
+    """Per-(symbol, timeframe, window) screened coverage derived purely from
+    result rows: which windows actually contributed, from which source, with how
+    many labeled bars. #1443 requires the run itself to state this for a newly
+    added asset whose history starts mid-universe."""
+    agg: dict = {}
+    for r in rows:
+        key = (str(r["symbol"]), str(r["timeframe"]), str(r["window"]))
+        e = agg.setdefault(key, {"symbol": key[0], "timeframe": key[1],
+                                 "window": key[2], "source": str(r.get("source", "")),
+                                 "rows": 0, "bars": {}})
+        e["rows"] += 1
+        e["bars"][str(r["classifier"])] = int(r.get("n_bars", 0) or 0)
+    return [agg[k] for k in sorted(agg)]
+
+
 def _policy_direction(label: str) -> int:
     """The side regime_directional_policy bets for a state: +1 long, -1 short, 0 neutral."""
     if label.startswith("trending_up"):
@@ -98,10 +209,11 @@ def _label_stream(close_df, classifier, th):
     return close_df["close"].to_numpy(), labels, valid
 
 
-def _load(symbol, timeframe, window, classifier, th):
+def _load(symbol, timeframe, window, classifier, th, exchange=None):
     start, end = WINDOWS[window]
-    df = load_cached_data(symbol, timeframe, exchange_id=PLATFORM,
+    df = load_cached_data(symbol, timeframe, exchange_id=(exchange or PLATFORM),
                           start_date=start, end_date=end)
+    df = _clip_window(df, start, end)
     if len(df) <= max(COMPOSITE_PERIOD, ADX_PERIOD) + 5:
         return None
     close, labels, valid = _label_stream(df, classifier, th)
@@ -109,17 +221,24 @@ def _load(symbol, timeframe, window, classifier, th):
     st = stability(vlabels)
     mean_dwell = (float(np.mean(list(st["mean_dwell"].values())))
                   if st["mean_dwell"] else 1.0)
-    return {"close": close, "valid": valid, "vlabels": vlabels, "mean_dwell": mean_dwell}
+    return {"close": close, "valid": valid, "vlabels": vlabels,
+            "mean_dwell": mean_dwell, "n_bars": int(np.count_nonzero(valid))}
 
 
 def run(symbols, timeframes, windows, horizons, classifiers, th, n_perm, seed):
-    """Returns a flat list of per-(classifier,symbol,tf,window,horizon,state) result rows."""
+    """Returns a flat list of per-(classifier,symbol,tf,window,horizon,state) result rows.
+
+    ``symbols`` accepts bare symbol strings (loaded from PLATFORM) or
+    ``(symbol, exchange)`` pairs from parse_symbols_arg (#1443)."""
     rows = []
+    specs = normalize_symbol_specs(symbols)
     for classifier in classifiers:
-        for symbol in symbols:
+        for symbol, exchange in specs:
+            source = exchange or PLATFORM
             for timeframe in timeframes:
                 for window in windows:
-                    d = _load(symbol, timeframe, window, classifier, th)
+                    d = _load(symbol, timeframe, window, classifier, th,
+                              exchange=exchange)
                     if d is None:
                         continue
                     for h in horizons:
@@ -138,6 +257,7 @@ def run(symbols, timeframes, windows, horizons, classifiers, th, n_perm, seed):
                             aligned = bool(pol != 0 and np.sign(gap) == pol)
                             rows.append({
                                 "classifier": classifier, "symbol": symbol,
+                                "source": source, "n_bars": int(d["n_bars"]),
                                 "timeframe": timeframe, "window": window, "horizon": int(h),
                                 "state": str(state), "gap": gap,
                                 "mean_fwd": float(sep.get(state, {}).get("mean", float("nan"))),
@@ -149,7 +269,39 @@ def run(symbols, timeframes, windows, horizons, classifiers, th, n_perm, seed):
     return rows
 
 
-def report(rows, classifiers):
+def _report_coverage(rows, symbols=None, timeframes=None, windows=None):
+    """Print which (symbol, timeframe, window) cells actually contributed rows.
+
+    #1443: a symbol whose listing post-dates part of the window grid contributes
+    nothing for the earlier windows, and the run must say so instead of leaving
+    the reader to infer it from a row count. The empty-cell enumeration reads the
+    REQUESTED axes, never the axes present in the results — a timeframe that
+    produced no rows for any symbol must still be named as empty."""
+    cov = coverage_table(rows)
+    print("SCREENED COVERAGE — (symbol, tf, window) cells that contributed rows:")
+    print(f"{'symbol':18s} {'source':12s} {'tf':4s} {'window':8s} {'rows':>5s}  labeled bars")
+    print("-" * 78)
+    for e in cov:
+        bars = " ".join(f"{c}={n}" for c, n in sorted(e["bars"].items()))
+        print(f"{e['symbol']:18s} {e['source']:12s} {e['timeframe']:4s} "
+              f"{e['window']:8s} {e['rows']:5d}  {bars}")
+    if symbols is not None and timeframes is not None and windows is not None:
+        present = {(e["symbol"], e["timeframe"], e["window"]) for e in cov}
+        missing = []
+        for symbol, _exchange in normalize_symbol_specs(symbols):
+            for tf in timeframes:
+                for w in windows:
+                    if (symbol, tf, w) not in present:
+                        missing.append((symbol, tf, w))
+        if missing:
+            print("\nWindows that contributed NO rows (too few bars after clipping "
+                  "to the window — e.g. the asset was not listed yet):")
+            for symbol, tf, w in missing:
+                print(f"  {symbol:18s} {tf:4s} {w}")
+    print()
+
+
+def report(rows, classifiers, symbols=None, timeframes=None, windows=None):
     directional = [r for r in rows if r["policy_dir"] != 0]   # trending_* states only
     n_dir = len(directional)
     n_fdr = sum(r["fdr_reject"] for r in directional)
@@ -162,6 +314,8 @@ def report(rows, classifiers):
     print(f"  FDR-significant (any sign):                {n_fdr}")
     print(f"  FDR-significant AND policy-sign-aligned:   {len(candidates)}  <- candidate edges")
     print()
+
+    _report_coverage(rows, symbols, timeframes, windows)
 
     # per-classifier breakdown
     for c in classifiers:
@@ -226,7 +380,12 @@ def report(rows, classifiers):
 def build_parser():
     import argparse
     p = argparse.ArgumentParser(description="#1076 scope-1: regime->direction premise screen")
-    p.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
+    p.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS),
+                   help="comma-separated SYMBOL[@exchange] specs. A bare symbol loads "
+                        f"from the default data source ({PLATFORM}); an @exchange suffix "
+                        "loads that symbol from that exchange's cache namespace instead "
+                        "(#1443, e.g. HYPE/USDC:USDC@hyperliquid). The default source is "
+                        "never repointed (#1315 axis separation).")
     p.add_argument("--timeframes", default=",".join(DEFAULT_TIMEFRAMES))
     p.add_argument("--windows", default=",".join(DEFAULT_WINDOWS),
                    help=f"comma-separated; known: {', '.join(WINDOWS)}")
@@ -242,7 +401,10 @@ def build_parser():
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     th = dict(_DEFAULT_COMPOSITE_THRESHOLDS)
-    symbols = tuple(s.strip() for s in args.symbols.split(",") if s.strip())
+    try:
+        symbols = parse_symbols_arg(args.symbols)
+    except ValueError as exc:
+        raise SystemExit(f"--symbols: {exc}")
     timeframes = tuple(t.strip() for t in args.timeframes.split(",") if t.strip())
     windows = tuple(w.strip() for w in args.windows.split(",") if w.strip())
     for w in windows:
@@ -251,19 +413,27 @@ def main(argv=None) -> int:
     horizons = tuple(int(h) for h in args.horizons.split(","))
     classifiers = tuple(c.strip() for c in args.classifiers.split(",") if c.strip())
 
-    print(f"# universe: {list(symbols)} x {list(timeframes)} x {list(windows)}")
+    sources = resolve_data_sources(symbols)
+    print(f"# universe: {sorted(sources)} x {list(timeframes)} x {list(windows)}")
+    print("# data sources: "
+          + " ".join(f"{sym}={src}" for sym, src in sorted(sources.items())))
     print(f"# classifiers={list(classifiers)} horizons={list(horizons)} "
-          f"n_perm={args.n_perm} platform={PLATFORM}\n")
+          f"n_perm={args.n_perm} default_platform={PLATFORM}\n")
     rows = run(symbols, timeframes, windows, horizons, classifiers, th,
                args.n_perm, args.seed)
-    report(rows, classifiers)
+    report(rows, classifiers, symbols=symbols, timeframes=timeframes,
+           windows=windows)
     if args.out:
         import json
         with open(args.out, "w") as fh:
-            json.dump({"universe": {"symbols": list(symbols), "timeframes": list(timeframes),
+            json.dump({"universe": {"symbols": sorted(sources),
+                                    "timeframes": list(timeframes),
                                     "windows": list(windows), "horizons": list(horizons),
                                     "classifiers": list(classifiers), "n_perm": args.n_perm,
-                                    "platform": PLATFORM}, "rows": rows}, fh, indent=2)
+                                    "default_platform": PLATFORM,
+                                    "data_sources": sources},
+                       "coverage": coverage_table(rows),
+                       "rows": rows}, fh, indent=2)
         print(f"# wrote {len(rows)} rows -> {args.out}")
     return 0
 

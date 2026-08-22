@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-19T00:00:00Z",
+  "generated_at": "2026-08-22T10:06:41Z",
   "generator": "backtest/research/regime_1076_certify.py",
   "source_evidence": "backtest/research/README_1076_directional_premise.md",
   "criteria": {
@@ -9,8 +9,51 @@
     "also_require_bonferroni": false,
     "require_sign_aligned": true,
     "require_held_out_forward": true,
-    "held_out_windows": ["is", "oos"],
-    "n_perm": 500
+    "held_out_windows": [
+      "is",
+      "oos"
+    ],
+    "screened_family_size": 1319,
+    "n_perm": 30000,
+    "permutation_p_floor": 3.333222225925803e-05,
+    "data_sources": {
+      "BTC/USDT": "binanceus",
+      "ETH/USDT": "binanceus",
+      "HYPE/USDC:USDC": "hyperliquid",
+      "SOL/USDT": "binanceus"
+    },
+    "universe": {
+      "classifiers": [
+        "adx",
+        "composite"
+      ],
+      "horizons": [
+        1,
+        4,
+        8,
+        12,
+        24,
+        48,
+        72
+      ],
+      "symbols": [
+        "BTC/USDT",
+        "ETH/USDT",
+        "HYPE/USDC:USDC",
+        "SOL/USDT"
+      ],
+      "timeframes": [
+        "1h",
+        "4h"
+      ],
+      "windows": [
+        "is",
+        "oos",
+        "2023",
+        "2024",
+        "2025H1"
+      ]
+    }
   },
   "default_ttl_days": 90,
   "certified": []
