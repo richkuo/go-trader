@@ -166,6 +166,10 @@ func makeTestState() *AppState {
 			LastWarningMarginDDPct: 18.7,
 			WarningEquityDeltaPct:  0.3,
 			WarningMarginDeltaPct:  -0.2,
+			// #1444 (PR review): the one-shot valuation-basis latch MUST
+			// survive a restart — an unpersisted latch would re-run the peak
+			// migration on every start and walk the kill-switch threshold.
+			ManualMarkBasisRebaselined: true,
 			Events: []KillSwitchEvent{
 				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", Source: "margin", DrawdownPct: 18.7, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
 			},
@@ -282,6 +286,9 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 	if loaded.PortfolioRisk.CurrentMarginDrawdownPct != 18.7 {
 		t.Errorf("PortfolioRisk.CurrentMarginDrawdownPct = %f, want 18.7", loaded.PortfolioRisk.CurrentMarginDrawdownPct)
+	}
+	if !loaded.PortfolioRisk.ManualMarkBasisRebaselined {
+		t.Error("PortfolioRisk.ManualMarkBasisRebaselined = false, want true (one-shot latch must survive a restart)")
 	}
 	if !loaded.PortfolioRisk.WarningSent {
 		t.Error("PortfolioRisk.WarningSent should be true")

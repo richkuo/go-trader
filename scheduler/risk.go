@@ -167,9 +167,19 @@ func mergePerpsMarks(prices map[string]float64, marks map[string]float64) {
 
 // missingMarkPosition names one open position that reached the end of a cycle
 // with no usable live mark in the shared prices map.
+//
+// Live separates the two consequences of the same miss, because they need
+// different operator channels. A live position also loses its mark-gated
+// managers (the Hyperliquid trailing stop-loss walker, the take-profit
+// ratchet), so an auto-protective mechanism is disabled and the operator must
+// be told through a channel they watch. A record-only position keeps every
+// management path it ever had, but its value still feeds PortfolioValue and
+// therefore the portfolio kill switch's equity drawdown input, so the miss is
+// still reported — as a log line only.
 type missingMarkPosition struct {
 	StrategyID string
 	Symbol     string
+	Live       bool
 }
 
 // collectMissingMarkPositions reports every open position whose symbol carries
@@ -187,15 +197,21 @@ type missingMarkPosition struct {
 // openSymbols maps strategy ID to the symbols that strategy currently holds an
 // open position in. Strategies absent from the map are treated as flat.
 //
-// Two exclusions, both deliberate:
-//   - Options strategies. Their value comes from OptionPositions
-//     (CurrentValueUSD, marked in Phase 5), and any spot/perps leg parked in
-//     Positions has no collector feeding it, so including them would emit a
-//     standing warning about a pre-existing valuation path rather than a
-//     regression.
-//   - Record-only (non-live) manual strategies. The manual ratchet and walker
-//     are gated on hyperliquidIsLive by design (main.go manual block), so a
-//     missing mark there breaks no management path.
+// One exclusion, deliberate: options strategies. Their value comes from
+// OptionPositions (CurrentValueUSD, marked in Phase 5), and any spot/perps leg
+// parked in Positions has no collector feeding it, so including them would
+// emit a standing warning about a pre-existing valuation path rather than a
+// regression.
+//
+// Record-only (non-live) strategies are NOT excluded. Their management paths
+// are gated on liveness by design, so nothing breaks there — but
+// computeSubsetPortfolioValue virtual-sums every strategy that is not folded
+// into a shared-wallet dedup set, and sameAccountLiveManualMembers folds in
+// LIVE manual only. A record-only manual position therefore reaches totalPV
+// through PortfolioValue, where a missing key silently reverts it to AvgCost
+// inside the portfolio kill switch's drawdown input — the exact silent
+// fallback this tripwire exists to close. They are reported with Live=false so
+// the caller logs them without raising the live-protection alarm.
 //
 // Output order is strategy order (config order) then symbol order, so operator
 // logs stay stable across cycles.
@@ -206,11 +222,7 @@ func collectMissingMarkPositions(strategies []StrategyConfig, openSymbols map[st
 	var out []missingMarkPosition
 	for _, sc := range strategies {
 		switch sc.Type {
-		case "spot", "perps", "futures":
-		case "manual":
-			if !hyperliquidIsLive(sc.Args) {
-				continue
-			}
+		case "spot", "perps", "futures", "manual":
 		default:
 			continue
 		}
@@ -218,6 +230,7 @@ func collectMissingMarkPositions(strategies []StrategyConfig, openSymbols map[st
 		if len(syms) == 0 {
 			continue
 		}
+		live := isLiveArgs(sc.Args)
 		sorted := append([]string(nil), syms...)
 		sort.Strings(sorted)
 		for _, sym := range sorted {
@@ -227,10 +240,152 @@ func collectMissingMarkPositions(strategies []StrategyConfig, openSymbols map[st
 			if prices[sym] > 0 {
 				continue
 			}
-			out = append(out, missingMarkPosition{StrategyID: sc.ID, Symbol: sym})
+			out = append(out, missingMarkPosition{StrategyID: sc.ID, Symbol: sym, Live: live})
 		}
 	}
 	return out
+}
+
+// snapshotOpenSymbolsByStrategy builds the strategy_id -> open symbols map
+// collectMissingMarkPositions consumes. The caller MUST hold mu (read or
+// write) — it walks StrategyState.Positions directly.
+//
+// A position counts as open on Quantity > 0. Zero and negative quantities are
+// the #1009 corrupt-position shape, which the force-close path clears with a
+// zero-PnL leg; warning about a missing mark for one would report the wrong
+// defect.
+func snapshotOpenSymbolsByStrategy(state *AppState) map[string][]string {
+	if state == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(state.Strategies))
+	for sid, s := range state.Strategies {
+		if s == nil {
+			continue
+		}
+		for sym, pos := range s.Positions {
+			if pos == nil || pos.Quantity <= 0 {
+				continue
+			}
+			out[sid] = append(out[sid], sym)
+		}
+	}
+	return out
+}
+
+// formatManualMarkBasisRebaselineDM is the owner-DM text for the one-shot
+// #1444 valuation-basis peak migration. It states both totals so the operator
+// can check the delta against their own book, and says plainly that the
+// drawdown reading was not reset.
+func formatManualMarkBasisRebaselineDM(priorPeak, newPeak, liveTotal, legacyTotal float64) string {
+	return fmt.Sprintf("ℹ️ **Portfolio peak re-baselined once (#1444 valuation basis)**\nManual positions now value at the live mark instead of entry cost, so the stored peak was measured on the old basis.\n• Peak: $%.2f → $%.2f\n• Live-priced total: $%.2f\n• Same book on the old basis: $%.2f\n• Basis delta: $%.2f\nThe drawdown reading was NOT reset — only the units were corrected. This runs once and is recorded in the kill-switch event log.",
+		priorPeak, newPeak, liveTotal, legacyTotal, liveTotal-legacyTotal)
+}
+
+// manualOnlyMarkSymbols returns the coins that reach the shared prices map
+// ONLY because of the #1444 manual branch in collectPerpsMarkSymbols — the
+// manual coins that no pre-#1444 rail already donated.
+//
+// This is the exact set whose valuation basis the #1444 change moved. A manual
+// coin that a perps strategy, a hedge leg, a spot strategy or a futures
+// strategy already contributed was live-marked before #1444 too, so its basis
+// did not move and it must not be counted.
+//
+// Pure by design: the one-shot peak re-baseline (#1445 review) uses it to
+// rebuild the pre-#1444 valuation and measure the basis shift exactly.
+func manualOnlyMarkSymbols(strategies []StrategyConfig) []string {
+	donors := make(map[string]bool)
+	for _, sc := range strategies {
+		switch sc.Type {
+		case "perps", "spot":
+			if len(sc.Args) >= 2 && sc.Args[1] != "" {
+				donors[sc.Args[1]] = true
+			}
+		}
+	}
+	for _, coin := range hedgeCoinsForStrategies(strategies) {
+		donors[coin] = true
+	}
+	for _, sym := range collectFuturesMarkSymbols(strategies) {
+		donors[sym] = true
+	}
+
+	set := make(map[string]bool)
+	for _, sc := range strategies {
+		if sc.Type != "manual" || sc.Platform != "hyperliquid" {
+			continue
+		}
+		if sc.Symbol == "" || donors[sc.Symbol] {
+			continue
+		}
+		set[sc.Symbol] = true
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for s := range set {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pricesWithoutSymbols returns a copy of prices with the named keys removed.
+// Deleting a key (rather than zeroing it) is what reproduces the pre-#1444
+// valuation exactly: PortfolioValue falls back to pos.AvgCost on a MISSING
+// key, and values a position at zero on a present-but-zero one.
+func pricesWithoutSymbols(prices map[string]float64, drop []string) map[string]float64 {
+	if len(drop) == 0 {
+		return prices
+	}
+	out := make(map[string]float64, len(prices))
+	for k, v := range prices {
+		out[k] = v
+	}
+	for _, sym := range drop {
+		delete(out, sym)
+	}
+	return out
+}
+
+// manualMarkBasisPeakAdjustment returns the re-baselined portfolio peak for the
+// one-shot #1444 valuation-basis migration, and whether it should be applied.
+//
+// #1444 moved manual positions from a frozen AvgCost valuation onto the live
+// mark rail. PortfolioRisk.PeakValue is a sticky, ratchet-up-only high-water
+// mark accumulated under the OLD basis, so the first post-upgrade cycle
+// compares a live-priced total against a cost-priced peak. An underwater
+// manual position can therefore latch the kill switch on that first cycle and
+// flatten the fleet on an accounting change rather than a loss.
+//
+// The adjustment is the basis delta and NOTHING else:
+//
+//	newPeak = oldPeak + (liveTotal - legacyTotal)
+//
+// It deliberately does NOT zero the drawdown or set the peak to the current
+// total. A real drawdown already accumulated under the old basis survives the
+// migration untouched — only the units change. A blanket re-baseline would
+// disarm a legitimately armed kill switch, which is the failure mode this
+// helper exists to avoid.
+//
+// Not applied when oldPeak is not positive (a cold-start peak has no legacy
+// basis to correct) or when the delta is zero (no manual position moved). The
+// result is floored at a positive value so a pathological delta cannot produce
+// a zero or negative peak, which CheckPortfolioRisk reads as "no peak yet".
+func manualMarkBasisPeakAdjustment(oldPeak, liveTotal, legacyTotal float64) (float64, bool) {
+	if oldPeak <= 0 {
+		return oldPeak, false
+	}
+	delta := liveTotal - legacyTotal
+	if delta == 0 {
+		return oldPeak, false
+	}
+	newPeak := oldPeak + delta
+	if newPeak <= 0 {
+		return oldPeak, false
+	}
+	return newPeak, true
 }
 
 // collectFuturesMarkSymbols returns the list of CME futures contract
@@ -357,6 +512,15 @@ type PortfolioRiskState struct {
 	WarningEquityDeltaPct    float64           `json:"warning_equity_delta_pct,omitempty"`
 	WarningMarginDeltaPct    float64           `json:"warning_margin_delta_pct,omitempty"`
 	Events                   []KillSwitchEvent `json:"events,omitempty"`
+
+	// ManualMarkBasisRebaselined latches the one-shot #1444 valuation-basis
+	// peak migration (see manualMarkBasisPeakAdjustment). Persisted, so a
+	// restart cannot re-run it and move the peak a second time. Set on the
+	// first cycle that can measure the shift — every open position has a
+	// positive mark — regardless of whether an adjustment was actually
+	// needed, so a later cycle never revisits a basis that has already
+	// converged.
+	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
 }
 
 // SharedWalletBalanceFetcher returns the real on-chain balance for a given

@@ -219,7 +219,8 @@ CREATE TABLE IF NOT EXISTS portfolio_risk (
     last_warning_equity_dd_pct REAL NOT NULL DEFAULT 0,
     last_warning_margin_dd_pct REAL NOT NULL DEFAULT 0,
     warning_equity_delta_pct REAL NOT NULL DEFAULT 0,
-    warning_margin_delta_pct REAL NOT NULL DEFAULT 0
+    warning_margin_delta_pct REAL NOT NULL DEFAULT 0,
+    manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS kill_switch_events (
@@ -663,6 +664,14 @@ func (sdb *StateDB) migrateSchema() error {
 		// sole writer stays the #1147 close path.
 		"ALTER TABLE trade_diagnostics ADD COLUMN hurst_at_open REAL",
 		"ALTER TABLE trade_diagnostics ADD COLUMN hurst_size_mult REAL",
+		// #1444 (PR review): one-shot latch for the manual valuation-basis peak
+		// migration. Manual positions moved from an AvgCost valuation onto the
+		// live mark rail, so the sticky peak accumulated under the old basis
+		// has to be shifted by the basis delta exactly once. Persisted so a
+		// restart cannot move the peak a second time. Legacy DBs default to 0
+		// and run the migration on their first fully-marked cycle, which is
+		// exactly the upgrade case this closes.
+		"ALTER TABLE portfolio_risk ADD COLUMN manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0",
 		// #1395: composite index so LoadState's per-strategy trade query can
 		// satisfy filter (strategy_id) + order (timestamp DESC, rowid DESC) from
 		// one index instead of the single-column strategy/timestamp indexes.
@@ -1533,12 +1542,17 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	if state.PortfolioRisk.WarningSent {
 		warnSent = 1
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	basisRebaselined := 0
+	if state.PortfolioRisk.ManualMarkBasisRebaselined {
+		basisRebaselined = 1
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct, manual_mark_basis_rebaselined)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		state.PortfolioRisk.PeakValue, state.PortfolioRisk.CurrentDrawdownPct, state.PortfolioRisk.CurrentMarginDrawdownPct,
 		ksActive, formatTime(state.PortfolioRisk.KillSwitchAt), warnSent, formatTime(state.PortfolioRisk.WarnBandEnteredAt),
 		state.PortfolioRisk.LastWarningEquityDDPct, state.PortfolioRisk.LastWarningMarginDDPct,
 		state.PortfolioRisk.WarningEquityDeltaPct, state.PortfolioRisk.WarningMarginDeltaPct,
+		basisRebaselined,
 	); err != nil {
 		return fmt.Errorf("upsert portfolio_risk: %w", err)
 	}
@@ -2226,15 +2240,17 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	}
 
 	// 6. Load portfolio_risk.
-	var ksActiveInt, warnSentInt int
+	var ksActiveInt, warnSentInt, basisRebaselinedInt int
 	var ksAtStr, warnBandEnteredAtStr string
-	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct FROM portfolio_risk WHERE id = 1").
+	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined FROM portfolio_risk WHERE id = 1").
 		Scan(&state.PortfolioRisk.PeakValue, &state.PortfolioRisk.CurrentDrawdownPct, &state.PortfolioRisk.CurrentMarginDrawdownPct,
 			&ksActiveInt, &ksAtStr, &warnSentInt, &warnBandEnteredAtStr, &state.PortfolioRisk.LastWarningEquityDDPct,
-			&state.PortfolioRisk.LastWarningMarginDDPct, &state.PortfolioRisk.WarningEquityDeltaPct, &state.PortfolioRisk.WarningMarginDeltaPct)
+			&state.PortfolioRisk.LastWarningMarginDDPct, &state.PortfolioRisk.WarningEquityDeltaPct, &state.PortfolioRisk.WarningMarginDeltaPct,
+			&basisRebaselinedInt)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("load portfolio_risk: %w", err)
 	}
+	state.PortfolioRisk.ManualMarkBasisRebaselined = basisRebaselinedInt != 0
 	state.PortfolioRisk.KillSwitchActive = ksActiveInt != 0
 	state.PortfolioRisk.KillSwitchAt = parseTime(ksAtStr)
 	state.PortfolioRisk.WarningSent = warnSentInt != 0
