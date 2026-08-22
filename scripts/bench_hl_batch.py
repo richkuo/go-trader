@@ -144,6 +144,44 @@ def _verify_injection(env: dict) -> None:
         raise SystemExit("preflight child errored: %s" % payload["error"])
 
 
+def _verify_batched_arm(env: dict) -> None:
+    """Fail loudly unless the batched arm really evaluates every slot.
+
+    The timed runs discard child output, so without this a `--batch-check`
+    child that died on a malformed envelope or an import fault would be
+    recorded as a sub-second success and published as the fast arm. This
+    preflight asserts the envelope parses and returns one clean result per
+    slot before any batched timing is taken.
+    """
+    strategies = _workload(2)
+    proc = subprocess.run(
+        [PYTHON, CHECK_SCRIPT] + _batch_argv(),
+        cwd=REPO_ROOT, env=env, input=_batch_stdin(strategies).encode(),
+        capture_output=True, check=False,
+    )
+    stderr = proc.stderr.decode(errors="replace")
+    if proc.returncode != 0:
+        raise SystemExit("batched preflight child exited %d:\n%s"
+                         % (proc.returncode, stderr))
+    try:
+        payload = json.loads(proc.stdout.decode())
+    except ValueError:
+        raise SystemExit("batched preflight child produced no JSON:\n" + stderr)
+    if payload.get("error"):
+        raise SystemExit("batched preflight child errored: %s" % payload["error"])
+    results = payload.get("results")
+    if not isinstance(results, list) or len(results) != len(strategies):
+        raise SystemExit(
+            "batched preflight returned %r results for %d slots; refusing to "
+            "publish a batched timing.\n%s"
+            % (len(results) if isinstance(results, list) else results,
+               len(strategies), stderr))
+    for slot in results:
+        if slot.get("error"):
+            raise SystemExit("batched preflight slot %s errored: %s"
+                             % (slot.get("id"), slot["error"]))
+
+
 def _maxrss_mb(maxrss: int) -> float:
     """Normalize ru_maxrss to MiB. Linux reports KiB, macOS reports bytes."""
     divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
@@ -156,7 +194,14 @@ def _child_usage():
 
 
 def _run(args, stdin_text=None, env=None):
-    subprocess.run(
+    """Run one timed child and abort the whole benchmark if it failed.
+
+    Output stays on DEVNULL so the measurement is of compute rather than of
+    pipe drain, but the exit status is checked: a child that dies early is
+    fast for the wrong reason, and an unchecked failure would be published as
+    a speedup.
+    """
+    proc = subprocess.run(
         [PYTHON, CHECK_SCRIPT] + args,
         cwd=REPO_ROOT,
         input=stdin_text.encode() if stdin_text is not None else None,
@@ -165,6 +210,10 @@ def _run(args, stdin_text=None, env=None):
         env=env,
         check=False,
     )
+    if proc.returncode != 0:
+        raise SystemExit(
+            "benchmark child exited %d (argv: %s); refusing to publish a timing "
+            "for work that did not complete." % (proc.returncode, " ".join(args)))
 
 
 def _strategy_argv(strategy: str) -> list:
@@ -256,6 +305,7 @@ def main(argv=None) -> int:
     _write_sitecustomize(inject_dir)
     env = _bench_env(args.fixture, inject_dir)
     _verify_injection(env)
+    _verify_batched_arm(env)
 
     host = {
         "platform": platform.platform(),

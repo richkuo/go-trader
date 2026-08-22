@@ -635,10 +635,31 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			hlBatchApplySharedFailure(in, msg, stderr, notifier, logf)
 			continue
 		}
-		hlBatchApplySlots(results, in, fingerprints, out, stderr, logf)
-		clearBatchSharedStateFailure(notifier, hlBatchAlertConfig(in.Key))
-		if recovered := hlBatchFallback.RecordSuccess(in.Key); recovered {
-			logf("[INFO] hl-batch %s: shared state recovered; batching resumed", in.Key)
+		drift := hlBatchApplySlots(results, in, fingerprints, out, stderr, logf)
+		if stderr != "" {
+			// Logged ONCE under the group identity: this is one call's combined
+			// stderr covering every member, so it describes the group's work,
+			// not any single strategy's.
+			logf("[INFO] hl-batch %s: stderr: %s", in.Key, stderr)
+		}
+		if drift > 0 {
+			// Envelope drift is a batching-path fault, so it counts against the
+			// SAME streak a shared-state failure does: the affected members
+			// already self-heal via their own spawns this cycle, and a drift
+			// that persists trips the group back to per-strategy checks instead
+			// of paying for a batch call that cannot account for its members.
+			msg := fmt.Sprintf("batch response accounted for %d of %d strategies; the rest ran their own checks",
+				len(in.Members)-drift, len(in.Members))
+			notifyBatchSharedStateFailure(notifier, hlBatchAlertConfig(in.Key), msg, in.MemberIDsOrdered())
+			if tripped := hlBatchFallback.RecordSharedFailure(in.Key); tripped {
+				logf("[WARN] hl-batch %s: %d consecutive incomplete batch responses; reverting this group to per-strategy checks (retry every %d cycles)",
+					in.Key, hlBatchSharedFailureFallbackThreshold, hlBatchFallbackRetryEvery)
+			}
+		} else {
+			clearBatchSharedStateFailure(notifier, hlBatchAlertConfig(in.Key))
+			if recovered := hlBatchFallback.RecordSuccess(in.Key); recovered {
+				logf("[INFO] hl-batch %s: shared state recovered; batching resumed", in.Key)
+			}
 		}
 		logf("[INFO] hl-batch %s: %d slots returned in %s", in.Key, len(out.Results), elapsed.Round(time.Millisecond))
 	}
@@ -682,11 +703,25 @@ func hlBatchApplySharedFailure(in hlBatchGroupInput, errMsg, stderr string, noti
 	}
 }
 
-// hlBatchApplySlots maps the response's slots back onto members. A member with
-// no slot, or a duplicated slot id, is treated as a hard crash for that member
-// alone — never silently skipped, because a skipped member would run its whole
-// downstream block on a stale decision.
-func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, fingerprints map[string]string, out *HyperliquidBatchResult, stderr string, logf func(string, ...any)) {
+// hlBatchApplySlots maps the response's slots back onto members and returns the
+// number of members the response failed to account for.
+//
+// A member with no slot, or a duplicated slot id, is left a map MISS — the same
+// treatment hlBatchApplySharedFailure gives every member on a shared fault, and
+// for the same reason. A missing or duplicated slot is a fault of the batching
+// PROTOCOL, not of that strategy. Caching it as a crash would return ok=false
+// from runHyperliquidCheck and blank close evaluation, the trailing-SL
+// cancel+replace, the ratchet, protection sync and hedge sync for that member
+// this cycle; a miss instead runs that member's own check in the SAME cycle, so
+// a batch-path-only fault can never leave a strategy with fewer chances at its
+// protective maintenance than the unbatched path would have given it. The
+// returned count is what lets a persistent drift trip the group's fallback
+// instead of repeating forever.
+//
+// A genuine per-slot error payload is NOT batch-specific — the script really
+// did fail for that strategy — so it stays a cached soft error and must never
+// become a re-spawn, or every strategy error would double the process count.
+func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, fingerprints map[string]string, out *HyperliquidBatchResult, stderr string, logf func(string, ...any)) int {
 	byID := make(map[string]*HyperliquidResult, len(out.Results))
 	dupes := map[string]bool{}
 	for i := range out.Results {
@@ -703,28 +738,22 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 		byID[id] = &res
 	}
 	expected := make(map[string]bool, len(in.Members))
+	drift := 0
 	for _, sc := range in.Members {
 		expected[sc.ID] = true
 		res, ok := byID[sc.ID]
 		switch {
 		case dupes[sc.ID]:
-			results.put(sc.ID, hlBatchMemberOutcome{
-				Err:         "batch response carried duplicate slots for this strategy",
-				Mode:        scriptFailureCrash,
-				Stderr:      stderr,
-				Fingerprint: fingerprints[sc.ID],
-			})
+			logf("[ERROR] hl-batch %s: response carried duplicate slots for %s; that strategy runs its own check this cycle", in.Key, sc.ID)
+			drift++
 		case !ok:
-			results.put(sc.ID, hlBatchMemberOutcome{
-				Err:         "batch response missing slot for this strategy",
-				Mode:        scriptFailureCrash,
-				Stderr:      stderr,
-				Fingerprint: fingerprints[sc.ID],
-			})
+			logf("[ERROR] hl-batch %s: response is missing the slot for %s; that strategy runs its own check this cycle", in.Key, sc.ID)
+			drift++
 		case res.Error != "":
 			// Soft slot error: exactly the per-strategy "Script returned
 			// error" branch. Result is cleared so no downstream code can read
-			// a zero-signal error payload as a decision to hold.
+			// a zero-signal error payload as a decision to hold. This member
+			// keeps the call's stderr because its own traceback is in there.
 			results.put(sc.ID, hlBatchMemberOutcome{
 				Err:         res.Error,
 				Mode:        scriptFailureError,
@@ -732,7 +761,11 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 				Fingerprint: fingerprints[sc.ID],
 			})
 		default:
-			results.put(sc.ID, hlBatchMemberOutcome{Result: res, Stderr: stderr, Fingerprint: fingerprints[sc.ID]})
+			// No stderr: the batch call's stderr is the GROUP's combined
+			// output, so stamping it here would replay a peer's traceback
+			// under this healthy strategy's identity, N times over. The
+			// caller logs it once under the group line instead.
+			results.put(sc.ID, hlBatchMemberOutcome{Result: res, Fingerprint: fingerprints[sc.ID]})
 		}
 	}
 	for id := range byID {
@@ -740,6 +773,7 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 			logf("[WARN] hl-batch %s: response carried unexpected slot id %q", in.Key, id)
 		}
 	}
+	return drift
 }
 
 // snapshotHyperliquidBatchGroups captures, under ONE mu.RLock read, the

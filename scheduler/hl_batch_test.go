@@ -560,8 +560,13 @@ func TestSharedStateFailureDoesNotFalselyClearAMemberStreak(t *testing.T) {
 	}
 }
 
-func TestMissingOrDuplicateSlotFailsOnlyThatMember(t *testing.T) {
+// A missing or duplicated slot is a batching-PROTOCOL fault, so the member must
+// be left a map MISS and run its own check this cycle. Caching it as a crash
+// would return ok=false downstream and blank close evaluation, the trailing-SL
+// cancel+replace, the ratchet, protection sync and hedge sync for that member.
+func TestMissingOrDuplicateSlotLeavesThatMemberAMiss(t *testing.T) {
 	resetBatchFallback(t)
+	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
 		out := batchOK("hl-a")
@@ -570,13 +575,94 @@ func TestMissingOrDuplicateSlotFailsOnlyThatMember(t *testing.T) {
 	})
 	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
 
-	dup, _ := results.lookup("hl-a")
-	if dup.Result != nil || !strings.Contains(dup.Err, "duplicate") || dup.Mode != scriptFailureCrash {
-		t.Fatalf("duplicate-slot outcome = %+v", dup)
+	if out, ok := results.lookup("hl-a"); ok {
+		t.Fatalf("duplicated-slot member must be a map miss, got %+v", out)
 	}
-	missing, _ := results.lookup("hl-b")
-	if missing.Result != nil || !strings.Contains(missing.Err, "missing slot") || missing.Mode != scriptFailureCrash {
-		t.Fatalf("missing-slot outcome = %+v", missing)
+	if out, ok := results.lookup("hl-b"); ok {
+		t.Fatalf("missing-slot member must be a map miss, got %+v", out)
+	}
+}
+
+// Drift that keeps repeating must trip the group's safety valve rather than
+// paying for a batch call that cannot account for its members, forever.
+func TestRepeatedSlotDriftTripsTheFallback(t *testing.T) {
+	resetBatchFallback(t)
+	resetFailureTrackers(t)
+	inputs, cfg := hlBatchTwoMemberInput(t)
+	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
+		return batchOK("hl-a"), "", nil // hl-b never accounted for
+	})
+	key := inputs[0].Key
+	for i := 1; i <= hlBatchSharedFailureFallbackThreshold; i++ {
+		if !hlBatchFallback.Allow(key) {
+			t.Fatalf("batching blocked before the threshold (strike %d)", i)
+		}
+		runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	}
+	if hlBatchFallback.Allow(key) {
+		t.Fatalf("group still batching after %d consecutive incomplete responses",
+			hlBatchSharedFailureFallbackThreshold)
+	}
+}
+
+// A genuine per-slot error payload is the strategy's own script failing, not a
+// batching fault: it must stay a cached soft error, or every strategy error
+// would re-spawn and double the process count.
+func TestSlotErrorPayloadStaysACachedSoftError(t *testing.T) {
+	resetBatchFallback(t)
+	resetFailureTrackers(t)
+	inputs, cfg := hlBatchTwoMemberInput(t)
+	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
+		out := batchOK("hl-a", "hl-b")
+		out.Results[1].Error = "adapter refused the symbol"
+		return out, "", nil
+	})
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	bad, ok := results.lookup("hl-b")
+	if !ok {
+		t.Fatal("a slot error payload must stay a map HIT, not become a re-spawn")
+	}
+	if bad.Result != nil || bad.Mode != scriptFailureError ||
+		!strings.Contains(bad.Err, "adapter refused") {
+		t.Fatalf("slot-error outcome = %+v", bad)
+	}
+	if hlBatchFallback.Allow(inputs[0].Key) != true {
+		t.Fatal("a per-slot error must not count against the batching fallback")
+	}
+}
+
+// The batch call's stderr is the GROUP's combined output. Stamping it on every
+// member replays one peer's traceback under N healthy strategy identities.
+func TestGroupStderrIsNotStampedOnHealthyMembers(t *testing.T) {
+	resetBatchFallback(t)
+	resetFailureTrackers(t)
+	inputs, cfg := hlBatchTwoMemberInput(t)
+	const groupStderr = "Traceback (most recent call last): peer blew up"
+	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
+		out := batchOK("hl-a", "hl-b")
+		out.Results[1].Error = "peer blew up"
+		return out, groupStderr, nil
+	})
+	var logged []string
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	healthy, _ := results.lookup("hl-a")
+	if healthy.Stderr != "" {
+		t.Fatalf("healthy member carries the group's stderr: %q", healthy.Stderr)
+	}
+	failed, _ := results.lookup("hl-b")
+	if failed.Stderr != groupStderr {
+		t.Fatalf("failed member lost the stderr holding its traceback: %q", failed.Stderr)
+	}
+	found := false
+	for _, line := range logged {
+		if strings.Contains(line, "hl-batch") && strings.Contains(line, groupStderr) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("group stderr must still be visible once under the group identity")
 	}
 }
 

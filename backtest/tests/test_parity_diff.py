@@ -709,6 +709,54 @@ def test_batched_dimension_zero_diff_with_close_refs_and_regime():
     assert result["batch_mismatches"] == 0, frame[~frame["match"]].head()
 
 
+def test_batched_slot_reaches_the_close_evaluators_and_params():
+    """The slot the dimension feeds the evaluator must carry the composed
+    shape the scheduler sends, not the raw ``strategy_refs`` the evaluator
+    ignores — otherwise a clean report says nothing about the close
+    evaluators or any non-default open params it claims to cover."""
+    from parity_diff import _hl_batch_slot, _load_hl_batch_module
+    cfg = _batched_cfg(
+        params={"lookback": 11},
+        close_refs=[{"name": "tiered_tp_pct", "params": {"tp_tiers": [
+            {"profit_pct": 0.5, "close_fraction": 1.0},
+        ]}}],
+    )
+    mod = _load_hl_batch_module()
+    slot = _hl_batch_slot(mod, cfg, "batched", "long", {"side": "long"})
+    assert slot["open_strategy"] == "breakout"
+    assert slot["close_strategies"] == "tiered_tp_pct"
+    assert slot["params"] == {"lookback": 11}
+    assert slot["close_params_by_name"]["tiered_tp_pct"]["tp_tiers"]
+
+
+def test_batched_close_fraction_can_be_non_zero():
+    """With a close evaluator and a real open position, both arms must be
+    able to report a non-zero close fraction — a dimension whose close
+    column is structurally pinned at 0.0 proves nothing about exits."""
+    from parity_diff import _batched_bar_decisions
+    df = _ohlcv(140)
+    window = df.iloc[:80]
+    mark = float(window["close"].iloc[-1])
+    # profit_pct is a FRACTION (0.02 == 2%), and the position below sits ~11%
+    # in profit, so the tier is genuinely hit.
+    cfg = _batched_cfg(
+        close_refs=[{"name": "tiered_tp_pct", "params": {"tp_tiers": [
+            {"profit_pct": 0.02, "close_fraction": 1.0},
+        ]}}],
+    )
+    ctx = {
+        "side": "long",
+        "avg_cost": mark * 0.90,
+        "current_quantity": 1.0,
+        "initial_quantity": 1.0,
+        "entry_atr": 1.0,
+    }
+    solo, batched = _batched_bar_decisions(
+        window, cfg, position_side="long", position_ctx=ctx)
+    assert batched["close_fraction"] > 0.0
+    assert solo["close_fraction"] == batched["close_fraction"]
+
+
 def test_batched_dimension_is_off_by_default():
     """Without --batched the frame, summary and exit code are unchanged."""
     frame = compute_parity_frame(_ohlcv(140), cfg=_batched_cfg(batched=False),

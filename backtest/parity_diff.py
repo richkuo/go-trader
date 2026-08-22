@@ -498,9 +498,19 @@ def _load_hl_batch_module():
     return _HL_BATCH_MODULE
 
 
-def _hl_batch_slot(cfg: ParityConfig, slot_id: str, position_side: str,
+def _hl_batch_slot(mod, cfg: ParityConfig, slot_id: str, position_side: str,
                    position_ctx: Optional[dict]) -> dict:
-    """Build one batch slot for cfg, mirroring the scheduler's slot builder."""
+    """Build one batch slot for cfg, mirroring the scheduler's slot builder.
+
+    The slot is routed through the script's own ``parse_batch_slots`` — the
+    same translation the ``--batch-check`` entrypoint applies — because
+    ``evaluate_signal_slot`` reads ``open_strategy`` / ``close_strategies`` /
+    ``params`` / ``close_params_by_name``, and only that parser derives them
+    from ``strategy_refs``. Handing it the raw slot would silently drop the
+    close evaluators and the strategy params, so the dimension would compare
+    bare default-param signals while reporting that it covered the composed
+    path.
+    """
     refs = {"open": {"name": cfg.strategy_name,
                      "params": dict(cfg.params or {})}}
     if cfg.close_refs:
@@ -508,7 +518,7 @@ def _hl_batch_slot(cfg: ParityConfig, slot_id: str, position_side: str,
             {"name": ref["name"], "params": dict(ref.get("params") or {})}
             for ref in cfg.close_refs
         ]
-    return {
+    raw = {
         "id": slot_id,
         "strategy": cfg.strategy_name,
         "mode": "paper",
@@ -517,6 +527,8 @@ def _hl_batch_slot(cfg: ParityConfig, slot_id: str, position_side: str,
         "position_side": position_side,
         "position_ctx": dict(position_ctx or {}) or None,
     }
+    envelope = json.dumps({"v": mod.BATCH_PROTOCOL_VERSION, "slots": [raw]})
+    return mod.parse_batch_slots(envelope)[0]
 
 
 def _hl_shared_state(mod, window: pd.DataFrame, cfg: ParityConfig):
@@ -553,7 +565,8 @@ def _batched_bar_decisions(window: pd.DataFrame, cfg: ParityConfig,
     mod = _load_hl_batch_module()
     solo_shared = _hl_shared_state(mod, window, cfg)
     solo = mod.evaluate_signal_slot(
-        solo_shared, _hl_batch_slot(cfg, "solo", position_side, position_ctx))
+        solo_shared,
+        _hl_batch_slot(mod, cfg, "solo", position_side, position_ctx))
 
     batch_shared = _hl_shared_state(mod, window, cfg)
     deps = mod._signal_check_deps()
@@ -561,7 +574,7 @@ def _batched_bar_decisions(window: pd.DataFrame, cfg: ParityConfig,
     for slot_id in ("peer", "batched"):
         out = mod.evaluate_signal_slot(
             batch_shared,
-            _hl_batch_slot(cfg, slot_id, position_side, position_ctx),
+            _hl_batch_slot(mod, cfg, slot_id, position_side, position_ctx),
             deps=deps,
         )
         if slot_id == "batched":
