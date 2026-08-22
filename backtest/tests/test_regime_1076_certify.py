@@ -489,3 +489,86 @@ def test_failing_family_keeps_the_per_rank_bar():
     assert v["bh_step_up_cutoff"] is None
     assert v["bh_threshold"] == pytest.approx(0.05 / 200)
     assert v["bh_threshold"] == v["bh_rank_threshold"]
+
+
+# --- #1443 review round 2: the displayed best_row must not contradict its own
+# verdict. The verdict is decided by nested filters; the row shown as its
+# evidence is drawn from the deepest tier the cell reached, never from the whole
+# directional set. Every case below puts the cell's globally lowest-p row in a
+# SHALLOWER tier than the one the verdict names.
+
+def test_certified_cell_does_not_display_a_wrong_signed_best_row():
+    rows = [_row(p=1e-6, sign_aligned=False), _row(p=1e-5, sign_aligned=True)]
+    v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
+    assert v["verdict"] == certify_mod.VERDICT_CERTIFIED
+    assert v["best_row"]["sign_aligned"] is True
+    assert v["best_row"]["p_value"] == 1e-5
+    assert v["best_row_basis"] == certify_mod.BASIS_CERTIFIED_HELD_OUT
+    # The cell minimum keeps its literal meaning — it is not the displayed row.
+    assert v["min_p_value"] == 1e-6
+
+
+def test_certified_cell_does_not_display_a_historical_window_best_row():
+    rows = [_row(p=1e-6, window="2024"), _row(p=1e-5, window="oos")]
+    v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
+    assert v["verdict"] == certify_mod.VERDICT_CERTIFIED
+    assert v["best_row"]["window"] == "oos"
+    assert v["best_row_basis"] == certify_mod.BASIS_CERTIFIED_HELD_OUT
+
+
+def test_not_held_out_cell_displays_an_aligned_row():
+    # Verdict says the cell survived BH and alignment but missed held-out
+    # forward; showing the wrong-signed minimum as its evidence contradicts that.
+    rows = [_row(p=1e-6, window="2024", sign_aligned=False),
+            _row(p=1e-5, window="2024", sign_aligned=True)]
+    v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
+    assert v["verdict"] == certify_mod.VERDICT_NOT_HELD_OUT
+    assert v["best_row"]["sign_aligned"] is True
+    assert v["best_row_basis"] == certify_mod.BASIS_SURVIVED_ALIGNED
+
+
+def test_wrong_signed_cell_displays_a_surviving_row():
+    rows = [_row(p=1e-6, sign_aligned=False), _row(p=1e-5, sign_aligned=False)]
+    v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
+    assert v["verdict"] == certify_mod.VERDICT_WRONG_SIGNED
+    assert v["best_row"]["p_value"] == 1e-6
+    assert v["best_row_basis"] == certify_mod.BASIS_SURVIVED_BH
+
+
+def test_single_row_cells_display_that_row_unchanged():
+    # The pre-existing shape: one directional row per cell, at every verdict.
+    for row, verdict in ((_row(p=1e-6), certify_mod.VERDICT_CERTIFIED),
+                         (_row(p=1e-6, window="2024"),
+                          certify_mod.VERDICT_NOT_HELD_OUT),
+                         (_row(p=1e-6, sign_aligned=False),
+                          certify_mod.VERDICT_WRONG_SIGNED),
+                         (_row(p=0.9), certify_mod.VERDICT_FAILS_GLOBAL_BH)):
+        v = certify_mod.cell_verdicts([row])[("BTC", "1h", "composite")]
+        assert v["verdict"] == verdict
+        assert v["best_row"]["p_value"] == row["p_value"] == v["min_p_value"]
+
+
+def test_failing_cell_still_displays_its_globally_lowest_p_row():
+    # Nothing passed, so "how far short did it fall" is the whole directional
+    # set — the reported basis and the committed run report both say so.
+    rows = [_row(p=0.5), _row(p=0.9)]
+    v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
+    assert v["verdict"] == certify_mod.VERDICT_FAILS_GLOBAL_BH
+    assert v["best_row"]["p_value"] == 0.5 == v["min_p_value"]
+    assert v["best_row_basis"] == certify_mod.BASIS_ALL_DIRECTIONAL
+
+
+def test_verdict_line_names_the_displayed_row_when_it_is_not_the_minimum():
+    rows = [_row(p=1e-6, sign_aligned=False), _row(p=1e-5, sign_aligned=True)]
+    v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]
+    line = certify_mod._format_verdict_line(v)
+    assert "min_p=1e-06" in line
+    assert "p=1e-05" in line
+    assert f"basis={certify_mod.BASIS_CERTIFIED_HELD_OUT}" in line
+
+
+def test_verdict_line_is_unchanged_when_the_displayed_row_is_the_minimum():
+    v = certify_mod.cell_verdicts([_row(p=0.5)])[("BTC", "1h", "composite")]
+    line = certify_mod._format_verdict_line(v)
+    assert " p=" not in line
+    assert "basis=" not in line

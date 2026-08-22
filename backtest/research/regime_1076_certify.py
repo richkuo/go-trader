@@ -232,6 +232,20 @@ VERDICT_WRONG_SIGNED = "wrong_signed"
 VERDICT_NOT_HELD_OUT = "not_held_out_forward"
 VERDICT_CERTIFIED = "certified"
 
+# #1443 review round 2: which tier of rows the displayed `best_row` was drawn
+# from. The verdict is decided by a LADDER of nested filters (directional ->
+# survived global BH -> sign-aligned -> held-out forward), and each verdict
+# names the deepest tier the cell reached. Picking the displayed row from the
+# whole directional set let a CERTIFIED cell print evidence that itself reads as
+# a miss (`sign_aligned: false`, or a historical window) whenever the cell's
+# globally lowest-p row was not one of the rows that actually passed. The row
+# shown is therefore always a member of the set the verdict is ABOUT, and this
+# field says which set that is so the diagnostic explains its own reasoning.
+BASIS_ALL_DIRECTIONAL = "all_directional_rows"
+BASIS_SURVIVED_BH = "survived_global_bh"
+BASIS_SURVIVED_ALIGNED = "survived_and_aligned"
+BASIS_CERTIFIED_HELD_OUT = "certified_held_out_forward"
+
 
 def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
     """Per-(asset, timeframe, classifier) verdict over premise-screen rows.
@@ -281,6 +295,7 @@ def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
             entry["verdict"] = VERDICT_NO_DIRECTIONAL_ROWS
             entry["min_p_value"] = None
             entry["best_row"] = None
+            entry["best_row_basis"] = None
             entry["bh_rank"] = None
             entry["bh_threshold"] = None
             entry["bh_rank_threshold"] = None
@@ -289,10 +304,13 @@ def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
             out[key] = entry
             continue
 
-        best_i = min(idxs, key=lambda i: pvals[i])
-        best = directional[best_i]
-        rank, thresh = ranked[best_i]
-        entry["min_p_value"] = float(best["p_value"])
+        # `min_p_value` and the BH fields stay anchored to the cell's globally
+        # lowest-p directional row: that is literally the minimum, and for a cell
+        # that failed it is the honest "how far short did it fall". The DISPLAYED
+        # row is chosen separately, below, from the tier the verdict names.
+        min_i = min(idxs, key=lambda i: pvals[i])
+        rank, thresh = ranked[min_i]
+        entry["min_p_value"] = float(pvals[min_i])
         entry["bh_rank"] = int(rank)
         # #1443 review: `bh_threshold` is the bar the VERDICT was decided against,
         # so it must be the step-up cutoff whenever the family rejected anything —
@@ -302,6 +320,37 @@ def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
         entry["bh_rank_threshold"] = float(thresh)
         entry["bh_step_up_cutoff"] = None if step_up is None else float(step_up)
         entry["bh_threshold"] = float(thresh if step_up is None else step_up)
+        # Placed here so the emitted key order is stable across the reordering
+        # this fix required; the values are filled once the verdict is known.
+        entry["best_row"] = None
+        entry["best_row_basis"] = None
+
+        passing_idxs = [i for i in idxs if global_bh[i]]
+        aligned_idxs = [i for i in passing_idxs
+                        if directional[i].get("sign_aligned")]
+        held_idxs = [i for i in aligned_idxs
+                     if directional[i].get("window") in held_out_windows]
+        entry["n_survive_global_bh"] = len(passing_idxs)
+        entry["n_survive_and_aligned"] = len(aligned_idxs)
+        entry["n_survive_aligned_held_out"] = len(held_idxs)
+        if not passing_idxs:
+            entry["verdict"] = VERDICT_FAILS_GLOBAL_BH
+            evidence_idxs, basis = idxs, BASIS_ALL_DIRECTIONAL
+        elif not aligned_idxs:
+            entry["verdict"] = VERDICT_WRONG_SIGNED
+            evidence_idxs, basis = passing_idxs, BASIS_SURVIVED_BH
+        elif not held_idxs:
+            entry["verdict"] = VERDICT_NOT_HELD_OUT
+            evidence_idxs, basis = aligned_idxs, BASIS_SURVIVED_ALIGNED
+        else:
+            entry["verdict"] = VERDICT_CERTIFIED
+            evidence_idxs, basis = held_idxs, BASIS_CERTIFIED_HELD_OUT
+            entry["certified_states"] = dict(sorted(
+                (_canonical_trend_label(str(directional[i]["state"])),
+                 _policy_direction_label(int(directional[i]["policy_dir"])))
+                for i in held_idxs))
+
+        best = directional[min(evidence_idxs, key=lambda i: pvals[i])]
         entry["best_row"] = {
             "window": str(best["window"]), "horizon": int(best["horizon"]),
             "state": str(best["state"]), "gap": float(best["gap"]),
@@ -310,24 +359,7 @@ def cell_verdicts(rows, fdr_q=0.05, held_out_windows=HELD_OUT_FORWARD) -> dict:
             "sign_aligned": bool(best.get("sign_aligned")),
             "source": str(best.get("source", "")),
         }
-
-        passing = [directional[i] for i in idxs if global_bh[i]]
-        aligned = [r for r in passing if r.get("sign_aligned")]
-        held = [r for r in aligned if r.get("window") in held_out_windows]
-        entry["n_survive_global_bh"] = len(passing)
-        entry["n_survive_and_aligned"] = len(aligned)
-        entry["n_survive_aligned_held_out"] = len(held)
-        if not passing:
-            entry["verdict"] = VERDICT_FAILS_GLOBAL_BH
-        elif not aligned:
-            entry["verdict"] = VERDICT_WRONG_SIGNED
-        elif not held:
-            entry["verdict"] = VERDICT_NOT_HELD_OUT
-        else:
-            entry["verdict"] = VERDICT_CERTIFIED
-            entry["certified_states"] = dict(sorted(
-                (_canonical_trend_label(str(r["state"])),
-                 _policy_direction_label(int(r["policy_dir"]))) for r in held))
+        entry["best_row_basis"] = basis
         out[key] = entry
     return out
 
@@ -475,13 +507,22 @@ def _format_verdict_line(v) -> str:
         return head + f"rows={v['n_screened_rows']} directional=0"
     bar_kind = "step-up cutoff" if v.get("bh_step_up_cutoff") is not None \
         else "per-rank bar"
+    # The displayed row is the verdict's own evidence, so it is not always the
+    # cell minimum. Say so on the line rather than letting `min_p=` be read as
+    # the shown row's p-value.
+    best_p = ("" if best["p_value"] == v["min_p_value"]
+              else f"p={best['p_value']:.6g} ")
+    basis = ("" if v.get("best_row_basis") in (None, BASIS_ALL_DIRECTIONAL)
+             else f" basis={v['best_row_basis']}")
     return (head
             + f"min_p={v['min_p_value']:.6g} "
             + f"needed<={v['bh_threshold']:.3e} ({bar_kind}; BH rank "
             + f"{v['bh_rank']}/{v['global_bh_family_size']}) "
             + f"best={best['state']}@{best['window']}/h{best['horizon']} "
+            + best_p
             + f"gap={best['gap']:+.5f} aligned={'Y' if best['sign_aligned'] else 'N'} "
-            + f"src={best['source']}")
+            + f"src={best['source']}"
+            + basis)
 
 
 def main(argv=None) -> int:
