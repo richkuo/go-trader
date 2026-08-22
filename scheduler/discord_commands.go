@@ -301,6 +301,17 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 	if state.PortfolioRisk.KillSwitchActive {
 		sb.WriteString(fmt.Sprintf("🛑 Portfolio kill switch ACTIVE (drawdown %.2f%%)\n", state.PortfolioRisk.CurrentDrawdownPct))
 	}
+	// #1449 review round 3: the book is over the drawdown limit and the only
+	// reason it is still open is that the measurement came from an untrusted
+	// total. An operator asking what is protecting the account right now needs
+	// to see that the full-book latch is pending, and that per-strategy
+	// breakers are carrying the load until it resolves.
+	if !state.PortfolioRisk.KillSwitchActive && !state.PortfolioRisk.UntrustedOverLimitSince.IsZero() {
+		sb.WriteString(fmt.Sprintf("⚠️ Portfolio latch DEFERRED: equity drawdown %.2f%% is over the limit on an untrusted total (since %s); escalates %s unless a trusted measurement lands first\n",
+			state.PortfolioRisk.CurrentDrawdownPct,
+			state.PortfolioRisk.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
+			state.PortfolioRisk.UntrustedOverLimitSince.Add(untrustedEquityLatchDeferral).Format("2006-01-02 15:04 UTC")))
+	}
 	if len(lines) == 0 {
 		if sb.Len() == 0 {
 			return "No active circuit breakers."

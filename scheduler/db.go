@@ -221,7 +221,8 @@ CREATE TABLE IF NOT EXISTS portfolio_risk (
     warning_equity_delta_pct REAL NOT NULL DEFAULT 0,
     warning_margin_delta_pct REAL NOT NULL DEFAULT 0,
     manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0,
-    drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0
+    drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0,
+    untrusted_over_limit_since TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS kill_switch_events (
@@ -679,6 +680,14 @@ func (sdb *StateDB) migrateSchema() error {
 		// not reconcile with peak_value. Legacy DBs default to 0 and are
 		// re-stamped on their first cycle with a measurable equity total.
 		"ALTER TABLE portfolio_risk ADD COLUMN drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0",
+		// #1449 (PR review round 3): start of the unbroken run of over-limit
+		// untrusted equity readings that is currently deferring the portfolio
+		// latch. Persisted so a crash-restart loop cannot keep restarting the
+		// deferral window and disarm the latch forever. Legacy DBs default to
+		// empty, which reads back as the zero time — no deferral in flight,
+		// which is the correct state for a DB written before the window
+		// existed.
+		"ALTER TABLE portfolio_risk ADD COLUMN untrusted_over_limit_since TEXT NOT NULL DEFAULT ''",
 		// #1395: composite index so LoadState's per-strategy trade query can
 		// satisfy filter (strategy_id) + order (timestamp DESC, rowid DESC) from
 		// one index instead of the single-column strategy/timestamp indexes.
@@ -1557,13 +1566,13 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	if state.PortfolioRisk.DrawdownReadingSubstituted {
 		ddSubstituted = 1
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct, manual_mark_basis_rebaselined, drawdown_reading_substituted)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO portfolio_risk (id, peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, warn_band_entered_at, last_warning_equity_dd_pct, last_warning_margin_dd_pct, warning_equity_delta_pct, warning_margin_delta_pct, manual_mark_basis_rebaselined, drawdown_reading_substituted, untrusted_over_limit_since)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		state.PortfolioRisk.PeakValue, state.PortfolioRisk.CurrentDrawdownPct, state.PortfolioRisk.CurrentMarginDrawdownPct,
 		ksActive, formatTime(state.PortfolioRisk.KillSwitchAt), warnSent, formatTime(state.PortfolioRisk.WarnBandEnteredAt),
 		state.PortfolioRisk.LastWarningEquityDDPct, state.PortfolioRisk.LastWarningMarginDDPct,
 		state.PortfolioRisk.WarningEquityDeltaPct, state.PortfolioRisk.WarningMarginDeltaPct,
-		basisRebaselined, ddSubstituted,
+		basisRebaselined, ddSubstituted, formatTime(state.PortfolioRisk.UntrustedOverLimitSince),
 	); err != nil {
 		return fmt.Errorf("upsert portfolio_risk: %w", err)
 	}
@@ -2252,17 +2261,18 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 
 	// 6. Load portfolio_risk.
 	var ksActiveInt, warnSentInt, basisRebaselinedInt, ddSubstitutedInt int
-	var ksAtStr, warnBandEnteredAtStr string
-	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted FROM portfolio_risk WHERE id = 1").
+	var ksAtStr, warnBandEnteredAtStr, untrustedOverLimitSinceStr string
+	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since FROM portfolio_risk WHERE id = 1").
 		Scan(&state.PortfolioRisk.PeakValue, &state.PortfolioRisk.CurrentDrawdownPct, &state.PortfolioRisk.CurrentMarginDrawdownPct,
 			&ksActiveInt, &ksAtStr, &warnSentInt, &warnBandEnteredAtStr, &state.PortfolioRisk.LastWarningEquityDDPct,
 			&state.PortfolioRisk.LastWarningMarginDDPct, &state.PortfolioRisk.WarningEquityDeltaPct, &state.PortfolioRisk.WarningMarginDeltaPct,
-			&basisRebaselinedInt, &ddSubstitutedInt)
+			&basisRebaselinedInt, &ddSubstitutedInt, &untrustedOverLimitSinceStr)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("load portfolio_risk: %w", err)
 	}
 	state.PortfolioRisk.ManualMarkBasisRebaselined = basisRebaselinedInt != 0
 	state.PortfolioRisk.DrawdownReadingSubstituted = ddSubstitutedInt != 0
+	state.PortfolioRisk.UntrustedOverLimitSince = parseTime(untrustedOverLimitSinceStr)
 	state.PortfolioRisk.KillSwitchActive = ksActiveInt != 0
 	state.PortfolioRisk.KillSwitchAt = parseTime(ksAtStr)
 	state.PortfolioRisk.WarningSent = warnSentInt != 0

@@ -108,7 +108,21 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	// check did not update this cycle would put the operator's eyes on the
 	// wrong number. The #292 per-strategy circuit breaker acts on margin on
 	// every path.
+	//
+	// #1449 review round 3: a deferred latch is the one case where the equity
+	// distance reads 0.0% without a flatten following. Printing the bare
+	// distance there would tell the operator the book is about to close when
+	// the check has deliberately held it back, so the deferral takes over the
+	// line and names its own deadline instead.
 	switch {
+	case in.EquityGuardArmed && !prs.UntrustedOverLimitSince.IsZero():
+		b.WriteString(fmt.Sprintf("Distance to kill switch: equity %.1f%% is already OVER the %.1f%% limit, but the total is untrusted — full-book latch DEFERRED, escalates %s unless a trusted measurement lands first",
+			prs.CurrentDrawdownPct, maxDD,
+			prs.UntrustedOverLimitSince.Add(untrustedEquityLatchDeferral).Format("2006-01-02 15:04 UTC")))
+		if in.PerpsMargin > 0 {
+			b.WriteString(fmt.Sprintf(" | perps margin %.1f%% from limit", positiveDistance(maxDD, prs.CurrentMarginDrawdownPct)))
+		}
+		b.WriteString("\nPer-strategy circuit breakers (#292) remain the active protection while the latch is deferred.")
 	case in.EquityGuardArmed:
 		b.WriteString(fmt.Sprintf("Distance to kill switch: %.1f%% equity", positiveDistance(maxDD, prs.CurrentDrawdownPct)))
 		if in.PerpsMargin > 0 {

@@ -75,16 +75,34 @@ func TestUntrustedEquity_FloorAloneCannotLatch(t *testing.T) {
 		t.Error("expected the floored reading to stay in the warn band")
 	}
 
-	// A genuine loss measured on the same untrusted cycle still latches.
+	// A genuine 30% loss measured on the same untrusted cycle is not swallowed
+	// by the clamp — but #1449 review round 3 DEFERS the full-book latch there
+	// rather than firing it, because an untrusted total that reads too low
+	// would otherwise flatten a healthy book. The measurement survives intact
+	// and the deferral window opens; the escalation and the trusted-cycle
+	// immediacy are pinned in the round-3 tests.
 	allowed, _, _, reason := checkPortfolioRiskWithEquityAvailability(prs, cfg, 7000, 0, 0, 0, true, false)
+	if !allowed || prs.KillSwitchActive {
+		t.Fatalf("an untrusted 30%% reading must defer, not latch; reason=%q", reason)
+	}
+	if prs.CurrentDrawdownPct != 30 {
+		t.Errorf("the clamp must not swallow a real measurement; got %.1f want 30", prs.CurrentDrawdownPct)
+	}
+	if prs.UntrustedOverLimitSince.IsZero() {
+		t.Error("an untrusted over-limit reading must open the deferral window")
+	}
+
+	// The same measurement on a TRUSTED cycle latches immediately, on equity.
+	trusted := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 24.9}
+	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(trusted, cfg, 7000, 0, 0, 0, true, true)
 	if allowed {
-		t.Fatal("a real 30% drawdown must latch even on an untrusted cycle")
+		t.Fatal("a real 30% drawdown must latch on a trusted cycle")
 	}
 	if !strings.Contains(reason, "portfolio drawdown") || strings.Contains(reason, "margin") {
 		t.Errorf("expected an equity-sourced latch reason; got %q", reason)
 	}
-	if len(prs.Events) != 1 || prs.Events[0].Source != "equity" {
-		t.Errorf("expected one triggered event with Source=equity; got %+v", prs.Events)
+	if len(trusted.Events) != 1 || trusted.Events[0].Source != "equity" {
+		t.Errorf("expected one triggered event with Source=equity; got %+v", trusted.Events)
 	}
 }
 
@@ -335,11 +353,25 @@ func TestUntrustedEquity_StoredOverLimitFloorCannotLatch(t *testing.T) {
 	}
 
 	// (b) The clamp must not become a fail-open: a genuine this-cycle
-	// measurement above the limit still latches on the same untrusted cycle.
+	// measurement above the limit still latches, and is not clamped.
+	//
+	// #1449 review round 3 moved WHICH cycle this is asserted on. It used to
+	// be asserted on an untrusted cycle, because the only question then was
+	// whether the clamp could swallow a real measurement. The round-3 finding
+	// added a second question the clamp says nothing about — whether an
+	// untrusted total that reads too LOW should be allowed to flatten the book
+	// at all — and the answer is that it is deferred, not suppressed. So the
+	// clamp's non-fail-open property is pinned here on a trusted cycle, where
+	// it is the only mechanism in play, and the untrusted case with its
+	// deferral and escalation is pinned in
+	// TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed.
 	real := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 40}
-	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(real, cfg, 6000, 0, 0, 0, true, false)
+	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(real, cfg, 6000, 0, 0, 0, true, true)
 	if allowed || !real.KillSwitchActive {
 		t.Fatal("a real 40% drawdown must latch even with the floor clamped")
+	}
+	if real.CurrentDrawdownPct != 40 {
+		t.Errorf("a this-cycle measurement above the limit must not be clamped; got %.1f want 40", real.CurrentDrawdownPct)
 	}
 	if !strings.Contains(reason, "portfolio drawdown") {
 		t.Errorf("expected an equity-sourced latch reason; got %q", reason)

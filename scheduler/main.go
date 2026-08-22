@@ -1733,10 +1733,23 @@ func main() {
 				warnEquityInBand, warnMarginInBand := portfolioWarnBandSignals(cfg.PortfolioRisk, &state.PortfolioRisk, pooledEquityComplete)
 				warnEquityDD := state.PortfolioRisk.CurrentDrawdownPct
 				warnMarginDD := state.PortfolioRisk.CurrentMarginDrawdownPct
+				// #1449 review round 3: non-zero means the equity arm measured
+				// OVER the limit on an untrusted total and the full-book latch
+				// is being held back (see untrustedEquityLatchDeferral).
+				warnLatchDeferredSince := state.PortfolioRisk.UntrustedOverLimitSince
 				mu.RUnlock()
 				notifyWarn, nextWarnAlerts := portfolioWarningShouldNotify(
 					portfolioWarningAlerts, warnEquityInBand, warnMarginInBand, warnEquityDD, warnMarginDD, warnNow)
 				portfolioWarningAlerts = nextWarnAlerts
+				// A deferred latch is an escalation, not a routine band cycle:
+				// the book is over the limit and the only thing holding the
+				// flatten back is a distrusted total. The throttle exists so a
+				// permanent warn band cannot spam the operator, but silence
+				// here would hide the one window in which a manual decision
+				// still changes the outcome. So it always sends.
+				if !warnLatchDeferredSince.IsZero() {
+					notifyWarn = true
+				}
 
 				// The recent-trade lookup only feeds the message body, so it is
 				// skipped on a throttled cycle along with the send.
@@ -1795,8 +1808,13 @@ func main() {
 				}
 				// The stdout line stays per-cycle: the throttle exists for
 				// operator channels, and the log is where an incident review
-				// reconstructs how long the band ran.
-				fmt.Printf("[WARN] %s\n", portfolioReason)
+				// reconstructs how long the band ran. A deferred latch logs at
+				// CRITICAL — it is an over-limit book, not an approach to one.
+				if warnLatchDeferredSince.IsZero() {
+					fmt.Printf("[WARN] %s\n", portfolioReason)
+				} else {
+					fmt.Printf("[CRITICAL] %s\n", portfolioReason)
+				}
 			}
 
 			// Correlation tracking: compute per-asset directional exposure.
