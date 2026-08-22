@@ -13,12 +13,22 @@ Two arms, same host, same configuration, same candles:
 - **batched** — one `check_hyperliquid.py --batch-check` invocation carrying N
   slots on stdin.
 
-Both arms are network-free. `GO_TRADER_HL_OHLCV_FIXTURE` pins the candles
-(`hl_batch_candles.json`, 200 hourly bars) and `--mark-price` is always
-supplied, so `adapter.get_spot_price` is never reached. The `#839` on-disk
-OHLCV cache is disabled for both arms, so the comparison measures compute
-rather than cache luck. Funding-aware strategies are excluded from the
-workload: they reach the network regardless of the candle fixture.
+Both arms are network-free, and the pinning lives entirely inside the harness.
+`scripts/bench_hl_batch.py` writes a `sitecustomize.py` into a temp directory
+on the children's `PYTHONPATH`; that module replaces
+`HyperliquidExchangeAdapter.get_ohlcv` with a reader over
+`hl_batch_candles.json` (200 hourly bars). **No benchmark switch exists on the
+trading path** — the adapter reads no fixture environment variable, so no
+stray setting on a deployment can make a live strategy trade on pinned
+candles. The harness runs a preflight child and aborts unless that child
+reports the injection took effect, so a silently-failed injection cannot
+produce a network-bound benchmark that still prints plausible numbers.
+
+`--mark-price` is always supplied, so `adapter.get_spot_price` is never
+reached. The `#839` on-disk OHLCV cache is disabled for both arms, so the
+comparison measures compute rather than cache luck. Funding-aware strategies
+are excluded from the workload: they reach the network regardless of the
+candle fixture.
 
 Workload strategies cycle through `breakout`, `momentum_pro`,
 `mean_reversion_pro`, `rsi_bb_combo`.

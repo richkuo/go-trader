@@ -63,23 +63,14 @@ const (
 	// non-empty result.Error. Surfaced as the run*Check
 	// "Script returned error: %s" branch.
 	scriptFailureError scriptFailureMode = "error"
-	// scriptFailureSharedState is a #1442 batched-check outage: the shared
-	// market state (candle fetch, adapter init, short history) failed, so every
-	// strategy in the batch is affected and none of them individually failed.
-	// Tracked on the synthetic group identity, never on a member.
-	scriptFailureSharedState scriptFailureMode = "shared_state"
 )
 
 // scriptFailureModeLabel renders a scriptFailureMode for operator messages.
 func scriptFailureModeLabel(mode scriptFailureMode) string {
-	switch mode {
-	case scriptFailureCrash:
+	if mode == scriptFailureCrash {
 		return "hard crash"
-	case scriptFailureSharedState:
-		return "shared market state"
-	default:
-		return "script error"
 	}
+	return "script error"
 }
 
 // scriptFailureEntry is one slot in the in-memory per-strategy tracker.

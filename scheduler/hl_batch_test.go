@@ -459,7 +459,7 @@ func TestBatchSlotErrorIsolatesOneMember(t *testing.T) {
 	// that strategy's tracker may move.
 	sc := hlBatchStrategy("hl-b", "momentum_pro", "BTC", "1h")
 	res, _, _, ok := finishHyperliquidCheck(&sc, nil, PositionCtx{}, nil, nil, hlBatchTestLogger(),
-		bad.Result, bad.Stderr, bad.Err, bad.Mode, bad.SharedFailure)
+		bad.Result, bad.Stderr, bad.Err, bad.Mode)
 	if ok || res != nil {
 		t.Fatalf("failing slot must not produce a decision: ok=%v res=%v", ok, res)
 	}
@@ -471,7 +471,15 @@ func TestBatchSlotErrorIsolatesOneMember(t *testing.T) {
 	}
 }
 
-func TestSharedStateFailureFreezesMemberTrackers(t *testing.T) {
+// TestSharedStateFailureLeavesMembersAsMisses pins the review finding that a
+// batch-path fault must not blank protective maintenance. A cached failure
+// outcome made finishHyperliquidCheck return ok=false for every member, and
+// the dispatch loop's `} else if ...; ok {` encloses close evaluation, the
+// trailing-SL cancel+replace, the ratchet, protection sync and hedge sync — so
+// one shared-state fault froze all of it for the whole coin, for up to three
+// cycles. Members must instead stay MISSES so each takes its own spawn in the
+// same cycle.
+func TestSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
@@ -481,14 +489,8 @@ func TestSharedStateFailureFreezesMemberTrackers(t *testing.T) {
 	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
 
 	for _, id := range []string{"hl-a", "hl-b"} {
-		out, ok := results.lookup(id)
-		if !ok || !out.SharedFailure || out.Result != nil || out.Mode != scriptFailureSharedState {
-			t.Fatalf("%s outcome = %+v", id, out)
-		}
-		sc := hlBatchStrategy(id, "breakout", "BTC", "1h")
-		if _, _, _, decided := finishHyperliquidCheck(&sc, nil, PositionCtx{}, nil, nil, hlBatchTestLogger(),
-			nil, "", out.Err, out.Mode, true); decided {
-			t.Fatalf("%s must not decide on a shared-state failure", id)
+		if out, ok := results.lookup(id); ok {
+			t.Fatalf("%s must be a map miss after a shared-state failure, got %+v", id, out)
 		}
 		if _, count := scriptFailureTracker.Clear(id); count != 0 {
 			t.Fatalf("%s member tracker moved on a shared outage: %d", id, count)
@@ -497,6 +499,43 @@ func TestSharedStateFailureFreezesMemberTrackers(t *testing.T) {
 	// The group identity carries the streak instead.
 	if _, count := scriptFailureTracker.Clear(hlBatchAlertConfig(inputs[0].Key).ID); count != 1 {
 		t.Fatalf("group tracker count = %d, want 1", count)
+	}
+}
+
+// TestSharedStateTimeoutLeavesMembersAsMisses is the same contract for the
+// deadline case the batch newly concentrates: N slots blowing the single
+// shared timeout that each strategy used to get to itself must still leave
+// every member free to run its own check this cycle.
+func TestSharedStateTimeoutLeavesMembersAsMisses(t *testing.T) {
+	resetBatchFallback(t)
+	resetFailureTrackers(t)
+	inputs, cfg := hlBatchTwoMemberInput(t)
+	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
+		return nil, "", &pythonScriptTimeoutError{d: hlBatchTimeout}
+	})
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	for _, id := range []string{"hl-a", "hl-b"} {
+		if out, ok := results.lookup(id); ok {
+			t.Fatalf("%s must be a map miss after a batch timeout, got %+v", id, out)
+		}
+	}
+}
+
+// TestUnparseableEnvelopeLeavesMembersAsMisses covers the OOM-killed child:
+// empty stdout, no envelope. Same contract — every member falls through to its
+// own spawn rather than losing the cycle.
+func TestUnparseableEnvelopeLeavesMembersAsMisses(t *testing.T) {
+	resetBatchFallback(t)
+	resetFailureTrackers(t)
+	inputs, cfg := hlBatchTwoMemberInput(t)
+	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
+		return nil, "", fmt.Errorf("parse batch output: unexpected end of JSON input (stdout: )")
+	})
+	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
+	for _, id := range []string{"hl-a", "hl-b"} {
+		if out, ok := results.lookup(id); ok {
+			t.Fatalf("%s must be a map miss after an unparseable envelope, got %+v", id, out)
+		}
 	}
 }
 
@@ -510,10 +549,12 @@ func TestSharedStateFailureDoesNotFalselyClearAMemberStreak(t *testing.T) {
 		return nil, "", fmt.Errorf("batch script error: exit 1")
 	})
 	results := runHyperliquidBatchGroups(inputs, cfg, nil, nil)
-	out, _ := results.lookup("hl-a")
-	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
-	finishHyperliquidCheck(&sc, nil, PositionCtx{}, nil, nil, hlBatchTestLogger(),
-		nil, "", out.Err, out.Mode, true)
+	if out, ok := results.lookup("hl-a"); ok {
+		t.Fatalf("hl-a must be a map miss after a shared-state failure, got %+v", out)
+	}
+	// The batch path neither recorded nor cleared the member's own streak; the
+	// member's spawn this cycle is what will move it, exactly as on the
+	// unbatched path.
 	if _, count := scriptFailureTracker.Clear("hl-a"); count != 1 {
 		t.Fatalf("prior member streak = %d, want it preserved at 1", count)
 	}
@@ -712,7 +753,7 @@ func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
 	posCtx := PositionCtx{Side: "long", Quantity: 1.5, AvgCost: 100, EntryATR: 3}
 	prices := map[string]float64{"BTC": 25_000}
-	fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil, 25_000)
+	fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
 	if err != nil {
 		t.Fatalf("fingerprint: %v", err)
 	}
@@ -721,8 +762,132 @@ func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	batch.put("hl-a", hlBatchMemberOutcome{Result: cached, Fingerprint: fp})
 
 	got, signalStr, price, ok := runHyperliquidCheck(&sc, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
-	if !ok || got != cached || price != 25_000 || signalStr != signalLabel(1) {
+	// The dispatch path re-stamps the cycle mark on a COPY, so identity is not
+	// the contract — the decision reaching the caller is.
+	if !ok || got == nil || !reflect.DeepEqual(*got, *cached) || price != 25_000 || signalStr != signalLabel(1) {
 		t.Fatalf("batched consumption = (%v, %q, %v, %v)", got, signalStr, price, ok)
+	}
+}
+
+// TestRoundedPriceWriteBackKeepsPeersBatched pins the review finding that
+// made the batch strictly more expensive than no batch. check_hyperliquid.py
+// emits round(price, 2) and the dispatch loop writes that value back into the
+// cycle's price map, so folding the mark into the slot fingerprint meant the
+// FIRST member of a group invalidated every other one: the cycle paid for the
+// batch and then re-spawned N-1 checks. Any coin whose mid carries more than
+// two decimals hit this, which is everything but the high-priced ones the
+// benchmark and the smoke test happened to use.
+func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
+	resetFailureTrackers(t)
+	const rawMid = 0.34567 // a low-priced coin: round(mid, 2) != mid
+	scA := hlBatchStrategy("hl-a", "breakout", "DOGE", "1h")
+	scB := hlBatchStrategy("hl-b", "momentum_pro", "DOGE", "1h")
+	posCtx := PositionCtx{Side: "long", Quantity: 1.5, AvgCost: 0.3, EntryATR: 0.01}
+	prices := map[string]float64{"DOGE": rawMid}
+
+	batch := &hlBatchCycleResults{}
+	for _, sc := range []StrategyConfig{scA, scB} {
+		// The pre-pass snapshots the fingerprint against the UNROUNDED mid.
+		fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
+		if err != nil {
+			t.Fatalf("fingerprint %s: %v", sc.ID, err)
+		}
+		batch.put(sc.ID, hlBatchMemberOutcome{
+			Result: &HyperliquidResult{
+				Strategy: sc.OpenStrategy.Name, Symbol: "DOGE", Timeframe: "1h",
+				Signal: 1, Price: hyperliquidBatchDisplayPrice(rawMid), Mode: "paper",
+			},
+			Fingerprint: fp,
+		})
+	}
+
+	// Member 1 consumes its slot and the dispatch loop writes the reported
+	// (rounded) price back, exactly as main.go does.
+	_, _, priceA, okA := runHyperliquidCheck(&scA, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	if !okA {
+		t.Fatal("member 1 must consume its cached slot")
+	}
+	prices["DOGE"] = priceA
+	if priceA == rawMid {
+		t.Fatalf("fixture no longer exercises the rounding write-back: %v", priceA)
+	}
+
+	// Member 2 must STILL hit its cached slot despite the rewritten map.
+	resB, _, priceB, okB := runHyperliquidCheck(&scB, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	if !okB || resB == nil {
+		t.Fatal("member 2 lost its cached slot to the rounded price write-back")
+	}
+	if priceB != priceA {
+		t.Fatalf("peer price = %v, want %v", priceB, priceA)
+	}
+}
+
+// TestBatchedMemberReportsDispatchTimeMark checks the other half of the same
+// fix: with the mark out of the fingerprint, the cached decision must adopt
+// the cycle's CURRENT mark rather than the pre-pass one, rounded exactly as
+// check_hyperliquid.py would round it so the two lanes report the same price.
+func TestBatchedMemberReportsDispatchTimeMark(t *testing.T) {
+	resetFailureTrackers(t)
+	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
+	posCtx := PositionCtx{Side: "long", Quantity: 1.5, AvgCost: 100, EntryATR: 3}
+	fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	cached := &HyperliquidResult{Strategy: "breakout", Symbol: "BTC", Timeframe: "1h", Signal: 1, Price: 25_000, Mode: "paper"}
+	batch := &hlBatchCycleResults{}
+	batch.put("hl-a", hlBatchMemberOutcome{Result: cached, Fingerprint: fp})
+
+	got, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 26_000.567}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	if !ok || got == nil {
+		t.Fatal("cached slot must still be consumed")
+	}
+	if price != 26_000.57 || got.Price != 26_000.57 {
+		t.Fatalf("dispatch-time mark not adopted: price=%v result.Price=%v", price, got.Price)
+	}
+	// The cached slot itself must not be mutated by the price adoption.
+	if cached.Price != 25_000 {
+		t.Fatalf("cached slot mutated: %v", cached.Price)
+	}
+}
+
+// TestWholeNumberMarkStillBatches is the BTC case the original benchmark used:
+// a mid that survives round(mid, 2) unchanged must batch just as before.
+func TestWholeNumberMarkStillBatches(t *testing.T) {
+	resetFailureTrackers(t)
+	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
+	posCtx := PositionCtx{}
+	fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	batch := &hlBatchCycleResults{}
+	batch.put("hl-a", hlBatchMemberOutcome{
+		Result:      &HyperliquidResult{Strategy: "breakout", Symbol: "BTC", Timeframe: "1h", Signal: 1, Price: 25_000, Mode: "paper"},
+		Fingerprint: fp,
+	})
+	_, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 25_000}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	if !ok || price != 25_000 {
+		t.Fatalf("whole-number mark broke the hit: ok=%v price=%v", ok, price)
+	}
+}
+
+// TestFailedSlotIsNotResurrectedByThePricePath guards the price adoption
+// against reviving an error outcome: Result stays nil, so the member takes the
+// failure branch and never reads a zero-signal payload as a hold.
+func TestFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
+	resetFailureTrackers(t)
+	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
+	posCtx := PositionCtx{}
+	fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	batch := &hlBatchCycleResults{}
+	batch.put("hl-a", hlBatchMemberOutcome{Err: "slot blew up", Mode: scriptFailureError, Fingerprint: fp})
+	res, _, price, ok := runHyperliquidCheck(&sc, map[string]float64{"BTC": 25_000}, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
+	if ok || res != nil || price != 0 {
+		t.Fatalf("failed slot resurrected: ok=%v res=%+v price=%v", ok, res, price)
 	}
 }
 
@@ -768,7 +933,7 @@ func TestRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
 	prices := map[string]float64{"BTC": 25_000}
 	snapshotCtx := PositionCtx{Side: "long", Quantity: 1.5, AvgCost: 100, EntryATR: 3}
-	fp, err := hyperliquidBatchSlotFingerprint(sc, snapshotCtx, nil, 25_000)
+	fp, err := hyperliquidBatchSlotFingerprint(sc, snapshotCtx, nil)
 	if err != nil {
 		t.Fatalf("fingerprint: %v", err)
 	}
@@ -783,12 +948,8 @@ func TestRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
 	// current state and must be discarded.
 	moved := snapshotCtx
 	moved.Quantity = 0.5
-	if fpMoved, _ := hyperliquidBatchSlotFingerprint(sc, moved, nil, 25_000); fpMoved == fp {
+	if fpMoved, _ := hyperliquidBatchSlotFingerprint(sc, moved, nil); fpMoved == fp {
 		t.Fatal("fingerprint failed to notice a changed position context")
-	}
-	// A changed cycle mark price is equally disqualifying.
-	if fpMark, _ := hyperliquidBatchSlotFingerprint(sc, snapshotCtx, nil, 26_000); fpMark == fp {
-		t.Fatal("fingerprint failed to notice a changed mark price")
 	}
 	_ = prices
 }
@@ -840,7 +1001,7 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := paper
 			prices := map[string]float64{"BTC": 25_000}
-			fp, err := hyperliquidBatchSlotFingerprint(sc, tc.posCtx, nil, 25_000)
+			fp, err := hyperliquidBatchSlotFingerprint(sc, tc.posCtx, nil)
 			if err != nil {
 				t.Fatalf("fingerprint: %v", err)
 			}
@@ -857,7 +1018,7 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 			scDirect := paper
 			direct := tc.result
 			fromDirect, _, _, ok := finishHyperliquidCheck(&scDirect, prices, tc.posCtx, nil, nil, hlBatchTestLogger(),
-				&direct, "", "", scriptFailureCrash, false)
+				&direct, "", "", scriptFailureCrash)
 			if !ok {
 				t.Fatal("per-strategy path did not produce a decision")
 			}
@@ -893,8 +1054,5 @@ func TestBatchSharedStateAlertRendersDistinctly(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("alert %q missing %q", msg, want)
 		}
-	}
-	if label := scriptFailureModeLabel(scriptFailureSharedState); label != "shared market state" {
-		t.Fatalf("mode label = %q", label)
 	}
 }

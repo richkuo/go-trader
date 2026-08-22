@@ -6,10 +6,13 @@ per-strategy checks cost, on the SAME host, the SAME configuration and the
 SAME candles. No speedup may be claimed without this artifact, and any target
 stated later has to be arithmetically reachable for the group size it names.
 
-Both arms are network-free: ``GO_TRADER_HL_OHLCV_FIXTURE`` pins the candles
-and ``--mark-price`` is always supplied, so ``get_spot_price`` is never
-reached. Funding-aware strategies are excluded from the workload for the same
-reason. What the arms differ in is exactly the thing under test:
+Both arms are network-free, and the pinning lives ENTIRELY in this harness:
+the child interpreters load a generated ``sitecustomize.py`` that replaces
+``HyperliquidExchangeAdapter.get_ohlcv`` with a fixture reader, so no
+benchmark switch exists anywhere on the trading path. ``--mark-price`` is
+always supplied, so ``get_spot_price`` is never reached either. Funding-aware
+strategies are excluded from the workload for the same reason. What the arms
+differ in is exactly the thing under test:
 
   unbatched — N sequential ``check_hyperliquid.py <strategy> <symbol> <tf>``
               invocations, the shape the dispatch loop produces today.
@@ -34,6 +37,7 @@ import resource
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -65,6 +69,79 @@ def build_fixture(path: str, bars: int = 200) -> str:
     with open(path, "w") as fh:
         json.dump(candles, fh)
     return path
+
+
+# The child-side injection. Written into a temp directory that is prepended to
+# PYTHONPATH, so CPython's `site` imports it before check_hyperliquid.py runs.
+# It patches the adapter CLASS in place and pre-binds sys.modules["adapter"],
+# which is the name check_hyperliquid.py imports lazily — so the patched method
+# is the one the check actually calls. Nothing in the repository reads a
+# benchmark environment variable; the seam exists only inside this harness.
+SITECUSTOMIZE = '''
+import json
+import os
+import sys
+
+_repo = os.environ["GO_TRADER_BENCH_REPO"]
+_fixture = os.environ["GO_TRADER_BENCH_FIXTURE"]
+
+with open(_fixture, "r") as _fh:
+    _CANDLES = json.load(_fh)
+
+sys.path.insert(0, os.path.join(_repo, "platforms", "hyperliquid"))
+import adapter as _adapter
+
+
+def _pinned_get_ohlcv(self, symbol, interval="1h", limit=200):
+    return _CANDLES[-limit:] if limit and limit > 0 else list(_CANDLES)
+
+
+_adapter.HyperliquidExchangeAdapter.get_ohlcv = _pinned_get_ohlcv
+print("[bench] candle fixture injected", file=sys.stderr)
+'''
+
+
+def _write_sitecustomize(dir_path: str) -> str:
+    path = os.path.join(dir_path, "sitecustomize.py")
+    with open(path, "w") as fh:
+        fh.write(SITECUSTOMIZE)
+    return path
+
+
+def _bench_env(fixture: str, inject_dir: str) -> dict:
+    env = dict(os.environ)
+    env["GO_TRADER_BENCH_REPO"] = REPO_ROOT
+    env["GO_TRADER_BENCH_FIXTURE"] = fixture
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = inject_dir + (os.pathsep + existing if existing else "")
+    # Both arms read the same pinned candles, so the #839 disk cache would only
+    # add noise; disable it so the measurement is of compute, not of cache luck.
+    env["GO_TRADER_HL_OHLCV_CACHE"] = "0"
+    return env
+
+
+def _verify_injection(env: dict) -> None:
+    """Fail loudly unless the child actually ran on the pinned candles.
+
+    Without this a silently-failed injection would produce a network-bound
+    benchmark that still prints plausible numbers — the artifact would be
+    wrong and nothing would say so.
+    """
+    proc = subprocess.run(
+        [PYTHON, CHECK_SCRIPT] + _strategy_argv(DEFAULT_STRATEGIES[0]),
+        cwd=REPO_ROOT, env=env, capture_output=True, check=False,
+    )
+    stderr = proc.stderr.decode(errors="replace")
+    if "[bench] candle fixture injected" not in stderr:
+        raise SystemExit(
+            "candle fixture injection did not take effect; refusing to publish a "
+            "network-bound benchmark.\nchild stderr:\n" + stderr)
+    try:
+        payload = json.loads(proc.stdout.decode())
+    except ValueError:
+        raise SystemExit("preflight child produced no JSON:\n" + stderr)
+    if payload.get("error"):
+        raise SystemExit("preflight child errored: %s" % payload["error"])
 
 
 def _maxrss_mb(maxrss: int) -> float:
@@ -175,11 +252,10 @@ def main(argv=None) -> int:
     if not os.path.exists(args.fixture):
         build_fixture(args.fixture)
 
-    env = dict(os.environ)
-    env["GO_TRADER_HL_OHLCV_FIXTURE"] = args.fixture
-    # Both arms read the same pinned candles, so the #839 disk cache would only
-    # add noise; disable it so the measurement is of compute, not of cache luck.
-    env["GO_TRADER_HL_OHLCV_CACHE"] = "0"
+    inject_dir = tempfile.mkdtemp(prefix="hl_bench_inject_")
+    _write_sitecustomize(inject_dir)
+    env = _bench_env(args.fixture, inject_dir)
+    _verify_injection(env)
 
     host = {
         "platform": platform.platform(),

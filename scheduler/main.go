@@ -4035,19 +4035,31 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	if outcome, ok := batch.lookup(sc.ID); ok {
 		// The cached slot is only usable when this strategy's check inputs are
 		// still exactly what the pre-pass snapshotted. Anything that moved
-		// since — position context, close refs, profile-merged params, or the
-		// cycle's mark price — falls through to this strategy's own check
-		// rather than deciding on a stale snapshot.
-		var markPrice float64
-		if sym := hyperliquidSymbol(sc.Args); sym != "" {
-			if mid, ok := prices[sym]; ok && mid > 0 {
-				markPrice = mid
-			}
-		}
-		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime, markPrice)
+		// since — position context, close refs or profile-merged params —
+		// falls through to this strategy's own check rather than deciding on a
+		// stale snapshot. The mark price is NOT one of those inputs: it sets
+		// only the reported price, so it is re-applied below instead of
+		// discarding an otherwise-current decision (see
+		// hyperliquidBatchSlotFingerprint).
+		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime)
 		if fpErr == nil && fp == outcome.Fingerprint {
+			result := outcome.Result
+			if result != nil {
+				// Adopt the cycle's CURRENT mark on a copy, so the batched
+				// member reports the same price its own spawn would have and
+				// the cached slot stays unmutated. A slot that carries an
+				// error keeps Result == nil and takes the failure branch
+				// untouched — the price path must never resurrect it.
+				res := *result
+				if sym := hyperliquidSymbol(sc.Args); sym != "" {
+					if mid, ok := prices[sym]; ok && mid > 0 {
+						res.Price = hyperliquidBatchDisplayPrice(mid)
+					}
+				}
+				result = &res
+			}
 			return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger,
-				outcome.Result, outcome.Stderr, outcome.Err, outcome.Mode, outcome.SharedFailure)
+				result, outcome.Stderr, outcome.Err, outcome.Mode)
 		}
 		logger.Warn("Batched check inputs changed since the pre-pass snapshot; running this strategy's own check (#1442)")
 	}
@@ -4088,7 +4100,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	case result.Error != "":
 		errMsg, mode, result = result.Error, scriptFailureError, nil
 	}
-	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode, false)
+	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode)
 }
 
 // finishHyperliquidCheck is everything runHyperliquidCheck does AFTER the
@@ -4096,18 +4108,9 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 // #907 divergence override, signal inversion, and the price fallback. Shared
 // verbatim by the per-strategy spawn and the #1442 batched slot, so a batched
 // decision cannot diverge from an unbatched one downstream of the subprocess.
-//
-// sharedFailure marks a batch-level outage: the member fails this cycle but
-// its OWN failure trackers are neither recorded nor cleared, because the
-// member's script did not fail — the group identity carries that alert.
-func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode, sharedFailure bool) (*HyperliquidResult, string, float64, bool) {
+func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode) (*HyperliquidResult, string, float64, bool) {
 	if errMsg != "" {
 		switch {
-		case sharedFailure:
-			logger.Error("Batched check shared state failed: %s", errMsg)
-			if stderr != "" {
-				logger.Error("stderr: %s", stderr)
-			}
 		case mode == scriptFailureCrash:
 			logger.Error("Script failed: %v", errMsg)
 			if stderr != "" {

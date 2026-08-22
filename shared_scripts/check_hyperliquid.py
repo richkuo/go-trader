@@ -147,13 +147,18 @@ def _futures_strategies_module():
     `strategies` is an ambiguous top-level name — the spot, futures and options
     registries all use it. In a subprocess the sys.path order above settles it,
     but when this file is loaded IN-PROCESS (the batch unit tests, the backtest
-    parity tool) another module may already own the name, and a bare import
-    would silently bind the wrong registry. Try the fast path, then fall back
-    to loading the futures registry by path.
+    parity tool, pytest -n auto) another module may already own the name, and a
+    bare import would silently bind the wrong registry.
+
+    The fast path is therefore accepted only when the bound module IS the
+    futures registry file. Identifying it by a function name would not do:
+    shared_strategies/open/spot/strategies.py defines apply_strategy too, so a
+    name check accepts the spot registry in exactly the situation this helper
+    exists to survive. Anything else loads the futures registry by path.
     """
     try:
         import strategies as mod
-        if hasattr(mod, "apply_strategy"):
+        if os.path.realpath(getattr(mod, "__file__", "") or "") == os.path.realpath(FUTURES_STRATEGIES_PATH):
             return mod
     except ImportError:
         pass

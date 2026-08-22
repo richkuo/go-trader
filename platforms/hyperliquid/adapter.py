@@ -219,27 +219,6 @@ def _ohlcv_cache_enabled() -> bool:
     return os.environ.get("GO_TRADER_HL_OHLCV_CACHE", "1") != "0"
 
 
-def _ohlcv_fixture_candles(limit: int):
-    """Candles from GO_TRADER_HL_OHLCV_FIXTURE, or None when unset (#1442).
-
-    A benchmark-only, read-only seam: it lets the batched-vs-unbatched
-    measurement run on pinned candles with no network call and no cache-warmth
-    difference between the arms. Any problem reading the fixture returns None,
-    so the trading path can never be broken by a stray environment variable.
-    """
-    path = os.environ.get("GO_TRADER_HL_OHLCV_FIXTURE", "").strip()
-    if not path:
-        return None
-    try:
-        with open(path, "r") as f:
-            candles = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(candles, list) or not candles:
-        return None
-    return candles[-limit:] if limit and limit > 0 else candles
-
-
 def _ohlcv_cache_ttl(interval_ms: int) -> int:
     """Cache freshness bound for a given candle interval.
 
@@ -615,16 +594,6 @@ class HyperliquidExchangeAdapter:
         }
         interval_ms = interval_ms_map.get(interval, 3_600_000)
         end_ms = int(time.time() * 1000)
-
-        # Benchmark seam (#1442): GO_TRADER_HL_OHLCV_FIXTURE points at a JSON
-        # candle file that replaces the fetch entirely, so the batched-vs-
-        # unbatched benchmark measures compute on identical candles with no
-        # network and no cache-warmth asymmetry. Default-off and read-only; an
-        # unset or unreadable value falls straight through to the real fetch,
-        # so the trading path is untouched.
-        fixture = _ohlcv_fixture_candles(limit)
-        if fixture is not None:
-            return fixture
 
         # Cycle-scoped dedup: reuse a fresh on-disk snapshot so peer strategies
         # sharing this (symbol, interval, limit) don't each hit /info (#839).

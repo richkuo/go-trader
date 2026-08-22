@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -388,19 +389,37 @@ func parseHyperliquidBatchOutput(stdout []byte) (*HyperliquidBatchResult, error)
 // loop iteration, the cached slot is discarded and that strategy spawns its own
 // check. That makes "the batched decision used this strategy's current inputs"
 // a checked fact rather than an argument about what else the cycle can touch.
-func hyperliquidBatchSlotFingerprint(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig, markPrice float64) (string, error) {
+//
+// The cycle mark price is deliberately NOT part of the signature. --mark-price
+// only freshens the REPORTED price (check_hyperliquid.py resolves it into
+// price_override, which overwrites output["price"] and nothing else); the
+// decision reads market_ctx["mark_price"] = the last closed bar's close, which
+// travels in the candles. Folding the mark in made the first member's rounded
+// write-back (prices[symbol] = round(mid, 2)) invalidate every later member of
+// the same group, so the cycle paid for the batch AND still spawned N-1 checks.
+// The dispatch-time mark is applied to the cached decision instead — see
+// hyperliquidBatchDisplayPrice.
+func hyperliquidBatchSlotFingerprint(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig) (string, error) {
 	slot, err := buildHyperliquidBatchSlot(sc, posCtx, regime)
 	if err != nil {
 		return "", err
 	}
 	blob, err := json.Marshal(struct {
-		Slot      hlBatchSlot `json:"slot"`
-		MarkPrice string      `json:"mark_price"`
-	}{Slot: slot, MarkPrice: fmt.Sprintf("%g", markPrice)})
+		Slot hlBatchSlot `json:"slot"`
+	}{Slot: slot})
 	if err != nil {
 		return "", err
 	}
 	return string(blob), nil
+}
+
+// hyperliquidBatchDisplayPrice renders the dispatch-time mark exactly as the
+// per-strategy path would report it. check_hyperliquid.py emits
+// round(price, 2), so a batched member that adopts the cycle's current mark
+// must round identically or the two lanes would report — and paper-fill at —
+// different prices for the same decision.
+func hyperliquidBatchDisplayPrice(markPrice float64) float64 {
+	return math.Round(markPrice*100) / 100
 }
 
 // hlBatchMemberOutcome is one member's cached result for this cycle.
@@ -412,10 +431,6 @@ type hlBatchMemberOutcome struct {
 	Err string
 	// Mode selects which per-strategy alert branch the member takes.
 	Mode scriptFailureMode
-	// SharedFailure marks a group-level outage: the member fails this cycle
-	// but its OWN failure trackers are neither recorded nor cleared, so a
-	// shared outage cannot storm N DMs or fake N recoveries.
-	SharedFailure bool
 	// Stderr is the batch call's stderr, logged per member.
 	Stderr string
 	// Fingerprint is the slot input signature recorded at snapshot time; see
@@ -587,7 +602,7 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 				slotErr = true
 				break
 			}
-			fp, err := hyperliquidBatchSlotFingerprint(sc, in.PosCtx[sc.ID], rc, in.MarkPrice)
+			fp, err := hyperliquidBatchSlotFingerprint(sc, in.PosCtx[sc.ID], rc)
 			if err != nil {
 				logf("[WARN] hl-batch %s: fingerprint failed for %s: %v; falling back to per-strategy checks", in.Key, sc.ID, err)
 				slotErr = true
@@ -609,7 +624,7 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 		out, stderr, err := runHyperliquidBatchCheckFn(hyperliquidCheckScript, args, stdin)
 		elapsed := time.Since(started)
 		if err != nil {
-			hlBatchApplySharedFailure(results, in, fingerprints, err.Error(), stderr, notifier, logf)
+			hlBatchApplySharedFailure(in, err.Error(), stderr, notifier, logf)
 			continue
 		}
 		if out.ErrorScope == hlBatchSharedStateScope || (out.Error != "" && len(out.Results) == 0) {
@@ -617,7 +632,7 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 			if msg == "" {
 				msg = "shared state failed with no detail"
 			}
-			hlBatchApplySharedFailure(results, in, fingerprints, msg, stderr, notifier, logf)
+			hlBatchApplySharedFailure(in, msg, stderr, notifier, logf)
 			continue
 		}
 		hlBatchApplySlots(results, in, fingerprints, out, stderr, logf)
@@ -639,20 +654,26 @@ func (in hlBatchGroupInput) MemberIDsOrdered() []string {
 	return out
 }
 
-// hlBatchApplySharedFailure marks every member of the group failed for this
-// cycle and fires ONE alert on the synthetic group identity. Member trackers
-// are deliberately left untouched: a shared outage is not the member's script
-// failing, so it must neither storm N DMs nor fake N recoveries.
-func hlBatchApplySharedFailure(results *hlBatchCycleResults, in hlBatchGroupInput, fingerprints map[string]string, errMsg, stderr string, notifier *MultiNotifier, logf func(string, ...any)) {
-	logf("[ERROR] hl-batch %s: shared state failed (%d strategies affected): %s", in.Key, len(in.Members), errMsg)
-	for _, sc := range in.Members {
-		results.put(sc.ID, hlBatchMemberOutcome{
-			Err:           errMsg,
-			Mode:          scriptFailureSharedState,
-			SharedFailure: true,
-			Stderr:        stderr,
-			Fingerprint:   fingerprints[sc.ID],
-		})
+// hlBatchApplySharedFailure records ONE alert on the synthetic group identity
+// and leaves every member as a map MISS.
+//
+// A miss is the whole point. The member's own spawn then runs in the SAME
+// cycle, so a fault confined to the batching path — envelope drift, an
+// OOM-killed child, N slots blowing the single shared deadline that each
+// strategy used to get to itself — cannot blank close evaluation, trailing-SL
+// cancel+replace, the ratchet, protection sync or hedge sync for the whole
+// coin. Caching the failure instead would have skipped all of that for every
+// member, for up to hlBatchSharedFailureFallbackThreshold cycles. Falling
+// through is never worse than the unbatched path: a genuine upstream outage
+// fails those spawns exactly as it does today.
+//
+// Member failure trackers stay untouched here for the same reason as before —
+// a shared outage is not the member's script failing, so the group identity
+// carries the alert and any per-member DM comes from that member's own spawn.
+func hlBatchApplySharedFailure(in hlBatchGroupInput, errMsg, stderr string, notifier *MultiNotifier, logf func(string, ...any)) {
+	logf("[ERROR] hl-batch %s: shared state failed (%d strategies fall back to their own checks this cycle): %s", in.Key, len(in.Members), errMsg)
+	if stderr != "" {
+		logf("[ERROR] hl-batch %s: stderr: %s", in.Key, stderr)
 	}
 	notifyBatchSharedStateFailure(notifier, hlBatchAlertConfig(in.Key), errMsg, in.MemberIDsOrdered())
 	if tripped := hlBatchFallback.RecordSharedFailure(in.Key); tripped {

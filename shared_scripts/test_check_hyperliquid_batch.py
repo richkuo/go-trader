@@ -453,3 +453,46 @@ def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
     result = mod.evaluate_signal_slot(shared, _slot("hl-offline", "breakout"))
     assert result["strategy"] == "breakout"
     assert math.isfinite(result["price"])
+
+
+# --- futures registry resolution -------------------------------------------
+
+
+def test_futures_registry_fast_path_rejects_the_spot_registry(mod, monkeypatch):
+    """The fast path must identify the module by FILE, not by a function name.
+
+    shared_strategies/open/spot/strategies.py also defines apply_strategy, so a
+    hasattr check accepts the spot registry whenever sys.modules["strategies"]
+    is already the spot shim — the in-process case (parity_diff --batched,
+    pytest -n auto) this helper exists to survive.
+    """
+    spot_path = os.path.join(
+        os.path.dirname(os.path.abspath(mod.__file__)),
+        "..", "shared_strategies", "open", "spot", "strategies.py")
+    spot_stub = types.ModuleType("strategies")
+    spot_stub.__file__ = spot_path
+    spot_stub.apply_strategy = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "strategies", spot_stub)
+
+    resolved = mod._futures_strategies_module()
+    assert resolved is not spot_stub
+    assert os.path.realpath(resolved.__file__) == os.path.realpath(mod.FUTURES_STRATEGIES_PATH)
+
+
+def test_futures_registry_fast_path_rejects_a_registry_without_a_file(mod, monkeypatch):
+    """A namespace-y or synthesized `strategies` must not be accepted either."""
+    stub = types.ModuleType("strategies")
+    stub.apply_strategy = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "strategies", stub)
+    resolved = mod._futures_strategies_module()
+    assert resolved is not stub
+    assert os.path.realpath(resolved.__file__) == os.path.realpath(mod.FUTURES_STRATEGIES_PATH)
+
+
+def test_futures_registry_fast_path_accepts_the_futures_registry(mod, monkeypatch):
+    """A subprocess where sys.path ordering already resolved it must not regress."""
+    futures_stub = types.ModuleType("strategies")
+    futures_stub.__file__ = mod.FUTURES_STRATEGIES_PATH
+    futures_stub.apply_strategy = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "strategies", futures_stub)
+    assert mod._futures_strategies_module() is futures_stub
