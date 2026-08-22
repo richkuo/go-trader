@@ -1,7 +1,9 @@
 package main
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
 // #1450 — the clamp at the two self-healing owner sites: the trailing walker
@@ -348,5 +350,251 @@ func TestProtectionPlanClampConvergesAfterOneReplace(t *testing.T) {
 	}
 	if got2 := plan2.AvgCost - plan2.StopLossATRMult*plan2.EntryATR; !approxEqLiq(got2, wantTrigger) {
 		t.Errorf("cycle 2 derives %g, want the same clamped %g (no state drift)", got2, wantTrigger)
+	}
+}
+
+// --- review round 2: a clamp may only claim success when a stop rests --------
+
+// lastLiqAlertAction reads the action the throttle recorded for the last alert
+// on (strategy, symbol). "" means nothing was reported.
+func lastLiqAlertAction(strategyID, symbol string) hlLiquidationAlertAction {
+	v, ok := hlLiquidationAlerts.Load(hlLiquidationAlertKey(strategyID, symbol))
+	if !ok {
+		return ""
+	}
+	st, ok := v.(hlLiquidationAlertState)
+	if !ok {
+		return ""
+	}
+	return st.LastAction
+}
+
+// (a) The walker cancels the old trigger and the replacement is REJECTED by the
+// open-order cap. The position now has no exchange-side stop, so the alert must
+// say "protection lost" — reporting a clamp here tells the operator the stop was
+// tightened while it was in fact deleted.
+func TestTrailingWalkerClampReportsProtectionLostWhenPlacementRejected(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		// The shape check_hyperliquid.py produces when the cancel lands and
+		// place_stop_loss is then rejected: no OID, no fill, cancel succeeded.
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded: true,
+			StopLossError:           "Order would exceed the open order limit",
+		}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t))
+	// The STATE update is still confirmed: the OID it points at is gone, and
+	// zeroing it is what lets the walker re-arm from nothing next cycle.
+	if !ok {
+		t.Fatal("the cancelled OID must still be cleared from state")
+	}
+	if got := lastLiqAlertAction("hl-eth", "ETH"); got != hlLiquidationActionProtectionLost {
+		t.Errorf("alert action = %q, want %q", got, hlLiquidationActionProtectionLost)
+	}
+}
+
+// (b) Both the cancel and the placement land — an ordinary clamp, with no false
+// "protection lost".
+func TestTrailingWalkerClampReportsClampedWhenReplacementRests(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded: true,
+			StopLossOID:             7100,
+			StopLossTriggerPx:       triggerPx,
+		}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	if _, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t)); !ok {
+		t.Fatal("walker must confirm the clamp")
+	}
+	if got := lastLiqAlertAction("hl-eth", "ETH"); got != hlLiquidationActionClamped {
+		t.Errorf("alert action = %q, want %q", got, hlLiquidationActionClamped)
+	}
+}
+
+// A clamp whose cancel never landed leaves the ORIGINAL stop resting. That is a
+// deferral, not a loss — and it must not read as a clamp either.
+func TestTrailingWalkerClampReportsDeferredWhenCancelFails(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{CancelStopLossError: "cancel rejected"}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	if _, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t)); ok {
+		t.Fatal("a failed cancel must not confirm the update")
+	}
+	if got := lastLiqAlertAction("hl-eth", "ETH"); got != hlLiquidationActionReplaceDeferred {
+		t.Errorf("alert action = %q, want %q", got, hlLiquidationActionReplaceDeferred)
+	}
+}
+
+// An escalation from "replace deferred" to "protection lost" must RE-alert on
+// the very next observation, inside the throttle interval — both are failures,
+// and the second is the one that means the position is naked.
+func TestLiquidationAlertReAlertsOnEscalationToProtectionLost(t *testing.T) {
+	now := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	prev := hlLiquidationAlertState{Notified: true, LastNotifiedAt: now, LastAction: hlLiquidationActionReplaceDeferred}
+	send, next := hlLiquidationShouldNotify(prev, hlLiquidationActionProtectionLost, now.Add(time.Second))
+	if !send {
+		t.Fatal("an escalation to protection lost must not be throttled")
+	}
+	if next.LastAction != hlLiquidationActionProtectionLost {
+		t.Errorf("LastAction = %q, want %q", next.LastAction, hlLiquidationActionProtectionLost)
+	}
+}
+
+// (c) The one-shot fixed-ATR arm: the clamp lands, the PLACEMENT does not. The
+// position had no stop and still has none, so nothing may claim a tighten.
+func TestFixedATRArmClampActionNeverClaimsATightenWithoutARestingStop(t *testing.T) {
+	cases := []struct {
+		name   string
+		result *HyperliquidStopLossUpdateResult
+		armOK  bool
+		want   hlLiquidationAlertAction
+	}{
+		{"open-order cap rejected the placement",
+			&HyperliquidStopLossUpdateResult{StopLossError: "Order would exceed the open order limit"}, true,
+			hlLiquidationActionRearmFailed},
+		{"subprocess failed outright", nil, false, hlLiquidationActionRearmFailed},
+		{"result carried a top-level error",
+			&HyperliquidStopLossUpdateResult{Error: "boom"}, false, hlLiquidationActionRearmFailed},
+		{"placement rested",
+			&HyperliquidStopLossUpdateResult{StopLossOID: 8001, StopLossTriggerPx: 2352}, true,
+			hlLiquidationActionClamped},
+		{"placement filled at submit",
+			&HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 2352}, true,
+			hlLiquidationActionClamped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hlLiquidationArmClampAction(tc.result, tc.armOK); got != tc.want {
+				t.Errorf("action = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The unprotected report must name the geometry that caused it AND say no stop
+// rests — an operator reading only "re-arm did not rest" cannot tell that the
+// configured stop was unreachable in the first place.
+func TestFixedATRArmFailedMessageNamesBothFacts(t *testing.T) {
+	headline, detail, unprotected := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionRearmFailed)
+	if headline != "**HL POSITION UNPROTECTED**" {
+		t.Errorf("headline = %q", headline)
+	}
+	if !unprotected {
+		t.Error("a failed arm leaves the position unprotected")
+	}
+	for _, want := range []string{"$2325.0000", "$2340.5000", "$2352.0000", "no exchange-side stop"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail = %q, want it to contain %q", detail, want)
+		}
+	}
+	if strings.Contains(detail, "tightened to") {
+		t.Errorf("detail = %q must never claim a tighten", detail)
+	}
+}
+
+// --- review round 2: the recorded trigger must match the resting order -------
+
+// A protection sync that places nothing must leave the recorded trigger alone.
+// The state it would otherwise overwrite is the audit's healed trigger — the
+// price an order is actually resting at — and replacing it with the plan's
+// derived value records a fiction that the next audit then "heals" by
+// cancelling and re-placing a healthy order, once per due cycle forever.
+func TestProtectionSyncEchoKeepsTheRestingTrigger(t *testing.T) {
+	cases := []struct {
+		name string
+		side string
+		// liqPx sits on the FAR side of the frozen anchor — reachable in cross
+		// margin, and the geometry no positive ATR multiple can express.
+		liqPx        float64
+		healedRestPx float64
+	}{
+		{"long with liquidation above the anchor", "long", 2500, 2500 * (1 + hlLiquidationStopBufferPct/100.0)},
+		{"short with liquidation below the anchor", "short", 2300, 2300 * (1 - hlLiquidationStopBufferPct/100.0)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mult := 2.5
+			sc := StrategyConfig{
+				ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+				Args:            []string{"x.py", "ETH", "1h", "--mode=live"},
+				StopLossATRMult: &mult,
+			}
+			pos := &Position{
+				Symbol: "ETH", Side: tc.side, Quantity: 1.0,
+				AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+				StopLossOID: 4242, StopLossTriggerPx: tc.healedRestPx,
+			}
+
+			plan, ok := buildHyperliquidProtectionPlan(sc, pos, tc.liqPx)
+			if !ok {
+				t.Fatal("expected a plan")
+			}
+			// The clamp cannot express this geometry, so the plan must not force
+			// a replace — that was the every-cycle cancel+replace loop.
+			if plan.ForceSLReplace {
+				t.Error("an unclampable far-side geometry must not force a replace")
+			}
+
+			// Python echoes the resting OID and, per the #1450 contract, reports
+			// NO trigger price because it placed nothing.
+			applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{StopLossOID: 4242}, nil)
+			if !approxEqLiq(pos.StopLossTriggerPx, tc.healedRestPx) {
+				t.Fatalf("recorded trigger = %g, want the resting %g — an echo must not rewrite it",
+					pos.StopLossTriggerPx, tc.healedRestPx)
+			}
+
+			// And the next audit is a no-op: the recorded trigger is reachable.
+			acts := planHyperliquidLiquidationAudit([]hlLiquidationAuditCandidate{{
+				StrategyID: "hl-eth", Symbol: "ETH", Side: tc.side, Qty: 1,
+				StopLossOID: 4242, StopLossTriggerPx: pos.StopLossTriggerPx,
+				LiquidationPx: tc.liqPx, BookConsistent: true,
+			}})
+			if len(acts) != 0 {
+				t.Errorf("audit actions = %+v, want none — the resting stop is already inside liquidation", acts)
+			}
+		})
+	}
+}
+
+// (c) A sync that DID place an order still refreshes the recorded trigger, so a
+// normally clampable geometry keeps converging in one replace.
+func TestProtectionSyncPlacementStillRefreshesTheTrigger(t *testing.T) {
+	pos := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1.0,
+		AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+		StopLossOID: 4242, StopLossTriggerPx: 2325,
+	}
+	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
+		StopLossOID: 9100, StopLossTriggerPx: 2352,
+	}, nil)
+	if pos.StopLossOID != 9100 {
+		t.Errorf("OID = %d, want the newly placed 9100", pos.StopLossOID)
+	}
+	if !approxEqLiq(pos.StopLossTriggerPx, 2352) {
+		t.Errorf("recorded trigger = %g, want the placed 2352", pos.StopLossTriggerPx)
 	}
 }

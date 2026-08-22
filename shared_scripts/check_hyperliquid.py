@@ -974,8 +974,40 @@ def run_sync_protection(
             else:
                 sl_px = avg_cost + stop_loss_atr_mult * entry_atr
             sl_px = adapter.round_perps_trigger_px(symbol, sl_px)
-            out["stop_loss_trigger_px"] = sl_px
+
+            # #1450 contract: ``stop_loss_trigger_px`` reports the trigger of the
+            # order THIS sync put on the book — never the price a plan merely
+            # derived. Go writes it straight into pos.StopLossTriggerPx, so
+            # emitting it on a branch that places nothing records a price no
+            # order rests at. That fiction is not cosmetic: the per-cycle #1450
+            # audit reads the recorded trigger, and a derived-but-unreachable
+            # value makes it cancel and re-place a perfectly healthy order every
+            # cycle for the life of the position. Every branch below that ends
+            # without a placement leaves the field ABSENT, and Go then keeps the
+            # trigger it already had.
+            def _sl_placed(px):
+                out["stop_loss_trigger_px"] = px
+
+            def _place_sl():
+                try:
+                    resp = adapter.place_stop_loss(symbol, size, sl_px, close_is_buy)
+                    kind, payload = _classify_sl_response(resp)
+                    if kind == "resting":
+                        out["stop_loss_oid"] = payload
+                        _sl_placed(sl_px)
+                    elif kind == "filled":
+                        out["stop_loss_filled_immediately"] = True
+                        _sl_placed(sl_px)
+                    elif kind == "error":
+                        out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
+                    else:
+                        out["stop_loss_error"] = f"place_stop_loss returned no usable status: {resp}"
+                except Exception as se:
+                    out["stop_loss_error"] = str(se)
+
             if _oid_is_open(open_oids, stop_loss_oid) and not force_sl_replace:
+                # Pure echo — the existing order keeps resting at whatever
+                # trigger it was placed at. Nothing to report.
                 out["stop_loss_oid"] = int(stop_loss_oid)
             elif _oid_is_open(open_oids, stop_loss_oid) and force_sl_replace:
                 if size <= 0:
@@ -985,19 +1017,7 @@ def run_sync_protection(
                         adapter.cancel_order_by_oid(symbol, int(stop_loss_oid))
                     except Exception as ce:
                         out["stop_loss_error"] = f"force replace cancel: {ce}"
-                    try:
-                        resp = adapter.place_stop_loss(symbol, size, sl_px, close_is_buy)
-                        kind, payload = _classify_sl_response(resp)
-                        if kind == "resting":
-                            out["stop_loss_oid"] = payload
-                        elif kind == "filled":
-                            out["stop_loss_filled_immediately"] = True
-                        elif kind == "error":
-                            out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
-                        else:
-                            out["stop_loss_error"] = f"place_stop_loss returned no usable status: {resp}"
-                    except Exception as se:
-                        out["stop_loss_error"] = str(se)
+                    _place_sl()
             else:
                 action, fill = _resolve_missing_oid(stop_loss_oid)
                 if action == "filled":
@@ -1005,19 +1025,7 @@ def run_sync_protection(
                     out["stop_loss_fill"] = fill
                     print(f"[WARN] stop-loss OID={stop_loss_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
                 elif action == "place" and size > 0:
-                    try:
-                        resp = adapter.place_stop_loss(symbol, size, sl_px, close_is_buy)
-                        kind, payload = _classify_sl_response(resp)
-                        if kind == "resting":
-                            out["stop_loss_oid"] = payload
-                        elif kind == "filled":
-                            out["stop_loss_filled_immediately"] = True
-                        elif kind == "error":
-                            out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
-                        else:
-                            out["stop_loss_error"] = f"place_stop_loss returned no usable status: {resp}"
-                    except Exception as se:
-                        out["stop_loss_error"] = str(se)
+                    _place_sl()
                 # action=="unknown" → leave SL OID untouched, retry next cycle
 
         tiers = _normalize_tp_tiers(tp_tiers, tp1_atr_mult, tp1_fraction, tp2_atr_mult)

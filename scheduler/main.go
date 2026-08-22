@@ -2022,7 +2022,11 @@ func main() {
 				// — so it cannot interleave with a walker cancel+replace on the
 				// same OID. This is also what catches a stop armed on the OPEN
 				// cycle, where the snapshot predated the position.
-				if auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlOnChainAbsQty, &mu, notifier, time.Now().UTC()); auditRes.ImmediateFills > 0 {
+				// hlStateFetched is threaded in rather than wrapping the call:
+				// without this cycle's snapshot both maps are empty, and an
+				// empty snapshot must never read as "every position is a
+				// phantom" (see runHyperliquidLiquidationAudit).
+				if auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlOnChainAbsQty, hlStateFetched, &mu, notifier, time.Now().UTC()); auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 					// A close booked here is a realized close like any other, so
 					// it gets the SAME operator notification the walker path
@@ -2875,10 +2879,24 @@ func main() {
 								// re-place path of its own, so clamp BEFORE
 								// placement rather than healing it later.
 								// Tighten-only; 0 (unknown) leaves it alone.
+								//
+								// The alert is held until the placement has been
+								// ATTEMPTED (below, after the state apply releases
+								// mu): an arm whose order never rests leaves the
+								// position with no exchange-side stop, and calling
+								// that "tightened to $X" tells the operator the
+								// opposite of what happened. No defer here — this
+								// dispatch body runs directly inside main(), so a
+								// deferred call would not run until the process
+								// exits.
+								clampOffendingPx := 0.0
+								clampedTriggerPx := 0.0
+								clampArmAction := hlLiquidationActionRearmFailed
 								if clamped, wasClamped := clampStopInsideLiquidation(hlPosSide, triggerPx, hlLiquidationPx[result.Symbol]); wasClamped {
 									logger.Warn("#1450 fixed ATR SL for %s would rest past liquidation $%.4f; tightening $%.4f -> $%.4f",
 										result.Symbol, hlLiquidationPx[result.Symbol], triggerPx, clamped)
-									notifyHLStopPastLiquidation(sc, result.Symbol, hlPosSide, triggerPx, clamped, hlLiquidationPx[result.Symbol], hlLiquidationActionClamped, notifier, logger, time.Now().UTC())
+									clampOffendingPx = triggerPx
+									clampedTriggerPx = clamped
 									triggerPx = clamped
 								}
 								if triggerPx > 0 {
@@ -2887,6 +2905,7 @@ func main() {
 										logger.Warn("fixed ATR SL arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", hlPosQty, slEffectiveQty, result.Symbol)
 									}
 									slResult, ok2 := hyperliquidArmFixedATRStopLossLive(sc, result.Symbol, hlPosSide, slEffectiveQty, triggerPx, notifier, logger)
+									clampArmAction = hlLiquidationArmClampAction(slResult, ok2)
 									if ok2 && slResult != nil {
 										mu.Lock()
 										if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide && pos.StopLossOID == 0 {
@@ -2904,6 +2923,13 @@ func main() {
 										}
 										mu.Unlock()
 									}
+								}
+								// #1450: report what ACTUALLY happened, with no
+								// lock held. "clamped" is claimed only when a stop
+								// is on the book; otherwise the position has no
+								// exchange-side stop and the operator is told so.
+								if clampedTriggerPx > 0 {
+									notifyHLStopPastLiquidation(sc, result.Symbol, hlPosSide, clampOffendingPx, clampedTriggerPx, hlLiquidationPx[result.Symbol], clampArmAction, notifier, logger, time.Now().UTC())
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {

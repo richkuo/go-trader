@@ -357,17 +357,137 @@ func TestPlanHyperliquidLiquidationAuditRefusesUnreconciledCoin(t *testing.T) {
 
 func TestHLLiquidationCoinBookConsistent(t *testing.T) {
 	got := hlLiquidationCoinBookConsistent(
-		map[string]float64{"ETH": 2.0, "BTC": 1.0, "SOL": 0.5},
-		map[string]float64{"ETH": 2.0, "BTC": 0.4},
+		map[string]float64{"ETH": 2.0, "BTC": 1.0, "SOL": 0.5, "AVAX": 3.0, "DOGE": 5.0},
+		map[string]int{"ETH": 2, "BTC": 2, "SOL": 1, "AVAX": 1, "DOGE": 1},
+		map[string]float64{"ETH": 2.0, "BTC": 0.4, "AVAX": 2.0},
 	)
 	if !got["ETH"] {
 		t.Error("ETH: recorded size equals on-chain size — consistent")
 	}
 	if got["BTC"] {
-		t.Error("BTC: recorded 1.0 exceeds on-chain 0.4 — a phantom position")
+		t.Error("BTC: recorded 1.0 across TWO owners exceeds on-chain 0.4 — a phantom position")
 	}
 	if got["SOL"] {
 		t.Error("SOL: absent from the snapshot — nothing on-chain backs the recorded size")
+	}
+	// #1450 review round 2 (optional 1): a SOLE owner whose recorded size drifted
+	// above the on-chain size (e.g. a manual partial TP) has no peer to harm.
+	// hlSLEffectiveQty caps the placement to the confirmed on-chain quantity, so
+	// the audit must still heal it rather than alert forever.
+	if !got["AVAX"] {
+		t.Error("AVAX: sole owner with virtual > on-chain — must stay actionable, sized to on-chain")
+	}
+	// A sole owner is not a licence to act on a coin with no on-chain backing:
+	// there is no confirmed quantity to size a replacement from.
+	if got["DOGE"] {
+		t.Error("DOGE: sole owner but absent from the snapshot — must still refuse")
+	}
+}
+
+// #1450 review round 2 (optional 1): the sole-owner route must reach the audit
+// decision end-to-end, and a shared coin with a phantom must still refuse.
+func TestCollectHLLiquidationAuditCandidatesHealsSoleOwnerDrift(t *testing.T) {
+	strategies, state := liqAuditFixture(t, true, 3.0)
+	// Manual partial TP: the book still records 1.0, the exchange shows 0.6.
+	cands := collectHLLiquidationAuditCandidates(
+		strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		map[string]float64{"ETH": 0.6},
+		&sync.RWMutex{},
+	)
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(cands))
+	}
+	if !cands[0].BookConsistent {
+		t.Fatal("sole owner with virtual > on-chain must stay actionable")
+	}
+	if math.Abs(cands[0].Qty-0.6) > 1e-9 {
+		t.Errorf("Qty = %v, want the on-chain cap 0.6 (#621)", cands[0].Qty)
+	}
+	acts := planHyperliquidLiquidationAudit(cands)
+	if len(acts) != 1 || acts[0].Kind != hlAuditTighten {
+		t.Fatalf("actions = %+v, want one tighten", acts)
+	}
+
+	// Add a SECOND live owner on the same coin: now the drift could move a
+	// reduce-only trigger against a peer, so the refusal comes back.
+	peer := strategies[0]
+	peer.ID = "hl-eth-peer"
+	state.Strategies["hl-eth-peer"] = &StrategyState{
+		ID: "hl-eth-peer", Platform: "hyperliquid", Type: "perps",
+		Positions: map[string]*Position{"ETH": {
+			Symbol: "ETH", Side: "long", Quantity: 1.0,
+			AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+			StopLossOID: 99, StopLossTriggerPx: 2325,
+		}},
+	}
+	shared := collectHLLiquidationAuditCandidates(
+		append(strategies, peer), state,
+		map[string]float64{"ETH": 2340.5},
+		map[string]float64{"ETH": 0.6},
+		&sync.RWMutex{},
+	)
+	for _, c := range shared {
+		if c.BookConsistent {
+			t.Errorf("%s: a shared coin with a phantom must refuse", c.StrategyID)
+		}
+	}
+}
+
+// #1450 review round 2 (optional 2): a failed clearinghouseState fetch hands the
+// audit empty maps. That is "no snapshot this cycle", never "every position is a
+// phantom" — it must produce no action and no alert.
+func TestRunHyperliquidLiquidationAuditSkipsWithoutSnapshot(t *testing.T) {
+	strategies, state := liqAuditFixture(t, true, 3.0)
+	// An unprotected static-scalar position: the shape that used to emit a
+	// CRITICAL phantom alert with $0.0000 prices.
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
+	calls := 0
+	orig := runHyperliquidUpdateStopLossFunc
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, qty, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 7, StopLossTriggerPx: triggerPx}, "", nil
+	}
+	defer func() { runHyperliquidUpdateStopLossFunc = orig }()
+	hlLiquidationAlerts.Delete(hlLiquidationAlertKey("hl-eth", "ETH"))
+
+	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{}, map[string]float64{}, false, &sync.RWMutex{}, nil, time.Now().UTC())
+	if res.ImmediateFills != 0 || len(res.CloseDetails) != 0 {
+		t.Errorf("result = %+v, want an empty result with no snapshot", res)
+	}
+	if calls != 0 {
+		t.Errorf("placement calls = %d, want 0 with no snapshot", calls)
+	}
+	if _, alerted := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); alerted {
+		t.Error("a failed fetch must not raise a phantom-position alert")
+	}
+}
+
+// #1450 review round 2 (optional 2): an audit refusal on a position that carries
+// NO stop must say so, never quote a $0.0000 trigger past a $0.0000 liquidation
+// price.
+func TestHLLiquidationAlertMessageOmitsUnknownGeometry(t *testing.T) {
+	headline, detail, unprotected := hlLiquidationAlertMessage(0, 0, 0, hlLiquidationActionUnreconciled)
+	if strings.Contains(detail, "$0.0000") {
+		t.Errorf("detail = %q, want no fabricated $0.0000 prices", detail)
+	}
+	if !strings.Contains(detail, "NO exchange-side stop") {
+		t.Errorf("detail = %q, want it to say the position has no stop", detail)
+	}
+	if headline != "**HL POSITION UNPROTECTED**" {
+		t.Errorf("headline = %q, want the unprotected headline", headline)
+	}
+	if !unprotected {
+		t.Error("a refused candidate with no stop is unprotected — must log CRITICAL")
+	}
+	// A real geometry still prints both prices.
+	_, armedDetail, armedUnprotected := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionUnreconciled)
+	if !strings.Contains(armedDetail, "$2325.0000") || !strings.Contains(armedDetail, "$2340.5000") {
+		t.Errorf("detail = %q, want the real trigger and liquidation prices", armedDetail)
+	}
+	if armedUnprotected {
+		t.Error("a refused TIGHTEN still has the old order resting — not unprotected")
 	}
 }
 
@@ -413,7 +533,7 @@ func TestRunHyperliquidLiquidationAuditReplacesScalarStop(t *testing.T) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
 	}
 
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if res.ImmediateFills != 0 {
 		t.Fatalf("immediate fills = %d, want 0 (a resting replacement)", res.ImmediateFills)
 	}
@@ -465,7 +585,7 @@ func TestRunHyperliquidLiquidationAuditKeepsOriginalStopOnFailure(t *testing.T) 
 			}
 			return f, "", nil
 		}
-		runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+		runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 		pos := state.Strategies["hl-eth"].Positions["ETH"]
 		if pos.StopLossOID != 4242 || !approxEqLiq(pos.StopLossTriggerPx, 2325) {
 			t.Fatalf("failure %+v: position must keep its ORIGINAL armed stop, got oid=%d trigger=%g", f, pos.StopLossOID, pos.StopLossTriggerPx)
@@ -495,7 +615,7 @@ func TestRunHyperliquidLiquidationAuditCancelledThenRejectedRearms(t *testing.T)
 			StopLossTriggerPx:       triggerPx,
 		}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, liq, onChain, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, liq, onChain, true, &mu, nil, time.Now().UTC())
 
 	pos := state.Strategies["hl-eth"].Positions["ETH"]
 	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
@@ -510,7 +630,7 @@ func TestRunHyperliquidLiquidationAuditCancelledThenRejectedRearms(t *testing.T)
 		gotTrigger, gotCancelOID = triggerPx, cancelStopLossOID
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 7777, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, liq, onChain, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, liq, onChain, true, &mu, nil, time.Now().UTC())
 
 	if gotCancelOID != 0 {
 		t.Errorf("a re-arm has nothing to cancel, got cancel OID %d", gotCancelOID)
@@ -536,7 +656,7 @@ func TestRunHyperliquidLiquidationAuditCancelThenPlaceIsANormalClamp(t *testing.
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossOID: 5150, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if got := state.Strategies["hl-eth"].Positions["ETH"].StopLossOID; got != 5150 {
 		t.Fatalf("position SL oid = %d, want the replacement 5150", got)
 	}
@@ -582,7 +702,7 @@ func TestRunHyperliquidLiquidationAuditSkipsPaper(t *testing.T) {
 		called = true
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 1}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if called {
 		t.Fatal("a paper strategy must never be clamped against a live liquidation price")
 	}
@@ -610,7 +730,7 @@ func TestRunHyperliquidLiquidationAuditHealsTrailingOwner(t *testing.T) {
 		gotTrigger, gotCancelOID = triggerPx, cancelStopLossOID
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 9100, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 
 	wantTrigger := 2340.5 * (1 + hlLiquidationStopBufferPct/100.0)
 	if !approxEqLiq(gotTrigger, wantTrigger) || gotCancelOID != 4242 {
@@ -627,7 +747,7 @@ func TestRunHyperliquidLiquidationAuditHealsTrailingOwner(t *testing.T) {
 		calls++
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 9101, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if calls != 0 {
 		t.Errorf("a reachable resting trigger must produce no further order churn, got %d placements", calls)
 	}
@@ -654,7 +774,7 @@ func TestRunHyperliquidLiquidationAuditIsIndependentOfSignalResults(t *testing.T
 		placed = true
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 9200, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if !placed {
 		t.Fatal("a non-due 4h trailing owner must still be healed by the per-cycle audit")
 	}
@@ -684,7 +804,7 @@ func TestRunHyperliquidLiquidationAuditRefusesPhantomOnSharedCoin(t *testing.T) 
 		called = true
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 1}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if called {
 		t.Fatal("the audit must not move a reduce-only trigger on a coin whose book exceeds the on-chain snapshot")
 	}
@@ -709,7 +829,7 @@ func TestRunHyperliquidLiquidationAuditHealsConsistentNonDuePosition(t *testing.
 		called = true
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 9300, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if !called {
 		t.Fatal("a consistent book must still be healed regardless of due-ness")
 	}
@@ -729,7 +849,7 @@ func TestRunHyperliquidLiquidationAuditNoOpsWithoutOnChainPosition(t *testing.T)
 		called = true
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 1}, "", nil
 	}
-	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{}, &mu, nil, time.Now().UTC())
+	runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{}, true, &mu, nil, time.Now().UTC())
 	if called {
 		t.Fatal("no on-chain position for the coin must be a no-op")
 	}
@@ -748,7 +868,7 @@ func TestRunHyperliquidLiquidationAuditReportsBookedCloses(t *testing.T) {
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if res.ImmediateFills != 1 {
 		t.Fatalf("immediate fills = %d, want 1", res.ImmediateFills)
 	}
@@ -775,7 +895,7 @@ func TestRunHyperliquidLiquidationAuditRestingClampEmitsNoClose(t *testing.T) {
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 9400, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, &mu, nil, time.Now().UTC())
+	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if len(res.CloseDetails) != 0 || res.ImmediateFills != 0 {
 		t.Fatalf("a resting clamp must produce no close notification, got %+v", res)
 	}

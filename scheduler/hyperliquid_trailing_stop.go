@@ -777,7 +777,15 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	// The clamp is strictly tightening in both cases, so it can never widen a
 	// stop, and it never returns 0 for a positive input — protection is never
 	// removed by this path.
-	placementConfirmed := false
+	// clampOutcome is what the deferred alert reports. It starts at "deferred"
+	// (nothing was cancelled, the ORIGINAL stop is still resting) and is only
+	// moved to "clamped" by a placement that actually RESTS or FILLS, or to
+	// "protection lost" by a cancel that landed with nothing behind it. A
+	// cancel-succeeded-placement-rejected cycle must never read as a clamp: the
+	// operator would be told the stop was tightened while the position has no
+	// exchange-side stop at all. Same invariant hlLiquidationClampReplace
+	// enforces for the audit.
+	clampOutcome := hlLiquidationActionReplaceDeferred
 	if policy.liquidationPx > 0 {
 		offending := newTrigger
 		if !replace {
@@ -786,17 +794,11 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		if clamped, clampedOK := clampStopInsideLiquidation(side, offending, policy.liquidationPx); clampedOK {
 			newTrigger = clamped
 			replace = true
-			// The alert is deferred so it reports what ACTUALLY happened
-			// (clamped vs. replace deferred), and so it drains after
-			// lockHyperliquidTrailingUpdate releases — defers run LIFO and that
-			// lock is taken below. placementConfirmed is set on the one success
-			// path at the end of this function.
+			// The alert is deferred so it reports what ACTUALLY happened, and so
+			// it drains after lockHyperliquidTrailingUpdate releases — defers run
+			// LIFO and that lock is taken below.
 			defer func() {
-				action := hlLiquidationActionReplaceDeferred
-				if placementConfirmed {
-					action = hlLiquidationActionClamped
-				}
-				notifyHLStopPastLiquidation(sc, symbol, side, offending, clamped, policy.liquidationPx, action, notifier, logger, time.Now().UTC())
+				notifyHLStopPastLiquidation(sc, symbol, side, offending, clamped, policy.liquidationPx, clampOutcome, notifier, logger, time.Now().UTC())
 			}()
 		}
 	}
@@ -866,12 +868,24 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if result.StopLossFilledImmediately {
 		logger.Warn("Trailing SL trigger filled at submit for %s — position is flat on-chain", symbol)
 	}
-	updateConfirmed := (result.StopLossOID > 0) ||
-		(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0) ||
-		result.CancelStopLossSucceeded
+	// A REPLACEMENT is resting (or filled at submit) only on these two shapes.
+	// CancelStopLossSucceeded alone means the old trigger was deleted and
+	// nothing took its place — the position is naked.
+	restingConfirmed := (result.StopLossOID > 0) ||
+		(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)
+	// updateConfirmed still includes the cancel-without-rest shape: state must
+	// stop pointing at an OID that no longer exists (applyTrailingStopUpdateResult
+	// zeroes it), which is also what makes the walker re-arm from nothing on its
+	// next run. It is a STATE signal, never an operator-facing success signal.
+	updateConfirmed := restingConfirmed || result.CancelStopLossSucceeded
 	if !updateConfirmed {
 		return highWater, result, false
 	}
-	placementConfirmed = true
+	switch {
+	case restingConfirmed:
+		clampOutcome = hlLiquidationActionClamped
+	case result.CancelStopLossSucceeded:
+		clampOutcome = hlLiquidationActionProtectionLost
+	}
 	return newHighWater, result, true
 }

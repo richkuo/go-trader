@@ -1248,3 +1248,90 @@ class TestComputeTPTierSizes:
         assert sum(sizes) == pytest.approx(0.5)
         assert sizes[0] == pytest.approx(0.25)
         assert sizes[1] == pytest.approx(0.25)
+
+
+class TestProtectionSyncStopLossTriggerContract:
+    """#1450 review round 2: ``stop_loss_trigger_px`` reports the trigger of the
+    order THIS sync put on the book — never a price the plan merely derived.
+
+    Go writes the field straight into ``pos.StopLossTriggerPx``. Emitting it on a
+    branch that places nothing records a stop price no order rests at, which the
+    per-cycle #1450 audit then reads and "heals" by cancelling and re-placing a
+    perfectly healthy order, once per due cycle for the life of the position.
+    """
+
+    def _run_sync(self, *, open_oids, stop_loss_oid, force_sl_replace, place_response):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.return_value = set(open_oids)
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = place_response
+        adapter.cancel_order_by_oid.return_value = {}
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH", "long", 1.0, 2400.0, 30.0, "live",
+                    stop_loss_atr_mult=2.5,
+                    stop_loss_oid=stop_loss_oid,
+                    force_sl_replace=force_sl_replace,
+                )
+        return json.loads(captured.getvalue()), adapter
+
+    @staticmethod
+    def _resting(oid):
+        return {"status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": oid}}]}}}
+
+    def test_echoed_oid_reports_no_trigger_price(self):
+        """The order keeps resting where it was placed; the sync knows nothing new."""
+        out, adapter = self._run_sync(
+            open_oids=[4242], stop_loss_oid=4242, force_sl_replace=False,
+            place_response=self._resting(9001),
+        )
+        assert out.get("stop_loss_oid") == 4242
+        assert "stop_loss_trigger_px" not in out
+        adapter.place_stop_loss.assert_not_called()
+
+    def test_force_replace_that_rests_reports_the_placed_trigger(self):
+        out, adapter = self._run_sync(
+            open_oids=[4242], stop_loss_oid=4242, force_sl_replace=True,
+            place_response=self._resting(9002),
+        )
+        assert out.get("stop_loss_oid") == 9002
+        # 2400 - 2.5 * 30
+        assert out.get("stop_loss_trigger_px") == pytest.approx(2325.0)
+        adapter.place_stop_loss.assert_called_once()
+
+    def test_force_replace_whose_placement_fails_reports_no_trigger_price(self):
+        """Cancel landed, placement rejected: nothing rests, so nothing is claimed."""
+        out, _ = self._run_sync(
+            open_oids=[4242], stop_loss_oid=4242, force_sl_replace=True,
+            place_response={"status": "err", "response": "open order limit"},
+        )
+        assert "stop_loss_trigger_px" not in out
+        assert out.get("stop_loss_error")
+
+    def test_fresh_placement_reports_the_placed_trigger(self):
+        out, adapter = self._run_sync(
+            open_oids=[], stop_loss_oid=0, force_sl_replace=False,
+            place_response=self._resting(9003),
+        )
+        assert out.get("stop_loss_oid") == 9003
+        assert out.get("stop_loss_trigger_px") == pytest.approx(2325.0)
+        adapter.place_stop_loss.assert_called_once()

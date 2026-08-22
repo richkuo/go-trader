@@ -437,6 +437,14 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	if result.StopLossOID > 0 {
 		pos.StopLossOID = result.StopLossOID
 	}
+	// #1450: StopLossTriggerPx is present ONLY when this sync actually put an
+	// order on the book (check_hyperliquid.py run_protection_sync). A cycle that
+	// merely echoes the resting OID omits it, so the recorded trigger keeps
+	// matching the order that is really there — including after the per-cycle
+	// audit tightened a stop this plan could not express as a positive ATR
+	// multiple. Rewriting it from a derived price would record a trigger no
+	// order rests at, and the audit would then cancel and re-place that healthy
+	// order every cycle.
 	if result.StopLossTriggerPx > 0 {
 		pos.StopLossTriggerPx = result.StopLossTriggerPx
 	}
