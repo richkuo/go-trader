@@ -59,7 +59,7 @@ type TelegramConfig struct {
 
 // PortfolioRiskConfig controls aggregate portfolio-level risk (#42).
 type PortfolioRiskConfig struct {
-	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25)
+	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`             // kill switch threshold (default 25). #1448 — governs EQUITY drawdown whenever the equity guard can measure; perps margin drawdown (#296) is measured against the same number but only warns there, and trips the latch solely when equity is unavailable (pooled wallet) or on a cold start with no recorded valuation. Per-position margin protection is the #292 per-strategy circuit breaker.
 	MaxNotionalUSD   float64 `json:"max_notional_usd"`             // 0 = disabled. #42/#1344 — when total gross notional exceeds the cap, position-INCREASING opens are held (per-signal via pausedBlocksSignal; options opens dropped; manual open/add/limit-open refuse). Closes, reductions, and SL/TP maintenance keep running; nothing is force-closed. Restart-required (not SIGHUP-hot-reloadable).
 	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"` // % of MaxDrawdownPct to warn (default 60)
 	DailyMaxLossUSD  float64 `json:"daily_max_loss_usd,omitempty"` // #1269 — hard daily loss limit in USD (0 = disabled). When the day's aggregate PRE-FEE realized loss across all strategies reaches this, position-increasing actions (fresh opens, adds, flips, manual-open/add) are held until the UTC rollover; closes and SL/TP management keep running and nothing is force-closed. Hot-reloadable, including while tripped. Portfolio-level only — ignored inside platforms.<name>.risk overrides.

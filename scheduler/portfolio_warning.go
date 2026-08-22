@@ -77,7 +77,14 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 
 	b.WriteString(fmt.Sprintf("Distance to kill switch: %.1f%% equity", positiveDistance(maxDD, prs.CurrentDrawdownPct)))
 	if in.PerpsMargin > 0 {
-		b.WriteString(fmt.Sprintf(" / %.1f%% margin", positiveDistance(maxDD, prs.CurrentMarginDrawdownPct)))
+		// #1448: margin drawdown no longer latches the portfolio while the
+		// equity guard can measure, so this is the distance to the margin
+		// LIMIT, not to the kill switch. Labeling it as distance-to-kill-
+		// switch would tell an operator mid-incident that a flatten is
+		// imminent when it is not. Margin still trips the latch on the
+		// equity-unavailable / cold-start path, and the #292 per-strategy
+		// circuit breaker acts on it always.
+		b.WriteString(fmt.Sprintf(" | perps margin %.1f%% from limit", positiveDistance(maxDD, prs.CurrentMarginDrawdownPct)))
 	}
 	b.WriteByte('\n')
 	b.WriteString(formatPortfolioWarningTrend(prs, in.PerpsMargin > 0))

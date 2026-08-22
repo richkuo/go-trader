@@ -604,7 +604,10 @@ type KillSwitchEvent struct {
 // (perps unrealized loss / deployed margin). Keeping them as separate fields
 // preserves the arithmetic invariant that (PeakValue, CurrentDrawdownPct) is
 // reconstructable, while still exposing the margin signal for operators and
-// the kill switch. The kill switch fires on whichever signal breaches first.
+// the kill switch. #1448: the portfolio latch is owned by CurrentDrawdownPct
+// whenever the equity guard can measure (equityAvailable && PeakValue > 0);
+// CurrentMarginDrawdownPct warns, and trips the latch only when the equity
+// guard cannot measure.
 // WarningSent is retained for persisted status visibility and is true while
 // either drawdown signal is in the warning band; notifications are emitted on
 // every cycle in that band.
@@ -887,23 +890,45 @@ func AggregatePerpsMarginInputs(strategies map[string]*StrategyState, configs []
 // while closes/reductions and SL/TP maintenance keep running; warning=true
 // means drawdown is approaching the kill switch threshold.
 //
-// Two independent drawdown signals feed the kill switch:
+// Two independent drawdown signals are computed:
 //
 //  1. Equity drawdown — (peak - totalValue) / peak. Captures spot/options
 //     PnL and overall cash erosion. Persisted as CurrentDrawdownPct.
 //  2. Perps margin drawdown (#296) — perpsUnrealizedLoss / perpsMargin.
 //     Captures leveraged-position losses against deployed margin, which a
-//     pure equity view understates dramatically for all-perps accounts: a
-//     50% loss on 10x margin shows up as ~5% of total account value, so the
-//     equity-only kill switch fires far too late (or not at all before
-//     liquidation). Persisted as CurrentMarginDrawdownPct.
+//     pure equity view understates for all-perps accounts: a 50% loss on 10x
+//     margin shows up as ~5% of total account value. Persisted as
+//     CurrentMarginDrawdownPct.
 //
 // The two signals live on separate fields so (PeakValue, CurrentDrawdownPct)
 // remains an arithmetically consistent equity tuple for post-incident review.
-// The kill switch fires on whichever signal breaches cfg.MaxDrawdownPct
-// first, so a mixed portfolio is guarded on both fronts. For all-perps
-// accounts, the margin signal dominates; for all-spot/options, the margin
-// inputs are zero and behavior is identical to the pre-#296 baseline.
+//
+// #1448 — which signal owns the PORTFOLIO latch:
+//
+// The portfolio latch force-closes every position and blocks the whole book
+// until an operator resets it, so its cost is the entire book. The margin
+// signal and the equity signal shared one limit before #1448, and they
+// diverge exactly when deployed margin is a SMALL share of the book. In that
+// regime the loss a margin trip can avert is bounded by that small margin,
+// while the latch still costs the full book, including manual and spot
+// positions that contribute nothing to the margin ratio. A live incident
+// (2026-08-22) latched the fleet at 65.3% margin drawdown on $48.42 of
+// deployed margin while equity drawdown was 9.8% against a 30% limit.
+//
+// So the latch is owned by the signal that measures real book loss whenever
+// that signal can measure at all:
+//
+//   - equity guard armed (equityAvailable && PeakValue > 0): the latch trips
+//     on equity drawdown ONLY. Margin drawdown stays a warning lens.
+//   - equity guard NOT armed (pooled shared wallet with no trustworthy
+//     balance, or a cold start that has never recorded a positive
+//     valuation): margin drawdown trips the latch, because it is then the
+//     only signal that can protect the account.
+//
+// Per-POSITION margin protection is unaffected and lives where it belongs:
+// the #292 per-strategy circuit breaker measures the same margin-drawdown
+// ratio and force-closes that one strategy on a cooldown, without latching
+// the book (see CheckRisk).
 //
 // The emitted KillSwitchEvent.Source records whether equity or margin drove
 // the fire/warning so operators can tell at a glance which lever tripped.
@@ -912,10 +937,12 @@ func CheckPortfolioRisk(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, total
 }
 
 // checkPortfolioRiskWithEquityAvailability allows the shared-wallet risk path
-// to suppress only the equity-drawdown signal when a pooled wallet has neither
-// a current nor one-generation-old real balance. The perps margin signal and
-// notional cap remain active. Existing callers use CheckPortfolioRisk and
-// therefore retain the historical equity-available behavior.
+// to suppress the equity-drawdown signal when a pooled wallet has neither a
+// current nor one-generation-old real balance. On that path the equity guard
+// is not armed, so the perps margin signal remains the TRIP for the portfolio
+// latch (#1448) rather than only a warning; the notional cap is unaffected.
+// Existing callers use CheckPortfolioRisk and therefore retain the historical
+// equity-available behavior.
 func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *PortfolioRiskConfig, totalValue, totalNotional, perpsUnrealizedLoss, perpsMargin float64, equityAvailable bool) (allowed, notionalBlocked, warning bool, reason string) {
 	if prs.KillSwitchActive {
 		return false, false, false, fmt.Sprintf("portfolio kill switch is latched (triggered at %s, manual reset required)",
@@ -943,15 +970,21 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 	}
 	prs.CurrentMarginDrawdownPct = marginDD
 
-	// Kill switch: fire if either signal breaches the limit. The reason names
-	// the breaching signal so operators know whether to investigate spot /
-	// options equity or perps margin.
+	// Kill switch (#1448): the equity guard owns the portfolio latch whenever
+	// it can measure; the margin signal trips only when it cannot. The two
+	// arms are mutually exclusive, so exactly one signal can latch the book on
+	// any given cycle and the reason always names it.
 	//
-	// Note: this branch runs even when PeakValue == 0, so a cold-start
-	// account that blows up margin on bar 1 (before any equity snapshot) is
-	// still protected — equityDD is zero in that case and only the margin
-	// signal can fire.
-	if (equityAvailable && equityDD > cfg.MaxDrawdownPct) || marginDD > cfg.MaxDrawdownPct {
+	// PeakValue == 0 is treated as "cannot measure" rather than as a separate
+	// case. The peak ratchet above runs BEFORE this check, so any cycle with a
+	// positive totalValue arms the guard in the same call. PeakValue == 0 here
+	// therefore means no equity snapshot has ever been recorded (totalValue
+	// has been non-positive on every cycle so far), which is the same
+	// condition as equityAvailable == false: the equity guard is not
+	// operative, and margin is the only signal that can protect the account.
+	// A cold-start account that blows up margin on bar 1 stays protected.
+	equityGuardArmed := equityAvailable && prs.PeakValue > 0
+	if (equityGuardArmed && equityDD > cfg.MaxDrawdownPct) || (!equityGuardArmed && marginDD > cfg.MaxDrawdownPct) {
 		prs.KillSwitchActive = true
 		prs.KillSwitchAt = time.Now().UTC()
 		prs.WarningSent = false
@@ -962,10 +995,9 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 		prs.WarningMarginDeltaPct = 0
 		var r, source string
 		var dd float64
-		// Tie-break to margin when the two signals are equal: the margin
-		// signal is the newer, more sensitive lens (#296) and surfacing it
-		// preferentially helps operators notice leveraged blow-ups.
-		if !equityAvailable || marginDD >= equityDD {
+		// #1448: the arms above are mutually exclusive, so the source falls
+		// out of which guard is armed. No tie-break is possible or needed.
+		if !equityGuardArmed {
 			source = "margin"
 			dd = marginDD
 			if equityAvailable {
@@ -1010,13 +1042,25 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 			prs.LastWarningMarginDDPct = marginDD
 			prs.WarningSent = true
 			warning = true
+			// #1448: margin drawdown can now sit ABOVE cfg.MaxDrawdownPct
+			// without latching (only reachable with the equity guard armed —
+			// otherwise the margin arm above already tripped). Saying it is
+			// "approaching" the limit would be false, so that case gets its
+			// own wording naming who actually owns the latch and where
+			// per-position margin protection lives.
+			marginOverLimit := marginDD > cfg.MaxDrawdownPct
 			switch {
+			case equityWarn && marginWarn && marginOverLimit:
+				reason = fmt.Sprintf("portfolio drawdown warning: equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f); portfolio latch governed by equity drawdown (limit %.1f%%); per-strategy circuit breakers own margin protection (#1448)",
+					equityDD, totalValue, prs.PeakValue, marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, cfg.MaxDrawdownPct)
 			case equityWarn && marginWarn:
 				// Both breached — surface both in the reason so a
-				// correlated move is visible to the operator. Ties go
-				// to margin (see kill-switch branch above).
+				// correlated move is visible to the operator.
 				reason = fmt.Sprintf("portfolio drawdown approaching kill switch limit %.1f%% (warn at %.1f%%): equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% (unrealized loss=$%.2f, margin=$%.2f)",
 					cfg.MaxDrawdownPct, warnDrawdownPct, equityDD, totalValue, prs.PeakValue, marginDD, perpsUnrealizedLoss, perpsMargin)
+			case marginWarn && marginOverLimit:
+				reason = fmt.Sprintf("portfolio perps margin drawdown %.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f); portfolio latch governed by equity drawdown %.1f%% (limit %.1f%%); per-strategy circuit breakers own margin protection (#1448)",
+					marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, equityDD, cfg.MaxDrawdownPct)
 			case marginWarn:
 				reason = fmt.Sprintf("portfolio perps margin drawdown %.1f%% approaching kill switch limit %.1f%% (warn at %.1f%%, unrealized loss=$%.2f, margin=$%.2f)",
 					marginDD, cfg.MaxDrawdownPct, warnDrawdownPct, perpsUnrealizedLoss, perpsMargin)

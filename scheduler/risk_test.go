@@ -2495,68 +2495,67 @@ func TestDetectSharedWalletPlatformsRequiresEveryRiskPathMemberLegacyPct(t *test
 
 // --- #296: portfolio-level perps margin drawdown ---
 
-// TestCheckPortfolioRisk_AllPerps_MarginDrawdownFires is the core acceptance-
-// criteria test for issue #296. An all-perps portfolio where deployed margin
-// has lost 50% of its value must fire the kill switch at the configured
-// drawdown limit, even though the equity-based drawdown looks small because
-// leveraged PnL is only a small fraction of total account value.
+// TestCheckPortfolioRisk_AllPerps_MarginDrawdownWarnsWithoutLatch is the #296
+// scenario re-stated for #1448. The inputs are unchanged from the original
+// #296 acceptance test; the expectation is inverted.
 //
 // Scenario: $10K equity, $1K of margin deployed on a 10x leveraged position
 // (notional ~$10K). A 5% adverse price move = $500 unrealized loss = 50% of
-// deployed margin, but only 5% of total equity. Pre-#296 the portfolio kill
-// switch would not fire until equity drawdown breached 25%, long after the
-// position would have been liquidated. Post-#296 the margin signal trips at
-// 25%.
-func TestCheckPortfolioRisk_AllPerps_MarginDrawdownFires(t *testing.T) {
+// deployed margin, but only 5% of total equity.
+//
+// #296 latched the whole portfolio here. #1448 does not: the equity guard is
+// armed (a positive peak exists), so it owns the portfolio latch and real book
+// loss is 5% against a 25% limit. The margin blow-up still reaches the
+// operator as a warning, and the #292 per-strategy circuit breaker still acts
+// on the individual leveraged position. Latching the fleet — flattening spot
+// and manual positions that contribute nothing to the margin ratio — to avert
+// a loss bounded by $1K of margin is the disproportion #1448 removes.
+func TestCheckPortfolioRisk_AllPerps_MarginDrawdownWarnsWithoutLatch(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000}
 
-	// Equity has barely moved — 5% nominal drawdown — so the pre-#296
-	// equity-only check would allow. Margin drawdown is 50%, well above
-	// the 25% limit, so the kill switch must fire.
 	totalValue := 9500.0
 	perpsLoss := 500.0
 	perpsMargin := 1000.0
 
-	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, totalValue, 0, perpsLoss, perpsMargin)
-	if allowed {
-		t.Errorf("expected kill switch to fire on 50%% perps margin drawdown; got allowed=true, reason=%s", reason)
+	allowed, notionalBlocked, warning, reason := CheckPortfolioRisk(prs, cfg, totalValue, 0, perpsLoss, perpsMargin)
+	if !allowed {
+		t.Errorf("expected 50%% margin drawdown at 5%% equity drawdown to be allowed; got allowed=false, reason=%s", reason)
 	}
-	if !prs.KillSwitchActive {
-		t.Error("expected KillSwitchActive=true")
+	if prs.KillSwitchActive {
+		t.Error("expected KillSwitchActive=false — margin drawdown must not latch the portfolio while the equity guard is armed")
 	}
-	if reason == "" {
-		t.Error("expected non-empty reason for kill switch")
+	if notionalBlocked {
+		t.Error("expected notionalBlocked=false — the margin signal never holds opens")
 	}
-	// Reason should name the margin signal, not equity.
+	if !warning {
+		t.Errorf("expected warning=true so the operator still sees the margin blow-up; reason=%q", reason)
+	}
+	// The reason must name the margin signal AND say it exceeds the limit —
+	// "approaching" would be false at 50% against a 25% limit.
 	if !strings.Contains(reason, "margin") {
 		t.Errorf("expected reason to reference perps margin drawdown; got %q", reason)
 	}
-	// Equity drawdown was only 5% — field stays on the equity signal.
+	if !strings.Contains(reason, "exceeds") {
+		t.Errorf("expected reason to say the margin limit is exceeded, not approached; got %q", reason)
+	}
+	// Both lenses are still persisted independently.
 	if prs.CurrentDrawdownPct < 4.9 || prs.CurrentDrawdownPct > 5.1 {
 		t.Errorf("expected CurrentDrawdownPct (equity)≈5%%; got %.2f", prs.CurrentDrawdownPct)
 	}
-	// Margin drawdown is 50% — recorded on the dedicated field so persistence
-	// stays arithmetically consistent (peak_value / current_drawdown_pct).
 	if prs.CurrentMarginDrawdownPct < 49.9 || prs.CurrentMarginDrawdownPct > 50.1 {
 		t.Errorf("expected CurrentMarginDrawdownPct≈50%%; got %.2f", prs.CurrentMarginDrawdownPct)
 	}
-	// Event must be recorded with source="margin" so auditors can tell which
-	// signal drove the fire without re-parsing the reason string.
-	if len(prs.Events) != 1 {
-		t.Fatalf("expected exactly one event; got %d", len(prs.Events))
+	// No "triggered" event: nothing tripped.
+	if len(prs.Events) != 0 {
+		t.Fatalf("expected no kill-switch events on a warning-only cycle; got %+v", prs.Events)
 	}
-	evt := prs.Events[0]
-	if evt.Type != "triggered" {
-		t.Errorf("expected event Type=triggered; got %q", evt.Type)
+	// Warn-band bookkeeping still records the margin signal.
+	if !prs.WarningSent {
+		t.Error("expected WarningSent=true")
 	}
-	if evt.Source != "margin" {
-		t.Errorf("expected event Source=margin; got %q", evt.Source)
-	}
-	// Event's DrawdownPct records the signal value (margin=50%), not a
-	// mixed "worse of" number.
-	if evt.DrawdownPct < 49.9 || evt.DrawdownPct > 50.1 {
-		t.Errorf("expected event DrawdownPct≈50%% (margin signal); got %.2f", evt.DrawdownPct)
+	if prs.LastWarningMarginDDPct < 49.9 || prs.LastWarningMarginDDPct > 50.1 {
+		t.Errorf("expected LastWarningMarginDDPct≈50%%; got %.2f", prs.LastWarningMarginDDPct)
 	}
 }
 
@@ -2575,6 +2574,12 @@ func TestCheckPortfolioRiskMissingPooledEquitySuppressesOnlyEquityArm(t *testing
 	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(prs, cfg, 0, 0, 300, 1000, false)
 	if allowed || !prs.KillSwitchActive || !strings.Contains(reason, "equity unavailable") {
 		t.Fatalf("margin blow-up must still fire without equity: allowed=%v reason=%q state=%+v", allowed, reason, prs)
+	}
+	// #1448 keeps the margin arm as the TRIP on this path — it is the only
+	// signal that can protect a pooled wallet whose balance is untrustworthy —
+	// and the audit row must still name it.
+	if len(prs.Events) != 1 || prs.Events[0].Type != "triggered" || prs.Events[0].Source != "margin" {
+		t.Fatalf("expected one triggered event with Source=margin; got %+v", prs.Events)
 	}
 }
 
@@ -2608,10 +2613,12 @@ func TestCheckPortfolioRisk_MixedAccount_SpotEquityStillHonored(t *testing.T) {
 	}
 }
 
-// TestCheckPortfolioRisk_MixedAccount_MarginFiresFirst verifies that when both
-// equity and margin drawdowns breach the limit simultaneously, the reason
-// names the larger (margin) signal — so operators see the headline number.
-func TestCheckPortfolioRisk_MixedAccount_MarginFiresFirst(t *testing.T) {
+// TestCheckPortfolioRisk_MixedAccount_EquityGovernsWhenBothBreach verifies the
+// #1448 tie-break removal. When both signals breach the limit and the equity
+// guard is armed, the equity arm is the one that can fire, so the event Source
+// and the DrawdownPct on it are always the equity numbers. There is no
+// "larger signal wins" path left in the trip branch.
+func TestCheckPortfolioRisk_MixedAccount_EquityGovernsWhenBothBreach(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000}
 
@@ -2622,20 +2629,220 @@ func TestCheckPortfolioRisk_MixedAccount_MarginFiresFirst(t *testing.T) {
 
 	allowed, _, _, reason := CheckPortfolioRisk(prs, cfg, totalValue, 0, perpsLoss, perpsMargin)
 	if allowed {
-		t.Error("expected kill switch to fire")
+		t.Error("expected kill switch to fire on 30% equity drawdown")
 	}
-	if !strings.Contains(reason, "margin") {
-		t.Errorf("expected reason to reference margin (worse signal); got %q", reason)
+	if !prs.KillSwitchActive {
+		t.Error("expected KillSwitchActive=true")
 	}
-	// Equity and margin are persisted separately: equity=30%, margin=60%.
+	// The reason is the equity reason: real book loss is what latched.
+	if strings.Contains(reason, "margin") {
+		t.Errorf("expected the equity reason to drive the latch; got %q", reason)
+	}
+	// Both lenses are still persisted separately: equity=30%, margin=60%.
 	if prs.CurrentDrawdownPct < 29.9 || prs.CurrentDrawdownPct > 30.1 {
 		t.Errorf("expected CurrentDrawdownPct (equity)≈30%%; got %.2f", prs.CurrentDrawdownPct)
 	}
 	if prs.CurrentMarginDrawdownPct < 59.9 || prs.CurrentMarginDrawdownPct > 60.1 {
 		t.Errorf("expected CurrentMarginDrawdownPct≈60%%; got %.2f", prs.CurrentMarginDrawdownPct)
 	}
-	if len(prs.Events) != 1 || prs.Events[0].Source != "margin" {
-		t.Errorf("expected one triggered event with Source=margin; got %+v", prs.Events)
+	if len(prs.Events) != 1 {
+		t.Fatalf("expected exactly one event; got %+v", prs.Events)
+	}
+	if prs.Events[0].Source != "equity" {
+		t.Errorf("expected triggered event Source=equity; got %q", prs.Events[0].Source)
+	}
+	if prs.Events[0].DrawdownPct < 29.9 || prs.Events[0].DrawdownPct > 30.1 {
+		t.Errorf("expected event DrawdownPct≈30%% (equity signal); got %.2f", prs.Events[0].DrawdownPct)
+	}
+}
+
+// TestCheckPortfolioRisk_Incident1448_MarginTripAvertedWhenEquityHealthy
+// replays the live incident that motivated #1448 (2026-08-22 05:10:50 UTC,
+// go-trader-live): $31.62 unrealized loss on $48.42 of deployed perps margin
+// = 65.3% margin drawdown against a 30% limit, while the book itself was down
+// 9.8% from a $1014.25 peak. The pre-#1448 kill switch latched, force-closed a
+// flat-PnL manual BTC position and an ETH position that was still above its
+// configured stop-loss floor, and blocked the whole book.
+//
+// Under #1448 that cycle is a warning. The equity guard still bounds real book
+// loss at the same limit, which the second half of the test proves.
+func TestCheckPortfolioRisk_Incident1448_MarginTripAvertedWhenEquityHealthy(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 30, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 1014.25}
+
+	allowed, notionalBlocked, warning, reason := CheckPortfolioRisk(prs, cfg, 914.97, 0, 31.62, 48.42)
+	if !allowed {
+		t.Fatalf("the live incident must no longer latch the book: allowed=false, reason=%s", reason)
+	}
+	if prs.KillSwitchActive {
+		t.Fatal("expected KillSwitchActive=false at 9.8% equity drawdown against a 30% limit")
+	}
+	if notionalBlocked {
+		t.Error("expected notionalBlocked=false")
+	}
+	if !warning {
+		t.Errorf("expected the margin blow-up to still warn the operator; reason=%q", reason)
+	}
+	if !strings.Contains(reason, "margin") || !strings.Contains(reason, "exceeds") {
+		t.Errorf("expected a margin reason that says the margin limit is exceeded; got %q", reason)
+	}
+	if !strings.Contains(reason, "#1448") {
+		t.Errorf("expected the reason to point at #1448 so an operator can find the rationale; got %q", reason)
+	}
+	if len(prs.Events) != 0 {
+		t.Fatalf("expected no kill-switch events; got %+v", prs.Events)
+	}
+	if prs.CurrentDrawdownPct < 9.7 || prs.CurrentDrawdownPct > 9.9 {
+		t.Errorf("expected equity drawdown≈9.8%%; got %.2f", prs.CurrentDrawdownPct)
+	}
+	if prs.CurrentMarginDrawdownPct < 65.2 || prs.CurrentMarginDrawdownPct > 65.4 {
+		t.Errorf("expected margin drawdown≈65.3%%; got %.2f", prs.CurrentMarginDrawdownPct)
+	}
+
+	// The equity guard still bounds real book loss at the same limit: push
+	// equity drawdown past 30% against the same peak and the latch fires.
+	allowed, _, _, reason = CheckPortfolioRisk(prs, cfg, 700, 0, 31.62, 48.42)
+	if allowed || !prs.KillSwitchActive {
+		t.Fatalf("equity drawdown above the limit must still latch: allowed=%v reason=%q", allowed, reason)
+	}
+	if len(prs.Events) != 1 || prs.Events[0].Source != "equity" {
+		t.Fatalf("expected one triggered event with Source=equity; got %+v", prs.Events)
+	}
+	if prs.Events[0].DrawdownPct < 30.9 || prs.Events[0].DrawdownPct > 31.1 {
+		t.Errorf("expected event DrawdownPct≈31%% (equity signal); got %.2f", prs.Events[0].DrawdownPct)
+	}
+}
+
+// TestCheckPortfolioRisk_BothWarnMarginAboveLimit_ReasonNamesEquityGovernance
+// covers the #1448 branch where BOTH signals are in the warn band and margin
+// is additionally above the limit. The reason must surface both lenses (a
+// correlated move stays visible) while stating plainly that margin did not and
+// will not latch the book.
+func TestCheckPortfolioRisk_BothWarnMarginAboveLimit_ReasonNamesEquityGovernance(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: 10000}
+
+	// Equity 22% (warn band, under the 25% limit); margin 40% (over it).
+	_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 7800, 0, 400, 1000)
+	if !warning || prs.KillSwitchActive {
+		t.Fatalf("expected warning without latch; warning=%v active=%v reason=%q", warning, prs.KillSwitchActive, reason)
+	}
+	for _, want := range []string{"equity=", "margin=", "exceeds limit", "#1448"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("expected reason to contain %q; got %q", want, reason)
+		}
+	}
+	if strings.Contains(reason, "approaching") {
+		t.Errorf("margin is over the limit, not approaching it; got %q", reason)
+	}
+}
+
+// TestCheckPortfolioRisk_MarginAboveLimit_WarnBookkeepingAcrossCycles locks the
+// warn-band bookkeeping on the #1448 path that did not exist before: margin
+// drawdown ABOVE the limit now persists as a warning across cycles instead of
+// latching once. WarnBandEnteredAt must be stamped once, the per-cycle delta
+// must track, and dropping back under the warn threshold must clear the band.
+func TestCheckPortfolioRisk_MarginAboveLimit_WarnBookkeepingAcrossCycles(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 30, WarnThresholdPct: 80} // warn at 24%
+	prs := &PortfolioRiskState{PeakValue: 10000}
+
+	// Cycle 1: equity flat, margin 40% (above the 30% limit).
+	_, _, warning, reason := CheckPortfolioRisk(prs, cfg, 10000, 0, 400, 1000)
+	if !warning || prs.KillSwitchActive {
+		t.Fatalf("cycle 1: expected warning without latch; warning=%v active=%v reason=%q", warning, prs.KillSwitchActive, reason)
+	}
+	if !prs.WarningSent {
+		t.Fatal("cycle 1: expected WarningSent=true")
+	}
+	entered := prs.WarnBandEnteredAt
+	if entered.IsZero() {
+		t.Fatal("cycle 1: expected WarnBandEnteredAt to be stamped on entry")
+	}
+	if prs.WarningMarginDeltaPct != 0 {
+		t.Errorf("cycle 1: expected zero delta on band entry; got %.2f", prs.WarningMarginDeltaPct)
+	}
+	if prs.LastWarningMarginDDPct < 39.9 || prs.LastWarningMarginDDPct > 40.1 {
+		t.Errorf("cycle 1: expected LastWarningMarginDDPct≈40%%; got %.2f", prs.LastWarningMarginDDPct)
+	}
+
+	// Cycle 2: margin worsens to 50%. Still no latch; delta tracks +10.
+	_, _, warning, reason = CheckPortfolioRisk(prs, cfg, 10000, 0, 500, 1000)
+	if !warning || prs.KillSwitchActive {
+		t.Fatalf("cycle 2: expected warning without latch; warning=%v active=%v reason=%q", warning, prs.KillSwitchActive, reason)
+	}
+	if !prs.WarnBandEnteredAt.Equal(entered) {
+		t.Errorf("cycle 2: WarnBandEnteredAt must not be re-stamped while in band; got %v want %v", prs.WarnBandEnteredAt, entered)
+	}
+	if prs.WarningMarginDeltaPct < 9.9 || prs.WarningMarginDeltaPct > 10.1 {
+		t.Errorf("cycle 2: expected WarningMarginDeltaPct≈+10; got %.2f", prs.WarningMarginDeltaPct)
+	}
+	if prs.LastWarningMarginDDPct < 49.9 || prs.LastWarningMarginDDPct > 50.1 {
+		t.Errorf("cycle 2: expected LastWarningMarginDDPct≈50%%; got %.2f", prs.LastWarningMarginDDPct)
+	}
+
+	// Cycle 3: margin recovers to 10%, under the 24% warn threshold. Band clears.
+	_, _, warning, _ = CheckPortfolioRisk(prs, cfg, 10000, 0, 100, 1000)
+	if warning {
+		t.Error("cycle 3: expected warning=false below the warn threshold")
+	}
+	if prs.WarningSent || !prs.WarnBandEnteredAt.IsZero() || prs.LastWarningMarginDDPct != 0 || prs.WarningMarginDeltaPct != 0 {
+		t.Errorf("cycle 3: expected the warn band to clear; got %+v", prs)
+	}
+	if prs.KillSwitchActive {
+		t.Error("cycle 3: expected no latch at any point in this sequence")
+	}
+}
+
+// TestCheckPortfolioRisk_AfterManualMarkBasisRebaseline_MarginDoesNotLatch
+// covers the #1444 interaction. #1444 moved manual positions onto the live
+// mark rail and re-baselines PortfolioRisk.PeakValue once by the basis delta,
+// precisely so the first post-upgrade cycle cannot flatten the fleet on an
+// accounting change. A margin arm that could still latch would re-introduce
+// that flatten through the other door, because an underwater manual position
+// sits next to a small perps margin base. #1448 closes it.
+func TestCheckPortfolioRisk_AfterManualMarkBasisRebaseline_MarginDoesNotLatch(t *testing.T) {
+	// A manual position marked $50 below its entry cost: the live-priced total
+	// is $950 where the legacy cost-priced total was $1000, so the $1000 peak
+	// migrates down to $950.
+	newPeak, ok := manualMarkBasisPeakAdjustment(1000, 950, 1000)
+	if !ok {
+		t.Fatalf("expected the #1444 basis migration to apply; got ok=false, peak=%.2f", newPeak)
+	}
+	if newPeak < 949.9 || newPeak > 950.1 {
+		t.Fatalf("expected migrated peak≈950; got %.2f", newPeak)
+	}
+
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 30, WarnThresholdPct: 80}
+	prs := &PortfolioRiskState{PeakValue: newPeak, ManualMarkBasisRebaselined: true}
+
+	// Book is 1.1% under the migrated peak; perps margin is 66.7% underwater
+	// on a $300 base. Pre-#1448 this latched and force-closed the manual
+	// position the migration exists to protect.
+	allowed, _, warning, reason := CheckPortfolioRisk(prs, cfg, 940, 0, 200, 300)
+	if !allowed || prs.KillSwitchActive {
+		t.Fatalf("margin drawdown must not latch against a migrated peak: allowed=%v active=%v reason=%q", allowed, prs.KillSwitchActive, reason)
+	}
+	if !warning {
+		t.Errorf("expected the margin signal to still warn; reason=%q", reason)
+	}
+	if len(prs.Events) != 0 {
+		t.Fatalf("expected no kill-switch events; got %+v", prs.Events)
+	}
+
+	// The equity guard is measured against the MIGRATED peak, and still fires:
+	// $600 against a $950 peak is 36.8% > 30%.
+	allowed, _, _, reason = CheckPortfolioRisk(prs, cfg, 600, 0, 200, 300)
+	if allowed || !prs.KillSwitchActive {
+		t.Fatalf("equity drawdown above the limit must still latch after migration: allowed=%v reason=%q", allowed, reason)
+	}
+	if len(prs.Events) != 1 || prs.Events[0].Source != "equity" {
+		t.Fatalf("expected one triggered event with Source=equity; got %+v", prs.Events)
+	}
+	if prs.Events[0].PeakValue < 949.9 || prs.Events[0].PeakValue > 950.1 {
+		t.Errorf("expected the event to record the migrated peak≈950; got %.2f", prs.Events[0].PeakValue)
+	}
+	if prs.Events[0].DrawdownPct < 36.7 || prs.Events[0].DrawdownPct > 36.9 {
+		t.Errorf("expected event DrawdownPct≈36.8%%; got %.2f", prs.Events[0].DrawdownPct)
 	}
 }
 
@@ -2874,7 +3081,9 @@ func TestBuildPortfolioWarningMessage_IncludesTriageSections(t *testing.T) {
 		"Kill switch: 25.0% drawdown | Warn threshold: 15.0%",
 		"In band since: 2026-06-06 05:47 UTC (18m)",
 		"Current: equity=16.5% ($8400 / peak $10060) | perps margin=18.2% ($250 loss on $1500 margin)",
-		"Distance to kill switch: 8.5% equity / 6.8% margin",
+		// #1448: margin drawdown does not latch the portfolio while the equity
+		// guard can measure, so the margin figure is a distance to the LIMIT.
+		"Distance to kill switch: 8.5% equity | perps margin 6.8% from limit",
 		"Trend: WORSENING - equity dd +1.2% since last cycle; margin dd +0.8%",
 		"Top contributors:",
 		"```",

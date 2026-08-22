@@ -1328,9 +1328,12 @@ func main() {
 			riskOpenSymbols := snapshotOpenSymbolsByStrategy(state)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
 			// #296: aggregate perps margin drawdown inputs alongside the
-			// equity total so the portfolio kill switch can fire on a
-			// leveraged margin blow-up that would otherwise hide inside
-			// equity-only drawdown for all-perps accounts.
+			// equity total. These feed the portfolio margin WARNING, and the
+			// portfolio latch only on the paths where the equity guard cannot
+			// measure (pooled wallet without a trustworthy balance, or a cold
+			// start that has never recorded a positive valuation) — #1448.
+			// Per-position margin protection is the #292 per-strategy circuit
+			// breaker's job.
 			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, cfg.Strategies, prices)
 			// #1269: evaluate the portfolio-wide daily loss limit once per
 			// cycle (pure read — stale per-strategy days count as 0, matching
@@ -1718,8 +1721,11 @@ func main() {
 				}
 				var warnMsg string
 				mu.Lock()
-				// Source mirrors CheckPortfolioRisk's tie-break: margin wins
-				// ties so the newer #296 signal is surfaced preferentially.
+				// The warn event names the LARGER of the two signals, so the
+				// audit row carries the headline number an operator would
+				// quote. This is a labeling choice for the warning band only:
+				// since #1448 the margin signal does not own the portfolio
+				// latch while the equity guard can measure.
 				source := "equity"
 				warnDD := state.PortfolioRisk.CurrentDrawdownPct
 				if state.PortfolioRisk.CurrentMarginDrawdownPct >= warnDD {
