@@ -1779,6 +1779,13 @@ func main() {
 						PerpsMargin: perpsMargin,
 						Recent:      recentTrades,
 						Now:         warnNow,
+						// #1449 review: same condition the risk check used for
+						// this cycle, so the message labels the arm that can
+						// actually latch. The peak read here is the one the
+						// check decided on: it only ratchets on a trusted
+						// cycle, and the untrusted rollback above is therefore
+						// a no-op rather than a value the message could miss.
+						EquityGuardArmed: pooledEquityComplete && state.PortfolioRisk.PeakValue > 0,
 					})
 				}
 				mu.Unlock()
@@ -1830,9 +1837,12 @@ func main() {
 						return
 					}
 					mu.Lock()
-					state.PortfolioRisk.KillSwitchActive = false
-					state.PortfolioRisk.KillSwitchAt = time.Time{}
-					addKillSwitchEvent(&state.PortfolioRisk, "reset", "", state.PortfolioRisk.CurrentDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via DM")
+					// #1449 review: clears the drawdown readings as well as the
+					// latch flags — see ResetPortfolioKillSwitchManual. The
+					// returned reading is the pre-reset one, so the audit event
+					// still records the drawdown the operator reset from.
+					resetDrawdownPct := ResetPortfolioKillSwitchManual(&state.PortfolioRisk)
+					addKillSwitchEvent(&state.PortfolioRisk, "reset", "", resetDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via DM")
 					if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
 						fmt.Printf("[CRITICAL] Failed to save state after kill switch reset: %v\n", err)
 					}

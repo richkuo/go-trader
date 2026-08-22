@@ -3073,7 +3073,8 @@ func TestBuildPortfolioWarningMessage_IncludesTriageSections(t *testing.T) {
 		Recent: []Trade{
 			{Timestamp: now.Add(-14 * time.Minute), StrategyID: "hl-btc-sma-30", Symbol: "BTC", Side: "sell", Quantity: 0.5, Price: 67800, TradeType: "perps", Details: "signal flip"},
 		},
-		Now: now,
+		Now:              now,
+		EquityGuardArmed: true,
 	})
 
 	for _, want := range []string{
@@ -3123,10 +3124,11 @@ func TestBuildPortfolioWarningMessage_DailyPnLFallbackLabel(t *testing.T) {
 		},
 	}
 	msg := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
-		Config:     &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
-		State:      state,
-		TotalValue: 800,
-		Now:        now,
+		Config:           &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+		State:            state,
+		TotalValue:       800,
+		Now:              now,
+		EquityGuardArmed: true,
 	})
 	if !strings.Contains(msg, "daily P&L -$75") {
 		t.Fatalf("expected daily P&L fallback label in warning message:\n%s", msg)
@@ -3147,8 +3149,9 @@ func TestBuildPortfolioWarningMessage_PoolIgnoresStaleInitialCapital(t *testing.
 		},
 	}}
 	msg := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
-		Config: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
-		State:  state,
+		Config:           &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60},
+		State:            state,
+		EquityGuardArmed: true,
 	})
 	if !strings.Contains(msg, "net P&L") || !strings.Contains(msg, "-$75") {
 		t.Fatalf("expected pool net P&L without stale baseline:\n%s", msg)

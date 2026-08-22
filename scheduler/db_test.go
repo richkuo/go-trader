@@ -170,6 +170,11 @@ func makeTestState() *AppState {
 			// survive a restart — an unpersisted latch would re-run the peak
 			// migration on every start and walk the kill-switch threshold.
 			ManualMarkBasisRebaselined: true,
+			// #1449 (PR review): the substituted marker must survive a restart
+			// too — reloading a floored reading with the marker lost would
+			// present a decision value as a direct measurement on every
+			// operator surface.
+			DrawdownReadingSubstituted: true,
 			Events: []KillSwitchEvent{
 				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", Source: "margin", DrawdownPct: 18.7, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
 			},
@@ -289,6 +294,9 @@ func TestSaveAndLoadDBRoundTrip(t *testing.T) {
 	}
 	if !loaded.PortfolioRisk.ManualMarkBasisRebaselined {
 		t.Error("PortfolioRisk.ManualMarkBasisRebaselined = false, want true (one-shot latch must survive a restart)")
+	}
+	if !loaded.PortfolioRisk.DrawdownReadingSubstituted {
+		t.Error("PortfolioRisk.DrawdownReadingSubstituted = false, want true (a substituted reading must stay labeled across a restart)")
 	}
 	if !loaded.PortfolioRisk.WarningSent {
 		t.Error("PortfolioRisk.WarningSent should be true")

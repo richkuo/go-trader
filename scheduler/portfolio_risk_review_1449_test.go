@@ -55,8 +55,14 @@ func TestUntrustedEquity_FreezesPeakAndFloorsDrawdown(t *testing.T) {
 }
 
 // TestUntrustedEquity_FloorAloneCannotLatch pins the safety property that makes
-// the floor sound: every stored reading came from a cycle that did NOT latch,
-// so it is at or below the limit and can never fire the kill switch by itself.
+// the floor sound: a carried reading can raise the reported drawdown but can
+// never fire the kill switch by itself, because the floor is clamped to
+// MaxDrawdownPct while the latch test is a strict >.
+//
+// The clamp is what makes that true. An earlier revision claimed instead that
+// every stored reading came from a non-latching cycle and was therefore already
+// below the limit; TestUntrustedEquity_StoredOverLimitFloorCannotLatch below is
+// the counterexample that disproved it.
 func TestUntrustedEquity_FloorAloneCannotLatch(t *testing.T) {
 	prs := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 24.9} // just under the 25% limit
 	cfg := review1449Config()
@@ -292,5 +298,219 @@ func TestCircuitBreakerSuppression_QueuesOwnerDM(t *testing.T) {
 	run()
 	if again := drainCircuitBreakerSuppressionAlerts(); len(again) != 1 {
 		t.Errorf("expected a fresh DM after re-enable then re-disable; got %d", len(again))
+	}
+}
+
+// TestUntrustedEquity_StoredOverLimitFloorCannotLatch is the #1449 review
+// counterexample to the floor's original soundness argument.
+//
+// CurrentDrawdownPct is written BEFORE the latch check, so the latching cycle
+// persists an OVER-LIMIT reading, and SQLite keeps it. Every reset path now
+// clears it, but the reading also survives a plain process restart while the
+// latch is already clear. Unclamped, the first untrusted cycle after that would
+// floor a healthy measurement back up to the stale over-limit value and flatten
+// the entire book off a number nothing measured this cycle.
+func TestUntrustedEquity_StoredOverLimitFloorCannotLatch(t *testing.T) {
+	cfg := review1449Config() // 25% limit
+
+	// (a) Stored reading exactly AT the limit: the strict > must not fire.
+	atLimit := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 25}
+	allowed, _, _, _ := checkPortfolioRiskWithEquityAvailability(atLimit, cfg, 10000, 0, 0, 0, true, false)
+	if !allowed || atLimit.KillSwitchActive {
+		t.Fatal("a stored reading equal to the limit must not latch on its own")
+	}
+
+	// (c) Restart shape: a reading ABOVE the limit reloaded from SQLite while
+	// KillSwitchActive is already false, first cycle untrusted.
+	overLimit := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 40}
+	allowed, _, _, reason := checkPortfolioRiskWithEquityAvailability(overLimit, cfg, 10000, 0, 0, 0, true, false)
+	if !allowed || overLimit.KillSwitchActive {
+		t.Fatalf("a stale over-limit reading must never re-latch by itself; reason=%q", reason)
+	}
+	if overLimit.CurrentDrawdownPct != 25 {
+		t.Errorf("floor must be clamped to the limit; got %.1f want 25", overLimit.CurrentDrawdownPct)
+	}
+	if !overLimit.DrawdownReadingSubstituted {
+		t.Error("a floored reading must be marked as substituted")
+	}
+
+	// (b) The clamp must not become a fail-open: a genuine this-cycle
+	// measurement above the limit still latches on the same untrusted cycle.
+	real := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 40}
+	allowed, _, _, reason = checkPortfolioRiskWithEquityAvailability(real, cfg, 6000, 0, 0, 0, true, false)
+	if allowed || !real.KillSwitchActive {
+		t.Fatal("a real 40% drawdown must latch even with the floor clamped")
+	}
+	if !strings.Contains(reason, "portfolio drawdown") {
+		t.Errorf("expected an equity-sourced latch reason; got %q", reason)
+	}
+	// The latch fired on this cycle's own 40% measurement, not on the floor, so
+	// the reading is a direct measurement and must not be marked substituted.
+	if real.DrawdownReadingSubstituted {
+		t.Error("a latch driven by a this-cycle measurement must not be marked substituted")
+	}
+}
+
+// TestManualKillSwitchReset_ClearsStaleReadings covers the other half of the
+// #1449 review finding: the owner-DM reset cleared only the latch flags, so the
+// over-limit reading the latching cycle persisted survived the reset. Both
+// auto-reset paths already cleared it.
+func TestManualKillSwitchReset_ClearsStaleReadings(t *testing.T) {
+	prs := &PortfolioRiskState{
+		PeakValue:                  10000,
+		CurrentDrawdownPct:         40,
+		CurrentMarginDrawdownPct:   65,
+		DrawdownReadingSubstituted: true,
+		KillSwitchActive:           true,
+		KillSwitchAt:               time.Date(2026, 8, 22, 1, 0, 0, 0, time.UTC),
+	}
+
+	prior := ResetPortfolioKillSwitchManual(prs)
+	if prior != 40 {
+		t.Errorf("reset must return the pre-reset reading for the audit event; got %.1f want 40", prior)
+	}
+	if prs.KillSwitchActive || !prs.KillSwitchAt.IsZero() {
+		t.Error("reset must clear the latch")
+	}
+	if prs.CurrentDrawdownPct != 0 || prs.CurrentMarginDrawdownPct != 0 {
+		t.Errorf("reset must clear both drawdown readings; got equity=%.1f margin=%.1f",
+			prs.CurrentDrawdownPct, prs.CurrentMarginDrawdownPct)
+	}
+	if prs.DrawdownReadingSubstituted {
+		t.Error("reset must clear the substituted marker")
+	}
+	// A manual reset makes no claim that the book is flat or the total
+	// verified, so unlike the auto-reset paths it must NOT move the peak.
+	if prs.PeakValue != 10000 {
+		t.Errorf("manual reset must retain the real high-water mark; got %.2f", prs.PeakValue)
+	}
+	// The cleared state cannot re-latch on the next untrusted cycle.
+	cfg := review1449Config()
+	if allowed, _, _, _ := checkPortfolioRiskWithEquityAvailability(prs, cfg, 10000, 0, 0, 0, true, false); !allowed {
+		t.Fatal("a freshly reset portfolio must not re-latch on the next untrusted cycle")
+	}
+	if ResetPortfolioKillSwitchManual(nil) != 0 {
+		t.Error("nil state must be a no-op")
+	}
+}
+
+// TestDrawdownReadingSubstitutedMarker pins the #1449 review finding that a
+// floored reading is persisted into CurrentDrawdownPct and so stops matching
+// the persisted peak and total. It stays persisted — that keeps the stored
+// number equal to the one the latch and warn band decided on — but it must
+// always be labeled.
+func TestDrawdownReadingSubstitutedMarker(t *testing.T) {
+	cfg := review1449Config()
+
+	// (a) Untrusted substitute ABOVE the peak: raw is 0%, the floor carries
+	// 10%. The stored reading must be marked so no surface implies a 10% loss
+	// at peak value.
+	prs := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 10}
+	checkPortfolioRiskWithEquityAvailability(prs, cfg, 12000, 0, 0, 0, true, false)
+	if prs.CurrentDrawdownPct != 10 || !prs.DrawdownReadingSubstituted {
+		t.Errorf("expected a marked 10%% floored reading; got %.1f marked=%v",
+			prs.CurrentDrawdownPct, prs.DrawdownReadingSubstituted)
+	}
+
+	// (c) The inverse: a trusted cycle writes the exact measurement and clears
+	// the marker, so the arithmetic invariant holds again.
+	checkPortfolioRiskWithEquityAvailability(prs, cfg, 9500, 0, 0, 0, true, true)
+	if prs.DrawdownReadingSubstituted {
+		t.Error("a trusted cycle must clear the substituted marker")
+	}
+	if want := (10000 - 9500.0) / 10000 * 100; prs.CurrentDrawdownPct != want {
+		t.Errorf("trusted reading must reconstruct from peak and total; got %.2f want %.2f",
+			prs.CurrentDrawdownPct, want)
+	}
+
+	// An untrusted cycle whose own measurement EXCEEDS the floor is a real
+	// measurement, so it must not be marked either.
+	checkPortfolioRiskWithEquityAvailability(prs, cfg, 9000, 0, 0, 0, true, false)
+	if prs.DrawdownReadingSubstituted {
+		t.Error("an untrusted cycle that measured above the floor is not substituted")
+	}
+	if prs.CurrentDrawdownPct != 10 {
+		t.Errorf("expected the measured 10%%; got %.2f", prs.CurrentDrawdownPct)
+	}
+}
+
+// TestPortfolioWarningLabels_FollowTheArmedGuard covers the #1449 review
+// finding that the warning message always attached "distance to kill switch" to
+// equity, even on the path where the margin arm is the one that flattens the
+// book. The two arms are mutually exclusive, so the labels must follow whichever
+// one can latch this cycle.
+func TestPortfolioWarningLabels_FollowTheArmedGuard(t *testing.T) {
+	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60}
+	base := func(prs PortfolioRiskState) *AppState {
+		return &AppState{PortfolioRisk: prs, Strategies: map[string]*StrategyState{}}
+	}
+
+	// (a) Pooled wallet with no trustworthy balance: margin in band, equity
+	// guard unarmed. Margin owns the latch, so it owns the label — and the
+	// stale equity reading must not be presented as current.
+	unarmed := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+		Config:           cfg,
+		State:            base(PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 18, CurrentMarginDrawdownPct: 20}),
+		PerpsLoss:        400,
+		PerpsMargin:      2000,
+		EquityGuardArmed: false,
+	})
+	if !strings.Contains(unarmed, "Distance to kill switch: 5.0% perps margin") {
+		t.Errorf("unarmed guard must label margin as the distance to the kill switch:\n%s", unarmed)
+	}
+	if strings.Contains(unarmed, "from limit") {
+		t.Errorf("margin must not be demoted to distance-from-limit when it owns the latch:\n%s", unarmed)
+	}
+	if strings.Contains(unarmed, "equity=18.0%") {
+		t.Errorf("a stale equity reading must not be shown as current when the guard is unarmed:\n%s", unarmed)
+	}
+
+	// (b) PeakValue == 0 cold start with a leftover non-zero reading: same
+	// unarmed treatment, and the leftover number must not surface.
+	coldStart := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+		Config:           cfg,
+		State:            base(PortfolioRiskState{PeakValue: 0, CurrentDrawdownPct: 22, CurrentMarginDrawdownPct: 19}),
+		PerpsLoss:        380,
+		PerpsMargin:      2000,
+		EquityGuardArmed: false,
+	})
+	if !strings.Contains(coldStart, "Distance to kill switch: 6.0% perps margin") {
+		t.Errorf("cold start must point the kill-switch label at margin:\n%s", coldStart)
+	}
+	if strings.Contains(coldStart, "22.0%") {
+		t.Errorf("leftover cold-start equity reading leaked into the message:\n%s", coldStart)
+	}
+	if !strings.Contains(coldStart, "equity dd n/a") {
+		t.Errorf("trend line must not report a delta for a signal never measured:\n%s", coldStart)
+	}
+
+	// (c) The inverse — armed guard keeps the #1448 labeling exactly as it was.
+	armed := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+		Config:           cfg,
+		State:            base(PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 18, CurrentMarginDrawdownPct: 20}),
+		TotalValue:       8200,
+		PerpsLoss:        400,
+		PerpsMargin:      2000,
+		EquityGuardArmed: true,
+	})
+	if !strings.Contains(armed, "Distance to kill switch: 7.0% equity | perps margin 5.0% from limit") {
+		t.Errorf("armed guard must keep equity on the kill-switch label:\n%s", armed)
+	}
+
+	// A substituted reading is labeled on the armed path so the percentage and
+	// the dollar figures beside it are not read as corrupt data.
+	substituted := BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
+		Config: cfg,
+		State: base(PortfolioRiskState{
+			PeakValue: 10000, CurrentDrawdownPct: 18, CurrentMarginDrawdownPct: 20,
+			DrawdownReadingSubstituted: true,
+		}),
+		TotalValue:       10200,
+		PerpsLoss:        400,
+		PerpsMargin:      2000,
+		EquityGuardArmed: true,
+	})
+	if !strings.Contains(substituted, "balance substituted this cycle") {
+		t.Errorf("a floored reading must be labeled on the operator surface:\n%s", substituted)
 	}
 }

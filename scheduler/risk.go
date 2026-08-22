@@ -608,22 +608,36 @@ type KillSwitchEvent struct {
 // whenever the equity guard can measure (equityAvailable && PeakValue > 0);
 // CurrentMarginDrawdownPct warns, and trips the latch only when the equity
 // guard cannot measure.
+//
+// #1449 review: that reconstructability invariant has EXACTLY ONE exception,
+// and DrawdownReadingSubstituted is the marker for it. On an untrusted cycle
+// (a substituted or one-generation-stale total) CurrentDrawdownPct carries the
+// floored reading the kill switch actually decided on rather than the raw
+// quotient, so the persisted number always matches the number that governed
+// the cycle. DrawdownReadingSubstituted is true on exactly those cycles, and
+// every operator surface that prints CurrentDrawdownPct next to PeakValue must
+// label the reading when it is set — otherwise the percentage and the dollar
+// figures beside it silently stop reconciling. A trusted cycle always writes
+// the exact measurement and clears the marker.
 // WarningSent is retained for persisted status visibility and is true while
 // either drawdown signal is in the warning band; notifications are emitted on
 // every cycle in that band.
 type PortfolioRiskState struct {
-	PeakValue                float64           `json:"peak_value"`
-	CurrentDrawdownPct       float64           `json:"current_drawdown_pct"`
-	CurrentMarginDrawdownPct float64           `json:"current_margin_drawdown_pct,omitempty"`
-	KillSwitchActive         bool              `json:"kill_switch_active"`
-	KillSwitchAt             time.Time         `json:"kill_switch_at,omitempty"`
-	WarningSent              bool              `json:"warning_sent,omitempty"`
-	WarnBandEnteredAt        time.Time         `json:"warn_band_entered_at,omitempty"`
-	LastWarningEquityDDPct   float64           `json:"last_warning_equity_dd_pct,omitempty"`
-	LastWarningMarginDDPct   float64           `json:"last_warning_margin_dd_pct,omitempty"`
-	WarningEquityDeltaPct    float64           `json:"warning_equity_delta_pct,omitempty"`
-	WarningMarginDeltaPct    float64           `json:"warning_margin_delta_pct,omitempty"`
-	Events                   []KillSwitchEvent `json:"events,omitempty"`
+	PeakValue                float64 `json:"peak_value"`
+	CurrentDrawdownPct       float64 `json:"current_drawdown_pct"`
+	CurrentMarginDrawdownPct float64 `json:"current_margin_drawdown_pct,omitempty"`
+	// DrawdownReadingSubstituted marks CurrentDrawdownPct as the floored
+	// decision value of an untrusted cycle instead of a direct measurement.
+	DrawdownReadingSubstituted bool              `json:"drawdown_reading_substituted,omitempty"`
+	KillSwitchActive           bool              `json:"kill_switch_active"`
+	KillSwitchAt               time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent                bool              `json:"warning_sent,omitempty"`
+	WarnBandEnteredAt          time.Time         `json:"warn_band_entered_at,omitempty"`
+	LastWarningEquityDDPct     float64           `json:"last_warning_equity_dd_pct,omitempty"`
+	LastWarningMarginDDPct     float64           `json:"last_warning_margin_dd_pct,omitempty"`
+	WarningEquityDeltaPct      float64           `json:"warning_equity_delta_pct,omitempty"`
+	WarningMarginDeltaPct      float64           `json:"warning_margin_delta_pct,omitempty"`
+	Events                     []KillSwitchEvent `json:"events,omitempty"`
 
 	// ManualMarkBasisRebaselined latches the one-shot #1444 valuation-basis
 	// peak migration (see manualMarkBasisPeakAdjustment). Persisted, so a
@@ -751,6 +765,7 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	state.PortfolioRisk.PeakValue = totalBalance
 	state.PortfolioRisk.CurrentDrawdownPct = 0
 	state.PortfolioRisk.CurrentMarginDrawdownPct = 0
+	state.PortfolioRisk.DrawdownReadingSubstituted = false
 	addKillSwitchEvent(&state.PortfolioRisk, "auto_reset", "",
 		0, totalBalance, totalBalance,
 		fmt.Sprintf("startup auto-clear: shared wallets %v reachable, total balance=$%.2f (peak re-baselined)",
@@ -818,8 +833,43 @@ func AutoResetConfirmedFlatKillSwitch(
 	}
 	prs.CurrentDrawdownPct = 0
 	prs.CurrentMarginDrawdownPct = 0
+	prs.DrawdownReadingSubstituted = false
 	addKillSwitchEvent(prs, "auto_reset", "", 0, rebaselineValue, prs.PeakValue, details)
 	return true
+}
+
+// ResetPortfolioKillSwitchManual clears a portfolio kill-switch latch on the
+// operator's explicit instruction (the #1368 owner-DM reset). It returns the
+// drawdown reading recorded at the moment of the reset so the caller can put it
+// on the audit event before it is cleared.
+//
+// #1449 review: this exists so the manual reset clears the same drawdown
+// readings both auto-reset paths clear (ClearLatchedKillSwitchSharedWallet,
+// AutoResetConfirmedFlatKillSwitch). It previously cleared only the latch
+// flags, which left CurrentDrawdownPct holding the OVER-LIMIT measurement the
+// latching cycle persists before the latch check. That stale reading then fed
+// the untrusted-cycle floor and could re-latch the whole book off a number
+// nothing measured this cycle. The floor is clamped in the risk check as the
+// structural guard; this removes the stale value at the source, so the warn
+// band and the operator surfaces also stop reporting a pre-reset drawdown.
+//
+// Unlike the auto-reset paths this does NOT re-baseline PeakValue: a manual
+// reset makes no claim about the portfolio being flat or the total being
+// verified, so the real high-water mark is retained and the next cycle
+// re-measures against it.
+//
+// CONCURRENCY: lock-free body — the caller must hold mu.
+func ResetPortfolioKillSwitchManual(prs *PortfolioRiskState) float64 {
+	if prs == nil {
+		return 0
+	}
+	priorDrawdownPct := prs.CurrentDrawdownPct
+	prs.KillSwitchActive = false
+	prs.KillSwitchAt = time.Time{}
+	prs.CurrentDrawdownPct = 0
+	prs.CurrentMarginDrawdownPct = 0
+	prs.DrawdownReadingSubstituted = false
+	return priorDrawdownPct
 }
 
 // addKillSwitchEvent appends an event and trims to maxKillSwitchEvents.
@@ -989,7 +1039,27 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 
 	// #1449 review: the last recorded equity drawdown, read BEFORE anything
 	// this cycle overwrites it. It is the floor applied on an untrusted cycle.
+	//
+	// It is clamped to cfg.MaxDrawdownPct because the stored reading is NOT
+	// guaranteed to be below the limit: the latching cycle writes its
+	// over-limit measurement to CurrentDrawdownPct before the latch check, and
+	// the owner-DM reset path clears only KillSwitchActive/KillSwitchAt. An
+	// unclamped floor would therefore re-latch the whole book on the first
+	// untrusted cycle after that reset, off a reading nothing measured this
+	// cycle. The clamp keeps the floor at or below the limit while the latch
+	// test is a strict >, so a carried value can raise the reported reading
+	// but can never fire the kill switch on its own. A genuine this-cycle
+	// measurement above the limit is unaffected — it is not clamped.
+	//
+	// The clamp is applied at READ time, not stored, so a later
+	// MaxDrawdownPct change (SIGHUP) re-derives it instead of permanently
+	// truncating the recorded reading. When MaxDrawdownPct is non-positive the
+	// clamp yields a non-positive floor, which cannot raise a drawdown that is
+	// already floored at 0 — the degenerate config keeps its existing meaning.
 	priorEquityDD := prs.CurrentDrawdownPct
+	if priorEquityDD > cfg.MaxDrawdownPct {
+		priorEquityDD = cfg.MaxDrawdownPct
+	}
 
 	// Ratchet peak high-water mark upward only. equityTrusted gates it so a
 	// substituted or one-generation-stale total cannot move the high-water
@@ -1013,12 +1083,20 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 		// never lower it. Monotone across a run of untrusted cycles; the first
 		// trusted cycle overwrites it with a real measurement. This closes the
 		// fail-open direction (a substitute that overstates equity understates
-		// the drawdown) without letting the floor alone fire the latch — every
-		// stored reading came from a cycle that did not latch.
+		// the drawdown), while the clamp on priorEquityDD above keeps the floor
+		// from firing the latch by itself.
+		//
+		// The floored value — not the raw quotient — is what gets persisted,
+		// so CurrentDrawdownPct always equals the number this cycle's latch and
+		// warn band decided on. DrawdownReadingSubstituted marks it as such for
+		// the operator surfaces (see the PortfolioRiskState doc comment).
+		substituted := false
 		if !equityTrusted && equityDD < priorEquityDD {
 			equityDD = priorEquityDD
+			substituted = true
 		}
 		prs.CurrentDrawdownPct = equityDD
+		prs.DrawdownReadingSubstituted = substituted
 	}
 	if perpsMargin > 0 && perpsUnrealizedLoss > 0 {
 		marginDD = perpsUnrealizedLoss / perpsMargin * 100
