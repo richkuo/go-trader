@@ -1008,6 +1008,34 @@ class TestSyncProtection:
         )
         adapter.cancel_order_by_oid.assert_called_once_with("ETH", 303)
 
+    def test_sl_filled_at_submit_skips_tp_placement(self):
+        """#1456 review round 18 (Optional 1): a submit-filled SL has flattened
+        the position on-chain. The TP tier walk below would place reduce-only
+        limits against nothing, sized off the virtual quantity — and Go books
+        the close BEFORE applyHyperliquidProtectionSync, so any TP OIDs placed
+        here were dropped from tracking for good. None may be placed."""
+        out, adapter = self._run_sync(
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+            place_responses={"sl": {
+                "status": "ok",
+                "response": {"type": "order", "data": {"statuses": [
+                    {"filled": {"oid": 67890, "avgPx": "1980"}}
+                ]}},
+            }},
+        )
+        assert out.get("stop_loss_filled_immediately") is True
+        adapter.place_take_profit_limit.assert_not_called()
+        assert not out.get("tp_oids")
+
+    def test_resting_still_places_and_records_tps(self):
+        """#1456 review round 18 (Optional 1) must-survive: a normal resting
+        placement still walks the tiers and records both TP OIDs."""
+        out, adapter = self._run_sync(
+            tp_tiers=[(1.0, 0.5), (2.0, 1.0)],
+        )
+        assert adapter.place_take_profit_limit.call_count == 2
+        assert len(out.get("tp_oids") or []) == 2
+
     def test_existing_oid_still_open_returns_same_oid(self):
         """OID still in open_orders → echo it back, do NOT call place_take_profit_limit."""
         out, adapter = self._run_sync(

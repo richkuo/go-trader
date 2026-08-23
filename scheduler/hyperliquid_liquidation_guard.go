@@ -601,6 +601,13 @@ func hlLiquidationArmClampAction(result *HyperliquidStopLossUpdateResult, armOK 
 		if result.StopLossFilledImmediately && result.StopLossTriggerPx > 0 {
 			return hlLiquidationActionExited
 		}
+		// #1456 review round 18 (Needs Fixing 1): an unreadable placement may
+		// be RESTING — never "re-arm failed", whose text asserts the position
+		// has NO exchange-side stop and whose unprotected classification
+		// re-alerts unthrottled every cycle.
+		if result.StopLossOutcomeUnknown {
+			return hlLiquidationActionOutcomeUnknown
+		}
 	}
 	return hlLiquidationActionRearmFailed
 }
@@ -778,6 +785,11 @@ type hlLiquidationAuditCandidate struct {
 	// Unprotected is true when the position carries NO exchange-side stop at
 	// all (no OID and no trigger).
 	Unprotected bool
+	// UnresolvedPlacement (#1456 review round 18) is true when a trigger is
+	// recorded but NO OID is — the unreadable-fresh-placement residue. An
+	// order may rest under an unknown OID; every placement queue is closed
+	// for that shape and the audit only keeps the operator alert alive.
+	UnresolvedPlacement bool
 	// BookConsistent is true when this coin's SIGNED recorded net across every
 	// live HL strategy fits inside the on-chain size reported by this cycle's
 	// snapshot (#1456 review round 8: the exchange nets one position per coin,
@@ -802,6 +814,11 @@ const (
 	// hlAuditRefuse — the condition is real but the coin's book does not match
 	// the on-chain snapshot; report only.
 	hlAuditRefuse
+	// hlAuditReport (#1456 review round 18) — an unreadable fresh placement's
+	// residue (trigger recorded, OID unknown). Report only: no queue may
+	// re-place it, but the operator must keep hearing that protection is
+	// UNVERIFIED in case nothing actually rested.
+	hlAuditReport
 )
 
 // hlLiquidationAuditAction is one decided unit of work.
@@ -839,6 +856,12 @@ func planHyperliquidLiquidationAudit(candidates []hlLiquidationAuditCandidate) [
 			continue
 		}
 		switch {
+		case c.UnresolvedPlacement:
+			// Report-only (round 18): keep the outcome-unknown alert alive
+			// without submitting anything.
+			actions = append(actions, hlLiquidationAuditAction{
+				Candidate: c, Kind: hlAuditReport, ClampedTriggerPx: c.StopLossTriggerPx,
+			})
 		case c.Unprotected:
 			// Only a static scalar owner is re-armed here; anything else has a
 			// re-place path of its own that runs when the strategy next does.
@@ -1032,6 +1055,13 @@ func collectHLLiquidationAuditCandidates(
 			staticScalar := !scaleInLiveProtectionResizable(sc)
 			armed := pos.StopLossTriggerPx > 0
 			unprotected := pos.StopLossOID == 0 && pos.StopLossTriggerPx <= 0
+			// #1456 review round 18 (Needs Fixing 1): a recorded trigger with
+			// NO OID is the unreadable-fresh-placement residue — an order may
+			// be resting under an OID nobody recorded. It must neither re-place
+			// (the queues are closed for exactly that reason) nor fall silent:
+			// if nothing actually rested, this is a live naked position and the
+			// operator keeps hearing about it.
+			unresolvedPlacement := pos.StopLossOID == 0 && armed
 			if !armed && !unprotected {
 				// An OID with no recorded trigger: something rests on-chain but
 				// its geometry is unknown, so neither a tighten nor a re-arm can
@@ -1040,6 +1070,27 @@ func collectHLLiquidationAuditCandidates(
 			}
 			if unprotected && !staticScalar {
 				// The walker / fixed-ATR arm / protection sync re-arms these.
+				continue
+			}
+			if unresolvedPlacement {
+				// Report-only: no queue may re-place this shape (round 18), but
+				// silence would hide the case where NOTHING rested. No
+				// liquidation geometry is required to say that, so this check
+				// sits BEFORE the unknown-liqPx skip.
+				slQty, capped := hlSLEffectiveQty(symbol, pos.Quantity, hlOnChainAbsQty)
+				out = append(out, hlLiquidationAuditCandidate{
+					StrategyID:          sc.ID,
+					Script:              sc.Script,
+					Symbol:              symbol,
+					Side:                pos.Side,
+					Qty:                 slQty,
+					VirtualQty:          pos.Quantity,
+					QtyCapped:           capped,
+					StopLossOID:         0,
+					StopLossTriggerPx:   pos.StopLossTriggerPx,
+					StaticScalarOwner:   staticScalar,
+					UnresolvedPlacement: true,
+				})
 				continue
 			}
 			liqPx := hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, pos.Side)
@@ -1180,6 +1231,16 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 			}
 			return result, hlReplaceProtectionLost
 		}
+		if result.StopLossOutcomeUnknown {
+			// #1456 review round 18 (Needs Fixing 1): a FRESH placement
+			// (cancelOID == 0 — audit static-scalar re-arm) whose submission
+			// went out but whose outcome is unreadable may be RESTING. Same
+			// rule as below, without a cancel flag to gate on.
+			if logger != nil {
+				logger.Error("CRITICAL: liquidation-clamp placement for %s returned an error and its outcome could NOT be read — it may be resting untracked: %s", candidate.Symbol, result.Error)
+			}
+			return result, hlReplaceOutcomeUnknown
+		}
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace returned error for %s: %s", candidate.Symbol, result.Error)
 		}
@@ -1222,12 +1283,19 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		return result, hlReplaceFilled
 	case result.StopLossOID > 0:
 		return result, hlReplacePlaced
-	case result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown:
+	case result.StopLossOutcomeUnknown:
 		// #1456 review round 16: the cancel landed but the placement's outcome
 		// is unreadable. The order may be resting, so neither the state clear
 		// nor the "NO exchange-side stop" claim is justified.
+		// #1456 review round 18 (Needs Fixing 1): the cancel flag is NOT part
+		// of this verdict. A FRESH placement (cancelOID == 0 — the audit's
+		// static-scalar re-arm) never emits cancel_stop_loss_succeeded, so
+		// gating on it routed an unreadable re-arm to the terminal Deferred,
+		// which left the position reading Unprotected and re-armed a SECOND
+		// full-size reduce-only stop on the next cycle under an OID nobody
+		// recorded.
 		if logger != nil {
-			logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s and the replacement's outcome could NOT be read — it may be resting untracked; recorded state kept", candidate.StopLossOID, candidate.Symbol)
+			logger.Error("CRITICAL: liquidation-clamp SL for %s (old OID=%d) could not read the placement's outcome — it may be resting untracked; recorded state kept", candidate.Symbol, candidate.StopLossOID)
 		}
 		return result, hlReplaceOutcomeUnknown
 	case result.CancelStopLossSucceeded:
@@ -1466,7 +1534,7 @@ func runHyperliquidLiquidationAudit(
 	// so a recurrence re-alerts on its first cycle instead of being suppressed
 	// by a stale key.
 	for _, c := range candidates {
-		if !c.Unprotected && !stopPastLiquidation(c.Side, c.StopLossTriggerPx, c.LiquidationPx) {
+		if !c.Unprotected && !c.UnresolvedPlacement && !stopPastLiquidation(c.Side, c.StopLossTriggerPx, c.LiquidationPx) {
 			clearHLLiquidationAlert(c.StrategyID, c.Symbol)
 		}
 	}
@@ -1502,6 +1570,19 @@ func runHyperliquidLiquidationAudit(
 				sc: sc, symbol: c.Symbol, side: c.Side,
 				triggerPx: c.StopLossTriggerPx, clampedPx: act.ClampedTriggerPx, liqPx: c.LiquidationPx,
 				action: hlLiquidationActionUnreconciled, logger: logger,
+			})
+			continue
+		}
+		if act.Kind == hlAuditReport {
+			// #1456 review round 18 (Needs Fixing 1): an unreadable fresh
+			// placement left a trigger recorded with no OID. Nothing is placed
+			// or cancelled here — the alert (throttled like every other action)
+			// keeps saying the protection surface is UNVERIFIED until something
+			// resolves it.
+			pending = append(pending, hlLiquidationPendingAlert{
+				sc: sc, symbol: c.Symbol, side: c.Side,
+				triggerPx: 0, clampedPx: act.ClampedTriggerPx, liqPx: c.LiquidationPx,
+				action: hlLiquidationActionOutcomeUnknown, logger: logger,
 			})
 			continue
 		}

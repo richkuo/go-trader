@@ -2989,7 +2989,12 @@ func main() {
 								}
 								mu.Unlock()
 							}
-							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 {
+							// #1456 review round 18 (Needs Fixing 1): also requires a
+							// CLEAN slate (no recorded trigger). A recorded trigger
+							// with no OID is the unreadable-placement residue — an
+							// order may rest under an unknown OID, so re-arming here
+							// would stack a second reduce-only stop.
+							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 && hlStopLossTriggerPx == 0 {
 								triggerPx := fixedStopLossATRTriggerPx(sc, hlPosSide, hlPosSnapshot)
 								// #1450: a one-shot fixed-ATR arm has no
 								// re-place path of its own, so clamp BEFORE
@@ -3036,6 +3041,17 @@ func main() {
 												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
 												stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 												logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
+											} else if slResult.StopLossOutcomeUnknown && slResult.StopLossTriggerPx > 0 {
+												// #1456 review round 18 (Needs Fixing 1): the
+												// arm's outcome is unreadable — the order may be
+												// resting under an OID nobody recorded. Record the
+												// REQUESTED trigger (OID stays 0) so this site's own
+												// `StopLossOID == 0` guard plus the audit's armed-at-
+												// reachable-trigger read submit no second placement,
+												// instead of re-placing on every Signal == 0 cycle.
+												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
+												stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
+												logger.Warn("Fixed ATR SL outcome unreadable for %s: requested trigger $%.4f recorded (oid unknown)", result.Symbol, slResult.StopLossTriggerPx)
 											}
 										}
 										mu.Unlock()

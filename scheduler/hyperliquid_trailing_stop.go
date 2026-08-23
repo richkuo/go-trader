@@ -731,7 +731,21 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 		// re-armed a trailing owner from currentTrigger <= 0 — placing a SECOND
 		// reduce-only stop while the first one's OID had never been recorded,
 		// leaving the scheduler unable to cancel it.
-		if logger != nil {
+		//
+		// #1456 review round 18 (Needs Fixing 1): a FRESH placement (audit
+		// static-scalar re-arm, one-shot arm) has NO state to keep — keeping
+		// zero is what left the position in the Unprotected re-arm queue. Record
+		// the REQUESTED trigger with the OID left at 0: the audit then reads the
+		// candidate as armed-at-a-reachable-trigger (its clamp refuses to move
+		// an inside-liquidation trigger), so it submits no second placement,
+		// while an owner that CAN re-place still sees a trigger to reason about.
+		if pos.StopLossTriggerPx <= 0 && slUpdate.StopLossTriggerPx > 0 {
+			pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
+			if logger != nil {
+				logger.Info("Unreadable fresh placement for %s: requested trigger $%.4f recorded (oid unknown)", symbol, slUpdate.StopLossTriggerPx)
+			}
+		}
+		if logger != nil && prevSLOID > 0 {
 			logger.Warn("Trailing SL old OID=%d was cancelled and the replacement's outcome could NOT be read — keeping recorded stop state; it may be resting untracked", prevSLOID)
 		}
 	case slUpdate.CancelStopLossSucceeded && prevSLOID > 0 && pos.StopLossOID == prevSLOID:

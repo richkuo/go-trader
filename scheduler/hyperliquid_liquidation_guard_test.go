@@ -2084,3 +2084,140 @@ func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 		}
 	})
 }
+
+// #1456 review round 18 (Needs Fixing 1) must-survive (a): a fresh re-arm
+// (cancelOID == 0) whose outcome cannot be read reports outcome-unknown and
+// records the REQUESTED trigger — so the following cycle submits no second
+// placement and raises no "NO exchange-side stop" CRITICAL.
+func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
+	var mu sync.RWMutex
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		if cancelOID != 0 {
+			t.Errorf("re-arm must place fresh, got cancelOID=%d", cancelOID)
+		}
+		return &HyperliquidStopLossUpdateResult{
+			StopLossError:          "place_stop_loss returned no usable status: {...}",
+			StopLossOutcomeUnknown: true,
+			StopLossTriggerPx:      triggerPx,
+		}, "", nil
+	}
+
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if calls != 1 {
+		t.Fatalf("first-pass placement calls = %d, want 1", calls)
+	}
+	pos := state.Strategies["hl-eth"].Positions["ETH"]
+	wantTrigger := 2340.5 * 1.005 // configured distance clamped just INSIDE liquidation
+	if pos.StopLossTriggerPx != wantTrigger || pos.StopLossOID != 0 {
+		t.Fatalf("state = oid=%d trigger=%.4f, want oid=0 trigger=%.4f (requested trigger recorded)", pos.StopLossOID, pos.StopLossTriggerPx, wantTrigger)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionOutcomeUnknown {
+		t.Fatalf("alert action = %q, want %q", last, hlLiquidationActionOutcomeUnknown)
+	}
+
+	// The following cycle: still exactly ONE lifetime placement.
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if calls != 1 {
+		t.Errorf("second-pass placement calls = %d total, want still 1 (no duplicate)", calls)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionOutcomeUnknown {
+		t.Errorf("second-cycle alert action = %q, want %q (unresolved stays surfaced)", last, hlLiquidationActionOutcomeUnknown)
+	}
+}
+
+// #1456 review round 18 (Needs Fixing 1) must-survive (b): a re-arm
+// POSITIVELY rejected by the open-order cap is still re-arm failed and still
+// retried next cycle — unchanged from before this round.
+func TestAuditRearmCapRejectedStillRetriedNextCycle(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
+	var mu sync.RWMutex
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{
+			StopLossError: "Order would exceed the open order limit",
+		}, "", nil
+	}
+	for i := 0; i < 2; i++ {
+		runHyperliquidLiquidationAudit(strategies, state,
+			map[string]float64{"ETH": 2340.5},
+			hlNetSideByCoinAllLong(),
+			map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	}
+	if calls != 2 {
+		t.Errorf("placement calls across two passes = %d, want 2 (genuine rejection keeps retrying)", calls)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionRearmFailed {
+		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionRearmFailed)
+	}
+}
+
+// #1456 review round 18 (Needs Fixing 1) must-survive (c): a re-arm whose
+// unreadable response the book diff resolved to one fresh oid is adopted as a
+// normal re-arm with that OID recorded.
+func TestAuditRearmAdoptsBookDiffResolvedOID(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
+	var mu sync.RWMutex
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{
+			StopLossError:     "place_stop_loss returned no usable status: {...}",
+			StopLossOID:       9002,
+			StopLossTriggerPx: triggerPx,
+		}, "", nil
+	}
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	pos := state.Strategies["hl-eth"].Positions["ETH"]
+	if pos.StopLossOID != 9002 {
+		t.Errorf("oid = %d, want 9002 (resolved re-arm adopted)", pos.StopLossOID)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionRearmed {
+		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionRearmed)
+	}
+}
+
+// #1456 review round 18 (Needs Fixing 1): the one-shot fixed-ATR arm reports
+// outcome-unknown instead of re-arm failed for an unreadable placement.
+func TestHLLiquidationArmClampActionOutcomeUnknown(t *testing.T) {
+	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{
+		StopLossError:          "boom",
+		StopLossOutcomeUnknown: true,
+		StopLossTriggerPx:      2300,
+	}, true); got != hlLiquidationActionOutcomeUnknown {
+		t.Errorf("action = %q, want %q", got, hlLiquidationActionOutcomeUnknown)
+	}
+	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{
+		StopLossError: "Order would exceed the open order limit",
+	}, true); got != hlLiquidationActionRearmFailed {
+		t.Errorf("positive rejection = %q, want re-arm failed", got)
+	}
+}

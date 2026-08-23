@@ -1176,8 +1176,21 @@ def run_sync_protection(
                     _place_sl()
                 # action=="unknown" → leave SL OID untouched, retry next cycle
 
+        # #1456 review round 18 (Optional 1): a submit-filled SL has FLATTENED
+        # the position on-chain. Walking the TP tiers below would place
+        # reduce-only limit orders against a position that no longer exists,
+        # sized off the virtual quantity — and Go books the close and returns
+        # BEFORE applyHyperliquidProtectionSync, so any OID those placements
+        # returned was dropped from tracking for good. Place nothing once the
+        # SL reported an immediate fill.
         tiers = _normalize_tp_tiers(tp_tiers, tp1_atr_mult, tp1_fraction, tp2_atr_mult)
-        if tiers:
+        if out.get("stop_loss_filled_immediately"):
+            print(
+                f"[WARN] TP protection skipped for {symbol}: SL filled at submit — "
+                f"the position is flat on-chain and no TP orders are placed",
+                file=sys.stderr,
+            )
+        elif tiers:
             existing_tp_oids = list(tp_oids or [])
             if not existing_tp_oids and (tp1_oid > 0 or tp2_oid > 0):
                 existing_tp_oids = [tp1_oid, tp2_oid]

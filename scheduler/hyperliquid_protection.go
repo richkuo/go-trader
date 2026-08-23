@@ -106,6 +106,21 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 			forceSLPastLiquidation = true
 		}
 	}
+	// #1456 review round 18 (Needs Fixing 1): an UNREADABLE fresh placement
+	// records its REQUESTED trigger with the OID left at 0
+	// (applyTrailingStopUpdateResult / the fixed-ATR arm site) — the order may
+	// be resting under an OID nobody recorded. Re-placing from the empty-OID
+	// path here would stack a second reduce-only stop (round 11's exact
+	// hazard), so suppress this plan's SL leg for the shape and let the TPs
+	// still sync. The recorded trigger keeps the audit's re-arm queue closed;
+	// a positively rejected placement clears both fields instead, so genuine
+	// retries are unaffected. After an external fill this shape exists only on
+	// a position the reconciler is about to delete — suppressing the placement
+	// is correct there too.
+	if pos.StopLossOID == 0 && pos.StopLossTriggerPx > 0 {
+		slMult = 0
+		forceSLPastLiquidation = false
+	}
 	tierCount := len(tiers)
 	return hlProtectionPlan{
 		ForceSLReplace: forceSLPastLiquidation,
