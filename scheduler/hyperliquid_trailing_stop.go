@@ -797,6 +797,9 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	// exchange-side stop at all. Same invariant hlLiquidationClampReplace
 	// enforces for the audit.
 	clampOutcome := hlLiquidationActionReplaceDeferred
+	// #1456 review round 7: set only when the LIQUIDATION clamp forced this
+	// cancel+replace. An ordinary trailing move keeps today's no-retry behavior.
+	clampTriggered := false
 	if policy.liquidationPx > 0 {
 		offending := newTrigger
 		if !replace {
@@ -805,6 +808,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		if clamped, clampedOK := clampStopInsideLiquidation(side, offending, policy.liquidationPx); clampedOK {
 			newTrigger = clamped
 			replace = true
+			clampTriggered = true
 			// The alert is deferred so it reports what ACTUALLY happened, and so
 			// it drains after lockHyperliquidTrailingUpdate releases — defers run
 			// LIFO and that lock is taken below.
@@ -898,6 +902,21 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	updateConfirmed := restingConfirmed || result.CancelStopLossSucceeded
 	if !updateConfirmed {
 		return highWater, result, false
+	}
+	// #1456 review round 7: the clamp branch CANCELLED a resting stop; if the
+	// replacement did not rest, retry ONCE in the same cycle — the same
+	// guarantee the audit enforces for its own strips. Recovery otherwise waits
+	// for this strategy's next due Signal == 0 cycle. Nothing rests on the book
+	// in this shape (that is what CancelStopLossSucceeded-without-rest means),
+	// so the fresh placement cannot duplicate an order. We already hold this
+	// coin's trailing-update lock, so the lock-free place primitive is used.
+	if result.CancelStopLossSucceeded && !restingConfirmed && clampTriggered {
+		retryResult, retryOutcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, qty, newTrigger, logger)
+		if retryOutcome == hlReplacePlaced || retryOutcome == hlReplaceFilled {
+			result = retryResult
+			filledAtSubmit = result.StopLossFilledImmediately && result.StopLossTriggerPx > 0
+			restingConfirmed = !filledAtSubmit && result.StopLossOID > 0
+		}
 	}
 	switch {
 	case filledAtSubmit:

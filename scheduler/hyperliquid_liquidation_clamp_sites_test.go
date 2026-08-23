@@ -738,3 +738,72 @@ func TestUnprotectedAlertNamesActualRecoveryCadence(t *testing.T) {
 		}
 	}
 }
+
+// #1456 review round 7: the walker's OWN clamp branch gets the same in-cycle
+// retry guarantee the audit enforces — when its cancel lands and the
+// replacement does not rest, it places fresh once before returning.
+func TestTrailingWalkerClampRetriesPlacementItStripped(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	type call struct {
+		cancelOID int64
+	}
+	var calls []call
+	callN := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		callN++
+		calls = append(calls, call{cancelOID: cancelStopLossOID})
+		if callN == 1 {
+			// Cancel lands, the open-order cap rejects the replacement.
+			return &HyperliquidStopLossUpdateResult{
+				CancelStopLossSucceeded: true,
+				StopLossError:           "Order would exceed the open order limit",
+			}, "", nil
+		}
+		// The same-cycle retry RESTS.
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 8100, StopLossTriggerPx: triggerPx}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	newHighWater, result, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t))
+	if !ok || result == nil || result.StopLossOID != 8100 {
+		t.Fatalf("walker must adopt the RETRY result (oid=%v ok=%v)", result, ok)
+	}
+	_ = newHighWater
+	if len(calls) != 2 || calls[1].cancelOID != 0 {
+		t.Errorf("calls = %+v, want exactly one fresh retry with cancelOID 0", calls)
+	}
+	if got := lastLiqAlertAction("hl-eth", "ETH"); got != hlLiquidationActionClamped {
+		t.Errorf("alert action = %q, want %q — the position IS protected again", got, hlLiquidationActionClamped)
+	}
+}
+
+// An ORDINARY trailing cancel+replace failure (no liquidation clamp involved)
+// keeps today's no-retry behavior — the retry belongs to the #1450 clamp path
+// only.
+func TestTrailingWalkerNonClampReplaceTakesNoRetry(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	sc := liqWalkerStrategy()
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded: true,
+			StopLossError:           "Order would exceed the open order limit",
+		}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	// No liquidationPx: an ordinary trail move past the min-move debounce
+	// (HWM 2500 -> trigger 2425, well below the resting 2330).
+	_, _, _ = runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2500, 2330, 4242,
+		trailingReplacePolicy{}, nil, newTestLogger(t))
+	if calls != 1 {
+		t.Errorf("placement calls = %d, want 1 — a non-clamp failure takes no in-cycle retry", calls)
+	}
+}

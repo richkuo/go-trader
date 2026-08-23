@@ -1177,14 +1177,24 @@ func hlLiquidationRetryPlace(candidate hlLiquidationAuditCandidate, clampedTrigg
 	}
 	unlock := lockHyperliquidTrailingUpdate(candidate.Symbol)
 	defer unlock()
+	return hlLiquidationPlaceFresh(candidate.Script, candidate.Symbol, candidate.Side, candidate.Qty, clampedTriggerPx, logger)
+}
 
-	result, stderr, err := runHyperliquidUpdateStopLossFunc(candidate.Script, candidate.Symbol, candidate.Side, candidate.Qty, clampedTriggerPx, 0)
+// hlLiquidationPlaceFresh submits ONE fresh placement (cancelOID = 0) and
+// classifies the outcome. Callers that already hold lockHyperliquidTrailingUpdate
+// (the trailing walker's clamp branch) may call it directly — it does NOT take
+// the coin lock itself.
+func hlLiquidationPlaceFresh(script, symbol, side string, qty, triggerPx float64, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
+	if triggerPx <= 0 || qty <= 0 {
+		return nil, hlReplaceDeferred
+	}
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(script, symbol, side, qty, triggerPx, 0)
 	if stderr != "" && logger != nil {
 		logger.Info("liquidation-clamp SL retry stderr: %s", stderr)
 	}
 	if err != nil {
 		if logger != nil {
-			logger.Error("Liquidation-clamp SL retry failed for %s: %v", candidate.Symbol, err)
+			logger.Error("Liquidation-clamp SL retry failed for %s: %v", symbol, err)
 		}
 		return result, hlReplaceDeferred
 	}
@@ -1194,14 +1204,14 @@ func hlLiquidationRetryPlace(candidate hlLiquidationAuditCandidate, clampedTrigg
 	switch {
 	case result.Error != "", result.OpenOrderCheckError != "", result.StopLossError != "":
 		if logger != nil && result.StopLossError != "" {
-			logger.Error("CRITICAL: liquidation-clamp SL retry did not rest for %s: %s — the position has NO exchange-side stop", candidate.Symbol, result.StopLossError)
+			logger.Error("CRITICAL: liquidation-clamp SL retry did not rest for %s: %s — the position has NO exchange-side stop", symbol, result.StopLossError)
 		}
 		return result, hlReplaceDeferred
 	case result.StopLossFilledImmediately && result.StopLossTriggerPx > 0:
 		return result, hlReplaceFilled
 	case result.StopLossOID > 0:
 		if logger != nil {
-			logger.Warn("Liquidation-clamp SL retry rested for %s at $%.4f after the first placement was rejected", candidate.Symbol, result.StopLossTriggerPx)
+			logger.Warn("Liquidation-clamp SL retry rested for %s at $%.4f after the first placement was rejected", symbol, result.StopLossTriggerPx)
 		}
 		return result, hlReplacePlaced
 	}
