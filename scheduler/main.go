@@ -951,6 +951,26 @@ func main() {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
+					// #1456 review round 17 (Needs Fixing 2): this pass cancels
+					// and places LIVE reduce-only stops, re-arms static-scalar
+					// owners, books realized closes and converges on-chain hedge
+					// legs. The dispatch phase below refuses exactly that class
+					// of work once saveFailures hits 3; this branch sits BEFORE
+					// that gate and stays reachable while dueStrategies remains
+					// empty, so on a quiet fleet whose SQLite writes are failing
+					// it would move live orders every cadence while every booked
+					// close existed only in memory. Halt identically: place
+					// nothing, book nothing, until a save succeeds. The probe
+					// save is what lets a fleet that never comes due recover —
+					// the dispatch halt heals through its own end-of-cycle save
+					// attempt, and without a probe this branch has none — and
+					// the clock stamp keeps it to one attempt per cadence.
+					if saveFailures >= 3 {
+						fmt.Println("[CRITICAL] State save failed 3x, skipping off-cycle liquidation audit this pass")
+						offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, 0, offCycleAuditSaveDirty, saveFailures, true)
+						lastLiquidationAudit = time.Now().UTC()
+						continue
+					}
 					mutations := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr)
 					// Stamp unconditionally — including fetch failure — so a
 					// failing endpoint can never turn this branch into a hot
@@ -986,7 +1006,7 @@ func main() {
 					// already DM'd the original close. Flush inline before
 					// sleeping, exactly as reconcilePendingLimitOrders does
 					// before its own continue. Nothing changed → no extra write.
-					offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, mutations, offCycleAuditSaveDirty, saveFailures)
+					offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, mutations, offCycleAuditSaveDirty, saveFailures, false)
 					continue
 				}
 				delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
@@ -2121,8 +2141,13 @@ func main() {
 							channelTrades[chKey]++
 							channelTradeDetails[chKey+"|"+extractAsset(cd.SC)] = append(channelTradeDetails[chKey+"|"+extractAsset(cd.SC)], cd.Detail)
 						}
-						sendTradeAlerts(cd.SC, state.Strategies[cd.SC.ID], 1, &mu, notifier)
 					}
+					// Grouped per strategy (#1456 review round 17, Optional 1):
+					// sendTradeAlerts emits the LAST n rows per call, so one
+					// call per detail re-emitted the newest close twice and
+					// never reported the older one when a single strategy booked
+					// two closes this pass.
+					sendAuditCloseAlerts(auditRes.CloseDetails, state.Strategies, &mu, notifier)
 					totalTrades += len(auditRes.CloseDetails)
 					// #1456 review round 10 (Optional 3): an audit-booked close
 					// is a primary lifecycle event. Converge the correlated

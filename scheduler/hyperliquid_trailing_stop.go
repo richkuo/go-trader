@@ -940,12 +940,22 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	// first submission may be resting, so a fresh placement here could stack a
 	// second untracked reduce-only stop (#1456 review round 11). Only a
 	// positively rejected placement retries.
+	retryOutcomeUnknown := false
 	if result.CancelStopLossSucceeded && !restingConfirmed && clampTriggered && !result.StopLossOutcomeUnknown {
 		retryResult, retryOutcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, qty, newTrigger, logger)
-		if retryOutcome == hlReplacePlaced || retryOutcome == hlReplaceFilled {
+		switch retryOutcome {
+		case hlReplacePlaced, hlReplaceFilled:
 			result = retryResult
 			filledAtSubmit = result.StopLossFilledImmediately && result.StopLossTriggerPx > 0
 			restingConfirmed = !filledAtSubmit && result.StopLossOID > 0
+		case hlReplaceOutcomeUnknown:
+			// #1456 review round 17 (Needs Fixing 1): the RETRY's own outcome
+			// is unreadable — it may be resting. Adopt the retry payload so
+			// applyTrailingStopUpdateResult KEEPS recorded stop state (never a
+			// next-cycle re-arm while an untracked order may exist), and report
+			// outcome-unknown instead of "NO exchange-side stop".
+			result = retryResult
+			retryOutcomeUnknown = true
 		}
 	}
 	switch {
@@ -953,7 +963,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		clampOutcome = hlLiquidationActionExited
 	case restingConfirmed:
 		clampOutcome = hlLiquidationActionClamped
-	case result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown:
+	case retryOutcomeUnknown || (result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown):
 		// #1456 review round 16: the replacement may be resting. Reporting
 		// "protection lost" here asserts a fact nobody measured, and its
 		// recovery sentence promises a re-place that must not happen.

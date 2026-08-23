@@ -1681,7 +1681,7 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	t.Run("booked close is persisted before the branch sleeps", func(t *testing.T) {
 		db := openTestDB(t)
 		state := newState()
-		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 1, false, 0)
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 1, false, 0, false)
 		if dirty || failures != 0 {
 			t.Fatalf("dirty=%v failures=%d, want false/0", dirty, failures)
 		}
@@ -1701,7 +1701,7 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	t.Run("nothing changed and nothing pending writes nothing", func(t *testing.T) {
 		db := openTestDB(t)
 		state := newState()
-		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, false, 2)
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, false, 2, false)
 		if dirty {
 			t.Errorf("dirty = true, want false")
 		}
@@ -1721,7 +1721,7 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 		db := openTestDB(t)
 		state := newState()
 		db.Close() // force SaveStateWithDB to fail
-		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 1, false, 0)
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 1, false, 0, false)
 		if !dirty {
 			t.Errorf("dirty = false after a failed save, want true (close still only in memory)")
 		}
@@ -1733,7 +1733,7 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	t.Run("a latched failure retries on a pass that books nothing", func(t *testing.T) {
 		db := openTestDB(t)
 		state := newState()
-		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, true, 1)
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, true, 1, false)
 		if dirty || failures != 0 {
 			t.Fatalf("dirty=%v failures=%d, want false/0 after the retry succeeded", dirty, failures)
 		}
@@ -1869,4 +1869,218 @@ func TestOutcomeUnknownIsNotProtectionLost(t *testing.T) {
 	if !hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{}) {
 		t.Errorf("a positively rejected placement must still retry")
 	}
+}
+
+// #1456 review round 17 (Needs Fixing 1): a placement must be classified by
+// what actually RESTS, never by accompanying error text. Python resolves an
+// unreadable submission by open-order book diff and emits stop_loss_error
+// TOGETHER with a resolved stop_loss_oid or stop_loss_outcome_unknown.
+func TestPlaceFreshClassifiesByWhatRests(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	t.Run("book-diff resolved oid outranks the error text", func(t *testing.T) {
+		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			return &HyperliquidStopLossUpdateResult{
+				StopLossError:     "place_stop_loss returned no usable status: {...}",
+				StopLossOID:       9002,
+				StopLossTriggerPx: triggerPx,
+			}, "", nil
+		}
+		result, outcome := hlLiquidationPlaceFresh("x.py", "ETH", "long", 1.0, 2300, nil)
+		if outcome != hlReplacePlaced {
+			t.Fatalf("outcome = %v, want placed (the diff resolved one resting oid)", outcome)
+		}
+		if result == nil || result.StopLossOID != 9002 {
+			t.Fatalf("result = %+v, want the resolved oid", result)
+		}
+	})
+
+	t.Run("unreadable retry is outcome-unknown, never protection-lost", func(t *testing.T) {
+		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			return &HyperliquidStopLossUpdateResult{
+				StopLossError:          "place_stop_loss failed: boom",
+				StopLossOutcomeUnknown: true,
+			}, "", nil
+		}
+		if _, outcome := hlLiquidationPlaceFresh("x.py", "ETH", "long", 1.0, 2300, nil); outcome != hlReplaceOutcomeUnknown {
+			t.Fatalf("outcome = %v, want outcome-unknown", outcome)
+		}
+	})
+
+	t.Run("positively rejected placement still defers", func(t *testing.T) {
+		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			return &HyperliquidStopLossUpdateResult{
+				StopLossError: "Order would exceed the open order limit",
+			}, "", nil
+		}
+		if _, outcome := hlLiquidationPlaceFresh("x.py", "ETH", "long", 1.0, 2300, nil); outcome != hlReplaceDeferred {
+			t.Fatalf("outcome = %v, want deferred", outcome)
+		}
+	})
+}
+
+// #1456 review round 17 (Needs Fixing 1) must-survive (a): a clamp retry whose
+// response was unreadable but whose open-order diff resolved one fresh oid is
+// adopted as a normal clamp — OID recorded, no protection-lost alert, so the
+// next cycle cannot re-arm a second full-size reduce-only stop.
+func TestAuditRetryAdoptsBookDiffResolvedOID(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqTrailingAuditFixture(t)
+	var mu sync.RWMutex
+	callN := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		callN++
+		if callN == 1 {
+			// Cancel lands, the open-order cap rejects the replacement.
+			return &HyperliquidStopLossUpdateResult{
+				CancelStopLossSucceeded: true,
+				StopLossError:           "Order would exceed the open order limit",
+			}, "", nil
+		}
+		// The retry's submission was unreadable but the book diff resolved it:
+		// error text AND a resting oid travel together.
+		return &HyperliquidStopLossUpdateResult{
+			StopLossError:     "place_stop_loss returned no usable status: {...}",
+			StopLossOID:       9002,
+			StopLossTriggerPx: triggerPx,
+		}, "", nil
+	}
+
+	res := runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+
+	if callN != 2 {
+		t.Errorf("placement calls = %d, want 2 (clamp + in-cycle retry)", callN)
+	}
+	pos := state.Strategies["hl-eth"].Positions["ETH"]
+	if pos.StopLossOID != 9002 {
+		t.Errorf("final oid = %d, want 9002 (resolved retry adopted)", pos.StopLossOID)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionClamped {
+		t.Errorf("alert action = %q, want %q (no protection-lost report)", last, hlLiquidationActionClamped)
+	}
+	if res.StateMutations < 1 {
+		t.Errorf("state mutations = %d, want >= 1 (oid rewrite must flush)", res.StateMutations)
+	}
+}
+
+// #1456 review round 17 (Needs Fixing 1) must-survive (b): a retry whose
+// outcome is genuinely unresolvable reports outcome-unknown and KEEPS recorded
+// stop state — the position must not become an Unprotected re-arm candidate on
+// the next cycle while an untracked reduce-only order may be resting.
+func TestAuditRetryOutcomeUnknownKeepsStateAndReportsUnknown(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqTrailingAuditFixture(t)
+	var mu sync.RWMutex
+	callN := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		callN++
+		if callN == 1 {
+			return &HyperliquidStopLossUpdateResult{
+				CancelStopLossSucceeded: true,
+				StopLossError:           "Order would exceed the open order limit",
+			}, "", nil
+		}
+		return &HyperliquidStopLossUpdateResult{
+			StopLossError:          "place_stop_loss failed: boom",
+			StopLossOutcomeUnknown: true,
+			StopLossTriggerPx:      triggerPx,
+		}, "", nil
+	}
+
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+
+	pos := state.Strategies["hl-eth"].Positions["ETH"]
+	if pos.StopLossOID != 4242 || pos.StopLossTriggerPx != 2325 {
+		t.Fatalf("state cleared to oid=%d trigger=%.4f, want kept 4242/2325 (never an Unprotected re-arm candidate)", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionOutcomeUnknown {
+		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionOutcomeUnknown)
+	}
+}
+
+// #1456 review round 17 (Needs Fixing 1) must-survive (c): a retry positively
+// rejected by the open-order cap produces exactly one honest protection-lost
+// report and clears the dead OID — unchanged from the pre-round-17 behavior.
+func TestAuditRetryCapRejectedStillProtectionLost(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqTrailingAuditFixture(t)
+	var mu sync.RWMutex
+	callN := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		callN++
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded: callN == 1,
+			StopLossError:           "Order would exceed the open order limit",
+		}, "", nil
+	}
+
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+
+	if callN != 2 {
+		t.Errorf("placement calls = %d, want 2", callN)
+	}
+	pos := state.Strategies["hl-eth"].Positions["ETH"]
+	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
+		t.Errorf("dead oid not cleared: oid=%d trigger=%.4f, want 0/0", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionProtectionLost {
+		t.Errorf("alert action = %q, want %q", last, hlLiquidationActionProtectionLost)
+	}
+}
+
+// #1456 review round 17 (Needs Fixing 2): force=true makes the flush attempt a
+// save even with nothing mutated and nothing dirty — the halt path's recovery
+// probe, without which a fleet that never comes due could never clear the
+// latch after SQLite recovers.
+func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
+	cfg := &Config{Strategies: []StrategyConfig{{ID: "hl-live", Platform: "hyperliquid", Type: "perps"}}}
+	newState := func() *AppState {
+		return &AppState{Strategies: map[string]*StrategyState{
+			"hl-live": {ID: "hl-live", Platform: "hyperliquid", Type: "perps",
+				Cash: 1234.5, InitialCapital: 1000,
+				Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
+		}}
+	}
+	var mu sync.RWMutex
+
+	t.Run("force saves through a clean latch", func(t *testing.T) {
+		db := openTestDB(t)
+		state := newState()
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, false, 3, true)
+		if dirty || failures != 0 {
+			t.Fatalf("dirty=%v failures=%d, want false/0 (probe save succeeded, halt cleared)", dirty, failures)
+		}
+	})
+
+	t.Run("force keeps counting on a failing save", func(t *testing.T) {
+		db := openTestDB(t)
+		state := newState()
+		db.Close()
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, false, 3, true)
+		if !dirty {
+			t.Errorf("dirty = false after a failed probe save, want true")
+		}
+		if failures != 4 {
+			t.Errorf("failures = %d, want 4 (probe failure counts like any save failure)", failures)
+		}
+	})
 }

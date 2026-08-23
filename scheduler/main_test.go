@@ -1341,3 +1341,48 @@ func TestKnownSubcommandsMatchDispatch(t *testing.T) {
 		}
 	}
 }
+
+// #1456 review round 17 (Optional 1): one strategy booking two audit closes in
+// the same pass must produce two DISTINCT trade DMs. sendTradeAlerts emits the
+// LAST n rows per call, so the grouping helper hands it the per-strategy count;
+// calling it once per detail re-emitted only the newest row.
+func TestSendAuditCloseAlertsGroupsPerStrategy(t *testing.T) {
+	mock := &mockNotifier{}
+	sc := StrategyConfig{
+		ID:       "test-spot-sma",
+		Type:     "spot",
+		Platform: "binanceus",
+		Args:     []string{"sma", "BTC/USDT", "1h", "--mode=paper"},
+	}
+	t1, t2 := testTrade(), testTrade()
+	t2.Price = 51000
+	state := &StrategyState{TradeHistory: []Trade{t1, t2}}
+	var mu sync.RWMutex
+	notifier := &MultiNotifier{
+		backends: []notifierBackend{
+			{
+				notifier:   mock,
+				ownerID:    "owner123",
+				channels:   map[string]string{},
+				dmChannels: map[string]string{"binanceus-paper": "owner123"},
+			},
+		},
+	}
+	details := []hlLiquidationCloseDetail{
+		{SC: sc, Symbol: "BTC/USDT", FillPx: 50000, Detail: "close 1"},
+		{SC: sc, Symbol: "BTC/USDT", FillPx: 51000, Detail: "close 2"},
+	}
+
+	sendAuditCloseAlerts(details, map[string]*StrategyState{sc.ID: state}, &mu, notifier)
+
+	if len(mock.dms) != 2 {
+		t.Fatalf("DMs = %d, want 2 (one per booked close)", len(mock.dms))
+	}
+	saw := map[string]bool{}
+	for _, dm := range mock.dms {
+		saw[dm.content] = true
+	}
+	if len(saw) != 2 {
+		t.Errorf("got %d distinct DM bodies, want 2 (the old close must not be swallowed by the newest-row emit)", len(saw))
+	}
+}

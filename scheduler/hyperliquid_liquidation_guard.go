@@ -1290,12 +1290,15 @@ func hlLiquidationPlaceFresh(script, symbol, side string, qty, triggerPx float64
 	if result == nil {
 		return nil, hlReplaceDeferred
 	}
+	// #1456 review round 17 (Needs Fixing 1): classification is ordered by
+	// what actually RESTS, never by error text. Python's placement resolver
+	// (check_hyperliquid.py) emits stop_loss_error TOGETHER with a resolved
+	// stop_loss_oid (open-order book diff) or stop_loss_outcome_unknown, so a
+	// payload that names an OID or an unreadable outcome can arrive inside an
+	// "error" shape. Reading the error first discarded a resting order's OID,
+	// reported protection lost for a stop that WAS resting, and made the next
+	// cycle re-arm a SECOND reduce-only stop nobody could cancel.
 	switch {
-	case result.Error != "", result.OpenOrderCheckError != "", result.StopLossError != "":
-		if logger != nil && result.StopLossError != "" {
-			logger.Error("CRITICAL: liquidation-clamp SL retry did not rest for %s: %s — the position has NO exchange-side stop", symbol, result.StopLossError)
-		}
-		return result, hlReplaceDeferred
 	case result.StopLossFilledImmediately && result.StopLossTriggerPx > 0:
 		return result, hlReplaceFilled
 	case result.StopLossOID > 0:
@@ -1303,6 +1306,16 @@ func hlLiquidationPlaceFresh(script, symbol, side string, qty, triggerPx float64
 			logger.Warn("Liquidation-clamp SL retry rested for %s at $%.4f after the first placement was rejected", symbol, result.StopLossTriggerPx)
 		}
 		return result, hlReplacePlaced
+	case result.StopLossOutcomeUnknown:
+		if logger != nil {
+			logger.Error("CRITICAL: liquidation-clamp SL retry's outcome could NOT be read for %s — it may be resting untracked", symbol)
+		}
+		return result, hlReplaceOutcomeUnknown
+	case result.Error != "", result.OpenOrderCheckError != "", result.StopLossError != "":
+		if logger != nil && result.StopLossError != "" {
+			logger.Error("CRITICAL: liquidation-clamp SL retry did not rest for %s: %s — the position has NO exchange-side stop", symbol, result.StopLossError)
+		}
+		return result, hlReplaceDeferred
 	}
 	return result, hlReplaceDeferred
 }
@@ -1354,6 +1367,29 @@ type hlLiquidationCloseDetail struct {
 	Symbol string
 	FillPx float64
 	Detail string
+}
+
+// sendAuditCloseAlerts sends the per-strategy trade DMs for one audit pass's
+// booked closes (#1456 review round 17, Optional 1). sendTradeAlerts emits the
+// LAST n rows of a strategy's TradeHistory, so calling it once per close
+// detail with count 1 re-emits only the newest row when one strategy booked
+// two closes in the same pass — the older close reached no operator surface.
+// Details are grouped per strategy (in first-seen order) and ONE call goes out
+// with that strategy's count, so each row is emitted exactly once.
+func sendAuditCloseAlerts(details []hlLiquidationCloseDetail, state map[string]*StrategyState, mu *sync.RWMutex, notifier *MultiNotifier) {
+	counts := make(map[string]int, len(details))
+	scByID := make(map[string]StrategyConfig, len(details))
+	order := make([]string, 0, len(details))
+	for _, cd := range details {
+		if _, seen := counts[cd.SC.ID]; !seen {
+			order = append(order, cd.SC.ID)
+			scByID[cd.SC.ID] = cd.SC
+		}
+		counts[cd.SC.ID]++
+	}
+	for _, id := range order {
+		sendTradeAlerts(scByID[id], state[id], counts[id], mu, notifier)
+	}
 }
 
 // applyAuditStopUpdate wraps applyTrailingStopUpdateResult for the audit's
@@ -1511,36 +1547,27 @@ func runHyperliquidLiquidationAudit(
 			}
 			mu.Unlock()
 		case hlReplaceProtectionLost:
-			// The cancel landed and the replacement did not rest. State MUST be
-			// updated so it stops pointing at an OID that no longer exists —
-			// that is also what makes this position an Unprotected re-arm
-			// candidate on the very next cycle.
+			// The cancel landed and the replacement did not rest. State MUST
+			// eventually stop pointing at an OID that no longer exists — that
+			// is also what makes this position an Unprotected re-arm candidate
+			// on the very next cycle.
 			action = hlLiquidationActionProtectionLost
-			mu.Lock()
-			// #1456 review round 13 (Optional 1): name THIS mechanism, not the
-			// trailing walker — the helper's contract says the audit passes
-			// liquidation_clamp_sl_immediate. The branch is unreachable with a
-			// filled flag today (hlLiquidationClampReplace's switch excludes it,
-			// and Python's crash handler never reports a fill), but the returns
-			// are handled exactly like the retry below so a future change to
-			// either precondition can never book an unreported close.
-			if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, result, logger); immediateFill {
-				res.ImmediateFills++
-				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
-				res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
-					SC: sc, Symbol: c.Symbol, FillPx: fillPx,
-					Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
-				})
-			}
-			mu.Unlock()
 			// #1456 review round 6: the audit CREATED this window — it ran the
 			// cancel. Retry the placement once in the same cycle instead of
 			// leaving a trailing/ATR owner naked until its next due Signal == 0
-			// cycle. Nothing rests on the book (that is what this outcome
-			// means), so the retry places fresh with nothing to cancel.
+			// cycle. Nothing rests on the book in this shape (that is what this
+			// outcome means), so the retry places fresh with nothing to cancel.
 			// EXCEPTION (#1456 review round 11): an outcome-unknown placement
 			// (unreadable response / post-submit exception) may have RESTED —
 			// skip the retry rather than stack a second untracked stop.
+			//
+			// #1456 review round 17 (Needs Fixing 1): the state clear now runs
+			// AFTER the retry resolves, because the retry's own payload can
+			// carry a resolved OID or an unreadable outcome. Clearing first and
+			// discarding a resolved OID left the resting order untracked while
+			// the position read as Unprotected — a guaranteed second full-size
+			// reduce-only stop on the next cycle.
+			clearDeadState := true
 			if hlLiquidationMayRetryReplace(result) {
 				retryResult, retryOutcome := hlLiquidationRetryPlace(c, act.ClampedTriggerPx, logger)
 				switch retryOutcome {
@@ -1550,6 +1577,7 @@ func runHyperliquidLiquidationAudit(
 					} else {
 						action = hlLiquidationActionClamped
 					}
+					clearDeadState = false
 					mu.Lock()
 					immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, retryResult, logger)
 					mu.Unlock()
@@ -1561,11 +1589,39 @@ func runHyperliquidLiquidationAudit(
 							Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
 						})
 					}
+				case hlReplaceOutcomeUnknown:
+					// The RETRY's own outcome is unreadable — it may be resting.
+					// Keep recorded state instead of clearing it into an
+					// Unprotected re-arm candidate (the stale OID self-heals: a
+					// cancel of a dead OID falls through to a fresh placement on
+					// the owner's own path), and report outcome-unknown, never
+					// "NO exchange-side stop".
+					action = hlLiquidationActionOutcomeUnknown
+					clearDeadState = false
 				default:
-					// The retry failed too: one protection-lost report for the
-					// cycle, never a duplicate resting stop and never a second
-					// alert class.
+					// The retry was positively rejected too: one protection-lost
+					// report for the cycle, never a duplicate resting stop and
+					// never a second alert class. The dead-OID clear below runs.
 				}
+			}
+			if clearDeadState {
+				mu.Lock()
+				// #1456 review round 13 (Optional 1): name THIS mechanism, not
+				// the trailing walker — the helper's contract says the audit
+				// passes liquidation_clamp_sl_immediate. A filled flag here is
+				// unreachable today (hlLiquidationClampReplace's switch excludes
+				// it, and Python's crash handler never reports a fill), but the
+				// return is handled exactly like every sibling site so a future
+				// change can never book an unreported close.
+				if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, result, logger); immediateFill {
+					res.ImmediateFills++
+					logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
+					res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
+						SC: sc, Symbol: c.Symbol, FillPx: fillPx,
+						Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
+					})
+				}
+				mu.Unlock()
 			}
 		case hlReplacePlaced, hlReplaceFilled:
 			// A FILL at submit is not a tighten — the position ended the
@@ -1720,8 +1776,15 @@ func liquidationAuditIntervalSeconds(strategies []StrategyConfig, intervals map[
 // window the inline save closes. A save failure is surfaced exactly the way the
 // end-of-cycle failure is: the shared saveFailures counter plus a [CRITICAL]
 // line, never swallowed.
-func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, mutations int, dirty bool, saveFailures int) (bool, int) {
-	if mutations <= 0 && !dirty {
+//
+// `force` (#1456 review round 17, Needs Fixing 2) makes the flush attempt a
+// save even with no mutations and nothing dirty. The caller's save-failure
+// HALT uses it as its recovery probe: while halted the audit places and books
+// nothing, so without a forced attempt no save would ever run on a fleet that
+// never comes due and the halt could not clear even after SQLite recovers.
+// One forced attempt per cadence — the caller stamps its clock either way.
+func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, mutations int, dirty bool, saveFailures int, force bool) (bool, int) {
+	if mutations <= 0 && !dirty && !force {
 		return dirty, saveFailures
 	}
 	mu.Lock()
@@ -1792,12 +1855,14 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 		if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type); chKey != "" {
 			notifier.SendToChannel(cd.SC.Platform, cd.SC.Type, fmt.Sprintf("**#1450 off-cycle liquidation audit**\n%s", cd.Detail))
 		}
-		sendTradeAlerts(cd.SC, state.Strategies[cd.SC.ID], 1, mu, notifier)
 		priceCoins[cd.Symbol] = true
 		if HedgeEnabled(cd.SC) && hedgeCoin(cd.SC) != "" {
 			priceCoins[hedgeCoin(cd.SC)] = true
 		}
 	}
+	// Grouped per strategy (#1456 review round 17, Optional 1): two closes for
+	// one strategy in this pass must produce two DISTINCT trade DMs.
+	sendAuditCloseAlerts(auditRes.CloseDetails, state.Strategies, mu, notifier)
 	prices := make(map[string]float64)
 	coins := make([]string, 0, len(priceCoins))
 	for c := range priceCoins {
