@@ -1295,6 +1295,23 @@ type hlLiquidationAuditResult struct {
 	// audit's exits reach the same trade notification every other close path
 	// produces instead of only a stdout line.
 	CloseDetails []hlLiquidationCloseDetail
+	// StateMutations counts every change the audit made to a position's
+	// PERSISTED protection state — a clamp that rested a replacement, a
+	// static-scalar re-arm, an in-cycle retry, a cancel-without-rest that
+	// zeroed a dead OID, and a booked close.
+	//
+	// #1456 review round 15 (Needs Fixing 1): booked closes alone are the
+	// audit's RARE outcome; its normal one is a resting replacement, which
+	// writes pos.StopLossOID / pos.StopLossTriggerPx and nothing else. The
+	// off-cycle branch continues past the loop body's only SaveStateWithDB, so
+	// keying the inline flush on closes alone left the new OID and trigger in
+	// memory for the whole quiet period. After an unclean exit the position
+	// reloads carrying the OLD, cancelled OID and the OLD past-liquidation
+	// trigger while the clamped order rests untracked: the next audit reads the
+	// stale trigger as past liquidation and cancels a dead OID every cycle, and
+	// the walker's cancel of that OID fails too, so stop management stalls.
+	// This counter is the off-cycle flush signal.
+	StateMutations int
 }
 
 // hlLiquidationCloseDetail is one booked close awaiting its trade alert.
@@ -1303,6 +1320,41 @@ type hlLiquidationCloseDetail struct {
 	Symbol string
 	FillPx float64
 	Detail string
+}
+
+// applyAuditStopUpdate wraps applyTrailingStopUpdateResult for the audit's
+// three apply sites and records whether the call changed PERSISTED protection
+// state, so runOffCycleLiquidationAudit can tell its caller to flush (#1456
+// review round 15). The helper reads the position's protection fields under
+// the caller's lock before and after; a booked close counts as a mutation
+// outright (recordPerpsStopLossClose deletes the position, so there is nothing
+// left to diff). A call that changes nothing — refused, deferred, or
+// re-validated away inside applyTrailingStopUpdateResult — increments nothing,
+// which is what keeps a no-op off-cycle pass from writing.
+func applyAuditStopUpdate(res *hlLiquidationAuditResult, ss *StrategyState, symbol, side string, prevSLOID int64, result *HyperliquidStopLossUpdateResult, logger *StrategyLogger) (bool, float64) {
+	var beforeOID int64
+	var beforeTriggerPx float64
+	var beforeNormalizePending bool
+	if ss != nil {
+		if pos, ok := ss.Positions[symbol]; ok && pos != nil {
+			beforeOID = pos.StopLossOID
+			beforeTriggerPx = pos.StopLossTriggerPx
+			beforeNormalizePending = pos.RatchetFallbackNormalizePending
+		}
+	}
+	immediateFill, fillPx := applyTrailingStopUpdateResult(ss, symbol, side, prevSLOID, 0, true, result, "liquidation_clamp_sl_immediate", logger)
+	if immediateFill {
+		res.StateMutations++
+		return true, fillPx
+	}
+	if ss != nil {
+		if pos, ok := ss.Positions[symbol]; ok && pos != nil {
+			if pos.StopLossOID != beforeOID || pos.StopLossTriggerPx != beforeTriggerPx || pos.RatchetFallbackNormalizePending != beforeNormalizePending {
+				res.StateMutations++
+			}
+		}
+	}
+	return false, fillPx
 }
 
 // runHyperliquidLiquidationAudit is the per-cycle driver. Sequence:
@@ -1416,7 +1468,7 @@ func runHyperliquidLiquidationAudit(
 			// and Python's crash handler never reports a fill), but the returns
 			// are handled exactly like the retry below so a future change to
 			// either precondition can never book an unreported close.
-			if immediateFill, fillPx := applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, result, "liquidation_clamp_sl_immediate", logger); immediateFill {
+			if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, result, logger); immediateFill {
 				res.ImmediateFills++
 				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
 				res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
@@ -1443,7 +1495,7 @@ func runHyperliquidLiquidationAudit(
 						action = hlLiquidationActionClamped
 					}
 					mu.Lock()
-					immediateFill, fillPx := applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, retryResult, "liquidation_clamp_sl_immediate", logger)
+					immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, retryResult, logger)
 					mu.Unlock()
 					if immediateFill {
 						res.ImmediateFills++
@@ -1474,7 +1526,7 @@ func runHyperliquidLiquidationAudit(
 			// The close reason names the AUDIT, not the trailing walker: the
 			// persisted CloseReason must match the LIQUIDATION-CLAMP DM built
 			// below (#1456 review).
-			immediateFill, fillPx := applyTrailingStopUpdateResult(ss, c.Symbol, c.Side, c.StopLossOID, 0, true, result, "liquidation_clamp_sl_immediate", logger)
+			immediateFill, fillPx := applyAuditStopUpdate(&res, ss, c.Symbol, c.Side, c.StopLossOID, result, logger)
 			mu.Unlock()
 			if immediateFill {
 				res.ImmediateFills++
@@ -1591,24 +1643,29 @@ func liquidationAuditIntervalSeconds(strategies []StrategyConfig, intervals map[
 
 // flushOffCycleLiquidationAuditState persists whatever runOffCycleLiquidationAudit
 // left in memory, and reports the caller's updated (dirty, saveFailures) pair
-// (#1456 review round 14, Needs Fixing 1).
+// (#1456 review rounds 14 and 15, Needs Fixing 1).
+//
+// `mutations` is runOffCycleLiquidationAudit's persisted-state change count —
+// resting replacements and re-arms as well as booked closes, since the audit's
+// normal outcome moves an order without closing anything.
 //
 // The off-cycle branch continues past the main loop's only end-of-cycle
-// SaveStateWithDB, so a realized close booked there — plus any hedge leg the
-// post-close reconciler converged on-chain — would exist in memory alone. The
+// SaveStateWithDB, so a stop the audit clamped or re-armed there — plus a
+// realized close and any hedge leg the post-close reconciler converged
+// on-chain — would exist in memory alone. The
 // branch is re-entered on every wake while dueStrategies stays empty, so on a
 // quiet fleet that unsaved window is the whole quiet period rather than one
 // tick. reconcilePendingLimitOrders sets the precedent: flush inline before
 // the continue.
 //
 // `dirty` carries a PRIOR pass's failed flush forward. A failed save leaves the
-// close in memory with nothing further to book, so without the carry the flush
+// mutation in memory with nothing further to book, so without the carry the flush
 // would wait for the next strategy to come due — reopening the same unbounded
 // window the inline save closes. A save failure is surfaced exactly the way the
 // end-of-cycle failure is: the shared saveFailures counter plus a [CRITICAL]
 // line, never swallowed.
-func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, booked int, dirty bool, saveFailures int) (bool, int) {
-	if booked <= 0 && !dirty {
+func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, mutations int, dirty bool, saveFailures int) (bool, int) {
+	if mutations <= 0 && !dirty {
 		return dirty, saveFailures
 	}
 	mu.Lock()
@@ -1635,11 +1692,17 @@ func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, stateDB *S
 // clock unconditionally — including on fetch failure — so this can never
 // become a hot retry loop.
 //
-// It returns the number of realized closes it booked. That count is the
-// caller's PERSISTENCE signal (#1456 review round 14, Needs Fixing 1): this
-// path books through recordPerpsStopLossClose, which is in-memory until a
-// SaveState commits, and the off-cycle branch continues past the loop's only
-// end-of-cycle save. The caller must flush before sleeping again.
+// It returns the number of PERSISTED-STATE mutations it made — every clamp
+// that rested a replacement, every static-scalar re-arm, every cancel that
+// zeroed a dead OID, and every booked close. That count is the caller's
+// PERSISTENCE signal (#1456 review rounds 14 and 15, Needs Fixing 1): all of
+// those writes are in-memory until a SaveState commits, and the off-cycle
+// branch continues past the loop's only end-of-cycle save. The caller must
+// flush before sleeping again.
+//
+// Counting only booked closes (round 14) was too narrow: a close is the
+// audit's rare outcome, while a resting replacement is its normal one, so the
+// common mutation went unsaved for the whole quiet period.
 //
 // It posts the close line straight to the operator channel rather than
 // accumulating into the per-cycle channelTrades / channelTradeDetails maps the
@@ -1663,7 +1726,9 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 	hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin := buildHLLiquidationMaps(hlPositions)
 	auditRes := runHyperliquidLiquidationAudit(strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, true, mu, notifier, time.Now().UTC())
 	if auditRes.ImmediateFills == 0 {
-		return 0
+		// No exit to alert on or hedge to converge, but a clamp / re-arm may
+		// still have rewritten this position's recorded protection.
+		return auditRes.StateMutations
 	}
 	fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 	priceCoins := make(map[string]bool)
@@ -1691,5 +1756,5 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 	if n := convergeHedgesAfterAuditClose(auditRes.CloseDetails, state.Strategies, mu, prices, notifier, logMgr.GetStrategyLogger); n > 0 {
 		fmt.Printf("[WARN] #1450 liquidation audit: converged %d hedge leg(s) post-close\n", n)
 	}
-	return len(auditRes.CloseDetails)
+	return auditRes.StateMutations
 }

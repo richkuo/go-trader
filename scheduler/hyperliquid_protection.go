@@ -439,6 +439,19 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 			notifier.SendOwnerDM(msg)
 		}
 	}
+	// #1456 review round 15: distinct from the lost-stop CRITICAL above. The
+	// replacement's outcome is genuinely unknown, so the operator is told what
+	// to check rather than told a falsehood in either direction.
+	if hlProtectionStopOutcomeUnknown(result) {
+		msg := fmt.Sprintf("**HL PROTECTION CRITICAL** [%s] %s force-replace cancelled the resting stop-loss and the replacement's outcome could NOT be read (open-order diff inconclusive) — a reduce-only stop may be resting untracked; recorded state kept, verify the order book on Hyperliquid", sc.ID, plan.Symbol)
+		if logger != nil {
+			logger.Error("%s", msg)
+		}
+		if notifier != nil && notifier.HasBackends() {
+			notifier.SendToAllChannels(msg)
+			notifier.SendOwnerDM(msg)
+		}
+	}
 	return result, true
 }
 
@@ -448,10 +461,31 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 // (StopLossOID > 0) or exited the position at submit (filled immediately)
 // is protection working, never a loss.
 func hlProtectionLostExchangeStop(result *HyperliquidProtectionSyncResult) bool {
+	// #1456 review round 15: an outcome-unknown placement is excluded. Its
+	// order may be resting, so "the position has NO exchange-side stop" would
+	// be a false CRITICAL — and the state it claims was cleared is deliberately
+	// kept. hlProtectionStopOutcomeUnknown raises its own alert instead.
 	return result != nil &&
 		result.CancelStopLossSucceeded &&
 		result.StopLossOID <= 0 &&
-		!result.StopLossFilledImmediately
+		!result.StopLossFilledImmediately &&
+		!result.StopLossOutcomeUnknown
+}
+
+// hlProtectionStopOutcomeUnknown reports the force-replace shape where the
+// cancel landed but the replacement's outcome could not be read even after the
+// open-order diff (#1456 review round 15). It is neither "protection lost" nor
+// "protection working": a reduce-only stop may be resting on the book that the
+// scheduler does not track. Recorded state is kept untouched, and the next sync
+// is deliberately still allowed to place — a duplicate reduce-only stop clips
+// to the position and no-ops once flat, while suppressing the placement could
+// leave the position genuinely naked, which is the worse failure.
+func hlProtectionStopOutcomeUnknown(result *HyperliquidProtectionSyncResult) bool {
+	return result != nil &&
+		result.CancelStopLossSucceeded &&
+		result.StopLossOID <= 0 &&
+		!result.StopLossFilledImmediately &&
+		result.StopLossOutcomeUnknown
 }
 
 func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtectionSyncResult, cancelTPOIDs []int64) {
@@ -463,7 +497,7 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	}
 	if result.StopLossOID > 0 {
 		pos.StopLossOID = result.StopLossOID
-	} else if result.CancelStopLossSucceeded {
+	} else if result.CancelStopLossSucceeded && !result.StopLossOutcomeUnknown {
 		// #1456 review round 9: the force-replace cancel LANDED but the
 		// replacement did not rest — the recorded OID points at a dead order
 		// and the trigger at a price nothing rests at. Clear both, mirroring
@@ -471,6 +505,13 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 		// the book and the next sync re-places from the empty-OID path. A
 		// FAILED cancel never sets this flag, so a still-resting order is
 		// never unrecorded.
+		//
+		// #1456 review round 15: an OUTCOME-UNKNOWN placement is excluded from
+		// this clear. An unreadable response is not a rejection — the order may
+		// be resting — and zeroing the OID here is exactly what let the next
+		// sync's _resolve_missing_oid(0) place a second untracked full-size
+		// reduce-only stop. Keep what is recorded and defer, mirroring how an
+		// unconfirmed CANCEL already defers.
 		pos.StopLossOID = 0
 		pos.StopLossTriggerPx = 0
 	}

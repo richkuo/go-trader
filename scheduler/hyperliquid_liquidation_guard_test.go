@@ -1698,7 +1698,7 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 		}
 	})
 
-	t.Run("nothing booked and nothing pending writes nothing", func(t *testing.T) {
+	t.Run("nothing changed and nothing pending writes nothing", func(t *testing.T) {
 		db := openTestDB(t)
 		state := newState()
 		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, false, 2)
@@ -1743,6 +1743,93 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 		}
 		if ss := loaded.Strategies["hl-live"]; ss == nil || len(ss.TradeHistory) != 1 {
 			t.Fatalf("retry did not persist the carried-over close: %+v", ss)
+		}
+	})
+}
+
+// #1456 review round 15 (Needs Fixing 1): the audit's NORMAL outcome is a
+// resting replacement, not a fill. applyAuditStopUpdate must count every write
+// to persisted protection state so the off-cycle flush fires for a clamp or
+// re-arm that closed nothing — and must count nothing when the call changed
+// nothing, so a quiet pass still writes nothing.
+func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
+	newSS := func(oid int64, trigger float64) *StrategyState {
+		return &StrategyState{
+			ID:        "hl-live",
+			Positions: map[string]*Position{"ETH": {Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 25, StopLossOID: oid, StopLossTriggerPx: trigger}},
+		}
+	}
+	logger := newTestLogger(t)
+
+	t.Run("clamp that rests a replacement counts, with no fill", func(t *testing.T) {
+		var res hlLiquidationAuditResult
+		ss := newSS(111, 1850)
+		fill, _ := applyAuditStopUpdate(&res, ss, "ETH", "long", 111, &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: 1900}, logger)
+		if fill {
+			t.Fatalf("immediateFill = true, want false")
+		}
+		if res.StateMutations != 1 {
+			t.Errorf("StateMutations = %d, want 1", res.StateMutations)
+		}
+		if res.ImmediateFills != 0 || len(res.CloseDetails) != 0 {
+			t.Errorf("close accounting touched on a pure replace: %+v", res)
+		}
+		pos := ss.Positions["ETH"]
+		if pos.StopLossOID != 222 || pos.StopLossTriggerPx != 1900 {
+			t.Errorf("position = OID %d trigger %.2f, want 222 / 1900", pos.StopLossOID, pos.StopLossTriggerPx)
+		}
+	})
+
+	t.Run("static-scalar re-arm from no stop counts", func(t *testing.T) {
+		var res hlLiquidationAuditResult
+		ss := newSS(0, 0)
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 0, &HyperliquidStopLossUpdateResult{StopLossOID: 777, StopLossTriggerPx: 1880}, logger); res.StateMutations != 1 {
+			t.Errorf("StateMutations = %d, want 1 on a re-arm", res.StateMutations)
+		}
+	})
+
+	t.Run("cancel without a rest zeroes the dead OID and counts", func(t *testing.T) {
+		var res hlLiquidationAuditResult
+		ss := newSS(111, 1850)
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 111, &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}, logger); res.StateMutations != 1 {
+			t.Errorf("StateMutations = %d, want 1 on cancel-without-rest", res.StateMutations)
+		}
+		if pos := ss.Positions["ETH"]; pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
+			t.Errorf("dead OID not cleared: OID %d trigger %.2f", pos.StopLossOID, pos.StopLossTriggerPx)
+		}
+	})
+
+	t.Run("a booked close counts", func(t *testing.T) {
+		var res hlLiquidationAuditResult
+		ss := newSS(111, 1850)
+		ss.Cash = 1000
+		fill, fillPx := applyAuditStopUpdate(&res, ss, "ETH", "long", 111, &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 1850}, logger)
+		if !fill || fillPx != 1850 {
+			t.Fatalf("fill = %v @ %.2f, want true @ 1850", fill, fillPx)
+		}
+		if res.StateMutations != 1 {
+			t.Errorf("StateMutations = %d, want 1 on a booked close", res.StateMutations)
+		}
+	})
+
+	t.Run("a call that changes nothing counts nothing", func(t *testing.T) {
+		var res hlLiquidationAuditResult
+		ss := newSS(111, 1850)
+
+		// nil update — the helper returns before touching anything.
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 111, nil, logger); res.StateMutations != 0 {
+			t.Errorf("StateMutations = %d after a nil update, want 0", res.StateMutations)
+		}
+		// side mismatch — re-validated away inside applyTrailingStopUpdateResult.
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "short", 111, &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 1900}, logger); res.StateMutations != 0 {
+			t.Errorf("StateMutations = %d after a side mismatch, want 0", res.StateMutations)
+		}
+		// a cancel whose prevSLOID no longer matches — no branch applies.
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 42, &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}, logger); res.StateMutations != 0 {
+			t.Errorf("StateMutations = %d after a stale-OID cancel, want 0", res.StateMutations)
+		}
+		if pos := ss.Positions["ETH"]; pos.StopLossOID != 111 || pos.StopLossTriggerPx != 1850 {
+			t.Errorf("no-op calls mutated the position: OID %d trigger %.2f", pos.StopLossOID, pos.StopLossTriggerPx)
 		}
 	})
 }

@@ -155,6 +155,15 @@ type HyperliquidProtectionSyncResult struct {
 	// clear pos.StopLossOID/StopLossTriggerPx. Mirrors
 	// HyperliquidStopLossUpdateResult.CancelStopLossSucceeded.
 	CancelStopLossSucceeded bool `json:"cancel_stop_loss_succeeded,omitempty"`
+	// #1456 review round 15: set by run_sync_protection when a force-replace
+	// placement's OUTCOME could not be read AND the open-order diff could not
+	// resolve it — an unreadable status entry or a post-submit exception, never
+	// a positive rejection. The order may be resting untracked, so recorded
+	// StopLossOID/StopLossTriggerPx must be KEPT (clearing them lets the next
+	// sync rest a second full-size reduce-only stop) and the "position has NO
+	// exchange-side stop" CRITICAL must not fire on this shape. Mirrors
+	// HyperliquidStopLossUpdateResult.StopLossOutcomeUnknown (round 11).
+	StopLossOutcomeUnknown bool `json:"stop_loss_outcome_unknown,omitempty"`
 }
 
 // runPython is the shared subprocess spawner. parentCtx is one of

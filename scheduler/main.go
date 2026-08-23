@@ -951,15 +951,17 @@ func main() {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
-					booked := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr)
+					mutations := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr)
 					// Stamp unconditionally — including fetch failure — so a
 					// failing endpoint can never turn this branch into a hot
 					// retry loop; the next attempt waits out the full cadence.
 					lastLiquidationAudit = now
-					// #1456 review round 14 (Needs Fixing 1): the audit books
-					// realized closes through recordPerpsStopLossClose (in
-					// memory until SaveState commits) and converges real
-					// on-chain hedge legs, then this branch CONTINUES past the
+					// #1456 review rounds 14 and 15 (Needs Fixing 1): the audit
+					// rewrites pos.StopLossOID / pos.StopLossTriggerPx on every
+					// clamp and re-arm, books realized closes through
+					// recordPerpsStopLossClose, and converges real on-chain
+					// hedge legs — all in memory until SaveState commits — then
+					// this branch CONTINUES past the
 					// loop body's only SaveStateWithDB. Because the branch is
 					// re-entered on every wake while dueStrategies stays empty,
 					// a quiet fleet could run pass after pass without ever
@@ -970,8 +972,8 @@ func main() {
 					// hl_sync_external at a later mark, after the operator was
 					// already DM'd the original close. Flush inline before
 					// sleeping, exactly as reconcilePendingLimitOrders does
-					// before its own continue. Nothing booked → no extra write.
-					offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, booked, offCycleAuditSaveDirty, saveFailures)
+					// before its own continue. Nothing changed → no extra write.
+					offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, mutations, offCycleAuditSaveDirty, saveFailures)
 					continue
 				}
 				delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
@@ -2078,7 +2080,21 @@ func main() {
 				// Stamp the audit clock whenever the audit RAN (fills or not) —
 				// the off-cycle pass keys off this and must not re-run a fresh
 				// dispatch-path audit immediately.
-				lastLiquidationAudit = time.Now().UTC()
+				//
+				// #1456 review round 15 (Optional 2): "RAN" means it inspected
+				// THIS cycle's snapshot. runHyperliquidLiquidationAudit returns
+				// immediately when hlStateFetched is false — it examined no
+				// candidate and touched no order — so stamping there recorded an
+				// audit that never happened and suppressed the off-cycle pass
+				// for a full cadence. That pass performs its OWN independent
+				// fetch and may well succeed, so on the long-interval fleet it
+				// serves, one transient HL API failure handed back the healing
+				// window. The off-cycle pass's own unconditional stamp is
+				// separate and stays: it exists to stop a failing endpoint
+				// becoming a hot retry loop.
+				if hlStateFetched {
+					lastLiquidationAudit = time.Now().UTC()
+				}
 				if auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 					// A close booked here is a realized close like any other, so

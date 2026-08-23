@@ -1042,3 +1042,64 @@ func TestRunHyperliquidProtectionSyncRestingPlacementBooksNoClose(t *testing.T) 
 		t.Error("resting placement must keep the position open with the new OID")
 	}
 }
+
+// #1456 review round 15 (Optional 1): an unreadable placement response is
+// OUTCOME UNKNOWN, never a rejection. Clearing recorded state on that shape
+// raised a false "the position has NO exchange-side stop" CRITICAL and let the
+// next sync's empty-OID path rest a second, untracked full-size reduce-only
+// stop on the same position.
+func TestProtectionSyncOutcomeUnknownDefersInsteadOfClearing(t *testing.T) {
+	newPos := func() *Position {
+		return &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 25, StopLossOID: 111, StopLossTriggerPx: 1850}
+	}
+
+	// (a) cancel lands, placement outcome unreadable while the order really
+	// rested: recorded OID/trigger untouched, no lost-stop CRITICAL.
+	unknown := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOutcomeUnknown: true, StopLossError: "place_stop_loss returned no usable status"}
+	if hlProtectionLostExchangeStop(unknown) {
+		t.Errorf("outcome-unknown classified as protection lost — that CRITICAL would be false")
+	}
+	if !hlProtectionStopOutcomeUnknown(unknown) {
+		t.Errorf("outcome-unknown not classified as such — the operator gets no alert at all")
+	}
+	pos := newPos()
+	applyHyperliquidProtectionSync(pos, unknown, nil)
+	if pos.StopLossOID != 111 || pos.StopLossTriggerPx != 1850 {
+		t.Errorf("outcome-unknown cleared recorded state: OID %d trigger %.2f, want 111 / 1850", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+
+	// (b) cancel lands, placement positively REJECTED: cleared and re-placed
+	// exactly as before this change.
+	rejected := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossError: "place_stop_loss SDK error: insufficient margin"}
+	if !hlProtectionLostExchangeStop(rejected) {
+		t.Errorf("a positively rejected placement must still read as protection lost")
+	}
+	if hlProtectionStopOutcomeUnknown(rejected) {
+		t.Errorf("a positively rejected placement must not read as outcome unknown")
+	}
+	pos = newPos()
+	applyHyperliquidProtectionSync(pos, rejected, nil)
+	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
+		t.Errorf("rejected placement left stale state: OID %d trigger %.2f, want 0 / 0", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+
+	// (c) cancel lands and the replacement rests — unchanged. The Python side
+	// resolves an unreadable response to a resting OID by open-order diff, so
+	// this is the shape that reaches Go in the common case.
+	rested := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOID: 222, StopLossTriggerPx: 1900}
+	if hlProtectionLostExchangeStop(rested) || hlProtectionStopOutcomeUnknown(rested) {
+		t.Errorf("a resting replacement must raise neither alert")
+	}
+	pos = newPos()
+	applyHyperliquidProtectionSync(pos, rested, nil)
+	if pos.StopLossOID != 222 || pos.StopLossTriggerPx != 1900 {
+		t.Errorf("resting replacement not adopted: OID %d trigger %.2f, want 222 / 1900", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+
+	// An outcome-unknown result that also carries a resting OID is a normal
+	// placement — the OID wins and neither alert fires.
+	both := &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOID: 333, StopLossOutcomeUnknown: true}
+	if hlProtectionLostExchangeStop(both) || hlProtectionStopOutcomeUnknown(both) {
+		t.Errorf("a resolved placement must raise neither alert")
+	}
+}

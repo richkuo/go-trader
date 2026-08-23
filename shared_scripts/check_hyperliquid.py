@@ -1018,7 +1018,62 @@ def run_sync_protection(
             def _sl_placed(px):
                 out["stop_loss_trigger_px"] = px
 
+            def _resolve_unknown_sl(reason, pre_oids):
+                """Resolve a placement whose OUTCOME could not be read.
+
+                #1456 review round 15 (Optional 1). An unreadable status entry
+                and a post-submit exception are *outcome unknown*, never
+                *rejected*: the order may well be resting. Reporting them as a
+                bare ``stop_loss_error`` made Go clear pos.StopLossOID AND
+                pos.StopLossTriggerPx (cancel_stop_loss_succeeded with no OID),
+                raise a "the position has NO exchange-side stop" CRITICAL that
+                is false, and then let the NEXT sync place a second full-size
+                reduce-only stop that nothing tracks.
+
+                Resolve the ambiguity at the source instead of propagating it:
+                diff the open-order book against the snapshot taken immediately
+                before submitting. Exactly one NEW oid is the order we just
+                placed — adopt it and report a normal resting placement. No new
+                oid means nothing rested, which is a genuine failure and clears
+                as before. Only when the book cannot be re-read, or the diff is
+                ambiguous, does ``stop_loss_outcome_unknown`` go out, and Go
+                then DEFERS (keeps recorded state, no false CRITICAL) exactly
+                as an unconfirmed cancel already does.
+
+                This runs before any TP placement in run_sync_protection, so a
+                fresh oid in the diff can only be this stop-loss.
+                """
+                out["stop_loss_error"] = reason
+                if pre_oids is None:
+                    out["stop_loss_outcome_unknown"] = True
+                    return
+                try:
+                    now_oids = adapter.open_order_oids(symbol)
+                except Exception as oe:
+                    print(f"[WARN] outcome-unknown SL placement: open_order_oids({symbol}) re-read failed: {oe}", file=sys.stderr)
+                    out["stop_loss_outcome_unknown"] = True
+                    return
+                if now_oids is None:
+                    out["stop_loss_outcome_unknown"] = True
+                    return
+                fresh = [int(o) for o in now_oids if int(o) not in pre_oids]
+                if len(fresh) == 1:
+                    out["stop_loss_oid"] = fresh[0]
+                    _sl_placed(sl_px)
+                    print(f"[WARN] unreadable SL placement response resolved to resting oid={fresh[0]}", file=sys.stderr)
+                    return
+                if not fresh:
+                    # Nothing new rests: the submission genuinely did not land.
+                    # Leave the outcome-unknown flag off so Go clears the dead
+                    # OID and re-places from the empty-OID path, as today.
+                    return
+                out["stop_loss_outcome_unknown"] = True
+
             def _place_sl():
+                # Snapshot the book BEFORE submitting so an unreadable response
+                # can be resolved by diff. `open_oids` is the top-of-call fetch;
+                # None means that fetch failed and no diff is possible.
+                pre_oids = set(int(o) for o in open_oids) if open_oids is not None else None
                 try:
                     resp = adapter.place_stop_loss(symbol, size, sl_px, close_is_buy)
                     kind, payload = _classify_sl_response(resp)
@@ -1029,11 +1084,13 @@ def run_sync_protection(
                         out["stop_loss_filled_immediately"] = True
                         _sl_placed(sl_px)
                     elif kind == "error":
+                        # Positively REJECTED by the exchange — nothing rests.
+                        # Clearing recorded state is correct here.
                         out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
                     else:
-                        out["stop_loss_error"] = f"place_stop_loss returned no usable status: {resp}"
+                        _resolve_unknown_sl(f"place_stop_loss returned no usable status: {resp}", pre_oids)
                 except Exception as se:
-                    out["stop_loss_error"] = str(se)
+                    _resolve_unknown_sl(str(se), pre_oids)
 
             if _oid_is_open(open_oids, stop_loss_oid) and not force_sl_replace:
                 # Pure echo — the existing order keeps resting at whatever
