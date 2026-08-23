@@ -223,11 +223,21 @@ func validateHLStopWithinBankruptcyBound(sc StrategyConfig) []string {
 		}
 		errs = append(errs, fmt.Sprintf("%s = %g%% is at or beyond the isolated-margin bankruptcy distance (100 / leverage = %g%% at leverage %g), so Hyperliquid would force-close the position before the stop could ever fill; lower the stop distance or lower the leverage", field, pct, bound, lev))
 	}
-	if sc.StopLossPct != nil {
-		report("stop_loss_pct", *sc.StopLossPct)
-	}
-	if sc.StopLossMarginPct != nil && *sc.StopLossMarginPct > 0 {
-		report("derived stop-loss price %% (stop_loss_margin_pct / leverage)", *sc.StopLossMarginPct/lev)
+	// The pct fields are scored ONLY when they actually resolve as the stop
+	// distance (#1456 review round 6): EffectiveStopLossPct returns 0 under a
+	// unified regime close (#841 — the close owns an ATR-based SL armed after
+	// open), making both fields INERT there, and no mutual-exclusion rule
+	// rejects the combination — so reporting them unconditionally turned a
+	// do-nothing field into a fatal boot failure. The runtime clamp still owns
+	// the unified close's derived trigger, which is the protection that
+	// matters.
+	if !strategyUsesUnifiedRegimeClose(sc) {
+		if sc.StopLossPct != nil {
+			report("stop_loss_pct", *sc.StopLossPct)
+		}
+		if sc.StopLossMarginPct != nil && *sc.StopLossMarginPct > 0 {
+			report("derived stop-loss price %% (stop_loss_margin_pct / leverage)", *sc.StopLossMarginPct/lev)
+		}
 	}
 	if hlStopLossResolvesFromMaxDrawdownFallback(sc) {
 		fallback := sc.MaxDrawdownPct
@@ -997,6 +1007,18 @@ func collectHLLiquidationAuditCandidates(
 				// Unknown liquidation price — never derive a band; skip.
 				continue
 			}
+			// #1456 review round 6: the re-arm PLACES a reduce-only order on
+			// this position's side, so it needs the snapshot to confirm the
+			// on-chain net is ON that side. A stale recorded side (a non-due
+			// strategy on a long interval) would submit against the opposite
+			// net every cycle — rejected, with an unthrottled CRITICAL each
+			// time. Unlike liqPx, side confirmation does NOT depend on the
+			// coin reporting a liquidation price, so a matching-side owner
+			// with unknown geometry still re-arms.
+			sideConfirmed := hlNetSideByCoin[symbol] == pos.Side
+			if unprotected && !sideConfirmed {
+				continue
+			}
 			// #621: never place a stop larger than the on-chain size.
 			slQty, _ := hlSLEffectiveQty(symbol, pos.Quantity, hlOnChainAbsQty)
 			rearmPx := 0.0
@@ -1140,6 +1162,52 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 	return result, hlReplaceDeferred
 }
 
+// hlLiquidationRetryPlace retries a FAILED placement once with nothing to
+// cancel (cancelOID = 0) — used only after a cancel LANDED and the replacement
+// did NOT rest, where the audit itself just stripped the position's only
+// exchange-side stop (#1456 review round 6). Deferring recovery to the owner's
+// own path would leave a trailing/ATR owner naked for up to a whole strategy
+// interval: both sit inside the dueStrategies dispatch gated on Signal == 0,
+// while the cancel ran on the every-cycle audit. The clamped trigger and the
+// on-chain-capped quantity are already in hand; nothing rests on the book, so
+// a fresh placement cannot duplicate an order.
+func hlLiquidationRetryPlace(candidate hlLiquidationAuditCandidate, clampedTriggerPx float64, logger *StrategyLogger) (*HyperliquidStopLossUpdateResult, hlLiquidationReplaceOutcome) {
+	if clampedTriggerPx <= 0 || candidate.Qty <= 0 {
+		return nil, hlReplaceDeferred
+	}
+	unlock := lockHyperliquidTrailingUpdate(candidate.Symbol)
+	defer unlock()
+
+	result, stderr, err := runHyperliquidUpdateStopLossFunc(candidate.Script, candidate.Symbol, candidate.Side, candidate.Qty, clampedTriggerPx, 0)
+	if stderr != "" && logger != nil {
+		logger.Info("liquidation-clamp SL retry stderr: %s", stderr)
+	}
+	if err != nil {
+		if logger != nil {
+			logger.Error("Liquidation-clamp SL retry failed for %s: %v", candidate.Symbol, err)
+		}
+		return result, hlReplaceDeferred
+	}
+	if result == nil {
+		return nil, hlReplaceDeferred
+	}
+	switch {
+	case result.Error != "", result.OpenOrderCheckError != "", result.StopLossError != "":
+		if logger != nil && result.StopLossError != "" {
+			logger.Error("CRITICAL: liquidation-clamp SL retry did not rest for %s: %s — the position has NO exchange-side stop", candidate.Symbol, result.StopLossError)
+		}
+		return result, hlReplaceDeferred
+	case result.StopLossFilledImmediately && result.StopLossTriggerPx > 0:
+		return result, hlReplaceFilled
+	case result.StopLossOID > 0:
+		if logger != nil {
+			logger.Warn("Liquidation-clamp SL retry rested for %s at $%.4f after the first placement was rejected", candidate.Symbol, result.StopLossTriggerPx)
+		}
+		return result, hlReplacePlaced
+	}
+	return result, hlReplaceDeferred
+}
+
 // hlLiquidationPendingAlert defers one operator alert until every lock is
 // released (the pending-slice drain pattern used by the HL balance reconciler).
 type hlLiquidationPendingAlert struct {
@@ -1271,6 +1339,35 @@ func runHyperliquidLiquidationAudit(
 			mu.Lock()
 			applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, result, "trailing_stop_loss_immediate", logger)
 			mu.Unlock()
+			// #1456 review round 6: the audit CREATED this window — it ran the
+			// cancel. Retry the placement once in the same cycle instead of
+			// leaving a trailing/ATR owner naked until its next due Signal == 0
+			// cycle. Nothing rests on the book (that is what this outcome
+			// means), so the retry places fresh with nothing to cancel.
+			retryResult, retryOutcome := hlLiquidationRetryPlace(c, act.ClampedTriggerPx, logger)
+			switch retryOutcome {
+			case hlReplacePlaced, hlReplaceFilled:
+				if retryOutcome == hlReplaceFilled {
+					action = hlLiquidationActionExited
+				} else {
+					action = hlLiquidationActionClamped
+				}
+				mu.Lock()
+				immediateFill, fillPx := applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, retryResult, "liquidation_clamp_sl_immediate", logger)
+				mu.Unlock()
+				if immediateFill {
+					res.ImmediateFills++
+					logger.Warn("Liquidation-clamp SL retry booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
+					res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
+						SC: sc, Symbol: c.Symbol, FillPx: fillPx,
+						Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
+					})
+				}
+			default:
+				// The retry failed too: one protection-lost report for the
+				// cycle, never a duplicate resting stop and never a second
+				// alert class.
+			}
 		case hlReplacePlaced, hlReplaceFilled:
 			// A FILL at submit is not a tighten — the position ended the
 			// cycle flat, and the operator DM must say so (#1456 review).

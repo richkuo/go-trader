@@ -2016,10 +2016,16 @@ func main() {
 				// strategy whose own recorded side disagrees with the net is
 				// treated exactly like "liquidation price unknown" — never
 				// clamped against a price that describes someone else's leg.
+				// #1456 review round 6: the side is recorded whenever ANY
+				// on-chain size exists, independent of whether this coin
+				// reported a liquidation price — the audit's re-arm needs the
+				// confirmed side even when the geometry is unknown.
 				hlNetSideByCoin := make(map[string]string, len(hlPositions))
 				for _, p := range hlPositions {
 					if p.LiquidationPx > 0 && math.Abs(p.Size) > 1e-9 {
 						hlLiquidationPx[p.Coin] = p.LiquidationPx
+					}
+					if math.Abs(p.Size) > 1e-9 {
 						if p.Size < 0 {
 							hlNetSideByCoin[p.Coin] = "short"
 						} else {

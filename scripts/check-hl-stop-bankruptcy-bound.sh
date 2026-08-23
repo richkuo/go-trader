@@ -238,13 +238,18 @@ for sc in cfg.get("strategies", []) or []:
     strategy_id = sc.get("id", "<no id>")
     sc = resolve_stop_owners(cfg, sc)
 
+    # Mirrors validateHLStopWithinBankruptcyBound (#1456 review round 6): the
+    # pct fields are scored ONLY when they resolve as the stop distance.
+    # EffectiveStopLossPct returns 0 under a unified regime close (the close
+    # owns an ATR-based SL armed after open), making both fields inert there.
     checks = []
-    slp = sc.get("stop_loss_pct")
-    if isinstance(slp, (int, float)) and not isinstance(slp, bool):
-        checks.append(("stop_loss_pct", float(slp)))
-    smp = sc.get("stop_loss_margin_pct")
-    if isinstance(smp, (int, float)) and not isinstance(smp, bool) and smp > 0:
-        checks.append(("stop_loss_margin_pct/leverage", float(smp) / max(lev, 1.0)))
+    if not uses_unified_regime_close(sc):
+        slp = sc.get("stop_loss_pct")
+        if isinstance(slp, (int, float)) and not isinstance(slp, bool):
+            checks.append(("stop_loss_pct", float(slp)))
+        smp = sc.get("stop_loss_margin_pct")
+        if isinstance(smp, (int, float)) and not isinstance(smp, bool) and smp > 0:
+            checks.append(("stop_loss_margin_pct/leverage", float(smp) / max(lev, 1.0)))
     # Mirrors hlStopLossResolvesFromMaxDrawdownFallback + the MaxAutoStopLossPct
     # cap, evaluated on the strategy AS LOADCONFIG RESOLVES IT (resolve_stop_owners
     # above) — the fallback owns the stop only when every explicit owner is absent

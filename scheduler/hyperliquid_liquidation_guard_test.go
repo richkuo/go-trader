@@ -1277,3 +1277,216 @@ func TestProtectionSyncSideMismatchNeverForcesPastLiquidationReplace(t *testing.
 		})
 	}
 }
+
+// --- #1456 review round 6 ----------------------------------------------------
+
+// Optional 1: the boot bound must not score pct fields that resolve as NOTHING
+// (EffectiveStopLossPct returns 0 under a unified regime close). Scope
+// correction over the finding: validateUnifiedCloseSoleOwner ALREADY rejects
+// stop_loss_pct / stop_loss_margin_pct alongside a unified close
+// (regime_unified.go), so the combination can never boot — the gate here fixes
+// the MISLEADING ERROR LINE, not a boot regression. Must-survive (c): without
+// a unified close both fields are still scored.
+func TestHLStopBankruptcyBoundSkipsInertPctFieldsUnderUnifiedClose(t *testing.T) {
+	base := func(unified bool) StrategyConfig {
+		sc := StrategyConfig{
+			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+			Script: "x.py", Args: []string{"x.py", "ETH", "1h", "--mode=live"},
+			StopLossPct:       floatPtr(10),
+			StopLossMarginPct: floatPtr(200), // 200/20 = 10% >= the 5% bound at 20x
+			Leverage:          20,
+			MarginMode:        "isolated",
+		}
+		if unified {
+			sc.CloseStrategy = &StrategyRef{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"trend_regime": map[string]interface{}{
+				"trending_up":   map[string]interface{}{"stop_loss_atr": 2.0, "tp_tiers": []interface{}{map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0}}},
+				"trending_down": map[string]interface{}{"stop_loss_atr": 2.0, "tp_tiers": []interface{}{map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0}}},
+				"ranging":       map[string]interface{}{"stop_loss_atr": 2.0, "tp_tiers": []interface{}{map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0}}},
+			}}}
+		}
+		return sc
+	}
+	if errs := validateHLStopWithinBankruptcyBound(base(true)); len(errs) != 0 {
+		t.Errorf("unified close owns the stop; bound reported %v", errs)
+	}
+	errs := validateHLStopWithinBankruptcyBound(base(false))
+	if len(errs) != 2 {
+		t.Errorf("without a unified close both pct fields must be scored, got %v", errs)
+	}
+}
+
+// Optional 2 (a): an UNPROTECTED static-scalar owner whose recorded side is
+// stale opposite the on-chain net gets no placement and no per-cycle CRITICAL —
+// the re-arm needs this cycle's snapshot to confirm the net is on the recorded
+// side.
+func TestAuditRearmSkipsStaleSideSoleOwner(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0 // unprotected
+	var mu sync.RWMutex
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
+	}
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		map[string]string{"ETH": "short"}, // net OPPOSITE the recorded long
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if calls != 0 {
+		t.Errorf("re-arm placements = %d, want 0 against an unconfirmed side", calls)
+	}
+	if _, alerted := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); alerted {
+		t.Error("a skipped stale-side re-arm must not raise the unthrottled CRITICAL")
+	}
+}
+
+// Optional 2 (b): a MATCHING side with no liquidation price reported must STILL
+// re-arm — the re-arm places at the configured distance and does not depend on
+// liquidation geometry.
+func TestAuditRearmProceedsWithMatchingSideAndUnknownGeometry(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
+	var mu sync.RWMutex
+	var gotTrigger float64
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		gotTrigger = triggerPx
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
+	}
+	// Price map EMPTY (no liquidation price reported); the net side is still
+	// known from the snapshot's size sign.
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{},
+		map[string]string{"ETH": "long"},
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	want := 2400 * (1 - 0.03125) // configured scalar distance off the frozen anchor
+	if !approxEqLiq(gotTrigger, want) {
+		t.Errorf("re-arm trigger = %g, want the unclamped configured distance %g", gotTrigger, want)
+	}
+}
+
+// liqTrailingAuditFixture is liqAuditFixture with a TRAILING stop owner instead
+// of a static scalar — the owner class whose recovery used to wait for its own
+// next due cycle after an audit cancel stripped the stop.
+func liqTrailingAuditFixture(t *testing.T) ([]StrategyConfig, *AppState) {
+	t.Helper()
+	trail := 3.0
+	sc := StrategyConfig{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
+		Args:            []string{"x.py", "ETH", "1h", "--mode=live"},
+		TrailingStopPct: &trail, Leverage: 3,
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-eth": {ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
+			"ETH": {
+				Symbol: "ETH", Side: "long", Quantity: 1.0,
+				AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+				StopLossOID: 4242, StopLossTriggerPx: 2325,
+			},
+		}},
+	}}
+	return []StrategyConfig{sc}, state
+}
+
+// Optional 3: when an audit tighten CANCELS a trailing owner's stop and the
+// replacement does not rest, the audit retries the placement once in the SAME
+// cycle (fresh, nothing to cancel) — it may not hand a window it created to a
+// path running on the strategy's slower cadence. A retry that rests updates
+// state and reports a clamp; a retry that also fails reports protection lost
+// once; a first-try rest stays a single call.
+func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		retryOK       bool
+		wantCalls     int
+		wantSecondOID int64
+		wantFinalOID  int64
+		wantAction    hlLiquidationAlertAction
+	}{
+		{"retry rests", true, 2, 0, 9002, hlLiquidationActionClamped},
+		{"retry also fails", false, 2, 0, 0, hlLiquidationActionProtectionLost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := runHyperliquidUpdateStopLossFunc
+			defer func() { runHyperliquidUpdateStopLossFunc = old }()
+			clearHLLiquidationAlert("hl-eth", "ETH")
+
+			strategies, state := liqTrailingAuditFixture(t)
+			var mu sync.RWMutex
+			type call struct {
+				cancelOID int64
+				trigger   float64
+			}
+			var calls []call
+			callN := 0
+			runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+				callN++
+				calls = append(calls, call{cancelOID: cancelOID, trigger: triggerPx})
+				if callN == 1 {
+					// Cancel lands, the open-order cap rejects the replacement.
+					return &HyperliquidStopLossUpdateResult{
+						CancelStopLossSucceeded: true,
+						StopLossError:           "Order would exceed the open order limit",
+					}, "", nil
+				}
+				if tc.retryOK {
+					return &HyperliquidStopLossUpdateResult{StopLossOID: 9002, StopLossTriggerPx: triggerPx}, "", nil
+				}
+				return &HyperliquidStopLossUpdateResult{
+					CancelStopLossSucceeded: false,
+					StopLossError:           "Order would exceed the open order limit",
+				}, "", nil
+			}
+
+			runHyperliquidLiquidationAudit(strategies, state,
+				map[string]float64{"ETH": 2340.5},
+				hlNetSideByCoinAllLong(),
+				map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("placement calls = %d (%+v), want %d", len(calls), calls, tc.wantCalls)
+			}
+			if tc.wantCalls == 2 && calls[1].cancelOID != tc.wantSecondOID {
+				t.Errorf("retry cancelOID = %d, want %d (nothing left to cancel)", calls[1].cancelOID, tc.wantSecondOID)
+			}
+			pos := state.Strategies["hl-eth"].Positions["ETH"]
+			if pos.StopLossOID != tc.wantFinalOID {
+				t.Errorf("final oid = %d, want %d", pos.StopLossOID, tc.wantFinalOID)
+			}
+			if last := lastLiqAlertAction("hl-eth", "ETH"); last != tc.wantAction {
+				t.Errorf("alert action = %q, want %q", last, tc.wantAction)
+			}
+		})
+	}
+
+	// (c) A normal clamp that rests FIRST time: no retry, single call.
+	t.Run("first-try rest takes no retry", func(t *testing.T) {
+		old := runHyperliquidUpdateStopLossFunc
+		defer func() { runHyperliquidUpdateStopLossFunc = old }()
+		clearHLLiquidationAlert("hl-eth", "ETH")
+
+		strategies, state := liqTrailingAuditFixture(t)
+		var mu sync.RWMutex
+		calls := 0
+		runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+			calls++
+			return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
+		}
+		runHyperliquidLiquidationAudit(strategies, state,
+			map[string]float64{"ETH": 2340.5},
+			hlNetSideByCoinAllLong(),
+			map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+		if calls != 1 {
+			t.Errorf("placement calls = %d, want 1", calls)
+		}
+	})
+}
