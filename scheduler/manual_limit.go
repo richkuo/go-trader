@@ -684,7 +684,13 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			o.FillFee = st.Fee
 			// Arm protection immediately so the filled coin is never unprotected,
 			// regardless of whether this strategy is "due" this cycle.
-			runHyperliquidProtectionSync(sc, state.Strategies[o.StrategyID], stateDB, o.Symbol, mu, notifier, logger, "HL limit-fill protection synced", nil, nil, nil)
+			// #1456 review round 13: a same-cycle submit-fill SL close booked by
+			// the sync is a realized close like any other — count it into
+			// tradesBooked (the row is already in TradeHistory) so the operator's
+			// trade alert includes it, matching the three dispatch call sites.
+			if _, fillPx := runHyperliquidProtectionSync(sc, state.Strategies[o.StrategyID], stateDB, o.Symbol, mu, notifier, logger, "HL limit-fill protection synced", nil, nil, nil); fillPx > 0 {
+				tradesBooked++
+			}
 			// #1450 liquidationPx=0: this fill just happened, so the cycle
 			// snapshot predates the position and the exchange has not reported
 			// a liquidation price for it yet. The next cycle audit covers it.

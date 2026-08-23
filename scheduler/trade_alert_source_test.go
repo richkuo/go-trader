@@ -16,6 +16,9 @@ func TestTradeAlertCloseSourceClassification(t *testing.T) {
 		{"Paper trailing SL close ETH, PnL: $-22.45 (fee $1.10)", "paper trailing SL"},
 		{"Trailing SL close ETH, PnL: $-22.45 (fee $1.10)", "trailing SL"},
 		{"Paper SL close ETH, PnL: $-22.45 (fee $1.10)", "paper SL"},
+		// #1450 round 13: the liquidation-guard's clamp closes carry their own
+		// prefix and must not fall through to an empty Source line.
+		{"Liquidation-clamp SL close ETH, PnL: $-22.45 (fee $1.10)", "liquidation-clamp SL"},
 		{"TP1 fill close, PnL: $34.35 (fee $1.23)", "exchange TP1"},
 		{"TP2 fill close, PnL: $50.00 (fee $1.50)", "exchange TP2"},
 		{"Circuit breaker on-chain close (no virtual position), fill=0.5 fee=$0.20", "circuit breaker"},

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -756,6 +755,11 @@ func main() {
 	// If you ever split writes across goroutines, add explicit locking —
 	// the existing `mu` lock guards `state`, not `lastRun`.
 	lastRun := make(map[string]time.Time)
+	// #1456 review round 13: last time ANY #1450 liquidation audit pass ran
+	// (dispatch or off-cycle). Bounds the open-cycle blind spot's healing
+	// guarantee to the audit's own cadence instead of the fleet's slowest
+	// strategy interval — see the empty-branch clamp below.
+	var lastLiquidationAudit time.Time
 	// Same single-writer invariant as lastRun; copied into AppState only during
 	// the save phase so restart throttling survives without widening state locks.
 	lastSummaryPost := cloneTimeMap(state.LastSummaryPost)
@@ -927,7 +931,47 @@ func main() {
 		}
 
 		if len(dueStrategies) == 0 {
-			// Nothing due, wait for next tick
+			// Nothing due, wait for next tick — but the #1450 audit must not
+			// inherit that sleep wholesale. Its "next cycle heals it" guarantee
+			// for a same-cycle-armed stop (#1456 review round 13, Optional 4)
+			// is bound by the fleet's minimum due interval; a single-strategy
+			// live HL perps fleet on a long interval would leave a fresh
+			// position's clamp window open for hours. When the audit's own
+			// cadence (the fastest live-HL-perps interval) has elapsed, run a
+			// dedicated audit cycle instead of sleeping past it; otherwise
+			// clamp the sleep so the loop wakes no later than that deadline.
+			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
+				now := time.Now().UTC()
+				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
+					runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr, channelTrades, channelTradeDetails, &totalTrades)
+					// Stamp unconditionally — including fetch failure — so a
+					// failing endpoint can never turn this branch into a hot
+					// retry loop; the next attempt waits out the full cadence.
+					lastLiquidationAudit = now
+					continue
+				}
+				delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
+				if wait := time.Until(lastLiquidationAudit.Add(time.Duration(audSec) * time.Second)); wait < delay {
+					delay = wait
+				}
+				if minTick := time.Duration(tickSeconds) * time.Second; delay < minTick {
+					delay = minTick
+				}
+				timer := time.NewTimer(delay)
+				select {
+				case <-timer.C:
+					continue
+				case <-reloadCh:
+					timer.Stop()
+					reloadConfig()
+					processConfigReloads()
+					continue
+				case <-stopCh:
+					timer.Stop()
+					fmt.Println("[shutdown] exiting trading loop.")
+					return
+				}
+			}
 			delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
 			timer := time.NewTimer(delay)
 			select {
@@ -1987,52 +2031,12 @@ func main() {
 					reportHLReconcileGaps(notifier, collectHLReconcileGapResults(state, &mu))
 				}
 
-				// #621: Build a coin→|on-chain qty| map from the pre-fetched positions
-				// so SL placement can cap its size when virtual qty > on-chain qty
-				// (e.g. after a manual TP reduced the position without the bot's knowledge).
-				hlOnChainAbsQty := make(map[string]float64, len(hlPositions))
-				for _, p := range hlPositions {
-					sz := p.Size
-					if sz < 0 {
-						sz = -sz
-					}
-					if sz > 1e-9 {
-						hlOnChainAbsQty[p.Coin] = sz
-					}
-				}
-
-				// #1450: coin -> exchange-reported liquidation price from the
-				// SAME Phase-1 clearinghouseState snapshot. Only positive
-				// entries are recorded; a missing coin means "unknown" and
-				// every consumer skips the comparison (never derive a band
-				// from 1/leverage). Immutable after construction, so the
-				// per-strategy phases below read it lock-free exactly like
-				// hlOnChainAbsQty.
-				hlLiquidationPx := make(map[string]float64, len(hlPositions))
-				// #1456 review: coin -> the side of the on-chain NET position
-				// that liquidation price describes (HL nets one position per
-				// coin; the sign of Size IS the net side). Every consumer of
-				// hlLiquidationPx goes through hlLiquidationPxForSide so a
-				// strategy whose own recorded side disagrees with the net is
-				// treated exactly like "liquidation price unknown" — never
-				// clamped against a price that describes someone else's leg.
-				// #1456 review round 6: the side is recorded whenever ANY
-				// on-chain size exists, independent of whether this coin
-				// reported a liquidation price — the audit's re-arm needs the
-				// confirmed side even when the geometry is unknown.
-				hlNetSideByCoin := make(map[string]string, len(hlPositions))
-				for _, p := range hlPositions {
-					if p.LiquidationPx > 0 && math.Abs(p.Size) > 1e-9 {
-						hlLiquidationPx[p.Coin] = p.LiquidationPx
-					}
-					if math.Abs(p.Size) > 1e-9 {
-						if p.Size < 0 {
-							hlNetSideByCoin[p.Coin] = "short"
-						} else {
-							hlNetSideByCoin[p.Coin] = "long"
-						}
-					}
-				}
+				// #621/#1450: build the three coin-keyed views from the
+				// pre-fetched positions — on-chain |qty| for the SL size cap,
+				// exchange-reported liquidation prices, and the on-chain net
+				// side per coin. Single source of truth shared with the
+				// off-cycle audit pass (buildHLLiquidationMaps doc).
+				hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin := buildHLLiquidationMaps(hlPositions)
 
 				// #1450 audit: heal stops that sit past the liquidation price
 				// for the STATIC SCALAR owners (stop_loss_pct,
@@ -2046,7 +2050,12 @@ func main() {
 				// without this cycle's snapshot both maps are empty, and an
 				// empty snapshot must never read as "every position is a
 				// phantom" (see runHyperliquidLiquidationAudit).
-				if auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, hlStateFetched, &mu, notifier, time.Now().UTC()); auditRes.ImmediateFills > 0 {
+				auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, hlStateFetched, &mu, notifier, time.Now().UTC())
+				// Stamp the audit clock whenever the audit RAN (fills or not) —
+				// the off-cycle pass keys off this and must not re-run a fresh
+				// dispatch-path audit immediately.
+				lastLiquidationAudit = time.Now().UTC()
+				if auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 					// A close booked here is a realized close like any other, so
 					// it gets the SAME operator notification the walker path

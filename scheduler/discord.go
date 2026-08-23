@@ -1421,6 +1421,10 @@ func tradeDirectionLabel(trade Trade) string {
 func tradeAlertCloseSource(details string) string {
 	d := strings.ToLower(details)
 	switch {
+	// #1450 (round 13): the liquidation-guard's clamp closes carry their own
+	// details prefix, which matches none of the generic SL substrings below.
+	case strings.Contains(d, "liquidation-clamp sl close"):
+		return "liquidation-clamp SL"
 	// #716 item 4: paper / trailing SL closes get distinct labels so an
 	// operator reading the close DM doesn't see a paper-mode trailing SL
 	// labeled "exchange SL". The paper-trailing case must be checked

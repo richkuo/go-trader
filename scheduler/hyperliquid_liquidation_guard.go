@@ -625,22 +625,15 @@ func hlTriggerStrictlyTighter(side string, candidate, resting float64) bool {
 // from a protection plan's SL ATR multiple: anchor - mult*atr for a long,
 // anchor + mult*atr for a short (check_hyperliquid.py, run_protection_sync).
 //
-// It is the SINGLE place that formula is mirrored. Every #1450 decision about a
-// protection-plan SL — is the derived trigger past liquidation, would a rewrite
-// reproduce the clamped price, is a force-replace worth issuing — reads it from
-// here, so a change to the Python geometry has exactly one Go counterpart to
-// follow. Returns 0 when the inputs cannot produce a trigger.
+// It delegates to atrStopLossTriggerPx — the SINGLE owner of that formula
+// (#1456 review round 13: the audit previously kept its own byte-identical
+// copy, so a fix to one could silently miss the other). Every #1450 decision
+// about a protection-plan SL — is the derived trigger past liquidation, would
+// a rewrite reproduce the clamped price, is a force-replace worth issuing —
+// reads it from here, so a change to the Python geometry has exactly one Go
+// counterpart to follow. Returns 0 when the inputs cannot produce a trigger.
 func hlProtectionSLTriggerPx(side string, anchor, entryATR, slMult float64) float64 {
-	if slMult <= 0 || entryATR <= 0 || anchor <= 0 {
-		return 0
-	}
-	switch side {
-	case "long":
-		return anchor - slMult*entryATR
-	case "short":
-		return anchor + slMult*entryATR
-	}
-	return 0
+	return atrStopLossTriggerPx(side, anchor, entryATR, slMult)
 }
 
 // hlClampProtectionSLMult clamps a protection plan's SL ATR multiple so that
@@ -749,8 +742,13 @@ type hlLiquidationAuditCandidate struct {
 	Symbol     string
 	Side       string
 	// Qty is the SL size to place — already passed through hlSLEffectiveQty so
-	// the #621 virtual-vs-on-chain cap applies.
+	// the #621 virtual-vs-on-chain cap applies. QtyCapped/VirtualQty carry the
+	// cap outcome to the execution site (the collector stays pure, no logger)
+	// so a capped re-arm logs the same Warn every sibling site does (#1456
+	// review round 13).
 	Qty               float64
+	VirtualQty        float64
+	QtyCapped         bool
 	StopLossOID       int64
 	StopLossTriggerPx float64
 	LiquidationPx     float64
@@ -1049,7 +1047,11 @@ func collectHLLiquidationAuditCandidates(
 				continue
 			}
 			// #621: never place a stop larger than the on-chain size.
-			slQty, _ := hlSLEffectiveQty(symbol, pos.Quantity, hlOnChainAbsQty)
+			// #1456 review round 13 (Optional 3): the cap outcome travels to
+			// the execution site (this collector is pure, no logger) so a
+			// capped re-arm logs like every sibling call site — this audit
+			// path can shrink a stop after an untracked manual partial TP.
+			slQty, capped := hlSLEffectiveQty(symbol, pos.Quantity, hlOnChainAbsQty)
 			rearmPx := 0.0
 			if unprotected {
 				rearmPx = hlLiquidationScalarRearmTriggerPx(sc, pos.Side, pos.riskAnchorPrice(), liqPx)
@@ -1060,6 +1062,8 @@ func collectHLLiquidationAuditCandidates(
 				Symbol:            symbol,
 				Side:              pos.Side,
 				Qty:               slQty,
+				VirtualQty:        pos.Quantity,
+				QtyCapped:         capped,
 				StopLossOID:       pos.StopLossOID,
 				StopLossTriggerPx: pos.StopLossTriggerPx,
 				LiquidationPx:     liqPx,
@@ -1348,6 +1352,13 @@ func runHyperliquidLiquidationAudit(
 	if len(actions) == 0 {
 		return res
 	}
+	// #1456 review round 13 (Optional 3): surface the #621 cap exactly once
+	// per capped candidate, like every sibling hlSLEffectiveQty call site.
+	for _, c := range candidates {
+		if c.QtyCapped {
+			(&StrategyLogger{stratID: c.StrategyID, writer: os.Stderr}).Warn("Liquidation-clamp SL re-arm: %s capped by on-chain size (virtual %.6f > on-chain %.6f)", c.Symbol, c.VirtualQty, c.Qty)
+		}
+	}
 	byID := make(map[string]StrategyConfig, len(strategies))
 	for _, sc := range strategies {
 		byID[sc.ID] = sc
@@ -1398,7 +1409,21 @@ func runHyperliquidLiquidationAudit(
 			// candidate on the very next cycle.
 			action = hlLiquidationActionProtectionLost
 			mu.Lock()
-			applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, result, "trailing_stop_loss_immediate", logger)
+			// #1456 review round 13 (Optional 1): name THIS mechanism, not the
+			// trailing walker — the helper's contract says the audit passes
+			// liquidation_clamp_sl_immediate. The branch is unreachable with a
+			// filled flag today (hlLiquidationClampReplace's switch excludes it,
+			// and Python's crash handler never reports a fill), but the returns
+			// are handled exactly like the retry below so a future change to
+			// either precondition can never book an unreported close.
+			if immediateFill, fillPx := applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, result, "liquidation_clamp_sl_immediate", logger); immediateFill {
+				res.ImmediateFills++
+				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
+				res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
+					SC: sc, Symbol: c.Symbol, FillPx: fillPx,
+					Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
+				})
+			}
 			mu.Unlock()
 			// #1456 review round 6: the audit CREATED this window — it ran the
 			// cancel. Retry the placement once in the same cycle instead of
@@ -1472,4 +1497,121 @@ func runHyperliquidLiquidationAudit(
 		notifyHLStopPastLiquidation(p.sc, p.symbol, p.side, p.triggerPx, p.clampedPx, p.liqPx, p.action, notifier, p.logger, now)
 	}
 	return res
+}
+
+// buildHLLiquidationMaps derives the three coin-keyed views every #1450
+// consumer reads from one clearinghouseState snapshot (#1456 review round 13:
+// extracted so the off-cycle audit pass builds them identically to dispatch):
+//
+//   - on-chain |qty| per coin, for the #621 SL size cap (sizes <= 1e-9 are
+//     omitted — a dust remainder must not cap a stop to zero);
+//   - exchange-reported liquidation price per coin, POSITIVE entries only —
+//     a missing coin means "unknown" and every consumer skips the comparison
+//     (never derive a band from 1/leverage). Immutable after construction,
+//     so downstream phases read it lock-free exactly like hlOnChainAbsQty;
+//   - the side of the on-chain NET position that liquidation price describes
+//     (HL nets one position per coin; the sign of Size IS the net side).
+//     Every consumer of liquidationPx goes through hlLiquidationPxForSide so
+//     a strategy whose own recorded side disagrees with the net is treated
+//     exactly like "liquidation price unknown". The side is recorded whenever
+//     ANY on-chain size exists, independent of whether this coin reported a
+//     liquidation price — the audit's re-arm needs the confirmed side even
+//     when the geometry is unknown.
+func buildHLLiquidationMaps(hlPositions []HLPosition) (onChainAbsQty map[string]float64, liquidationPx map[string]float64, netSideByCoin map[string]string) {
+	onChainAbsQty = make(map[string]float64, len(hlPositions))
+	liquidationPx = make(map[string]float64, len(hlPositions))
+	netSideByCoin = make(map[string]string, len(hlPositions))
+	for _, p := range hlPositions {
+		sz := p.Size
+		if sz < 0 {
+			sz = -sz
+		}
+		if sz > 1e-9 {
+			onChainAbsQty[p.Coin] = sz
+			if p.Size < 0 {
+				netSideByCoin[p.Coin] = "short"
+			} else {
+				netSideByCoin[p.Coin] = "long"
+			}
+			if p.LiquidationPx > 0 {
+				liquidationPx[p.Coin] = p.LiquidationPx
+			}
+		}
+	}
+	return onChainAbsQty, liquidationPx, netSideByCoin
+}
+
+// liquidationAuditIntervalSeconds returns the #1450 audit's OWN cadence floor:
+// the minimum effective check interval across live Hyperliquid perps
+// strategies — the population the audit protects. The off-cycle audit pass
+// runs on this clock instead of inheriting the whole fleet's slowest interval
+// (#1456 review round 13). Returns 0 when no live HL perps strategy exists.
+func liquidationAuditIntervalSeconds(strategies []StrategyConfig, intervals map[string]int) int {
+	best := 0
+	for _, sc := range strategies {
+		if sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+			continue
+		}
+		if iv := intervals[sc.ID]; iv > 0 && (best == 0 || iv < best) {
+			best = iv
+		}
+	}
+	return best
+}
+
+// runOffCycleLiquidationAudit is the dedicated audit pass for cycles where NO
+// strategy fleet-wide is due (#1456 review round 13, Optional 4). It fetches a
+// fresh clearinghouseState itself, builds the same three coin-keyed views the
+// dispatch path uses (buildHLLiquidationMaps), and runs the identical audit —
+// so a stop armed on an open cycle is clamped on the audit's own cadence, not
+// whenever some unrelated platform's strategy next comes due. Alerting and
+// hedge convergence mirror the dispatch site exactly: each booked close gets
+// the channel trade line + per-strategy DM via sendTradeAlerts, and the
+// primary's correlated hedge leg converges through the ONE reconciler with
+// marks fetched only for the affected coins. The caller stamps the audit
+// clock unconditionally — including on fetch failure — so this can never
+// become a hot retry loop.
+func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, channelTrades map[string]int, channelTradeDetails map[string][]string, totalTrades *int) {
+	hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+	if hlAddr == "" {
+		return
+	}
+	_, hlPositions, err := fetchHyperliquidState(hlAddr)
+	if err != nil {
+		fmt.Printf("[WARN] #1450 off-cycle liquidation audit: clearinghouseState fetch failed: %v\n", err)
+		return
+	}
+	hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin := buildHLLiquidationMaps(hlPositions)
+	auditRes := runHyperliquidLiquidationAudit(strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, true, mu, notifier, time.Now().UTC())
+	if auditRes.ImmediateFills == 0 {
+		return
+	}
+	fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
+	priceCoins := make(map[string]bool)
+	for _, cd := range auditRes.CloseDetails {
+		if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type); chKey != "" {
+			channelTrades[chKey]++
+			channelTradeDetails[chKey+"|"+extractAsset(cd.SC)] = append(channelTradeDetails[chKey+"|"+extractAsset(cd.SC)], cd.Detail)
+		}
+		sendTradeAlerts(cd.SC, state.Strategies[cd.SC.ID], 1, mu, notifier)
+		priceCoins[cd.Symbol] = true
+		if HedgeEnabled(cd.SC) && hedgeCoin(cd.SC) != "" {
+			priceCoins[hedgeCoin(cd.SC)] = true
+		}
+	}
+	*totalTrades += len(auditRes.CloseDetails)
+	prices := make(map[string]float64)
+	coins := make([]string, 0, len(priceCoins))
+	for c := range priceCoins {
+		coins = append(coins, c)
+	}
+	sort.Strings(coins)
+	if marks, err := fetchHyperliquidMids(coins); err != nil {
+		fmt.Printf("[WARN] #1450 off-cycle liquidation audit: mark fetch failed for %v — hedge sync will use fallback pricing\n", coins)
+	} else {
+		prices = marks
+	}
+	if n := convergeHedgesAfterAuditClose(auditRes.CloseDetails, state.Strategies, mu, prices, notifier, logMgr.GetStrategyLogger); n > 0 {
+		fmt.Printf("[WARN] #1450 liquidation audit: converged %d hedge leg(s) post-close\n", n)
+	}
 }

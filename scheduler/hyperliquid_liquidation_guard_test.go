@@ -415,6 +415,11 @@ func TestCollectHLLiquidationAuditCandidatesHealsSoleOwnerDrift(t *testing.T) {
 	if math.Abs(cands[0].Qty-0.6) > 1e-9 {
 		t.Errorf("Qty = %v, want the on-chain cap 0.6 (#621)", cands[0].Qty)
 	}
+	// #1456 review round 13 (optional 3): the cap must be visible so the
+	// execution site can log it like every sibling hlSLEffectiveQty caller.
+	if !cands[0].QtyCapped || math.Abs(cands[0].VirtualQty-1.0) > 1e-9 {
+		t.Errorf("QtyCapped/VirtualQty = %v/%v, want true/1.0", cands[0].QtyCapped, cands[0].VirtualQty)
+	}
 	acts := planHyperliquidLiquidationAudit(cands)
 	if len(acts) != 1 || acts[0].Kind != hlAuditTighten {
 		t.Fatalf("actions = %+v, want one tighten", acts)
@@ -1533,4 +1538,59 @@ func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
 			t.Errorf("placement calls = %d, want 1", calls)
 		}
 	})
+}
+
+// #1456 review round 13 (optional 4): the off-cycle audit's cadence comes from
+// the fastest LIVE HL perps interval — never from an unrelated platform's or
+// paper strategy's slower/faster clock, and 0 with no such strategy.
+func TestLiquidationAuditIntervalSeconds(t *testing.T) {
+	mk := func(id string, platform, typ string, live bool) StrategyConfig {
+		args := []string{"--mode", "paper"}
+		if live {
+			args = []string{"--mode", "live"}
+		}
+		return StrategyConfig{ID: id, Platform: platform, Type: typ, Args: args}
+	}
+	strategies := []StrategyConfig{
+		mk("hl-live-a", "hyperliquid", "perps", true),
+		mk("hl-paper-b", "hyperliquid", "perps", false),
+		mk("okx-live-c", "okx", "perps", true),
+		mk("hl-live-spot", "hyperliquid", "spot", true),
+	}
+	intervals := map[string]int{"hl-live-a": 300, "hl-paper-b": 60, "okx-live-c": 120, "hl-live-spot": 30}
+	if got := liquidationAuditIntervalSeconds(strategies, intervals); got != 300 {
+		t.Errorf("interval = %d, want 300 (only hl-live-a counts)", got)
+	}
+	if got := liquidationAuditIntervalSeconds(strategies[1:], intervals); got != 0 {
+		t.Errorf("interval without any live HL perps = %d, want 0", got)
+	}
+}
+
+// #1456 review round 13: the extracted map builder must reproduce the
+// dispatch-path semantics — dust omitted entirely (no side stamp, no cap
+// entry), positive-only liquidation prices, net side from Size sign.
+func TestBuildHLLiquidationMaps(t *testing.T) {
+	onChain, liqPx, netSide := buildHLLiquidationMaps([]HLPosition{
+		{Coin: "ETH", Size: -2.5, LiquidationPx: 1800.25},
+		{Coin: "BTC", Size: 0.4, LiquidationPx: 0},
+		{Coin: "DUST", Size: 5e-10, LiquidationPx: 99},
+	})
+	if onChain["ETH"] != 2.5 || onChain["BTC"] != 0.4 {
+		t.Errorf("onChain = %v, want ETH 2.5 / BTC 0.4", onChain)
+	}
+	if _, ok := onChain["DUST"]; ok {
+		t.Error("DUST position must be omitted below the 1e-9 floor")
+	}
+	if liqPx["ETH"] != 1800.25 {
+		t.Errorf("liqPx[ETH] = %v, want 1800.25", liqPx["ETH"])
+	}
+	if _, ok := liqPx["BTC"]; ok {
+		t.Error("BTC reported no liquidation price — must stay unknown")
+	}
+	if netSide["ETH"] != "short" || netSide["BTC"] != "long" {
+		t.Errorf("netSide = %v, want ETH short / BTC long", netSide)
+	}
+	if _, ok := netSide["DUST"]; ok {
+		t.Error("DUST must carry no side stamp")
+	}
 }
