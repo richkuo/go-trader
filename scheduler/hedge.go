@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -1500,4 +1501,54 @@ func hedgeConfigEqual(a, b *HedgeConfig) bool {
 		return a == b
 	}
 	return *a == *b
+}
+
+// postAuditHedgeSyncFn is the reconciler entry convergeHedgesAfterAuditClose
+// calls; a package var so Go CI can stub it without spawning Python.
+var postAuditHedgeSyncFn = runHedgeSync
+
+// convergeHedgesAfterAuditClose runs the ONE hedge reconciler for every
+// strategy whose primary position the #1450 liquidation audit closed this
+// cycle (#1456 review round 10, Optional 3). The audit books realized closes
+// for strategies that are NOT due — outside the dueStrategies dispatch where
+// runHedgeSync normally sits — and a hedge leg carries no stop by design, so
+// without this call it stays unmanaged until the owner's next due cycle. This
+// is not a second mirror point: it invokes the same state-derived reconciler,
+// just from a second call site, so hedge state still converges from the book.
+//
+// Inputs follow the dispatch site's discipline: no fresh exposure this cycle
+// (the audit only REDUCES primary exposure, so a failed hedge must alert and
+// retry — never unwind), no primary cancel OIDs (the clamp path already
+// consumed the primary's triggers when it closed), marks from this cycle's
+// price snapshot. Unhedged strategies and missing state are no-ops.
+func convergeHedgesAfterAuditClose(
+	closeDetails []hlLiquidationCloseDetail,
+	states map[string]*StrategyState,
+	mu *sync.RWMutex,
+	prices map[string]float64,
+	notifier *MultiNotifier,
+	getLogger func(string) (*StrategyLogger, error),
+) int {
+	converged := 0
+	for _, cd := range closeDetails {
+		sc := cd.SC
+		if !HedgeEnabled(sc) {
+			continue
+		}
+		s := states[sc.ID]
+		if s == nil || mu == nil {
+			continue
+		}
+		logger, err := getLogger(sc.ID)
+		if err != nil || logger == nil {
+			logger = &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
+		}
+		postAuditHedgeSyncFn(sc, s, mu, defaultHedgeExecutor(), hedgeSyncInputs{
+			PrimaryPx: prices[cd.Symbol],
+			HedgePx:   prices[hedgeCoin(sc)],
+			Live:      hyperliquidIsLive(sc.Args),
+		}, notifier, logger)
+		converged++
+	}
+	return converged
 }

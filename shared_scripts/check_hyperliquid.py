@@ -717,6 +717,36 @@ def _classify_sl_response(sdk_response: dict):
     return ("missing", None)
 
 
+
+def _classify_cancel_response(sdk_response):
+    """Classify an order-cancel SDK response into ("ok", "") or ("error", reason).
+
+    HL reports a REJECTED cancel inside a normal-looking response body rather
+    than raising: {"status": "err", ...} at the top level, or a per-order
+    {"error": "..."} entry under response.data.statuses (per-order successes
+    appear there as the string "success" or an empty dict, depending on SDK
+    version). Treating "the call did not raise" as landed can clear a recorded
+    stop OID while the order still rests on the book (#1456 review round 10).
+
+    Fails closed: any shape that does not CONFIRM the landing classifies as
+    ("error", ...), so callers keep the recorded OID tracked.
+    """
+    try:
+        if not isinstance(sdk_response, dict):
+            return ("error", f"unexpected cancel response: {sdk_response}")
+        if sdk_response.get("status") != "ok":
+            return ("error", str(sdk_response))
+        data = sdk_response.get("response", {}).get("data", {})
+        statuses = data.get("statuses") if isinstance(data, dict) else None
+        if not isinstance(statuses, list) or not statuses:
+            return ("error", f"cancel returned no per-order status: {sdk_response}")
+        for st in statuses:
+            if isinstance(st, dict) and "error" in st:
+                return ("error", str(st["error"]))
+        return ("ok", "")
+    except Exception as e:
+        return ("error", f"_classify_cancel_response: {e}")
+
 def _oid_is_open(open_oids: set[int] | None, oid: int) -> bool:
     return oid > 0 and open_oids is not None and int(oid) in open_oids
 
@@ -1013,20 +1043,31 @@ def run_sync_protection(
                 if size <= 0:
                     out["stop_loss_oid"] = int(stop_loss_oid)
                 else:
-                    cancel_ok = False
-                    try:
-                        adapter.cancel_order_by_oid(symbol, int(stop_loss_oid))
-                        cancel_ok = True
-                    except Exception as ce:
-                        out["stop_loss_error"] = f"force replace cancel: {ce}"
                     # #1456 review round 9: once this cancel lands the resting
                     # OID is gone from the book. If the replacement below then
                     # fails, Go must clear pos.StopLossOID/StopLossTriggerPx
                     # instead of leaving them pointed at a dead order. Emitted
-                    # even when False so a FAILED cancel (the old order may
-                    # still be resting) never reads as "safe to clear".
+                    # even when False so an unconfirmed cancel never reads as
+                    # "safe to clear".
+                    #
+                    # #1456 review round 10: "landed" means the exchange
+                    # RESPONSE confirmed it (a rejected cancel arrives without
+                    # raising) AND only then is the replacement placed — a
+                    # failed cancel defers placement to the next sync instead of
+                    # resting two full-size reduce-only stops on one position.
+                    cancel_ok = False
+                    try:
+                        kind, payload = _classify_cancel_response(
+                            adapter.cancel_order_by_oid(symbol, int(stop_loss_oid)))
+                        if kind == "ok":
+                            cancel_ok = True
+                        else:
+                            out["stop_loss_error"] = f"force replace cancel rejected: {payload}"
+                    except Exception as ce:
+                        out["stop_loss_error"] = f"force replace cancel: {ce}"
                     out["cancel_stop_loss_succeeded"] = cancel_ok
-                    _place_sl()
+                    if cancel_ok:
+                        _place_sl()
             else:
                 action, fill = _resolve_missing_oid(stop_loss_oid)
                 if action == "filled":
@@ -1294,8 +1335,16 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             try:
                 for oid in cancel_oids:
                     try:
-                        adapter.cancel_trigger_order(symbol, oid)
-                        cancel_succeeded = True
+                        # #1456 review round 10: only a response-confirmed cancel
+                        # may report success — a rejected cancel leaves the stale
+                        # SL tracked so the next sync re-handles it.
+                        kind, payload = _classify_cancel_response(
+                            adapter.cancel_trigger_order(symbol, oid))
+                        if kind == "ok":
+                            cancel_succeeded = True
+                        else:
+                            cancel_errors.append(f"{oid}: {payload}")
+                            print(f"[WARN] cancel_trigger_order({symbol}, {oid}) rejected: {payload}", file=sys.stderr)
                     except Exception as ce:
                         cancel_errors.append(f"{oid}: {ce}")
                         print(f"[WARN] cancel_trigger_order({symbol}, {oid}) failed: {ce}", file=sys.stderr)
@@ -1487,9 +1536,20 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             if open_oids is None:
                 should_place = False
             elif _oid_is_open(open_oids, cancel_oid):
+                # #1456 review round 10: a cancel counts as landed only when the
+                # exchange RESPONSE confirms it — a rejected cancel arrives as a
+                # normal body, not an exception. An unconfirmed cancel leaves the
+                # old order possibly resting, so the replacement must defer to
+                # the next update instead of stacking a second full-size stop.
                 try:
-                    adapter.cancel_trigger_order(symbol, cancel_oid)
-                    cancel_succeeded = True
+                    kind, payload = _classify_cancel_response(
+                        adapter.cancel_trigger_order(symbol, cancel_oid))
+                    if kind == "ok":
+                        cancel_succeeded = True
+                    else:
+                        cancel_err = payload
+                        should_place = False
+                        print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected: {payload}; not placing replacement", file=sys.stderr)
                 except Exception as ce:
                     cancel_err = str(ce)
                     should_place = False

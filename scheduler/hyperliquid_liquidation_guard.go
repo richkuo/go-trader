@@ -1138,6 +1138,18 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		return nil, hlReplaceDeferred
 	}
 	if result.Error != "" {
+		if result.CancelStopLossSucceeded {
+			// #1456 review round 10: the subprocess raised AFTER the cancel
+			// landed — nothing rests on the book. This is protection lost,
+			// never a deferral: the caller's hlReplaceProtectionLost case
+			// clears the dead OID and retries in-cycle, where "replace
+			// deferred" would leave pos.StopLossOID pointed at a cancelled
+			// order and tell the operator the original stop still rests.
+			if logger != nil {
+				logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s and the subprocess failed before placing — the position has NO exchange-side stop: %s", candidate.StopLossOID, candidate.Symbol, result.Error)
+			}
+			return result, hlReplaceProtectionLost
+		}
 		if logger != nil {
 			logger.Error("Liquidation-clamp SL replace returned error for %s: %s", candidate.Symbol, result.Error)
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -850,5 +851,173 @@ func TestManualForceCloseClearsLiquidationAlertThrottle(t *testing.T) {
 	}
 	if _, exists := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); exists {
 		t.Error("force-close must clear the liquidation-alert throttle — a reopen must re-alert on its first cycle")
+	}
+}
+
+// #1456 review round 10 (Needs Fixing): a cancel that LANDS followed by a
+// subprocess-level error (error payload + CancelStopLossSucceeded) must NOT be
+// classified "replace deferred" — the original stop is gone, so the operator
+// alert must not claim it still rests and the in-cycle clamp retry must run.
+func TestTrailingWalkerErrorPayloadAfterCancelLandedRunsRetry(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		if calls == 1 {
+			// cancel landed, then the subprocess raised before placing.
+			return &HyperliquidStopLossUpdateResult{Error: "boom after cancel", CancelStopLossSucceeded: true}, "", nil
+		}
+		// In-cycle fresh retry (cancelOID=0).
+		if cancelStopLossOID != 0 {
+			t.Errorf("retry cancel OID = %d, want 0 (fresh placement)", cancelStopLossOID)
+		}
+		return &HyperliquidStopLossUpdateResult{StopLossOID: 7009, StopLossTriggerPx: triggerPx}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t))
+	if !ok {
+		t.Fatal("walker must treat error-after-cancel as cancel-landed and confirm via the retry")
+	}
+	if calls != 2 {
+		t.Fatalf("placement calls = %d, want 2 (failed replace + in-cycle retry)", calls)
+	}
+}
+
+// Same shape WITHOUT a resting replacement and without a clamp trigger (an
+// ordinary trailing move): still never reads as deferred — the outcome is
+// protection lost, reported through the confirmed update.
+func TestTrailingWalkerErrorPayloadAfterCancelLandedOrdinaryMove(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{Error: "boom after cancel", CancelStopLossSucceeded: true}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2300, 4242,
+		trailingReplacePolicy{}, nil, newTestLogger(t))
+	if !ok {
+		t.Fatal("cancel-landed is a state-confirming shape even without a clamp retry")
+	}
+	if calls != 1 {
+		t.Fatalf("placement calls = %d, want 1 (no clamp, no retry)", calls)
+	}
+}
+
+// Must-survive (c): a genuine PRE-cancel failure (cancel_stop_loss_error set,
+// no cancel_stop_loss_succeeded) stays "replace deferred" — the original stop
+// may still rest, so no retry and no confirmation.
+func TestTrailingWalkerPreCancelFailureStillDeferred(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{CancelStopLossError: "cancel down"}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t))
+	if ok {
+		t.Fatal("a failed cancel must stay deferred — the original stop may still rest")
+	}
+	if calls != 1 {
+		t.Fatalf("placement calls = %d, want 1 (no retry on a failed cancel)", calls)
+	}
+}
+
+// Audit mirror of the Needs Fixing: the same error-after-cancel payload
+// reaching hlLiquidationClampReplace classifies hlReplaceProtectionLost (the
+// caller then clears the dead OID and retries), while a failed CANCEL stays
+// hlReplaceDeferred.
+func TestLiquidationClampReplaceClassifiesErrorAfterCancelLanded(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	candidate := hlLiquidationAuditCandidate{
+		Script: "x.py", StrategyID: "hl-eth", Symbol: "ETH", Side: "long",
+		Qty: 1.0, StopLossOID: 4242, StopLossTriggerPx: 2330,
+	}
+
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{Error: "boom after cancel", CancelStopLossSucceeded: true}, "", nil
+	}
+	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t)); outcome != hlReplaceProtectionLost {
+		t.Errorf("outcome = %v, want hlReplaceProtectionLost (cancel landed, nothing rests)", outcome)
+	}
+
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{Error: "pre-cancel boom"}, "", nil
+	}
+	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t)); outcome != hlReplaceDeferred {
+		t.Errorf("outcome = %v, want hlReplaceDeferred (no landed cancel — the old order may rest)", outcome)
+	}
+
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{CancelStopLossError: "cancel down"}, "", nil
+	}
+	if _, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t)); outcome != hlReplaceDeferred {
+		t.Errorf("outcome = %v, want hlReplaceDeferred for a FAILED cancel", outcome)
+	}
+}
+
+// #1456 review round 10 (Optional 3): every hedged strategy whose primary the
+// audit closed gets ONE reconciler call this cycle; unhedged ones get none.
+func TestConvergeHedgesAfterAuditClose(t *testing.T) {
+	old := postAuditHedgeSyncFn
+	defer func() { postAuditHedgeSyncFn = old }()
+
+	hedged := StrategyConfig{
+		ID: "hl-btc", Type: "perps", Platform: "hyperliquid",
+		Args:  []string{"x.py", "BTC", "1h"},
+		Hedge: &HedgeConfig{Symbol: "ETH", Enabled: true},
+	}
+	unhedged := liqWalkerStrategy()
+
+	var synced []string
+	postAuditHedgeSyncFn = func(sc StrategyConfig, s *StrategyState, mu *sync.RWMutex, exec hedgeExecutor, in hedgeSyncInputs, notifier *MultiNotifier, logger *StrategyLogger) hedgeActionKind {
+		synced = append(synced, sc.ID)
+		if in.PrimaryPx != 100 || in.HedgePx != 50 {
+			t.Errorf("%s: prices PrimaryPx=%g HedgePx=%g, want 100/50", sc.ID, in.PrimaryPx, in.HedgePx)
+		}
+		if in.FreshExposureQty != 0 {
+			t.Errorf("%s: FreshExposureQty=%g, want 0 (the audit only reduces)", sc.ID, in.FreshExposureQty)
+		}
+		return hedgeActionNone
+	}
+
+	details := []hlLiquidationCloseDetail{
+		{SC: hedged, Symbol: "BTC", FillPx: 100},
+		{SC: unhedged, Symbol: "ETH", FillPx: 2335},
+	}
+	states := map[string]*StrategyState{"hl-btc": {Positions: map[string]*Position{}}}
+	n := convergeHedgesAfterAuditClose(details, states, &sync.RWMutex{},
+		map[string]float64{"BTC": 100, "ETH": 50}, nil,
+		func(string) (*StrategyLogger, error) { return newTestLogger(t), nil })
+	if n != 1 || len(synced) != 1 || synced[0] != "hl-btc" {
+		t.Errorf("converged=%d synced=%v, want exactly the hedged strategy hl-btc", n, synced)
+	}
+
+	// Missing state: skipped without a reconciler call.
+	n = convergeHedgesAfterAuditClose(details[:1], map[string]*StrategyState{}, &sync.RWMutex{},
+		map[string]float64{"BTC": 100}, nil,
+		func(string) (*StrategyLogger, error) { return newTestLogger(t), nil })
+	if n != 0 {
+		t.Errorf("converged=%d, want 0 when strategy state is missing", n)
 	}
 }

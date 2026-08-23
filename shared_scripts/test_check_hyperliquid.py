@@ -500,6 +500,50 @@ class TestClassifySLResponse:
         assert payload is None
 
 
+# #1456 review round 10: a CONFIRMED HL cancel lands as {"status":"ok"} with a
+# per-order success entry; rejections arrive inside a normal body instead of
+# raising.
+_CANCEL_OK_RESPONSE = {
+    "status": "ok",
+    "response": {"type": "cancel", "data": {"statuses": ["success"]}},
+}
+_CANCEL_REJECTED_RESPONSE = {
+    "status": "err",
+    "response": {"type": "cancel", "data": {"statuses": [{"error": "order already filled"}]}},
+}
+
+
+class TestClassifyCancelResponse:
+    """Only an exchange-confirmed landing may report a cancel as succeeded."""
+
+    def _load(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_confirmed_string_status_is_ok(self):
+        assert self._load()._classify_cancel_response(_CANCEL_OK_RESPONSE) == ("ok", "")
+
+    def test_confirmed_dict_status_without_error_is_ok(self):
+        resp = {"status": "ok", "response": {"data": {"statuses": [{}]}}}
+        assert self._load()._classify_cancel_response(resp) == ("ok", "")
+
+    def test_top_level_err_rejects(self):
+        kind, payload = self._load()._classify_cancel_response({"status": "err"})
+        assert kind == "error"
+        assert "err" in payload
+
+    def test_per_order_error_rejects(self):
+        resp = {"status": "ok", "response": {"data": {"statuses": [{"error": "no such order"}]}}}
+        assert self._load()._classify_cancel_response(resp)[0] == "error"
+
+    def test_missing_statuses_fails_closed(self):
+        assert self._load()._classify_cancel_response({})[0] == "error"
+
+    def test_non_dict_fails_closed(self):
+        assert self._load()._classify_cancel_response(None)[0] == "error"
+
+
 class TestUpdateStopLoss:
     """#501: trailing stops reuse cancel_trigger_order + place_stop_loss without
     submitting a market order."""
@@ -509,6 +553,7 @@ class TestUpdateStopLoss:
         side="long",
         place_response=None,
         cancel_side_effect=None,
+        cancel_response=_UNSET,
         open_oids=None,
         open_oids_side_effect=None,
         lookup_result=_UNSET,
@@ -521,6 +566,9 @@ class TestUpdateStopLoss:
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.round_perps_trigger_px.side_effect = lambda _symbol, px: round(px, 2)
+        mock_adapter.cancel_trigger_order.return_value = (
+            _CANCEL_OK_RESPONSE if cancel_response is _UNSET else cancel_response
+        )
         if open_oids_side_effect is not None:
             mock_adapter.open_order_oids.side_effect = open_oids_side_effect
         else:
@@ -571,6 +619,16 @@ class TestUpdateStopLoss:
         adapter.cancel_trigger_order.assert_called_once_with("ETH", 11111)
         adapter.place_stop_loss.assert_not_called()
         assert "cancel down" in out["cancel_stop_loss_error"]
+        assert "stop_loss_oid" not in out
+
+    def test_cancel_rejected_defers_replacement(self):
+        """#1456 review round 10: HL reports a REJECTED cancel inside a normal
+        response body. The old order may still rest — no replacement may be
+        stacked on top of it."""
+        out, adapter = self._run_update(cancel_response=_CANCEL_REJECTED_RESPONSE)
+        adapter.place_stop_loss.assert_not_called()
+        assert "cancel_stop_loss_succeeded" not in out
+        assert "already filled" in out["cancel_stop_loss_error"]
         assert "stop_loss_oid" not in out
 
     def test_open_order_lookup_failure_defers_replacement(self):
@@ -1271,7 +1329,7 @@ class TestProtectionSyncStopLossTriggerContract:
         adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
         adapter.round_size.side_effect = lambda _sym, sz: sz
         adapter.place_stop_loss.return_value = place_response
-        adapter.cancel_order_by_oid.return_value = {}
+        adapter.cancel_order_by_oid.return_value = _CANCEL_OK_RESPONSE
 
         captured = StringIO()
         import builtins
@@ -1326,6 +1384,49 @@ class TestProtectionSyncStopLossTriggerContract:
         )
         assert "stop_loss_trigger_px" not in out
         assert out.get("stop_loss_error")
+
+    def test_force_replace_cancel_rejected_defers_replacement(self):
+        """#1456 review round 10: a REJECTED cancel (normal body, no raise)
+        leaves the old stop possibly resting — nothing placed on top of it."""
+        out, adapter = self._run_sync_cancel_response(_CANCEL_REJECTED_RESPONSE)
+        adapter.place_stop_loss.assert_not_called()
+        assert out.get("cancel_stop_loss_succeeded") is False
+        assert "already filled" in out["stop_loss_error"]
+        assert "stop_loss_oid" not in out
+
+    def _run_sync_cancel_response(self, cancel_response):
+        import builtins
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.return_value = {4242}
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = self._resting(9002)
+        adapter.cancel_order_by_oid.return_value = cancel_response
+
+        captured = StringIO()
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH", "long", 1.0, 2400.0, 30.0, "live",
+                    stop_loss_atr_mult=2.5,
+                    stop_loss_oid=4242,
+                    force_sl_replace=True,
+                )
+        return json.loads(captured.getvalue()), adapter
 
     def test_fresh_placement_reports_the_placed_trigger(self):
         out, adapter = self._run_sync(

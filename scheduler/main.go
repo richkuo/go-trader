@@ -2062,6 +2062,15 @@ func main() {
 						sendTradeAlerts(cd.SC, state.Strategies[cd.SC.ID], 1, &mu, notifier)
 					}
 					totalTrades += len(auditRes.CloseDetails)
+					// #1456 review round 10 (Optional 3): an audit-booked close
+					// is a primary lifecycle event. Converge the correlated
+					// hedge leg through the ONE reconciler NOW — the audit
+					// closes strategies that are not due this cycle, and a
+					// hedge leg carries no stop by design, so without this it
+					// sits unmanaged until the owner's next due cycle.
+					if n := convergeHedgesAfterAuditClose(auditRes.CloseDetails, state.Strategies, &mu, prices, notifier, logMgr.GetStrategyLogger); n > 0 {
+						fmt.Printf("[WARN] #1450 liquidation audit: converged %d hedge leg(s) post-close\n", n)
+					}
 				}
 
 				// #879: the dispatch loop below is the first regime-store

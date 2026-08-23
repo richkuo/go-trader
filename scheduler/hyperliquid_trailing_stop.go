@@ -838,9 +838,19 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		logger.Error("Trailing SL update returned no result")
 		return highWater, nil, false
 	}
-	if result.Error != "" {
+	if result.Error != "" && !result.CancelStopLossSucceeded {
 		logger.Error("Trailing SL update returned error: %s", result.Error)
 		return highWater, result, false
+	}
+	if result.Error != "" {
+		// #1456 review round 10: the subprocess raised AFTER the old trigger was
+		// cancelled (e.g. trigger rounding outside the placement try) — the
+		// payload still carries CancelStopLossSucceeded. Reading this as "replace
+		// deferred" told the operator the ORIGINAL stop was still resting while
+		// nothing was, and skipped the in-cycle retry. Fall through to the normal
+		// interpretation: state clears via applyTrailingStopUpdateResult, the
+		// clamp retry below runs, and the alert names protection lost.
+		logger.Error("Trailing SL update returned error AFTER the old trigger was cancelled (%s) — treating as cancel-landed", result.Error)
 	}
 	if result.OpenOrderCheckError != "" {
 		logger.Warn("Trailing SL open-order check failed; replacement deferred: %s", result.OpenOrderCheckError)
