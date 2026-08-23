@@ -648,3 +648,151 @@ func TestExecuteSpotWithFillFee_PersistsImmediately(t *testing.T) {
 		t.Errorf("trade rows after ExecuteSpotSignalWithFillFee = %d, want 1 (hook never fired)", count)
 	}
 }
+
+// #1456 review round 14 (Needs Fixing 2): the open trade row is recorded up
+// front (round 12) so the #1431 decision log always carries its open leg
+// before a same-cycle closer can delete the position. copyPositionOpenSnapshotToTrade
+// therefore reads the stop fields BEFORE the #885 inline arm sets them, and a
+// PURE TRAILING owner never reaches the protection sync's own backfill —
+// buildHyperliquidProtectionPlan refuses the plan for it. Without the explicit
+// post-arm stamp the row (and the open DM's "SL: $…" line) stayed blank for the
+// life of the position.
+func TestOpenTradeCarriesTrailingArmStopAfterEarlyRecord(t *testing.T) {
+	trailingMult := 2.0
+	sc := StrategyConfig{
+		ID:                  "hl-trail",
+		Platform:            "hyperliquid",
+		Type:                "perps",
+		Args:                []string{"--mode", "live"},
+		TrailingStopATRMult: &trailingMult,
+	}
+
+	// The premise: a pure trailing owner gets NO protection plan, so
+	// runHyperliquidProtectionSync returns before stampOpenTradeWithProtectionSnapshot
+	// on this cycle and every later one. Nothing else backfills the row.
+	pos := &Position{Symbol: "ETH", Side: "long", Quantity: 1, AvgCost: 2000, EntryATR: 25}
+	if _, syncOK := buildHyperliquidProtectionPlan(sc, pos, 0); syncOK {
+		t.Fatalf("pure trailing owner unexpectedly produced a protection plan — the backfill premise changed")
+	}
+
+	db := openTestDB(t)
+	prev := tradeRecorder
+	tradeRecorder = db.InsertTrade
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	s := &StrategyState{
+		ID:              "hl-trail",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Cash:            10000,
+		InitialCapital:  10000,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+		TradeHistory:    []Trade{},
+	}
+	logger := newTestLogger(t)
+
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 1, "9001", 0.2, DirectionLong, 0, logger)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignalWithLeverageDeferredOpen: %v", err)
+	}
+	opened := s.Positions["ETH"]
+	opened.EntryATR = 25
+
+	// Round-12 ordering: the open row is journaled while the stop is still unarmed.
+	recordPositionOpen(s, sc, exec.OpenTrade, opened)
+	if s.TradeHistory[0].StopLossOID != 0 || s.TradeHistory[0].StopLossTriggerPx != 0 {
+		t.Fatalf("open row = OID %d trigger %.2f, want the pre-arm blanks this test exists to backfill", s.TradeHistory[0].StopLossOID, s.TradeHistory[0].StopLossTriggerPx)
+	}
+
+	// armTrailingStopAtOpenNow rests the SL and stamps the position.
+	opened.StopLossOID = 4242
+	opened.StopLossTriggerPx = 1950
+
+	// (a) the post-arm stamp puts the armed OID and trigger on the open row.
+	stampOpenTradeWithProtectionSnapshot(s, db, sc, "ETH", opened)
+	if s.TradeHistory[0].StopLossOID != 4242 || s.TradeHistory[0].StopLossTriggerPx != 1950 {
+		t.Fatalf("in-memory open row = OID %d trigger %.2f, want 4242 / 1950", s.TradeHistory[0].StopLossOID, s.TradeHistory[0].StopLossTriggerPx)
+	}
+	var slOID int64
+	var triggerPx float64
+	if err := db.db.QueryRow(`SELECT stop_loss_oid, stop_loss_trigger_px FROM trades WHERE strategy_id = 'hl-trail'`).Scan(&slOID, &triggerPx); err != nil {
+		t.Fatalf("query persisted open row: %v", err)
+	}
+	if slOID != 4242 || triggerPx != 1950 {
+		t.Errorf("persisted open row = OID %d trigger %.2f, want 4242 / 1950", slOID, triggerPx)
+	}
+
+	// (c) a later stamp with a position whose stop was cleared (scale-in
+	// re-size in flight, walker mid cancel+replace) must never blank the row.
+	opened.StopLossOID = 0
+	opened.StopLossTriggerPx = 0
+	stampOpenTradeWithProtectionSnapshot(s, db, sc, "ETH", opened)
+	if s.TradeHistory[0].StopLossOID != 4242 || s.TradeHistory[0].StopLossTriggerPx != 1950 {
+		t.Errorf("re-stamp overwrote the armed snapshot: OID %d trigger %.2f, want 4242 / 1950", s.TradeHistory[0].StopLossOID, s.TradeHistory[0].StopLossTriggerPx)
+	}
+}
+
+// #1456 review round 14 (Optional 3): moving recordPositionOpen out of the
+// live-only `execResult != nil && trades > 0` gate also made it reachable on
+// PAPER HL perps opens, which previously recorded no open trade at all. That
+// is the correct behavior — a paper open is a trade — but nothing in the diff
+// pinned it, so pin it here: exactly one open row, same shape as live, and a
+// paper close adds exactly one close row with no duplicate.
+func TestPaperHLPerpsOpenRecordsExactlyOneTradeRow(t *testing.T) {
+	db := openTestDB(t)
+	prev := tradeRecorder
+	tradeRecorder = db.InsertTrade
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := StrategyConfig{ID: "hl-paper", Platform: "hyperliquid", Type: "perps", Args: []string{"--mode", "paper"}}
+	s := &StrategyState{
+		ID:              "hl-paper",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		Cash:            10000,
+		InitialCapital:  10000,
+		Positions:       map[string]*Position{},
+		OptionPositions: map[string]*OptionPosition{},
+		TradeHistory:    []Trade{},
+	}
+	logger := newTestLogger(t)
+
+	// Paper: no exchange fill, so fillQty/fillOID/fillFee are all zero-valued —
+	// this is exactly the shape executeHyperliquidResultDeferredOpen builds when
+	// execResult is nil.
+	exec, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionLong, 0, logger)
+	if err != nil {
+		t.Fatalf("ExecutePerpsSignalWithLeverageDeferredOpen: %v", err)
+	}
+	if exec.TradesExecuted != 1 || exec.OpenTrade == nil {
+		t.Fatalf("paper exec = %+v, want one deferred open trade", exec)
+	}
+	recordPositionOpen(s, sc, exec.OpenTrade, s.Positions["ETH"])
+
+	countRows := func(where string) int {
+		var n int
+		if err := db.db.QueryRow(`SELECT COUNT(*) FROM trades WHERE strategy_id = 'hl-paper' AND ` + where).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", where, err)
+		}
+		return n
+	}
+	if got := countRows("is_close = 0"); got != 1 {
+		t.Fatalf("paper open rows = %d, want exactly 1", got)
+	}
+	if got := countRows("is_close = 1"); got != 0 {
+		t.Fatalf("close rows after an open = %d, want 0", got)
+	}
+
+	// A paper close books through the same helper the live path uses; it must
+	// add exactly one close row and no second open.
+	if _, err := ExecutePerpsSignalWithLeverageDeferredOpen(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionLong, 0, logger); err != nil {
+		t.Fatalf("paper close: %v", err)
+	}
+	if got := countRows("is_close = 1"); got != 1 {
+		t.Errorf("paper close rows = %d, want exactly 1", got)
+	}
+	if got := countRows("is_close = 0"); got != 1 {
+		t.Errorf("open rows after the close = %d, want still exactly 1", got)
+	}
+}

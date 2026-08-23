@@ -1541,22 +1541,85 @@ func buildHLLiquidationMaps(hlPositions []HLPosition) (onChainAbsQty map[string]
 	return onChainAbsQty, liquidationPx, netSideByCoin
 }
 
-// liquidationAuditIntervalSeconds returns the #1450 audit's OWN cadence floor:
-// the minimum effective check interval across live Hyperliquid perps
-// strategies — the population the audit protects. The off-cycle audit pass
-// runs on this clock instead of inheriting the whole fleet's slowest interval
-// (#1456 review round 13). Returns 0 when no live HL perps strategy exists.
+// liquidationAuditMinIntervalSeconds floors the off-cycle audit cadence. The
+// pass fetches clearinghouseState + mids, so the halving below must never
+// drive it into a hot polling loop against Hyperliquid on a fast fleet.
+const liquidationAuditMinIntervalSeconds = 60
+
+// liquidationAuditIntervalSeconds returns the #1450 audit's OWN cadence: HALF
+// the minimum effective check interval across the strategies the audit
+// actually acts on, floored at liquidationAuditMinIntervalSeconds. Returns 0
+// when no such strategy exists.
+//
+// Two properties this must hold (#1456 review round 14, Optional 1):
+//
+//   - STRICTLY SHORTER than the cadence already bounding the healing window.
+//     Returning the bare minimum interval made the audit deadline elapse at
+//     the same instant the strategy setting it became due — at which point
+//     dueStrategies is non-empty and the dispatch-path audit runs anyway, so
+//     the off-cycle pass could not fire any sooner than what it was added to
+//     pre-empt. A single 4h live HL perps fleet kept a ~4h window. Halving
+//     makes the off-cycle pass land mid-interval, which is the whole point.
+//   - The SAME population collectHLLiquidationAuditCandidates audits, which
+//     is live HL perps AND live HL `manual`. Excluding manual gave a live HL
+//     manual-only fleet audSec == 0 and therefore no off-cycle pass at all,
+//     even though every one of its positions is an audit candidate.
 func liquidationAuditIntervalSeconds(strategies []StrategyConfig, intervals map[string]int) int {
 	best := 0
 	for _, sc := range strategies {
-		if sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+		if sc.Platform != "hyperliquid" {
+			continue
+		}
+		if sc.Type != "perps" && sc.Type != "manual" {
+			continue
+		}
+		if !hyperliquidIsLive(sc.Args) {
 			continue
 		}
 		if iv := intervals[sc.ID]; iv > 0 && (best == 0 || iv < best) {
 			best = iv
 		}
 	}
-	return best
+	if best == 0 {
+		return 0
+	}
+	if half := best / 2; half > liquidationAuditMinIntervalSeconds {
+		return half
+	}
+	return liquidationAuditMinIntervalSeconds
+}
+
+// flushOffCycleLiquidationAuditState persists whatever runOffCycleLiquidationAudit
+// left in memory, and reports the caller's updated (dirty, saveFailures) pair
+// (#1456 review round 14, Needs Fixing 1).
+//
+// The off-cycle branch continues past the main loop's only end-of-cycle
+// SaveStateWithDB, so a realized close booked there — plus any hedge leg the
+// post-close reconciler converged on-chain — would exist in memory alone. The
+// branch is re-entered on every wake while dueStrategies stays empty, so on a
+// quiet fleet that unsaved window is the whole quiet period rather than one
+// tick. reconcilePendingLimitOrders sets the precedent: flush inline before
+// the continue.
+//
+// `dirty` carries a PRIOR pass's failed flush forward. A failed save leaves the
+// close in memory with nothing further to book, so without the carry the flush
+// would wait for the next strategy to come due — reopening the same unbounded
+// window the inline save closes. A save failure is surfaced exactly the way the
+// end-of-cycle failure is: the shared saveFailures counter plus a [CRITICAL]
+// line, never swallowed.
+func flushOffCycleLiquidationAuditState(state *AppState, cfg *Config, stateDB *StateDB, mu *sync.RWMutex, booked int, dirty bool, saveFailures int) (bool, int) {
+	if booked <= 0 && !dirty {
+		return dirty, saveFailures
+	}
+	mu.Lock()
+	err := SaveStateWithDB(state, cfg, stateDB)
+	mu.Unlock()
+	if err != nil {
+		saveFailures++
+		fmt.Printf("[CRITICAL] Save state failed after off-cycle liquidation audit (%d/3): %v\n", saveFailures, err)
+		return true, saveFailures
+	}
+	return false, 0
 }
 
 // runOffCycleLiquidationAudit is the dedicated audit pass for cycles where NO
@@ -1565,33 +1628,48 @@ func liquidationAuditIntervalSeconds(strategies []StrategyConfig, intervals map[
 // dispatch path uses (buildHLLiquidationMaps), and runs the identical audit —
 // so a stop armed on an open cycle is clamped on the audit's own cadence, not
 // whenever some unrelated platform's strategy next comes due. Alerting and
-// hedge convergence mirror the dispatch site exactly: each booked close gets
-// the channel trade line + per-strategy DM via sendTradeAlerts, and the
+// hedge convergence mirror the dispatch site: each booked close gets an
+// operator channel line plus the per-strategy DM via sendTradeAlerts, and the
 // primary's correlated hedge leg converges through the ONE reconciler with
 // marks fetched only for the affected coins. The caller stamps the audit
 // clock unconditionally — including on fetch failure — so this can never
 // become a hot retry loop.
-func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager, channelTrades map[string]int, channelTradeDetails map[string][]string, totalTrades *int) {
+//
+// It returns the number of realized closes it booked. That count is the
+// caller's PERSISTENCE signal (#1456 review round 14, Needs Fixing 1): this
+// path books through recordPerpsStopLossClose, which is in-memory until a
+// SaveState commits, and the off-cycle branch continues past the loop's only
+// end-of-cycle save. The caller must flush before sleeping again.
+//
+// It posts the close line straight to the operator channel rather than
+// accumulating into the per-cycle channelTrades / channelTradeDetails maps the
+// dispatch site uses (#1456 review round 14, Optional 2). Those maps are
+// re-created at the top of every iteration and the off-cycle branch continues
+// before the channel-summary block that reads them, so writing into them
+// produced a line that never reached a channel. The summary itself cannot be
+// emitted here — it needs the cycle's prices, wallet balances and Sharpe
+// inputs, none of which this branch computes — so the exit gets its own
+// direct message instead.
+func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, mu *sync.RWMutex, notifier *MultiNotifier, logMgr *LogManager) int {
 	hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 	if hlAddr == "" {
-		return
+		return 0
 	}
 	_, hlPositions, err := fetchHyperliquidState(hlAddr)
 	if err != nil {
 		fmt.Printf("[WARN] #1450 off-cycle liquidation audit: clearinghouseState fetch failed: %v\n", err)
-		return
+		return 0
 	}
 	hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin := buildHLLiquidationMaps(hlPositions)
 	auditRes := runHyperliquidLiquidationAudit(strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, true, mu, notifier, time.Now().UTC())
 	if auditRes.ImmediateFills == 0 {
-		return
+		return 0
 	}
 	fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 	priceCoins := make(map[string]bool)
 	for _, cd := range auditRes.CloseDetails {
 		if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type); chKey != "" {
-			channelTrades[chKey]++
-			channelTradeDetails[chKey+"|"+extractAsset(cd.SC)] = append(channelTradeDetails[chKey+"|"+extractAsset(cd.SC)], cd.Detail)
+			notifier.SendToChannel(cd.SC.Platform, cd.SC.Type, fmt.Sprintf("**#1450 off-cycle liquidation audit**\n%s", cd.Detail))
 		}
 		sendTradeAlerts(cd.SC, state.Strategies[cd.SC.ID], 1, mu, notifier)
 		priceCoins[cd.Symbol] = true
@@ -1599,7 +1677,6 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 			priceCoins[hedgeCoin(cd.SC)] = true
 		}
 	}
-	*totalTrades += len(auditRes.CloseDetails)
 	prices := make(map[string]float64)
 	coins := make([]string, 0, len(priceCoins))
 	for c := range priceCoins {
@@ -1614,4 +1691,5 @@ func runOffCycleLiquidationAudit(strategies []StrategyConfig, state *AppState, m
 	if n := convergeHedgesAfterAuditClose(auditRes.CloseDetails, state.Strategies, mu, prices, notifier, logMgr.GetStrategyLogger); n > 0 {
 		fmt.Printf("[WARN] #1450 liquidation audit: converged %d hedge leg(s) post-close\n", n)
 	}
+	return len(auditRes.CloseDetails)
 }

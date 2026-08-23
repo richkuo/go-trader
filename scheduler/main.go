@@ -760,6 +760,14 @@ func main() {
 	// guarantee to the audit's own cadence instead of the fleet's slowest
 	// strategy interval — see the empty-branch clamp below.
 	var lastLiquidationAudit time.Time
+	// offCycleAuditSaveDirty latches when the #1450 off-cycle audit booked a
+	// realized close but its inline SaveStateWithDB failed. The close only
+	// lives in memory at that point, and the branch that produced it books
+	// nothing further, so without a retry the flush would wait for the next
+	// strategy to come due — the exact unbounded quiet window the inline save
+	// exists to close. The next quiet wake retries the flush even when that
+	// pass booked nothing (#1456 review round 14, Needs Fixing 1).
+	offCycleAuditSaveDirty := false
 	// Same single-writer invariant as lastRun; copied into AppState only during
 	// the save phase so restart throttling survives without widening state locks.
 	lastSummaryPost := cloneTimeMap(state.LastSummaryPost)
@@ -943,11 +951,27 @@ func main() {
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
-					runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr, channelTrades, channelTradeDetails, &totalTrades)
+					booked := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr)
 					// Stamp unconditionally — including fetch failure — so a
 					// failing endpoint can never turn this branch into a hot
 					// retry loop; the next attempt waits out the full cadence.
 					lastLiquidationAudit = now
+					// #1456 review round 14 (Needs Fixing 1): the audit books
+					// realized closes through recordPerpsStopLossClose (in
+					// memory until SaveState commits) and converges real
+					// on-chain hedge legs, then this branch CONTINUES past the
+					// loop body's only SaveStateWithDB. Because the branch is
+					// re-entered on every wake while dueStrategies stays empty,
+					// a quiet fleet could run pass after pass without ever
+					// reaching that save — the unsaved window is the whole
+					// quiet period, not one tick. After an unclean exit the
+					// position reloads open with cash unchanged while the
+					// exchange is flat, and the next reconcile re-books it as
+					// hl_sync_external at a later mark, after the operator was
+					// already DM'd the original close. Flush inline before
+					// sleeping, exactly as reconcilePendingLimitOrders does
+					// before its own continue. Nothing booked → no extra write.
+					offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, booked, offCycleAuditSaveDirty, saveFailures)
 					continue
 				}
 				delay := schedulerDelay(cfg.Strategies, intervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
@@ -3149,6 +3173,37 @@ func main() {
 											detail = slDetail
 										}
 									}
+									// #1456 review round 14 (Needs Fixing 2): the open /
+									// scale_in trade row is recorded up front (round 12) so
+									// the #1431 decision log always carries its open leg
+									// before any same-cycle closer can delete the position.
+									// copyPositionOpenSnapshotToTrade therefore reads the
+									// stop fields BEFORE the #885 inline arm and the
+									// scale-in re-size above set them, and a PURE TRAILING
+									// owner never reaches the protection sync's own
+									// stampOpenTradeWithProtectionSnapshot backfill —
+									// buildHyperliquidProtectionPlan returns syncOK=false
+									// for it (slMult is 0 and trailing_tp_ratchet places no
+									// on-chain tiers), on this cycle and every later one.
+									// The open row then carried StopLossOID=0 /
+									// StopLossTriggerPx=0 permanently and the open DM
+									// omitted its "SL: $…" line for a position that DOES
+									// have a stop armed — the exact gap #625 added the
+									// stamp to close. Stamp from the position now, after
+									// whichever path armed it. stampOpenTradeFromPosition
+									// only fills fields that are still zero, so an OID
+									// already stamped (fixed-ATR / tiered owners, a
+									// scale-in onto an armed position) is never overwritten
+									// with a blank. Skipped when a submit-fill flattened
+									// the position this cycle — there is no open row left
+									// to backfill.
+									if openTrade != nil {
+										mu.Lock()
+										if pos, okPos := stratState.Positions[result.Symbol]; okPos && pos != nil && pos.Quantity > 0 {
+											stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
+										}
+										mu.Unlock()
+									}
 									// #1159: a fresh open (not an add — that branch set the
 									// quantity above) is the whole unhedged increment.
 									if scaleInAddQty <= 0 && openTrade != nil && openTrade.Quantity > 0 {
@@ -3804,6 +3859,9 @@ func main() {
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
 		} else {
 			saveFailures = 0
+			// This save commits everything the off-cycle audit left in memory
+			// too, so its retry latch is discharged here as well.
+			offCycleAuditSaveDirty = false
 		}
 
 		// #175: Decide whether to auto-post daily leaderboard (check inside lock).

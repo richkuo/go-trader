@@ -1558,11 +1558,56 @@ func TestLiquidationAuditIntervalSeconds(t *testing.T) {
 		mk("hl-live-spot", "hyperliquid", "spot", true),
 	}
 	intervals := map[string]int{"hl-live-a": 300, "hl-paper-b": 60, "okx-live-c": 120, "hl-live-spot": 30}
-	if got := liquidationAuditIntervalSeconds(strategies, intervals); got != 300 {
-		t.Errorf("interval = %d, want 300 (only hl-live-a counts)", got)
+	// #1456 review round 14 (Optional 1): HALF the minimum, not the minimum.
+	// Returning 300 made the audit deadline elapse at the same instant
+	// hl-live-a became due, so the off-cycle pass could never fire earlier
+	// than the dispatch-path audit it exists to pre-empt.
+	if got := liquidationAuditIntervalSeconds(strategies, intervals); got != 150 {
+		t.Errorf("interval = %d, want 150 (half of hl-live-a's 300)", got)
 	}
 	if got := liquidationAuditIntervalSeconds(strategies[1:], intervals); got != 0 {
-		t.Errorf("interval without any live HL perps = %d, want 0", got)
+		t.Errorf("interval without any live HL perps or manual = %d, want 0", got)
+	}
+}
+
+// #1456 review round 14 (Optional 1): the cadence must be strictly shorter
+// than the interval bounding the healing window, must never fall below the
+// endpoint-protection floor, and must cover live HL `manual` — which
+// collectHLLiquidationAuditCandidates audits but the original population
+// filter excluded, leaving a manual-only fleet with no off-cycle pass at all.
+func TestLiquidationAuditIntervalStrictlyShorterAndCoversManual(t *testing.T) {
+	live := func(id, typ string) StrategyConfig {
+		return StrategyConfig{ID: id, Platform: "hyperliquid", Type: typ, Args: []string{"--mode", "live"}}
+	}
+
+	// (a) one live HL perps strategy at 4h — audited materially sooner than 4h.
+	perps4h := []StrategyConfig{live("hl-4h", "perps")}
+	iv4h := map[string]int{"hl-4h": 14400}
+	got := liquidationAuditIntervalSeconds(perps4h, iv4h)
+	if got != 7200 {
+		t.Errorf("4h fleet cadence = %d, want 7200", got)
+	}
+	if got >= 14400 {
+		t.Errorf("cadence %d is not strictly shorter than the 14400s interval it bounds", got)
+	}
+
+	// (b) live HL manual-only fleet — still gets an off-cycle pass.
+	manualOnly := []StrategyConfig{live("hl-manual", "manual")}
+	if got := liquidationAuditIntervalSeconds(manualOnly, map[string]int{"hl-manual": 3600}); got != 1800 {
+		t.Errorf("manual-only cadence = %d, want 1800 (manual is an audit candidate)", got)
+	}
+
+	// (c) a fast fleet floors at liquidationAuditMinIntervalSeconds so halving
+	// can never turn the pass into a hot poll against Hyperliquid.
+	if got := liquidationAuditIntervalSeconds(perps4h, map[string]int{"hl-4h": 30}); got != liquidationAuditMinIntervalSeconds {
+		t.Errorf("fast-fleet cadence = %d, want floor %d", got, liquidationAuditMinIntervalSeconds)
+	}
+
+	// (d) a PAPER manual strategy is still excluded — the audit only acts on
+	// live positions.
+	paperManual := []StrategyConfig{{ID: "hl-pm", Platform: "hyperliquid", Type: "manual", Args: []string{"--mode", "paper"}}}
+	if got := liquidationAuditIntervalSeconds(paperManual, map[string]int{"hl-pm": 3600}); got != 0 {
+		t.Errorf("paper manual cadence = %d, want 0", got)
 	}
 }
 
@@ -1593,4 +1638,111 @@ func TestBuildHLLiquidationMaps(t *testing.T) {
 	if _, ok := netSide["DUST"]; ok {
 		t.Error("DUST must carry no side stamp")
 	}
+}
+
+// #1456 review round 14 (Needs Fixing 1): the off-cycle audit branch continues
+// past the loop's only end-of-cycle save, so a close it books must be flushed
+// inline. Pins the three states the reviewer named: a booked close survives the
+// restart, a pass that books nothing writes nothing, and a save failure is
+// reported through the same saveFailures counter as the end-of-cycle failure
+// (and retried on the next quiet wake rather than being swallowed).
+func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
+	newState := func() *AppState {
+		return &AppState{
+			Strategies: map[string]*StrategyState{
+				"hl-live": {
+					ID:              "hl-live",
+					Platform:        "hyperliquid",
+					Type:            "perps",
+					Cash:            1234.5,
+					InitialCapital:  1000,
+					Positions:       map[string]*Position{},
+					OptionPositions: map[string]*OptionPosition{},
+					TradeHistory: []Trade{{
+						Symbol:      "ETH",
+						Timestamp:   time.Date(2026, 8, 23, 8, 0, 0, 0, time.UTC),
+						Side:        "sell",
+						Quantity:    1,
+						Price:       1900,
+						IsClose:     true,
+						RealizedPnL: -100,
+						TradeType:   "stop_loss",
+						PositionID:  "pos-1",
+						ExchangeFee: 0.1,
+						StrategyID:  "hl-live",
+					}},
+				},
+			},
+		}
+	}
+	cfg := &Config{Strategies: []StrategyConfig{{ID: "hl-live", Platform: "hyperliquid", Type: "perps"}}}
+	var mu sync.RWMutex
+
+	t.Run("booked close is persisted before the branch sleeps", func(t *testing.T) {
+		db := openTestDB(t)
+		state := newState()
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 1, false, 0)
+		if dirty || failures != 0 {
+			t.Fatalf("dirty=%v failures=%d, want false/0", dirty, failures)
+		}
+		loaded, err := LoadStateWithDB(cfg, db)
+		if err != nil {
+			t.Fatalf("LoadStateWithDB: %v", err)
+		}
+		ss := loaded.Strategies["hl-live"]
+		if ss == nil || len(ss.TradeHistory) != 1 || !ss.TradeHistory[0].IsClose {
+			t.Fatalf("reloaded trades = %+v, want the booked close", ss)
+		}
+		if ss.TradeHistory[0].Price != 1900 || ss.TradeHistory[0].TradeType != "stop_loss" {
+			t.Errorf("reloaded close = price %.2f type %q, want 1900 / stop_loss", ss.TradeHistory[0].Price, ss.TradeHistory[0].TradeType)
+		}
+	})
+
+	t.Run("nothing booked and nothing pending writes nothing", func(t *testing.T) {
+		db := openTestDB(t)
+		state := newState()
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, false, 2)
+		if dirty {
+			t.Errorf("dirty = true, want false")
+		}
+		if failures != 2 {
+			t.Errorf("failures = %d, want 2 (untouched — no save attempted)", failures)
+		}
+		loaded, err := LoadStateWithDB(cfg, db)
+		if err != nil {
+			t.Fatalf("LoadStateWithDB: %v", err)
+		}
+		if ss := loaded.Strategies["hl-live"]; ss != nil && len(ss.TradeHistory) != 0 {
+			t.Errorf("wrote %d trade(s) on a no-op pass, want 0", len(ss.TradeHistory))
+		}
+	})
+
+	t.Run("save failure counts and latches for retry", func(t *testing.T) {
+		db := openTestDB(t)
+		state := newState()
+		db.Close() // force SaveStateWithDB to fail
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 1, false, 0)
+		if !dirty {
+			t.Errorf("dirty = false after a failed save, want true (close still only in memory)")
+		}
+		if failures != 1 {
+			t.Errorf("failures = %d, want 1 (reported like the end-of-cycle save failure)", failures)
+		}
+	})
+
+	t.Run("a latched failure retries on a pass that books nothing", func(t *testing.T) {
+		db := openTestDB(t)
+		state := newState()
+		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 0, true, 1)
+		if dirty || failures != 0 {
+			t.Fatalf("dirty=%v failures=%d, want false/0 after the retry succeeded", dirty, failures)
+		}
+		loaded, err := LoadStateWithDB(cfg, db)
+		if err != nil {
+			t.Fatalf("LoadStateWithDB: %v", err)
+		}
+		if ss := loaded.Strategies["hl-live"]; ss == nil || len(ss.TradeHistory) != 1 {
+			t.Fatalf("retry did not persist the carried-over close: %+v", ss)
+		}
+	})
 }
