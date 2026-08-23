@@ -449,6 +449,107 @@ func TestTrailingWalkerClampReportsDeferredWhenCancelFails(t *testing.T) {
 	}
 }
 
+// #1456 review (2c): a walker clamp where the OLD stop already filled on-chain
+// must NOT report "replace deferred — the original stop is still resting". The
+// order just filled; there is nothing left to replace and the reconciler books
+// the close.
+func TestTrailingWalkerClampReportsFilledOnChainWhenOldStopFilled(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{StopLossFilledExternally: true}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	if _, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t)); ok {
+		t.Fatal("an externally-filled stop must not confirm the update")
+	}
+	if got := lastLiqAlertAction("hl-eth", "ETH"); got != hlLiquidationActionFilledOnChain {
+		t.Errorf("alert action = %q, want %q — the message must not claim the original stop is still resting", got, hlLiquidationActionFilledOnChain)
+	}
+}
+
+// #1456 review (2c): the deferred alert text must never assert the ORIGINAL
+// stop is still resting for a fill-at-submit shape either.
+func TestTrailingWalkerClampFillAtSubmitReportsExitedNotTightened(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded:   true,
+			StopLossFilledImmediately: true,
+			StopLossTriggerPx:         triggerPx,
+		}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	if _, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t)); !ok {
+		t.Fatal("the fill at submit confirms the update")
+	}
+	if got := lastLiqAlertAction("hl-eth", "ETH"); got != hlLiquidationActionExited {
+		t.Errorf("alert action = %q, want %q — the position is flat, not tightened", got, hlLiquidationActionExited)
+	}
+}
+
+// #1456 review (2): the alert TEXT matches the action for every outcome —
+// an exited position is not "tightened to $X", and no liquidation lecture is
+// appended to a re-arm that had nothing to do with liquidation geometry.
+func TestLiquidationAlertMessageMatchesOutcome(t *testing.T) {
+	headline, detail, unprotected := hlLiquidationAlertMessage(2330, 2352, 2340.5, hlLiquidationActionExited)
+	if headline != "**HL STOP FILLED — POSITION FLAT**" || unprotected {
+		t.Errorf("exited: headline=%q unprotected=%v", headline, unprotected)
+	}
+	for _, banned := range []string{"tightened"} {
+		if strings.Contains(detail, banned) {
+			t.Errorf("exited detail %q must not claim %q", detail, banned)
+		}
+	}
+
+	headline, _, _ = hlLiquidationAlertMessage(2330, 2352, 2340.5, hlLiquidationActionFilledOnChain)
+	if headline != "**HL STOP ALREADY FILLED**" {
+		t.Errorf("filled-on-chain headline = %q", headline)
+	}
+
+	// Re-arm with NO known liquidation price: no "$0.0000" and no lecture.
+	_, armedDetail, _ := hlLiquidationAlertMessage(0, 2352, 0, hlLiquidationActionRearmed)
+	if strings.Contains(armedDetail, "$0.0000") {
+		t.Errorf("re-arm detail with unknown liquidation price prints $0.0000: %q", armedDetail)
+	}
+}
+
+// #1456 review (2): the past-liquidation lecture is a CAUSE assertion — it may
+// ride only on alerts whose triggering condition actually included measured
+// past-liquidation geometry and an open position.
+func TestLiquidationAlertLectureOnlyOnMeasuredOpenGeometry(t *testing.T) {
+	sc := liqWalkerStrategy()
+	const lecture = "A stop past liquidation can never fill"
+
+	// (a) audit clamp that fills at submit — flat: no lecture.
+	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 2330, 2352, 2340.5, hlLiquidationActionExited); strings.Contains(msg, lecture) {
+		t.Errorf("exited alert must not carry the lecture: %q", msg)
+	}
+	// (b) re-arm with unknown liquidation price — geometry never measured.
+	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 0, 2352, 0, hlLiquidationActionRearmed); strings.Contains(msg, lecture) {
+		t.Errorf("re-arm without a liquidation price must not carry the lecture: %q", msg)
+	}
+	// (c) filled-on-chain — nothing left to advise on.
+	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 2330, 2352, 2340.5, hlLiquidationActionFilledOnChain); strings.Contains(msg, lecture) {
+		t.Errorf("filled-on-chain alert must not carry the lecture: %q", msg)
+	}
+	// (d) a live clamp with known geometry keeps the advice.
+	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 2330, 2352, 2340.5, hlLiquidationActionClamped); !strings.Contains(msg, lecture) {
+		t.Errorf("clamped alert with known geometry should keep the lecture: %q", msg)
+	}
+}
+
 // An escalation from "replace deferred" to "protection lost" must RE-alert on
 // the very next observation, inside the throttle interval — both are failures,
 // and the second is the one that means the position is naked.
@@ -482,9 +583,9 @@ func TestFixedATRArmClampActionNeverClaimsATightenWithoutARestingStop(t *testing
 		{"placement rested",
 			&HyperliquidStopLossUpdateResult{StopLossOID: 8001, StopLossTriggerPx: 2352}, true,
 			hlLiquidationActionClamped},
-		{"placement filled at submit",
+		{"placement filled at submit — position is FLAT, not tightened",
 			&HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 2352}, true,
-			hlLiquidationActionClamped},
+			hlLiquidationActionExited},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

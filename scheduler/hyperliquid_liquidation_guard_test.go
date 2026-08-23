@@ -667,6 +667,94 @@ func TestRunHyperliquidLiquidationAuditCancelThenPlaceIsANormalClamp(t *testing.
 	clearHLLiquidationAlert("hl-eth", "ETH")
 }
 
+// #1456 review (2a): an audit clamp that FILLS at submit reports the position
+// as EXITED — never "tightened to $X" for a position that ended the cycle flat.
+func TestRunHyperliquidLiquidationAuditFillAtSubmitReportsExited(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	var mu sync.RWMutex
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded:   true,
+			StopLossFilledImmediately: true,
+			StopLossTriggerPx:         triggerPx,
+		}, "", nil
+	}
+	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if res.ImmediateFills != 1 || len(res.CloseDetails) != 1 {
+		t.Fatalf("immediate fills = %d, close details = %d, want 1/1", res.ImmediateFills, len(res.CloseDetails))
+	}
+	st, _ := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH"))
+	if s2, ok := st.(hlLiquidationAlertState); !ok || s2.LastAction != hlLiquidationActionExited {
+		t.Errorf("last action = %+v, want %q — the position is FLAT", st, hlLiquidationActionExited)
+	}
+}
+
+// #1456 review (4): the close the audit books names the AUDIT mechanism, so the
+// persisted CloseReason matches the LIQUIDATION-CLAMP operator DM.
+func TestRunHyperliquidLiquidationAuditImmediateCloseReasonsTheAudit(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	var mu sync.RWMutex
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded:   true,
+			StopLossFilledImmediately: true,
+			StopLossTriggerPx:         triggerPx,
+		}, "", nil
+	}
+	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if res.ImmediateFills != 1 || len(res.CloseDetails) != 1 {
+		t.Fatalf("immediate fills = %d, close details = %d, want 1/1", res.ImmediateFills, len(res.CloseDetails))
+	}
+	ss := state.Strategies["hl-eth"]
+	if len(ss.ClosedPositions) == 0 {
+		t.Fatal("no closed position recorded for the immediate close")
+	}
+	cp := ss.ClosedPositions[len(ss.ClosedPositions)-1]
+	if cp.CloseReason != "liquidation_clamp_sl_immediate" {
+		t.Errorf("persisted CloseReason = %q, want liquidation_clamp_sl_immediate (not the trailing walker)", cp.CloseReason)
+	}
+	if len(ss.TradeHistory) == 0 {
+		t.Fatal("no trade recorded for the immediate close")
+	}
+	tr := ss.TradeHistory[len(ss.TradeHistory)-1]
+	if !strings.Contains(tr.Details, "Liquidation-clamp SL") {
+		t.Errorf("trade details %q must match the LIQUIDATION-CLAMP operator wording", tr.Details)
+	}
+}
+
+// #1456 review (2c): an audit replace whose OLD stop already fired on-chain is
+// reported as SL filled — never as "replace deferred; original still resting".
+func TestRunHyperliquidLiquidationAuditFilledExternallyReportsFilled(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125)
+	var mu sync.RWMutex
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		return &HyperliquidStopLossUpdateResult{StopLossFilledExternally: true}, "", nil
+	}
+	res := runHyperliquidLiquidationAudit(strategies, state, map[string]float64{"ETH": 2340.5}, map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if res.ImmediateFills != 0 {
+		t.Fatalf("the reconciler owns this close, audit booked %d", res.ImmediateFills)
+	}
+	st, _ := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH"))
+	if s2, ok := st.(hlLiquidationAlertState); !ok || s2.LastAction != hlLiquidationActionFilledOnChain {
+		t.Errorf("last action = %+v, want %q", st, hlLiquidationActionFilledOnChain)
+	}
+}
+
 // #1450 review (1c): a live perps static scalar owner cannot scale in at all
 // (config.go rejects allow_scale_in for a non-resizable SL owner), so the
 // re-arm can never race an add and double-arm.
@@ -952,11 +1040,37 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("stop_loss_pct 50 @ 1x is valid, got %v", errs)
 	}
 
-	// trailing_stop_pct is covered too.
+	// #1456 review: trailing_stop_pct is EXCLUDED — its anchor ratchets with
+	// the mark, so the entry-anchored bound is not exact for it and the
+	// runtime clamp handles the pre-move window. It must load.
 	sc = base()
 	sc.TrailingStopPct = floatPtr(10)
+	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 0 {
+		t.Errorf("trailing_stop_pct 10 @ 20x must NOT be rejected (anchor ratchets), got %v", errs)
+	}
+
+	// #1456 review: the MaxDrawdownPct fallback is entry-anchored and IS
+	// covered when it owns the stop.
+	sc = base()
+	sc.MaxDrawdownPct = 15
+	errs := validateHLStopWithinBankruptcyBound(sc)
+	if len(errs) != 1 || !strings.Contains(errs[0], "max_drawdown_pct") {
+		t.Errorf("max_drawdown_pct fallback 15 @ 20x must be rejected, got %v", errs)
+	}
+	// EffectiveStopLossPct caps the fallback at MaxAutoStopLossPct (50); the
+	// check compares the RESOLVED value, so 90 @ 20x rejects via its cap.
+	sc = base()
+	sc.MaxDrawdownPct = 90
 	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 1 {
-		t.Errorf("trailing_stop_pct 10 @ 20x must be rejected, got %v", errs)
+		t.Errorf("max_drawdown_pct 90 @ 20x resolves through its 50%% cap to a rejection, got %v", errs)
+	}
+
+	// The fallback check does not fire when an explicit owner wins instead.
+	sc = base()
+	sc.StopLossPct = floatPtr(4.9)
+	sc.MaxDrawdownPct = 15
+	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 0 {
+		t.Errorf("explicit stop_loss_pct owns the stop; max_drawdown_pct must not be checked, got %v", errs)
 	}
 
 	// stop_loss_margin_pct is read through its leverage derivation.

@@ -23,9 +23,13 @@
 #   - platform hyperliquid, type perps, LIVE args only (paper has no account);
 #   - ISOLATED margin only (empty margin_mode reads as isolated; a cross-margin
 #     liquidation can sit beyond 1/leverage, so the bound would falsely reject);
-#   - percentage owners only: stop_loss_pct, trailing_stop_pct, and the derived
-#     stop_loss_margin_pct / leverage. ATR-derived owners need a per-position
-#     EntryATR and are checked at arm time by the runtime clamp instead.
+#   - percentage owners only: stop_loss_pct, the derived
+#     stop_loss_margin_pct / leverage, and the max_drawdown_pct fallback that
+#     EffectiveStopLossPct resolves when all explicit stop fields are absent.
+#     ATR-derived owners need a per-position EntryATR and are checked at arm
+#     time by the runtime clamp instead. trailing_stop_pct is EXCLUDED: its
+#     anchor ratchets with the mark, so the entry-anchored bound is not exact
+#     for it and the runtime clamp handles the pre-move window (#1456 review).
 #
 # Exit codes:
 #   0 — every deployment readable and every live isolated strategy inside the bound
@@ -89,14 +93,45 @@ for sc in cfg.get("strategies", []) or []:
         continue
     lev = effective_leverage(sc)
     bound = 100.0 / max(lev, 1.0)
+
+    def uses_unified_regime_close(sc):
+        # Mirrors strategyUsesUnifiedRegimeClose (scheduler/regime_unified.go):
+        # a close ref named one of the unified regime closes whose params carry
+        # the trend_regime classifier key. Only the canonical close_strategy ref
+        # is mirrored — the explicit-field checks below behave the same way the
+        # Go check does for them.
+        cs = sc.get("close_strategy")
+        if not isinstance(cs, dict):
+            return False
+        name = str(cs.get("name", "") or "").strip().lower()
+        if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime",
+                        "tiered_tp_atr_live_regime_dynamic"):
+            return False
+        params = cs.get("params")
+        return isinstance(params, dict) and "trend_regime" in params
+
     checks = []
-    for field in ("stop_loss_pct", "trailing_stop_pct"):
-        v = sc.get(field)
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            checks.append((field, float(v)))
+    slp = sc.get("stop_loss_pct")
+    if isinstance(slp, (int, float)) and not isinstance(slp, bool):
+        checks.append(("stop_loss_pct", float(slp)))
     smp = sc.get("stop_loss_margin_pct")
     if isinstance(smp, (int, float)) and not isinstance(smp, bool) and smp > 0:
         checks.append(("stop_loss_margin_pct/leverage", float(smp) / max(lev, 1.0)))
+    # Mirrors hlStopLossResolvesFromMaxDrawdownFallback + the MaxAutoStopLossPct
+    # cap: the fallback owns the stop only when every explicit owner is absent.
+    mdd = sc.get("max_drawdown_pct")
+    has_explicit_owner = any(
+        sc.get(f) is not None
+        for f in ("trailing_stop_atr_mult", "stop_loss_atr_mult", "stop_loss_atr_regime",
+                  "trailing_stop_atr_regime", "trailing_stop_pct", "stop_loss_pct",
+                  "stop_loss_margin_pct")
+    )
+    if (
+        not has_explicit_owner
+        and not uses_unified_regime_close(sc)
+        and isinstance(mdd, (int, float)) and not isinstance(mdd, bool) and mdd > 0
+    ):
+        checks.append(("max_drawdown_pct", min(float(mdd), 50.0)))
     for field, pct in checks:
         if pct > 0 and pct >= bound:
             print(

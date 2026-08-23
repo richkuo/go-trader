@@ -95,7 +95,7 @@ func armTrailingStopAtOpenNow(
 	newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, symbol, side, slEffectiveQty, &posSnap, mark, 0, 0, 0, trailingReplacePolicy{}, notifier, logger)
 	mu.Lock()
 	defer mu.Unlock()
-	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, 0, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
+	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, 0, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger); immediateFill {
 		return 1, fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, symbol, fillPx)
 	}
 	if updateConfirmed && slUpdate != nil && slUpdate.StopLossOID > 0 {

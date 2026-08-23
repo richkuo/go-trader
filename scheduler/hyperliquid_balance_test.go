@@ -147,6 +147,26 @@ func TestFetchHyperliquidStateLiquidationPx(t *testing.T) {
 					"liquidationPx": "0",
 				},
 			},
+			{
+				// #1456 review: HL also sends a BARE NUMBER. A plain string
+				// field fails the whole snapshot unmarshal on this shape.
+				"position": map[string]interface{}{
+					"coin":          "LINK",
+					"szi":           "50",
+					"entryPx":       "20.00",
+					"liquidationPx": 17.25,
+				},
+			},
+			{
+				// #1456 review: mixed response — one asset reports a string,
+				// another (above) a number. Both must decode.
+				"position": map[string]interface{}{
+					"coin":          "ARB",
+					"szi":           "200",
+					"entryPx":       "1.50",
+					"liquidationPx": "1.2",
+				},
+			},
 		},
 	}
 
@@ -164,8 +184,8 @@ func TestFetchHyperliquidStateLiquidationPx(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(positions) != 5 {
-		t.Fatalf("positions count = %d, want 5", len(positions))
+	if len(positions) != 7 {
+		t.Fatalf("positions count = %d, want 7", len(positions))
 	}
 	want := map[string]float64{
 		"ETH":  2340.5,
@@ -173,6 +193,8 @@ func TestFetchHyperliquidStateLiquidationPx(t *testing.T) {
 		"SOL":  0,
 		"DOGE": 0,
 		"AVAX": 0,
+		"LINK": 17.25,
+		"ARB":  1.2,
 	}
 	for _, p := range positions {
 		w, ok := want[p.Coin]

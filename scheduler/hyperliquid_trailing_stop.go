@@ -677,7 +677,15 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 // expectedSide guards against a side flip between snapshot and lock; prevSLOID
 // is the OID captured before the update (used to confirm the cancel applies to
 // the OID we expected to replace).
-func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, logger *StrategyLogger) (immediateFill bool, fillPx float64) {
+//
+// closeReason is the persisted Trade.CloseReason for an immediate fill. The
+// persisted reason must name the mechanism that PLACED the order that filled —
+// the #1456 review caught the liquidation-guard audit booking its closes as
+// "trailing_stop_loss_immediate" while its operator DM said LIQUIDATION-CLAMP,
+// so a stop_loss_pct owner re-armed by the audit read back in history as a
+// trailing-stop exit. Walker callers pass "trailing_stop_loss_immediate"; the
+// audit passes "liquidation_clamp_sl_immediate".
+func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, closeReason string, logger *StrategyLogger) (immediateFill bool, fillPx float64) {
 	if s == nil {
 		return false, 0
 	}
@@ -694,10 +702,13 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	if slUpdate == nil {
 		return false, 0
 	}
+	if closeReason == "" {
+		closeReason = "trailing_stop_loss_immediate"
+	}
 	switch {
 	case slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0:
 		pos.RatchetFallbackNormalizePending = false
-		if recordPerpsStopLossClose(s, symbol, slUpdate.StopLossTriggerPx, "trailing_stop_loss_immediate", logger) {
+		if recordPerpsStopLossClose(s, symbol, slUpdate.StopLossTriggerPx, closeReason, logger) {
 			return true, slUpdate.StopLossTriggerPx
 		}
 	case slUpdate.StopLossOID > 0:
@@ -839,6 +850,9 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	if result.StopLossFilledExternally {
 		logger.Warn("Trailing SL OID=%d already filled on-chain for %s — reconciler will book the close", currentOID, symbol)
+		// The old order just FILLED — the deferred alert must not claim it is
+		// still resting (#1456 review).
+		clampOutcome = hlLiquidationActionFilledOnChain
 		return highWater, result, false
 	}
 	if result.CancelStopLossError != "" {
@@ -873,6 +887,10 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	// nothing took its place — the position is naked.
 	restingConfirmed := (result.StopLossOID > 0) ||
 		(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)
+	// A fill at submit ended the cycle FLAT — the alert must say the position
+	// exited, never that a stop was tightened onto an order no position needs
+	// (#1456 review).
+	filledAtSubmit := result.StopLossFilledImmediately && result.StopLossTriggerPx > 0
 	// updateConfirmed still includes the cancel-without-rest shape: state must
 	// stop pointing at an OID that no longer exists (applyTrailingStopUpdateResult
 	// zeroes it), which is also what makes the walker re-arm from nothing on its
@@ -882,6 +900,8 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		return highWater, result, false
 	}
 	switch {
+	case filledAtSubmit:
+		clampOutcome = hlLiquidationActionExited
 	case restingConfirmed:
 		clampOutcome = hlLiquidationActionClamped
 	case result.CancelStopLossSucceeded:

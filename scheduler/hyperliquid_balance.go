@@ -276,10 +276,11 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 				} `json:"leverage"`
 				UnrealizedPnl string `json:"unrealizedPnl"`
 				// #1450: HL sends a JSON string, or null when it cannot name a
-				// liquidation price. Unmarshalling null into a string leaves the
-				// zero value and raises no error, so the whole snapshot still
-				// parses.
-				LiquidationPx string `json:"liquidationPx"`
+				// liquidation price. RawMessage decodes ANY single JSON value —
+				// string, number, null, garbage text — so no shape of this
+				// advisory field can ever fail the parse of the fields the
+				// reconciler and the size cap depend on (#1456 review).
+				LiquidationPx json.RawMessage `json:"liquidationPx"`
 			} `json:"position"`
 		} `json:"assetPositions"`
 	}
@@ -333,12 +334,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 		// unparseable → 0, which every consumer treats as "unknown" and skips.
 		// Never fall back to a derived 1/leverage band: HL maintenance margin
 		// is per-asset and such a band would falsely reject valid geometry.
-		var liqPx float64
-		if ap.Position.LiquidationPx != "" {
-			if parsed, lqerr := strconv.ParseFloat(ap.Position.LiquidationPx, 64); lqerr == nil && parsed > 0 {
-				liqPx = parsed
-			}
-		}
+		liqPx := parseHLLiquidationPx(ap.Position.LiquidationPx)
 		positions = append(positions, HLPosition{
 			Coin:          ap.Position.Coin,
 			Size:          szi,
@@ -351,6 +347,23 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 	}
 
 	return balance, positions, nil
+}
+
+// parseHLLiquidationPx decodes one raw liquidationPx JSON value into the
+// float64 every #1450 consumer reads. It accepts a bare number and a quoted
+// number, and lands on 0 ("unknown" — every consumer skips) for null, an
+// empty payload, or anything unparseable. A malformed advisory field must
+// never be able to fail the snapshot it rode in on.
+func parseHLLiquidationPx(raw json.RawMessage) float64 {
+	s := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if s == "" || s == "null" {
+		return 0
+	}
+	parsed, err := strconv.ParseFloat(s, 64)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
 }
 
 // reconcileHyperliquidPositionsForStrategy is the production entry point with

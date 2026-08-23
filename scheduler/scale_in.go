@@ -76,7 +76,7 @@ func scaleInResizeTrailingSLNow(
 	defer mu.Unlock()
 	trades := 0
 	detail := ""
-	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, logger); immediateFill {
+	if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, symbol, side, slOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger); immediateFill {
 		trades = 1
 		detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, symbol, fillPx)
 	}

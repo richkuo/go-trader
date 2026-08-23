@@ -569,6 +569,11 @@ func stopLossCloseDetailsPrefix(reason string) string {
 		return "Paper trailing SL close"
 	case "trailing_stop_loss_immediate":
 		return "Trailing SL close"
+	case "liquidation_clamp_sl_immediate":
+		// #1450: a close the liquidation-guard audit booked because its clamped
+		// trigger filled at submit. Named for the mechanism that placed the
+		// order, so history matches the operator DM (#1456 review).
+		return "Liquidation-clamp SL close"
 	case "stop_loss_atr_paper":
 		return "Paper SL close"
 	case "replay_live_mirror":

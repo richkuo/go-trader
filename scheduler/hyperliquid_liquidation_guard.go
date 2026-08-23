@@ -157,10 +157,22 @@ func hlBankruptcyStopBoundPct(leverage float64) float64 {
 //     1/leverage because the whole account equity backs the position, so the
 //     bound would falsely reject valid configurations. Empty margin_mode reads
 //     as isolated, matching the runtime default.
-//   - Percentage owners only (stop_loss_pct, trailing_stop_pct, and the
-//     stop_loss_margin_pct / leverage derivation). Every ATR-derived owner
-//     needs a per-position EntryATR that does not exist until the position
-//     opens, so it can only be checked at arm time by the runtime clamp.
+//   - Percentage owners only (stop_loss_pct and the stop_loss_margin_pct /
+//     leverage derivation). Every ATR-derived owner needs a per-position
+//     EntryATR that does not exist until the position opens, so it can only be
+//     checked at arm time by the runtime clamp.
+//
+// trailing_stop_pct is deliberately EXCLUDED (#1456 review): a trailing
+// trigger is anchored on the high-water mark (`highWater * (1 - pct/100)`),
+// which ratchets with the mark, so the geometry becomes reachable as soon as
+// the position moves in favor — the entry-anchored bankruptcy distance is
+// exact only for stops whose anchor is frozen for the life of the position,
+// and the runtime clamp already handles the pre-move window. A boot-time
+// rejection here would abort startup for configurations that work.
+//
+// The MaxDrawdownPct fallback IS covered: EffectiveStopLossPct resolves it as
+// an entry-anchored stop distance whenever all seven explicit owners are
+// absent, so it must satisfy the same bound as stop_loss_pct (#1456 review).
 //
 // With leverage 1 the bound is 100%, above the existing 50% caps, so every
 // low-leverage configuration passes.
@@ -189,13 +201,45 @@ func validateHLStopWithinBankruptcyBound(sc StrategyConfig) []string {
 	if sc.StopLossPct != nil {
 		report("stop_loss_pct", *sc.StopLossPct)
 	}
-	if sc.TrailingStopPct != nil {
-		report("trailing_stop_pct", *sc.TrailingStopPct)
-	}
 	if sc.StopLossMarginPct != nil && *sc.StopLossMarginPct > 0 {
 		report("derived stop-loss price %% (stop_loss_margin_pct / leverage)", *sc.StopLossMarginPct/lev)
 	}
+	if hlStopLossResolvesFromMaxDrawdownFallback(sc) {
+		fallback := sc.MaxDrawdownPct
+		if fallback > MaxAutoStopLossPct {
+			fallback = MaxAutoStopLossPct
+		}
+		report("max_drawdown_pct", fallback)
+	}
 	return errs
+}
+
+// hlStopLossResolvesFromMaxDrawdownFallback mirrors exactly the branch chain
+// of EffectiveStopLossPct up to its MaxDrawdownPct fallback: true only when
+// that fallback is the owner that would actually resolve — every earlier
+// branch (unified close, positive ATR mults, regime dicts, any explicit pct
+// field) defers or wins instead. Explicit-zero ATR fields fall through in
+// EffectiveStopLossPct, so they fall through here too.
+func hlStopLossResolvesFromMaxDrawdownFallback(sc StrategyConfig) bool {
+	if strategyUsesUnifiedRegimeClose(sc) {
+		return false
+	}
+	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
+		return false
+	}
+	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
+		return false
+	}
+	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+		return false
+	}
+	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+		return false
+	}
+	return sc.TrailingStopPct == nil &&
+		sc.StopLossPct == nil &&
+		sc.StopLossMarginPct == nil &&
+		sc.MaxDrawdownPct > 0
 }
 
 // --- throttled operator alert ---------------------------------------------
@@ -325,6 +369,16 @@ const (
 	// virtual position on a shared coin). Acting could move a reduce-only
 	// trigger that would close a peer strategy's real size.
 	hlLiquidationActionUnreconciled hlLiquidationAlertAction = "not reconciled"
+	// hlLiquidationActionExited — the clamped trigger FILLED at submit: the
+	// position is FLAT. Reporting "tightened to $X" here would name an order
+	// that no position needs anymore (#1456 review).
+	hlLiquidationActionExited hlLiquidationAlertAction = "exited"
+	// hlLiquidationActionFilledOnChain — the ORIGINAL stop already fired
+	// on-chain before the replace could cancel it. Nothing was cancelled and
+	// there is nothing left to replace; the reconciler books the close.
+	// Reporting "replace deferred — the original stop is still resting" would
+	// describe an order that just filled (#1456 review).
+	hlLiquidationActionFilledOnChain hlLiquidationAlertAction = "SL filled"
 )
 
 // hlLiquidationActionUnprotected reports whether the action leaves the position
@@ -337,7 +391,7 @@ func hlLiquidationActionUnprotected(a hlLiquidationAlertAction) bool {
 // notifyHLStopPastLiquidation emits the throttled owner alert. Callers MUST
 // invoke it with no state lock held: it sends to the notifier.
 func notifyHLStopPastLiquidation(sc StrategyConfig, symbol, side string, triggerPx, clampedPx, liqPx float64, action hlLiquidationAlertAction, notifier *MultiNotifier, logger *StrategyLogger, now time.Time) {
-	headline, detail, unprotected := hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx, action)
+	_, detail, unprotected := hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx, action)
 	// The DM is throttled; the CRITICAL log for a position with NO exchange-side
 	// stop is NOT. A naked live position must stay visible on every cycle it
 	// persists, and the throttle exists to bound DM volume, never to hide the
@@ -354,11 +408,28 @@ func notifyHLStopPastLiquidation(sc StrategyConfig, symbol, side string, trigger
 		return
 	}
 	if notifier != nil && notifier.HasBackends() {
-		msg := fmt.Sprintf("%s [%s] %s %s — %s. A stop past liquidation can never fill: Hyperliquid force-closes first, at liquidation-engine pricing. Lower the leverage or tighten the stop distance so the configured geometry is reachable.",
-			headline, sc.ID, symbol, side, detail)
+		msg := hlLiquidationAlertFullMessage(sc, symbol, side, triggerPx, clampedPx, liqPx, action)
 		notifier.SendToAllChannels(msg)
 		notifier.SendOwnerDM(msg)
 	}
+}
+
+// hlLiquidationAlertFullMessage assembles the complete operator DM. The
+// past-liquidation advisory asserts a CAUSE (unreachable geometry from
+// leverage) that only exists when both prices are known and the position is
+// still open. A re-arm fixed a lost stop, and a flat position needs no advice —
+// appending it there lectures about a geometry that was never measured
+// (#1456 review).
+func hlLiquidationAlertFullMessage(sc StrategyConfig, symbol, side string, triggerPx, clampedPx, liqPx float64, action hlLiquidationAlertAction) string {
+	headline, detail, _ := hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx, action)
+	msg := fmt.Sprintf("%s [%s] %s %s — %s.", headline, sc.ID, symbol, side, detail)
+	if triggerPx > 0 && liqPx > 0 &&
+		action != hlLiquidationActionRearmed &&
+		action != hlLiquidationActionExited &&
+		action != hlLiquidationActionFilledOnChain {
+		msg += " A stop past liquidation can never fill: Hyperliquid force-closes first, at liquidation-engine pricing. Lower the leverage or tighten the stop distance so the configured geometry is reachable."
+	}
+	return msg
 }
 
 // hlLiquidationAlertMessage is the PURE message composition: headline, detail,
@@ -381,7 +452,14 @@ func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiq
 	switch action {
 	case hlLiquidationActionRearmed:
 		headline = "**HL STOP RE-ARMED**"
-		detail = fmt.Sprintf("the position had NO exchange-side stop; re-armed at $%.4f (liquidation $%.4f)", clampedPx, liqPx)
+		// A re-arm most often fixes a stop that failed at OPEN — no liquidation
+		// price may be known at all. Printing "$0.0000" for a geometry nobody
+		// measured describes nothing; name the price only when it exists.
+		if liqPx > 0 {
+			detail = fmt.Sprintf("the position had NO exchange-side stop; re-armed at $%.4f (liquidation $%.4f)", clampedPx, liqPx)
+		} else {
+			detail = fmt.Sprintf("the position had NO exchange-side stop; re-armed at $%.4f", clampedPx)
+		}
 	case hlLiquidationActionRearmFailed:
 		headline = "**HL POSITION UNPROTECTED**"
 		if geometryKnown {
@@ -406,6 +484,12 @@ func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiq
 			unprotected = true
 		}
 		detail = preamble + " — the audit did NOT touch the order: this coin's recorded size does not match the on-chain snapshot, so moving a reduce-only trigger could close a peer strategy's real position. Reconcile the coin, then the audit heals it."
+	case hlLiquidationActionExited:
+		headline = "**HL STOP FILLED — POSITION FLAT**"
+		detail = fmt.Sprintf("the replacement trigger at $%.4f FILLED at submit — the position exited immediately, at a price inside the old liquidation price. No stop is needed; nothing is unprotected.", clampedPx)
+	case hlLiquidationActionFilledOnChain:
+		headline = "**HL STOP ALREADY FILLED**"
+		detail = "the ORIGINAL stop already fired on-chain before it could be replaced — nothing was cancelled and there is no order left to replace; the reconciler books the close."
 	default:
 		detail = preamble
 	}
@@ -421,9 +505,15 @@ func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiq
 // only when an order is on the book; every other shape reports the position as
 // unprotected.
 func hlLiquidationArmClampAction(result *HyperliquidStopLossUpdateResult, armOK bool) hlLiquidationAlertAction {
-	if armOK && result != nil &&
-		(result.StopLossOID > 0 || (result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)) {
-		return hlLiquidationActionClamped
+	if armOK && result != nil {
+		if result.StopLossOID > 0 {
+			return hlLiquidationActionClamped
+		}
+		// A fill at submit means the position is FLAT — the operator must
+		// hear that, never "tightened to $X" (#1456 review).
+		if result.StopLossFilledImmediately && result.StopLossTriggerPx > 0 {
+			return hlLiquidationActionExited
+		}
 	}
 	return hlLiquidationActionRearmFailed
 }
@@ -885,6 +975,11 @@ const (
 	hlReplacePlaced
 	// hlReplaceFilled — the trigger filled at submit; the position is flat.
 	hlReplaceFilled
+	// hlReplaceFilledExternally — the OLD stop fired on-chain before the
+	// replace reached it. Nothing was cancelled; there is nothing left to
+	// replace. Reporting this as a deferral told the operator the original
+	// stop was still resting while it had just filled (#1456 review).
+	hlReplaceFilledExternally
 	// hlReplaceProtectionLost — the cancel landed, the replacement did not
 	// rest. NOTHING is protecting the position.
 	hlReplaceProtectionLost
@@ -939,7 +1034,7 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		if logger != nil {
 			logger.Warn("Liquidation-clamp: SL OID=%d for %s already filled on-chain — reconciler will book the close", candidate.StopLossOID, candidate.Symbol)
 		}
-		return result, hlReplaceDeferred
+		return result, hlReplaceFilledExternally
 	}
 	if result.CancelStopLossError != "" {
 		if logger != nil {
@@ -1090,6 +1185,12 @@ func runHyperliquidLiquidationAudit(
 			if act.Kind == hlAuditRearm {
 				action = hlLiquidationActionRearmFailed
 			}
+		case hlReplaceFilledExternally:
+			// The old stop fired on-chain before the replace reached it. No
+			// state change here — the reconciler books the close from the
+			// exchange side, and the alert says the stop FILLED, never that
+			// the original order is still resting.
+			action = hlLiquidationActionFilledOnChain
 		case hlReplaceProtectionLost:
 			// The cancel landed and the replacement did not rest. State MUST be
 			// updated so it stops pointing at an OID that no longer exists —
@@ -1097,16 +1198,24 @@ func runHyperliquidLiquidationAudit(
 			// candidate on the very next cycle.
 			action = hlLiquidationActionProtectionLost
 			mu.Lock()
-			applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, result, logger)
+			applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, result, "trailing_stop_loss_immediate", logger)
 			mu.Unlock()
 		case hlReplacePlaced, hlReplaceFilled:
+			// A FILL at submit is not a tighten — the position ended the
+			// cycle flat, and the operator DM must say so (#1456 review).
+			if outcome == hlReplaceFilled {
+				action = hlLiquidationActionExited
+			}
 			mu.Lock()
 			ss := state.Strategies[c.StrategyID]
 			// applyTrailingStopUpdateResult re-validates side and quantity
 			// under the lock and handles all three outcomes (immediate fill,
 			// resting replacement, cancel-without-rest). newHighWater=0 leaves
 			// StopLossHighWaterPx untouched — the audit never moves a trail.
-			immediateFill, fillPx := applyTrailingStopUpdateResult(ss, c.Symbol, c.Side, c.StopLossOID, 0, true, result, logger)
+			// The close reason names the AUDIT, not the trailing walker: the
+			// persisted CloseReason must match the LIQUIDATION-CLAMP DM built
+			// below (#1456 review).
+			immediateFill, fillPx := applyTrailingStopUpdateResult(ss, c.Symbol, c.Side, c.StopLossOID, 0, true, result, "liquidation_clamp_sl_immediate", logger)
 			mu.Unlock()
 			if immediateFill {
 				res.ImmediateFills++

@@ -67,6 +67,32 @@ func TestConfigValidationAcceptsAggressiveButReachableStops(t *testing.T) {
 	}
 }
 
+// #1456 review (optional 3): the boot bound is an ENTRY-ANCHORED rule. A
+// trailing trigger ratchets with the mark, so a trailing_stop_pct above
+// 100/leverage is reachable once the position moves in favor — it must LOAD,
+// and the runtime clamp handles the pre-move window.
+func TestConfigValidationAllowsTrailingPctPastBankruptcyDistance(t *testing.T) {
+	cfg := liqValidationConfig(0, 20, "live", "isolated")
+	cfg.Strategies[0].StopLossPct = nil
+	trailing := 10.0
+	cfg.Strategies[0].TrailingStopPct = &trailing
+	if err := validateConfig(&cfg, true); err != nil && strings.Contains(err.Error(), "bankruptcy") {
+		t.Fatalf("trailing_stop_pct past 100/leverage must not be rejected at boot (anchor ratchets), got %v", err)
+	}
+}
+
+// #1456 review (optional 3): the MaxDrawdownPct fallback IS entry-anchored and
+// must satisfy the same bound as stop_loss_pct when it owns the stop.
+func TestConfigValidationRejectsMaxDrawdownFallbackPastBankruptcyDistance(t *testing.T) {
+	cfg := liqValidationConfig(0, 20, "live", "isolated")
+	cfg.Strategies[0].StopLossPct = nil // all seven explicit owners absent → fallback owns
+	cfg.Strategies[0].MaxDrawdownPct = 15
+	err := validateConfig(&cfg, true)
+	if err == nil || !strings.Contains(err.Error(), "bankruptcy") {
+		t.Fatalf("max_drawdown_pct fallback of 15%% at 20x must be rejected like stop_loss_pct: 15%%, got %v", err)
+	}
+}
+
 // #1450 review (optional 3): the fleet preflight
 // (scripts/check-hl-stop-bankruptcy-bound.sh) exists so an operator can find
 // offending deployments BEFORE the restart that would enforce the new fatal
@@ -136,5 +162,91 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheck(t *testing.T) {
 			t.Errorf("%s: preflight rejects = %v, Go check rejects = %v — the two have drifted:\n%s",
 				c.name, scriptRejects, goRejects, out)
 		}
+	}
+}
+
+// #1456 review (optional 3): the preflight must agree with the Go check on the
+// NEW scope too — trailing_stop_pct no longer flagged, the max_drawdown_pct
+// fallback now flagged.
+func TestHLBankruptcyBoundPreflightMatchesGoCheckNewScope(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	script, err := filepath.Abs(filepath.Join("..", "scripts", "check-hl-stop-bankruptcy-bound.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		mutate    func(*StrategyConfig)
+		goRejects bool
+	}{
+		{"trailing above bound loads", func(sc *StrategyConfig) {
+			t := 10.0
+			sc.StopLossPct = nil
+			sc.TrailingStopPct = &t
+		}, false},
+		{"max_drawdown fallback above bound rejected", func(sc *StrategyConfig) {
+			sc.StopLossPct = nil
+			sc.MaxDrawdownPct = 15
+		}, true},
+		{"max_drawdown fallback below bound loads", func(sc *StrategyConfig) {
+			sc.StopLossPct = nil
+			sc.MaxDrawdownPct = 4
+		}, false},
+		{"stop_loss_pct still rejected", func(sc *StrategyConfig) {}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sc := StrategyConfig{
+				ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+				Script:  "shared_scripts/check_hyperliquid.py",
+				Args:    []string{"sma_crossover", "ETH", "1h", "--mode=live"},
+				Capital: 1000, MaxDrawdownPct: 40, Leverage: 20,
+				MarginMode: "isolated", StopLossPct: floatPtr(10),
+			}
+			c.mutate(&sc)
+			cfg := Config{
+				Strategies:    []StrategyConfig{sc},
+				PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80},
+			}
+			goRejects := false
+			if err := validateConfig(&cfg, true); err != nil && strings.Contains(err.Error(), "bankruptcy") {
+				goRejects = true
+			}
+			if goRejects != c.goRejects {
+				t.Fatalf("Go check rejects=%v, want %v (err=%v)", goRejects, c.goRejects, func() error { return validateConfig(&cfg, true) }())
+			}
+
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "scheduler"), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			cfg.ConfigVersion = CurrentConfigVersion
+			blob, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "scheduler", "config.json"), blob, 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			out, runErr := exec.Command("bash", script, dir).CombinedOutput()
+			scriptRejects := false
+			if ee, ok := runErr.(*exec.ExitError); ok {
+				if ee.ExitCode() != 1 {
+					t.Fatalf("preflight exited %d, want 0 or 1:\n%s", ee.ExitCode(), out)
+				}
+				scriptRejects = true
+			} else if runErr != nil {
+				t.Fatalf("preflight failed to run: %v\n%s", runErr, out)
+			}
+			if scriptRejects != goRejects {
+				t.Errorf("preflight rejects=%v, Go rejects=%v — drifted:\n%s", scriptRejects, goRejects, out)
+			}
+		})
 	}
 }
