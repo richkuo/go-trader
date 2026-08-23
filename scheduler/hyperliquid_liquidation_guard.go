@@ -767,11 +767,14 @@ type hlLiquidationAuditCandidate struct {
 	// Unprotected is true when the position carries NO exchange-side stop at
 	// all (no OID and no trigger).
 	Unprotected bool
-	// BookConsistent is true when this coin's TOTAL recorded size across every
+	// BookConsistent is true when this coin's SIGNED recorded net across every
 	// live HL strategy fits inside the on-chain size reported by this cycle's
-	// snapshot. False means at least one strategy holds a phantom position on
-	// the coin, so a reduce-only trigger placed from here could close a PEER
-	// strategy's real size. The audit refuses to act and alerts instead.
+	// snapshot (#1456 review round 8: the exchange nets one position per coin,
+	// so a legal long peer + short peer book nets to the reported figure —
+	// only the signed net is comparable). False means at least one strategy
+	// holds a phantom position on the coin, so a reduce-only trigger placed
+	// from here could close a PEER strategy's real size. The audit refuses to
+	// act and alerts instead.
 	BookConsistent bool
 }
 
@@ -907,9 +910,15 @@ func hlLiquidationScalarRearmTriggerPx(sc StrategyConfig, side string, anchor, l
 //
 // Two ways a coin qualifies:
 //
-//   - The TOTAL recorded size across every live HL perps/manual strategy fits
+//   - The recorded NET size across every live HL perps/manual strategy fits
 //     inside the on-chain absolute size. Nothing is phantom, so nothing can be
-//     over-closed.
+//     over-closed. #1456 review round 8: the map is the SIGNED sum of recorded
+//     quantities — Hyperliquid nets ONE position per coin, and the codebase
+//     documents long + short peers on the same coin as legal (config.go,
+//     bidirectional perps), so only the signed net is directly comparable to
+//     the exchange's single reported figure. Summing magnitudes there made a
+//     healthy 1.0-long + 0.4-short book read as a phantom against its true
+//     0.6 net and refused the heal FOREVER for the leg that needed it.
 //   - Exactly ONE live strategy records a position on the coin. There is no peer
 //     to harm, and hlSLEffectiveQty already caps the placed size to the confirmed
 //     on-chain quantity (#621) — precisely the drift a manual partial TP leaves
@@ -920,15 +929,15 @@ func hlLiquidationScalarRearmTriggerPx(sc StrategyConfig, side string, anchor, l
 // on-chain backs the recorded size, so there is no confirmed quantity to size a
 // replacement from. Comparison carries the same 1e-9 slack the #621 size cap
 // uses.
-func hlLiquidationCoinBookConsistent(virtualByCoin map[string]float64, ownersByCoin map[string]int, onChainAbsQty map[string]float64) map[string]bool {
-	out := make(map[string]bool, len(virtualByCoin))
-	for coin, virtual := range virtualByCoin {
+func hlLiquidationCoinBookConsistent(netVirtualByCoin map[string]float64, ownersByCoin map[string]int, onChainAbsQty map[string]float64) map[string]bool {
+	out := make(map[string]bool, len(netVirtualByCoin))
+	for coin, netVirtual := range netVirtualByCoin {
 		onChain, ok := onChainAbsQty[coin]
 		if !ok || onChain <= 1e-9 {
 			out[coin] = false
 			continue
 		}
-		out[coin] = virtual <= onChain+1e-9 || ownersByCoin[coin] <= 1
+		out[coin] = math.Abs(netVirtual) <= onChain+1e-9 || ownersByCoin[coin] <= 1
 	}
 	return out
 }
@@ -986,7 +995,17 @@ func collectHLLiquidationAuditCandidates(
 			}
 			// Every live recorded position on the coin counts toward the
 			// consistency check, including the ones that produce no candidate.
-			virtualByCoin[symbol] += pos.Quantity
+			// SIGNED (#1456 review round 8): the exchange nets one position per
+			// coin, so the comparable figure is the signed virtual net — a
+			// documented legal long peer + short peer on the same coin sums to
+			// |net|, which is what the snapshot reports. Summing magnitudes
+			// made that configuration permanently "inconsistent" and refused
+			// the heal forever.
+			if pos.Side == "short" {
+				virtualByCoin[symbol] -= pos.Quantity
+			} else {
+				virtualByCoin[symbol] += pos.Quantity
+			}
 			ownersByCoin[symbol]++
 
 			staticScalar := !scaleInLiveProtectionResizable(sc)

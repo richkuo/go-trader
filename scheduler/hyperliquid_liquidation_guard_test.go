@@ -359,9 +359,9 @@ func TestPlanHyperliquidLiquidationAuditRefusesUnreconciledCoin(t *testing.T) {
 
 func TestHLLiquidationCoinBookConsistent(t *testing.T) {
 	got := hlLiquidationCoinBookConsistent(
-		map[string]float64{"ETH": 2.0, "BTC": 1.0, "SOL": 0.5, "AVAX": 3.0, "DOGE": 5.0},
-		map[string]int{"ETH": 2, "BTC": 2, "SOL": 1, "AVAX": 1, "DOGE": 1},
-		map[string]float64{"ETH": 2.0, "BTC": 0.4, "AVAX": 2.0},
+		map[string]float64{"ETH": 2.0, "BTC": 1.0, "SOL": 0.5, "AVAX": 3.0, "DOGE": 5.0, "MIX": -0.6, "PHANTOM": 1.1},
+		map[string]int{"ETH": 2, "BTC": 2, "SOL": 1, "AVAX": 1, "DOGE": 1, "MIX": 2, "PHANTOM": 3},
+		map[string]float64{"ETH": 2.0, "BTC": 0.4, "AVAX": 2.0, "MIX": 0.6, "PHANTOM": 0.6},
 	)
 	if !got["ETH"] {
 		t.Error("ETH: recorded size equals on-chain size — consistent")
@@ -371,6 +371,14 @@ func TestHLLiquidationCoinBookConsistent(t *testing.T) {
 	}
 	if got["SOL"] {
 		t.Error("SOL: absent from the snapshot — nothing on-chain backs the recorded size")
+	}
+	// #1456 review round 8: SIGNED comparison. A documented legal long+short
+	// book nets to the reported figure; only a same-side excess is drift.
+	if !got["MIX"] {
+		t.Error("MIX: signed net -0.6 vs on-chain 0.6 across two owners — consistent")
+	}
+	if got["PHANTOM"] {
+		t.Error("PHANTOM: signed net 1.1 exceeds on-chain 0.6 — real drift")
 	}
 	// #1450 review round 2 (optional 1): a SOLE owner whose recorded size drifted
 	// above the on-chain size (e.g. a manual partial TP) has no peer to harm.
@@ -1166,11 +1174,15 @@ func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *test
 			StopLossOID: 88, StopLossTriggerPx: 2460,
 		}},
 	}
+	// On-chain net is long 0.6 (1.6 recorded long legs? no: 1.0 long - 0.4
+	// short) — the REALISTIC figure main.go computes from |net signed size|.
+	// Round 8: this used to pass the summed 1.4, which let the magnitude-summing
+	// book check refuse the coin and mask the whole scenario.
 	cands := collectHLLiquidationAuditCandidates(
 		append(strategies, shortPeer), state,
 		map[string]float64{"ETH": 2340.5},
-		map[string]string{"ETH": "long"}, // on-chain NET is long (1.6 - 0.4)
-		map[string]float64{"ETH": 1.4},
+		map[string]string{"ETH": "long"}, // on-chain NET is long (+1.0 - 0.4)
+		map[string]float64{"ETH": 0.6},
 		&sync.RWMutex{},
 	)
 	var actedFor []string
@@ -1178,16 +1190,48 @@ func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *test
 		if c.StrategyID == "hl-eth-short" && c.LiquidationPx != 0 {
 			t.Errorf("short peer read a liquidation price %g that describes the opposite net leg", c.LiquidationPx)
 		}
+		if c.StrategyID == "hl-eth" && !c.BookConsistent {
+			t.Errorf("a legal long+short book nets to the reported 0.6 — must NOT read as a phantom (#1456 review round 8)")
+		}
 	}
 	for _, a := range planHyperliquidLiquidationAudit(cands) {
 		actedFor = append(actedFor, a.Candidate.StrategyID)
 		if a.Candidate.StrategyID == "hl-eth-short" {
 			t.Errorf("the short peer's healthy stop must not be clamped against the net's liquidation price")
 		}
+		if a.Kind == hlAuditRefuse {
+			t.Errorf("%s: a healthy bidirectional book must be tightened, not refused", a.Candidate.StrategyID)
+		}
 	}
 	sort.Strings(actedFor)
 	if len(actedFor) != 1 || actedFor[0] != "hl-eth" {
 		t.Errorf("actions ran for %v, want only the net-matching long owner [hl-eth]", actedFor)
+	}
+
+	// Must-survive (b): a genuinely phantom SAME-side third peer (a stale long
+	// 0.5 that is actually closed) pushes the signed net past the reported size
+	// — the refusal must come back for the whole coin.
+	stalePeer := strategies[0]
+	stalePeer.ID = "hl-eth-stale"
+	state.Strategies["hl-eth-stale"] = &StrategyState{
+		ID: "hl-eth-stale", Platform: "hyperliquid", Type: "perps",
+		Positions: map[string]*Position{"ETH": {
+			Symbol: "ETH", Side: "long", Quantity: 0.5,
+			AvgCost: 2400, RiskAnchorPrice: 2400, EntryATR: 30,
+			StopLossOID: 77, StopLossTriggerPx: 2325,
+		}},
+	}
+	phantom := collectHLLiquidationAuditCandidates(
+		append(append(strategies, shortPeer), stalePeer), state,
+		map[string]float64{"ETH": 2340.5},
+		map[string]string{"ETH": "long"},
+		map[string]float64{"ETH": 0.6}, // signed net now 1.1 > 0.6: real drift
+		&sync.RWMutex{},
+	)
+	for _, c := range phantom {
+		if c.BookConsistent {
+			t.Errorf("%s: a phantom same-side peer is real drift and must refuse", c.StrategyID)
+		}
 	}
 }
 

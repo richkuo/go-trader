@@ -589,6 +589,12 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		if closedFull {
 			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, operatorCloseReason(sc), now)
 			delete(ss.Positions, a.Symbol)
+			// #1456 review round 8: this is a position-close site like any
+			// other — without the shared hook, a reopen on the same coin
+			// inherited a stale liquidation-alert throttle and its first
+			// past-liquidation observation could be suppressed for up to
+			// alert_throttle_interval. The hook self-guards on HL perps/manual.
+			clearHLPerpsPositionAlertThrottles(ss, a.Symbol)
 		} else {
 			// #1159: capture the hedge leg's pre-reduce size before the
 			// decrement — the proportional re-anchor below needs both sides.

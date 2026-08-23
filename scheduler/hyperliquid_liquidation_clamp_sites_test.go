@@ -807,3 +807,48 @@ func TestTrailingWalkerNonClampReplaceTakesNoRetry(t *testing.T) {
 		t.Errorf("placement calls = %d, want 1 — a non-clamp failure takes no in-cycle retry", calls)
 	}
 }
+
+// #1456 review round 8 (optional): the manual force-close drain is a
+// position-close site like any other — it must clear the per-position
+// liquidation-alert throttle so a reopen's first past-liquidation observation
+// is never suppressed by a stale key from the prior position.
+func TestManualForceCloseClearsLiquidationAlertThrottle(t *testing.T) {
+	prev := tradeRecorder
+	tradeRecorder = nil
+	t.Cleanup(func() { tradeRecorder = prev })
+
+	sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
+		Script: "x.py", Args: []string{"x.py", "ETH", "1h", "--mode=live"}}
+	scByID := map[string]StrategyConfig{"hl-eth": sc}
+	ss := &StrategyState{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2400},
+		}}
+	state := &AppState{Strategies: map[string]*StrategyState{"hl-eth": ss}}
+
+	// Stale throttle left by the PREVIOUS position on this coin.
+	hlLiquidationAlerts.Store(hlLiquidationAlertKey("hl-eth", "ETH"),
+		hlLiquidationAlertState{Notified: true, LastNotifiedAt: time.Now(), LastAction: hlLiquidationActionClamped})
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	err := applyManualAction(state, nil, scByID, PendingManualAction{
+		StrategyID:  "hl-eth",
+		Action:      "close",
+		Symbol:      "ETH",
+		Side:        "sell",
+		Quantity:    1.0,
+		FillPrice:   2400,
+		FillFee:     1,
+		RealizedPnL: 10,
+		IsFullClose: true,
+	})
+	if err != nil {
+		t.Fatalf("applyManualAction: %v", err)
+	}
+	if _, stillOpen := ss.Positions["ETH"]; stillOpen {
+		t.Fatal("position must be fully closed")
+	}
+	if _, exists := hlLiquidationAlerts.Load(hlLiquidationAlertKey("hl-eth", "ETH")); exists {
+		t.Error("force-close must clear the liquidation-alert throttle — a reopen must re-alert on its first cycle")
+	}
+}
