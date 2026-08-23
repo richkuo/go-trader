@@ -559,6 +559,7 @@ class TestUpdateStopLoss:
         open_oids_side_effect=None,
         lookup_result=_UNSET,
         cancel_oid=11111,
+        post_place_oids=_UNSET,
     ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -570,10 +571,27 @@ class TestUpdateStopLoss:
         mock_adapter.cancel_trigger_order.return_value = (
             _CANCEL_OK_RESPONSE if cancel_response is _UNSET else cancel_response
         )
+        base_oids = {11111} if open_oids is None else open_oids
         if open_oids_side_effect is not None:
             mock_adapter.open_order_oids.side_effect = open_oids_side_effect
+        elif post_place_oids is not _UNSET:
+            # #1456 review round 16: the book-diff resolver re-reads the book
+            # AFTER submitting, so the harness must be able to answer
+            # differently on that second read. The first read is the pre-submit
+            # snapshot; every read after it reports post_place_oids.
+            reads = {"n": 0}
+
+            def _oids(_symbol):
+                reads["n"] += 1
+                if reads["n"] == 1:
+                    return base_oids
+                if isinstance(post_place_oids, Exception):
+                    raise post_place_oids
+                return post_place_oids
+
+            mock_adapter.open_order_oids.side_effect = _oids
         else:
-            mock_adapter.open_order_oids.return_value = {11111} if open_oids is None else open_oids
+            mock_adapter.open_order_oids.return_value = base_oids
         if cancel_side_effect is not None:
             mock_adapter.cancel_trigger_order.side_effect = cancel_side_effect
         if lookup_result is not _UNSET:
@@ -617,22 +635,57 @@ class TestUpdateStopLoss:
         adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, True)
         assert out["stop_loss_oid"] == 22222
 
-    def test_unreadable_placement_response_marks_outcome_unknown(self):
-        """#1456 review round 11: a response the classifier cannot read means
-        the order MAY have rested — Go must see the unknown flag and defer any
-        in-cycle retry."""
+    def test_unreadable_placement_resolves_to_the_resting_oid(self):
+        """#1456 review round 16 (Optional 2), must-survive (a): the response
+        could not be read but the order DID rest. The book diff finds the one
+        fresh oid and reports a normal resting placement, so Go sees no
+        ambiguity, keeps no stale state, and never places a duplicate."""
         out, _ = self._run_update(
             place_response={"status": "weird"},
+            post_place_oids={22222},
+        )
+        assert out["stop_loss_oid"] == 22222
+        assert "stop_loss_outcome_unknown" not in out
+
+    def test_placement_exception_resolves_to_the_resting_oid(self):
+        def _boom(*_a, **_k):
+            raise RuntimeError("connection reset after submit")
+
+        out, _ = self._run_update(place_side_effect=_boom, post_place_oids={22222})
+        assert out["stop_loss_oid"] == 22222
+        assert "stop_loss_outcome_unknown" not in out
+
+    def test_unreadable_placement_with_nothing_resting_is_a_genuine_failure(self):
+        """Must-survive (b): the diff shows no new order, so the submission
+        really did not land. Reported as a plain failure — NOT outcome-unknown —
+        so Go clears the dead OID and re-places, as before."""
+        out, _ = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids=set(),
+        )
+        assert "stop_loss_outcome_unknown" not in out
+        assert "stop_loss_oid" not in out
+        assert "no usable status" in out["stop_loss_error"]
+
+    def test_unresolvable_diff_marks_outcome_unknown(self):
+        """The residue round 11 introduced the flag for: the book cannot be
+        re-read, so the order may be resting untracked. Go must KEEP the
+        recorded stop state and license no re-place."""
+        out, _ = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids=RuntimeError("indexer down"),
         )
         assert out.get("stop_loss_outcome_unknown") is True
         assert "stop_loss_oid" not in out
 
-    def test_placement_exception_marks_outcome_unknown(self):
-        def _boom(*_a, **_k):
-            raise RuntimeError("connection reset after submit")
-
-        out, _ = self._run_update(place_side_effect=_boom)
+    def test_ambiguous_diff_marks_outcome_unknown(self):
+        """More than one fresh oid cannot be attributed to this stop-loss."""
+        out, _ = self._run_update(
+            place_response={"status": "weird"},
+            post_place_oids={22222, 33333},
+        )
         assert out.get("stop_loss_outcome_unknown") is True
+        assert "stop_loss_oid" not in out
 
     def test_rejected_placement_does_not_mark_outcome_unknown(self):
         """A positively rejected placement (open-order cap) is retryable."""
@@ -680,8 +733,14 @@ class TestUpdateStopLoss:
         assert out["stop_loss_oid"] == 22222
 
     def test_initial_placement_without_cancel_oid(self):
+        """#1456 review round 16: a fresh arm now takes ONE pre-submit
+        open-order read so an unreadable placement outcome is resolvable here
+        too. This is the entry point the static-scalar re-arm and the #885
+        one-shot arm use, and it is exactly where an unresolved ambiguity would
+        force a choice between duplicating an order and leaving the position
+        naked. No cancel is attempted."""
         out, adapter = self._run_update(cancel_oid=0)
-        adapter.open_order_oids.assert_not_called()
+        adapter.open_order_oids.assert_called_once_with("ETH")
         adapter.cancel_trigger_order.assert_not_called()
         adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
         assert out["stop_loss_oid"] == 22222

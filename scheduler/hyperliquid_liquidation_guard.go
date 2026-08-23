@@ -427,6 +427,16 @@ const (
 	// Reporting "replace deferred — the original stop is still resting" would
 	// describe an order that just filled (#1456 review).
 	hlLiquidationActionFilledOnChain hlLiquidationAlertAction = "SL filled"
+	// hlLiquidationActionOutcomeUnknown — the cancel landed and the
+	// replacement's OUTCOME could not be read (unreadable status entry or a
+	// post-submit exception, and the open-order diff could not resolve it).
+	// #1456 review round 16: this is NEITHER "protection lost" NOR a clamp. The
+	// replacement may be resting untracked, so asserting the position has no
+	// exchange-side stop is a falsehood in one direction and asserting a
+	// successful tighten is a falsehood in the other. Recorded OID/trigger are
+	// KEPT on this shape, so the position never becomes an Unprotected re-arm
+	// candidate off an outcome nobody measured.
+	hlLiquidationActionOutcomeUnknown hlLiquidationAlertAction = "outcome unknown"
 )
 
 // hlLiquidationActionUnprotected reports whether the action leaves the position
@@ -564,6 +574,9 @@ func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiq
 	case hlLiquidationActionFilledOnChain:
 		headline = "**HL STOP ALREADY FILLED**"
 		detail = "the ORIGINAL stop already fired on-chain before it could be replaced — nothing was cancelled and there is no order left to replace; the reconciler books the close."
+	case hlLiquidationActionOutcomeUnknown:
+		headline = "**HL STOP OUTCOME UNKNOWN**"
+		detail = preamble + fmt.Sprintf(" — the old trigger was CANCELLED and the replacement at $%.4f returned an outcome that could NOT be read: it may be resting untracked. Recorded stop state is KEPT and no re-place is attempted; verify the order book on Hyperliquid.", clampedPx)
 	default:
 		detail = preamble
 	}
@@ -1106,6 +1119,11 @@ const (
 	// hlReplaceProtectionLost — the cancel landed, the replacement did not
 	// rest. NOTHING is protecting the position.
 	hlReplaceProtectionLost
+	// hlReplaceOutcomeUnknown — the cancel landed but the replacement's outcome
+	// could not be READ (#1456 review round 16). Distinct from
+	// hlReplaceProtectionLost: nothing may be re-placed and recorded state must
+	// NOT be cleared, because the first order may be on the book.
+	hlReplaceOutcomeUnknown
 )
 
 // hlLiquidationClampReplace runs one cancel+replace (or, with
@@ -1149,6 +1167,14 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 			// clears the dead OID and retries in-cycle, where "replace
 			// deferred" would leave pos.StopLossOID pointed at a cancelled
 			// order and tell the operator the original stop still rests.
+			if result.StopLossOutcomeUnknown {
+				// #1456 review round 16: the submission went out and its
+				// outcome is unreadable — never assert "no exchange-side stop".
+				if logger != nil {
+					logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s and the replacement's outcome could NOT be read — it may be resting untracked: %s", candidate.StopLossOID, candidate.Symbol, result.Error)
+				}
+				return result, hlReplaceOutcomeUnknown
+			}
 			if logger != nil {
 				logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s and the subprocess failed before placing — the position has NO exchange-side stop: %s", candidate.StopLossOID, candidate.Symbol, result.Error)
 			}
@@ -1196,6 +1222,14 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 		return result, hlReplaceFilled
 	case result.StopLossOID > 0:
 		return result, hlReplacePlaced
+	case result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown:
+		// #1456 review round 16: the cancel landed but the placement's outcome
+		// is unreadable. The order may be resting, so neither the state clear
+		// nor the "NO exchange-side stop" claim is justified.
+		if logger != nil {
+			logger.Error("CRITICAL: liquidation-clamp cancelled SL OID=%d for %s and the replacement's outcome could NOT be read — it may be resting untracked; recorded state kept", candidate.StopLossOID, candidate.Symbol)
+		}
+		return result, hlReplaceOutcomeUnknown
 	case result.CancelStopLossSucceeded:
 		// The ONLY branch that must never read as success. The old trigger is
 		// gone from the book and nothing replaced it.
@@ -1454,6 +1488,28 @@ func runHyperliquidLiquidationAudit(
 			// exchange side, and the alert says the stop FILLED, never that
 			// the original order is still resting.
 			action = hlLiquidationActionFilledOnChain
+		case hlReplaceOutcomeUnknown:
+			// #1456 review round 16: the cancel landed and the replacement's
+			// outcome is unreadable. applyAuditStopUpdate is still called so
+			// the shared helper owns the decision, but its outcome-unknown case
+			// KEEPS pos.StopLossOID / pos.StopLossTriggerPx — the order may be
+			// resting untracked, and zeroing them would make this position an
+			// Unprotected re-arm candidate on the very next cycle, placing a
+			// SECOND reduce-only stop the scheduler could never cancel. No
+			// in-cycle retry either (hlLiquidationMayRetryReplace already
+			// refuses this shape); the operator gets the outcome-unknown alert.
+			action = hlLiquidationActionOutcomeUnknown
+			mu.Lock()
+			if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, result, logger); immediateFill {
+				res.ImmediateFills++
+				action = hlLiquidationActionExited
+				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
+				res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
+					SC: sc, Symbol: c.Symbol, FillPx: fillPx,
+					Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
+				})
+			}
+			mu.Unlock()
 		case hlReplaceProtectionLost:
 			// The cancel landed and the replacement did not rest. State MUST be
 			// updated so it stops pointing at an OID that no longer exists —

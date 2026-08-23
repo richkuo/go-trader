@@ -955,7 +955,20 @@ func main() {
 					// Stamp unconditionally — including fetch failure — so a
 					// failing endpoint can never turn this branch into a hot
 					// retry loop; the next attempt waits out the full cadence.
-					lastLiquidationAudit = now
+					//
+					// #1456 review round 16 (Optional 1): stamp COMPLETION time,
+					// not the pre-run `now`. This branch continues to the top of
+					// the loop without sleeping, so the next iteration re-tests
+					// time.Now().Sub(lastLiquidationAudit) >= audSec — already
+					// true whenever the pass itself took at least audSec. A pass
+					// that fetches clearinghouseState plus mids and spawns a
+					// placement subprocess per candidate can reach that on a slow
+					// API, and a persistently failing re-arm produces an action
+					// every pass, so the pre-run stamp would drive back-to-back
+					// exchange fetches and live placements with no pacing — the
+					// very hot loop the unconditional stamp exists to prevent.
+					// Re-eligibility is now a full cadence after COMPLETION.
+					lastLiquidationAudit = time.Now().UTC()
 					// #1456 review rounds 14 and 15 (Needs Fixing 1): the audit
 					// rewrites pos.StopLossOID / pos.StopLossTriggerPx on every
 					// clamp and re-arm, books realized closes through

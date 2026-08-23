@@ -1052,8 +1052,11 @@ func TestTrailingWalkerOutcomeUnknownSkipsRetry(t *testing.T) {
 	}
 }
 
-// Audit mirror: outcome-unknown suppresses the in-cycle retry while still
-// classifying protection lost.
+// Audit mirror: outcome-unknown suppresses the in-cycle retry and, since
+// #1456 review round 16, gets its OWN outcome instead of being classified
+// protection lost. "Protection lost" asserts the position has no exchange-side
+// stop and licenses the caller to clear recorded state — both wrong when the
+// replacement may be resting untracked. The retry suppression is unchanged.
 func TestLiquidationClampReplaceOutcomeUnknownSuppressesRetry(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1072,8 +1075,8 @@ func TestLiquidationClampReplaceOutcomeUnknownSuppressesRetry(t *testing.T) {
 		}, "", nil
 	}
 	result, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t))
-	if outcome != hlReplaceProtectionLost {
-		t.Errorf("outcome = %v, want hlReplaceProtectionLost", outcome)
+	if outcome != hlReplaceOutcomeUnknown {
+		t.Errorf("outcome = %v, want hlReplaceOutcomeUnknown", outcome)
 	}
 	if calls != 1 {
 		t.Fatalf("placement calls = %d, want 1", calls)

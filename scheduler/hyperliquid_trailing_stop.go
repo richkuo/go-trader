@@ -718,6 +718,22 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 		if logger != nil {
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
+	case slUpdate.StopLossOutcomeUnknown:
+		// #1456 review round 16: the cancel landed but the replacement's
+		// OUTCOME could not be read (unreadable status entry / post-submit
+		// exception, unresolvable by the open-order diff). The order may be
+		// resting untracked, so KEEP the recorded OID and trigger — mirroring
+		// applyHyperliquidProtectionSync (round 15).
+		//
+		// Clearing them here was what made this shape compound: the position
+		// then read as Unprotected (StopLossOID == 0 && StopLossTriggerPx <= 0),
+		// so the next audit re-armed a static-scalar owner and the walker
+		// re-armed a trailing owner from currentTrigger <= 0 — placing a SECOND
+		// reduce-only stop while the first one's OID had never been recorded,
+		// leaving the scheduler unable to cancel it.
+		if logger != nil {
+			logger.Warn("Trailing SL old OID=%d was cancelled and the replacement's outcome could NOT be read — keeping recorded stop state; it may be resting untracked", prevSLOID)
+		}
 	case slUpdate.CancelStopLossSucceeded && prevSLOID > 0 && pos.StopLossOID == prevSLOID:
 		pos.StopLossOID = 0
 		pos.StopLossTriggerPx = 0
@@ -937,6 +953,11 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		clampOutcome = hlLiquidationActionExited
 	case restingConfirmed:
 		clampOutcome = hlLiquidationActionClamped
+	case result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown:
+		// #1456 review round 16: the replacement may be resting. Reporting
+		// "protection lost" here asserts a fact nobody measured, and its
+		// recovery sentence promises a re-place that must not happen.
+		clampOutcome = hlLiquidationActionOutcomeUnknown
 	case result.CancelStopLossSucceeded:
 		clampOutcome = hlLiquidationActionProtectionLost
 	}

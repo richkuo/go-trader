@@ -1833,3 +1833,40 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 		}
 	})
 }
+
+// #1456 review round 16 (Needs Fixing 1): the outcome-unknown shape must never
+// be reported as "protection lost". That message asserts the position has NO
+// exchange-side stop and its recovery sentence promises a re-place — both
+// wrong when the replacement may be resting untracked.
+func TestOutcomeUnknownIsNotProtectionLost(t *testing.T) {
+	if hlLiquidationActionUnprotected(hlLiquidationActionOutcomeUnknown) {
+		t.Errorf("outcome-unknown counted as unprotected — the operator is told a fact nobody measured")
+	}
+	if !hlLiquidationActionUnprotected(hlLiquidationActionProtectionLost) {
+		t.Errorf("protection lost must still count as unprotected")
+	}
+
+	headline, detail, unprotected := hlLiquidationAlertMessage(1800, 1900, 1750, hlLiquidationActionOutcomeUnknown, "recovery")
+	if unprotected {
+		t.Errorf("outcome-unknown message flagged unprotected")
+	}
+	if !strings.Contains(headline, "OUTCOME UNKNOWN") {
+		t.Errorf("headline = %q, want an outcome-unknown headline", headline)
+	}
+	for _, want := range []string{"could NOT be read", "may be resting", "KEPT"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail = %q, want it to contain %q", detail, want)
+		}
+	}
+	if strings.Contains(detail, "no exchange-side stop right now") {
+		t.Errorf("detail asserts the position is unprotected: %q", detail)
+	}
+
+	// The retry gate is unchanged: only a positively rejected placement retries.
+	if hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true}) {
+		t.Errorf("outcome-unknown must not license an in-cycle retry")
+	}
+	if !hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{}) {
+		t.Errorf("a positively rejected placement must still retry")
+	}
+}
