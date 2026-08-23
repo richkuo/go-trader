@@ -3050,6 +3050,23 @@ func main() {
 								} else {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								}
+								// #1456 review round 12: journal the open/scale_in trade +
+								// replay decision BEFORE any same-cycle closer can run — the
+								// post-trade protection sync, the ratchet-tighten walker,
+								// and the #885 inline arm can all book a submit-fill SL close
+								// that DELETES the position. Recorded any later, the open
+								// decision was skipped (pos already nil) while the close side
+								// still journaled full_close, leaving the #1431 paper mirror
+								// a close with no matching open. Protection-snapshot fields
+								// stamped later are backfilled by the sync's
+								// stampOpenTradeWithProtectionSnapshot (#625/#669).
+								if openTrade != nil {
+									var pos *Position
+									if p, ok := stratState.Positions[result.Symbol]; ok {
+										pos = p
+									}
+									recordPositionOpen(stratState, sc, openTrade, pos)
+								}
 								mu.Unlock()
 								// #1110: deliver any ratchet-tighten DM after releasing the lock
 								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
@@ -3123,13 +3140,6 @@ func main() {
 											detail = slDetail
 										}
 									}
-									mu.Lock()
-									var pos *Position
-									if p, ok := stratState.Positions[result.Symbol]; ok {
-										pos = p
-									}
-									recordPositionOpen(stratState, sc, openTrade, pos)
-									mu.Unlock()
 									// #1159: a fresh open (not an add — that branch set the
 									// quantity above) is the whole unhedged increment.
 									if scaleInAddQty <= 0 && openTrade != nil && openTrade.Quantity > 0 {

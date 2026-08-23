@@ -551,3 +551,41 @@ func TestReplayMirrorWatermarkStateRoundTrip(t *testing.T) {
 		t.Fatalf("ReplayMirrorWatermark = %d, want 41", got.ReplayMirrorWatermark)
 	}
 }
+
+// #1456 review round 12 (Optional): an open whose position is closed later in
+// the SAME cycle (submit-fill SL from the post-trade protection sync, the
+// ratchet-tighten walker, or the #885 inline arm) must still journal its
+// open/scale_in replay decision — and BEFORE the full_close row. The dispatch
+// now calls recordPositionOpen immediately after the deferred-open execute leg,
+// before any closer runs; this pins the ordering contract that makes that
+// hoist load-bearing.
+func TestRecordPositionOpenBeforeSameCycleCloseJournalsOpenThenClose(t *testing.T) {
+	sc := replayTestConfig("hl-live-eth").Strategies[0]
+	state := replayTestStrategyState("hl-live-eth")
+	captured := swapReplayHooks(t, replayTestConfig("hl-live-eth"))
+
+	pos := &Position{
+		Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2400, EntryATR: 60,
+	}
+	state.Positions["ETH"] = pos
+
+	trade := &Trade{
+		Timestamp: time.Now().UTC(), StrategyID: sc.ID, Symbol: "ETH",
+		Side: "buy", Quantity: 1.0, Price: 2400, TradeType: "perps",
+	}
+	if !recordPositionOpen(state, sc, trade, pos) {
+		t.Fatal("recordPositionOpen must succeed")
+	}
+	// The same-cycle submit-fill close then deletes the position.
+	if !recordPerpsStopLossClose(state, "ETH", 2318.5, "protection_sync_sl_immediate", nil) {
+		t.Fatal("close booking must succeed")
+	}
+
+	var kinds []string
+	for _, dec := range *captured {
+		kinds = append(kinds, dec.DecisionType)
+	}
+	if len(kinds) != 2 || kinds[0] != ReplayDecisionOpen || kinds[1] != ReplayDecisionFullClose {
+		t.Errorf("decision order = %v, want [%s %s]", kinds, ReplayDecisionOpen, ReplayDecisionFullClose)
+	}
+}
