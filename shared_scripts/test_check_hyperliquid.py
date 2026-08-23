@@ -1550,3 +1550,75 @@ class TestProtectionSyncStopLossTriggerContract:
         assert out.get("stop_loss_oid") == 9003
         assert out.get("stop_loss_trigger_px") == pytest.approx(2325.0)
         adapter.place_stop_loss.assert_called_once()
+
+    def _run_sync_dynamic_oids(self, *, oid_reads, place_response):
+        """Like _run_sync but open_order_oids returns a SEQUENCE of reads:
+        the top-of-call fetch, then the re-read inside the book diff."""
+        import builtins
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        adapter = MagicMock()
+        mock_adapter_cls.return_value = adapter
+        adapter.open_order_oids.side_effect = [set(s) for s in oid_reads]
+        adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 2)
+        adapter.round_size.side_effect = lambda _sym, sz: sz
+        adapter.place_stop_loss.return_value = place_response
+        adapter.cancel_order_by_oid.return_value = _CANCEL_OK_RESPONSE
+
+        captured = StringIO()
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "ETH", "long", 1.0, 2400.0, 30.0, "live",
+                    stop_loss_atr_mult=2.5,
+                    stop_loss_oid=4242,
+                    force_sl_replace=True,
+                )
+        return json.loads(captured.getvalue()), adapter
+
+    def test_unreadable_placement_resolved_to_resting_reports_no_error(self):
+        """#1456 review round 19 (Optional 1), must-survive (a): the response
+        was unreadable but the book diff resolves one fresh oid. Go records a
+        normal resting placement — a success — so NO stop_loss_error may ride
+        alongside the OID, or formatProtectionSyncWarnings fires a false
+        "protection partially failed" DM for a protected position."""
+        out, _ = self._run_sync_dynamic_oids(
+            oid_reads=[{4242}, {9004}],
+            place_response={"status": "weird"},
+        )
+        assert out.get("stop_loss_oid") == 9004
+        assert "stop_loss_error" not in out
+
+    def test_unreadable_placement_ambiguous_diff_reports_no_warning_error(self):
+        """Must-survive (c): an ambiguous diff is the single accurate
+        outcome-unknown CRITICAL — the generic partial-failure WARNING must
+        not stack on top of it via a stray error field."""
+        out, _ = self._run_sync_dynamic_oids(
+            oid_reads=[{4242}, {9004, 9005}],
+            place_response={"status": "weird"},
+        )
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert "stop_loss_error" not in out
+
+    def test_unreadable_placement_nothing_resting_keeps_the_error(self):
+        """Must-survive (b): the diff shows nothing rested — a genuine
+        failure whose error text must survive so Go clears and re-places."""
+        out, _ = self._run_sync_dynamic_oids(
+            oid_reads=[{4242}, set()],
+            place_response={"status": "weird"},
+        )
+        assert "stop_loss_oid" not in out
+        assert "stop_loss_outcome_unknown" not in out
+        assert "no usable status" in out.get("stop_loss_error", "")
+

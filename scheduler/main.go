@@ -2946,7 +2946,7 @@ func main() {
 								forceResize := hlScaleInResizePending && !capped
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, result.Symbol, hlPosSide)}, notifier, logger)
 								mu.Lock()
-								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger); immediateFill {
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, 0); immediateFill {
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 								}
@@ -3565,7 +3565,7 @@ func main() {
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest
 								// OID. Previously this only handled the resting-replacement case.
-								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger); immediateFill {
+								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, 0); immediateFill {
 									logger.Info("[%s] manual trailing SL filled immediately %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
 								}
 								// The manual trailing walker owns the SL re-size when it fires

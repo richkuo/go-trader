@@ -437,6 +437,14 @@ const (
 	// KEPT on this shape, so the position never becomes an Unprotected re-arm
 	// candidate off an outcome nobody measured.
 	hlLiquidationActionOutcomeUnknown hlLiquidationAlertAction = "outcome unknown"
+	// hlLiquidationActionPlacementUnknown (#1456 review round 19 Optional 3) —
+	// the same unreadable outcome, but on a placement that CANCELLED NOTHING
+	// (a fresh static-scalar re-arm, the one-shot fixed-ATR arm, a report-only
+	// residue). The generic outcome-unknown detail asserts "the old trigger was
+	// CANCELLED", an action this path never performed; operators reading it
+	// would hunt for a deletion that never happened. Recorded state follows the
+	// round-18 contract: requested trigger kept, OID 0, no queue re-places.
+	hlLiquidationActionPlacementUnknown hlLiquidationAlertAction = "placement unknown"
 )
 
 // hlLiquidationActionUnprotected reports whether the action leaves the position
@@ -576,7 +584,12 @@ func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiq
 		detail = "the ORIGINAL stop already fired on-chain before it could be replaced — nothing was cancelled and there is no order left to replace; the reconciler books the close."
 	case hlLiquidationActionOutcomeUnknown:
 		headline = "**HL STOP OUTCOME UNKNOWN**"
-		detail = preamble + fmt.Sprintf(" — the old trigger was CANCELLED and the replacement at $%.4f returned an outcome that could NOT be read: it may be resting untracked. Recorded stop state is KEPT and no re-place is attempted; verify the order book on Hyperliquid.", clampedPx)
+		detail = preamble + fmt.Sprintf(" — the old trigger was CANCELLED and the replacement at $%.4f returned an outcome that could NOT be read: it may be resting untracked. Recorded state is KEPT and no re-place is attempted; verify the order book on Hyperliquid.", clampedPx)
+	case hlLiquidationActionPlacementUnknown:
+		// #1456 review round 19 (Optional 3): a FRESH placement cancelled
+		// nothing — asserting a cancel here describes an action this path
+		// never performed.
+		detail = fmt.Sprintf("a fresh stop placement at $%.4f returned an outcome that could NOT be read: it may be resting untracked. Nothing was cancelled and nothing will be re-placed automatically; verify the order book on Hyperliquid.", clampedPx)
 	default:
 		detail = preamble
 	}
@@ -606,7 +619,7 @@ func hlLiquidationArmClampAction(result *HyperliquidStopLossUpdateResult, armOK 
 		// has NO exchange-side stop and whose unprotected classification
 		// re-alerts unthrottled every cycle.
 		if result.StopLossOutcomeUnknown {
-			return hlLiquidationActionOutcomeUnknown
+			return hlLiquidationActionPlacementUnknown
 		}
 	}
 	return hlLiquidationActionRearmFailed
@@ -1469,7 +1482,10 @@ func sendAuditCloseAlerts(details []hlLiquidationCloseDetail, state map[string]*
 // left to diff). A call that changes nothing — refused, deferred, or
 // re-validated away inside applyTrailingStopUpdateResult — increments nothing,
 // which is what keeps a no-op off-cycle pass from writing.
-func applyAuditStopUpdate(res *hlLiquidationAuditResult, ss *StrategyState, symbol, side string, prevSLOID int64, result *HyperliquidStopLossUpdateResult, logger *StrategyLogger) (bool, float64) {
+// placedQty is the candidate's #621-capped placement size: a submit fill
+// books the quantity the exchange actually clipped to (#1456 review round 19
+// Optional 2), never the stale recorded quantity.
+func applyAuditStopUpdate(res *hlLiquidationAuditResult, ss *StrategyState, symbol, side string, prevSLOID int64, placedQty float64, result *HyperliquidStopLossUpdateResult, logger *StrategyLogger) (bool, float64) {
 	var beforeOID int64
 	var beforeTriggerPx float64
 	var beforeNormalizePending bool
@@ -1480,7 +1496,7 @@ func applyAuditStopUpdate(res *hlLiquidationAuditResult, ss *StrategyState, symb
 			beforeNormalizePending = pos.RatchetFallbackNormalizePending
 		}
 	}
-	immediateFill, fillPx := applyTrailingStopUpdateResult(ss, symbol, side, prevSLOID, 0, true, result, "liquidation_clamp_sl_immediate", logger)
+	immediateFill, fillPx := applyTrailingStopUpdateResult(ss, symbol, side, prevSLOID, 0, true, result, "liquidation_clamp_sl_immediate", logger, placedQty)
 	if immediateFill {
 		res.StateMutations++
 		return true, fillPx
@@ -1578,11 +1594,12 @@ func runHyperliquidLiquidationAudit(
 			// placement left a trigger recorded with no OID. Nothing is placed
 			// or cancelled here — the alert (throttled like every other action)
 			// keeps saying the protection surface is UNVERIFIED until something
-			// resolves it.
+			// resolves it. Round 19 (Optional 3): this is the PLACEMENT-UNKNOWN
+			// wording — nothing was ever cancelled on this path.
 			pending = append(pending, hlLiquidationPendingAlert{
 				sc: sc, symbol: c.Symbol, side: c.Side,
-				triggerPx: 0, clampedPx: act.ClampedTriggerPx, liqPx: c.LiquidationPx,
-				action: hlLiquidationActionOutcomeUnknown, logger: logger,
+				triggerPx: c.StopLossTriggerPx, clampedPx: act.ClampedTriggerPx, liqPx: c.LiquidationPx,
+				action: hlLiquidationActionPlacementUnknown, logger: logger,
 			})
 			continue
 		}
@@ -1606,18 +1623,26 @@ func runHyperliquidLiquidationAudit(
 			// the original order is still resting.
 			action = hlLiquidationActionFilledOnChain
 		case hlReplaceOutcomeUnknown:
-			// #1456 review round 16: the cancel landed and the replacement's
-			// outcome is unreadable. applyAuditStopUpdate is still called so
-			// the shared helper owns the decision, but its outcome-unknown case
-			// KEEPS pos.StopLossOID / pos.StopLossTriggerPx — the order may be
-			// resting untracked, and zeroing them would make this position an
-			// Unprotected re-arm candidate on the very next cycle, placing a
-			// SECOND reduce-only stop the scheduler could never cancel. No
+			// #1456 review round 16: the replacement's outcome is unreadable.
+			// applyAuditStopUpdate is still called so the shared helper owns
+			// the decision; since round 19 it records the REQUESTED trigger
+			// with the OID left at 0 — for a tighten that un-points state from
+			// the OID this cycle just cancelled, which is what previously made
+			// every later cycle re-cancel the dead OID and stack another
+			// untracked placement. The {OID: 0, trigger: requested} shape is
+			// report-only in the collector, so no queue re-places it. No
 			// in-cycle retry either (hlLiquidationMayRetryReplace already
-			// refuses this shape); the operator gets the outcome-unknown alert.
+			// refuses this shape); the operator gets the unknown-outcome alert.
+			//
+			// Round 19 (Optional 3): only a candidate that HAD a resting stop
+			// to cancel uses the "old trigger was CANCELLED" wording; a fresh
+			// re-arm cancelled nothing.
 			action = hlLiquidationActionOutcomeUnknown
+			if c.StopLossOID == 0 {
+				action = hlLiquidationActionPlacementUnknown
+			}
 			mu.Lock()
-			if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, result, logger); immediateFill {
+			if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, c.Qty, result, logger); immediateFill {
 				res.ImmediateFills++
 				action = hlLiquidationActionExited
 				logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
@@ -1660,7 +1685,7 @@ func runHyperliquidLiquidationAudit(
 					}
 					clearDeadState = false
 					mu.Lock()
-					immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, retryResult, logger)
+					immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, c.Qty, retryResult, logger)
 					mu.Unlock()
 					if immediateFill {
 						res.ImmediateFills++
@@ -1672,11 +1697,12 @@ func runHyperliquidLiquidationAudit(
 					}
 				case hlReplaceOutcomeUnknown:
 					// The RETRY's own outcome is unreadable — it may be resting.
-					// Keep recorded state instead of clearing it into an
-					// Unprotected re-arm candidate (the stale OID self-heals: a
-					// cancel of a dead OID falls through to a fresh placement on
-					// the owner's own path), and report outcome-unknown, never
-					// "NO exchange-side stop".
+					// applyAuditStopUpdate below records the requested trigger
+					// with the OID left at 0 (round 19): never an Unprotected
+					// re-arm candidate, and never state pointing at the dead OID
+					// licensing a next-cycle re-place. Report outcome-unknown
+					// (the retry replaced a cancelled stop), never "NO
+					// exchange-side stop".
 					action = hlLiquidationActionOutcomeUnknown
 					clearDeadState = false
 				default:
@@ -1694,7 +1720,7 @@ func runHyperliquidLiquidationAudit(
 				// it, and Python's crash handler never reports a fill), but the
 				// return is handled exactly like every sibling site so a future
 				// change can never book an unreported close.
-				if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, result, logger); immediateFill {
+				if immediateFill, fillPx := applyAuditStopUpdate(&res, state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, c.Qty, result, logger); immediateFill {
 					res.ImmediateFills++
 					logger.Warn("Liquidation-clamp SL booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
 					res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
@@ -1719,7 +1745,7 @@ func runHyperliquidLiquidationAudit(
 			// The close reason names the AUDIT, not the trailing walker: the
 			// persisted CloseReason must match the LIQUIDATION-CLAMP DM built
 			// below (#1456 review).
-			immediateFill, fillPx := applyAuditStopUpdate(&res, ss, c.Symbol, c.Side, c.StopLossOID, result, logger)
+			immediateFill, fillPx := applyAuditStopUpdate(&res, ss, c.Symbol, c.Side, c.StopLossOID, c.Qty, result, logger)
 			mu.Unlock()
 			if immediateFill {
 				res.ImmediateFills++

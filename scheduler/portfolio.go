@@ -590,6 +590,23 @@ func recordPerpsStopLossClose(s *StrategyState, symbol string, triggerPx float64
 	return bookPerpsClose(s, symbol, triggerPx, reason, stopLossCloseDetailsPrefix(reason), "SL close reconciled", logger)
 }
 
+// recordPerpsStopLossCloseQty books a submit-filled SL close at the quantity
+// the exchange actually clipped the order to (#1456 review round 19 Optional 2),
+// not the full recorded position. A reduce-only placement sized by
+// hlSLEffectiveQty can fill BELOW the virtual quantity when an off-scheduler
+// partial close shrank the on-chain leg during a quiet period; booking the
+// recorded quantity then overstated the close and priced the externally-closed
+// remainder at the SL trigger. fillQty <= 0 (unknown) and fillQty >= recorded
+// keep the exact legacy full-close path. A partial booking leaves the residue
+// position in the book for the standing reconciler, which owns external-close
+// attribution; the caller clears the residue's dead protection fields.
+func recordPerpsStopLossCloseQty(s *StrategyState, symbol string, fillQty, triggerPx float64, reason string, logger *StrategyLogger) bool {
+	if pos, ok := s.Positions[symbol]; fillQty > 0 && ok && pos != nil && pos.Quantity > 0 && fillQty < pos.Quantity-1e-9 {
+		return bookPerpsPartialCloseWithFillFee(s, symbol, fillQty, triggerPx, 0, false, "", reason, stopLossCloseDetailsPrefix(reason), "SL close reconciled", logger)
+	}
+	return recordPerpsStopLossClose(s, symbol, triggerPx, reason, logger)
+}
+
 // recordPerpsStopLossCloseWithFillFee is the reconciler entry point — same
 // behavior as recordPerpsStopLossClose but threads the userFills-resolved
 // exchange fee + OID into the close Trade so virtual cash matches the

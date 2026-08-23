@@ -685,7 +685,12 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 // so a stop_loss_pct owner re-armed by the audit read back in history as a
 // trailing-stop exit. Walker callers pass "trailing_stop_loss_immediate"; the
 // audit passes "liquidation_clamp_sl_immediate".
-func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, closeReason string, logger *StrategyLogger) (immediateFill bool, fillPx float64) {
+//
+// placedQty (#1456 review round 19 Optional 2) is the quantity the placement
+// was actually SIZED to (hlSLEffectiveQty's on-chain cap) so a submit fill
+// books the quantity the exchange clipped to, never more; 0 means unknown and
+// keeps the legacy full-quantity booking.
+func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string, prevSLOID int64, newHighWater float64, updateConfirmed bool, slUpdate *HyperliquidStopLossUpdateResult, closeReason string, logger *StrategyLogger, placedQty float64) (immediateFill bool, fillPx float64) {
 	if s == nil {
 		return false, 0
 	}
@@ -708,7 +713,17 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	switch {
 	case slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0:
 		pos.RatchetFallbackNormalizePending = false
-		if recordPerpsStopLossClose(s, symbol, slUpdate.StopLossTriggerPx, closeReason, logger) {
+		if recordPerpsStopLossCloseQty(s, symbol, placedQty, slUpdate.StopLossTriggerPx, closeReason, logger) {
+			// A partial booking (placedQty below the recorded quantity, the
+			// round-19 shape) leaves a residue position whose protection
+			// fields point at the order that just FIRED. Clear them so the
+			// residue re-arms from the empty-OID path on its next cycle; a
+			// full booking deletes the position and finds nothing here.
+			if residue, ok := s.Positions[symbol]; ok && residue != nil && residue.Quantity > 0 {
+				residue.StopLossOID = 0
+				residue.StopLossTriggerPx = 0
+				residue.RatchetFallbackNormalizePending = false
+			}
 			return true, slUpdate.StopLossTriggerPx
 		}
 	case slUpdate.StopLossOID > 0:
@@ -722,31 +737,42 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 		// #1456 review round 16: the cancel landed but the replacement's
 		// OUTCOME could not be read (unreadable status entry / post-submit
 		// exception, unresolvable by the open-order diff). The order may be
-		// resting untracked, so KEEP the recorded OID and trigger — mirroring
-		// applyHyperliquidProtectionSync (round 15).
+		// resting untracked.
 		//
-		// Clearing them here was what made this shape compound: the position
-		// then read as Unprotected (StopLossOID == 0 && StopLossTriggerPx <= 0),
-		// so the next audit re-armed a static-scalar owner and the walker
-		// re-armed a trailing owner from currentTrigger <= 0 — placing a SECOND
-		// reduce-only stop while the first one's OID had never been recorded,
-		// leaving the scheduler unable to cancel it.
+		// Clearing everything here was the original compound hazard: the
+		// position then read as Unprotected (StopLossOID == 0 &&
+		// StopLossTriggerPx <= 0), so the next audit re-armed a static-scalar
+		// owner and the walker re-armed a trailing owner from currentTrigger
+		// <= 0 — placing a SECOND reduce-only stop while the first one's OID
+		// had never been recorded.
 		//
-		// #1456 review round 18 (Needs Fixing 1): a FRESH placement (audit
-		// static-scalar re-arm, one-shot arm) has NO state to keep — keeping
-		// zero is what left the position in the Unprotected re-arm queue. Record
-		// the REQUESTED trigger with the OID left at 0: the audit then reads the
-		// candidate as armed-at-a-reachable-trigger (its clamp refuses to move
-		// an inside-liquidation trigger), so it submits no second placement,
-		// while an owner that CAN re-place still sees a trigger to reason about.
-		if pos.StopLossTriggerPx <= 0 && slUpdate.StopLossTriggerPx > 0 {
+		// Rounds 18/19 settled the shape for BOTH fresh placements AND
+		// tightens: record the REQUESTED trigger with the OID left at 0.
+		// Keeping a tightened position's OLD OID instead (round 16's "keep")
+		// pointed it at an order this very call had CANCELLED, with the old
+		// past-liquidation trigger — so every later cycle re-cancelled the
+		// dead OID and placed again, stacking one more untracked stop per
+		// unreadable outcome. With {OID: 0, trigger: requested} every placement
+		// queue closes: the audit reads the candidate armed-at-a-reachable-
+		// trigger and reports it without acting, buildHyperliquidProtectionPlan
+		// suppresses its SL leg, and the fixed-ATR arm site requires a clean
+		// slate. A trailing owner still heals on its own next legitimate
+		// min-move replace, which places ONE order at a readable outcome and
+		// records it. A duplicate reduce-only stop clips to the netted
+		// position and no-ops once flat (#621 cap), so the worst case of the
+		// residue is bounded — mirroring the accepted protection-sync
+		// semantics (hlProtectionStopOutcomeUnknown).
+		if pos.StopLossOID == prevSLOID {
+			pos.StopLossOID = 0
+		}
+		if slUpdate.StopLossTriggerPx > 0 {
 			pos.StopLossTriggerPx = slUpdate.StopLossTriggerPx
 			if logger != nil {
-				logger.Info("Unreadable fresh placement for %s: requested trigger $%.4f recorded (oid unknown)", symbol, slUpdate.StopLossTriggerPx)
+				logger.Info("Unreadable placement outcome for %s: requested trigger $%.4f recorded (oid unknown)", symbol, slUpdate.StopLossTriggerPx)
 			}
 		}
 		if logger != nil && prevSLOID > 0 {
-			logger.Warn("Trailing SL old OID=%d was cancelled and the replacement's outcome could NOT be read — keeping recorded stop state; it may be resting untracked", prevSLOID)
+			logger.Warn("Trailing SL old OID=%d was cancelled and the replacement's outcome could NOT be read — recorded trigger kept, oid unknown; no re-place is licensed until a readable attempt", prevSLOID)
 		}
 	case slUpdate.CancelStopLossSucceeded && prevSLOID > 0 && pos.StopLossOID == prevSLOID:
 		pos.StopLossOID = 0
@@ -977,7 +1003,12 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		clampOutcome = hlLiquidationActionExited
 	case restingConfirmed:
 		clampOutcome = hlLiquidationActionClamped
-	case retryOutcomeUnknown || (result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown):
+	case retryOutcomeUnknown:
+		// #1456 review round 19 (Optional 3): the RETRY was a fresh placement —
+		// nothing was cancelled by it, so the "old trigger was CANCELLED"
+		// wording would describe an action never performed.
+		clampOutcome = hlLiquidationActionPlacementUnknown
+	case result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown:
 		// #1456 review round 16: the replacement may be resting. Reporting
 		// "protection lost" here asserts a fact nobody measured, and its
 		// recovery sentence promises a re-place that must not happen.

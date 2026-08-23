@@ -1099,16 +1099,29 @@ def run_sync_protection(
                 This runs before any TP placement in run_sync_protection, so a
                 fresh oid in the diff can only be this stop-loss.
                 """
+                # #1456 review round 19 (Optional 1): the error text travels
+                # ONLY on the "none" branch. A placement resolved to a resting
+                # order is a SUCCESS — Go records the OID, and emitting
+                # ``stop_loss_error`` alongside it made
+                # formatProtectionSyncWarnings fire a false "SL sync failed"
+                # DM for a position that is protected. The ambiguous-diff
+                # residue reports ``stop_loss_outcome_unknown`` alone too: Go
+                # raises its own accurate CRITICAL for that shape, and the
+                # generic partial-failure WARNING would only stack on top of
+                # it.
                 out["stop_loss_error"] = reason
                 kind, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
                 if kind == "resting":
+                    del out["stop_loss_error"]
                     out["stop_loss_oid"] = oid
                     _sl_placed(sl_px)
                 elif kind == "unknown":
+                    del out["stop_loss_error"]
                     out["stop_loss_outcome_unknown"] = True
-                # kind == "none": nothing rests, a genuine failure. Leave the
-                # outcome-unknown flag off so Go clears the dead OID and
-                # re-places from the empty-OID path, as before.
+                # kind == "none": nothing rests, a genuine failure. Keep the
+                # error and leave the outcome-unknown flag off so Go clears
+                # the dead OID and re-places from the empty-OID path, as
+                # before.
 
             def _place_sl():
                 # Snapshot the book BEFORE submitting so an unreadable response

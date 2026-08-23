@@ -1764,7 +1764,7 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 	t.Run("clamp that rests a replacement counts, with no fill", func(t *testing.T) {
 		var res hlLiquidationAuditResult
 		ss := newSS(111, 1850)
-		fill, _ := applyAuditStopUpdate(&res, ss, "ETH", "long", 111, &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: 1900}, logger)
+		fill, _ := applyAuditStopUpdate(&res, ss, "ETH", "long", 111, 1.0, &HyperliquidStopLossUpdateResult{StopLossOID: 222, StopLossTriggerPx: 1900}, logger)
 		if fill {
 			t.Fatalf("immediateFill = true, want false")
 		}
@@ -1783,7 +1783,7 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 	t.Run("static-scalar re-arm from no stop counts", func(t *testing.T) {
 		var res hlLiquidationAuditResult
 		ss := newSS(0, 0)
-		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 0, &HyperliquidStopLossUpdateResult{StopLossOID: 777, StopLossTriggerPx: 1880}, logger); res.StateMutations != 1 {
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 0, 1.0, &HyperliquidStopLossUpdateResult{StopLossOID: 777, StopLossTriggerPx: 1880}, logger); res.StateMutations != 1 {
 			t.Errorf("StateMutations = %d, want 1 on a re-arm", res.StateMutations)
 		}
 	})
@@ -1791,7 +1791,7 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 	t.Run("cancel without a rest zeroes the dead OID and counts", func(t *testing.T) {
 		var res hlLiquidationAuditResult
 		ss := newSS(111, 1850)
-		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 111, &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}, logger); res.StateMutations != 1 {
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 111, 1.0, &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}, logger); res.StateMutations != 1 {
 			t.Errorf("StateMutations = %d, want 1 on cancel-without-rest", res.StateMutations)
 		}
 		if pos := ss.Positions["ETH"]; pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
@@ -1803,7 +1803,7 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 		var res hlLiquidationAuditResult
 		ss := newSS(111, 1850)
 		ss.Cash = 1000
-		fill, fillPx := applyAuditStopUpdate(&res, ss, "ETH", "long", 111, &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 1850}, logger)
+		fill, fillPx := applyAuditStopUpdate(&res, ss, "ETH", "long", 111, 1.0, &HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 1850}, logger)
 		if !fill || fillPx != 1850 {
 			t.Fatalf("fill = %v @ %.2f, want true @ 1850", fill, fillPx)
 		}
@@ -1817,15 +1817,15 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 		ss := newSS(111, 1850)
 
 		// nil update — the helper returns before touching anything.
-		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 111, nil, logger); res.StateMutations != 0 {
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 111, 1.0, nil, logger); res.StateMutations != 0 {
 			t.Errorf("StateMutations = %d after a nil update, want 0", res.StateMutations)
 		}
 		// side mismatch — re-validated away inside applyTrailingStopUpdateResult.
-		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "short", 111, &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 1900}, logger); res.StateMutations != 0 {
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "short", 111, 1.0, &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 1900}, logger); res.StateMutations != 0 {
 			t.Errorf("StateMutations = %d after a side mismatch, want 0", res.StateMutations)
 		}
 		// a cancel whose prevSLOID no longer matches — no branch applies.
-		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 42, &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}, logger); res.StateMutations != 0 {
+		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 42, 1.0, &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}, logger); res.StateMutations != 0 {
 			t.Errorf("StateMutations = %d after a stale-OID cancel, want 0", res.StateMutations)
 		}
 		if pos := ss.Positions["ETH"]; pos.StopLossOID != 111 || pos.StopLossTriggerPx != 1850 {
@@ -2123,8 +2123,8 @@ func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 	if pos.StopLossTriggerPx != wantTrigger || pos.StopLossOID != 0 {
 		t.Fatalf("state = oid=%d trigger=%.4f, want oid=0 trigger=%.4f (requested trigger recorded)", pos.StopLossOID, pos.StopLossTriggerPx, wantTrigger)
 	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionOutcomeUnknown {
-		t.Fatalf("alert action = %q, want %q", last, hlLiquidationActionOutcomeUnknown)
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionPlacementUnknown {
+		t.Fatalf("alert action = %q, want %q (fresh re-arm cancelled nothing)", last, hlLiquidationActionPlacementUnknown)
 	}
 
 	// The following cycle: still exactly ONE lifetime placement.
@@ -2135,8 +2135,8 @@ func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("second-pass placement calls = %d total, want still 1 (no duplicate)", calls)
 	}
-	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionOutcomeUnknown {
-		t.Errorf("second-cycle alert action = %q, want %q (unresolved stays surfaced)", last, hlLiquidationActionOutcomeUnknown)
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionPlacementUnknown {
+		t.Errorf("second-cycle alert action = %q, want %q (unresolved stays surfaced)", last, hlLiquidationActionPlacementUnknown)
 	}
 }
 
@@ -2205,19 +2205,153 @@ func TestAuditRearmAdoptsBookDiffResolvedOID(t *testing.T) {
 	}
 }
 
-// #1456 review round 18 (Needs Fixing 1): the one-shot fixed-ATR arm reports
-// outcome-unknown instead of re-arm failed for an unreadable placement.
+// #1456 review round 18 (Needs Fixing 1), round 19 (Optional 3): the one-shot
+// fixed-ATR arm reports PLACEMENT unknown instead of re-arm failed for an
+// unreadable placement — the arm cancels nothing, so the cancel-claiming
+// wording would be false.
 func TestHLLiquidationArmClampActionOutcomeUnknown(t *testing.T) {
 	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{
 		StopLossError:          "boom",
 		StopLossOutcomeUnknown: true,
 		StopLossTriggerPx:      2300,
-	}, true); got != hlLiquidationActionOutcomeUnknown {
-		t.Errorf("action = %q, want %q", got, hlLiquidationActionOutcomeUnknown)
+	}, true); got != hlLiquidationActionPlacementUnknown {
+		t.Errorf("action = %q, want %q", got, hlLiquidationActionPlacementUnknown)
 	}
 	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{
 		StopLossError: "Order would exceed the open order limit",
 	}, true); got != hlLiquidationActionRearmFailed {
 		t.Errorf("positive rejection = %q, want re-arm failed", got)
+	}
+}
+
+// #1456 review round 19 (Needs Fixing 1) must-survive (a): a TIGHTEN whose
+// cancel lands and whose placement outcome is unreadable must leave state
+// pointing at neither the cancelled OID nor the old past-liquidation trigger,
+// and the next cycle must submit NO second order — only the alert repeats.
+func TestAuditTightenOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+
+	strategies, state := liqAuditFixture(t, true, 3.125) // oid=4242 trigger=2325 < liq 2340.5
+	var mu sync.RWMutex
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		if cancelOID != 4242 {
+			t.Errorf("tighten must cancel the recorded stop, got cancelOID=%d", cancelOID)
+		}
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded: true,
+			StopLossOutcomeUnknown:  true,
+			StopLossTriggerPx:       triggerPx,
+		}, "", nil
+	}
+
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if calls != 1 {
+		t.Fatalf("first-pass placement calls = %d, want 1", calls)
+	}
+	pos := state.Strategies["hl-eth"].Positions["ETH"]
+	wantTrigger := 2340.5 * 1.005
+	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != wantTrigger {
+		t.Fatalf("state = oid=%d trigger=%.4f, want oid=0 trigger=%.4f (requested trigger, dead OID unrecorded)", pos.StopLossOID, pos.StopLossTriggerPx, wantTrigger)
+	}
+
+	// Second unreadable cycle: no placement at all — the residue is
+	// report-only — and the alert keeps firing under its placement-unknown
+	// wording.
+	runHyperliquidLiquidationAudit(strategies, state,
+		map[string]float64{"ETH": 2340.5},
+		hlNetSideByCoinAllLong(),
+		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
+	if calls != 1 {
+		t.Errorf("second-pass placement calls = %d total, want still 1 (no stacking)", calls)
+	}
+	if last := lastLiqAlertAction("hl-eth", "ETH"); last != hlLiquidationActionPlacementUnknown {
+		t.Errorf("second-cycle alert action = %q, want %q", last, hlLiquidationActionPlacementUnknown)
+	}
+}
+
+// #1456 review round 19 (Needs Fixing 1) must-survive (b): from the
+// outcome-unknown residue ({oid 0, reachable trigger}), a later READABLE
+// placement records exactly one tracked stop.
+func TestResidueStateConvergesOnReadableReplace(t *testing.T) {
+	ss := &StrategyState{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
+		"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2400,
+			StopLossTriggerPx: 2352.2025},
+	}}
+	residue := ss.Positions["ETH"]
+	fill, fillPx := applyTrailingStopUpdateResult(ss, "ETH", "long", 0, 0, true,
+		&HyperliquidStopLossUpdateResult{StopLossOID: 7777, StopLossTriggerPx: 2360},
+		"trailing_stop_loss_immediate", nil, 0)
+	if fill || fillPx != 0 {
+		t.Fatalf("resting replacement read as an immediate fill (%v, %.4f)", fill, fillPx)
+	}
+	if residue.StopLossOID != 7777 || residue.StopLossTriggerPx != 2360 {
+		t.Fatalf("state = oid=%d trigger=%.4f, want the single tracked resting stop oid=7777 trigger=2360",
+			residue.StopLossOID, residue.StopLossTriggerPx)
+	}
+}
+
+// #1456 review round 19 (Optional 2): a submit fill sized by the #621 on-chain
+// cap books the FILLED quantity, leaves the residue in the book with cleared
+// protection fields, and never over-books the stale virtual quantity.
+func TestApplyAuditStopUpdateBooksPartialFillQty(t *testing.T) {
+	ss := &StrategyState{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
+		"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2000},
+	}}
+	pos := ss.Positions["ETH"]
+	pos.StopLossOID = 555
+	pos.StopLossTriggerPx = 1900
+
+	immediate, fillPx := applyAuditStopUpdate(&hlLiquidationAuditResult{}, ss, "ETH", "long", 555, 0.6,
+		&HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 1900}, nil)
+	if !immediate || fillPx != 1900 {
+		t.Fatalf("immediate=%v fillPx=%.4f, want true/1900", immediate, fillPx)
+	}
+	if pos.Quantity != 0.4 {
+		t.Fatalf("residual quantity = %.6f, want 0.4 (only the filled portion booked)", pos.Quantity)
+	}
+	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
+		t.Errorf("residue protection = oid=%d trigger=%.4f, want cleared (the fired order protects nothing)", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+	if len(ss.TradeHistory) != 1 || ss.TradeHistory[0].Quantity != 0.6 {
+		t.Errorf("booked trades = %+v, want one close of 0.6", ss.TradeHistory)
+	}
+
+	// Full-cap fill: unchanged legacy behavior — the whole position closes.
+	ss2 := &StrategyState{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
+		"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2000},
+	}}
+	immediate2, _ := applyAuditStopUpdate(&hlLiquidationAuditResult{}, ss2, "ETH", "long", 0, 1.0,
+		&HyperliquidStopLossUpdateResult{StopLossFilledImmediately: true, StopLossTriggerPx: 1900}, nil)
+	if !immediate2 {
+		t.Fatal("full-quantity fill not booked")
+	}
+	if _, ok := ss2.Positions["ETH"]; ok {
+		t.Error("position should be deleted on a full-quantity close")
+	}
+}
+
+// #1456 review round 19 (Optional 3): the two unknown-outcome actions carry
+// different cancel claims, and every other action's wording is untouched.
+func TestLiquidationAlertPlacementUnknownWording(t *testing.T) {
+	_, detailTighten, unprotectedTighten := hlLiquidationAlertMessage(2325, 2352.2025, 2340.5, hlLiquidationActionOutcomeUnknown, "rec")
+	if !strings.Contains(detailTighten, "CANCELLED") {
+		t.Errorf("tighten detail lost the cancel claim: %q", detailTighten)
+	}
+	if unprotectedTighten {
+		t.Error("outcome unknown must not classify as unprotected")
+	}
+	_, detailFresh, unprotectedFresh := hlLiquidationAlertMessage(0, 2352.2025, 2340.5, hlLiquidationActionPlacementUnknown, "rec")
+	if strings.Contains(detailFresh, "old trigger was CANCELLED") || !strings.Contains(detailFresh, "Nothing was cancelled") {
+		t.Errorf("fresh-placement detail asserts a cancel that never happened: %q", detailFresh)
+	}
+	if unprotectedFresh {
+		t.Error("placement unknown must not classify as unprotected")
 	}
 }

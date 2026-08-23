@@ -203,6 +203,31 @@ def resolve_stop_owners(cfg, sc):
     return sc
 
 
+def effective_max_drawdown_pct(cfg, sc):
+    # Mirrors LoadConfig's hierarchical default (scheduler/config.go): an
+    # omitted OR EXPLICIT-ZERO strategy field falls through to the platform
+    # risk override, then the per-type default. validateConfig never sees a
+    # non-positive value, and validateHLStopWithinBankruptcyBound scores the
+    # RESOLVED one — so the preflight must score it too, or it prints OK for
+    # exactly the configs Go rejects at boot (#1456 review round 19).
+    v = sc.get("max_drawdown_pct")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+        return float(v)
+    pc = (cfg.get("platforms") or {}).get(str(sc.get("platform") or "")) or {}
+    risk = pc.get("risk") or {}
+    pv = risk.get("max_drawdown_pct")
+    if isinstance(pv, (int, float)) and not isinstance(pv, bool) and pv > 0:
+        return float(pv)
+    t = sc.get("type")
+    if t == "options":
+        return 40.0
+    if t == "perps":
+        return 50.0
+    if t == "futures":
+        return 45.0
+    return 60.0
+
+
 def resolves_from_max_drawdown_fallback(sc):
     # Mirrors hlStopLossResolvesFromMaxDrawdownFallback
     # (scheduler/hyperliquid_liquidation_guard.go) EXACTLY: the ATR scalars only
@@ -254,11 +279,8 @@ for sc in cfg.get("strategies", []) or []:
     # cap, evaluated on the strategy AS LOADCONFIG RESOLVES IT (resolve_stop_owners
     # above) — the fallback owns the stop only when every explicit owner is absent
     # AFTER the two load-time injections have run.
-    mdd = sc.get("max_drawdown_pct")
-    if (
-        resolves_from_max_drawdown_fallback(sc)
-        and isinstance(mdd, (int, float)) and not isinstance(mdd, bool) and mdd > 0
-    ):
+    mdd = effective_max_drawdown_pct(cfg, sc)
+    if resolves_from_max_drawdown_fallback(sc):
         checks.append(("max_drawdown_pct", min(float(mdd), 50.0)))
     for field, pct in checks:
         if pct > 0 and pct >= bound:
