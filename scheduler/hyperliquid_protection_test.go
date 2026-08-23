@@ -520,7 +520,7 @@ func TestRunHyperliquidProtectionSyncManualAppliesOIDs(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if !runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, 0) {
+	if !runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil) {
 		t.Fatal("expected runHyperliquidProtectionSync to apply")
 	}
 	if calls != 1 {
@@ -554,7 +554,7 @@ func TestRunHyperliquidProtectionSyncSkipsWhenNoPlan(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, 0) {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil) {
 		t.Fatal("expected runHyperliquidProtectionSync to skip when no plan")
 	}
 	if called {
@@ -588,7 +588,7 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 	})
 
 	var mu sync.RWMutex
-	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, 0) {
+	if runHyperliquidProtectionSync(sc, state, nil, "ETH", &mu, nil, nil, "test", nil, nil, nil) {
 		t.Fatal("expected apply to be skipped after position closed externally")
 	}
 	pos := state.Positions["ETH"]
@@ -637,7 +637,7 @@ func TestRunHyperliquidProtectionSyncStampsTradeInDB(t *testing.T) {
 	})
 
 	var mu sync.RWMutex
-	if !runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, 0) {
+	if !runHyperliquidProtectionSync(sc, state, db, "ETH", &mu, nil, nil, "test", nil, nil, nil) {
 		t.Fatal("expected runHyperliquidProtectionSync to apply")
 	}
 

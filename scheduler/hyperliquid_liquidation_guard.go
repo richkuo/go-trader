@@ -124,6 +124,31 @@ func clampStopInsideLiquidation(side string, triggerPx, liqPx float64) (float64,
 	return clamped, true
 }
 
+// hlLiquidationPxForSide returns this coin's exchange-reported liquidation
+// price ONLY when the strategy's own recorded side matches the side of the
+// on-chain NET position that price describes.
+//
+// Hyperliquid nets ONE position per coin, so the reported liquidation price
+// prices the NET across every strategy holding the coin (#1456 review). When a
+// strategy's own side is OPPOSITE to that net — a shared coin holding both a
+// long and a short peer (bidirectional perps are legal), or a sole owner whose
+// recorded side is stale — the net's liquidation price sits on the far side of
+// the mark from that leg's geometry, so stopPastLiquidation would be
+// unconditionally true and the clamp would CANCEL a healthy resting stop to
+// place one the exchange rejects against the opposite net. A side that cannot
+// be confirmed must behave exactly like liquidationPx == 0: unknown, skip,
+// change nothing.
+func hlLiquidationPxForSide(liqPxByCoin map[string]float64, netSideByCoin map[string]string, coin, side string) float64 {
+	px := liqPxByCoin[coin]
+	if px <= 0 {
+		return 0
+	}
+	if netSideByCoin[coin] != side || (side != "long" && side != "short") {
+		return 0
+	}
+	return px
+}
+
 // --- boot-time validation --------------------------------------------------
 
 // hlBankruptcyStopBoundPct is the price-% adverse move at which an
@@ -401,10 +426,30 @@ func hlLiquidationActionUnprotected(a hlLiquidationAlertAction) bool {
 	return a == hlLiquidationActionProtectionLost || a == hlLiquidationActionRearmFailed
 }
 
+// hlLiquidationUnprotectedRecovery states the ACTUAL recovery path for an
+// unprotected position (#1456 review). The audit re-arms only STATIC SCALAR
+// owners — it deliberately skips `unprotected && !staticScalar` — so a
+// trailing or fixed-ATR owner recovers on ITS OWN next due manage-only cycle,
+// which sits inside the dueStrategies dispatch gated on Signal == 0 and can be
+// a whole strategy interval away. Promising "every cycle" for those owners
+// described a self-healing cadence the code does not perform.
+func hlLiquidationUnprotectedRecovery(sc StrategyConfig) string {
+	if !scaleInLiveProtectionResizable(sc) {
+		// Static scalar owner: no self-re-arm exists; the audit owns recovery
+		// pre-dispatch every scheduler cycle.
+		return "The scheduler re-arms it on the next cycle"
+	}
+	if sc.IntervalSeconds > 0 {
+		return fmt.Sprintf("This strategy's own stop management re-arms it on its next due manage-only cycle (interval %s)", (time.Duration(sc.IntervalSeconds) * time.Second).String())
+	}
+	return "This strategy's own stop management re-arms it on its next due manage-only cycle"
+}
+
 // notifyHLStopPastLiquidation emits the throttled owner alert. Callers MUST
 // invoke it with no state lock held: it sends to the notifier.
 func notifyHLStopPastLiquidation(sc StrategyConfig, symbol, side string, triggerPx, clampedPx, liqPx float64, action hlLiquidationAlertAction, notifier *MultiNotifier, logger *StrategyLogger, now time.Time) {
-	_, detail, unprotected := hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx, action)
+	recovery := hlLiquidationUnprotectedRecovery(sc)
+	_, detail, unprotected := hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx, action, recovery)
 	// The DM is throttled; the CRITICAL log for a position with NO exchange-side
 	// stop is NOT. A naked live position must stay visible on every cycle it
 	// persists, and the throttle exists to bound DM volume, never to hide the
@@ -434,7 +479,7 @@ func notifyHLStopPastLiquidation(sc StrategyConfig, symbol, side string, trigger
 // appending it there lectures about a geometry that was never measured
 // (#1456 review).
 func hlLiquidationAlertFullMessage(sc StrategyConfig, symbol, side string, triggerPx, clampedPx, liqPx float64, action hlLiquidationAlertAction) string {
-	headline, detail, _ := hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx, action)
+	headline, detail, _ := hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx, action, hlLiquidationUnprotectedRecovery(sc))
 	msg := fmt.Sprintf("%s [%s] %s %s — %s.", headline, sc.ID, symbol, side, detail)
 	if triggerPx > 0 && liqPx > 0 &&
 		action != hlLiquidationActionRearmed &&
@@ -449,12 +494,18 @@ func hlLiquidationAlertFullMessage(sc StrategyConfig, symbol, side string, trigg
 // and whether the state it describes leaves the position with NO exchange-side
 // stop (which drives log severity).
 //
+// recovery (#1456 review) is the sentence stating how the position ACTUALLY
+// regains a stop — the audit's per-cycle re-arm for static scalar owners, the
+// owner's own next due manage-only cycle for everything else. It replaces the
+// hardcoded "the scheduler retries every cycle", which promised a cadence the
+// audit deliberately does not perform for non-scalar owners.
+//
 // The past-liquidation preamble is emitted ONLY when both prices are known. A
 // candidate that carries no stop at all has triggerPx == 0, and an audit that
 // ran without a usable snapshot has liqPx == 0; printing "configured trigger
 // $0.0000 is past the exchange liquidation price $0.0000" for either describes
 // a geometry that does not exist.
-func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiquidationAlertAction) (headline, detail string, unprotected bool) {
+func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiquidationAlertAction, recovery string) (headline, detail string, unprotected bool) {
 	headline = "**HL STOP PAST LIQUIDATION**"
 	geometryKnown := triggerPx > 0 && liqPx > 0
 	preamble := "the position has NO exchange-side stop"
@@ -476,9 +527,9 @@ func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiq
 	case hlLiquidationActionRearmFailed:
 		headline = "**HL POSITION UNPROTECTED**"
 		if geometryKnown {
-			detail = fmt.Sprintf("%s — the clamped stop at $%.4f did NOT rest: the position has no exchange-side stop right now. The scheduler retries every cycle.", preamble, clampedPx)
+			detail = fmt.Sprintf("%s — the clamped stop at $%.4f did NOT rest: the position has no exchange-side stop right now. %s.", preamble, clampedPx, recovery)
 		} else {
-			detail = fmt.Sprintf("the position has NO exchange-side stop and the re-arm at $%.4f did not rest; the scheduler retries every cycle", clampedPx)
+			detail = fmt.Sprintf("the position has NO exchange-side stop and the re-arm at $%.4f did not rest; %s", clampedPx, strings.ToLower(recovery[:1])+recovery[1:])
 		}
 	case hlLiquidationActionClamped:
 		detail = preamble + fmt.Sprintf(" — tightened to $%.4f (%.2f%% inside liquidation)", clampedPx, hlLiquidationStopBufferPct)
@@ -486,7 +537,7 @@ func hlLiquidationAlertMessage(triggerPx, clampedPx, liqPx float64, action hlLiq
 		detail = preamble + fmt.Sprintf(" — could not re-place at $%.4f; the ORIGINAL stop is still resting and the scheduler will retry next cycle", clampedPx)
 	case hlLiquidationActionProtectionLost:
 		headline = "**HL POSITION UNPROTECTED**"
-		detail = preamble + fmt.Sprintf(" — the old trigger was CANCELLED but the replacement at $%.4f did NOT rest: the position has no exchange-side stop right now. The scheduler re-arms it on the next cycle.", clampedPx)
+		detail = preamble + fmt.Sprintf(" — the old trigger was CANCELLED but the replacement at $%.4f did NOT rest: the position has no exchange-side stop right now. %s.", clampedPx, recovery)
 	case hlLiquidationActionUnreconciled:
 		// A refused candidate that carries no stop is UNPROTECTED and stays
 		// that way until the coin reconciles — that is strictly worse than a
@@ -882,6 +933,10 @@ func collectHLLiquidationAuditCandidates(
 	strategies []StrategyConfig,
 	state *AppState,
 	hlLiquidationPx map[string]float64,
+	// hlNetSideByCoin (#1456 review) is coin -> the side of the on-chain NET
+	// position from the same snapshot. A candidate's liquidation price is read
+	// only when its own side matches; see hlLiquidationPxForSide.
+	hlNetSideByCoin map[string]string,
 	hlOnChainAbsQty map[string]float64,
 	mu *sync.RWMutex,
 ) []hlLiquidationAuditCandidate {
@@ -937,7 +992,7 @@ func collectHLLiquidationAuditCandidates(
 				// The walker / fixed-ATR arm / protection sync re-arms these.
 				continue
 			}
-			liqPx := hlLiquidationPx[symbol]
+			liqPx := hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, pos.Side)
 			if armed && liqPx <= 0 {
 				// Unknown liquidation price — never derive a band; skip.
 				continue
@@ -1128,6 +1183,9 @@ func runHyperliquidLiquidationAudit(
 	strategies []StrategyConfig,
 	state *AppState,
 	hlLiquidationPx map[string]float64,
+	// hlNetSideByCoin (#1456 review) gates every read of hlLiquidationPx on
+	// the strategy's own side matching the on-chain NET side.
+	hlNetSideByCoin map[string]string,
 	hlOnChainAbsQty map[string]float64,
 	// snapshotFetched reports whether THIS cycle's clearinghouseState fetch
 	// succeeded. It is not optional: both maps are built from that snapshot, so
@@ -1148,7 +1206,7 @@ func runHyperliquidLiquidationAudit(
 	if !snapshotFetched {
 		return res
 	}
-	candidates := collectHLLiquidationAuditCandidates(strategies, state, hlLiquidationPx, hlOnChainAbsQty, mu)
+	candidates := collectHLLiquidationAuditCandidates(strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, mu)
 	// Clear the throttle for every live candidate whose geometry is now fine,
 	// so a recurrence re-alerts on its first cycle instead of being suppressed
 	// by a stale key.

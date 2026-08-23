@@ -49,7 +49,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_LiveReplacesWiderTrigger(t *te
 	// Intended trigger: HWM 102 * (1 - 0.75*5/100) = 102 * 0.9625 = 98.175
 	wantTrigger := 102.0 * (1.0 - 0.75*5.0/100.0)
 
-	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, map[string]float64{"ETH": 0.2}, nil, &mu, nil, newTestLogger(t))
+	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, map[string]float64{"ETH": 0.2}, nil, nil, &mu, nil, newTestLogger(t))
 	if n != 0 {
 		t.Fatalf("trades = %d, want 0 (resting replacement, not immediate fill)", n)
 	}
@@ -106,7 +106,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_PaperUpdatesVirtualTrigger(t *
 	var mu sync.RWMutex
 	wantTrigger := 102.0 * (1.0 - 0.75*5.0/100.0)
 
-	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, nil, nil, &mu, nil, newTestLogger(t))
+	n, _ := runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102.0, nil, nil, nil, &mu, nil, newTestLogger(t))
 	if n != 0 {
 		t.Fatalf("trades = %d, want 0", n)
 	}
@@ -152,7 +152,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_NoOpGuards(t *testing.T) {
 	sc, st := mk()
 	st.Positions["ETH"].Quantity = 0
 	called = false
-	runTrailingStopUpdateAfterRatchetTighten(*sc, st, "ETH", 102, map[string]float64{"ETH": 0}, nil, &mu, nil, newTestLogger(t))
+	runTrailingStopUpdateAfterRatchetTighten(*sc, st, "ETH", 102, map[string]float64{"ETH": 0}, nil, nil, &mu, nil, newTestLogger(t))
 	if called {
 		t.Error("flat position: expected no subprocess call")
 	}
@@ -161,7 +161,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_NoOpGuards(t *testing.T) {
 	sc, st = mk()
 	sc.Platform = "okx"
 	called = false
-	runTrailingStopUpdateAfterRatchetTighten(*sc, st, "ETH", 102, map[string]float64{"ETH": 0.2}, nil, &mu, nil, newTestLogger(t))
+	runTrailingStopUpdateAfterRatchetTighten(*sc, st, "ETH", 102, map[string]float64{"ETH": 0.2}, nil, nil, &mu, nil, newTestLogger(t))
 	if called {
 		t.Error("non-HL: expected no subprocess call")
 	}
@@ -169,7 +169,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_NoOpGuards(t *testing.T) {
 	// Mark missing → no-op.
 	sc, st = mk()
 	called = false
-	runTrailingStopUpdateAfterRatchetTighten(*sc, st, "ETH", 0, map[string]float64{"ETH": 0.2}, nil, &mu, nil, newTestLogger(t))
+	runTrailingStopUpdateAfterRatchetTighten(*sc, st, "ETH", 0, map[string]float64{"ETH": 0.2}, nil, nil, &mu, nil, newTestLogger(t))
 	if called {
 		t.Error("mark<=0: expected no subprocess call")
 	}
@@ -203,7 +203,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_UsesResidualNotPreCloseOnChain
 	}
 	// Stale Phase-1 on-chain still shows pre-partial-close size (1.0); residual
 	// virtual is 0.2 — hlSLEffectiveQty must pick the residual.
-	runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102, map[string]float64{"ETH": 1.0}, nil, &mu, nil, newTestLogger(t))
+	runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102, map[string]float64{"ETH": 1.0}, nil, nil, &mu, nil, newTestLogger(t))
 	if !approxEq(gotSize, 0.2) {
 		t.Fatalf("SL size = %v, want residual 0.2 (not stale on-chain 1.0)", gotSize)
 	}
@@ -297,7 +297,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_LandsUnderDefaultMinMove(t *te
 				return &HyperliquidStopLossUpdateResult{StopLossOID: 999001, StopLossTriggerPx: triggerPx}, "", nil
 			}
 
-			runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", c.highWater, map[string]float64{"ETH": 0.2}, nil, &mu, nil, newTestLogger(t))
+			runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", c.highWater, map[string]float64{"ETH": 0.2}, nil, nil, &mu, nil, newTestLogger(t))
 
 			if calls != 1 {
 				t.Fatalf("cancel+replace calls = %d, want 1 (#1416: tighten must not be debounced)", calls)
@@ -413,7 +413,7 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_TwoTiersOneCycleReplacesOnce(t
 		gotTrigger = triggerPx
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 999002, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", mark, map[string]float64{"ETH": 0.2}, nil, &mu, nil, newTestLogger(t))
+	runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", mark, map[string]float64{"ETH": 0.2}, nil, nil, &mu, nil, newTestLogger(t))
 
 	if calls != 1 {
 		t.Fatalf("cancel+replace calls = %d, want exactly 1 for a two-tier cycle", calls)

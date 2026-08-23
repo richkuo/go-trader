@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -2008,9 +2009,22 @@ func main() {
 				// per-strategy phases below read it lock-free exactly like
 				// hlOnChainAbsQty.
 				hlLiquidationPx := make(map[string]float64, len(hlPositions))
+				// #1456 review: coin -> the side of the on-chain NET position
+				// that liquidation price describes (HL nets one position per
+				// coin; the sign of Size IS the net side). Every consumer of
+				// hlLiquidationPx goes through hlLiquidationPxForSide so a
+				// strategy whose own recorded side disagrees with the net is
+				// treated exactly like "liquidation price unknown" — never
+				// clamped against a price that describes someone else's leg.
+				hlNetSideByCoin := make(map[string]string, len(hlPositions))
 				for _, p := range hlPositions {
-					if p.LiquidationPx > 0 {
+					if p.LiquidationPx > 0 && math.Abs(p.Size) > 1e-9 {
 						hlLiquidationPx[p.Coin] = p.LiquidationPx
+						if p.Size < 0 {
+							hlNetSideByCoin[p.Coin] = "short"
+						} else {
+							hlNetSideByCoin[p.Coin] = "long"
+						}
 					}
 				}
 
@@ -2026,7 +2040,7 @@ func main() {
 				// without this cycle's snapshot both maps are empty, and an
 				// empty snapshot must never read as "every position is a
 				// phantom" (see runHyperliquidLiquidationAudit).
-				if auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlOnChainAbsQty, hlStateFetched, &mu, notifier, time.Now().UTC()); auditRes.ImmediateFills > 0 {
+				if auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, hlStateFetched, &mu, notifier, time.Now().UTC()); auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
 					// A close booked here is a realized close like any other, so
 					// it gets the SAME operator notification the walker path
@@ -2828,7 +2842,7 @@ func main() {
 								// on-chain size (!capped) so the trailing SL covers the
 								// new total without waiting for a trailing trigger move.
 								forceResize := hlScaleInResizePending && !capped
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened, liquidationPx: hlLiquidationPx[result.Symbol]}, notifier, logger)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, result.Symbol, hlPosSide)}, notifier, logger)
 								mu.Lock()
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, result.Symbol, hlPosSide, hlStopLossOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger); immediateFill {
 									trades++
@@ -2892,9 +2906,10 @@ func main() {
 								clampOffendingPx := 0.0
 								clampedTriggerPx := 0.0
 								clampArmAction := hlLiquidationActionRearmFailed
-								if clamped, wasClamped := clampStopInsideLiquidation(hlPosSide, triggerPx, hlLiquidationPx[result.Symbol]); wasClamped {
+								armLiqPx := hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, result.Symbol, hlPosSide)
+								if clamped, wasClamped := clampStopInsideLiquidation(hlPosSide, triggerPx, armLiqPx); wasClamped {
 									logger.Warn("#1450 fixed ATR SL for %s would rest past liquidation $%.4f; tightening $%.4f -> $%.4f",
-										result.Symbol, hlLiquidationPx[result.Symbol], triggerPx, clamped)
+										result.Symbol, armLiqPx, triggerPx, clamped)
 									clampOffendingPx = triggerPx
 									clampedTriggerPx = clamped
 									triggerPx = clamped
@@ -2929,11 +2944,11 @@ func main() {
 								// is on the book; otherwise the position has no
 								// exchange-side stop and the operator is told so.
 								if clampedTriggerPx > 0 {
-									notifyHLStopPastLiquidation(sc, result.Symbol, hlPosSide, clampOffendingPx, clampedTriggerPx, hlLiquidationPx[result.Symbol], clampArmAction, notifier, logger, time.Now().UTC())
+									notifyHLStopPastLiquidation(sc, result.Symbol, hlPosSide, clampOffendingPx, clampedTriggerPx, armLiqPx, clampArmAction, notifier, logger, time.Now().UTC())
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx[result.Symbol])
+								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin)
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
 							// #873 scale-in: a same-direction signal on an open HL
@@ -3033,13 +3048,13 @@ func main() {
 								//     since paper has a nil execResult.
 								ratchetWalkerOwnedByScaleIn := scaleInAddQty > 0 && execResult != nil && trades > 0
 								if ratchetAlert != nil && !ratchetWalkerOwnedByScaleIn {
-									if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, &mu, notifier, logger); extraTrades > 0 {
+									if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
 										trades += extraTrades
 										detail = slDetail
 									}
 								}
 								if execResult != nil && trades > 0 {
-									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON, hlLiquidationPx[result.Symbol])
+									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin)
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									// #873/#882: for a trailing-SL owner the post-trade sync
 									// re-sized only the on-chain TPs (the walker owns the SL).
@@ -3062,7 +3077,7 @@ func main() {
 										// #1416: when this add also cleared a ratchet tier, the same
 										// single pass must place the grown size at the NEW tighter
 										// trigger instead of re-placing the old wider one.
-										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, filledAddQty, ratchetAlert != nil, &mu, notifier, logger); extraTrades > 0 {
+										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin, filledAddQty, ratchetAlert != nil, &mu, notifier, logger); extraTrades > 0 {
 											trades += extraTrades
 											detail = slDetail
 										}
@@ -3282,7 +3297,7 @@ func main() {
 							// the latter sees on-chain-reconciled qty. Post-TP SL
 							// adjustment is deferred to the post-stamp block below so
 							// regime-keyed *_atr_regime SL sees pos.Regime (#878 review).
-							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx[sc.Symbol])
+							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin)
 						}
 						// #872: run the close evaluator and stamp the regime BEFORE
 						// arming the post-TP SL / ratchet / trailing walker below. The
@@ -3375,7 +3390,7 @@ func main() {
 								// position (the trailing SL otherwise covers only the
 								// pre-add size until the next trigger move).
 								forceResize := pos.ScaleInResizePending && !capped
-								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manualRatchetTightened, liquidationPx: hlLiquidationPx[sc.Symbol]}, notifier, logger)
+								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manualRatchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, sc.Symbol, pos.Side)}, notifier, logger)
 								mu.Lock()
 								// Shared handler with the perps path — books an immediate fill,
 								// updates a resting replacement, or clears a cancelled-without-rest

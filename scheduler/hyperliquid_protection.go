@@ -606,9 +606,14 @@ func runHyperliquidProtectionSync(
 	logger *StrategyLogger,
 	logTag string,
 	reconcileFillHintsJSON []byte,
-	// liquidationPx (#1450) is this coin's CURRENT-cycle exchange-reported
-	// liquidation price, or 0 when unknown. Threaded straight into the plan.
-	liquidationPx float64,
+	// liqPxByCoin (#1450) maps coin -> this cycle's exchange-reported
+	// liquidation price, and netSideByCoin (#1456 review) coin -> the side of
+	// the on-chain NET position that price describes. The plan for each
+	// position reads its liquidation price through hlLiquidationPxForSide — a
+	// position whose own side disagrees with the on-chain net gets 0 (unknown)
+	// and the plan stays byte-identical to pre-#1450 behavior.
+	liqPxByCoin map[string]float64,
+	netSideByCoin map[string]string,
 ) bool {
 	if stratState == nil || symbol == "" {
 		return false
@@ -622,7 +627,7 @@ func runHyperliquidProtectionSync(
 		if pos, ok := stratState.Positions[symbol]; ok {
 			oldAppliedRegime := pos.RegimeAppliedLabel
 			regimeChanged := advanceDynamicCloseRegime(pos, stratState, sc)
-			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, liquidationPx)
+			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
 			if syncOK {
 				plan.CancelTPOIDs = dynamicProtectionSurplusTPOIDs(pos.TPOIDs, len(plan.Tiers))
 				if regimeChanged {
@@ -647,7 +652,7 @@ func runHyperliquidProtectionSync(
 	} else {
 		mu.RLock()
 		if pos, ok := stratState.Positions[symbol]; ok {
-			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, liquidationPx)
+			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
 			if syncOK && pos.ScaleInResizePending {
 				// #873: re-size SL + un-cleared TP tiers to the grown total at
 				// the frozen trigger geometry; the watermark is not reset.

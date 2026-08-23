@@ -44,8 +44,11 @@ func runTrailingStopUpdateAfterRatchetTighten(
 	mark float64,
 	hlOnChainAbsQty map[string]float64,
 	// #1450: coin -> current-cycle exchange liquidation price; a missing or
-	// non-positive entry means "unknown" and the walker skips the clamp.
+	// non-positive entry means "unknown" and the walker skips the clamp. The
+	// companion net-side map (#1456 review) gates the read on this position's
+	// side matching the on-chain NET side.
 	hlLiquidationPx map[string]float64,
+	hlNetSideByCoin map[string]string,
 	mu *sync.RWMutex,
 	notifier *MultiNotifier,
 	logger *StrategyLogger,
@@ -80,7 +83,7 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		// copy it per call so the coin's liquidation price never leaks across
 		// strategies.
 		livePolicy := ratchetTightenReplacePolicy
-		livePolicy.liquidationPx = hlLiquidationPx[symbol]
+		livePolicy.liquidationPx = hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)
 		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(
 			sc, symbol, side, slEffectiveQty, &posSnap, mark, highWater, triggerPx, slOID, livePolicy, notifier, logger)
 		mu.Lock()

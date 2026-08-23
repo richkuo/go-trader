@@ -503,7 +503,7 @@ func TestTrailingWalkerClampFillAtSubmitReportsExitedNotTightened(t *testing.T) 
 // an exited position is not "tightened to $X", and no liquidation lecture is
 // appended to a re-arm that had nothing to do with liquidation geometry.
 func TestLiquidationAlertMessageMatchesOutcome(t *testing.T) {
-	headline, detail, unprotected := hlLiquidationAlertMessage(2330, 2352, 2340.5, hlLiquidationActionExited)
+	headline, detail, unprotected := hlLiquidationAlertMessage(2330, 2352, 2340.5, hlLiquidationActionExited, hlLiquidationUnprotectedRecovery(liqWalkerStrategy()))
 	if headline != "**HL STOP FILLED — POSITION FLAT**" || unprotected {
 		t.Errorf("exited: headline=%q unprotected=%v", headline, unprotected)
 	}
@@ -513,13 +513,13 @@ func TestLiquidationAlertMessageMatchesOutcome(t *testing.T) {
 		}
 	}
 
-	headline, _, _ = hlLiquidationAlertMessage(2330, 2352, 2340.5, hlLiquidationActionFilledOnChain)
+	headline, _, _ = hlLiquidationAlertMessage(2330, 2352, 2340.5, hlLiquidationActionFilledOnChain, "")
 	if headline != "**HL STOP ALREADY FILLED**" {
 		t.Errorf("filled-on-chain headline = %q", headline)
 	}
 
 	// Re-arm with NO known liquidation price: no "$0.0000" and no lecture.
-	_, armedDetail, _ := hlLiquidationAlertMessage(0, 2352, 0, hlLiquidationActionRearmed)
+	_, armedDetail, _ := hlLiquidationAlertMessage(0, 2352, 0, hlLiquidationActionRearmed, "")
 	if strings.Contains(armedDetail, "$0.0000") {
 		t.Errorf("re-arm detail with unknown liquidation price prints $0.0000: %q", armedDetail)
 	}
@@ -600,7 +600,7 @@ func TestFixedATRArmClampActionNeverClaimsATightenWithoutARestingStop(t *testing
 // rests — an operator reading only "re-arm did not rest" cannot tell that the
 // configured stop was unreachable in the first place.
 func TestFixedATRArmFailedMessageNamesBothFacts(t *testing.T) {
-	headline, detail, unprotected := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionRearmFailed)
+	headline, detail, unprotected := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionRearmFailed, "The scheduler re-arms it on the next cycle")
 	if headline != "**HL POSITION UNPROTECTED**" {
 		t.Errorf("headline = %q", headline)
 	}
@@ -697,5 +697,44 @@ func TestProtectionSyncPlacementStillRefreshesTheTrigger(t *testing.T) {
 	}
 	if !approxEqLiq(pos.StopLossTriggerPx, 2352) {
 		t.Errorf("recorded trigger = %g, want the placed 2352", pos.StopLossTriggerPx)
+	}
+}
+
+// #1456 review round 5 (optional): an unprotected-position alert must state the
+// recovery path the code ACTUALLY performs — the audit's per-cycle re-arm for
+// static scalar owners, the owner's own next due manage-only cycle for
+// trailing/fixed-ATR owners.
+func TestUnprotectedAlertNamesActualRecoveryCadence(t *testing.T) {
+	// (a) A trailing owner on a 4h interval: the audit skips it while
+	// unprotected, so "every cycle" would be a false promise.
+	walker := liqWalkerStrategy()
+	walker.IntervalSeconds = 14400
+	_, detail, _ := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionProtectionLost, hlLiquidationUnprotectedRecovery(walker))
+	if strings.Contains(detail, "every cycle") {
+		t.Errorf("trailing owner detail must not promise per-cycle recovery: %q", detail)
+	}
+	if !strings.Contains(detail, "next due manage-only cycle") || !strings.Contains(detail, "4h0m0s") {
+		t.Errorf("trailing owner detail must name the next due cycle and its interval: %q", detail)
+	}
+
+	// Same owner without a per-strategy override: still names the due cycle.
+	walker.IntervalSeconds = 0
+	_, detail, _ = hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionProtectionLost, hlLiquidationUnprotectedRecovery(walker))
+	if strings.Contains(detail, "every cycle") || !strings.Contains(detail, "next due manage-only cycle") {
+		t.Errorf("interval-less owner detail = %q", detail)
+	}
+
+	// (b) A static scalar owner: the audit genuinely re-arms every cycle.
+	scalar := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", StopLossPct: floatPtr(3)}
+	if got := hlLiquidationUnprotectedRecovery(scalar); got != "The scheduler re-arms it on the next cycle" {
+		t.Errorf("static scalar recovery = %q", got)
+	}
+
+	// (c) A successful re-arm carries no stale retry text.
+	_, armedDetail, _ := hlLiquidationAlertMessage(0, 2352, 2340.5, hlLiquidationActionRearmed, hlLiquidationUnprotectedRecovery(scalar))
+	for _, banned := range []string{"every cycle", "next due"} {
+		if strings.Contains(armedDetail, banned) {
+			t.Errorf("re-armed detail must not carry retry text %q: %q", banned, armedDetail)
+		}
 	}
 }

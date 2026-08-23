@@ -83,7 +83,7 @@ func TestScaleInResizeTrailingSLNow_AddPlusTightenIsOneReplace(t *testing.T) {
 			}
 
 			scaleInResizeTrailingSLNow(sc, st, "ETH", c.highWater,
-				map[string]float64{"ETH": 0.2}, nil, 0.1, true, &mu, nil, newTestLogger(t))
+				map[string]float64{"ETH": 0.2}, nil, nil, 0.1, true, &mu, nil, newTestLogger(t))
 
 			if calls != 1 {
 				t.Fatalf("cancel+replace calls = %d, want exactly 1 (resize and tighten in one pass)", calls)
@@ -132,7 +132,7 @@ func TestScaleInResizeTrailingSLNow_AddWithoutTightenIsUnchanged(t *testing.T) {
 	}
 
 	scaleInResizeTrailingSLNow(sc, st, "ETH", highWater,
-		map[string]float64{"ETH": 0.2}, nil, 0.1, false, &mu, nil, newTestLogger(t))
+		map[string]float64{"ETH": 0.2}, nil, nil, 0.1, false, &mu, nil, newTestLogger(t))
 
 	if calls != 1 {
 		t.Fatalf("cancel+replace calls = %d, want 1 (#873 forced resize)", calls)
@@ -168,7 +168,7 @@ func TestScaleInResizeTrailingSLNow_ForcedResizeAdoptsPendingTighten(t *testing.
 
 	// ratchetTightened=false: this cycle saw no tier clear of its own.
 	scaleInResizeTrailingSLNow(sc, st, "ETH", highWater,
-		map[string]float64{"ETH": 0.2}, nil, 0.1, false, &mu, nil, newTestLogger(t))
+		map[string]float64{"ETH": 0.2}, nil, nil, 0.1, false, &mu, nil, newTestLogger(t))
 
 	if want := trailingTriggerFor("long", highWater, 2.0); !approxEq(gotTrigger, want) {
 		t.Fatalf("trigger = %v, want %v — a forced resize must not re-place the stale wide trigger %v",
