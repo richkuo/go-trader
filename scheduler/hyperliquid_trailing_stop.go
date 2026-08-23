@@ -920,7 +920,11 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	// in this shape (that is what CancelStopLossSucceeded-without-rest means),
 	// so the fresh placement cannot duplicate an order. We already hold this
 	// coin's trailing-update lock, so the lock-free place primitive is used.
-	if result.CancelStopLossSucceeded && !restingConfirmed && clampTriggered {
+	// StopLossOutcomeUnknown excludes the unreadable-placement shapes: the
+	// first submission may be resting, so a fresh placement here could stack a
+	// second untracked reduce-only stop (#1456 review round 11). Only a
+	// positively rejected placement retries.
+	if result.CancelStopLossSucceeded && !restingConfirmed && clampTriggered && !result.StopLossOutcomeUnknown {
 		retryResult, retryOutcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, qty, newTrigger, logger)
 		if retryOutcome == hlReplacePlaced || retryOutcome == hlReplaceFilled {
 			result = retryResult

@@ -1562,6 +1562,11 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                     print(f"[WARN] stop-loss OID={cancel_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
 
         sl_is_buy = side == "short"
+        # #1456 review round 11: a placement whose outcome Go cannot READ is not
+        # one Hyperliquid positively rejected — the order may have rested. The
+        # in-cycle retry must stay off this shape (a second full-size reduce-only
+        # stop would rest untracked); only a classified rejection may retry.
+        place_unknown = False
         trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
         if should_place:
             try:
@@ -1577,9 +1582,11 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                     print(f"[WARN] {sl_err}", file=sys.stderr)
                 else:
                     sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
+                    place_unknown = True
                     print(f"[WARN] {sl_err}", file=sys.stderr)
             except Exception as se:
                 sl_err = str(se)
+                place_unknown = True
                 print(f"[WARN] place_stop_loss({symbol}, {size}, {trigger_px}) failed: {se}", file=sys.stderr)
 
         out = {
@@ -1601,6 +1608,8 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             out["stop_loss_filled_immediately"] = True
         if sl_filled_externally:
             out["stop_loss_filled_externally"] = True
+        if place_unknown:
+            out["stop_loss_outcome_unknown"] = True
         print(json.dumps(out, cls=SafeEncoder))
 
     except SystemExit:

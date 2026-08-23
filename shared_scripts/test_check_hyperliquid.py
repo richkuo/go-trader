@@ -554,6 +554,7 @@ class TestUpdateStopLoss:
         place_response=None,
         cancel_side_effect=None,
         cancel_response=_UNSET,
+        place_side_effect=None,
         open_oids=None,
         open_oids_side_effect=None,
         lookup_result=_UNSET,
@@ -582,6 +583,8 @@ class TestUpdateStopLoss:
                 {"resting": {"oid": 22222}}
             ]}}
         }
+        if place_side_effect is not None:
+            mock_adapter.place_stop_loss.side_effect = place_side_effect
 
         captured = StringIO()
         import builtins
@@ -613,6 +616,30 @@ class TestUpdateStopLoss:
         out, adapter = self._run_update(side="short")
         adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, True)
         assert out["stop_loss_oid"] == 22222
+
+    def test_unreadable_placement_response_marks_outcome_unknown(self):
+        """#1456 review round 11: a response the classifier cannot read means
+        the order MAY have rested — Go must see the unknown flag and defer any
+        in-cycle retry."""
+        out, _ = self._run_update(
+            place_response={"status": "weird"},
+        )
+        assert out.get("stop_loss_outcome_unknown") is True
+        assert "stop_loss_oid" not in out
+
+    def test_placement_exception_marks_outcome_unknown(self):
+        def _boom(*_a, **_k):
+            raise RuntimeError("connection reset after submit")
+
+        out, _ = self._run_update(place_side_effect=_boom)
+        assert out.get("stop_loss_outcome_unknown") is True
+
+    def test_rejected_placement_does_not_mark_outcome_unknown(self):
+        """A positively rejected placement (open-order cap) is retryable."""
+        out, _ = self._run_update(
+            place_response={"status": "err", "response": "open order limit"},
+        )
+        assert "stop_loss_outcome_unknown" not in out
 
     def test_cancel_failure_defers_replacement(self):
         out, adapter = self._run_update(cancel_side_effect=RuntimeError("cancel down"))

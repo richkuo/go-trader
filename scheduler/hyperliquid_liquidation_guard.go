@@ -1203,6 +1203,16 @@ func hlLiquidationClampReplace(candidate hlLiquidationAuditCandidate, clampedTri
 	return result, hlReplaceDeferred
 }
 
+// hlLiquidationMayRetryReplace reports whether a fresh in-cycle replacement
+// may follow a protection-lost outcome (#1456 review round 11). A placement
+// whose outcome could not be READ (unreadable response / post-submit
+// exception) may have RESTED — retrying would stack a second untracked
+// reduce-only stop. An error payload from a subprocess death BEFORE placing,
+// or a positively rejected placement, rests nothing and may retry.
+func hlLiquidationMayRetryReplace(result *HyperliquidStopLossUpdateResult) bool {
+	return result != nil && !result.StopLossOutcomeUnknown
+}
+
 // hlLiquidationRetryPlace retries a FAILED placement once with nothing to
 // cancel (cancelOID = 0) — used only after a cancel LANDED and the replacement
 // did NOT rest, where the audit itself just stripped the position's only
@@ -1395,29 +1405,34 @@ func runHyperliquidLiquidationAudit(
 			// leaving a trailing/ATR owner naked until its next due Signal == 0
 			// cycle. Nothing rests on the book (that is what this outcome
 			// means), so the retry places fresh with nothing to cancel.
-			retryResult, retryOutcome := hlLiquidationRetryPlace(c, act.ClampedTriggerPx, logger)
-			switch retryOutcome {
-			case hlReplacePlaced, hlReplaceFilled:
-				if retryOutcome == hlReplaceFilled {
-					action = hlLiquidationActionExited
-				} else {
-					action = hlLiquidationActionClamped
+			// EXCEPTION (#1456 review round 11): an outcome-unknown placement
+			// (unreadable response / post-submit exception) may have RESTED —
+			// skip the retry rather than stack a second untracked stop.
+			if hlLiquidationMayRetryReplace(result) {
+				retryResult, retryOutcome := hlLiquidationRetryPlace(c, act.ClampedTriggerPx, logger)
+				switch retryOutcome {
+				case hlReplacePlaced, hlReplaceFilled:
+					if retryOutcome == hlReplaceFilled {
+						action = hlLiquidationActionExited
+					} else {
+						action = hlLiquidationActionClamped
+					}
+					mu.Lock()
+					immediateFill, fillPx := applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, retryResult, "liquidation_clamp_sl_immediate", logger)
+					mu.Unlock()
+					if immediateFill {
+						res.ImmediateFills++
+						logger.Warn("Liquidation-clamp SL retry booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
+						res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
+							SC: sc, Symbol: c.Symbol, FillPx: fillPx,
+							Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
+						})
+					}
+				default:
+					// The retry failed too: one protection-lost report for the
+					// cycle, never a duplicate resting stop and never a second
+					// alert class.
 				}
-				mu.Lock()
-				immediateFill, fillPx := applyTrailingStopUpdateResult(state.Strategies[c.StrategyID], c.Symbol, c.Side, c.StopLossOID, 0, true, retryResult, "liquidation_clamp_sl_immediate", logger)
-				mu.Unlock()
-				if immediateFill {
-					res.ImmediateFills++
-					logger.Warn("Liquidation-clamp SL retry booked an immediate close for %s @ $%.4f", c.Symbol, fillPx)
-					res.CloseDetails = append(res.CloseDetails, hlLiquidationCloseDetail{
-						SC: sc, Symbol: c.Symbol, FillPx: fillPx,
-						Detail: fmt.Sprintf("[%s] LIQUIDATION-CLAMP SL %s @ $%.2f", sc.ID, c.Symbol, fillPx),
-					})
-				}
-			default:
-				// The retry failed too: one protection-lost report for the
-				// cycle, never a duplicate resting stop and never a second
-				// alert class.
 			}
 		case hlReplacePlaced, hlReplaceFilled:
 			// A FILL at submit is not a tighten — the position ended the

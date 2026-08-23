@@ -1021,3 +1021,68 @@ func TestConvergeHedgesAfterAuditClose(t *testing.T) {
 		t.Errorf("converged=%d, want 0 when strategy state is missing", n)
 	}
 }
+
+// #1456 review round 11 (Optional 1): an OUTCOME-UNKNOWN placement (unreadable
+// response / post-submit exception) may have rested — the in-cycle retry must
+// stay off it so a second untracked reduce-only stop never stacks.
+func TestTrailingWalkerOutcomeUnknownSkipsRetry(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+	clearHLLiquidationAlert("hl-eth", "ETH")
+	defer clearHLLiquidationAlert("hl-eth", "ETH")
+
+	sc := liqWalkerStrategy()
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded: true,
+			StopLossError:           "place_stop_loss returned no usable status",
+			StopLossOutcomeUnknown:  true,
+		}, "", nil
+	}
+	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
+	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
+		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t))
+	if !ok {
+		t.Fatal("cancel-landed stays state-confirming; outcome is protection lost")
+	}
+	if calls != 1 {
+		t.Fatalf("placement calls = %d, want 1 (unknown outcome must NOT retry)", calls)
+	}
+}
+
+// Audit mirror: outcome-unknown suppresses the in-cycle retry while still
+// classifying protection lost.
+func TestLiquidationClampReplaceOutcomeUnknownSuppressesRetry(t *testing.T) {
+	old := runHyperliquidUpdateStopLossFunc
+	defer func() { runHyperliquidUpdateStopLossFunc = old }()
+
+	candidate := hlLiquidationAuditCandidate{
+		Script: "x.py", StrategyID: "hl-eth", Symbol: "ETH", Side: "long",
+		Qty: 1.0, StopLossOID: 4242, StopLossTriggerPx: 2330,
+	}
+	calls := 0
+	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
+		calls++
+		return &HyperliquidStopLossUpdateResult{
+			CancelStopLossSucceeded: true,
+			StopLossError:           "place_stop_loss SDK error: boom",
+			StopLossOutcomeUnknown:  true,
+		}, "", nil
+	}
+	result, outcome := hlLiquidationClampReplace(candidate, 2335, newTestLogger(t))
+	if outcome != hlReplaceProtectionLost {
+		t.Errorf("outcome = %v, want hlReplaceProtectionLost", outcome)
+	}
+	if calls != 1 {
+		t.Fatalf("placement calls = %d, want 1", calls)
+	}
+	// The caller gates its in-cycle retry on this predicate.
+	if hlLiquidationMayRetryReplace(result) {
+		t.Error("outcome-unknown must suppress the fresh-placement retry")
+	}
+	if !hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}) {
+		t.Error("a positively-rejected placement must still allow the retry")
+	}
+}

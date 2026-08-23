@@ -2963,7 +2963,12 @@ func main() {
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
-								runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin)
+								if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
+									// #1456 review round 11: a submit-fill SL close booked by the
+									// sync gets the same trade line any other exit produces.
+									trades++
+									detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
+								}
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
 							// #873 scale-in: a same-direction signal on an open HL
@@ -3069,7 +3074,10 @@ func main() {
 									}
 								}
 								if execResult != nil && trades > 0 {
-									runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin)
+									if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced after trade", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
+										trades++
+										detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
+									}
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 									// #873/#882: for a trailing-SL owner the post-trade sync
 									// re-sized only the on-chain TPs (the walker owns the SL).
@@ -3312,7 +3320,10 @@ func main() {
 							// the latter sees on-chain-reconciled qty. Post-TP SL
 							// adjustment is deferred to the post-stamp block below so
 							// regime-keyed *_atr_regime SL sees pos.Regime (#878 review).
-							runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin)
+							if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
+								trades++
+								detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
+							}
 						}
 						// #872: run the close evaluator and stamp the regime BEFORE
 						// arming the post-TP SL / ratchet / trailing walker below. The

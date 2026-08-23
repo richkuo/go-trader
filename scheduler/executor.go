@@ -105,7 +105,12 @@ type HyperliquidStopLossUpdateResult struct {
 	StopLossError             string  `json:"stop_loss_error,omitempty"`
 	StopLossFilledImmediately bool    `json:"stop_loss_filled_immediately,omitempty"`
 	StopLossFilledExternally  bool    `json:"stop_loss_filled_externally,omitempty"`
-	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
+	// #1456 review round 11: the placement's outcome could not be READ (the
+	// classifier found no usable status, or place_stop_loss raised). The order
+	// may have rested — never retry on top of this shape; only a positive
+	// rejection may retry.
+	StopLossOutcomeUnknown bool   `json:"stop_loss_outcome_unknown,omitempty"`
+	OpenOrderCheckError    string `json:"open_order_check_error,omitempty"`
 }
 
 // HyperliquidProtectionSyncResult is emitted by check_hyperliquid.py

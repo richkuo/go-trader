@@ -651,9 +651,9 @@ func runHyperliquidProtectionSync(
 	// and the plan stays byte-identical to pre-#1450 behavior.
 	liqPxByCoin map[string]float64,
 	netSideByCoin map[string]string,
-) bool {
+) (bool, float64) {
 	if stratState == nil || symbol == "" {
-		return false
+		return false, 0
 	}
 	var plan hlProtectionPlan
 	var syncOK bool
@@ -703,17 +703,27 @@ func runHyperliquidProtectionSync(
 		mu.RUnlock()
 	}
 	if !syncOK {
-		return false
+		return false, 0
 	}
 	protection, ok := syncHyperliquidProtection(sc, plan, notifier, logger, reconcileFillHintsJSON)
 	if !ok || protection == nil {
-		return false
+		return false, 0
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	pos, ok := stratState.Positions[symbol]
 	if !ok || pos == nil || pos.Quantity <= 0 || pos.Side != plan.Side {
-		return false
+		return false, 0
+	}
+	// #1456 review round 11 (Optional 2): a placement whose trigger filled at
+	// submit has FLATTENED the position on-chain. Booking nothing left virtual
+	// state open with a trigger no order rests at, and the realized close only
+	// surfaced later as hl_sync_external at that cycle's mark. Book NOW at the
+	// trigger price — same as the walker, audit, and execute siblings.
+	if protection.StopLossFilledImmediately && protection.StopLossTriggerPx > 0 {
+		if recordPerpsStopLossClose(stratState, symbol, protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
+			return true, protection.StopLossTriggerPx
+		}
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
 	// #873: the scale-in re-size has been applied on-chain; clear the one-shot
@@ -740,7 +750,7 @@ func runHyperliquidProtectionSync(
 	if logger != nil {
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
 	}
-	return true
+	return true, 0
 }
 
 // hyperliquidPlacesOnChainTPs reports whether sc is configured to place
