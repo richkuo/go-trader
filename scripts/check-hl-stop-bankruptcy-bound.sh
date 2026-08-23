@@ -31,6 +31,18 @@
 #     anchor ratchets with the mark, so the entry-anchored bound is not exact
 #     for it and the runtime clamp handles the pre-move window (#1456 review).
 #
+# The Go check runs on the config AFTER LoadConfig resolves it, so this script
+# mirrors LoadConfig's stop-owner resolution before applying the bound
+# (#1456 review round 4). Reading the raw per-strategy keys is a DIFFERENT
+# question and drifts three ways:
+#   - an explicit-zero stop_loss_atr_mult / trailing_stop_atr_mult falls THROUGH
+#     in EffectiveStopLossPct, so max_drawdown_pct still owns the stop;
+#   - the #562/#601/#605 default_stop_loss_atr_mult auto-default attaches an ATR
+#     owner to any HL perps strategy with no stop field set, so the fallback
+#     does NOT own the stop there;
+#   - the #1133 user_defaults.close ratchet-regime trail attaches a
+#     trailing_stop_atr_regime that never appears in the strategy's own JSON.
+#
 # Exit codes:
 #   0 — every deployment readable and every live isolated strategy inside the bound
 #   1 — at least one offending strategy, or a deployment that could not be read
@@ -82,6 +94,136 @@ def effective_leverage(sc):
     return 1.0
 
 
+# --- load-time stop-owner resolution -------------------------------------
+# The Go check runs on the config AFTER LoadConfig has resolved it, so reading
+# the raw per-strategy keys is NOT the same question. Two load-time injections
+# attach a stop owner that never appears in the strategy's own JSON, and the
+# explicit-zero ATR scalars fall THROUGH instead of owning the stop. Mirror all
+# three here (#1456 review round 4), in LoadConfig's own order.
+
+SCALAR_STOP_FIELDS = (
+    "stop_loss_pct", "stop_loss_margin_pct", "trailing_stop_pct",
+    "trailing_stop_atr_mult", "stop_loss_atr_mult",
+)
+REGIME_STOP_FIELDS = ("stop_loss_atr_regime", "trailing_stop_atr_regime")
+
+
+def uses_unified_regime_close(sc):
+    # Mirrors strategyUsesUnifiedRegimeClose (scheduler/regime_unified.go):
+    # a close ref named one of the unified regime closes whose params carry
+    # the trend_regime classifier key. Only the canonical close_strategy ref
+    # is mirrored, which is exact for config_version >= 13 (closeRefs returns
+    # that single ref).
+    cs = sc.get("close_strategy")
+    if not isinstance(cs, dict):
+        return False
+    name = str(cs.get("name", "") or "").strip().lower()
+    if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime",
+                    "tiered_tp_atr_live_regime_dynamic"):
+        return False
+    params = cs.get("params")
+    return isinstance(params, dict) and "trend_regime" in params
+
+
+def uses_ratchet_regime_close(sc):
+    # Mirrors strategyUsesTrailingTPRatchetRegimeClose (close_defaults.go).
+    cs = sc.get("close_strategy")
+    if not isinstance(cs, dict):
+        return False
+    return str(cs.get("name", "") or "").strip().lower() == "trailing_tp_ratchet_regime"
+
+
+def regime_block_is_configured(v):
+    # Mirrors RegimeATRBlock.IsConfigured (regime_atr.go): raw-aware, so ANY
+    # non-empty object counts. This is the predicate LoadConfig's injections
+    # use, and it is deliberately looser than is_zero below.
+    return isinstance(v, dict) and len(v) > 0
+
+
+def has_explicit_stop_owner(sc):
+    # Mirrors strategyHasExplicitStopOwner (close_defaults.go).
+    if any(sc.get(f) is not None for f in SCALAR_STOP_FIELDS):
+        return True
+    if any(regime_block_is_configured(sc.get(f)) for f in REGIME_STOP_FIELDS):
+        return True
+    return uses_unified_regime_close(sc)
+
+
+def user_close_default_trailing_regime(cfg):
+    # Mirrors userCloseDefaultTrailingStopATRRegime (close_defaults.go) +
+    # closeDefaultsEntry's case-insensitive key match.
+    ud = cfg.get("user_defaults")
+    if not isinstance(ud, dict):
+        return None
+    closes = ud.get("close")
+    if not isinstance(closes, dict):
+        return None
+    entry = None
+    for k in sorted(closes.keys()):
+        if str(k).strip().lower() == "trailing_tp_ratchet_regime":
+            entry = closes[k]
+            break
+    if not isinstance(entry, dict):
+        return None
+    block = entry.get("trailing_stop_atr_regime")
+    if not isinstance(block, dict):
+        return None
+    return block
+
+
+def default_stop_loss_atr_mult(cfg):
+    # Mirrors LoadConfig: nil/omitted default_stop_loss_atr_mult falls back to
+    # the DefaultStopLossATRMult constant (1.0); an explicit 0 opts out.
+    v = cfg.get("default_stop_loss_atr_mult")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    return 1.0
+
+
+def resolve_stop_owners(cfg, sc):
+    # Applies LoadConfig's two stop-owner injections, IN ITS ORDER, mutating a
+    # copy of the strategy so the checks below see what validateConfig sees.
+    #   1. applyUserCloseDefaultRatchetRegimeTrails (#1133) attaches
+    #      user_defaults.close.trailing_tp_ratchet_regime.trailing_stop_atr_regime.
+    #   2. the #562/#601/#605 default_stop_loss_atr_mult auto-default attaches
+    #      stop_loss_atr_mult to any HL perps strategy with NO stop field set.
+    sc = dict(sc)
+    if uses_ratchet_regime_close(sc) and not has_explicit_stop_owner(sc):
+        block = user_close_default_trailing_regime(cfg)
+        if block is not None:
+            sc["trailing_stop_atr_regime"] = block
+    default_mult = default_stop_loss_atr_mult(cfg)
+    if default_mult > 0:
+        if (
+            all(sc.get(f) is None for f in SCALAR_STOP_FIELDS)
+            and not any(regime_block_is_configured(sc.get(f)) for f in REGIME_STOP_FIELDS)
+            and not uses_unified_regime_close(sc)
+        ):
+            sc["stop_loss_atr_mult"] = default_mult
+    return sc
+
+
+def resolves_from_max_drawdown_fallback(sc):
+    # Mirrors hlStopLossResolvesFromMaxDrawdownFallback
+    # (scheduler/hyperliquid_liquidation_guard.go) EXACTLY: the ATR scalars only
+    # defer when POSITIVE (an explicit 0 falls through, per EffectiveStopLossPct),
+    # the regime blocks defer on the same raw-aware IsConfigured() predicate the
+    # Go check uses at this phase, and the three pct fields must be absent
+    # entirely.
+    if uses_unified_regime_close(sc):
+        return False
+    for f in ("trailing_stop_atr_mult", "stop_loss_atr_mult"):
+        v = sc.get(f)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            return False
+    if any(regime_block_is_configured(sc.get(f)) for f in REGIME_STOP_FIELDS):
+        return False
+    return all(
+        sc.get(f) is None
+        for f in ("trailing_stop_pct", "stop_loss_pct", "stop_loss_margin_pct")
+    )
+
+
 for sc in cfg.get("strategies", []) or []:
     if not isinstance(sc, dict):
         continue
@@ -93,22 +235,8 @@ for sc in cfg.get("strategies", []) or []:
         continue
     lev = effective_leverage(sc)
     bound = 100.0 / max(lev, 1.0)
-
-    def uses_unified_regime_close(sc):
-        # Mirrors strategyUsesUnifiedRegimeClose (scheduler/regime_unified.go):
-        # a close ref named one of the unified regime closes whose params carry
-        # the trend_regime classifier key. Only the canonical close_strategy ref
-        # is mirrored — the explicit-field checks below behave the same way the
-        # Go check does for them.
-        cs = sc.get("close_strategy")
-        if not isinstance(cs, dict):
-            return False
-        name = str(cs.get("name", "") or "").strip().lower()
-        if name not in ("tiered_tp_atr_regime", "tiered_tp_atr_live_regime",
-                        "tiered_tp_atr_live_regime_dynamic"):
-            return False
-        params = cs.get("params")
-        return isinstance(params, dict) and "trend_regime" in params
+    strategy_id = sc.get("id", "<no id>")
+    sc = resolve_stop_owners(cfg, sc)
 
     checks = []
     slp = sc.get("stop_loss_pct")
@@ -118,17 +246,12 @@ for sc in cfg.get("strategies", []) or []:
     if isinstance(smp, (int, float)) and not isinstance(smp, bool) and smp > 0:
         checks.append(("stop_loss_margin_pct/leverage", float(smp) / max(lev, 1.0)))
     # Mirrors hlStopLossResolvesFromMaxDrawdownFallback + the MaxAutoStopLossPct
-    # cap: the fallback owns the stop only when every explicit owner is absent.
+    # cap, evaluated on the strategy AS LOADCONFIG RESOLVES IT (resolve_stop_owners
+    # above) — the fallback owns the stop only when every explicit owner is absent
+    # AFTER the two load-time injections have run.
     mdd = sc.get("max_drawdown_pct")
-    has_explicit_owner = any(
-        sc.get(f) is not None
-        for f in ("trailing_stop_atr_mult", "stop_loss_atr_mult", "stop_loss_atr_regime",
-                  "trailing_stop_atr_regime", "trailing_stop_pct", "stop_loss_pct",
-                  "stop_loss_margin_pct")
-    )
     if (
-        not has_explicit_owner
-        and not uses_unified_regime_close(sc)
+        resolves_from_max_drawdown_fallback(sc)
         and isinstance(mdd, (int, float)) and not isinstance(mdd, bool) and mdd > 0
     ):
         checks.append(("max_drawdown_pct", min(float(mdd), 50.0)))
@@ -136,7 +259,7 @@ for sc in cfg.get("strategies", []) or []:
         if pct > 0 and pct >= bound:
             print(
                 "%s: %s = %g%% >= bound %g%% (leverage %g)"
-                % (sc.get("id", "<no id>"), field, pct, bound, lev)
+                % (strategy_id, field, pct, bound, lev)
             )
 PY
 }

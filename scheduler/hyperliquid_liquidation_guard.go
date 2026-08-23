@@ -220,6 +220,19 @@ func validateHLStopWithinBankruptcyBound(sc StrategyConfig) []string {
 // branch (unified close, positive ATR mults, regime dicts, any explicit pct
 // field) defers or wins instead. Explicit-zero ATR fields fall through in
 // EffectiveStopLossPct, so they fall through here too.
+//
+// #1456 review round 4: the regime blocks are read with the raw-aware
+// IsConfigured(), NOT EffectiveStopLossPct's !IsZero(). EffectiveStopLossPct is
+// a RUNTIME caller, so its blocks have been through ResolveSurface; this helper
+// runs from validateConfig's per-strategy loop, which is BEFORE
+// validateRegimeATRConfig resolves them, and IsZero() reports true on an
+// unresolved-but-configured block (see its doc, and #735.1 / #1111 which hit
+// the same phase ordering). Reading !IsZero() here made a strategy whose stop is
+// owned by stop_loss_atr_regime / trailing_stop_atr_regime look like it had NO
+// owner, so the max_drawdown_pct fallback was scored as the owner and this
+// FATAL bound refused to boot a legal config. The two predicates agree on every
+// config that loads: a block that resolves is always use_defaults or a non-empty
+// trend_regime map, and one that does not resolve fails validation anyway.
 func hlStopLossResolvesFromMaxDrawdownFallback(sc StrategyConfig) bool {
 	if strategyUsesUnifiedRegimeClose(sc) {
 		return false
@@ -230,10 +243,10 @@ func hlStopLossResolvesFromMaxDrawdownFallback(sc StrategyConfig) bool {
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		return false
 	}
-	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
+	if sc.StopLossATRRegime.IsConfigured() {
 		return false
 	}
-	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
+	if sc.TrailingStopATRRegime.IsConfigured() {
 		return false
 	}
 	return sc.TrailingStopPct == nil &&
