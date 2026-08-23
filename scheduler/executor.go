@@ -134,12 +134,22 @@ type HyperliquidProtectionSyncResult struct {
 	TP2Error                 string    `json:"tp2_error,omitempty"`
 	OpenOrderCheckError      string    `json:"open_order_check_error,omitempty"`
 	StopLossFilledExternally bool      `json:"stop_loss_filled_externally,omitempty"`
-	TP1FilledExternally      bool      `json:"tp1_filled_externally,omitempty"`
-	TP2FilledExternally      bool      `json:"tp2_filled_externally,omitempty"`
+	// #1456 review round 9: emitted when a force-replace placement filled at
+	// submit — protection WORKED (the position exited); never a lost-stop.
+	StopLossFilledImmediately bool `json:"stop_loss_filled_immediately,omitempty"`
+	TP1FilledExternally       bool `json:"tp1_filled_externally,omitempty"`
+	TP2FilledExternally       bool `json:"tp2_filled_externally,omitempty"`
 	// #843: surplus tier-count-shrink cancels — failed OIDs are re-appended to
 	// pos.TPOIDs so the next cycle retries; filled OIDs are dropped from tracking.
 	TPCancelFailedOIDs []int64 `json:"tp_cancel_failed_oids,omitempty"`
 	TPCancelFilledOIDs []int64 `json:"tp_cancel_filled_oids,omitempty"`
+	// #1456 review round 9: set by run_sync_protection's force-replace branch —
+	// true when the resting SL WAS cancelled, false when the cancel itself
+	// failed (the old order may still be resting). With StopLossOID absent this
+	// means cancel-landed + place-failed: applyHyperliquidProtectionSync must
+	// clear pos.StopLossOID/StopLossTriggerPx. Mirrors
+	// HyperliquidStopLossUpdateResult.CancelStopLossSucceeded.
+	CancelStopLossSucceeded bool `json:"cancel_stop_loss_succeeded,omitempty"`
 }
 
 // runPython is the shared subprocess spawner. parentCtx is one of

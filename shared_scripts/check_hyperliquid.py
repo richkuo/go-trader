@@ -1013,10 +1013,19 @@ def run_sync_protection(
                 if size <= 0:
                     out["stop_loss_oid"] = int(stop_loss_oid)
                 else:
+                    cancel_ok = False
                     try:
                         adapter.cancel_order_by_oid(symbol, int(stop_loss_oid))
+                        cancel_ok = True
                     except Exception as ce:
                         out["stop_loss_error"] = f"force replace cancel: {ce}"
+                    # #1456 review round 9: once this cancel lands the resting
+                    # OID is gone from the book. If the replacement below then
+                    # fails, Go must clear pos.StopLossOID/StopLossTriggerPx
+                    # instead of leaving them pointed at a dead order. Emitted
+                    # even when False so a FAILED cancel (the old order may
+                    # still be resting) never reads as "safe to clear".
+                    out["cancel_stop_loss_succeeded"] = cancel_ok
                     _place_sl()
             else:
                 action, fill = _resolve_missing_oid(stop_loss_oid)

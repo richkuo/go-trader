@@ -424,7 +424,34 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 		}
 		notifyHLProtectionFailure(notifier, sc, plan.Symbol, msg)
 	}
+	// #1456 review round 9: cancel-landed + place-failed is qualitatively
+	// different from a TP-only hiccup — the position now has NO exchange-side
+	// stop. The generic "protection partially failed" wording above does not
+	// say that, so name it. Recovery is automatic: applyHyperliquidProtectionSync
+	// cleared the dead OID and the next sync re-places from the empty-OID path.
+	if hlProtectionLostExchangeStop(result) {
+		msg := fmt.Sprintf("**HL PROTECTION CRITICAL** [%s] %s force-replace cancelled the resting stop-loss but the replacement did NOT rest — the position has NO exchange-side stop; recorded state cleared, next sync re-places", sc.ID, plan.Symbol)
+		if logger != nil {
+			logger.Error("%s", msg)
+		}
+		if notifier != nil && notifier.HasBackends() {
+			notifier.SendToAllChannels(msg)
+			notifier.SendOwnerDM(msg)
+		}
+	}
 	return result, true
+}
+
+// hlProtectionLostExchangeStop reports the one protection-sync shape that must
+// never read as an ordinary partial failure (#1456 review round 9): the
+// resting SL was cancelled and nothing replaced it. A placement that landed
+// (StopLossOID > 0) or exited the position at submit (filled immediately)
+// is protection working, never a loss.
+func hlProtectionLostExchangeStop(result *HyperliquidProtectionSyncResult) bool {
+	return result != nil &&
+		result.CancelStopLossSucceeded &&
+		result.StopLossOID <= 0 &&
+		!result.StopLossFilledImmediately
 }
 
 func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtectionSyncResult, cancelTPOIDs []int64) {
@@ -436,6 +463,16 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	}
 	if result.StopLossOID > 0 {
 		pos.StopLossOID = result.StopLossOID
+	} else if result.CancelStopLossSucceeded {
+		// #1456 review round 9: the force-replace cancel LANDED but the
+		// replacement did not rest — the recorded OID points at a dead order
+		// and the trigger at a price nothing rests at. Clear both, mirroring
+		// the trailing walker's CancelStopLossSucceeded case, so state matches
+		// the book and the next sync re-places from the empty-OID path. A
+		// FAILED cancel never sets this flag, so a still-resting order is
+		// never unrecorded.
+		pos.StopLossOID = 0
+		pos.StopLossTriggerPx = 0
 	}
 	// #1450: StopLossTriggerPx is present ONLY when this sync actually put an
 	// order on the book (check_hyperliquid.py run_protection_sync). A cycle that

@@ -929,6 +929,16 @@ func hlLiquidationScalarRearmTriggerPx(sc StrategyConfig, side string, anchor, l
 // on-chain backs the recorded size, so there is no confirmed quantity to size a
 // replacement from. Comparison carries the same 1e-9 slack the #621 size cap
 // uses.
+//
+// Known limit (#1456 review round 9): phantoms on OPPOSITE sides of one coin
+// cancel in the signed sum and read as consistent — a single netted exchange
+// figure cannot distinguish them from a healthy bidirectional book, and no
+// per-strategy on-chain truth exists on a pooled wallet (the same limit #258
+// documents for shared-coin reconciliation). A strict per-owner bound would
+// re-break the legal long+short case above. Bounds that remain: placements
+// are reduce-only (Hyperliquid clips them at the real netted position), sized
+// through hlSLEffectiveQty's cap at the confirmed on-chain quantity, and aimed
+// only at owners whose recorded side matches the net side.
 func hlLiquidationCoinBookConsistent(netVirtualByCoin map[string]float64, ownersByCoin map[string]int, onChainAbsQty map[string]float64) map[string]bool {
 	out := make(map[string]bool, len(netVirtualByCoin))
 	for coin, netVirtual := range netVirtualByCoin {

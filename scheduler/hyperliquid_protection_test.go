@@ -915,3 +915,64 @@ func TestBuildHyperliquidProtectionPlanAnchorsToRiskAnchorPrice(t *testing.T) {
 		t.Errorf("plan.Size = %g; want re-sized total quantity 3", plan.Size)
 	}
 }
+
+// #1456 review round 9 (Needs Fixing): a force-replace whose cancel LANDED but
+// whose replacement did NOT rest must not leave pos.StopLossOID/TriggerPx
+// pointing at a dead order — state would claim protection that no longer
+// exists, for fixed/regime/unified-ATR owners the #1450 audit cannot re-arm.
+func TestApplyHyperliquidProtectionSyncClearsDeadSLOnCancelLandedPlaceFailed(t *testing.T) {
+	pos := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
+	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
+		CancelStopLossSucceeded: true,
+		StopLossError:           "place_stop_loss SDK error: open order cap",
+	}, nil)
+	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
+		t.Errorf("SL = oid %d @ %g after cancel-landed/place-failed, want both cleared", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+}
+
+// Must-survive (c): cancel AND placement both succeed keeps working exactly as
+// before — the new OID and its trigger overwrite state; no clearing.
+func TestApplyHyperliquidProtectionSyncForceReplaceSuccessUnchanged(t *testing.T) {
+	pos := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
+	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
+		CancelStopLossSucceeded: true,
+		StopLossOID:             6000,
+		StopLossTriggerPx:       2300,
+	}, nil)
+	if pos.StopLossOID != 6000 || pos.StopLossTriggerPx != 2300 {
+		t.Errorf("SL = oid %d @ %g, want 6000 @ 2300 from the successful replacement", pos.StopLossOID, pos.StopLossTriggerPx)
+	}
+
+	// A FAILED cancel never sets the flag: the old order may still be resting,
+	// so state must keep it recorded.
+	pos2 := &Position{Symbol: "ETH", StopLossOID: 5150, StopLossTriggerPx: 2325}
+	applyHyperliquidProtectionSync(pos2, &HyperliquidProtectionSyncResult{
+		StopLossError: "force replace cancel: timeout",
+	}, nil)
+	if pos2.StopLossOID != 5150 || pos2.StopLossTriggerPx != 2325 {
+		t.Errorf("failed-cancel result mutated SL to oid %d @ %g, want 5150 @ 2325 kept (order may still rest)", pos2.StopLossOID, pos2.StopLossTriggerPx)
+	}
+}
+
+// The critical-alert predicate: only cancel-landed + nothing-resting reads as
+// lost protection. A landed replacement or an at-submit fill is protection
+// working.
+func TestHLProtectionLostExchangeStop(t *testing.T) {
+	cases := []struct {
+		name   string
+		result *HyperliquidProtectionSyncResult
+		want   bool
+	}{
+		{"cancel landed, place failed", &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true}, true},
+		{"cancel landed, replacement rests", &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossOID: 7}, false},
+		{"cancel landed, filled at submit", &HyperliquidProtectionSyncResult{CancelStopLossSucceeded: true, StopLossFilledImmediately: true}, false},
+		{"cancel failed", &HyperliquidProtectionSyncResult{}, false},
+		{"nil result", nil, false},
+	}
+	for _, tc := range cases {
+		if got := hlProtectionLostExchangeStop(tc.result); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
