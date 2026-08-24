@@ -371,6 +371,73 @@ func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, posi
 	return lines
 }
 
+// settledKillSwitchSymbols collects each NON-HL venue's positively-confirmed
+// closed coins, keyed by platform, for applyKillSwitchSettledLegsWhileLatched.
+// HL coins are excluded on purpose: their settled legs book from REAL fills
+// (report.Fills), which is strictly better than a mark estimate.
+func settledKillSwitchSymbols(plan *KillSwitchClosePlan) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	add := func(platform string, coins []string) {
+		if len(coins) == 0 {
+			return
+		}
+		set := out[platform]
+		if set == nil {
+			set = map[string]bool{}
+			out[platform] = set
+		}
+		for _, c := range coins {
+			if c != "" {
+				set[c] = true
+			}
+		}
+	}
+	add("okx", plan.OKXCloseReport.ClosedCoins)
+	add("robinhood", plan.RHCloseReport.ClosedCoins)
+	add("topstep", plan.TSCloseReport.ClosedCoins)
+	return out
+}
+
+// applyKillSwitchSettledLegsWhileLatched books ONLY what the kill-switch
+// closers POSITIVELY settled while OnChainConfirmedFlat is false — the
+// #1457-review decoupling of "hold the latch" from "book nothing":
+//
+//   - HL legs with a confirmed fill book that fill (price/fee/OID) exactly as
+//     the confirmed-flat sweep would; the #954 same-OID dedupe inside
+//     applyHyperliquidCircuitCloseFill makes re-injection across latched
+//     cycles (already-flat recovery re-finding the same fill) idempotent.
+//   - Non-HL legs whose venue report lists the coin in ClosedCoins book
+//     model-only at the current mark via forceCloseSettledPositions — safe,
+//     because the exchange leg IS flat; waiting for the latch to clear would
+//     leave the virtual book disagreeing with the venue for the whole latch
+//     window.
+//
+// Everything UNSETTLED — an errored close, a foreign Unconfigured coin, an HL
+// coin with no fill this cycle — stays untouched for the retry: closing it
+// here would write an estimate over a live exchange position, which is
+// exactly what the #341 confirmed-flat gate exists to prevent.
+//
+// Caller holds mu. The latch itself (OnChainConfirmedFlat=false → retry next
+// cycle) is untouched — only the booking coupling is relaxed.
+func applyKillSwitchSettledLegsWhileLatched(strategies map[string]*StrategyState, cfgs []StrategyConfig, plan *KillSwitchClosePlan, hlRoster []StrategyConfig, virtualQty hlVirtualQuantitySnapshot, prices map[string]float64, logger *StrategyLogger) {
+	if plan == nil || len(cfgs) == 0 {
+		return
+	}
+	settled := settledKillSwitchSymbols(plan)
+	hasHLFills := len(plan.CloseReport.Fills) > 0
+	for _, sc := range cfgs {
+		s, ok := strategies[sc.ID]
+		if !ok || s == nil {
+			continue
+		}
+		if hasHLFills {
+			applyHyperliquidKillSwitchCloseFill(s, sc, plan.CloseReport.Fills, hlRoster, virtualQty)
+			applyHyperliquidKillSwitchHedgeFill(s, sc, plan.CloseReport.Fills)
+		}
+		forceCloseSettledPositions(s, sc, prices, settled, logger)
+	}
+}
+
 // planKillSwitchClose runs the kill-switch close logic without touching any
 // mutable state — no locks, no virtual state mutation, no Discord delivery.
 // The caller applies mutations based on the returned plan.

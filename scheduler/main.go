@@ -1223,8 +1223,10 @@ func main() {
 			}
 			// Reconcile lists extend hlLive* to include type=manual: manual
 			// positions are real on-chain HL positions that can be closed
-			// externally and must be reconciled. Other hlLiveAll consumers
-			// (kill-switch, trailing-stop, risk math) remain perps-only (#576).
+			// externally and must be reconciled. #1454: the kill switch now
+			// consumes this same perps+manual roster; trailing-stop arming and
+			// risk math remain the perps-only hlLiveAll consumers (#576) — do
+			// NOT widen hlLiveAll itself to reach them.
 			var hlReconcileAll []StrategyConfig
 			for _, sc := range cfg.Strategies {
 				if isHLLiveReconcilable(sc) {
@@ -1782,6 +1784,18 @@ func main() {
 				for _, line := range plan.LogLines {
 					fmt.Println(line)
 				}
+			}
+
+			// #1457 review round 2: a HELD latch (a foreign Unconfigured coin,
+			// one failed close) must not discard what the closers POSITIVELY
+			// settled — confirmed HL fills and non-HL coins the reports list as
+			// closed book immediately; everything unsettled waits for the
+			// retry. The latch itself stays held below (auto-reset and the full
+			// sweep remain gated on OnChainConfirmedFlat).
+			if killSwitchFired && !plan.OnChainConfirmedFlat {
+				mu.Lock()
+				applyKillSwitchSettledLegsWhileLatched(state.Strategies, cfg.Strategies, &plan, hlKillSwitchAll, hlVirtualQty, prices, nil)
+				mu.Unlock()
 			}
 
 			killSwitchAutoReset := false
@@ -4492,8 +4506,9 @@ func hyperliquidSymbol(args []string) string {
 // isHLLiveReconcilable reports whether sc should participate in on-chain
 // reconciliation. Both type=perps and type=manual are live HL positions that
 // can be closed externally; the reconciler is type-agnostic so both are safe.
-// Other consumers of hlLiveAll (kill-switch, trailing-stop arming, risk math)
-// intentionally stay perps-only.
+// #1454: the kill switch consumes this same roster. The perps-only hlLiveAll
+// consumers — trailing-stop arming and risk math — intentionally do NOT use
+// this predicate (#576); keep them on hlLiveAll.
 func isHLLiveReconcilable(sc StrategyConfig) bool {
 	return sc.Platform == "hyperliquid" &&
 		(sc.Type == "perps" || sc.Type == "manual") &&

@@ -313,6 +313,137 @@ func TestPlanKillSwitchClose_DeclaredButFlatHedgeCoinStaysUnowned(t *testing.T) 
 	}
 }
 
+// #1457 review round 2: a HELD latch must not discard what the closers
+// positively settled. HL legs with confirmed fills book the real fill;
+// unsettled legs stay in the book for the retry.
+func TestApplyKillSwitchSettledLegsWhileLatched_BooksConfirmedHLFill(t *testing.T) {
+	cfgs := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	state := &StrategyState{
+		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1.0, AvgCost: 2000, Side: "long", Multiplier: 1},
+		},
+	}
+	strategies := map[string]*StrategyState{"hl-eth": state}
+	plan := KillSwitchClosePlan{OnChainConfirmedFlat: false}
+	plan.CloseReport.Fills = map[string]HyperliquidCloseFill{
+		"ETH": {TotalSz: 1.0, AvgPx: 2100, Fee: 0.5, OID: 555},
+	}
+	virtualQty := snapshotHyperliquidVirtualQuantities(strategies, cfgs)
+
+	applyKillSwitchSettledLegsWhileLatched(strategies, cfgs, &plan, cfgs, virtualQty,
+		map[string]float64{"ETH": 2100}, nil)
+
+	if len(state.Positions) != 0 {
+		t.Fatalf("positions after apply = %+v; want flat", state.Positions)
+	}
+	var booked *Trade
+	for i := range state.TradeHistory {
+		tr := &state.TradeHistory[i]
+		if tr.ExchangeOrderID == "555" {
+			booked = tr
+		}
+	}
+	if booked == nil {
+		t.Fatal("confirmed fill must book with its real OID while latched")
+	}
+	if math.Abs(booked.RealizedPnL-100) > 1e-6 || math.Abs(booked.ExchangeFee-0.5) > 1e-9 {
+		t.Errorf("booked fill = PnL %.4f fee %.4f; want 100 / 0.5", booked.RealizedPnL, booked.ExchangeFee)
+	}
+
+	// Re-running on the next latched cycle (already-flat recovery re-finding
+	// the same fill) must be a no-op — no double booking (#954 dedupe).
+	before := len(state.TradeHistory)
+	applyKillSwitchSettledLegsWhileLatched(strategies, cfgs, &plan, cfgs, virtualQty,
+		map[string]float64{"ETH": 2100}, nil)
+	if len(state.TradeHistory) != before {
+		t.Errorf("same-OID re-application must not double-book: %d -> %d rows", before, len(state.TradeHistory))
+	}
+}
+
+func TestApplyKillSwitchSettledLegsWhileLatched_UnsettledLegStays(t *testing.T) {
+	cfgs := []StrategyConfig{
+		{ID: "hl-sol", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "SOL", "1h", "--mode=live"}},
+	}
+	state := &StrategyState{
+		ID: "hl-sol", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"SOL": {Symbol: "SOL", Quantity: 2.0, AvgCost: 100, Side: "long", Multiplier: 1},
+		},
+	}
+	strategies := map[string]*StrategyState{"hl-sol": state}
+	plan := KillSwitchClosePlan{OnChainConfirmedFlat: false} // SOL close ERRORED — no fill
+
+	applyKillSwitchSettledLegsWhileLatched(strategies, cfgs, &plan, cfgs, nil,
+		map[string]float64{"SOL": 90}, nil)
+
+	pos := state.Positions["SOL"]
+	if pos == nil || math.Abs(pos.Quantity-2.0) > 1e-9 {
+		t.Fatalf("unsettled leg must stay untouched for the retry, got %+v", state.Positions)
+	}
+	if len(state.TradeHistory) != 0 {
+		t.Errorf("no trade may book over an unsettled live position, got %+v", state.TradeHistory)
+	}
+}
+
+func TestApplyKillSwitchSettledLegsWhileLatched_OKXClosedCoinBooksModelOnly(t *testing.T) {
+	okxCfgs := []StrategyConfig{
+		{ID: "okx-btc", Platform: "okx", Type: "perps",
+			Args: []string{"sma", "BTC-USDT-SWAP", "1h", "--mode=live"}},
+	}
+	hlCfgs := []StrategyConfig{
+		{ID: "hl-btc", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
+	}
+	okxState := &StrategyState{
+		ID: "okx-btc", Type: "perps", Platform: "okx", Cash: 1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 1.0, AvgCost: 50000, Side: "long", Multiplier: 1},
+		},
+	}
+	hlState := &StrategyState{
+		ID: "hl-btc", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 3.0, AvgCost: 50000, Side: "long", Multiplier: 1},
+		},
+	}
+	strategies := map[string]*StrategyState{"okx-btc": okxState, "hl-btc": hlState}
+	plan := KillSwitchClosePlan{OnChainConfirmedFlat: false}
+	plan.OKXCloseReport.ClosedCoins = []string{"BTC"} // OKX leg settled; HL coin UNRELATED
+
+	applyKillSwitchSettledLegsWhileLatched(strategies, append(append([]StrategyConfig{}, okxCfgs...), hlCfgs...),
+		&plan, nil, nil, map[string]float64{"BTC": 51000}, nil)
+
+	if len(okxState.Positions) != 0 {
+		t.Fatalf("OKX coin the report confirmed closed must book while latched, got %+v", okxState.Positions)
+	}
+	if len(okxState.TradeHistory) != 1 || !okxState.TradeHistory[0].IsClose {
+		t.Fatalf("OKX close row missing: %+v", okxState.TradeHistory)
+	}
+	// Platform gating: the OKX closed-coin set must never touch an HL strategy's
+	// same-named symbol — that leg settles only through its own fill or sweep.
+	if hlState.Positions["BTC"] == nil || math.Abs(hlState.Positions["BTC"].Quantity-3.0) > 1e-9 {
+		t.Errorf("HL position must be untouched by the OKX settled set, got %+v", hlState.Positions)
+	}
+}
+
+func TestSettledKillSwitchSymbols_PlatformKeyed(t *testing.T) {
+	plan := KillSwitchClosePlan{}
+	plan.OKXCloseReport.ClosedCoins = []string{"BTC", ""}
+	plan.TSCloseReport.ClosedCoins = []string{"NQ"}
+	out := settledKillSwitchSymbols(&plan)
+	if len(out) != 2 || !out["okx"]["BTC"] || out["okx"][""] || !out["topstep"]["NQ"] {
+		t.Fatalf("settled = %+v; want okx{BTC}, topstep{NQ}, empty coins dropped", out)
+	}
+	if _, ok := out["robinhood"]; ok {
+		t.Fatalf("platforms with no closes must be absent, got %+v", out)
+	}
+}
+
 // #1454 review: every kill-switch surface must resolve a manual strategy's
 // coin through the ONE symbol-first resolver, so a hand-written args list
 // whose args[1] diverges from Symbol can never split close scope from fill
