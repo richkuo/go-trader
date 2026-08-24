@@ -1147,19 +1147,21 @@ func (sdb *StateDB) UpdateTradeStampedFields(strategyID string, ts time.Time, en
 }
 
 // ReconcileModelOnlyClose corrects a fire-time model-only circuit-breaker
-// close with the real exchange fill (#1455) in ONE transaction: the trades row
-// (price/fee/OID/fee_source/gross realized_pnl), its closed_positions row, and
-// the #1147 trade_diagnostics capture. Row identity is database-side —
-// (strategy_id, timestamp) for trades per UpdateTradeStampedFields,
-// (strategy_id, symbol, close_reason, closed_at) for closed_positions, and
-// (strategy_id, position_id, closed_at) for trade_diagnostics — so the
-// correction survives a restart between the CB fire and the fill. The trades
-// WHERE clause re-asserts the uncorrected shape (empty OID +
-// reconcile_adjustment) so an already-reconciled row can never be corrected
-// twice.
+// close with the real exchange fill (#1455) in ONE transaction: the trades row,
+// its closed_positions row, and the #1147 trade_diagnostics capture. Row
+// identity is database-side — (strategy_id, timestamp) for trades per
+// UpdateTradeStampedFields, (strategy_id, symbol, close_reason, closed_at) for
+// closed_positions, and (strategy_id, position_id, closed_at) for
+// trade_diagnostics — so the correction survives a restart between the CB fire
+// and the fill. The trades WHERE clause re-asserts the uncorrected shape
+// (empty OID + reconcile_adjustment) so an already-completed row can never be
+// corrected twice. During a partial-fill sequence (#1455 review finding 1) the
+// update writes CUMULATIVE filled state and keeps the empty OID; only a
+// complete correction stamps the OID and swaps the fee source.
 //
 // Hedge legs have no diagnostics row (captureTradeDiagnostics skips them), so
-// a zero-row diagnostics update is success there.
+// a zero-row diagnostics update is success there; a returned error on any
+// statement fails the whole transaction (#1455 review optional 3).
 func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -1171,11 +1173,20 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	defer tx.Rollback()
 
 	ts := formatTime(u.Timestamp)
-	res, err := tx.Exec(
-		`UPDATE trades SET price = ?, value = ?, details = ?, exchange_order_id = ?, exchange_fee = ?, fee_source = ?, realized_pnl = ?
-		 WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND is_close = 1 AND exchange_order_id = '' AND fee_source = ?`,
-		u.Price, u.Value, u.Details, u.OID, u.Fee, FeeSourceUserFills, u.GrossPnL,
-		u.StrategyID, ts, u.Symbol, FeeSourceReconcileAdjustment)
+	var res sql.Result
+	if u.Complete {
+		res, err = tx.Exec(
+			`UPDATE trades SET quantity = ?, price = ?, value = ?, details = ?, exchange_fee = ?, realized_pnl = ?, exchange_order_id = ?, fee_source = ?
+			 WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND is_close = 1 AND exchange_order_id = '' AND fee_source = ?`,
+			u.FilledQty, u.RowPrice, u.Value, u.Details, u.CumFee, u.CumGross, u.OID, FeeSourceUserFills,
+			u.StrategyID, ts, u.Symbol, FeeSourceReconcileAdjustment)
+	} else {
+		res, err = tx.Exec(
+			`UPDATE trades SET quantity = ?, price = ?, value = ?, details = ?, exchange_fee = ?, realized_pnl = ?
+			 WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND is_close = 1 AND exchange_order_id = '' AND fee_source = ?`,
+			u.FilledQty, u.RowPrice, u.Value, u.Details, u.CumFee, u.CumGross,
+			u.StrategyID, ts, u.Symbol, FeeSourceReconcileAdjustment)
+	}
 	if err != nil {
 		return fmt.Errorf("update trades row: %w", err)
 	}
@@ -1186,7 +1197,7 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	res, err = tx.Exec(
 		`UPDATE closed_positions SET close_price = ?, realized_pnl = ?
 		 WHERE strategy_id = ? AND symbol = ? AND close_reason = ? AND closed_at = ?`,
-		u.Price, u.GrossPnL-u.Fee, u.StrategyID, u.Symbol, "circuit_breaker", formatTime(u.ClosedAt))
+		u.VwapPx, u.CumGross-u.CumFee, u.StrategyID, u.Symbol, u.CloseReason, formatTime(u.ClosedAt))
 	if err != nil {
 		return fmt.Errorf("update closed_positions row: %w", err)
 	}
@@ -1196,10 +1207,12 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 
 	if u.PositionID != "" {
 		// Hedge legs never reach the diagnostics capture; zero rows is fine.
-		_, _ = tx.Exec(
+		if _, err := tx.Exec(
 			`UPDATE trade_diagnostics SET exit_price = ?, realized_pnl = ?
 			 WHERE strategy_id = ? AND position_id = ? AND closed_at = ?`,
-			u.Price, u.GrossPnL-u.Fee, u.StrategyID, u.PositionID, formatTime(u.ClosedAt))
+			u.VwapPx, u.CumGross-u.CumFee, u.StrategyID, u.PositionID, formatTime(u.ClosedAt)); err != nil {
+			return fmt.Errorf("update trade_diagnostics row: %w", err)
+		}
 	}
 	return tx.Commit()
 }

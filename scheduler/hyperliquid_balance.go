@@ -2812,11 +2812,13 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	pos, ok := s.Positions[symbol]
 	if !ok || pos == nil || pos.Quantity <= 0 {
 		// #1455: a missing virtual position explained by a fire-time
-		// circuit-breaker close is RECONCILED — the earlier model-only row is
+		// model-only close is RECONCILED — the earlier estimate row is
 		// corrected to the real fill instead of stacking a second, PnL-free
 		// row. Only a genuinely unexplained fill falls through to the
-		// defensive branch below.
-		if reconcileModelOnlyCloseWithFill(s, symbol, fillSz, fillPx, fillFee, fillOID) {
+		// defensive branch below. The caller's close reason is threaded
+		// through so a fill only ever corrects a row from the SAME close
+		// event (#1455 review).
+		if reconcileModelOnlyCloseWithFill(s, symbol, fillSz, fillPx, fillFee, fillOID, closeReason) {
 			return
 		}
 		// No virtual position to decrement — record defensive Trade with no
