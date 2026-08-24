@@ -294,7 +294,7 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	t.Run("risk/forceCloseAllPositions", func(t *testing.T) {
 		s := newState("hyperliquid")
 		s.Positions["BTC"] = &Position{Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long"}
-		forceCloseAllPositions(s, map[string]float64{"BTC": 51000}, logger)
+		forceCloseAllPositions(s, nil, map[string]float64{"BTC": 51000}, logger)
 		if got := lastRegime(s); got != want {
 			t.Errorf("Regime = %q; want %q", got, want)
 		}

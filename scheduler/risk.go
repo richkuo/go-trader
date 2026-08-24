@@ -1940,7 +1940,7 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 	// price/fee rather than the model-only reconciliation adjustment
 	// forceCloseAllPositions would otherwise write.
 	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
-	forceCloseAllPositions(s, prices, logger)
+	forceCloseAllPositions(s, &sc, prices, logger)
 }
 
 // classifyPositionTradeType maps a position to the correct trade_type label
@@ -1981,96 +1981,18 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 
 // forceCloseAllPositions liquidates all open positions at current prices.
 // Called when any circuit breaker fires.
-func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger *StrategyLogger) {
-	now := time.Now().UTC()
-
+//
+// sc carries the strategy's config for the #1454-review live gate on the
+// model-only close DM (nil skips the alert — legacy test callers only); every
+// production caller has it. A PAPER strategy never places exchange orders, so
+// its model-only rows are expected bookkeeping and must not page the owner;
+// a live venue close with no fill behind it is exactly what the alert exists
+// for (#1451/#1454).
+func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[string]float64, logger *StrategyLogger) {
 	for symbol, pos := range s.Positions {
-		price, ok := prices[symbol]
-		if !ok {
-			price = pos.AvgCost
-		}
-		var pnl, value float64
-		// PnL branch is the same for perps (Multiplier=1) and futures
-		// (Multiplier=contract size) — qty*multiplier*price_delta. Only the
-		// trade_type LABEL differs by venue, classified via
-		// classifyPositionTradeType so perps force-closes carry an accurate
-		// operator-facing label. The label does not feed any ledger sum
-		// (tradeLedgerDeltaSQL ignores trade_type); it is display-only.
-		tradeType := classifyPositionTradeType(s, pos)
-		reason := "circuit_breaker"
-		details := ""
-		// #1009: a force-close must never book PnL off a structurally-corrupt
-		// position. A non-positive quantity (the negative residual a mis-sized
-		// direction reversal used to leave) or a non-positive avg cost (a zeroed
-		// entry that books the full notional as PnL — the ~4884x overstatement
-		// folded in from PR #1008) makes qty*(price-avgCost) meaningless. Clear
-		// it with a zero-PnL leg and leave cash untouched so the booked
-		// realized_pnl reconciles with the closed_positions row.
-		if closePositionIsCorrupt(pos) {
-			reason = "circuit_breaker_corrupt"
-			details = fmt.Sprintf("Circuit breaker close %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", pos.Side, pos.Quantity, pos.AvgCost)
-			if logger != nil {
-				logger.Warn("Circuit breaker: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", pos.Side, symbol, pos.Quantity, pos.AvgCost)
-			}
-		} else if pos.Multiplier > 0 {
-			// Futures/perps: PnL-based (contracts * multiplier * price delta)
-			if pos.Side == "long" {
-				pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
-			} else {
-				pnl = pos.Quantity * pos.Multiplier * (pos.AvgCost - price)
-			}
-			s.Cash += pnl
-			value = pos.Quantity * pos.Multiplier * price
-		} else if pos.Side == "long" {
-			proceeds := pos.Quantity * price
-			pnl = proceeds - pos.Quantity*pos.AvgCost
-			s.Cash += proceeds
-			value = proceeds
-		} else {
-			pnl = pos.Quantity * (pos.AvgCost - price)
-			s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
-			value = pos.Quantity * price
-		}
-		if details == "" {
-			details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
-		}
-		// Stamp the PRE-fire streak (#1455 review round 3): RecordTradeResult
-		// below RESETS it to 0 on an estimated win, and the fill reconciler can
-		// only reconstruct "what RecordTradeResult would have done" — 0 on a
-		// win, pre-fire+1 on a loss — if the pre-fire value rides on the row.
-		details = fmt.Sprintf("%s, pre-streak=%d", details, s.RiskState.ConsecutiveLosses)
-		if logger != nil {
-			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
-		}
-		positionID := ensurePositionTradeID(s.ID, symbol, pos)
-		trade := Trade{
-			Timestamp:         now,
-			StrategyID:        s.ID,
-			Symbol:            symbol,
-			PositionID:        positionID,
-			Side:              closeTradeSide(pos.Side),
-			Quantity:          absQty(pos.Quantity),
-			Price:             price,
-			Value:             value,
-			TradeType:         tradeType,
-			Details:           details,
-			IsClose:           true,
-			RealizedPnL:       pnl,
-			PnLGross:          true, // model-only adjustment has no exchange fee: gross == net
-			FeeSource:         FeeSourceReconcileAdjustment,
-			Regime:            s.Regime,
-			EntryATR:          pos.EntryATR,
-			StopLossTriggerPx: pos.StopLossTriggerPx,
-			StopLossATRMult:   pos.StopLossATRMult,
-			TPTiersJSON:       pos.TPTiersJSON,
-		}
-		RecordTrade(s, trade)
-		// #1159: a hedge leg's PnL never feeds the loss streak.
-		recordPositionTradeResult(s, pos, pnl)
-		recordClosedPosition(s, pos, price, pnl, reason, now)
-		delete(s.Positions, symbol)
-		clearHLPerpsPositionAlertThrottles(s, symbol)
+		closeVirtualPositionAtMark(s, sc, symbol, pos, prices, logger)
 	}
+	now := time.Now().UTC()
 
 	for id, pos := range s.OptionPositions {
 		var pnl, closePrice float64
@@ -2109,6 +2031,138 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		RecordTradeResult(&s.RiskState, pnl)
 		recordClosedOptionPosition(s, pos, closePrice, pnl, "circuit_breaker", now)
 		delete(s.OptionPositions, id)
+	}
+}
+
+// closeVirtualPositionAtMark books ONE virtual position's model-only close at
+// the current mark (AvgCost fallback) and removes it from the book. Extracted
+// from forceCloseAllPositions so the kill-switch latched path
+// (applyKillSwitchSettledLegsWhileLatched) can close ONLY positively-settled
+// symbols with the identical booking implementation — never a forked one.
+//
+// sc carries the strategy's config for the #1454-review live gate on the
+// model-only close DM (nil skips the alert — legacy test callers only); every
+// production caller has it. A PAPER strategy never places exchange orders, so
+// its model-only rows are expected bookkeeping and must not page the owner;
+// a live venue close with no fill behind it is exactly what the alert exists
+// for (#1451/#1454).
+func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol string, pos *Position, prices map[string]float64, logger *StrategyLogger) {
+	now := time.Now().UTC()
+	price, ok := prices[symbol]
+	if !ok {
+		price = pos.AvgCost
+	}
+	var pnl, value float64
+	// PnL branch is the same for perps (Multiplier=1) and futures
+	// (Multiplier=contract size) — qty*multiplier*price_delta. Only the
+	// trade_type LABEL differs by venue, classified via
+	// classifyPositionTradeType so perps force-closes carry an accurate
+	// operator-facing label. The label does not feed any ledger sum
+	// (tradeLedgerDeltaSQL ignores trade_type); it is display-only.
+	tradeType := classifyPositionTradeType(s, pos)
+	reason := "circuit_breaker"
+	details := ""
+	// #1009: a force-close must never book PnL off a structurally-corrupt
+	// position. A non-positive quantity (the negative residual a mis-sized
+	// direction reversal used to leave) or a non-positive avg cost (a zeroed
+	// entry that books the full notional as PnL — the ~4884x overstatement
+	// folded in from PR #1008) makes qty*(price-avgCost) meaningless. Clear
+	// it with a zero-PnL leg and leave cash untouched so the booked
+	// realized_pnl reconciles with the closed_positions row.
+	if closePositionIsCorrupt(pos) {
+		reason = "circuit_breaker_corrupt"
+		details = fmt.Sprintf("Circuit breaker close %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", pos.Side, pos.Quantity, pos.AvgCost)
+		if logger != nil {
+			logger.Warn("Circuit breaker: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", pos.Side, symbol, pos.Quantity, pos.AvgCost)
+		}
+	} else if pos.Multiplier > 0 {
+		// Futures/perps: PnL-based (contracts * multiplier * price delta)
+		if pos.Side == "long" {
+			pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
+		} else {
+			pnl = pos.Quantity * pos.Multiplier * (pos.AvgCost - price)
+		}
+		s.Cash += pnl
+		value = pos.Quantity * pos.Multiplier * price
+	} else if pos.Side == "long" {
+		proceeds := pos.Quantity * price
+		pnl = proceeds - pos.Quantity*pos.AvgCost
+		s.Cash += proceeds
+		value = proceeds
+	} else {
+		pnl = pos.Quantity * (pos.AvgCost - price)
+		s.Cash += pos.Quantity*pos.AvgCost - pos.Quantity*price
+		value = pos.Quantity * price
+	}
+	if details == "" {
+		details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
+		// #1451 folded alert (#1454): a model-only row is an estimate
+		// standing in for a real exchange close. Escalate once per
+		// (strategy, symbol) per throttle window instead of leaving the DB
+		// row as the only signal. Live-only (#1454 review): paper rows
+		// have no exchange position behind them by construction.
+		if sc != nil && isLiveArgs(sc.Args) {
+			queueModelOnlyCloseAlert(s.ID, symbol, pos.Quantity)
+		}
+	}
+	// Stamp the PRE-fire streak (#1455 review round 3): RecordTradeResult
+	// below RESETS it to 0 on an estimated win, and the fill reconciler can
+	// only reconstruct "what RecordTradeResult would have done" — 0 on a
+	// win, pre-fire+1 on a loss — if the pre-fire value rides on the row.
+	details = fmt.Sprintf("%s, pre-streak=%d", details, s.RiskState.ConsecutiveLosses)
+	if logger != nil {
+		logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
+	}
+	positionID := ensurePositionTradeID(s.ID, symbol, pos)
+	trade := Trade{
+		Timestamp:         now,
+		StrategyID:        s.ID,
+		Symbol:            symbol,
+		PositionID:        positionID,
+		Side:              closeTradeSide(pos.Side),
+		Quantity:          absQty(pos.Quantity),
+		Price:             price,
+		Value:             value,
+		TradeType:         tradeType,
+		Details:           details,
+		IsClose:           true,
+		RealizedPnL:       pnl,
+		PnLGross:          true, // model-only adjustment has no exchange fee: gross == net
+		FeeSource:         FeeSourceReconcileAdjustment,
+		Regime:            s.Regime,
+		EntryATR:          pos.EntryATR,
+		StopLossTriggerPx: pos.StopLossTriggerPx,
+		StopLossATRMult:   pos.StopLossATRMult,
+		TPTiersJSON:       pos.TPTiersJSON,
+	}
+	RecordTrade(s, trade)
+	// #1159: a hedge leg's PnL never feeds the loss streak.
+	recordPositionTradeResult(s, pos, pnl)
+	recordClosedPosition(s, pos, price, pnl, reason, now)
+	delete(s.Positions, symbol)
+	clearHLPerpsPositionAlertThrottles(s, symbol)
+}
+
+// forceCloseSettledPositions model-only-closes ONLY the strategy's positions
+// whose venue leg the kill-switch report POSITIVELY confirmed flat
+// (applyKillSwitchSettledLegsWhileLatched). An unsettled leg — a coin whose
+// close errored or was never attempted — must stay in the book for the retry;
+// closing it here would write an estimate over a live exchange position.
+// settled maps platform → that platform's confirmed-closed coin set.
+func forceCloseSettledPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, settled map[string]map[string]bool, logger *StrategyLogger) {
+	coins := settled[sc.Platform]
+	if len(coins) == 0 || s == nil {
+		return
+	}
+	var syms []string
+	for sym := range s.Positions {
+		if coins[sym] {
+			syms = append(syms, sym)
+		}
+	}
+	sort.Strings(syms)
+	for _, sym := range syms {
+		closeVirtualPositionAtMark(s, &sc, sym, s.Positions[sym], prices, logger)
 	}
 }
 
@@ -2310,7 +2364,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			setTopStepCircuitBreakerPending(sc, s, assist)
 			setOperatorRequiredCircuitBreakerPending(sc, s)
 			if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
-				forceCloseAllPositions(s, prices, logger)
+				forceCloseAllPositions(s, sc, prices, logger)
 			}
 			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
@@ -2334,7 +2388,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		setTopStepCircuitBreakerPending(sc, s, assist)
 		setOperatorRequiredCircuitBreakerPending(sc, s)
 		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
-			forceCloseAllPositions(s, prices, logger)
+			forceCloseAllPositions(s, sc, prices, logger)
 		}
 		return false, fmt.Sprintf("%s (%d in a row, threshold %d)", RiskReasonConsecutiveLosses, r.ConsecutiveLosses, lossStreakThreshold)
 	}

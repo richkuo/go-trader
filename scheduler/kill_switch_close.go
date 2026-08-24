@@ -14,7 +14,16 @@ import (
 type HLNoFillRecoverer func(since time.Time) (*HLUserFillsResult, error)
 
 const (
-	hlKillSwitchNoFillRecoveryLookback = 30 * time.Second
+	// #1454: widened from 30s — an already-flat position whose real fill landed
+	// shortly before the kill switch fired (external close, or an SL fill inside
+	// the fetch-to-submit window) was unrecoverable inside the old window and
+	// its row cleared model-only. Ten minutes bounds the userFills query while
+	// covering every observed incident latency. #1454 review: uniqueness alone
+	// no longer carries the match — recoverHyperliquidAlreadyFlatFills also
+	// requires a REDUCING fill (non-zero closedPnl, so an opening fill of the
+	// same size can never be adopted) at or after the query's since bound, so a
+	// lone wrong candidate inside the wider net fails closed to model-only.
+	hlKillSwitchNoFillRecoveryLookback = 10 * time.Minute
 	hlKillSwitchNoFillRecoveryTimeout  = 20 * time.Second
 )
 
@@ -321,10 +330,26 @@ func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, posi
 		raws = append(raws, r)
 	}
 	sort.Strings(raws)
+	// #1454 review: restrict candidates to fills that could BE this close —
+	// a reducing fill (Hyperliquid reports closedPnl=0 on opening legs) whose
+	// event time is not before the query's since bound. Matching then stays
+	// unique-by-coin+qty over a pool of plausible closes only; an ambiguous or
+	// empty filtered pool falls back to model-only cleanup, never to booking
+	// an unrelated same-size fill's price/OID/fee into the cash adjustment.
+	candidates := make(map[string]HLFillSummary, len(result.ByOID))
+	for oid, summary := range result.ByOID {
+		if summary.ClosedPnLGross == 0 {
+			continue
+		}
+		if t := hlFillSummaryEventTime(summary); !t.IsZero() && t.Before(since) {
+			continue
+		}
+		candidates[oid] = summary
+	}
 	var lines []string
 	for _, rawCoin := range raws {
 		expected := eligibleByRaw[rawCoin]
-		match, ok, ambiguous := findUniqueHLFillByCoinQty(result.ByOID, rawCoin, expected.qty, true, time.Time{}, 0)
+		match, ok, ambiguous := findUniqueHLFillByCoinQty(candidates, rawCoin, expected.qty, true, time.Time{}, 0)
 		switch {
 		case ok:
 			report.Fills[rawCoin] = HyperliquidCloseFill{
@@ -344,6 +369,73 @@ func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, posi
 		}
 	}
 	return lines
+}
+
+// settledKillSwitchSymbols collects each NON-HL venue's positively-confirmed
+// closed coins, keyed by platform, for applyKillSwitchSettledLegsWhileLatched.
+// HL coins are excluded on purpose: their settled legs book from REAL fills
+// (report.Fills), which is strictly better than a mark estimate.
+func settledKillSwitchSymbols(plan *KillSwitchClosePlan) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	add := func(platform string, coins []string) {
+		if len(coins) == 0 {
+			return
+		}
+		set := out[platform]
+		if set == nil {
+			set = map[string]bool{}
+			out[platform] = set
+		}
+		for _, c := range coins {
+			if c != "" {
+				set[c] = true
+			}
+		}
+	}
+	add("okx", plan.OKXCloseReport.ClosedCoins)
+	add("robinhood", plan.RHCloseReport.ClosedCoins)
+	add("topstep", plan.TSCloseReport.ClosedCoins)
+	return out
+}
+
+// applyKillSwitchSettledLegsWhileLatched books ONLY what the kill-switch
+// closers POSITIVELY settled while OnChainConfirmedFlat is false — the
+// #1457-review decoupling of "hold the latch" from "book nothing":
+//
+//   - HL legs with a confirmed fill book that fill (price/fee/OID) exactly as
+//     the confirmed-flat sweep would; the #954 same-OID dedupe inside
+//     applyHyperliquidCircuitCloseFill makes re-injection across latched
+//     cycles (already-flat recovery re-finding the same fill) idempotent.
+//   - Non-HL legs whose venue report lists the coin in ClosedCoins book
+//     model-only at the current mark via forceCloseSettledPositions — safe,
+//     because the exchange leg IS flat; waiting for the latch to clear would
+//     leave the virtual book disagreeing with the venue for the whole latch
+//     window.
+//
+// Everything UNSETTLED — an errored close, a foreign Unconfigured coin, an HL
+// coin with no fill this cycle — stays untouched for the retry: closing it
+// here would write an estimate over a live exchange position, which is
+// exactly what the #341 confirmed-flat gate exists to prevent.
+//
+// Caller holds mu. The latch itself (OnChainConfirmedFlat=false → retry next
+// cycle) is untouched — only the booking coupling is relaxed.
+func applyKillSwitchSettledLegsWhileLatched(strategies map[string]*StrategyState, cfgs []StrategyConfig, plan *KillSwitchClosePlan, hlRoster []StrategyConfig, virtualQty hlVirtualQuantitySnapshot, prices map[string]float64, logger *StrategyLogger) {
+	if plan == nil || len(cfgs) == 0 {
+		return
+	}
+	settled := settledKillSwitchSymbols(plan)
+	hasHLFills := len(plan.CloseReport.Fills) > 0
+	for _, sc := range cfgs {
+		s, ok := strategies[sc.ID]
+		if !ok || s == nil {
+			continue
+		}
+		if hasHLFills {
+			applyHyperliquidKillSwitchCloseFill(s, sc, plan.CloseReport.Fills, hlRoster, virtualQty)
+			applyHyperliquidKillSwitchHedgeFill(s, sc, plan.CloseReport.Fills)
+		}
+		forceCloseSettledPositions(s, sc, prices, settled, logger)
+	}
 }
 
 // planKillSwitchClose runs the kill-switch close logic without touching any
@@ -427,6 +519,20 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 		for _, coin := range plan.CloseReport.SortedErrorCoins() {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] hl-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.CloseReport.Errors[coin]))
+		}
+		// #1454: on-chain positions on coins no live HL strategy (perps OR
+		// manual) trades block flat confirmation in a mixed fleet too. The
+		// detection previously lived only in the empty-roster branch below, so
+		// a fleet with at least one live perps strategy never reached it and a
+		// manual-held coin was skipped without error, report entry, or latch.
+		if len(plan.CloseReport.Unconfigured) > 0 {
+			plan.Unconfigured = append(plan.Unconfigured, plan.CloseReport.Unconfigured...)
+			sort.Slice(plan.Unconfigured, func(i, j int) bool { return plan.Unconfigured[i].Coin < plan.Unconfigured[j].Coin })
+			plan.OnChainConfirmedFlat = false
+			for _, p := range plan.Unconfigured {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] hl-close: on-chain position for unconfigured coin %s (szi=%.6f) — manual intervention required, kill switch will retry next cycle", p.Coin, p.Size))
+			}
 		}
 
 	case hlStateFetched && len(in.HLLiveAll) == 0:
@@ -621,6 +727,39 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 	plan.DiscordMessage = formatKillSwitchMessage(in.HLAddr, plan, in.PortfolioReason)
 	return plan
+}
+
+// collectHLKillSwitchStopOIDs gathers every resting SL/TP trigger OID held by
+// the kill-switch roster's virtual positions, keyed by coin, so the flatten can
+// cancel them before submitting (#421/#479). Extracted from main.go so the
+// #1454 roster extension to live type=manual strategies — whose resting
+// triggers would otherwise be orphaned on HL's open-order cap — is testable
+// without a running loop.
+func collectHLKillSwitchStopOIDs(strategies map[string]*StrategyState, roster []StrategyConfig) map[string][]int64 {
+	out := map[string][]int64{}
+	for _, sc := range roster {
+		// RAW coin key — forceCloseHyperliquidLive indexes stopLossOIDsByCoin
+		// by the raw on-chain p.Coin (case-sensitive kPEPE-style tickers).
+		// #1454 review: single resolver so close scope, fill booking and
+		// trigger cancel can never name different coins for one strategy.
+		sym := hyperliquidRawCoin(sc)
+		if sym == "" {
+			continue
+		}
+		ss, ok := strategies[sc.ID]
+		if !ok || ss == nil {
+			continue
+		}
+		pos := hlVirtualPositionFor(ss, sc, sym)
+		if pos == nil {
+			continue
+		}
+		out[sym] = appendUniquePositiveStopLossOID(out[sym], pos.StopLossOID)
+		for _, tpOID := range pos.TPOIDs {
+			out[sym] = appendUniquePositiveStopLossOID(out[sym], tpOID)
+		}
+	}
+	return out
 }
 
 // formatKillSwitchMessage builds the Discord notification string from a plan.

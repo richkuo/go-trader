@@ -1228,8 +1228,10 @@ func main() {
 			}
 			// Reconcile lists extend hlLive* to include type=manual: manual
 			// positions are real on-chain HL positions that can be closed
-			// externally and must be reconciled. Other hlLiveAll consumers
-			// (kill-switch, trailing-stop, risk math) remain perps-only (#576).
+			// externally and must be reconciled. #1454: the kill switch now
+			// consumes this same perps+manual roster; trailing-stop arming and
+			// risk math remain the perps-only hlLiveAll consumers (#576) — do
+			// NOT widen hlLiveAll itself to reach them.
 			var hlReconcileAll []StrategyConfig
 			for _, sc := range cfg.Strategies {
 				if isHLLiveReconcilable(sc) {
@@ -1242,6 +1244,19 @@ func main() {
 					hlReconcileDue = append(hlReconcileDue, sc)
 				}
 			}
+			// #1454: kill-switch roster — live HL perps PLUS live type=manual.
+			// #576 keeps hlLiveAll perps-only because trailing-stop arming and
+			// risk math depend on that meaning, but the kill switch must BOTH
+			// close and book fills for manual positions: they are real leveraged
+			// exposure on the same wallet. Built with isHLLiveReconcilable (the
+			// #620 peer-scope precedent) and consumed ONLY by the kill-switch
+			// surfaces below — never by trailing-stop or risk math.
+			// #1454 review: this is the SAME predicate that built hlReconcileAll,
+			// so the roster aliases that slice instead of re-filtering — one list,
+			// never two rosters to keep identical by hand. If a future change
+			// ever needs the kill switch to diverge from reconcile scope, give
+			// hlKillSwitchAll its own named predicate here.
+			hlKillSwitchAll := hlReconcileAll
 
 			// #345: Partition live OKX strategies for the kill-switch close
 			// path. Perps and spot are separated because only perps support
@@ -1718,22 +1733,13 @@ func main() {
 				// Sole-source: every live HL strategy's Position for the
 				// coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
-				hlSLOIDs := map[string][]int64{}
 				mu.RLock()
-				for _, sc := range hlLiveAll {
-					sym := hyperliquidSymbol(sc.Args)
-					if sym == "" {
-						continue
-					}
-					if ss, ok := state.Strategies[sc.ID]; ok && ss != nil {
-						if pos, pok := ss.Positions[sym]; pok && pos != nil {
-							hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], pos.StopLossOID)
-							for _, tpOID := range pos.TPOIDs {
-								hlSLOIDs[sym] = appendUniquePositiveStopLossOID(hlSLOIDs[sym], tpOID)
-							}
-						}
-					}
-				}
+				// #1454: the roster includes live manual strategies and every
+				// surface keys coins through hyperliquidRawCoin (RAW, case-
+				// preserved — NOT hyperliquidConfiguredCoin's normalized form),
+				// so a manual coin's resting SL/TP triggers are cancelled with
+				// the rest (#421/#479).
+				hlSLOIDs := collectHLKillSwitchStopOIDs(state.Strategies, hlKillSwitchAll)
 				// #1159: hedge coins the scheduler CURRENTLY holds a leg on.
 				// Gated on the held leg, not on config, so the kill switch
 				// never liquidates a foreign position sitting on a coin a
@@ -1746,14 +1752,14 @@ func main() {
 						}
 					}
 				}
-				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlLiveAll)
+				hlVirtualQty = snapshotHyperliquidVirtualQuantities(state.Strategies, hlKillSwitchAll)
 				mu.RUnlock()
 
 				inputs := KillSwitchCloseInputs{
 					HLAddr:            hlAddr,
 					HLStateFetched:    hlStateFetched,
 					HLPositions:       hlPositions,
-					HLLiveAll:         hlLiveAll,
+					HLLiveAll:         hlKillSwitchAll,
 					HLHedgeCoins:      hlHedgeCoins,
 					HLCloser:          defaultHyperliquidLiveCloser,
 					HLFetcher:         defaultHLStateFetcher,
@@ -1785,12 +1791,24 @@ func main() {
 				}
 			}
 
+			// #1457 review round 2: a HELD latch (a foreign Unconfigured coin,
+			// one failed close) must not discard what the closers POSITIVELY
+			// settled — confirmed HL fills and non-HL coins the reports list as
+			// closed book immediately; everything unsettled waits for the
+			// retry. The latch itself stays held below (auto-reset and the full
+			// sweep remain gated on OnChainConfirmedFlat).
+			if killSwitchFired && !plan.OnChainConfirmedFlat {
+				mu.Lock()
+				applyKillSwitchSettledLegsWhileLatched(state.Strategies, cfg.Strategies, &plan, hlKillSwitchAll, hlVirtualQty, prices, nil)
+				mu.Unlock()
+			}
+
 			killSwitchAutoReset := false
 			if killSwitchFired && plan.OnChainConfirmedFlat {
 				mu.Lock()
 				for _, sc := range cfg.Strategies {
 					if s, ok := state.Strategies[sc.ID]; ok {
-						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlLiveAll, hlVirtualQty, nil)
+						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, nil)
 						// Pending HL circuit close was already cleared above
 						// when portfolio kill fired (line ~611); nothing to do
 						// here. The per-strategy pending field is owned by the
@@ -1824,6 +1842,16 @@ func main() {
 					killSwitchMsg = formatKillSwitchAutoResetMessage(killSwitchMsg)
 				}
 				notifier.SendToAllChannels(killSwitchMsg)
+			}
+
+			// #1451 folded alert (#1454): any model-only close row the sweep
+			// just booked reaches the owner here too — a latched fleet may have
+			// no due strategy this cycle, so the per-strategy drain site below
+			// would not run.
+			for _, moAlert := range drainModelOnlyCloseAlerts() {
+				if notifier.HasOwner() {
+					notifier.SendOwnerDM(formatModelOnlyCloseDM(moAlert))
+				}
 			}
 
 			// Warning alert: drawdown approaching kill switch threshold.
@@ -2390,6 +2418,14 @@ func main() {
 					for _, cbAlert := range drainCircuitBreakerSuppressionAlerts() {
 						if notifier.HasOwner() {
 							notifier.SendOwnerDM(formatCircuitBreakerSuppressionDM(cbAlert))
+						}
+					}
+					// #1451 folded alert (#1454): a model-only force-close row is
+					// an estimate standing in for a real exchange close. Drained
+					// unconditionally outside mu, per the same #880 rule.
+					for _, moAlert := range drainModelOnlyCloseAlerts() {
+						if notifier.HasOwner() {
+							notifier.SendOwnerDM(formatModelOnlyCloseDM(moAlert))
 						}
 					}
 					// #1046: a latched per-strategy circuit breaker on an HL perps
@@ -4475,8 +4511,9 @@ func hyperliquidSymbol(args []string) string {
 // isHLLiveReconcilable reports whether sc should participate in on-chain
 // reconciliation. Both type=perps and type=manual are live HL positions that
 // can be closed externally; the reconciler is type-agnostic so both are safe.
-// Other consumers of hlLiveAll (kill-switch, trailing-stop arming, risk math)
-// intentionally stay perps-only.
+// #1454: the kill switch consumes this same roster. The perps-only hlLiveAll
+// consumers — trailing-stop arming and risk math — intentionally do NOT use
+// this predicate (#576); keep them on hlLiveAll.
 func isHLLiveReconcilable(sc StrategyConfig) bool {
 	return sc.Platform == "hyperliquid" &&
 		(sc.Type == "perps" || sc.Type == "manual") &&

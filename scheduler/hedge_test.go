@@ -1642,7 +1642,7 @@ func TestEveryHedgeLegCarriesTheHedgeTradeType(t *testing.T) {
 	t.Run("circuit-breaker virtual force-close sweep", func(t *testing.T) {
 		s := hedgeTestState("eth-long")
 		s.Positions["BTC"] = hedgePos(0.4, "short", 10)
-		forceCloseAllPositions(s, map[string]float64{"BTC": 51000}, silentStrategyLogger("eth-long"))
+		forceCloseAllPositions(s, nil, map[string]float64{"BTC": 51000}, silentStrategyLogger("eth-long"))
 		assertAllHedgeRows(t, s, 1)
 	})
 
@@ -2007,7 +2007,7 @@ func TestCircuitBreakerFireWithFailedFetchThenRecoveryClosesBothLegs(t *testing.
 	if !shouldForceCloseAllPositionsOnCircuitBreaker(&sc, assist) {
 		t.Fatal("setup: a sole-owner strategy still force-closes virtually")
 	}
-	forceCloseAllPositions(s, map[string]float64{"ETH": testPrimaryPx, "BTC": testHedgePx}, silentStrategyLogger("eth-long"))
+	forceCloseAllPositions(s, nil, map[string]float64{"ETH": testPrimaryPx, "BTC": testHedgePx}, silentStrategyLogger("eth-long"))
 	if len(s.Positions) != 0 {
 		t.Fatalf("setup: the sweep must clear both virtual legs, got %d", len(s.Positions))
 	}

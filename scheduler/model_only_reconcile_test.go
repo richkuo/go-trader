@@ -42,7 +42,7 @@ func fireModelOnlyCircuitBreakerClose(t *testing.T) *StrategyState {
 			"ETH": {Symbol: "ETH", Quantity: 2.0, AvgCost: 3000, Side: "long", Multiplier: 1, Leverage: 5},
 		},
 	}
-	forceCloseAllPositions(s, map[string]float64{"ETH": 2800}, nil)
+	forceCloseAllPositions(s, nil, map[string]float64{"ETH": 2800}, nil)
 	if len(s.Positions) != 0 {
 		t.Fatalf("fire must delete the virtual position, has %v", s.Positions)
 	}
