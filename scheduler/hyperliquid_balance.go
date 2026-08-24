@@ -2811,6 +2811,14 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 	now := time.Now().UTC()
 	pos, ok := s.Positions[symbol]
 	if !ok || pos == nil || pos.Quantity <= 0 {
+		// #1455: a missing virtual position explained by a fire-time
+		// circuit-breaker close is RECONCILED — the earlier model-only row is
+		// corrected to the real fill instead of stacking a second, PnL-free
+		// row. Only a genuinely unexplained fill falls through to the
+		// defensive branch below.
+		if reconcileModelOnlyCloseWithFill(s, symbol, fillSz, fillPx, fillFee, fillOID) {
+			return
+		}
 		// No virtual position to decrement — record defensive Trade with no
 		// PnL accounting (no AvgCost basis available). Closing a short is a
 		// buy; closing a long is a sell. Default to "sell" when the on-chain

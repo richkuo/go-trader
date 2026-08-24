@@ -1146,6 +1146,83 @@ func (sdb *StateDB) UpdateTradeStampedFields(strategyID string, ts time.Time, en
 	return err
 }
 
+// ReconcileModelOnlyClose corrects a fire-time model-only circuit-breaker
+// close with the real exchange fill (#1455) in ONE transaction: the trades row
+// (price/fee/OID/fee_source/gross realized_pnl), its closed_positions row, and
+// the #1147 trade_diagnostics capture. Row identity is database-side —
+// (strategy_id, timestamp) for trades per UpdateTradeStampedFields,
+// (strategy_id, symbol, close_reason, closed_at) for closed_positions, and
+// (strategy_id, position_id, closed_at) for trade_diagnostics — so the
+// correction survives a restart between the CB fire and the fill. The trades
+// WHERE clause re-asserts the uncorrected shape (empty OID +
+// reconcile_adjustment) so an already-reconciled row can never be corrected
+// twice.
+//
+// Hedge legs have no diagnostics row (captureTradeDiagnostics skips them), so
+// a zero-row diagnostics update is success there.
+func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	tx, err := sdb.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	ts := formatTime(u.Timestamp)
+	res, err := tx.Exec(
+		`UPDATE trades SET price = ?, value = ?, details = ?, exchange_order_id = ?, exchange_fee = ?, fee_source = ?, realized_pnl = ?
+		 WHERE strategy_id = ? AND timestamp = ? AND symbol = ? AND is_close = 1 AND exchange_order_id = '' AND fee_source = ?`,
+		u.Price, u.Value, u.Details, u.OID, u.Fee, FeeSourceUserFills, u.GrossPnL,
+		u.StrategyID, ts, u.Symbol, FeeSourceReconcileAdjustment)
+	if err != nil {
+		return fmt.Errorf("update trades row: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("model-only trades row not found or already reconciled for %s %s @ %s (affected %d)", u.StrategyID, u.Symbol, ts, n)
+	}
+
+	res, err = tx.Exec(
+		`UPDATE closed_positions SET close_price = ?, realized_pnl = ?
+		 WHERE strategy_id = ? AND symbol = ? AND close_reason = ? AND closed_at = ?`,
+		u.Price, u.GrossPnL-u.Fee, u.StrategyID, u.Symbol, "circuit_breaker", formatTime(u.ClosedAt))
+	if err != nil {
+		return fmt.Errorf("update closed_positions row: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("closed_positions basis row not found for %s %s @ %s (affected %d)", u.StrategyID, u.Symbol, formatTime(u.ClosedAt), n)
+	}
+
+	if u.PositionID != "" {
+		// Hedge legs never reach the diagnostics capture; zero rows is fine.
+		_, _ = tx.Exec(
+			`UPDATE trade_diagnostics SET exit_price = ?, realized_pnl = ?
+			 WHERE strategy_id = ? AND position_id = ? AND closed_at = ?`,
+			u.Price, u.GrossPnL-u.Fee, u.StrategyID, u.PositionID, formatTime(u.ClosedAt))
+	}
+	return tx.Commit()
+}
+
+// LoadModelOnlyCloseBasis recovers the accounting basis of a persisted
+// circuit-breaker closed_positions row so a restart between the CB fire and
+// the real fill does not lose the reconcile path (#1455).
+func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol string, closedAt time.Time) (*modelOnlyClosedBasis, error) {
+	if sdb == nil || sdb.db == nil {
+		return nil, fmt.Errorf("state db unavailable")
+	}
+	row := sdb.db.QueryRow(
+		`SELECT quantity, avg_cost, side, multiplier FROM closed_positions
+		 WHERE strategy_id = ? AND symbol = ? AND close_reason = ? AND closed_at = ?
+		 ORDER BY id DESC LIMIT 1`,
+		strategyID, symbol, "circuit_breaker", formatTime(closedAt))
+	var b modelOnlyClosedBasis
+	if err := row.Scan(&b.Quantity, &b.AvgCost, &b.Side, &b.Multiplier); err != nil {
+		return nil, fmt.Errorf("load closed-position basis for %s %s @ %s: %w", strategyID, symbol, formatTime(closedAt), err)
+	}
+	return &b, nil
+}
+
 // nullableFloat64 returns a *float64 unchanged for use with database/sql so a
 // nil pointer maps to SQL NULL while a non-nil pointer's value is bound. The
 // helper exists purely as a callsite-readability anchor — passing the *float64

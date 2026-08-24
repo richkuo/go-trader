@@ -181,6 +181,10 @@ func main() {
 	// written to SQLite the moment it is appended to TradeHistory — this
 	// survives mid-cycle crashes that would otherwise lose the in-memory batch.
 	tradeRecorder = stateDB.InsertTrade
+	// #1455: fire-time model-only circuit-breaker closes are reconciled to the
+	// real exchange fill in one transaction across trades/closed_positions/diagnostics.
+	modelOnlyCloseUpdater = stateDB.ReconcileModelOnlyClose
+	modelOnlyCloseBasisLoader = stateDB.LoadModelOnlyCloseBasis
 
 	// #1431: open the shared live→paper decision log when configured. Both
 	// the live writer deployment and the paper mirror deployment open the
