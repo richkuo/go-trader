@@ -1135,3 +1135,99 @@ func TestWarnAbandonedPartialModelClose_MarksRowForOfflineRepair(t *testing.T) {
 		t.Fatalf("the tag must be persisted exactly once, got %d", marks)
 	}
 }
+
+func TestModelOnlyClose_PreStreakStampSurvivesMultiSliceRewrites(t *testing.T) {
+	// #1455 review round 4 must-survive (a): TWO slices, pre-fire streak 3,
+	// estimate a WIN (fire reset to 0), cumulative real result a loss — the
+	// completing slice must still see the stamp the fire wrote, so the
+	// counter ends at 4 even though slice 1 rewrote Details.
+	resetModelOnlyReconcileHooks(t)
+	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
+	now := time.Now().UTC()
+	estGross := 2.0 * (3010 - 3000)
+	s := &StrategyState{
+		ID: "hl-ms3", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		RiskState: RiskState{ConsecutiveLosses: 0, DailyPnLDate: now.Format("2006-01-02")},
+	}
+	s.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: s.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
+		Price: 3010, Value: 6020, TradeType: "perps", PositionID: "pos-m", IsClose: true,
+		RealizedPnL: estGross, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close long, PnL: $%.2f (%s; no exchange fill), pre-streak=3", estGross, modelOnlyDetailMarker),
+	}}
+	s.ClosedPositions = []ClosedPosition{{
+		StrategyID: s.ID, Symbol: "ETH", Quantity: 2, AvgCost: 3000, Side: "long",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 3010, RealizedPnL: estGross, CloseReason: "circuit_breaker",
+	}}
+
+	if reconcileModelOnlyCloseWithFill(s, "ETH", 1, 3100, 0, 860, "") != modelOnlyReconcileApplied {
+		t.Fatal("slice 1 must reconcile")
+	}
+	if got := s.RiskState.ConsecutiveLosses; got != 0 {
+		t.Fatalf("an incomplete sequence must not touch the streak, got %d", got)
+	}
+	if trade := findModelOnlyCloseTrade(s, "ETH"); trade == nil || !strings.Contains(trade.Details, ", pre-streak=3") {
+		t.Fatalf("slice 1's rewrite must preserve the pre-streak stamp: %+v", trade)
+	}
+	if reconcileModelOnlyCloseWithFill(s, "ETH", 1, 2800, 0, 861, "") != modelOnlyReconcileApplied {
+		t.Fatal("slice 2 must reconcile")
+	}
+	// Cumulative gross = +100 + (2800-3000) = -100: a loss.
+	if got := s.RiskState.ConsecutiveLosses; got != 4 {
+		t.Errorf("two-slice est-win→real-loss must reconstruct pre-fire+1 = 4, got %d", got)
+	}
+
+	// Must-survive (b): TWO slices, pre-fire streak 4, estimate a LOSS, final
+	// result a win → 0.
+	s2 := &StrategyState{
+		ID: "hl-ms4", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		RiskState: RiskState{ConsecutiveLosses: 5, DailyPnLDate: now.Format("2006-01-02")},
+	}
+	estLoss := 2.0 * (2800 - 3000)
+	s2.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: s2.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
+		Price: 2800, Value: 5600, TradeType: "perps", PositionID: "pos-n", IsClose: true,
+		RealizedPnL: estLoss, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close long, PnL: $%.2f (%s; no exchange fill), pre-streak=4", estLoss, modelOnlyDetailMarker),
+	}}
+	s2.ClosedPositions = []ClosedPosition{{
+		StrategyID: s2.ID, Symbol: "ETH", Quantity: 2, AvgCost: 3000, Side: "long",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 2800, RealizedPnL: estLoss, CloseReason: "circuit_breaker",
+	}}
+	if reconcileModelOnlyCloseWithFill(s2, "ETH", 1, 2700, 0, 862, "") != modelOnlyReconcileApplied {
+		t.Fatal("slice 1 must reconcile")
+	}
+	// Cumulative gross = (2700-3000) + (3400-3000) = +100: a win.
+	if reconcileModelOnlyCloseWithFill(s2, "ETH", 1, 3400, 0, 863, "") != modelOnlyReconcileApplied {
+		t.Fatal("slice 2 must reconcile")
+	}
+	if got := s2.RiskState.ConsecutiveLosses; got != 0 {
+		t.Errorf("two-slice est-loss→real-win must reset the streak to 0, got %d", got)
+	}
+
+	// Must-survive (c): a hedge-leg multi-slice sequence never touches the
+	// streak in either direction.
+	sh := &StrategyState{
+		ID: "hl-ms-hedge", Type: "perps", Platform: "hyperliquid",
+		RiskState: RiskState{ConsecutiveLosses: 6, DailyPnLDate: now.Format("2006-01-02")},
+	}
+	sh.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: sh.ID, Symbol: "SOL", Side: "buy", Quantity: 10,
+		Price: 95, Value: 950, TradeType: hedgeTradeType, IsClose: true,
+		RealizedPnL: -50, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close short, PnL: $-50.00 (%s; no exchange fill), pre-streak=5", modelOnlyDetailMarker),
+	}}
+	sh.ClosedPositions = []ClosedPosition{{
+		StrategyID: sh.ID, Symbol: "SOL", Quantity: 10, AvgCost: 95, Side: "short",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 95, RealizedPnL: -50, CloseReason: "circuit_breaker",
+	}}
+	if reconcileModelOnlyCloseWithFill(sh, "SOL", 4, 90, 0, 864, "") != modelOnlyReconcileApplied {
+		t.Fatal("hedge slice 1 must reconcile")
+	}
+	if reconcileModelOnlyCloseWithFill(sh, "SOL", 6, 92, 0, 865, "") != modelOnlyReconcileApplied {
+		t.Fatal("hedge slice 2 must reconcile")
+	}
+	if got := sh.RiskState.ConsecutiveLosses; got != 6 {
+		t.Errorf("hedge multi-slice correction must never touch the streak, got %d", got)
+	}
+}

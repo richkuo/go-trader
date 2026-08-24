@@ -280,6 +280,13 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 	complete := filledAfter >= basis.Quantity-max(1e-9, basis.Quantity*1e-6)
 
 	label := hyperliquidOnChainCloseTradeLabel(closeReason)
+	// The pre-streak stamp must survive every rewrite: a completing slice
+	// reads it from Details AFTER earlier slices already rewrote them
+	// (#1455 review round 4).
+	var detailsSuffix string
+	if preStreak >= 0 {
+		detailsSuffix = fmt.Sprintf(", pre-streak=%d", preStreak)
+	}
 	// Every applied slice's exchange order id is recorded on the row the
 	// moment it is applied (#1455 review round 2 optional 3): while a sequence
 	// is open ExchangeOrderID stays empty, so #954's strategyHasCloseTradeForOID
@@ -304,14 +311,15 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 		}
 	}
 	var details, oidStr string
+	detailsBody := modelOnlyDetailMarker + detailsSuffix
 	if complete {
 		oidStr = curOID
 		// The completed row keeps every applied slice's OID in Details: the
 		// final one also lands in ExchangeOrderID, but an early slice's replay
 		// after completion must still be caught by #954's scan.
-		details = fmt.Sprintf("%s [fill-reconciled oids=%s], PnL: $%.2f gross (fee $%.4f) (%s)", label, sliceOIDs, cumGross, cumFee, modelOnlyDetailMarker)
+		details = fmt.Sprintf("%s [fill-reconciled oids=%s], PnL: $%.2f gross (fee $%.4f) (%s)", label, sliceOIDs, cumGross, cumFee, detailsBody)
 	} else {
-		details = fmt.Sprintf("%s [fill-reconciled partial %.6f/%.6f oids=%s], PnL so far: $%.2f gross (fee $%.4f) (%s)", label, filledAfter, basis.Quantity, sliceOIDs, cumGross, cumFee, modelOnlyDetailMarker)
+		details = fmt.Sprintf("%s [fill-reconciled partial %.6f/%.6f oids=%s], PnL so far: $%.2f gross (fee $%.4f) (%s)", label, filledAfter, basis.Quantity, sliceOIDs, cumGross, cumFee, detailsBody)
 	}
 
 	// Snapshot everything the mutation touches so a persist failure can roll
@@ -503,7 +511,7 @@ func modelOnlyPreStreak(details string) int {
 		return -1
 	}
 	rest := details[i+len(modelOnlyPreStreakToken):]
-	if j := strings.IndexAny(rest, ", "); j >= 0 {
+	if j := strings.IndexAny(rest, ", )"); j >= 0 {
 		rest = rest[:j]
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(rest))

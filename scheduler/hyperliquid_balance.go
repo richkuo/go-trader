@@ -2302,12 +2302,15 @@ func checkAbandonedPartialModelClose(state *AppState, stratID, symbol string, mu
 		return
 	}
 	now := time.Now().UTC()
-	mu.RLock()
+	// WRITE lock: warnAbandonedPartialModelClose MUTATES TradeHistory (the
+	// abandonment tag), and concurrent RLock readers (the UI status snapshot)
+	// would race a torn Details string otherwise (#1455 review round 4).
+	mu.Lock()
 	var msg string
 	if ss := state.Strategies[stratID]; ss != nil {
 		msg = warnAbandonedPartialModelClose(ss, symbol, now)
 	}
-	mu.RUnlock()
+	mu.Unlock()
 	if msg != "" && ownerDM != nil {
 		fmt.Printf("[CRITICAL] hl-circuit-close: %s\n", msg)
 		ownerDM(msg)
