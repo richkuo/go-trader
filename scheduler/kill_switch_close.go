@@ -18,9 +18,11 @@ const (
 	// shortly before the kill switch fired (external close, or an SL fill inside
 	// the fetch-to-submit window) was unrecoverable inside the old window and
 	// its row cleared model-only. Ten minutes bounds the userFills query while
-	// covering every observed incident latency; findUniqueHLFillByCoinQty still
-	// fails closed on ambiguous candidates, so the wider net cannot mis-book a
-	// foreign fill to this close.
+	// covering every observed incident latency. #1454 review: uniqueness alone
+	// no longer carries the match — recoverHyperliquidAlreadyFlatFills also
+	// requires a REDUCING fill (non-zero closedPnl, so an opening fill of the
+	// same size can never be adopted) at or after the query's since bound, so a
+	// lone wrong candidate inside the wider net fails closed to model-only.
 	hlKillSwitchNoFillRecoveryLookback = 10 * time.Minute
 	hlKillSwitchNoFillRecoveryTimeout  = 20 * time.Second
 )
@@ -328,10 +330,26 @@ func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, posi
 		raws = append(raws, r)
 	}
 	sort.Strings(raws)
+	// #1454 review: restrict candidates to fills that could BE this close —
+	// a reducing fill (Hyperliquid reports closedPnl=0 on opening legs) whose
+	// event time is not before the query's since bound. Matching then stays
+	// unique-by-coin+qty over a pool of plausible closes only; an ambiguous or
+	// empty filtered pool falls back to model-only cleanup, never to booking
+	// an unrelated same-size fill's price/OID/fee into the cash adjustment.
+	candidates := make(map[string]HLFillSummary, len(result.ByOID))
+	for oid, summary := range result.ByOID {
+		if summary.ClosedPnLGross == 0 {
+			continue
+		}
+		if t := hlFillSummaryEventTime(summary); !t.IsZero() && t.Before(since) {
+			continue
+		}
+		candidates[oid] = summary
+	}
 	var lines []string
 	for _, rawCoin := range raws {
 		expected := eligibleByRaw[rawCoin]
-		match, ok, ambiguous := findUniqueHLFillByCoinQty(result.ByOID, rawCoin, expected.qty, true, time.Time{}, 0)
+		match, ok, ambiguous := findUniqueHLFillByCoinQty(candidates, rawCoin, expected.qty, true, time.Time{}, 0)
 		switch {
 		case ok:
 			report.Fills[rawCoin] = HyperliquidCloseFill{
@@ -655,10 +673,9 @@ func collectHLKillSwitchStopOIDs(strategies map[string]*StrategyState, roster []
 	for _, sc := range roster {
 		// RAW coin key — forceCloseHyperliquidLive indexes stopLossOIDsByCoin
 		// by the raw on-chain p.Coin (case-sensitive kPEPE-style tickers).
-		sym := hyperliquidSymbol(sc.Args)
-		if sc.Type == "manual" {
-			sym = sc.Symbol
-		}
+		// #1454 review: single resolver so close scope, fill booking and
+		// trigger cancel can never name different coins for one strategy.
+		sym := hyperliquidRawCoin(sc)
 		if sym == "" {
 			continue
 		}

@@ -551,8 +551,11 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatSharedLowKCoinAmbiguousFallsBack(
 	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
 		return &HLUserFillsResult{
 			ByOID: map[string]HLFillSummary{
-				"111": {Coin: "kPEPE", Fee: 0.1, Qty: 2.0, Px: 0.00010, LastTimeMS: time.Now().UnixMilli()},
-				"222": {Coin: "kPEPE", Fee: 0.2, Qty: 2.0, Px: 0.00009, LastTimeMS: time.Now().UnixMilli()},
+				// Reducing candidates (non-zero closedPnl) — the #1454-review
+				// filter drops opening fills before uniqueness is judged, so
+				// genuine ambiguity needs closing fills here.
+				"111": {Coin: "kPEPE", Fee: 0.1, Qty: 2.0, Px: 0.00010, ClosedPnLGross: -0.5, LastTimeMS: time.Now().UnixMilli()},
+				"222": {Coin: "kPEPE", Fee: 0.2, Qty: 2.0, Px: 0.00009, ClosedPnLGross: -0.6, LastTimeMS: time.Now().UnixMilli()},
 			},
 		}, nil
 	}
@@ -618,8 +621,8 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatAmbiguousUserFillFallsBack(t *tes
 	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
 		return &HLUserFillsResult{
 			ByOID: map[string]HLFillSummary{
-				"100": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, LastTimeMS: time.Now().UnixMilli()},
-				"101": {Coin: "ETH", Fee: 0.5, Qty: 1.0, Px: 1989, LastTimeMS: time.Now().UnixMilli()},
+				"100": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: -10, LastTimeMS: time.Now().UnixMilli()},
+				"101": {Coin: "ETH", Fee: 0.5, Qty: 1.0, Px: 1989, ClosedPnLGross: -11, LastTimeMS: time.Now().UnixMilli()},
 			},
 		}, nil
 	}
@@ -633,6 +636,80 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatAmbiguousUserFillFallsBack(t *tes
 	}
 	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "multiple userFills candidates") {
 		t.Fatalf("missing ambiguity warning: %v", plan.LogLines)
+	}
+}
+
+// #1454 review: a lone OPENING fill (closedPnl=0) of the same size inside the
+// widened 10m window must never be booked as the close — uniqueness is judged
+// over plausible closes only.
+func TestHyperliquidKillSwitchClose_AlreadyFlatRecoveryRejectsOpeningFill(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 2000}}
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	fetcher, _ := stubHLStateFetcher(nil, nil)
+	in := defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher)
+	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
+		return &HLUserFillsResult{
+			ByOID: map[string]HLFillSummary{
+				"300": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: 0, LastTimeMS: time.Now().UnixMilli()},
+			},
+		}, nil
+	}
+
+	plan := planKillSwitchClose(in)
+	if _, ok := plan.CloseReport.Fills["ETH"]; ok {
+		t.Fatalf("opening fill must never be adopted as the close: %+v", plan.CloseReport.Fills)
+	}
+	if !strings.Contains(strings.Join(plan.LogLines, "\n"), "no userFills match") {
+		t.Fatalf("expected fail-closed warning, got: %v", plan.LogLines)
+	}
+}
+
+// #1454 review: a reducing candidate whose event time sits BEFORE the query's
+// since bound is outside the recovery window and must be rejected.
+func TestHyperliquidKillSwitchClose_AlreadyFlatRecoveryIgnoresFillBeforeSince(t *testing.T) {
+	hlLive := []StrategyConfig{
+		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
+			Args: []string{"sma", "ETH", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 1.0, EntryPrice: 2000}}
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close:    &HyperliquidClose{Symbol: symbol, AlreadyFlat: true},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	fetcher, _ := stubHLStateFetcher(nil, nil)
+	var gotSince time.Time
+	in := defaultHLInputs("0xaddr", true, positions, hlLive,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher)
+	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
+		gotSince = since
+		return &HLUserFillsResult{
+			ByOID: map[string]HLFillSummary{
+				"400": {Coin: "ETH", Fee: 0.4, Qty: 1.0, Px: 1990, ClosedPnLGross: -10,
+					LastTimeMS: since.Add(-time.Minute).UnixMilli()},
+			},
+		}, nil
+	}
+
+	plan := planKillSwitchClose(in)
+	if gotSince.IsZero() {
+		t.Fatal("recovery since timestamp must be populated")
+	}
+	if _, ok := plan.CloseReport.Fills["ETH"]; ok {
+		t.Fatalf("fill before the since bound must not be adopted: %+v", plan.CloseReport.Fills)
 	}
 }
 

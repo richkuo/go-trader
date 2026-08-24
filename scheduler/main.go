@@ -1244,12 +1244,12 @@ func main() {
 			// exposure on the same wallet. Built with isHLLiveReconcilable (the
 			// #620 peer-scope precedent) and consumed ONLY by the kill-switch
 			// surfaces below — never by trailing-stop or risk math.
-			var hlKillSwitchAll []StrategyConfig
-			for _, sc := range cfg.Strategies {
-				if isHLLiveReconcilable(sc) {
-					hlKillSwitchAll = append(hlKillSwitchAll, sc)
-				}
-			}
+			// #1454 review: this is the SAME predicate that built hlReconcileAll,
+			// so the roster aliases that slice instead of re-filtering — one list,
+			// never two rosters to keep identical by hand. If a future change
+			// ever needs the kill switch to diverge from reconcile scope, give
+			// hlKillSwitchAll its own named predicate here.
+			hlKillSwitchAll := hlReconcileAll
 
 			// #345: Partition live OKX strategies for the kill-switch close
 			// path. Perps and spot are separated because only perps support
@@ -1727,9 +1727,11 @@ func main() {
 				// coin it trades. Shared coins may have multiple
 				// per-strategy SL triggers, so preserve every OID.
 				mu.RLock()
-				// #1454: the roster includes live manual strategies and the coin
-				// key goes through hyperliquidConfiguredCoin, so a manual coin's
-				// resting SL/TP triggers are cancelled with the rest (#421/#479).
+				// #1454: the roster includes live manual strategies and every
+				// surface keys coins through hyperliquidRawCoin (RAW, case-
+				// preserved — NOT hyperliquidConfiguredCoin's normalized form),
+				// so a manual coin's resting SL/TP triggers are cancelled with
+				// the rest (#421/#479).
 				hlSLOIDs := collectHLKillSwitchStopOIDs(state.Strategies, hlKillSwitchAll)
 				// #1159: hedge coins the scheduler CURRENTLY holds a leg on.
 				// Gated on the held leg, not on config, so the kill switch

@@ -312,3 +312,146 @@ func TestPlanKillSwitchClose_DeclaredButFlatHedgeCoinStaysUnowned(t *testing.T) 
 		t.Errorf("Unconfigured = %+v; want [SOL]", plan.Unconfigured)
 	}
 }
+
+// #1454 review: every kill-switch surface must resolve a manual strategy's
+// coin through the ONE symbol-first resolver, so a hand-written args list
+// whose args[1] diverges from Symbol can never split close scope from fill
+// booking / trigger cancel.
+func TestHyperliquidRawCoin_ManualSymbolWinsOverArgs(t *testing.T) {
+	sc := StrategyConfig{Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
+		Args: []string{"hold", "BTC", "1h", "--mode=live"}}
+	if got := hyperliquidRawCoin(sc); got != "ETH" {
+		t.Errorf("hyperliquidRawCoin = %q; want ETH (sc.Symbol wins for manual)", got)
+	}
+	if got := hyperliquidConfiguredCoin(sc); got != "ETH" {
+		t.Errorf("hyperliquidConfiguredCoin = %q; want ETH", got)
+	}
+	perps := StrategyConfig{Platform: "hyperliquid", Type: "perps",
+		Args: []string{"sma", "BTC", "1h", "--mode=live"}}
+	if got := hyperliquidRawCoin(perps); got != "BTC" {
+		t.Errorf("hyperliquidRawCoin(perps) = %q; want BTC (args[1])", got)
+	}
+}
+
+func TestForceCloseHyperliquidLive_ManualDivergentArgsStaysInCloseScope(t *testing.T) {
+	// A manual strategy whose hand-written args[1] names a different coin than
+	// its configured symbol must still be closed and booked under sc.Symbol —
+	// the pre-review resolver treated args[1] as authoritative for the close
+	// scope only, leaving the real position unowned while every booking surface
+	// keyed under the symbol.
+	roster := []StrategyConfig{
+		{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
+			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
+	}
+	positions := []HLPosition{{Coin: "ETH", Size: 2.0, EntryPrice: 2000}}
+	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
+		return &HyperliquidCloseResult{
+			Close: &HyperliquidClose{Symbol: symbol,
+				Fill: &HyperliquidCloseFill{TotalSz: 2.0, AvgPx: 2100, Fee: 0.5, OID: 777}},
+			Platform: "hyperliquid",
+		}, nil
+	}
+	fetcher, _ := stubHLStateFetcher(nil, nil)
+	in := defaultHLInputs("0xaddr", true, positions, roster,
+		"portfolio drawdown 25.0% exceeds limit 20.0%",
+		time.Second, closer, fetcher)
+	plan := planKillSwitchClose(in)
+
+	if !plan.OnChainConfirmedFlat {
+		t.Fatalf("expected confirmed-flat plan; Unconfigured=%+v errors=%+v", plan.Unconfigured, plan.CloseReport.Errors)
+	}
+	fill, ok := plan.CloseReport.Fills["ETH"]
+	if !ok || fill.TotalSz != 2.0 {
+		t.Fatalf("fills = %+v; want ETH booked under the raw configured symbol", plan.CloseReport.Fills)
+	}
+
+	state := &StrategyState{
+		ID: "hl-manual-eth-live", Type: "manual", Platform: "hyperliquid", Cash: 1000,
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 2.0, AvgCost: 2000, Side: "long", Multiplier: 1},
+		},
+	}
+	virtualQty := snapshotHyperliquidVirtualQuantities(map[string]*StrategyState{"hl-manual-eth-live": state}, roster)
+	forceCloseKillSwitchPositions(state, roster[0], map[string]float64{"ETH": 2100}, plan.CloseReport.Fills, roster, virtualQty, nil)
+	if len(state.Positions) != 0 {
+		t.Fatalf("positions after apply = %+v; want flat", state.Positions)
+	}
+	var booked *Trade
+	for i := range state.TradeHistory {
+		tr := &state.TradeHistory[i]
+		if tr.ExchangeOrderID != "" {
+			booked = tr
+		}
+	}
+	if booked == nil {
+		t.Fatal("manual leg must book the REAL exchange fill (OID), not fall back to model-only")
+	}
+}
+
+func TestForceCloseAllPositions_ModelOnlyAlertLiveGate(t *testing.T) {
+	drainModelOnlyCloseAlerts()
+	// Unique (strategy, symbol) per sub-case: the global throttle holds slots
+	// for the process lifetime, so shared keys would mask later firings.
+	liveHL := StrategyConfig{ID: "mo-gate-live-hl", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"sma", "MOHLIVE", "1h", "--mode=live"}}
+	paperHL := StrategyConfig{ID: "mo-gate-paper-hl", Platform: "hyperliquid", Type: "perps",
+		Args: []string{"sma", "MOHPAPER", "1h", "--mode=paper"}}
+	okxSpot := StrategyConfig{ID: "mo-gate-live-okx", Platform: "okx", Type: "spot",
+		Args: []string{"sma", "MOOKX", "1h", "--mode=live"}}
+
+	mkState := func(id, sym string, pos *Position) *StrategyState {
+		return &StrategyState{
+			ID: id, Type: "perps", Platform: liveHL.Platform, Cash: 1000,
+			Positions: map[string]*Position{sym: pos},
+		}
+	}
+	long := func(sym string) *Position {
+		return &Position{Symbol: sym, Quantity: 1.0, AvgCost: 100, Side: "long"}
+	}
+
+	// Paper HL perps: model-only row is expected bookkeeping — NO alert.
+	forceCloseAllPositions(mkState(paperHL.ID, "MOHPAPER", long("MOHPAPER")), &paperHL,
+		map[string]float64{"MOHPAPER": 90}, nil)
+	for _, a := range drainModelOnlyCloseAlerts() {
+		if a.StrategyID == paperHL.ID {
+			t.Errorf("paper strategy must never raise the model-only DM, got %+v", a)
+		}
+	}
+
+	// Live OKX spot (no auto-close path): still alerts.
+	forceCloseAllPositions(mkState(okxSpot.ID, "MOOKX", long("MOOKX")), &okxSpot,
+		map[string]float64{"MOOKX": 90}, nil)
+	foundOKX := false
+	for _, a := range drainModelOnlyCloseAlerts() {
+		if a.StrategyID == okxSpot.ID {
+			foundOKX = true
+		}
+	}
+	if !foundOKX {
+		t.Error("live non-HL venue with no auto-close path must still raise the model-only DM")
+	}
+
+	// Live HL perps: alerts.
+	forceCloseAllPositions(mkState(liveHL.ID, "MOHLIVE", long("MOHLIVE")), &liveHL,
+		map[string]float64{"MOHLIVE": 90}, nil)
+	foundHL := false
+	for _, a := range drainModelOnlyCloseAlerts() {
+		if a.StrategyID == liveHL.ID && a.Symbol == "MOHLIVE" {
+			foundHL = true
+		}
+	}
+	if !foundHL {
+		t.Error("live HL perps force-close without a fill must raise the model-only DM")
+	}
+
+	// Corrupt position (qty<=0 OR avgCost<=0): #1009 books a zero-PnL leg with
+	// details set → silent on every mode.
+	corruptPos := &Position{Symbol: "MOCORRUPT", Quantity: -1e-7, AvgCost: 0, Side: "long"}
+	forceCloseAllPositions(mkState(liveHL.ID, "MOCORRUPT", corruptPos), &liveHL,
+		map[string]float64{"MOCORRUPT": 90}, nil)
+	for _, a := range drainModelOnlyCloseAlerts() {
+		if a.StrategyID == liveHL.ID && a.Symbol == "MOCORRUPT" {
+			t.Errorf("corrupt-position close must stay silent, got %+v", a)
+		}
+	}
+}

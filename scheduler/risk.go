@@ -1940,7 +1940,7 @@ func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices m
 	// price/fee rather than the model-only reconciliation adjustment
 	// forceCloseAllPositions would otherwise write.
 	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
-	forceCloseAllPositions(s, prices, logger)
+	forceCloseAllPositions(s, &sc, prices, logger)
 }
 
 // classifyPositionTradeType maps a position to the correct trade_type label
@@ -1981,7 +1981,14 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 
 // forceCloseAllPositions liquidates all open positions at current prices.
 // Called when any circuit breaker fires.
-func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger *StrategyLogger) {
+//
+// sc carries the strategy's config for the #1454-review live gate on the
+// model-only close DM (nil skips the alert — legacy test callers only); every
+// production caller has it. A PAPER strategy never places exchange orders, so
+// its model-only rows are expected bookkeeping and must not page the owner;
+// a live venue close with no fill behind it is exactly what the alert exists
+// for (#1451/#1454).
+func forceCloseAllPositions(s *StrategyState, sc *StrategyConfig, prices map[string]float64, logger *StrategyLogger) {
 	now := time.Now().UTC()
 
 	for symbol, pos := range s.Positions {
@@ -2036,8 +2043,11 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 			// #1451 folded alert (#1454): a model-only row is an estimate
 			// standing in for a real exchange close. Escalate once per
 			// (strategy, symbol) per throttle window instead of leaving the DB
-			// row as the only signal.
-			queueModelOnlyCloseAlert(s.ID, symbol, pos.Quantity)
+			// row as the only signal. Live-only (#1454 review): paper rows
+			// have no exchange position behind them by construction.
+			if sc != nil && isLiveArgs(sc.Args) {
+				queueModelOnlyCloseAlert(s.ID, symbol, pos.Quantity)
+			}
 		}
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
@@ -2310,7 +2320,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 			setTopStepCircuitBreakerPending(sc, s, assist)
 			setOperatorRequiredCircuitBreakerPending(sc, s)
 			if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
-				forceCloseAllPositions(s, prices, logger)
+				forceCloseAllPositions(s, sc, prices, logger)
 			}
 			return false, fmt.Sprintf("%s (%.1f%% > %.1f%%, portfolio=$%.2f peak=$%.2f, denom=%s=$%.2f)",
 				RiskReasonMaxDrawdownExceeded, r.CurrentDrawdownPct, r.MaxDrawdownPct, portfolioValue, r.PeakValue, denomLabel, denom)
@@ -2334,7 +2344,7 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 		setTopStepCircuitBreakerPending(sc, s, assist)
 		setOperatorRequiredCircuitBreakerPending(sc, s)
 		if shouldForceCloseAllPositionsOnCircuitBreaker(sc, assist) {
-			forceCloseAllPositions(s, prices, logger)
+			forceCloseAllPositions(s, sc, prices, logger)
 		}
 		return false, fmt.Sprintf("%s (%d in a row, threshold %d)", RiskReasonConsecutiveLosses, r.ConsecutiveLosses, lossStreakThreshold)
 	}

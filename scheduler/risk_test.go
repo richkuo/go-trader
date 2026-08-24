@@ -781,7 +781,7 @@ func TestForceCloseAllPositionsRecordsDirectionalTradeSides(t *testing.T) {
 		RiskState:    RiskState{},
 	}
 
-	forceCloseAllPositions(s, map[string]float64{"BTC": 51000, "ETH": 2800}, nil)
+	forceCloseAllPositions(s, nil, map[string]float64{"BTC": 51000, "ETH": 2800}, nil)
 
 	if len(s.TradeHistory) != 4 {
 		t.Fatalf("TradeHistory len = %d, want 4", len(s.TradeHistory))
@@ -842,7 +842,7 @@ func TestForceCloseAllPositions_CorruptPositionBooksZeroPnL(t *testing.T) {
 			// price far from avgCost so a non-zero PnL WOULD be booked if the
 			// corrupt fields were used (e.g. 0.5 * 2150 = 1075, the rowid-54
 			// magnitude). The guard must keep it at zero.
-			forceCloseAllPositions(s, map[string]float64{tc.pos.Symbol: 2150}, nil)
+			forceCloseAllPositions(s, nil, map[string]float64{tc.pos.Symbol: 2150}, nil)
 
 			if len(s.TradeHistory) != 1 {
 				t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
@@ -888,7 +888,7 @@ func TestForceCloseAllPositions_HealthyPositionReconciles(t *testing.T) {
 		ClosedPositions: []ClosedPosition{},
 		RiskState:       RiskState{},
 	}
-	forceCloseAllPositions(s, map[string]float64{"ETH": 2100}, nil)
+	forceCloseAllPositions(s, nil, map[string]float64{"ETH": 2100}, nil)
 	if len(s.TradeHistory) != 1 || len(s.ClosedPositions) != 1 {
 		t.Fatalf("history=%d closed=%d, want 1/1", len(s.TradeHistory), len(s.ClosedPositions))
 	}
@@ -914,7 +914,7 @@ func TestForceCloseAllPositions_ResidualRowMarkedReconcileAdjustment(t *testing.
 		ClosedPositions: []ClosedPosition{},
 		RiskState:       RiskState{},
 	}
-	forceCloseAllPositions(s, map[string]float64{"ETH": 2100}, nil)
+	forceCloseAllPositions(s, nil, map[string]float64{"ETH": 2100}, nil)
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
 	}
@@ -947,7 +947,7 @@ func TestForceCloseAllPositions_OptionRowsMarkedReconcileAdjustment(t *testing.T
 		ClosedPositions: []ClosedPosition{},
 		RiskState:       RiskState{},
 	}
-	forceCloseAllPositions(s, nil, nil)
+	forceCloseAllPositions(s, nil, nil, nil)
 	if len(s.TradeHistory) != 2 {
 		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
 	}
@@ -3550,7 +3550,7 @@ func TestForceCloseAllPositions_TradeType_PerpsVsFutures(t *testing.T) {
 				TradeHistory: []Trade{},
 				RiskState:    RiskState{},
 			}
-			forceCloseAllPositions(s, map[string]float64{"BTC": 51000}, nil)
+			forceCloseAllPositions(s, nil, map[string]float64{"BTC": 51000}, nil)
 			if len(s.TradeHistory) != 1 {
 				t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
 			}

@@ -255,7 +255,7 @@ func TestForceCloseAllPositions_StampsProtectionSnapshot(t *testing.T) {
 		RiskState:    RiskState{},
 	}
 
-	forceCloseAllPositions(s, map[string]float64{"BTC": 51000}, nil)
+	forceCloseAllPositions(s, nil, map[string]float64{"BTC": 51000}, nil)
 
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
