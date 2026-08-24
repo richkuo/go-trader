@@ -1219,8 +1219,12 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 
 // LoadModelOnlyCloseBasis recovers the accounting basis of a persisted
 // circuit-breaker closed_positions row so a restart between the CB fire and
-// the real fill does not lose the reconcile path (#1455).
-func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol string, closedAt time.Time) (*modelOnlyClosedBasis, error) {
+// the real fill does not lose the reconcile path (#1455). closeReason is part
+// of the identity: a fill may only recover a basis produced by the SAME close
+// event, and this loader is the only basis source production executes after
+// SaveState clears the in-memory buffer (#1455 review round 2) — hardcoding
+// one reason here made the same-event guard test-only.
+func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol, closeReason string, closedAt time.Time) (*modelOnlyClosedBasis, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
 	}
@@ -1228,7 +1232,7 @@ func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol string, closedAt 
 		`SELECT quantity, avg_cost, side, multiplier FROM closed_positions
 		 WHERE strategy_id = ? AND symbol = ? AND close_reason = ? AND closed_at = ?
 		 ORDER BY id DESC LIMIT 1`,
-		strategyID, symbol, "circuit_breaker", formatTime(closedAt))
+		strategyID, symbol, closeReason, formatTime(closedAt))
 	var b modelOnlyClosedBasis
 	if err := row.Scan(&b.Quantity, &b.AvgCost, &b.Side, &b.Multiplier); err != nil {
 		return nil, fmt.Errorf("load closed-position basis for %s %s @ %s: %w", strategyID, symbol, formatTime(closedAt), err)
@@ -2940,7 +2944,7 @@ func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow
 	}
 	rows, err := sdb.db.Query(`
 		SELECT rowid, timestamp, symbol, COALESCE(position_id, '') AS position_id,
-		       side, quantity, price, value, trade_type, is_close, exchange_order_id, exchange_fee, realized_pnl,
+		       side, quantity, price, value, trade_type, details, is_close, exchange_order_id, exchange_fee, realized_pnl,
 		       COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 		FROM trades
 		WHERE strategy_id = ?
@@ -2954,7 +2958,7 @@ func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow
 		var t TradeBackfillRow
 		var tsStr string
 		var isCloseInt, pnlGrossInt int
-		if err := rows.Scan(&t.RowID, &tsStr, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &isCloseInt,
+		if err := rows.Scan(&t.RowID, &tsStr, &t.Symbol, &t.PositionID, &t.Side, &t.Quantity, &t.Price, &t.Value, &t.TradeType, &t.Details, &isCloseInt,
 			&t.ExchangeOrderID, &t.ExchangeFee, &t.RealizedPnL, &pnlGrossInt, &t.FeeSource); err != nil {
 			return nil, fmt.Errorf("scan trade: %w", err)
 		}

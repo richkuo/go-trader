@@ -840,8 +840,14 @@ func strategyHasCloseTradeForOID(s *StrategyState, exchangeOrderID string) bool 
 		return false
 	}
 	for i := len(s.TradeHistory) - 1; i >= 0; i-- {
-		t := s.TradeHistory[i]
-		if t.IsClose && t.ExchangeOrderID == exchangeOrderID {
+		t := &s.TradeHistory[i]
+		if !t.IsClose {
+			continue
+		}
+		// ExchangeOrderID covers normal rows; the oids= token covers an
+		// in-flight partial model-only reconciliation, whose ExchangeOrderID
+		// stays empty until the sequence completes (#1455 review round 2).
+		if t.ExchangeOrderID == exchangeOrderID || tradeHasModelOnlySliceOID(t, exchangeOrderID) {
 			return true
 		}
 	}

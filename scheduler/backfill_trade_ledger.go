@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -102,6 +103,15 @@ func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[str
 	byOID := make(map[string][]rowMatch)
 	for _, t := range trades {
 		if t.FeeSource != FeeSourceReconcileAdjustment || !t.IsClose || t.ExchangeOrderID != "" || t.Quantity <= 0 {
+			continue
+		}
+		// An in-flight partial model-only reconciliation is LIVE state the
+		// running scheduler still owns: its quantity covers only the filled
+		// slice, so matching it to a fill here would rewrite the row and
+		// stamp an OID that blocks the residual from ever reconciling
+		// (#1455 review round 2 optional 4). Untouched pre-#1455 rows carry
+		// no marker and stay repairable.
+		if strings.Contains(t.Details, modelOnlyFillReconciledMarker) {
 			continue
 		}
 		candidates := findHLFillCandidatesByCoinQty(fillMap, t.Symbol, t.Quantity, false, t.Timestamp, tradeLedgerNoOIDRepairWindow, reservedOIDs)

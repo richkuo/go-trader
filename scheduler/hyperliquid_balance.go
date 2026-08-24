@@ -2610,6 +2610,21 @@ func runPendingHyperliquidCircuitCloses(
 				break
 			}
 			if sz <= 1e-15 {
+				// #418: flat on-chain, nothing to close. #1455 review round 2:
+				// if a partial fill-reconciled row is open for this coin, the
+				// residual was finished by another mechanism (e.g. a resting
+				// stop) and the row would stay half-corrected silently — flag
+				// it for operator repair instead of just clearing pending.
+				mu.RLock()
+				var abandonMsg string
+				if ss := state.Strategies[j.stratID]; ss != nil {
+					abandonMsg = warnAbandonedPartialModelClose(ss, c.Symbol, time.Now().UTC())
+				}
+				mu.RUnlock()
+				if abandonMsg != "" && ownerDM != nil {
+					fmt.Printf("[CRITICAL] hl-circuit-close: %s\n", abandonMsg)
+					ownerDM(abandonMsg)
+				}
 				continue
 			}
 			partial := sz
@@ -2818,7 +2833,15 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 		// defensive branch below. The caller's close reason is threaded
 		// through so a fill only ever corrects a row from the SAME close
 		// event (#1455 review).
-		if reconcileModelOnlyCloseWithFill(s, symbol, fillSz, fillPx, fillFee, fillOID, closeReason) {
+		//
+		// modelOnlyReconcilePersistFailed ALSO falls through: the correction
+		// rolled back, so the defensive audit row below is what lands this
+		// fill's price/fee/OID durably — a full fill's drain observation is
+		// never re-presented, and dropping it would lose the exchange fee
+		// forever while the alert claimed an automatic retry (#1455 review
+		// round 2 optional 2). The untouched model-only row keeps its empty
+		// OID and stays matchable for offline backfill repair.
+		if reconcileModelOnlyCloseWithFill(s, symbol, fillSz, fillPx, fillFee, fillOID, closeReason) == modelOnlyReconcileApplied {
 			return
 		}
 		// No virtual position to decrement — record defensive Trade with no

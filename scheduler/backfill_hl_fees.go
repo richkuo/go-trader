@@ -76,6 +76,7 @@ type TradeBackfillRow struct {
 	Price           float64
 	Value           float64
 	TradeType       string
+	Details         string
 	IsClose         bool
 	ExchangeOrderID string
 	ExchangeFee     float64

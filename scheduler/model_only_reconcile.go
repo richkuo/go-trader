@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,10 +35,12 @@ import (
 // Price keeps the mark-derived estimate price and ExchangeOrderID stays empty
 // until completion, which is what lets the next drain retry find and extend
 // the same row; on the final slice the row takes the cumulative VWAP, the last
-// fill's OID, and FeeSourceUserFills. Per-fill dedup rides the existing #954
+// fill's OID, and FeeSourceUserFills. Per-fill dedup rides #954's
 // strategyHasCloseTradeForOID guard at the top of
 // applyHyperliquidCircuitCloseFill, which runs before this branch for every
-// fill.
+// fill; while a sequence is open the guard reads each applied slice's OID from
+// the row's oids= Details token, since ExchangeOrderID stays empty until
+// completion (#1455 review round 2 optional 3).
 //
 // Conventions preserved:
 //   - #954 one-fill-one-row: the completed row carries the closing OID, so
@@ -87,8 +90,10 @@ var modelOnlyCloseUpdater func(u modelOnlyCloseCorrection) error
 
 // modelOnlyCloseBasisLoader is the hook for recovering the closed_positions
 // basis when it is no longer in the in-memory buffer (restart between fire and
-// fill). Set in main() to (*StateDB).LoadModelOnlyCloseBasis.
-var modelOnlyCloseBasisLoader func(strategyID, symbol string, closedAt time.Time) (*modelOnlyClosedBasis, error)
+// fill). Set in main() to (*StateDB).LoadModelOnlyCloseBasis. closeReason is
+// part of the lookup key: the same-event guard must hold on THIS path — it is
+// the only one production executes (#1455 review round 2).
+var modelOnlyCloseBasisLoader func(strategyID, symbol, closeReason string, closedAt time.Time) (*modelOnlyClosedBasis, error)
 
 const modelOnlyDetailMarker = "model-only reconciliation adjustment"
 
@@ -148,7 +153,7 @@ func modelOnlyCloseBasisFor(s *StrategyState, symbol string, ts time.Time, close
 		}
 	}
 	if modelOnlyCloseBasisLoader != nil {
-		basis, err := modelOnlyCloseBasisLoader(s.ID, symbol, ts)
+		basis, err := modelOnlyCloseBasisLoader(s.ID, symbol, closeReason, ts)
 		if err == nil && basis != nil {
 			return basis
 		}
@@ -159,36 +164,54 @@ func modelOnlyCloseBasisFor(s *StrategyState, symbol string, ts time.Time, close
 	return nil
 }
 
+// modelOnlyReconcileOutcome tells the caller how to finish accounting for the
+// fill.
+type modelOnlyReconcileOutcome int
+
+const (
+	// modelOnlyReconcileNone — no recoverable basis (or refused): genuinely
+	// unexplained fill; caller takes the defensive zero-PnL branch.
+	modelOnlyReconcileNone modelOnlyReconcileOutcome = iota
+	// modelOnlyReconcileApplied — the fill is fully accounted for (including
+	// in-memory); caller must NOT book anything else.
+	modelOnlyReconcileApplied
+	// modelOnlyReconcilePersistFailed — the DB correction failed and every
+	// in-memory mutation was rolled back. The caller STILL books the
+	// defensive audit row so the fill's price/fee/OID land durably — the
+	// estimate stands uncorrected and matchable for offline backfill repair,
+	// while a silently dropped fill would lose the exchange fee forever
+	// (#1455 review round 2 optional 2). The defensive row's OID also keeps
+	// a replayed observation from double-booking via #954.
+	modelOnlyReconcilePersistFailed
+)
+
 // reconcileModelOnlyCloseWithFill corrects a prior fire-time model-only close
 // row with the real exchange fill. Called from
 // applyHyperliquidCircuitCloseFill's no-virtual-position branch BEFORE the
-// defensive zero-PnL row; true means the caller must return (the fill is fully
-// accounted for — including the rolled-back-on-persist-failure case, where the
-// defensive branch must NOT stamp the fill's OID), false means "no recoverable
-// basis — take the defensive branch".
+// defensive zero-PnL row.
 //
 // Caller must hold mu (it mutates Cash, DailyPnL, TradeHistory,
 // ClosedPositions). The DB correction runs inside the same critical section:
 // RecordTrade's eager persist already establishes SQLite writes under mu, and
 // the trade/closed_positions/diagnostics corrections must not be observable
 // half-applied by the cycle-end save.
-func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee float64, fillOID int64, closeReason string) bool {
+func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fillPx, fillFee float64, fillOID int64, closeReason string) modelOnlyReconcileOutcome {
 	if s == nil || fillSz <= 0 || fillPx <= 0 || fillOID <= 0 {
-		return false
+		return modelOnlyReconcileNone
 	}
 	if closeReason == "" {
 		closeReason = "circuit_breaker"
 	}
 	t := findModelOnlyCloseTrade(s, symbol)
 	if t == nil {
-		return false
+		return modelOnlyReconcileNone
 	}
 	basis := modelOnlyCloseBasisFor(s, symbol, t.Timestamp, closeReason)
 	if basis == nil || basis.Quantity <= 0 || basis.AvgCost <= 0 || basis.Multiplier <= 0 {
 		// A non-positive multiplier has no qty*mult*price-delta meaning and a
 		// corrupt basis would book meaningless PnL — refuse both (#1455 review
 		// case c); the caller falls through to the zero-PnL defensive branch.
-		return false
+		return modelOnlyReconcileNone
 	}
 
 	// Untouched rows carry FULL-basis estimate semantics: Quantity = basis
@@ -212,7 +235,7 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 	if qty <= 1e-9 {
 		// Every unit of the persisted basis is already reconciled; exposure
 		// beyond it is genuinely unexplained — defensive branch.
-		return false
+		return modelOnlyReconcileNone
 	}
 	feeShare := fillFee
 	if fillSz > qty+1e-9 {
@@ -242,12 +265,38 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 	complete := filledAfter >= basis.Quantity-max(1e-9, basis.Quantity*1e-6)
 
 	label := hyperliquidOnChainCloseTradeLabel(closeReason)
+	// Every applied slice's exchange order id is recorded on the row the
+	// moment it is applied (#1455 review round 2 optional 3): while a sequence
+	// is open ExchangeOrderID stays empty, so #954's strategyHasCloseTradeForOID
+	// scans these oids= tokens too — without them a replayed observation of an
+	// already-applied slice would book twice.
+	curOID := strconv.FormatInt(fillOID, 10)
+	sliceOIDs := curOID
+	if touched {
+		prev := modelOnlySliceOIDs(t.Details)
+		if len(prev) > 0 {
+			seen := false
+			for _, o := range prev {
+				if o == curOID {
+					seen = true
+					break
+				}
+			}
+			sliceOIDs = strings.Join(prev, ",")
+			if !seen {
+				sliceOIDs += "," + curOID
+			}
+		}
+	}
 	var details, oidStr string
 	if complete {
-		oidStr = strconv.FormatInt(fillOID, 10)
-		details = fmt.Sprintf("%s [fill-reconciled], PnL: $%.2f gross (fee $%.4f) (%s)", label, cumGross, cumFee, modelOnlyDetailMarker)
+		oidStr = curOID
+		// The completed row keeps every applied slice's OID in Details: the
+		// final one also lands in ExchangeOrderID, but an early slice's replay
+		// after completion must still be caught by #954's scan.
+		details = fmt.Sprintf("%s [fill-reconciled oids=%s], PnL: $%.2f gross (fee $%.4f) (%s)", label, sliceOIDs, cumGross, cumFee, modelOnlyDetailMarker)
 	} else {
-		details = fmt.Sprintf("%s [fill-reconciled partial %.6f/%.6f], PnL so far: $%.2f gross (fee $%.4f) (%s)", label, filledAfter, basis.Quantity, cumGross, cumFee, modelOnlyDetailMarker)
+		details = fmt.Sprintf("%s [fill-reconciled partial %.6f/%.6f oids=%s], PnL so far: $%.2f gross (fee $%.4f) (%s)", label, filledAfter, basis.Quantity, sliceOIDs, cumGross, cumFee, modelOnlyDetailMarker)
 	}
 
 	// Snapshot everything the mutation touches so a persist failure can roll
@@ -292,27 +341,20 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 		rolloverDailyPnL(&s.RiskState)
 		s.RiskState.DailyPnL += deltaNet
 	}
-	// The loss STREAK was decided at fire time off the estimate's sign;
-	// re-litigate ONLY on a sign transition between the estimate and the
-	// cumulative realized net (#1455 review optional 5) — decrementing when a
-	// booked loss turns out a win, incrementing on the inverse — so later
-	// fills of the same position never double-count the round trip. Hedge
-	// legs were already streak-excluded at fire time (#1159).
-	if t.TradeType != hedgeTradeType {
-		estLoss := unit*(estPx-basis.AvgCost) < 0
-		prevGross := cumGrossBefore
-		if !touched {
-			// An untouched row's streak-relevant prior state is the FULL
-			// fire-time estimate (what RecordTradeResult booked at fire), not
-			// zero — otherwise a first fill that flips the sign could never
-			// undo the fire-time streak move.
-			prevGross = basis.Quantity * unit * (estPx - basis.AvgCost)
-		}
-		prevNet := prevGross - cumFeeBefore
-		newNet := cumGross - cumFee
-		if estLoss && prevNet < 0 && newNet >= 0 && s.RiskState.ConsecutiveLosses > 0 {
-			s.RiskState.ConsecutiveLosses--
-		} else if !estLoss && prevNet >= 0 && newNet < 0 {
+	// The loss STREAK was decided at fire time off the estimate's PRE-FEE
+	// sign (#954/#292 semantics). Re-litigate ONCE, when the sequence
+	// COMPLETES, by comparing the full-basis estimate sign against the
+	// cumulative pre-fee realized sign — never on an intermediate slice,
+	// whose transient cumulative sign can differ from the final outcome and
+	// could otherwise move the counter in one direction only (#1455 review
+	// round 2). Hedge legs were already streak-excluded at fire time (#1159).
+	if complete && t.TradeType != hedgeTradeType {
+		estGross := basis.Quantity * unit * (estPx - basis.AvgCost)
+		if estGross < 0 {
+			if cumGross >= 0 && s.RiskState.ConsecutiveLosses > 0 {
+				s.RiskState.ConsecutiveLosses--
+			}
+		} else if cumGross < 0 {
 			s.RiskState.ConsecutiveLosses++
 		}
 	}
@@ -348,18 +390,97 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 			if cpIdx >= 0 {
 				s.ClosedPositions[cpIdx] = snapCP
 			}
-			msg := fmt.Sprintf("model-only close reconciliation persist failed for %s %s: %v — correction rolled back; retries on the next observation of this fill", s.ID, symbol, err)
+			msg := fmt.Sprintf("model-only close reconciliation persist failed for %s %s: %v — correction rolled back; the fill is recorded below as a zero-PnL audit row and the persisted estimate stays matchable — run backfill trade-ledger to repair it", s.ID, symbol, err)
 			fmt.Printf("[state] WARN: %s\n", msg)
 			if tradePersistWarn != nil {
 				tradePersistWarn(msg)
 			}
-			// Handled: returning true keeps the caller OFF the defensive
-			// branch, whose row would stamp this fill's OID and make the
-			// uncorrected model row permanently unreconcilable.
-			return true
+			// The caller books the defensive audit row on this outcome: a full
+			// fill whose drain observation is consumed would otherwise lose its
+			// price/fee/OID permanently while nothing re-presents it (#1455
+			// review round 2 optional 2). The untouched model row keeps its
+			// empty OID, so offline backfill can still true up the estimate.
+			return modelOnlyReconcilePersistFailed
 		}
 	}
 	fmt.Printf("[hl-sync] %s/%s: reconciled model-only %s close with fill oid=%d qty=%.6f/%.6f px=%.6f fee=%.6f cum_gross=%.2f cash_delta=%.2f complete=%v (#1455)\n",
 		s.ID, symbol, closeReason, fillOID, filledAfter, basis.Quantity, fillPx, fillFee, cumGross, deltaNet, complete)
-	return true
+	return modelOnlyReconcileApplied
+}
+
+// modelOnlyOIDsToken opens the per-slice exchange order id list inside a
+// partially-reconciled row's Details ("... oids=a,b], ..."). The token is
+// written the moment the first slice is applied and dropped when the row
+// completes (the final OID moves to ExchangeOrderID).
+const modelOnlyOIDsToken = " oids="
+
+// modelOnlySliceOIDs extracts the per-fill exchange order ids recorded while a
+// partial reconciliation sequence is open.
+func modelOnlySliceOIDs(details string) []string {
+	i := strings.Index(details, modelOnlyOIDsToken)
+	if i < 0 {
+		return nil
+	}
+	rest := details[i+len(modelOnlyOIDsToken):]
+	if j := strings.IndexByte(rest, ']'); j >= 0 {
+		rest = rest[:j]
+	}
+	var out []string
+	for _, p := range strings.Split(rest, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// tradeHasModelOnlySliceOID reports whether an in-flight partial reconciliation
+// row has already applied this fill (#954 dedup extension — ExchangeOrderID is
+// empty until completion, but every applied slice's OID is on the row).
+func tradeHasModelOnlySliceOID(t *Trade, oidStr string) bool {
+	if t == nil || oidStr == "" || !t.IsClose {
+		return false
+	}
+	for _, o := range modelOnlySliceOIDs(t.Details) {
+		if o == oidStr {
+			return true
+		}
+	}
+	return false
+}
+
+// modelOnlyAbandonedAlerts throttles the abandoned-residual owner DM to one
+// alert per (strategy, symbol) per day — the condition can persist across many
+// drain cycles until an operator repairs the rows.
+var modelOnlyAbandonedAlerts sync.Map // "strategy|symbol" -> time.Time of last notify
+
+const modelOnlyAbandonedAlertCooldown = 24 * time.Hour
+
+// warnAbandonedPartialModelClose flags a partially-reconciled model-only row
+// whose coin has gone flat on-chain before the residual retried: the row stays
+// half-corrected forever (quantity/PnL cover only the filled slice while cash
+// retains the residual's estimate share) unless an operator converges it, so it
+// must never be silently abandoned (#1455 review round 2 optional 1). Returns
+// the owner DM message when one should be sent now. Caller must hold mu (it
+// reads TradeHistory); safe to call every cycle.
+func warnAbandonedPartialModelClose(s *StrategyState, symbol string, now time.Time) string {
+	if s == nil {
+		return ""
+	}
+	key := s.ID + "|" + symbol
+	t := findModelOnlyCloseTrade(s, symbol)
+	if t == nil || t.ExchangeOrderID != "" || !strings.Contains(t.Details, modelOnlyFillReconciledMarker) {
+		// No in-flight sequence: drop any stale throttle entry so a future
+		// partial sequence alerts on its first cycle.
+		modelOnlyAbandonedAlerts.Delete(key)
+		return ""
+	}
+	if v, ok := modelOnlyAbandonedAlerts.Load(key); ok {
+		if last, ok2 := v.(time.Time); ok2 && now.Sub(last) < modelOnlyAbandonedAlertCooldown {
+			return ""
+		}
+	}
+	modelOnlyAbandonedAlerts.Store(key, now)
+	return fmt.Sprintf("model-only close reconciliation ABANDONED for %s %s: partial row covers %.6f (fee $%.4f) but the coin is flat on-chain — the residual was finished by another mechanism (e.g. a resting stop). The trade row, closed_positions and cash are inconsistent; run backfill trade-ledger or reconcile manually.",
+		s.ID, symbol, t.Quantity, t.ExchangeFee)
 }
