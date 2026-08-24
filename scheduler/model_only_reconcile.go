@@ -365,20 +365,25 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 		s.RiskState.DailyPnL += deltaNet
 	}
 	// The loss STREAK was decided at fire time by RecordTradeResult off the
-	// estimate's PRE-FEE sign: a WIN resets the counter to 0, a LOSS
-	// increments it. Reconstruct exactly that outcome for the TRUE sign —
-	// never a ±1 nudge, which under-counts when the fire reset an already
-	// long streak (#1455 review round 3). Only ONCE, when the sequence
-	// COMPLETES: an intermediate slice's transient cumulative sign can differ
-	// from the final outcome. Hedge legs were already streak-excluded at fire
-	// time (#1159).
+	// estimate's PRE-FEE sign (the model-only row has no fee, so gross==net
+	// there): a WIN resets the counter to 0, a LOSS increments it.
+	// Reconstruct exactly that outcome for the TRUE sign — never a ±1 nudge,
+	// which under-counts when the fire reset an already long streak (#1455
+	// review round 3). The truth side classifies on the NET figure, matching
+	// RecordTradeResult everywhere else: every real close hands it pnl minus
+	// fee, so a fill inside the fee band (cumGross >= 0 but cumNet < 0) is a
+	// LOSS for the streak (#1455 review round 6). Only ONCE, when the
+	// sequence COMPLETES: an intermediate slice's transient cumulative sign
+	// can differ from the final outcome. Hedge legs were already
+	// streak-excluded at fire time (#1159).
 	if complete && t.TradeType != hedgeTradeType {
 		estGross := basis.Quantity * unit * (estPx - basis.AvgCost)
+		cumNet := cumGross - cumFee
 		switch {
-		case estGross < 0 && cumGross >= 0:
+		case estGross < 0 && cumNet >= 0:
 			// Fire booked pre-fire+1; the truth is a win → reset to 0.
 			s.RiskState.ConsecutiveLosses = 0
-		case estGross >= 0 && cumGross < 0:
+		case estGross >= 0 && cumNet < 0:
 			// Fire RESET to 0; the truth is a loss → pre-fire+1. The pre-fire
 			// value rides on the row (stamped at force-close); rows created
 			// before that stamp fall back to +1 from the zeroed counter.

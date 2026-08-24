@@ -1059,6 +1059,88 @@ func TestModelOnlyClose_PreFireStreakRecoveredFromRowStamp(t *testing.T) {
 	}
 }
 
+func TestModelOnlyClose_StreakClassifiedOnNetPnL(t *testing.T) {
+	// #1455 review round 6 must-survive: the TRUE outcome is classified on
+	// the NET figure (cumGross - cumFee), matching RecordTradeResult — a fill
+	// inside the fee band (gross >= 0, net < 0) is a LOSS for the streak.
+	resetModelOnlyReconcileHooks(t)
+	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
+	now := time.Now().UTC()
+
+	// (a): estimate a LOSS (fire booked pre-fire+1), fill nets +0.20 gross
+	// but -0.40 after the fee — still a loss, so the counter stays at 4
+	// (never resets to 0 on the pre-fee sign).
+	s := &StrategyState{
+		ID: "hl-fee-a", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		RiskState: RiskState{ConsecutiveLosses: 4, DailyPnLDate: now.Format("2006-01-02")}, // 3 + fire-time loss
+	}
+	estLoss := 2.0 * (2990 - 3000) // -20 estimated loss
+	s.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: s.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
+		Price: 2990, Value: 5980, TradeType: "perps", PositionID: "pos-fa", IsClose: true,
+		RealizedPnL: estLoss, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close long, PnL: $%.2f (%s; no exchange fill), pre-streak=3", estLoss, modelOnlyDetailMarker),
+	}}
+	s.ClosedPositions = []ClosedPosition{{
+		StrategyID: s.ID, Symbol: "ETH", Quantity: 2, AvgCost: 3000, Side: "long",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 2990, RealizedPnL: estLoss, CloseReason: "circuit_breaker",
+	}}
+	if reconcileModelOnlyCloseWithFill(s, "ETH", 2, 3000.10, 0.60, 850, "") != modelOnlyReconcileApplied {
+		t.Fatal("fill must reconcile")
+	}
+	if got := s.RiskState.ConsecutiveLosses; got != 4 {
+		t.Errorf("net loss inside the fee band must keep pre-fire+1 = 4, got %d", got)
+	}
+
+	// (b): estimate a WIN (fire RESET to 0), fill nets +0.10 gross but
+	// -0.40 after the fee — a net loss, so the counter must become
+	// pre-fire+1 = 3, not stay 0.
+	s2 := &StrategyState{
+		ID: "hl-fee-b", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		RiskState: RiskState{ConsecutiveLosses: 0, DailyPnLDate: now.Format("2006-01-02")}, // fire zeroed it
+	}
+	estWin := 2.0 * (3010 - 3000) // +20 estimated win
+	s2.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: s2.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
+		Price: 3010, Value: 6020, TradeType: "perps", PositionID: "pos-fb", IsClose: true,
+		RealizedPnL: estWin, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close long, PnL: $%.2f (%s; no exchange fill), pre-streak=2", estWin, modelOnlyDetailMarker),
+	}}
+	s2.ClosedPositions = []ClosedPosition{{
+		StrategyID: s2.ID, Symbol: "ETH", Quantity: 2, AvgCost: 3000, Side: "long",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 3010, RealizedPnL: estWin, CloseReason: "circuit_breaker",
+	}}
+	if reconcileModelOnlyCloseWithFill(s2, "ETH", 2, 3000.05, 0.50, 851, "") != modelOnlyReconcileApplied {
+		t.Fatal("fill must reconcile")
+	}
+	if got := s2.RiskState.ConsecutiveLosses; got != 3 {
+		t.Errorf("net loss under an estimated win must become pre-fire+1 = 3, got %d", got)
+	}
+
+	// (c): a HEDGE leg in the same fee band leaves any non-zero streak
+	// untouched in both directions.
+	sh := &StrategyState{
+		ID: "hl-fee-hedge", Type: "perps", Platform: "hyperliquid",
+		RiskState: RiskState{ConsecutiveLosses: 7, DailyPnLDate: now.Format("2006-01-02")},
+	}
+	sh.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: sh.ID, Symbol: "SOL", Side: "buy", Quantity: 10,
+		Price: 95, Value: 950, TradeType: hedgeTradeType, IsClose: true,
+		RealizedPnL: 0.10, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close short, PnL: $0.10 (%s; no exchange fill), pre-streak=6", modelOnlyDetailMarker),
+	}}
+	sh.ClosedPositions = []ClosedPosition{{
+		StrategyID: sh.ID, Symbol: "SOL", Quantity: 10, AvgCost: 95, Side: "short",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 95, RealizedPnL: 0.10, CloseReason: "circuit_breaker",
+	}}
+	if reconcileModelOnlyCloseWithFill(sh, "SOL", 10, 94.995, 0.90, 852, "") != modelOnlyReconcileApplied {
+		t.Fatal("hedge fill must reconcile")
+	}
+	if got := sh.RiskState.ConsecutiveLosses; got != 7 {
+		t.Errorf("hedge correction in the fee band must never touch the streak, got %d", got)
+	}
+}
+
 func TestModelOnlyClose_BasisLookupErrorAlertsNoRowsStaySilent(t *testing.T) {
 	// #1455 review round 3 optional 2 must-survive (a): a genuine query
 	// failure raises the operator alert, not just stdout. (b): an ordinary
