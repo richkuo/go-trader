@@ -185,6 +185,7 @@ func main() {
 	// real exchange fill in one transaction across trades/closed_positions/diagnostics.
 	modelOnlyCloseUpdater = stateDB.ReconcileModelOnlyClose
 	modelOnlyCloseBasisLoader = stateDB.LoadModelOnlyCloseBasis
+	modelOnlyCloseAbandonMarker = stateDB.MarkModelOnlyCloseAbandoned
 
 	// #1431: open the shared live→paper decision log when configured. Both
 	// the live writer deployment and the paper mirror deployment open the

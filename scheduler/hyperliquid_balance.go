@@ -2290,6 +2290,39 @@ func lookupStrategyConfig(strategies []StrategyConfig, id string) *StrategyConfi
 	return nil
 }
 
+// checkAbandonedPartialModelClose raises the abandoned-partial owner DM when
+// strategy stratID holds an in-flight partial fill-reconciled row for symbol
+// (#1455 review round 3). Wired at EVERY site that ends a pending close without
+// a residual retry — coin absent-or-zero in the snapshot, alreadyFlat closer
+// outcome, and the non-live/shared-coin guards that clear pending outright —
+// because a flat coin is usually absent from the snapshot, so no single flat
+// signal covers every abandonment path.
+func checkAbandonedPartialModelClose(state *AppState, stratID, symbol string, mu *sync.RWMutex, ownerDM func(string)) {
+	if symbol == "" {
+		return
+	}
+	now := time.Now().UTC()
+	mu.RLock()
+	var msg string
+	if ss := state.Strategies[stratID]; ss != nil {
+		msg = warnAbandonedPartialModelClose(ss, symbol, now)
+	}
+	mu.RUnlock()
+	if msg != "" && ownerDM != nil {
+		fmt.Printf("[CRITICAL] hl-circuit-close: %s\n", msg)
+		ownerDM(msg)
+	}
+}
+
+// firstPendingSymbol returns the drain's first queued symbol for the guard
+// sites that clear pending before per-symbol symbols are enumerated.
+func firstPendingSymbol(p PendingCircuitClose) string {
+	if len(p.Symbols) == 0 {
+		return ""
+	}
+	return p.Symbols[0].Symbol
+}
+
 // runPendingHyperliquidCircuitCloses drains the hyperliquid entry of
 // RiskState.PendingCircuitCloses for every strategy, submitting reduce-only HL
 // closes outside the state mutex. Retries next scheduler cycle on failure
@@ -2564,6 +2597,7 @@ func runPendingHyperliquidCircuitCloses(
 		}
 		sc := lookupStrategyConfig(strategies, j.stratID)
 		if sc == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+			checkAbandonedPartialModelClose(state, j.stratID, firstPendingSymbol(j.pending), mu, ownerDM)
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
@@ -2574,6 +2608,7 @@ func runPendingHyperliquidCircuitCloses(
 		if sym := hyperliquidConfiguredCoin(*sc); sym != "" && len(hlLiveStrategiesForCoin(sym, hlCircuitPeerAll)) > 1 {
 			fmt.Printf("[INFO] hl-circuit-close: strategy %s coin %s shares the wallet position with peers — clearing pending close and leaving exchange position untouched\n",
 				j.stratID, sym)
+			checkAbandonedPartialModelClose(state, j.stratID, sym, mu, ownerDM)
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
@@ -2615,16 +2650,7 @@ func runPendingHyperliquidCircuitCloses(
 				// residual was finished by another mechanism (e.g. a resting
 				// stop) and the row would stay half-corrected silently — flag
 				// it for operator repair instead of just clearing pending.
-				mu.RLock()
-				var abandonMsg string
-				if ss := state.Strategies[j.stratID]; ss != nil {
-					abandonMsg = warnAbandonedPartialModelClose(ss, c.Symbol, time.Now().UTC())
-				}
-				mu.RUnlock()
-				if abandonMsg != "" && ownerDM != nil {
-					fmt.Printf("[CRITICAL] hl-circuit-close: %s\n", abandonMsg)
-					ownerDM(abandonMsg)
-				}
+				checkAbandonedPartialModelClose(state, j.stratID, c.Symbol, mu, ownerDM)
 				continue
 			}
 			partial := sz
@@ -2660,6 +2686,13 @@ func runPendingHyperliquidCircuitCloses(
 					fillFee = result.Close.Fill.Fee
 					fillOID = result.Close.Fill.OID
 				}
+			}
+			if alreadyFlat {
+				// #1455 review round 3: a coin finished by another mechanism is
+				// usually ABSENT from the positions snapshot (szi==0 rows are
+				// dropped), so the flat signal that ends an in-flight partial
+				// sequence is this outcome, not the zero-size branch above.
+				checkAbandonedPartialModelClose(state, j.stratID, c.Symbol, mu, ownerDM)
 			}
 
 			// Apply whatever did fill against virtual state (#418 Fix 2). For

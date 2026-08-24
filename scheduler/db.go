@@ -1240,6 +1240,23 @@ func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol, closeReason stri
 	return &b, nil
 }
 
+// MarkModelOnlyCloseAbandoned tags an in-flight partial fill-reconciled row as
+// abandoned (#1455 review round 3 optional 1): the drain observed the coin flat
+// on-chain, so the residual is never coming through this path. The tag releases
+// scheduler ownership — `backfill trade-ledger` skips LIVE in-flight rows but
+// repairs ABANDONED ones, which is the recovery the owner DM names. Idempotent.
+func (sdb *StateDB) MarkModelOnlyCloseAbandoned(strategyID, symbol string, ts time.Time) error {
+	if sdb == nil || sdb.db == nil {
+		return fmt.Errorf("state db unavailable")
+	}
+	_, err := sdb.db.Exec(
+		`UPDATE trades SET details = details || ? WHERE strategy_id = ? AND timestamp = ? AND symbol = ?
+		  AND exchange_order_id = '' AND fee_source = ? AND details LIKE '%fill-reconciled%'
+		  AND details NOT LIKE '%[reconcile-abandoned]%'`,
+		" [reconcile-abandoned]", strategyID, formatTime(ts), symbol, FeeSourceReconcileAdjustment)
+	return err
+}
+
 // nullableFloat64 returns a *float64 unchanged for use with database/sql so a
 // nil pointer maps to SQL NULL while a non-nil pointer's value is bound. The
 // helper exists purely as a callsite-readability anchor — passing the *float64

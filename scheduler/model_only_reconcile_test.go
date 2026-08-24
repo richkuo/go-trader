@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -72,7 +73,7 @@ func manualModelOnlyCloseState(id, symbol string, ts time.Time, qty, avgCost flo
 		Timestamp: ts, StrategyID: s.ID, Symbol: symbol, Side: closeTradeSide(side), Quantity: qty,
 		Price: estPx, Value: qty * estPx, TradeType: "perps", PositionID: "pos-1", IsClose: true,
 		RealizedPnL: estGross, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
-		Details: fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (%s; no exchange fill)", side, estGross, modelOnlyDetailMarker),
+		Details: fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (%s; no exchange fill), pre-streak=0", side, estGross, modelOnlyDetailMarker),
 	}}
 	s.ClosedPositions = []ClosedPosition{{
 		StrategyID: s.ID, Symbol: symbol, Quantity: qty, AvgCost: avgCost, Side: side,
@@ -924,11 +925,213 @@ func TestTradeLedgerNoOIDReconcileMatches_SkipsInFlightPartialRows(t *testing.T)
 			PnLGross: true, RealizedPnL: -10,
 			Details: "Circuit breaker close long, PnL: $-10.00 (" + modelOnlyDetailMarker + "; no exchange fill)"},
 	}
+	trades = append(trades, TradeBackfillRow{RowID: 3, Timestamp: now.Add(-time.Minute), Symbol: "DOT", IsClose: true,
+		Quantity: 1.0, Price: 90, Value: 90, FeeSource: FeeSourceReconcileAdjustment,
+		PnLGross: true, RealizedPnL: -10,
+		Details: "Circuit breaker close long [fill-reconciled partial 1.000000/2.000000 oids=702] (" + modelOnlyDetailMarker + ") [reconcile-abandoned]"})
+	fillMap["702"] = HLFillSummary{Coin: "DOT", Qty: 1.0, Px: 90, Fee: 0.5, Count: 1,
+		FirstTimeMS: now.Add(-30 * time.Second).UnixMilli(), LastTimeMS: now.UnixMilli()}
+
 	matches := tradeLedgerNoOIDReconcileMatches(trades, fillMap, map[string]bool{})
 	if _, ok := matches[1]; ok {
 		t.Fatal("in-flight partial reconciliation rows must be skipped by the offline backfill")
 	}
 	if _, ok := matches[2]; !ok {
 		t.Fatal("an untouched pre-#1455 model-only row must still be repairable")
+	}
+	if _, ok := matches[3]; !ok {
+		t.Fatal("an ABANDONED row must be released for offline repair — it is the recovery the owner DM names")
+	}
+}
+
+func TestMarkModelOnlyCloseAbandoned_PersistsIdempotentTag(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	sdb, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer sdb.Close()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	details := "Circuit breaker close long [fill-reconciled partial 1.000000/2.000000 oids=700], PnL so far: $-100.00 gross (" + modelOnlyDetailMarker + ")"
+	if _, err := sdb.db.Exec(`INSERT INTO trades (strategy_id, timestamp, symbol, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, pnl_gross, fee_source)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"abandon-db", formatTime(now), "ETH", "sell", 1, 2800, 2800, "perps", details, "", 0, 1, -100, 1, FeeSourceReconcileAdjustment); err != nil {
+		t.Fatalf("insert trade: %v", err)
+	}
+
+	if err := sdb.MarkModelOnlyCloseAbandoned("abandon-db", "ETH", now); err != nil {
+		t.Fatalf("mark abandoned: %v", err)
+	}
+	var got string
+	if err := sdb.db.QueryRow(`SELECT details FROM trades WHERE strategy_id=?`, "abandon-db").Scan(&got); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(got, modelOnlyAbandonedMarker) {
+		t.Fatalf("persisted details must carry the tag: %q", got)
+	}
+	if err := sdb.MarkModelOnlyCloseAbandoned("abandon-db", "ETH", now); err != nil {
+		t.Fatalf("second mark: %v", err)
+	}
+	if err := sdb.db.QueryRow(`SELECT details FROM trades WHERE strategy_id=?`, "abandon-db").Scan(&got); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if strings.Count(got, modelOnlyAbandonedMarker) != 1 {
+		t.Fatalf("tag must stay single: %q", got)
+	}
+}
+
+func TestModelOnlyClose_PreFireStreakRecoveredFromRowStamp(t *testing.T) {
+	// #1455 review round 3 must-survive (a): pre-fire streak 3, estimate a
+	// WIN (fire RESET the counter to 0), fill reveals a loss — the counter
+	// must end at 4, not 1.
+	resetModelOnlyReconcileHooks(t)
+	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
+	now := time.Now().UTC()
+	estGross := 2.0 * (3010 - 3000) // +20 estimated win
+	s := &StrategyState{
+		ID: "hl-pre3", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		RiskState: RiskState{ConsecutiveLosses: 0, DailyPnLDate: now.Format("2006-01-02")}, // fire zeroed it
+	}
+	s.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: s.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
+		Price: 3010, Value: 6020, TradeType: "perps", PositionID: "pos-p", IsClose: true,
+		RealizedPnL: estGross, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close long, PnL: $%.2f (%s; no exchange fill), pre-streak=3", estGross, modelOnlyDetailMarker),
+	}}
+	s.ClosedPositions = []ClosedPosition{{
+		StrategyID: s.ID, Symbol: "ETH", Quantity: 2, AvgCost: 3000, Side: "long",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 3010, RealizedPnL: estGross, CloseReason: "circuit_breaker",
+	}}
+
+	if reconcileModelOnlyCloseWithFill(s, "ETH", 2, 2850, 0, 830, "") != modelOnlyReconcileApplied {
+		t.Fatal("fill must reconcile")
+	}
+	if got := s.RiskState.ConsecutiveLosses; got != 4 {
+		t.Errorf("pre-fire 3 + true loss must end at 4, got %d", got)
+	}
+
+	// Must-survive (b): pre-fire streak 4, estimate a LOSS (fire booked 5),
+	// fill reveals a win — the counter must reset to 0.
+	s2 := &StrategyState{
+		ID: "hl-pre4", Type: "perps", Platform: "hyperliquid", Cash: 1000,
+		RiskState: RiskState{ConsecutiveLosses: 5, DailyPnLDate: now.Format("2006-01-02")}, // 4 + fire-time loss
+	}
+	estLoss := 2.0 * (2800 - 3000) // -400 estimated loss
+	s2.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: s2.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
+		Price: 2800, Value: 5600, TradeType: "perps", PositionID: "pos-q", IsClose: true,
+		RealizedPnL: estLoss, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close long, PnL: $%.2f (%s; no exchange fill), pre-streak=4", estLoss, modelOnlyDetailMarker),
+	}}
+	s2.ClosedPositions = []ClosedPosition{{
+		StrategyID: s2.ID, Symbol: "ETH", Quantity: 2, AvgCost: 3000, Side: "long",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 2800, RealizedPnL: estLoss, CloseReason: "circuit_breaker",
+	}}
+	if reconcileModelOnlyCloseWithFill(s2, "ETH", 2, 3100, 0, 831, "") != modelOnlyReconcileApplied {
+		t.Fatal("fill must reconcile")
+	}
+	if got := s2.RiskState.ConsecutiveLosses; got != 0 {
+		t.Errorf("true win must reset the streak to 0, got %d", got)
+	}
+
+	// Must-survive (c): a hedge leg leaves any non-zero streak untouched in
+	// both directions.
+	sh := &StrategyState{
+		ID: "hl-hedge-st", Type: "perps", Platform: "hyperliquid",
+		RiskState: RiskState{ConsecutiveLosses: 7, DailyPnLDate: now.Format("2006-01-02")},
+	}
+	sh.TradeHistory = []Trade{{
+		Timestamp: now, StrategyID: sh.ID, Symbol: "SOL", Side: "buy", Quantity: 10,
+		Price: 95, Value: 950, TradeType: hedgeTradeType, IsClose: true,
+		RealizedPnL: 50, PnLGross: true, FeeSource: FeeSourceReconcileAdjustment,
+		Details: fmt.Sprintf("Circuit breaker close short, PnL: $50.00 (%s; no exchange fill), pre-streak=6", modelOnlyDetailMarker),
+	}}
+	sh.ClosedPositions = []ClosedPosition{{
+		StrategyID: sh.ID, Symbol: "SOL", Quantity: 10, AvgCost: 95, Side: "short",
+		Multiplier: 1, ClosedAt: now, ClosePrice: 95, RealizedPnL: 50, CloseReason: "circuit_breaker",
+	}}
+	if reconcileModelOnlyCloseWithFill(sh, "SOL", 10, 90, 0, 832, "") != modelOnlyReconcileApplied {
+		t.Fatal("hedge fill must reconcile")
+	}
+	if got := sh.RiskState.ConsecutiveLosses; got != 7 {
+		t.Errorf("hedge correction must never touch the streak, got %d", got)
+	}
+}
+
+func TestModelOnlyClose_BasisLookupErrorAlertsNoRowsStaySilent(t *testing.T) {
+	// #1455 review round 3 optional 2 must-survive (a): a genuine query
+	// failure raises the operator alert, not just stdout. (b): an ordinary
+	// unexplained fill (sql.ErrNoRows from the loader) stays silent on the
+	// alert channel while still taking the defensive branch. (c): the model
+	// row is untouched either way, so a restart can still reconcile it.
+	resetModelOnlyReconcileHooks(t)
+	var warns []string
+	prevWarn := tradePersistWarn
+	tradePersistWarn = func(msg string) { warns = append(warns, msg) }
+	t.Cleanup(func() { tradePersistWarn = prevWarn })
+
+	s := fireModelOnlyCircuitBreakerClose(t)
+	ts := findModelOnlyCloseTrade(s, "ETH").Timestamp
+
+	modelOnlyCloseBasisLoader = func(string, string, string, time.Time) (*modelOnlyClosedBasis, error) {
+		return nil, fmt.Errorf("database is locked")
+	}
+	s.ClosedPositions = nil // force the loader path
+	rowsBefore := len(s.TradeHistory)
+	if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 840, "") != modelOnlyReconcileNone {
+		t.Fatal("a failed lookup must not reconcile")
+	}
+	if len(warns) != 1 {
+		t.Fatalf("a genuine lookup failure must raise the owner alert once, got %d", len(warns))
+	}
+
+	modelOnlyCloseBasisLoader = func(string, string, string, time.Time) (*modelOnlyClosedBasis, error) {
+		return nil, fmt.Errorf("wrapped: %w", sql.ErrNoRows)
+	}
+	if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 841, "") != modelOnlyReconcileNone {
+		t.Fatal("no-such-row must not reconcile")
+	}
+	if len(warns) != 1 {
+		t.Fatalf("the ordinary no-match case must stay off the operator alert channel, got %d", len(warns))
+	}
+	if t2 := findModelOnlyCloseTrade(s, "ETH"); t2 == nil || !t2.Timestamp.Equal(ts) || len(s.TradeHistory) != rowsBefore {
+		t.Fatalf("model row must stay matchable after degraded lookups: %+v", t2)
+	}
+}
+
+func TestWarnAbandonedPartialModelClose_MarksRowForOfflineRepair(t *testing.T) {
+	// #1455 review round 3 optional 1: the FIRST abandonment observation tags
+	// the row [reconcile-abandoned] so backfill trade-ledger may repair it —
+	// the recovery the DM names — and later cycles stay silent past the
+	// cooldown because the tag, not the throttle, ends the condition.
+	resetModelOnlyReconcileHooks(t)
+	var marks int
+	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
+	modelOnlyCloseAbandonMarker = func(string, string, time.Time) error { marks++; return nil }
+	t.Cleanup(func() { modelOnlyCloseAbandonMarker = nil })
+
+	now := time.Now().UTC()
+	s := manualModelOnlyCloseState("hl-abandon2", "ETH", now.Add(-time.Hour), 2, 3000, "long", 2800)
+	if reconcileModelOnlyCloseWithFill(s, "ETH", 1.0, 2900, 2.0, 850, "") != modelOnlyReconcileApplied {
+		t.Fatal("slice 1 must reconcile to create the in-flight partial row")
+	}
+	t.Cleanup(func() { modelOnlyAbandonedAlerts.Delete("hl-abandon2|ETH") })
+
+	if msg := warnAbandonedPartialModelClose(s, "ETH", now); msg == "" {
+		t.Fatal("first observation must alert")
+	}
+	if marks != 1 {
+		t.Fatalf("first observation must persist the abandonment tag once, got %d", marks)
+	}
+	trade := findModelOnlyCloseTrade(s, "ETH")
+	if trade == nil || !strings.Contains(trade.Details, modelOnlyAbandonedMarker) {
+		t.Fatalf("in-memory row must carry the abandonment tag: %+v", trade)
+	}
+	if again := warnAbandonedPartialModelClose(s, "ETH", now.Add(25*time.Hour)); again != "" {
+		t.Errorf("an already-abandoned row must not re-alert, got: %s", again)
+	}
+	if marks != 1 {
+		t.Fatalf("the tag must be persisted exactly once, got %d", marks)
 	}
 }

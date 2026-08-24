@@ -1,6 +1,8 @@
 package main
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -157,8 +159,18 @@ func modelOnlyCloseBasisFor(s *StrategyState, symbol string, ts time.Time, close
 		if err == nil && basis != nil {
 			return basis
 		}
-		if err != nil {
-			fmt.Printf("[state] WARN: model-only close basis lookup failed for %s %s: %v\n", s.ID, symbol, err)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			// A genuine query failure (locked/corrupt DB) is NOT the ordinary
+			// "no such close event" case: degrading here silently reinstates
+			// the pre-#1455 estimate while looking like routine noise
+			// (#1455 review round 3 optional 2). Raise the same operator alert
+			// a failed money persist uses; the fill still takes the defensive
+			// branch and the row stays reconcilable after the fault clears.
+			msg := fmt.Sprintf("model-only close basis lookup FAILED for %s %s (%s): %v — correction degraded to the defensive branch; verify the state database", s.ID, symbol, closeReason, err)
+			fmt.Printf("[state] WARN: %s\n", msg)
+			if tradePersistWarn != nil {
+				tradePersistWarn(msg)
+			}
 		}
 	}
 	return nil
@@ -220,6 +232,9 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 	// the same row carries CUMULATIVE state flagged by the fill-reconciled
 	// marker in Details.
 	touched := strings.Contains(t.Details, modelOnlyFillReconciledMarker)
+	// Read BEFORE the mutation below replaces Details — the stamp rides only
+	// on the original fire-time text (#1455 review round 3).
+	preStreak := modelOnlyPreStreak(t.Details)
 	filledBefore, cumGrossBefore, cumFeeBefore, notionalBefore := 0.0, 0.0, 0.0, 0.0
 	if touched {
 		filledBefore = t.Quantity
@@ -341,21 +356,29 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 		rolloverDailyPnL(&s.RiskState)
 		s.RiskState.DailyPnL += deltaNet
 	}
-	// The loss STREAK was decided at fire time off the estimate's PRE-FEE
-	// sign (#954/#292 semantics). Re-litigate ONCE, when the sequence
-	// COMPLETES, by comparing the full-basis estimate sign against the
-	// cumulative pre-fee realized sign — never on an intermediate slice,
-	// whose transient cumulative sign can differ from the final outcome and
-	// could otherwise move the counter in one direction only (#1455 review
-	// round 2). Hedge legs were already streak-excluded at fire time (#1159).
+	// The loss STREAK was decided at fire time by RecordTradeResult off the
+	// estimate's PRE-FEE sign: a WIN resets the counter to 0, a LOSS
+	// increments it. Reconstruct exactly that outcome for the TRUE sign —
+	// never a ±1 nudge, which under-counts when the fire reset an already
+	// long streak (#1455 review round 3). Only ONCE, when the sequence
+	// COMPLETES: an intermediate slice's transient cumulative sign can differ
+	// from the final outcome. Hedge legs were already streak-excluded at fire
+	// time (#1159).
 	if complete && t.TradeType != hedgeTradeType {
 		estGross := basis.Quantity * unit * (estPx - basis.AvgCost)
-		if estGross < 0 {
-			if cumGross >= 0 && s.RiskState.ConsecutiveLosses > 0 {
-				s.RiskState.ConsecutiveLosses--
+		switch {
+		case estGross < 0 && cumGross >= 0:
+			// Fire booked pre-fire+1; the truth is a win → reset to 0.
+			s.RiskState.ConsecutiveLosses = 0
+		case estGross >= 0 && cumGross < 0:
+			// Fire RESET to 0; the truth is a loss → pre-fire+1. The pre-fire
+			// value rides on the row (stamped at force-close); rows created
+			// before that stamp fall back to +1 from the zeroed counter.
+			if pre := preStreak; pre >= 0 {
+				s.RiskState.ConsecutiveLosses = pre + 1
+			} else if s.RiskState.ConsecutiveLosses == 0 {
+				s.RiskState.ConsecutiveLosses = 1
 			}
-		} else if cumGross < 0 {
-			s.RiskState.ConsecutiveLosses++
 		}
 	}
 	if cpIdx >= 0 {
@@ -456,13 +479,48 @@ var modelOnlyAbandonedAlerts sync.Map // "strategy|symbol" -> time.Time of last 
 
 const modelOnlyAbandonedAlertCooldown = 24 * time.Hour
 
+// modelOnlyAbandonedMarker tags a partially-reconciled row the drain has
+// demonstrably given up on (coin flat on-chain, no residual retry coming).
+// Marking releases scheduler ownership: backfill trade-ledger skips in-flight
+// fill-reconciled rows but repairs ABANDONED ones, so the alert's named
+// recovery actually works (#1455 review round 3 optional 1).
+const modelOnlyAbandonedMarker = "[reconcile-abandoned]"
+
+// modelOnlyCloseAbandonMarker persists the abandonment tag; set in main() to
+// (*StateDB).MarkModelOnlyCloseAbandoned. Nil in tests without a DB — the
+// in-memory tag is still applied and the DM still fires.
+var modelOnlyCloseAbandonMarker func(strategyID, symbol string, ts time.Time) error
+
+// modelOnlyPreStreakToken carries the pre-fire ConsecutiveLosses value stamped
+// onto every fire-time model-only row (", pre-streak=<n>").
+const modelOnlyPreStreakToken = ", pre-streak="
+
+// modelOnlyPreStreak extracts the pre-fire loss streak from a fire-time row's
+// Details; -1 when absent (rows created before the stamp existed).
+func modelOnlyPreStreak(details string) int {
+	i := strings.LastIndex(details, modelOnlyPreStreakToken)
+	if i < 0 {
+		return -1
+	}
+	rest := details[i+len(modelOnlyPreStreakToken):]
+	if j := strings.IndexAny(rest, ", "); j >= 0 {
+		rest = rest[:j]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(rest))
+	if err != nil || n < 0 {
+		return -1
+	}
+	return n
+}
+
 // warnAbandonedPartialModelClose flags a partially-reconciled model-only row
 // whose coin has gone flat on-chain before the residual retried: the row stays
 // half-corrected forever (quantity/PnL cover only the filled slice while cash
-// retains the residual's estimate share) unless an operator converges it, so it
-// must never be silently abandoned (#1455 review round 2 optional 1). Returns
-// the owner DM message when one should be sent now. Caller must hold mu (it
-// reads TradeHistory); safe to call every cycle.
+// retains the residual's estimate share) unless it is converged or flagged
+// (#1455 review round 2 optional 1). The FIRST observation marks the row
+// ABANDONED — releasing scheduler ownership so `backfill trade-ledger` may
+// repair it — and returns the owner DM message to send now. Caller must hold mu
+// (it reads and mutates TradeHistory); safe to call every cycle.
 func warnAbandonedPartialModelClose(s *StrategyState, symbol string, now time.Time) string {
 	if s == nil {
 		return ""
@@ -475,12 +533,23 @@ func warnAbandonedPartialModelClose(s *StrategyState, symbol string, now time.Ti
 		modelOnlyAbandonedAlerts.Delete(key)
 		return ""
 	}
+	if strings.Contains(t.Details, modelOnlyAbandonedMarker) {
+		// Already released for offline repair — the operator was told.
+		modelOnlyAbandonedAlerts.Delete(key)
+		return ""
+	}
 	if v, ok := modelOnlyAbandonedAlerts.Load(key); ok {
 		if last, ok2 := v.(time.Time); ok2 && now.Sub(last) < modelOnlyAbandonedAlertCooldown {
 			return ""
 		}
 	}
 	modelOnlyAbandonedAlerts.Store(key, now)
+	t.Details += " " + modelOnlyAbandonedMarker
+	if modelOnlyCloseAbandonMarker != nil {
+		if err := modelOnlyCloseAbandonMarker(s.ID, symbol, t.Timestamp); err != nil {
+			fmt.Printf("[state] WARN: model-only close abandonment mark failed for %s %s: %v\n", s.ID, symbol, err)
+		}
+	}
 	return fmt.Sprintf("model-only close reconciliation ABANDONED for %s %s: partial row covers %.6f (fee $%.4f) but the coin is flat on-chain — the residual was finished by another mechanism (e.g. a resting stop). The trade row, closed_positions and cash are inconsistent; run backfill trade-ledger or reconcile manually.",
 		s.ID, symbol, t.Quantity, t.ExchangeFee)
 }

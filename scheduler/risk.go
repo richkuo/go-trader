@@ -2034,6 +2034,11 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		if details == "" {
 			details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
 		}
+		// Stamp the PRE-fire streak (#1455 review round 3): RecordTradeResult
+		// below RESETS it to 0 on an estimated win, and the fill reconciler can
+		// only reconstruct "what RecordTradeResult would have done" — 0 on a
+		// win, pre-fire+1 on a loss — if the pre-fire value rides on the row.
+		details = fmt.Sprintf("%s, pre-streak=%d", details, s.RiskState.ConsecutiveLosses)
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
 		}

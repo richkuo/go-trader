@@ -109,9 +109,11 @@ func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[str
 		// running scheduler still owns: its quantity covers only the filled
 		// slice, so matching it to a fill here would rewrite the row and
 		// stamp an OID that blocks the residual from ever reconciling
-		// (#1455 review round 2 optional 4). Untouched pre-#1455 rows carry
-		// no marker and stay repairable.
-		if strings.Contains(t.Details, modelOnlyFillReconciledMarker) {
+		// (#1455 review round 2 optional 4). Rows the drain has marked
+		// ABANDONED are released for offline repair — that is the recovery
+		// the owner DM names (#1455 review round 3 optional 1). Untouched
+		// pre-#1455 rows carry no marker and stay repairable.
+		if strings.Contains(t.Details, modelOnlyFillReconciledMarker) && !strings.Contains(t.Details, modelOnlyAbandonedMarker) {
 			continue
 		}
 		candidates := findHLFillCandidatesByCoinQty(fillMap, t.Symbol, t.Quantity, false, t.Timestamp, tradeLedgerNoOIDRepairWindow, reservedOIDs)
