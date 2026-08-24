@@ -14,7 +14,14 @@ import (
 type HLNoFillRecoverer func(since time.Time) (*HLUserFillsResult, error)
 
 const (
-	hlKillSwitchNoFillRecoveryLookback = 30 * time.Second
+	// #1454: widened from 30s — an already-flat position whose real fill landed
+	// shortly before the kill switch fired (external close, or an SL fill inside
+	// the fetch-to-submit window) was unrecoverable inside the old window and
+	// its row cleared model-only. Ten minutes bounds the userFills query while
+	// covering every observed incident latency; findUniqueHLFillByCoinQty still
+	// fails closed on ambiguous candidates, so the wider net cannot mis-book a
+	// foreign fill to this close.
+	hlKillSwitchNoFillRecoveryLookback = 10 * time.Minute
 	hlKillSwitchNoFillRecoveryTimeout  = 20 * time.Second
 )
 
@@ -428,6 +435,20 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] hl-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.CloseReport.Errors[coin]))
 		}
+		// #1454: on-chain positions on coins no live HL strategy (perps OR
+		// manual) trades block flat confirmation in a mixed fleet too. The
+		// detection previously lived only in the empty-roster branch below, so
+		// a fleet with at least one live perps strategy never reached it and a
+		// manual-held coin was skipped without error, report entry, or latch.
+		if len(plan.CloseReport.Unconfigured) > 0 {
+			plan.Unconfigured = append(plan.Unconfigured, plan.CloseReport.Unconfigured...)
+			sort.Slice(plan.Unconfigured, func(i, j int) bool { return plan.Unconfigured[i].Coin < plan.Unconfigured[j].Coin })
+			plan.OnChainConfirmedFlat = false
+			for _, p := range plan.Unconfigured {
+				plan.LogLines = append(plan.LogLines,
+					fmt.Sprintf("[CRITICAL] hl-close: on-chain position for unconfigured coin %s (szi=%.6f) — manual intervention required, kill switch will retry next cycle", p.Coin, p.Size))
+			}
+		}
 
 	case hlStateFetched && len(in.HLLiveAll) == 0:
 		for _, p := range hlPositions {
@@ -621,6 +642,40 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 	plan.DiscordMessage = formatKillSwitchMessage(in.HLAddr, plan, in.PortfolioReason)
 	return plan
+}
+
+// collectHLKillSwitchStopOIDs gathers every resting SL/TP trigger OID held by
+// the kill-switch roster's virtual positions, keyed by coin, so the flatten can
+// cancel them before submitting (#421/#479). Extracted from main.go so the
+// #1454 roster extension to live type=manual strategies — whose resting
+// triggers would otherwise be orphaned on HL's open-order cap — is testable
+// without a running loop.
+func collectHLKillSwitchStopOIDs(strategies map[string]*StrategyState, roster []StrategyConfig) map[string][]int64 {
+	out := map[string][]int64{}
+	for _, sc := range roster {
+		// RAW coin key — forceCloseHyperliquidLive indexes stopLossOIDsByCoin
+		// by the raw on-chain p.Coin (case-sensitive kPEPE-style tickers).
+		sym := hyperliquidSymbol(sc.Args)
+		if sc.Type == "manual" {
+			sym = sc.Symbol
+		}
+		if sym == "" {
+			continue
+		}
+		ss, ok := strategies[sc.ID]
+		if !ok || ss == nil {
+			continue
+		}
+		pos := hlVirtualPositionFor(ss, sc, sym)
+		if pos == nil {
+			continue
+		}
+		out[sym] = appendUniquePositiveStopLossOID(out[sym], pos.StopLossOID)
+		for _, tpOID := range pos.TPOIDs {
+			out[sym] = appendUniquePositiveStopLossOID(out[sym], tpOID)
+		}
+	}
+	return out
 }
 
 // formatKillSwitchMessage builds the Discord notification string from a plan.

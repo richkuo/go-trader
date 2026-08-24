@@ -2033,6 +2033,11 @@ func forceCloseAllPositions(s *StrategyState, prices map[string]float64, logger 
 		}
 		if details == "" {
 			details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
+			// #1451 folded alert (#1454): a model-only row is an estimate
+			// standing in for a real exchange close. Escalate once per
+			// (strategy, symbol) per throttle window instead of leaving the DB
+			// row as the only signal.
+			queueModelOnlyCloseAlert(s.ID, symbol, pos.Quantity)
 		}
 		if logger != nil {
 			logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)

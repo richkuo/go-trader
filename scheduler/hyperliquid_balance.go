@@ -1970,6 +1970,12 @@ type HyperliquidLiveCloseReport struct {
 	AlreadyFlat []string
 	// Errors is non-nil so coin-keyed writes don't panic; len() works on nil maps too.
 	Errors map[string]error
+	// #1454: on-chain positions on coins no live HL strategy in the kill-switch
+	// roster (live perps + live type=manual) trades. Surfaced by
+	// planKillSwitchClose as plan.Unconfigured so a MIXED fleet gets the same
+	// CRITICAL line + flat-confirmation block an all-paper fleet already had,
+	// instead of the silent skip that hid manual-only coins.
+	Unconfigured []HLPosition
 }
 
 // ConfirmedFlat reports whether every configured live HL coin reached a
@@ -2030,9 +2036,16 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 
 	tradedCoins := make(map[string]bool)
 	for _, sc := range hlLiveAll {
-		sym := hyperliquidSymbol(sc.Args)
-		if sym != "" {
-			tradedCoins[sym] = true
+		// #1454: resolve sc.Symbol for type=manual so a coin held only by a
+		// live manual strategy is inside the close scope instead of being
+		// skipped as unowned. Membership is compared CASE-INSENSITIVELY (HL
+		// tickers like kPEPE carry a lower-case prefix; hyperliquidConfiguredCoin's
+		// upper-casing is safe for peer matching but NOT for exchange-side keys),
+		// while report.Fills stays keyed by the RAW on-chain coin.
+		if sym := hyperliquidSymbol(sc.Args); sym != "" {
+			tradedCoins[strings.ToUpper(sym)] = true
+		} else if sc.Type == "manual" && sc.Symbol != "" {
+			tradedCoins[strings.ToUpper(sc.Symbol)] = true
 		}
 	}
 	// #1159: a held hedge leg is exposure this scheduler opened and therefore
@@ -2046,11 +2059,18 @@ func forceCloseHyperliquidLive(ctx context.Context, positions []HLPosition, hlLi
 	}
 
 	for _, p := range positions {
-		if !tradedCoins[p.Coin] {
+		if !tradedCoins[strings.ToUpper(p.Coin)] {
 			// Unowned position — kill switch only acts on coins this scheduler
 			// is configured to trade. An on-chain leftover from a different
 			// system (manual trade, another bot) is the operator's problem to
 			// reconcile, not the scheduler's to liquidate.
+			// #1454: a NON-ZERO unowned position is reported (report.Unconfigured
+			// → plan.Unconfigured → latch) rather than silently skipped — the
+			// silent skip is what left manual-held exposure running after a
+			// "confirmed flat" kill-switch pass on a mixed fleet.
+			if p.Size != 0 {
+				report.Unconfigured = append(report.Unconfigured, p)
+			}
 			continue
 		}
 		if p.Size == 0 {
@@ -2140,8 +2160,18 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 		if ss == nil {
 			continue
 		}
-		if coin := hyperliquidSymbol(sc.Args); coin != "" {
-			if pos := ss.Positions[coin]; pos != nil && pos.Quantity > 0 {
+		// #1454: resolve the coin for type=manual so their virtual quantities
+		// join the same fill-share snapshot as perps; otherwise a shared
+		// perps+manual coin awards the whole fill to the perps side and the
+		// manual leg fails closed into a model-only row. RAW key — this must
+		// match the key applyHyperliquidKillSwitchCloseFill books under.
+		coin := hyperliquidSymbol(sc.Args)
+		if sc.Type == "manual" {
+			coin = sc.Symbol
+		}
+		if coin != "" {
+			pos := hlVirtualPositionFor(ss, sc, coin)
+			if pos != nil && pos.Quantity > 0 {
 				record(coin, sc.ID, pos.Quantity)
 			}
 		}
@@ -2159,6 +2189,26 @@ func snapshotHyperliquidVirtualQuantities(strategies map[string]*StrategyState, 
 		return nil
 	}
 	return out
+}
+
+// hlVirtualPositionFor looks up a strategy's virtual position for a kill-switch
+// coin. The kill-switch chain keys coins through hyperliquidConfiguredCoin
+// (normalized upper-case), while type=manual positions are keyed by the raw
+// configured symbol — the fallback covers an operator-entered lower-case
+// symbol so the normalized fill-share key still finds the virtual leg.
+func hlVirtualPositionFor(ss *StrategyState, sc StrategyConfig, coin string) *Position {
+	if ss == nil {
+		return nil
+	}
+	if pos, ok := ss.Positions[coin]; ok && pos != nil {
+		return pos
+	}
+	if sc.Type == "manual" && sc.Symbol != "" && sc.Symbol != coin {
+		if pos, ok := ss.Positions[sc.Symbol]; ok && pos != nil {
+			return pos
+		}
+	}
+	return nil
 }
 
 // computeHyperliquidCircuitCloseQty returns the unsigned coin quantity for a
@@ -2231,10 +2281,19 @@ func hyperliquidKillSwitchFillShare(sc StrategyConfig, coin string, fillSz, fill
 // share of the portfolio kill-switch fill before generic virtual-state cleanup
 // runs.
 func applyHyperliquidKillSwitchCloseFill(s *StrategyState, sc StrategyConfig, fills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, virtualQty hlVirtualQuantitySnapshot) bool {
-	if s == nil || sc.Platform != "hyperliquid" || sc.Type != "perps" || !hyperliquidIsLive(sc.Args) {
+	// #1454: type=manual joins perps — a live manual strategy must book its
+	// share of the real fill (price/fee/OID) instead of falling through to
+	// forceCloseAllPositions' model-only reconciliation row.
+	if s == nil || sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") || !hyperliquidIsLive(sc.Args) {
 		return false
 	}
+	// #1454: resolve sc.Symbol for type=manual (the #1444 precedent) rather
+	// than relying on auto-filled Args. RAW key — report.Fills is keyed by the
+	// raw on-chain coin, and lower-case-prefix tickers (kPEPE) are case-sensitive.
 	coin := hyperliquidSymbol(sc.Args)
+	if sc.Type == "manual" {
+		coin = sc.Symbol
+	}
 	if coin == "" {
 		return false
 	}
