@@ -2805,6 +2805,172 @@ func TestFormatTradeDM_CloseNoATR(t *testing.T) {
 	}
 }
 
+// TestFormatTradeDM_RatchetShowsATRAndRungTargets verifies #1463: when the close
+// strategy is trailing_tp_ratchet_regime (not tiered_tp_atr*), the open-trade
+// DM must still surface (a) the ATR value, (b) the initial trail, and (c) each
+// rung's price target with its trailing-mult-after suffix. The position-summary
+// block already does this; the trade-alert path was silently dropping all
+// three for ratchet strategies.
+func TestFormatTradeDM_RatchetShowsATRAndRungTargets(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		ID:            "hl-vwap-eth-60",
+		Platform:      "hyperliquid",
+		Type:          "perps",
+		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+		TrailingStopATRRegime: &RegimeATRBlock{
+			UseDefaults: false,
+			TrendRegime: map[string]RegimeATREntry{
+				"ranging": {ATR: 2.5},
+			},
+		},
+	}
+	// Entry 2,479, ATR 23.64 → SL trigger at 2479 - 2.5*23.64 = 2419.90 (matches
+	// the live hl-vwap-eth-60 trade the operator posted). Use_defaults resolves
+	// ranging → ranging_quiet ladder (0.75×/1.5×/2.0× ATR).
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.403,
+		Price:             2479,
+		Value:             999,
+		EntryATR:          23.64,
+		StopLossTriggerPx: 2419.90,
+		StopLossATRMult:   pf(2.5),
+		ExchangeOrderID:   "525653910900",
+		Regime:            "ranging",
+		Details:           "Open long 0.403 @ $2479",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	t.Logf("\n--- rendered DM ---\n%s--- end ---", msg)
+	for _, want := range []string{
+		"ATR: $23.64",
+		"SL: $2,419.90 (-2.4%) (2.5x)",
+		"Ratchet: 0/3 | Trail: 2.5x",
+		"RT1: $2,496.73 (+0.7%) (0.75x -> 1x trail)",
+		"RT2: $2,514.46 (+1.4%) (1.5x -> 0.75x trail)",
+		"RT3: $2,526.28 (+1.9%) (2x -> 0.75x trail)",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected %q in DM, got:\n%s", want, msg)
+		}
+	}
+	// Sanity: ratchet rung block should NOT include TP1/TP2 (those belong to
+	// tiered_tp_atr* strategies, not trailing_tp_ratchet*).
+	for _, notWant := range []string{"TP1:", "TP2:"} {
+		if strings.Contains(msg, notWant) {
+			t.Errorf("ratchet strategy DM should not include %s, got:\n%s", notWant, msg)
+		}
+	}
+}
+
+// TestFormatTradeDM_RatchetScalarTrail verifies #1463 for the scalar
+// trailing_tp_ratchet variant: the initial trail comes from
+// TrailingStopATRMult (not the regime variant), rung targets still render.
+func TestFormatTradeDM_RatchetScalarTrail(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	initialTrail := 3.0
+	sc := StrategyConfig{
+		ID:            "hl-ratchet-btc",
+		Platform:      "hyperliquid",
+		Type:          "perps",
+		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet", Params: map[string]interface{}{
+			"tp_tiers": []interface{}{
+				map[string]interface{}{"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 2.0},
+				map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.0, "trailing_mult_after": 1.0},
+			},
+		}},
+		TrailingStopATRMult: &initialTrail,
+	}
+	trade := Trade{
+		Symbol:            "BTC",
+		Side:              "buy",
+		Quantity:          0.025,
+		Price:             63500,
+		Value:             1587.5,
+		EntryATR:          1000,
+		StopLossTriggerPx: 62000,
+		StopLossATRMult:   pf(3.0),
+		Regime:            "trending_up",
+		Details:           "Open long 0.025 @ $63500",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	for _, want := range []string{
+		"ATR: $1,000.00",
+		"Ratchet: 0/2 | Trail: 3x",
+		"RT1: $64,500.00 (+1.6%) (1x -> 2x trail)",
+		"RT2: $65,500.00 (+3.1%) (2x -> 1x trail)",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected %q in DM, got:\n%s", want, msg)
+		}
+	}
+}
+
+// TestFormatTradeDM_TieredTPATRStillShowsTPAndATR is the regression guard for
+// #1463: tiered_tp_atr* strategies must keep rendering TP1/TP2 (existing
+// behavior) AND the ATR line (now always shown). Together they prove the
+// ATR-decoupling change did not regress the tiered path.
+func TestFormatTradeDM_TieredTPATRStillShowsTPAndATR(t *testing.T) {
+	sc := StrategyConfig{
+		ID:            "hl-tatr-btc",
+		Platform:      "hyperliquid",
+		Type:          "perps",
+		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"},
+	}
+	trade := Trade{
+		Symbol:   "BTC",
+		Side:     "buy",
+		Quantity: 0.01,
+		Price:    63500,
+		Value:    635,
+		EntryATR: 1000,
+		Details:  "Open long 0.010000 @ $63500",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	for _, want := range []string{"ATR: $1,000.00", "TP1: $65,000.00 (1.5x)", "TP2: $66,500.00 (3x)"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected %q in tiered_tp_atr DM, got:\n%s", want, msg)
+		}
+	}
+	// Ratchet block must stay silent when tiered_tp_atr tiers resolved.
+	if strings.Contains(msg, "Ratchet:") || strings.Contains(msg, "RT1:") {
+		t.Errorf("tiered_tp_atr DM should not include ratchet block, got:\n%s", msg)
+	}
+}
+
+// TestFormatTradeDM_ATRShownWithoutTiers verifies #1463 even when the strategy
+// has no tiered_tp_atr* tiers AND no ratchet (e.g. an SL-only trailing-stop
+// strategy). ATR must still surface so operators can sanity-check the SL math.
+func TestFormatTradeDM_ATRShownWithoutTiers(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		ID:            "hl-sl-only-eth",
+		Platform:      "hyperliquid",
+		Type:          "perps",
+		CloseStrategy: &StrategyRef{Name: "trailing_stop_atr"},
+		TrailingStopATRMult: pf(1.5),
+	}
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.5,
+		Price:             2300,
+		Value:             1150,
+		EntryATR:          15,
+		StopLossTriggerPx: 2277.5, // 2300 - 1.5*15
+		StopLossATRMult:   pf(1.5),
+		Details:           "Open long 0.5 @ $2300",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if !strings.Contains(msg, "ATR: $15.00") {
+		t.Errorf("expected ATR on trailing-stop-only DM, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "TP1:") || strings.Contains(msg, "Ratchet:") {
+		t.Errorf("trailing-stop DM should not include TP/Ratchet blocks, got:\n%s", msg)
+	}
+}
+
 // TestStampOpenTradeFromPosition verifies the backfill helper for EntryATR and
 // StopLossTriggerPx on the most-recent open trade for a symbol (#561).
 func TestStampOpenTradeFromPosition(t *testing.T) {
