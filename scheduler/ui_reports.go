@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-
 type auditRow struct {
 	Strategy     string
 	Registry     string

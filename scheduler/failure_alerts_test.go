@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-
 func TestShouldNotifyDrainFailure_FirstFailure_Notifies(t *testing.T) {
 	if !shouldNotifyDrainFailure(1, time.Time{}, time.Now()) {
 		t.Error("expected notify on first failure")
@@ -47,7 +46,6 @@ func TestShouldNotifyDrainFailure_ZeroLastNotifiedAt_FirstNotifiesMidSuppressed(
 		t.Error("count==5 with zero LastNotifiedAt must be suppressed (not mod 10, IsZero blocks hourly)")
 	}
 }
-
 
 func TestLiveExecFailureThrottle_FirstFailureNotifies(t *testing.T) {
 	th := &LiveExecFailureThrottle{}
@@ -130,7 +128,6 @@ func TestLiveExecFailureThrottle_HourlyAlert(t *testing.T) {
 		t.Error("expected hourly alert after 65 minutes")
 	}
 }
-
 
 func TestFormatLiveExecFailureAlert_IncludesAllFields(t *testing.T) {
 	msg := formatLiveExecFailureAlert("hl-tema-btc", "hyperliquid", "open", "BTC", "float_to_wire", 1)

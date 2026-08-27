@@ -51,8 +51,8 @@ type hlFillRecord struct {
 	ClosedPnl string      `json:"closedPnl"`
 	Time      int64       `json:"time"`
 	Dir       string      `json:"dir"`
-	Tid  json.Number `json:"tid"`
-	Hash string      `json:"hash"`
+	Tid       json.Number `json:"tid"`
+	Hash      string      `json:"hash"`
 }
 
 var fetchHyperliquidUserFillsByTime = defaultFetchHyperliquidUserFillsByTime

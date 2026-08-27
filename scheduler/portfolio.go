@@ -11,47 +11,47 @@ import (
 )
 
 type Position struct {
-	Symbol              string    `json:"symbol"`
-	TradePositionID     string    `json:"position_id,omitempty"`
-	Quantity            float64   `json:"quantity"`
-	InitialQuantity     float64   `json:"initial_quantity,omitempty"`
-	AvgCost             float64   `json:"avg_cost"`
-	EntryATR            float64   `json:"entry_atr,omitempty"`
-	Side                string    `json:"side"`
-	Multiplier          float64   `json:"multiplier,omitempty"`
-	Leverage            float64   `json:"leverage,omitempty"`
-	OwnerStrategyID     string    `json:"owner_strategy_id,omitempty"`
-	OpenedAt            time.Time `json:"opened_at,omitempty"`
-	StopLossOID         int64     `json:"stop_loss_oid,omitempty"`
-	StopLossTriggerPx   float64   `json:"stop_loss_trigger_px,omitempty"`
-	StopLossHighWaterPx float64   `json:"stop_loss_high_water_px,omitempty"`
-	TPOIDs              []int64   `json:"tp_oids,omitempty"`
-	TPArmedTiers    []bool            `json:"tp_armed_tiers,omitempty"`
-	StopLossATRMult *float64          `json:"stop_loss_atr_mult,omitempty"`
-	TPTiersJSON     string            `json:"tp_tiers_json,omitempty"`
-	Regime          string            `json:"regime,omitempty"`
-	RegimeWindows   map[string]string `json:"regime_windows,omitempty"`
-	OpenProfile     string            `json:"open_profile,omitempty"`
-	DirectionCertifiedAtOpen bool `json:"direction_certified_at_open,omitempty"`
-	DirectionCertifiedStatesAtOpen map[string]string `json:"direction_certified_states_at_open,omitempty"`
-	RegimePendingLabel string `json:"regime_pending_label,omitempty"`
-	RegimePendingCount int    `json:"regime_pending_count,omitempty"`
-	RegimeAppliedLabel string `json:"regime_applied_label,omitempty"`
-	SLAdjustedTiersProcessed int `json:"sl_adjusted_tiers_processed,omitempty"`
-	PostTPTrailingATRMult *float64 `json:"post_tp_trailing_atr_mult,omitempty"`
-	ScaleInCount     int     `json:"scale_in_count,omitempty"`
-	LastAddPrice     float64 `json:"last_add_price,omitempty"`
-	AddedNotionalUSD float64 `json:"added_notional_usd,omitempty"`
-	RiskAnchorPrice      float64 `json:"risk_anchor_price,omitempty"`
-	ScaleInResizePending bool    `json:"-"`
-	RatchetFallbackNormalizePending bool `json:"-"`
-	LLMAnalysisRequested bool   `json:"llm_analysis_requested,omitempty"`
-	LLMVerdict           string `json:"llm_verdict,omitempty"`
-	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
-	HurstAtOpen   float64 `json:"hurst_at_open,omitempty"`
-	HurstSizeMult float64 `json:"hurst_size_mult,omitempty"`
-	HedgeFor             string  `json:"hedge_for,omitempty"`
-	HedgePrimaryQtyBasis float64 `json:"hedge_primary_qty_basis,omitempty"`
+	Symbol                          string            `json:"symbol"`
+	TradePositionID                 string            `json:"position_id,omitempty"`
+	Quantity                        float64           `json:"quantity"`
+	InitialQuantity                 float64           `json:"initial_quantity,omitempty"`
+	AvgCost                         float64           `json:"avg_cost"`
+	EntryATR                        float64           `json:"entry_atr,omitempty"`
+	Side                            string            `json:"side"`
+	Multiplier                      float64           `json:"multiplier,omitempty"`
+	Leverage                        float64           `json:"leverage,omitempty"`
+	OwnerStrategyID                 string            `json:"owner_strategy_id,omitempty"`
+	OpenedAt                        time.Time         `json:"opened_at,omitempty"`
+	StopLossOID                     int64             `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx               float64           `json:"stop_loss_trigger_px,omitempty"`
+	StopLossHighWaterPx             float64           `json:"stop_loss_high_water_px,omitempty"`
+	TPOIDs                          []int64           `json:"tp_oids,omitempty"`
+	TPArmedTiers                    []bool            `json:"tp_armed_tiers,omitempty"`
+	StopLossATRMult                 *float64          `json:"stop_loss_atr_mult,omitempty"`
+	TPTiersJSON                     string            `json:"tp_tiers_json,omitempty"`
+	Regime                          string            `json:"regime,omitempty"`
+	RegimeWindows                   map[string]string `json:"regime_windows,omitempty"`
+	OpenProfile                     string            `json:"open_profile,omitempty"`
+	DirectionCertifiedAtOpen        bool              `json:"direction_certified_at_open,omitempty"`
+	DirectionCertifiedStatesAtOpen  map[string]string `json:"direction_certified_states_at_open,omitempty"`
+	RegimePendingLabel              string            `json:"regime_pending_label,omitempty"`
+	RegimePendingCount              int               `json:"regime_pending_count,omitempty"`
+	RegimeAppliedLabel              string            `json:"regime_applied_label,omitempty"`
+	SLAdjustedTiersProcessed        int               `json:"sl_adjusted_tiers_processed,omitempty"`
+	PostTPTrailingATRMult           *float64          `json:"post_tp_trailing_atr_mult,omitempty"`
+	ScaleInCount                    int               `json:"scale_in_count,omitempty"`
+	LastAddPrice                    float64           `json:"last_add_price,omitempty"`
+	AddedNotionalUSD                float64           `json:"added_notional_usd,omitempty"`
+	RiskAnchorPrice                 float64           `json:"risk_anchor_price,omitempty"`
+	ScaleInResizePending            bool              `json:"-"`
+	RatchetFallbackNormalizePending bool              `json:"-"`
+	LLMAnalysisRequested            bool              `json:"llm_analysis_requested,omitempty"`
+	LLMVerdict                      string            `json:"llm_verdict,omitempty"`
+	ATRMethodAtOpen                 string            `json:"atr_method_at_open,omitempty"`
+	HurstAtOpen                     float64           `json:"hurst_at_open,omitempty"`
+	HurstSizeMult                   float64           `json:"hurst_size_mult,omitempty"`
+	HedgeFor                        string            `json:"hedge_for,omitempty"`
+	HedgePrimaryQtyBasis            float64           `json:"hedge_primary_qty_basis,omitempty"`
 }
 
 func (p *Position) isHedgeLeg() bool {
@@ -415,12 +415,12 @@ type Trade struct {
 	IsClose     bool    `json:"is_close,omitempty"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 
-	PnLGross bool `json:"pnl_gross,omitempty"`
+	PnLGross  bool   `json:"pnl_gross,omitempty"`
 	FeeSource string `json:"fee_source,omitempty"`
 
-	Regime string `json:"regime,omitempty"`
+	Regime               string `json:"regime,omitempty"`
 	RegimeDivergenceNote string `json:"-"`
-	RegimeProfileNote string `json:"-"`
+	RegimeProfileNote    string `json:"-"`
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
@@ -435,8 +435,8 @@ type Trade struct {
 }
 
 type SignalExecutionResult struct {
-	TradesExecuted int
-	OpenTrade      *Trade
+	TradesExecuted        int
+	OpenTrade             *Trade
 	CashReconcileRequired bool
 	CashOverBudgetAlert   string
 }

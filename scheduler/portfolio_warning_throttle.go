@@ -2,7 +2,6 @@ package main
 
 import "time"
 
-
 const portfolioWarningEscalationPct = 1.0
 
 type portfolioWarningAlertState struct {

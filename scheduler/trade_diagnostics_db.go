@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-
 func (sdb *StateDB) InsertTradeDiagnostics(row *TradeDiagnosticsRow) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")

@@ -21,13 +21,13 @@ func sharedWalletDriftLogInterval() time.Duration {
 }
 
 type sharedWalletDriftEntry struct {
-	coinStreaks map[string]int
-	alertedCoins map[string]bool
-	cycles         int
-	lastNotifiedAt time.Time
-	lastLoggedAt time.Time
-	lastLoggedDriftCents int64
-	alerted              bool
+	coinStreaks            map[string]int
+	alertedCoins           map[string]bool
+	cycles                 int
+	lastNotifiedAt         time.Time
+	lastLoggedAt           time.Time
+	lastLoggedDriftCents   int64
+	alerted                bool
 	lastNotifiedDriftCents int64
 }
 

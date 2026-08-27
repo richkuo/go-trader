@@ -62,7 +62,6 @@ func scaleInResizeTrailingSLNow(
 
 const scaleInTradeType = "scale_in"
 
-
 func applyScaleIn(pos *Position, addQty, addPrice float64) {
 	if pos == nil || addQty <= 0 || addPrice <= 0 {
 		return

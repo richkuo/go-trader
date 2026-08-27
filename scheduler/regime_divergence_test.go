@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-
 func TestClassifyRegimeDivergence_NoneWhenSame(t *testing.T) {
 	cases := []struct {
 		short, medium string
@@ -129,7 +128,6 @@ func TestClassifyRegimeDivergence_RangingDirectionalExplicit(t *testing.T) {
 		t.Fatalf("ranging_directional_down vs trending_up: want hard/short, got %q/%q", downVsUp.Kind, downVsUp.OverrideDir)
 	}
 }
-
 
 func TestRegimeWindowDivergence_ResolveRaw_Valid(t *testing.T) {
 	raw := `{"short_window":"composite_short","medium_window":"composite_medium","on_divergence":"trust_short"}`
@@ -263,7 +261,6 @@ func TestRegimeWindowDivergence_EqualForReload(t *testing.T) {
 	}
 }
 
-
 func TestApplyRegimeDivergenceOverride_MutatesFlatSC(t *testing.T) {
 	d := &RegimeWindowDivergence{ShortWindow: "short", MediumWindow: "medium", OnDivergence: onDivergenceTrustShort}
 	sc := &StrategyConfig{Direction: DirectionBoth, InvertSignal: true}
@@ -338,7 +335,6 @@ func TestApplyRegimeDivergenceOverride_AlertOnly_NoMutation(t *testing.T) {
 		t.Errorf("alert_only: sc.Direction should be unchanged, got %q", sc.Direction)
 	}
 }
-
 
 func TestUpdateStrategyDivergenceState_CounterIncrement(t *testing.T) {
 	s := &StrategyState{}

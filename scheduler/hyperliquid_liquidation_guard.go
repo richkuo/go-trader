@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-
 const hlLiquidationStopBufferPct = 0.5
 
 func stopPastLiquidation(side string, triggerPx, liqPx float64) bool {
@@ -55,7 +54,6 @@ func hlLiquidationPxForSide(liqPxByCoin map[string]float64, netSideByCoin map[st
 	}
 	return px
 }
-
 
 func hlBankruptcyStopBoundPct(leverage float64) float64 {
 	if leverage < 1 {
@@ -126,11 +124,10 @@ func hlStopLossResolvesFromMaxDrawdownFallback(sc StrategyConfig) bool {
 		sc.MaxDrawdownPct > 0
 }
 
-
 type hlLiquidationAlertState struct {
 	Notified       bool
 	LastNotifiedAt time.Time
-	LastAction hlLiquidationAlertAction
+	LastAction     hlLiquidationAlertAction
 }
 
 var hlLiquidationAlerts sync.Map
@@ -196,15 +193,15 @@ func clearHLPerpsPositionAlertThrottles(s *StrategyState, symbol string) {
 type hlLiquidationAlertAction string
 
 const (
-	hlLiquidationActionClamped hlLiquidationAlertAction = "clamped"
-	hlLiquidationActionReplaceDeferred hlLiquidationAlertAction = "replace deferred"
-	hlLiquidationActionProtectionLost hlLiquidationAlertAction = "protection lost"
-	hlLiquidationActionRearmed hlLiquidationAlertAction = "re-armed"
-	hlLiquidationActionRearmFailed hlLiquidationAlertAction = "re-arm failed"
-	hlLiquidationActionUnreconciled hlLiquidationAlertAction = "not reconciled"
-	hlLiquidationActionExited hlLiquidationAlertAction = "exited"
-	hlLiquidationActionFilledOnChain hlLiquidationAlertAction = "SL filled"
-	hlLiquidationActionOutcomeUnknown hlLiquidationAlertAction = "outcome unknown"
+	hlLiquidationActionClamped          hlLiquidationAlertAction = "clamped"
+	hlLiquidationActionReplaceDeferred  hlLiquidationAlertAction = "replace deferred"
+	hlLiquidationActionProtectionLost   hlLiquidationAlertAction = "protection lost"
+	hlLiquidationActionRearmed          hlLiquidationAlertAction = "re-armed"
+	hlLiquidationActionRearmFailed      hlLiquidationAlertAction = "re-arm failed"
+	hlLiquidationActionUnreconciled     hlLiquidationAlertAction = "not reconciled"
+	hlLiquidationActionExited           hlLiquidationAlertAction = "exited"
+	hlLiquidationActionFilledOnChain    hlLiquidationAlertAction = "SL filled"
+	hlLiquidationActionOutcomeUnknown   hlLiquidationAlertAction = "outcome unknown"
 	hlLiquidationActionPlacementUnknown hlLiquidationAlertAction = "placement unknown"
 )
 
@@ -390,23 +387,22 @@ func hlProtectionSLTriggerReachable(side string, anchor, entryATR, slMult, liqPx
 	return !stopPastLiquidation(side, wouldBe, liqPx)
 }
 
-
 type hlLiquidationAuditCandidate struct {
-	StrategyID string
-	Script     string
-	Symbol     string
-	Side       string
-	Qty               float64
-	VirtualQty        float64
-	QtyCapped         bool
-	StopLossOID       int64
-	StopLossTriggerPx float64
-	LiquidationPx     float64
-	StaticScalarOwner bool
-	RearmTriggerPx float64
-	Unprotected bool
+	StrategyID          string
+	Script              string
+	Symbol              string
+	Side                string
+	Qty                 float64
+	VirtualQty          float64
+	QtyCapped           bool
+	StopLossOID         int64
+	StopLossTriggerPx   float64
+	LiquidationPx       float64
+	StaticScalarOwner   bool
+	RearmTriggerPx      float64
+	Unprotected         bool
 	UnresolvedPlacement bool
-	BookConsistent bool
+	BookConsistent      bool
 }
 
 type hlLiquidationAuditActionKind int
@@ -419,8 +415,8 @@ const (
 )
 
 type hlLiquidationAuditAction struct {
-	Candidate hlLiquidationAuditCandidate
-	Kind      hlLiquidationAuditActionKind
+	Candidate        hlLiquidationAuditCandidate
+	Kind             hlLiquidationAuditActionKind
 	ClampedTriggerPx float64
 }
 
@@ -795,7 +791,7 @@ type hlLiquidationPendingAlert struct {
 
 type hlLiquidationAuditResult struct {
 	ImmediateFills int
-	CloseDetails []hlLiquidationCloseDetail
+	CloseDetails   []hlLiquidationCloseDetail
 	StateMutations int
 }
 

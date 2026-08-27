@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-
 func TestResolveATRMethodPrecedence(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -54,7 +53,6 @@ func TestValidATRMethodValue(t *testing.T) {
 		}
 	}
 }
-
 
 func TestValidateConfigRejectsUnknownATRMethod(t *testing.T) {
 	cfg := Config{
@@ -108,7 +106,6 @@ func TestValidateConfigAcceptsWilderATRMethod(t *testing.T) {
 		t.Fatalf("valid atr_method values rejected: %v", err)
 	}
 }
-
 
 func TestValidateHotReloadStateCompatibleATRMethod(t *testing.T) {
 	mkCfg := func(global, strategy string) *Config {
@@ -221,7 +218,6 @@ func TestApplyHotReloadConfigAppliesATRMethodWhenFlat(t *testing.T) {
 	}
 }
 
-
 func TestAppendATRMethodArg(t *testing.T) {
 	got := appendATRMethodArg([]string{"a", "ETH", "1h"}, ATRMethodWilder)
 	want := []string{"a", "ETH", "1h", "--atr-method=wilder"}
@@ -253,7 +249,6 @@ func TestProbeArgvsCarryATRMethod(t *testing.T) {
 	}
 }
 
-
 func TestMigrateConfigStampsV17(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -280,7 +275,6 @@ func TestMigrateConfigStampsV17(t *testing.T) {
 	}
 }
 
-
 func TestGenerateConfigEmitsATRMethod(t *testing.T) {
 	cfg := generateConfig(InitOptions{ATRMethod: "wilder"})
 	if cfg.ATRMethod != "wilder" {
@@ -294,7 +288,6 @@ func TestGenerateConfigEmitsATRMethod(t *testing.T) {
 		t.Error("default init must omit atr_method (simple is implicit)")
 	}
 }
-
 
 func TestStampATRMethodAtOpenIfOpenedFreshOpen(t *testing.T) {
 	cases := []struct {
@@ -425,7 +418,6 @@ func TestCheckATRMethodDriftAtStartup(t *testing.T) {
 	})
 }
 
-
 func TestSummaryLineSurfacesNonDefaultATRMethod(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", ATRMethod: "wilder"}
 	if line := formatStrategySummaryLine(sc, nil, nil); !strings.Contains(line, "atr=wilder") {
@@ -444,7 +436,6 @@ func TestSummaryLineSurfacesNonDefaultATRMethod(t *testing.T) {
 		t.Errorf("options must never carry the atr= tag: %s", line)
 	}
 }
-
 
 func TestApplyManualActionOpenStampsATRMethod(t *testing.T) {
 	newState := func(id string) *AppState {

@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"database/sql"
 	"fmt"
@@ -23,10 +22,10 @@ const (
 var regimeTransitionPruneInterval = time.Hour
 
 type RegimeTransitionAlertsConfig struct {
-	Enabled bool `json:"enabled"`
-	DebounceCycles int `json:"debounce_cycles,omitempty"`
-	RetentionDays int `json:"retention_days,omitempty"`
-	ReversalMinOpposing int `json:"reversal_min_opposing,omitempty"`
+	Enabled             bool `json:"enabled"`
+	DebounceCycles      int  `json:"debounce_cycles,omitempty"`
+	RetentionDays       int  `json:"retention_days,omitempty"`
+	ReversalMinOpposing int  `json:"reversal_min_opposing,omitempty"`
 }
 
 func (c *RegimeTransitionAlertsConfig) enabled() bool {
@@ -85,7 +84,6 @@ type RegimeWindowTransitionRow struct {
 	TS        string `json:"ts"`
 	AlertedAt string `json:"alerted_at,omitempty"`
 }
-
 
 type RegimeWindowHistoryEntry struct {
 	Label   string
@@ -225,7 +223,6 @@ func (sdb *StateDB) ClearRegimeReversalSignature(key regimeBundleKey) error {
 	return err
 }
 
-
 func regimeTransitionConfirmed(currentLabel string, trailing []string, debounce int) bool {
 	if debounce < 1 {
 		debounce = 1
@@ -251,7 +248,7 @@ func netRegimeTransition(pending []RegimeWindowTransitionRow, confirmedLabel str
 type regimeReversalResult struct {
 	LongestWindow string
 	LongestLabel  string
-	Opposing map[string]string
+	Opposing      map[string]string
 }
 
 func classifyRegimeReversal(snaps map[string]RegimeSnapshot, periods map[string]int, minOpposing int) (regimeReversalResult, bool) {
@@ -334,7 +331,6 @@ func sortedStringKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-
 func formatRegimeTransitionDM(key regimeBundleKey, window, oldLabel, newLabel, barTime string) string {
 	msg := fmt.Sprintf("📊 Regime transition — %s window %s: %s → %s", key.String(), window, oldLabel, newLabel)
 	if barTime != "" {
@@ -352,7 +348,6 @@ func formatRegimeReversalDM(key regimeBundleKey, r regimeReversalResult) string 
 		key.String(), r.LongestWindow, r.LongestLabel, strings.Join(parts, ", "))
 }
 
-
 var regimeAlertSendFn = func(notifier *MultiNotifier, msg string) {
 	if notifier != nil {
 		notifier.SendOwnerDM(msg)
@@ -360,9 +355,9 @@ var regimeAlertSendFn = func(notifier *MultiNotifier, msg string) {
 }
 
 type regimeReversalPending struct {
-	sig      string
-	count    int
-	inactive int
+	sig         string
+	count       int
+	inactive    int
 	lastBarTime string
 }
 
@@ -508,7 +503,6 @@ func processRegimeReversal(sdb *StateDB, b *RegimeBundle, rc *RegimeConfig, noti
 	}
 	regimeAlertSendFn(notifier, formatRegimeReversalDM(b.Key, result))
 }
-
 
 func recentRegimeTransitionsNote(sdb *StateDB, rc *RegimeConfig, now time.Time) string {
 	if sdb == nil || rc == nil || !rc.Transitions.enabled() {

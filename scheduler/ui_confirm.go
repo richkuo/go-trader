@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"crypto/rand"
 	"crypto/subtle"

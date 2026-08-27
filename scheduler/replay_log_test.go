@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-
 func replayTestConfig(ids ...string) *Config {
 	cfg := &Config{ReplayLogPath: "/tmp/replay.db"}
 	for _, id := range ids {
@@ -401,7 +400,6 @@ func TestReplaySourceAndMirrorPredicates(t *testing.T) {
 		t.Error("flag-less strategy never mirrors")
 	}
 }
-
 
 func TestDecisionLogEntryATRRegimeRoundTrip(t *testing.T) {
 	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))

@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-
 type TradeLedgerChange struct {
 	RowID        int64
 	Timestamp    time.Time

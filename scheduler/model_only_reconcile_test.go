@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-
 func resetModelOnlyReconcileHooks(t *testing.T) {
 	t.Helper()
 	prevUpdater := modelOnlyCloseUpdater

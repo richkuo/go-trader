@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-
 func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 	if notionalCapSkipsStrategyCycle(false) {
 		t.Fatal("notionalCapSkipsStrategyCycle(false) must be false")

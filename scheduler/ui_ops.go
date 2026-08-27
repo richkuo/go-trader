@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-
 const uiOpsMaxLimit = 500
 
 func (ss *StatusServer) handleAPILeaderboard(w http.ResponseWriter, r *http.Request) {

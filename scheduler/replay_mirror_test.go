@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-
 func replayMirrorTestSetup(t *testing.T, id string) (StrategyConfig, *StrategyState, *StrategyLogger) {
 	t.Helper()
 	sc := StrategyConfig{
@@ -248,7 +247,6 @@ func TestMergeTradeDetailsEmptyReplayKeepsNative(t *testing.T) {
 		t.Fatalf("empty existing produced %q", got)
 	}
 }
-
 
 func TestMirrorReplayPersistedWatermarkSurvivesRestart(t *testing.T) {
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")

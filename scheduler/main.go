@@ -1103,7 +1103,7 @@ func main() {
 					TSFetcher:         defaultTopStepPositionsFetcher,
 					PortfolioReason:   portfolioReason,
 					CloseTimeout:      90 * time.Second,
-					RHCloseTimeout: 150 * time.Second,
+					RHCloseTimeout:    150 * time.Second,
 				}
 				plan = planKillSwitchClose(inputs)
 				for _, line := range plan.LogLines {
@@ -1199,15 +1199,15 @@ func main() {
 				}
 				if notifyWarn {
 					warnMsg = BuildPortfolioWarningMessage(PortfolioWarningMessageInputs{
-						Reason:      portfolioReason,
-						Config:      cfg.PortfolioRisk,
-						State:       state,
-						Prices:      prices,
-						TotalValue:  totalPV,
-						PerpsLoss:   perpsLoss,
-						PerpsMargin: perpsMargin,
-						Recent:      recentTrades,
-						Now:         warnNow,
+						Reason:           portfolioReason,
+						Config:           cfg.PortfolioRisk,
+						State:            state,
+						Prices:           prices,
+						TotalValue:       totalPV,
+						PerpsLoss:        perpsLoss,
+						PerpsMargin:      perpsMargin,
+						Recent:           recentTrades,
+						Now:              warnNow,
 						EquityGuardArmed: pooledEquityComplete && state.PortfolioRisk.PeakValue > 0,
 					})
 				}

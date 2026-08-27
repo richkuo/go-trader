@@ -17,10 +17,10 @@ type hlProtectionPlan struct {
 	StopLossOID     int64
 	Tiers           []hlProtectionTier
 	TPOIDs          []int64
-	TPArmedTiers []bool
-	ForceSLReplace bool
-	ForceTPReplace []bool
-	CancelTPOIDs []int64
+	TPArmedTiers    []bool
+	ForceSLReplace  bool
+	ForceTPReplace  []bool
+	CancelTPOIDs    []int64
 }
 
 func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidationPx float64) (hlProtectionPlan, bool) {
@@ -67,10 +67,10 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 	}
 	tierCount := len(tiers)
 	return hlProtectionPlan{
-		ForceSLReplace: forceSLPastLiquidation,
-		Symbol:         pos.Symbol,
-		Side:           pos.Side,
-		Size:           pos.Quantity,
+		ForceSLReplace:  forceSLPastLiquidation,
+		Symbol:          pos.Symbol,
+		Side:            pos.Side,
+		Size:            pos.Quantity,
 		AvgCost:         pos.riskAnchorPrice(),
 		EntryATR:        pos.EntryATR,
 		StopLossATRMult: slMult,

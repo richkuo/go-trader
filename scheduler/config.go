@@ -52,13 +52,13 @@ type TelegramConfig struct {
 }
 
 type PortfolioRiskConfig struct {
-	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`
-	MaxNotionalUSD   float64 `json:"max_notional_usd"`
-	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"`
-	DailyMaxLossUSD  float64 `json:"daily_max_loss_usd,omitempty"`
-	DailyMaxLossPct  float64 `json:"daily_max_loss_pct,omitempty"`
+	MaxDrawdownPct              float64 `json:"max_drawdown_pct"`
+	MaxNotionalUSD              float64 `json:"max_notional_usd"`
+	WarnThresholdPct            float64 `json:"warn_threshold_pct,omitempty"`
+	DailyMaxLossUSD             float64 `json:"daily_max_loss_usd,omitempty"`
+	DailyMaxLossPct             float64 `json:"daily_max_loss_pct,omitempty"`
 	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
-	MaxAssetConcentrationPct float64 `json:"max_asset_concentration_pct,omitempty"`
+	MaxAssetConcentrationPct    float64 `json:"max_asset_concentration_pct,omitempty"`
 }
 
 type PlatformConfig struct {
@@ -66,15 +66,15 @@ type PlatformConfig struct {
 }
 
 type RegimeConfig struct {
-	Enabled      bool             `json:"enabled"`
-	Period       int              `json:"period"`
-	ADXThreshold float64          `json:"adx_threshold"`
-	Timeframe    string           `json:"timeframe,omitempty"`
-	Windows      RegimeWindowsMap `json:"windows,omitempty"`
-	DisplayWindows []string `json:"display_windows,omitempty"`
-	Transitions *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
-	GateOnFailure string `json:"gate_on_failure,omitempty"`
-	HurstGateOnFailure string `json:"hurst_gate_on_failure,omitempty"`
+	Enabled            bool                          `json:"enabled"`
+	Period             int                           `json:"period"`
+	ADXThreshold       float64                       `json:"adx_threshold"`
+	Timeframe          string                        `json:"timeframe,omitempty"`
+	Windows            RegimeWindowsMap              `json:"windows,omitempty"`
+	DisplayWindows     []string                      `json:"display_windows,omitempty"`
+	Transitions        *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
+	GateOnFailure      string                        `json:"gate_on_failure,omitempty"`
+	HurstGateOnFailure string                        `json:"hurst_gate_on_failure,omitempty"`
 }
 
 var regimeTimeframeAllowSet = map[string]bool{
@@ -516,14 +516,14 @@ type StrategyConfig struct {
 }
 
 type HedgeConfig struct {
-	Enabled bool `json:"enabled"`
-	Symbol string `json:"symbol"`
-	Side string `json:"side,omitempty"`
-	Ratio float64 `json:"ratio,omitempty"`
-	Platform string `json:"platform,omitempty"`
-	Type string `json:"type,omitempty"`
-	MarginMode string `json:"margin_mode,omitempty"`
-	Leverage float64 `json:"leverage,omitempty"`
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
 }
 
 func HedgeEnabled(sc StrategyConfig) bool {
@@ -581,10 +581,10 @@ func HedgeSideForPrimary(primarySide string) string {
 }
 
 type ScaleInConfig struct {
-	MaxAdds int `json:"max_adds,omitempty"`
+	MaxAdds             int     `json:"max_adds,omitempty"`
 	MaxAddedNotionalUSD float64 `json:"max_added_notional_usd,omitempty"`
-	AddSpacingATR float64 `json:"add_spacing_atr,omitempty"`
-	AddNotionalUSD float64 `json:"add_notional_usd,omitempty"`
+	AddSpacingATR       float64 `json:"add_spacing_atr,omitempty"`
+	AddNotionalUSD      float64 `json:"add_notional_usd,omitempty"`
 }
 
 func (sc *StrategyConfig) UnmarshalJSON(data []byte) error {

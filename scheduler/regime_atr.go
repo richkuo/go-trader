@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"encoding/json"
 	"fmt"
@@ -26,7 +25,7 @@ const regimeClassifierKey = "trend_regime"
 type regimeATRSurface int
 
 const (
-	regimeSurfaceStopLoss       regimeATRSurface = iota
+	regimeSurfaceStopLoss regimeATRSurface = iota
 	regimeSurfaceTrailing
 	regimeSurfaceTPTierATROnly
 	regimeSurfaceTPTierWithFrac
@@ -167,16 +166,16 @@ var regimeATRDefaults = struct {
 		"ranging":       {ATR: 1.5},
 	},
 	Trailing: map[string]RegimeATREntry{
-		"trending_up":          {ATR: 2.5},
-		"trending_down":        {ATR: 2.5},
-		"ranging":              {ATR: 2.0},
-		"trending_up_clean":    {ATR: 2.5},
-		"trending_down_clean":  {ATR: 2.5},
-		"trending_up_choppy":   {ATR: 2.25},
-		"trending_down_choppy": {ATR: 2.25},
-		"ranging_quiet":        {ATR: 1.0},
-		"ranging_volatile":     {ATR: 1.25},
-		"ranging_directional":  {ATR: 1.5},
+		"trending_up":              {ATR: 2.5},
+		"trending_down":            {ATR: 2.5},
+		"ranging":                  {ATR: 2.0},
+		"trending_up_clean":        {ATR: 2.5},
+		"trending_down_clean":      {ATR: 2.5},
+		"trending_up_choppy":       {ATR: 2.25},
+		"trending_down_choppy":     {ATR: 2.25},
+		"ranging_quiet":            {ATR: 1.0},
+		"ranging_volatile":         {ATR: 1.25},
+		"ranging_directional":      {ATR: 1.5},
 		"ranging_directional_up":   {ATR: 1.5},
 		"ranging_directional_down": {ATR: 1.5},
 	},

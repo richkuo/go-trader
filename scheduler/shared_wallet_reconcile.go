@@ -8,15 +8,14 @@ import (
 	"strings"
 )
 
-
 type SharedWalletPosition struct {
 	Coin          string
 	UnrealizedPnL float64
 }
 
 type sharedWalletReconcileResult struct {
-	Values map[string]float64
-	Drift float64
+	Values      map[string]float64
+	Drift       float64
 	OrphanCoins []string
 }
 
@@ -140,13 +139,13 @@ func attributeSharedWalletUPnL(
 }
 
 type ledgerWalletInputs struct {
-	Members     []string
-	InitialByID map[string]float64
-	LedgerByID  map[string]float64
-	Positions   []SharedWalletPosition
-	VirtualQty  map[string]map[string]float64
+	Members        []string
+	InitialByID    map[string]float64
+	LedgerByID     map[string]float64
+	Positions      []SharedWalletPosition
+	VirtualQty     map[string]map[string]float64
 	AccountBalance float64
-	NonTradeFlows float64
+	NonTradeFlows  float64
 	BaselineOffset float64
 	BaselineSet    bool
 }
@@ -188,12 +187,12 @@ func roundCents(v float64) float64 {
 }
 
 type sharedWalletDriftResult struct {
-	Key         SharedWalletKey
-	Drift       float64
-	Balance     float64
-	MemberSum   float64
-	OrphanCoins []string
-	Basis string
+	Key            SharedWalletKey
+	Drift          float64
+	Balance        float64
+	MemberSum      float64
+	OrphanCoins    []string
+	Basis          string
 	ExpectedEquity float64
 	JournalPending bool
 }

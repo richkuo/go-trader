@@ -17,11 +17,11 @@ import (
 )
 
 type HLPosition struct {
-	Coin       string
-	Size       float64
-	EntryPrice float64
-	Leverage   float64
-	MarginMode string
+	Coin          string
+	Size          float64
+	EntryPrice    float64
+	Leverage      float64
+	MarginMode    string
 	UnrealizedPnL float64
 	LiquidationPx float64
 }
@@ -202,7 +202,7 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 					Type  string      `json:"type"`
 					Value json.Number `json:"value"`
 				} `json:"leverage"`
-				UnrealizedPnl string `json:"unrealizedPnl"`
+				UnrealizedPnl string          `json:"unrealizedPnl"`
 				LiquidationPx json.RawMessage `json:"liquidationPx"`
 			} `json:"position"`
 		} `json:"assetPositions"`
@@ -1507,10 +1507,10 @@ func hlAttemptCloseFromTPFills(s *StrategyState, sym string, pos *Position, reso
 }
 
 type HyperliquidLiveCloseReport struct {
-	ClosedCoins []string
-	Fills map[string]HyperliquidCloseFill
-	AlreadyFlat []string
-	Errors map[string]error
+	ClosedCoins  []string
+	Fills        map[string]HyperliquidCloseFill
+	AlreadyFlat  []string
+	Errors       map[string]error
 	Unconfigured []HLPosition
 }
 
@@ -2171,8 +2171,8 @@ func applyHyperliquidCircuitCloseFill(s *StrategyState, symbol string, fillSz, f
 			ExchangeFee:     fillFee,
 			FeeSource:       FeeSourceUserFills,
 			PnLGross:        true,
-			IsClose: true,
-			Regime:  s.Regime,
+			IsClose:         true,
+			Regime:          s.Regime,
 		})
 		return
 	}

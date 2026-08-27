@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-
 type topstepFillRecord struct {
 	FillID      string  `json:"fill_id"`
 	TimeMs      int64   `json:"ts_ms"`

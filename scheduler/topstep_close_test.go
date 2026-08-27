@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-
 func TestForceCloseTopStepLive_ClosesOwnedSymbolsOnly(t *testing.T) {
 	tsLive := []StrategyConfig{
 		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
@@ -169,7 +168,6 @@ func TestTopStepLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	}
 }
 
-
 func TestParseTopStepCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ES","fill":{"avg_px":5000,"total_contracts":2,"oid":"ord-1"}},"platform":"topstep","timestamp":"2026-04-19T10:00:00Z"}`)
 	result, _, err := parseTopStepCloseOutput(stdout, "", nil)
@@ -218,7 +216,6 @@ func TestParseTopStepCloseOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
-
 func TestParseTopStepPositionsOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"ES","size":2,"avg_price":5000,"side":"long"}],"platform":"topstep","timestamp":"x"}`)
 	result, _, err := parseTopStepPositionsOutput(stdout, "", nil)
@@ -247,7 +244,6 @@ func TestParseTopStepPositionsOutput_MalformedJSON(t *testing.T) {
 		t.Fatal("expected non-nil err on malformed JSON")
 	}
 }
-
 
 func TestComputeTopStepCircuitCloseQty_SolePeerFullFlatten(t *testing.T) {
 	tsLive := []StrategyConfig{

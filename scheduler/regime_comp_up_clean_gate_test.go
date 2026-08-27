@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-
 func compUpCleanP21FuturesConfig() Config {
 	return Config{
 		IntervalSeconds: 60,

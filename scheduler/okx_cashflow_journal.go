@@ -21,7 +21,6 @@ func defaultOKXAccountBillsFetcher(sinceMs int64) ([]okxBillRecord, bool, error)
 	return result.Bills, result.Capped, nil
 }
 
-
 const okxJournalSettlementCcy = "USDT"
 
 type okxBillRecord struct {

@@ -30,7 +30,6 @@ func TestAnchoredVWAPReversionWiring(t *testing.T) {
 	}
 }
 
-
 func TestGenerateConfig_AnchoredVWAPReversion_DefaultsToCompositeRangingGate(t *testing.T) {
 	opts := baseOpts()
 	opts.Assets = []string{"BTC"}

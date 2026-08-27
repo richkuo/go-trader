@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"encoding/json"
 	"fmt"
@@ -165,7 +164,6 @@ func (s *DirectionalCertSet) Certified(asset, timeframe, classifier string, now 
 	}
 	return entry.States, true
 }
-
 
 var (
 	directionalCertMu    sync.RWMutex

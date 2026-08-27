@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-
 func hedgePerpsStrategy(id, coin string) StrategyConfig {
 	return StrategyConfig{
 		ID:       id,

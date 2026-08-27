@@ -1,6 +1,5 @@
 package main
 
-
 import "fmt"
 
 func notionalCapSkipsStrategyCycle(notionalBlocked bool) bool {

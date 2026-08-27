@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-
 const hedgeQtyEpsilon = 1e-9
 
 const hedgeMinOrderNotionalUSD = 10.0
@@ -54,18 +53,18 @@ type hedgeSnapshot struct {
 	HedgeSymbol string
 	HedgeQty    float64
 	HedgeSide   string
-	HedgeBasis float64
-	HedgeHeld bool
+	HedgeBasis  float64
+	HedgeHeld   bool
 }
 
 type hedgeAction struct {
-	Kind hedgeActionKind
-	Qty float64
-	Side string
+	Kind      hedgeActionKind
+	Qty       float64
+	Side      string
 	HedgeSide string
-	NewBasis float64
-	Reason string
-	Blocked bool
+	NewBasis  float64
+	Reason    string
+	Blocked   bool
 }
 
 func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedgePx float64) hedgeAction {
@@ -292,8 +291,8 @@ func hedgeSnapshotFromState(sc StrategyConfig, s *StrategyState) hedgeSnapshot {
 }
 
 type hedgeExecutor struct {
-	Open func(sc StrategyConfig, coin, side string, qty float64, setMargin bool) (*HyperliquidExecuteResult, error)
-	Reduce func(sc StrategyConfig, coin string, qty *float64) (*HyperliquidCloseResult, error)
+	Open          func(sc StrategyConfig, coin, side string, qty float64, setMargin bool) (*HyperliquidExecuteResult, error)
+	Reduce        func(sc StrategyConfig, coin string, qty *float64) (*HyperliquidCloseResult, error)
 	UnwindPrimary func(sc StrategyConfig, coin string, qty float64, cancelOIDs []int64) (*HyperliquidCloseResult, error)
 }
 
@@ -331,11 +330,11 @@ func defaultHedgeExecutor() hedgeExecutor {
 }
 
 type hedgeSyncInputs struct {
-	PrimaryPx float64
-	HedgePx   float64
-	FreshExposureQty float64
+	PrimaryPx         float64
+	HedgePx           float64
+	FreshExposureQty  float64
 	PrimaryCancelOIDs []int64
-	Live bool
+	Live              bool
 }
 
 func runHedgeSync(
@@ -616,8 +615,8 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 			Details:         fmt.Sprintf("%s %s %s %.8f @ $%.4f (fee $%.4f)", detailsPrefix, action.Kind, coin, filledQty, fillPx, fee),
 			ExchangeOrderID: oid,
 			Regime:          s.Regime,
-			ExchangeFee: fee,
-			FeeSource:   executionFeeSource(fillFee, useFillFee),
+			ExchangeFee:     fee,
+			FeeSource:       executionFeeSource(fillFee, useFillFee),
 		}
 		RecordTrade(s, trade)
 		if logger != nil {

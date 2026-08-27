@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-
 func TestTopStepFillSettledDelta(t *testing.T) {
 	cases := []struct {
 		name      string

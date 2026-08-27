@@ -11,7 +11,6 @@ import (
 
 const limitFillEpsilon = 1e-9
 
-
 type HyperliquidLimitOpenResult struct {
 	Platform   string  `json:"platform"`
 	Timestamp  string  `json:"timestamp"`
@@ -159,7 +158,6 @@ var (
 	runHyperliquidLimitStatusFn = RunHyperliquidLimitStatus
 	runHyperliquidCancelOrderFn = RunHyperliquidCancelOrder
 )
-
 
 type manualLimitOpenInputs struct {
 	strategyID  string
@@ -336,7 +334,6 @@ func runManualCancel(args []string) int {
 	return 0
 }
 
-
 func limitOrderFullyFilled(cumFilled, orderSize float64) bool {
 	tol := orderSize * 1e-6
 	if tol < 1e-9 {
@@ -454,13 +451,13 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 	}
 
 	trade := Trade{
-		Timestamp:  now,
-		StrategyID: o.StrategyID,
-		Symbol:     o.Symbol,
-		Side:       openTradeSide(o.Side),
-		Quantity:   deltaQty,
-		Price:      avgPx,
-		Value:      deltaQty * avgPx,
+		Timestamp:       now,
+		StrategyID:      o.StrategyID,
+		Symbol:          o.Symbol,
+		Side:            openTradeSide(o.Side),
+		Quantity:        deltaQty,
+		Price:           avgPx,
+		Value:           deltaQty * avgPx,
 		TradeType:       scaleInTradeType,
 		Details:         fmt.Sprintf("manual limit add %s %s %.6f @ $%.4f (oid=%d)", o.Side, o.Symbol, deltaQty, avgPx, o.OrderOID),
 		PositionID:      ensurePositionTradeID(o.StrategyID, o.Symbol, pos),

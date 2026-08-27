@@ -2,7 +2,6 @@ package main
 
 import "testing"
 
-
 func findStrategy(cfg *Config, id string) (StrategyConfig, bool) {
 	for _, s := range cfg.Strategies {
 		if s.ID == id {

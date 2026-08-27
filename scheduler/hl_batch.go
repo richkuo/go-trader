@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-
 const hyperliquidCheckScript = "shared_scripts/check_hyperliquid.py"
 
 const hlBatchPythonDefaultOhlcvLimit = 200
@@ -304,10 +303,10 @@ func hyperliquidBatchDisplayPrice(markPrice float64) float64 {
 }
 
 type hlBatchMemberOutcome struct {
-	Result *HyperliquidResult
-	Err string
-	Mode scriptFailureMode
-	Stderr string
+	Result      *HyperliquidResult
+	Err         string
+	Mode        scriptFailureMode
+	Stderr      string
 	Fingerprint string
 }
 

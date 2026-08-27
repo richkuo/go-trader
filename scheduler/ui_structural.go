@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"encoding/json"
 	"fmt"
@@ -96,7 +95,6 @@ func isOnlyStrategyOnDisk(path, id string) bool {
 	}
 	return strategyRawID(list[0]) == id
 }
-
 
 func (ss *StatusServer) confirmStructuralAction(action, strategyID string, params json.RawMessage) (phrase, description, payload string, err error) {
 	p, perr := decodeStructuralParams(params)
@@ -203,7 +201,6 @@ func (ss *StatusServer) regimeGateConfirmContext(strategyID, gateName string) (r
 	}
 	return preset, sc, alsoActivated, nil
 }
-
 
 func (ss *StatusServer) uiStructuralGuards(w http.ResponseWriter, r *http.Request) bool {
 	if ss.rejectIfDraining(w) {

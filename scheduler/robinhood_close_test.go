@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-
 func TestForceCloseRobinhoodLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	rhLive := []StrategyConfig{
 		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
@@ -207,7 +206,6 @@ func TestRobinhoodLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	}
 }
 
-
 func TestParseRobinhoodCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc-123"}},"platform":"robinhood","timestamp":"2026-04-19T10:00:00Z"}`)
 	result, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
@@ -267,7 +265,6 @@ func TestParseRobinhoodCloseOutput_MalformedJSON(t *testing.T) {
 		t.Errorf("expected nil result on parse failure, got %+v", result)
 	}
 }
-
 
 func TestParseRobinhoodPositionsOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"avg_price":42000}],"platform":"robinhood","timestamp":"x"}`)

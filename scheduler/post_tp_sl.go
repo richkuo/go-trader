@@ -29,12 +29,12 @@ func closeTierListParam(params map[string]interface{}) (interface{}, bool) {
 }
 
 type SLAfterRule struct {
-	Kind string
-	ATRMult float64
-	TrailATRMult float64
-	ATRRegime *RegimeATRBlock
-	TrailATRRegime *RegimeATRBlock
-	TPATRFraction float64
+	Kind                string
+	ATRMult             float64
+	TrailATRMult        float64
+	ATRRegime           *RegimeATRBlock
+	TrailATRRegime      *RegimeATRBlock
+	TPATRFraction       float64
 	TPATRFractionRegime *RegimeFloatBlock
 }
 

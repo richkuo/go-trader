@@ -97,11 +97,11 @@ func mergePerpsMarks(prices map[string]float64, marks map[string]float64) {
 }
 
 type missingMarkPosition struct {
-	StrategyID string
-	Symbol     string
-	Live       bool
-	Platform string
-	Type     string
+	StrategyID       string
+	Symbol           string
+	Live             bool
+	Platform         string
+	Type             string
 	DisabledManagers []string
 }
 
@@ -330,20 +330,20 @@ type KillSwitchEvent struct {
 }
 
 type PortfolioRiskState struct {
-	PeakValue                float64 `json:"peak_value"`
-	CurrentDrawdownPct       float64 `json:"current_drawdown_pct"`
-	CurrentMarginDrawdownPct float64 `json:"current_margin_drawdown_pct,omitempty"`
-	DrawdownReadingSubstituted bool `json:"drawdown_reading_substituted,omitempty"`
-	UntrustedOverLimitSince time.Time         `json:"untrusted_over_limit_since,omitempty"`
-	KillSwitchActive        bool              `json:"kill_switch_active"`
-	KillSwitchAt            time.Time         `json:"kill_switch_at,omitempty"`
-	WarningSent             bool              `json:"warning_sent,omitempty"`
-	WarnBandEnteredAt       time.Time         `json:"warn_band_entered_at,omitempty"`
-	LastWarningEquityDDPct  float64           `json:"last_warning_equity_dd_pct,omitempty"`
-	LastWarningMarginDDPct  float64           `json:"last_warning_margin_dd_pct,omitempty"`
-	WarningEquityDeltaPct   float64           `json:"warning_equity_delta_pct,omitempty"`
-	WarningMarginDeltaPct   float64           `json:"warning_margin_delta_pct,omitempty"`
-	Events                  []KillSwitchEvent `json:"events,omitempty"`
+	PeakValue                  float64           `json:"peak_value"`
+	CurrentDrawdownPct         float64           `json:"current_drawdown_pct"`
+	CurrentMarginDrawdownPct   float64           `json:"current_margin_drawdown_pct,omitempty"`
+	DrawdownReadingSubstituted bool              `json:"drawdown_reading_substituted,omitempty"`
+	UntrustedOverLimitSince    time.Time         `json:"untrusted_over_limit_since,omitempty"`
+	KillSwitchActive           bool              `json:"kill_switch_active"`
+	KillSwitchAt               time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent                bool              `json:"warning_sent,omitempty"`
+	WarnBandEnteredAt          time.Time         `json:"warn_band_entered_at,omitempty"`
+	LastWarningEquityDDPct     float64           `json:"last_warning_equity_dd_pct,omitempty"`
+	LastWarningMarginDDPct     float64           `json:"last_warning_margin_dd_pct,omitempty"`
+	WarningEquityDeltaPct      float64           `json:"warning_equity_delta_pct,omitempty"`
+	WarningMarginDeltaPct      float64           `json:"warning_margin_delta_pct,omitempty"`
+	Events                     []KillSwitchEvent `json:"events,omitempty"`
 
 	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
 }
@@ -720,14 +720,14 @@ func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]f
 }
 
 type RiskState struct {
-	PeakValue           float64   `json:"peak_value"`
-	MaxDrawdownPct      float64   `json:"max_drawdown_pct"`
-	CurrentDrawdownPct  float64   `json:"current_drawdown_pct"`
-	DailyPnL            float64   `json:"daily_pnl"`
-	DailyPnLDate        string    `json:"daily_pnl_date"`
-	ConsecutiveLosses   int       `json:"consecutive_losses"`
-	CircuitBreaker      bool      `json:"circuit_breaker"`
-	CircuitBreakerUntil time.Time `json:"circuit_breaker_until"`
+	PeakValue            float64                         `json:"peak_value"`
+	MaxDrawdownPct       float64                         `json:"max_drawdown_pct"`
+	CurrentDrawdownPct   float64                         `json:"current_drawdown_pct"`
+	DailyPnL             float64                         `json:"daily_pnl"`
+	DailyPnLDate         string                          `json:"daily_pnl_date"`
+	ConsecutiveLosses    int                             `json:"consecutive_losses"`
+	CircuitBreaker       bool                            `json:"circuit_breaker"`
+	CircuitBreakerUntil  time.Time                       `json:"circuit_breaker_until"`
 	PendingCircuitCloses map[string]*PendingCircuitClose `json:"pending_circuit_closes,omitempty"`
 }
 
@@ -761,10 +761,10 @@ type PlatformRiskAssist struct {
 	HLLiveAll    []StrategyConfig
 	OKXPositions []OKXPosition
 	OKXLiveAll   []StrategyConfig
-	RHPositions []RobinhoodPosition
-	RHLiveAll []StrategyConfig
-	TSPositions []TopStepPosition
-	TSLiveAll []StrategyConfig
+	RHPositions  []RobinhoodPosition
+	RHLiveAll    []StrategyConfig
+	TSPositions  []TopStepPosition
+	TSLiveAll    []StrategyConfig
 }
 
 func (r *RiskState) MarshalPendingCircuitClosesJSON() string {

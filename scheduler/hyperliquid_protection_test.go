@@ -107,7 +107,7 @@ func TestApplyHyperliquidProtectionSyncClearsFilledExternally(t *testing.T) {
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
 		StopLossFilledExternally: true,
 		TPFilledExternally:       []bool{true, false},
-		TPOIDs: []int64{0, 33},
+		TPOIDs:                   []int64{0, 33},
 	}, nil)
 	if pos.StopLossOID != 0 {
 		t.Errorf("StopLossOID = %d, want 0 (cleared because filled externally)", pos.StopLossOID)

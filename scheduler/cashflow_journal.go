@@ -14,7 +14,6 @@ const driftBasisJournal = "journal"
 
 const journalDriftStreakKeySuffix = ":journal"
 
-
 type CashflowJournalState struct {
 	FillsSinceMs         int64
 	FundingSinceMs       int64

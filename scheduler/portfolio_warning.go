@@ -15,15 +15,15 @@ const (
 )
 
 type PortfolioWarningMessageInputs struct {
-	Reason      string
-	Config      *PortfolioRiskConfig
-	State       *AppState
-	Prices      map[string]float64
-	TotalValue  float64
-	PerpsLoss   float64
-	PerpsMargin float64
-	Recent      []Trade
-	Now         time.Time
+	Reason           string
+	Config           *PortfolioRiskConfig
+	State            *AppState
+	Prices           map[string]float64
+	TotalValue       float64
+	PerpsLoss        float64
+	PerpsMargin      float64
+	Recent           []Trade
+	Now              time.Time
 	EquityGuardArmed bool
 }
 
