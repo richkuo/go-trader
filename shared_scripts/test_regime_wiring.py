@@ -89,11 +89,13 @@ def test_1409_advisory_only_comment_was_revoked_for_gating_and_sizing():
     source = (_SHARED_TOOLS / 'regime.py').read_text()
     assert 'never read by\n    # map_composite_label, gating, or sizing' not in source
     assert 'gating, or sizing' not in source
-    assert '#1411' in source
-    assert 'map_composite_label' in source
+    assert 'def map_composite_label' in source
     label_fn_start = source.index('def map_composite_label')
     label_fn = source[label_fn_start:source.index('\ndef ', label_fn_start + 1)]
     assert 'hurst' not in label_fn
+    composite_start = source.index('def latest_regime_composite')
+    composite_fn = source[composite_start:source.index('\ndef ', composite_start + 1)]
+    assert 'hurst_exponent' in composite_fn
 
 def test_regime_label_string_is_safe_for_output_field():
     df = _make_uptrend_df()
