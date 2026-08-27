@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// TestHyperliquidAllTiersArmedAndCleared_DustGuard verifies #777: all-zero TPOIDs
-// with every tier armed is distinct from a never-placed TP list.
 func TestHyperliquidAllTiersArmedAndCleared_DustGuard(t *testing.T) {
 	sc := tieredTPATRSC()
 	pos := &Position{
@@ -27,12 +25,9 @@ func TestHyperliquidAllTiersArmedAndCleared_DustGuard(t *testing.T) {
 	}
 }
 
-// TestSoleOwnerTPDust_BooksBothTiersAtUserFills is the #777 positive case:
-// short qty=0.013, all TPOIDs zero, all tiers armed, on-chain dust -0.001,
-// userFills carry both TP partials — expect two close trades and qty=0.001.
 func TestSoleOwnerTPDust_BooksBothTiersAtUserFills(t *testing.T) {
 	const (
-		fullQty  = 0.012 // 50/50 tiers → 0.006 per TP leg
+		fullQty  = 0.012
 		dustQty  = 0.001
 		tp1OID   = int64(438613562733)
 		tp2OID   = int64(438613569010)
@@ -104,14 +99,12 @@ func TestSoleOwnerTPDust_BooksBothTiersAtUserFills(t *testing.T) {
 	if math.Abs(closes[0].Quantity-tp1Qty) > 1e-9 || math.Abs(closes[0].Price-tp1Px) > 1e-9 {
 		t.Errorf("TP1 trade = %+v, want qty=%g px=%g", closes[0], tp1Qty, tp1Px)
 	}
-	wantTP2Qty := fullQty - dustQty - tp1Qty // clamped to leave dust residual
+	wantTP2Qty := fullQty - dustQty - tp1Qty
 	if math.Abs(closes[1].Quantity-wantTP2Qty) > 1e-9 || math.Abs(closes[1].Price-tp2Px) > 1e-9 {
 		t.Errorf("TP2 trade = %+v, want qty=%g px=%g", closes[1], wantTP2Qty, tp2Px)
 	}
 }
 
-// TestSoleOwnerTPDust_NeverPlaced_NoBook is the #777 negative guard: all-zero
-// TPOIDs with TPArmedTiers never set must not fabricate TP close trades.
 func TestSoleOwnerTPDust_NeverPlaced_NoBook(t *testing.T) {
 	const (
 		fullQty  = 0.013
@@ -150,16 +143,15 @@ func TestSoleOwnerTPDust_NeverPlaced_NoBook(t *testing.T) {
 	if pos == nil {
 		t.Fatal("expected position to remain")
 	}
-	// Legacy reconciler resyncs qty to on-chain when dust is not TP-attributable.
+
 	if math.Abs(pos.Quantity-dustQty) > 1e-9 {
 		t.Errorf("Quantity = %g, want legacy resync to %g", pos.Quantity, dustQty)
 	}
 }
 
-// TestReconcileSharedCoin_TPDust_BooksBothTiers is Detector 3 parity for #777.
 func TestReconcileSharedCoin_TPDust_BooksBothTiers(t *testing.T) {
 	const (
-		fullQty  = 0.012 // 50/50 tiers → 0.006 per TP leg
+		fullQty  = 0.012
 		dustQty  = 0.001
 		tp1OID   = int64(438613562733)
 		tp2OID   = int64(438613569010)

@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-// TestSetOperatorRequiredCircuitBreakerPending_OKXSpot verifies #363 phase 5:
-// a live OKX spot strategy tripping its circuit breaker enqueues a pending
-// close with OperatorRequired=true under the PlatformPendingCloseOKXSpot key
-// — NOT under the auto-close "okx" key, so the portfolio-kill OKX perps drain
-// never dequeues and auto-closes it.
 func TestSetOperatorRequiredCircuitBreakerPending_OKXSpot(t *testing.T) {
 	sc := &StrategyConfig{
 		ID: "okx-sma-btc", Platform: "okx", Type: "spot",
@@ -37,15 +32,12 @@ func TestSetOperatorRequiredCircuitBreakerPending_OKXSpot(t *testing.T) {
 	if len(p.Symbols) != 1 || p.Symbols[0].Symbol != "BTC-USDT" || p.Symbols[0].Size != 0.0125 {
 		t.Errorf("unexpected pending symbols: %+v", p.Symbols)
 	}
-	// Defensive: must NOT land under the auto-close "okx" key.
+
 	if s.RiskState.getPendingCircuitClose("okx") != nil {
 		t.Error("enqueue leaked into the auto-close okx key — portfolio-kill drain would auto-close this")
 	}
 }
 
-// TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions verifies each
-// open option leg is captured as a separate PendingCircuitCloseSymbol (not the
-// underlier) so the operator sees which specific positions need manual close.
 func TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions(t *testing.T) {
 	sc := &StrategyConfig{
 		ID: "rh-ccall-spy", Platform: "robinhood", Type: "options",
@@ -72,7 +64,7 @@ func TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions(t *testing.T)
 	if len(p.Symbols) != 2 {
 		t.Fatalf("expected 2 option legs, got %d: %+v", len(p.Symbols), p.Symbols)
 	}
-	// Deterministic sort guarantees alphabetic order.
+
 	if p.Symbols[0].Symbol != "SPY-2026-05-15-450-C" || p.Symbols[1].Symbol != "SPY-2026-06-19-460-C" {
 		t.Errorf("legs not sorted alphabetically: %+v", p.Symbols)
 	}
@@ -81,10 +73,6 @@ func TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions(t *testing.T)
 	}
 }
 
-// TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions_NoOpenLegs
-// locks in the marker-entry fallback: when options CB fires before any leg is
-// opened, we still enqueue a single underlier marker so /status and
-// notifications surface the fire.
 func TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions_NoOpenLegs(t *testing.T) {
 	sc := &StrategyConfig{
 		ID: "rh-vol-qqq", Platform: "robinhood", Type: "options",
@@ -107,11 +95,8 @@ func TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions_NoOpenLegs(t 
 	}
 }
 
-// TestSetOperatorRequiredCircuitBreakerPending_PaperMode_NoEnqueue verifies
-// paper-mode strategies do NOT enqueue — there is no real venue exposure and
-// surfacing a warning would be noise.
 func TestSetOperatorRequiredCircuitBreakerPending_PaperMode_NoEnqueue(t *testing.T) {
-	// OKX spot, paper mode (no --mode=live).
+
 	sc := &StrategyConfig{
 		ID: "okx-paper", Platform: "okx", Type: "spot",
 		Args: []string{"sma_crossover", "BTC-USDT", "1h", "--mode=paper"},
@@ -124,7 +109,6 @@ func TestSetOperatorRequiredCircuitBreakerPending_PaperMode_NoEnqueue(t *testing
 		t.Error("paper-mode OKX spot enqueued operator-required pending; want nil")
 	}
 
-	// RH options, paper mode.
 	sc2 := &StrategyConfig{
 		ID: "rh-paper", Platform: "robinhood", Type: "options",
 		Args: []string{"covered_call", "SPY", "1d", "--mode=paper"},
@@ -138,10 +122,6 @@ func TestSetOperatorRequiredCircuitBreakerPending_PaperMode_NoEnqueue(t *testing
 	}
 }
 
-// TestSetOperatorRequiredCircuitBreakerPending_IgnoresOtherPlatforms verifies
-// the helper is a no-op for HL / TopStep / BinanceUS / OKX perps / RH crypto
-// — those either have an automated close path or fall under a different
-// helper.
 func TestSetOperatorRequiredCircuitBreakerPending_IgnoresOtherPlatforms(t *testing.T) {
 	for _, sc := range []*StrategyConfig{
 		{ID: "hl-1", Platform: "hyperliquid", Type: "perps",
@@ -163,9 +143,6 @@ func TestSetOperatorRequiredCircuitBreakerPending_IgnoresOtherPlatforms(t *testi
 	}
 }
 
-// TestCheckRisk_LiveOKXSpot_SetsOperatorRequiredPending verifies the full
-// CheckRisk → setOperatorRequiredCircuitBreakerPending wiring for OKX spot.
-// Drawdown is intentionally above the max threshold so the CB fires.
 func TestCheckRisk_LiveOKXSpot_SetsOperatorRequiredPending(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "okx-sma-btc", Platform: "okx", Type: "spot",
@@ -182,7 +159,7 @@ func TestCheckRisk_LiveOKXSpot_SetsOperatorRequiredPending(t *testing.T) {
 		},
 		OptionPositions: map[string]*OptionPosition{},
 	}
-	// Price drop sends PV to $500 (50% drawdown from peak 1000 — well past max 10%).
+
 	prices := map[string]float64{"BTC-USDT": 50000}
 
 	allowed, reason := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, nil)
@@ -198,8 +175,6 @@ func TestCheckRisk_LiveOKXSpot_SetsOperatorRequiredPending(t *testing.T) {
 	}
 }
 
-// --- Drain + formatter tests ---
-
 type captureNotifier struct {
 	hasBackends bool
 	channels    []string
@@ -210,8 +185,6 @@ func (n *captureNotifier) HasBackends() bool          { return n.hasBackends }
 func (n *captureNotifier) SendToAllChannels(c string) { n.channels = append(n.channels, c) }
 func (n *captureNotifier) SendOwnerDM(c string)       { n.dms = append(n.dms, c) }
 
-// TestPlanOperatorRequiredWarning_EmptyStateNoEntries confirms the formatter
-// is silent when no operator-required pending is present.
 func TestPlanOperatorRequiredWarning_EmptyStateNoEntries(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"hl-1": {ID: "hl-1", RiskState: RiskState{}},
@@ -225,9 +198,6 @@ func TestPlanOperatorRequiredWarning_EmptyStateNoEntries(t *testing.T) {
 	}
 }
 
-// TestPlanOperatorRequiredWarning_IgnoresAutomatedPlatforms verifies that
-// PendingCircuitCloses entries WITHOUT OperatorRequired=true (i.e. HL auto-close
-// pending) do not produce operator warnings — the HL drain owns those.
 func TestPlanOperatorRequiredWarning_IgnoresAutomatedPlatforms(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"hl-1": {
@@ -245,9 +215,6 @@ func TestPlanOperatorRequiredWarning_IgnoresAutomatedPlatforms(t *testing.T) {
 	}
 }
 
-// TestPlanOperatorRequiredWarning_FormatsOKXAndRH locks in the message
-// structure: sorted by strategy ID then platform, leg list, CB-until suffix,
-// explicit "No automated close" footer.
 func TestPlanOperatorRequiredWarning_FormatsOKXAndRH(t *testing.T) {
 	cbUntil := time.Date(2026, 4, 21, 3, 30, 0, 0, time.UTC)
 	state := &AppState{Strategies: map[string]*StrategyState{
@@ -288,11 +255,11 @@ func TestPlanOperatorRequiredWarning_FormatsOKXAndRH(t *testing.T) {
 	if !plan.HasEntries() || len(plan.Entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d: %+v", len(plan.Entries), plan.Entries)
 	}
-	// Deterministic ordering: strategy ID alphabetical.
+
 	if plan.Entries[0].StrategyID != "okx-sma-btc" || plan.Entries[1].StrategyID != "rh-ccall-spy" {
 		t.Errorf("entries not sorted by StrategyID: got %s, %s", plan.Entries[0].StrategyID, plan.Entries[1].StrategyID)
 	}
-	// Legs within an entry sorted alphabetically.
+
 	rhLegs := plan.Entries[1].Symbols
 	if rhLegs[0].Symbol != "SPY-2026-05-15-450-C" || rhLegs[1].Symbol != "SPY-2026-06-19-460-C" {
 		t.Errorf("RH legs not sorted: %+v", rhLegs)
@@ -315,7 +282,6 @@ func TestPlanOperatorRequiredWarning_FormatsOKXAndRH(t *testing.T) {
 		}
 	}
 
-	// LogLines: one CRITICAL per entry, containing strategy ID + platform key.
 	if len(plan.LogLines) != 2 {
 		t.Fatalf("expected 2 log lines, got %d", len(plan.LogLines))
 	}
@@ -326,9 +292,6 @@ func TestPlanOperatorRequiredWarning_FormatsOKXAndRH(t *testing.T) {
 	}
 }
 
-// TestDrainOperatorRequired_DeliversToNotifier confirms the drain wrapper
-// forwards to SendToAllChannels and SendOwnerDM exactly once per cycle when
-// entries are present.
 func TestDrainOperatorRequired_DeliversToNotifier(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"okx-s": {
@@ -353,15 +316,11 @@ func TestDrainOperatorRequired_DeliversToNotifier(t *testing.T) {
 		t.Errorf("channel message missing header: %s", n.channels[0])
 	}
 
-	// Pending must remain after drain — auto-clearing would hide the gap.
 	if state.Strategies["okx-s"].RiskState.getPendingCircuitClose(PlatformPendingCloseOKXSpot) == nil {
 		t.Error("drain cleared the pending; it should persist until operator intervenes")
 	}
 }
 
-// TestDrainOperatorRequired_NoBackendsSafe confirms the drain tolerates a
-// notifier with no backends (Discord + Telegram disabled) without panicking
-// and without producing output.
 func TestDrainOperatorRequired_NoBackendsSafe(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"okx-s": {
@@ -376,13 +335,12 @@ func TestDrainOperatorRequired_NoBackendsSafe(t *testing.T) {
 	}}
 	n := &captureNotifier{hasBackends: false}
 	var mu sync.RWMutex
-	drainOperatorRequiredPendingCloses(state, n, &mu) // must not panic
+	drainOperatorRequiredPendingCloses(state, n, &mu)
 	if len(n.channels)+len(n.dms) != 0 {
 		t.Errorf("expected no sends when HasBackends()=false; got %d/%d", len(n.channels), len(n.dms))
 	}
 }
 
-// TestDrainOperatorRequired_NilNotifierSafe locks in the nil-notifier guard.
 func TestDrainOperatorRequired_NilNotifierSafe(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"okx-s": {
@@ -396,13 +354,9 @@ func TestDrainOperatorRequired_NilNotifierSafe(t *testing.T) {
 		},
 	}}
 	var mu sync.RWMutex
-	drainOperatorRequiredPendingCloses(state, nil, &mu) // must not panic
+	drainOperatorRequiredPendingCloses(state, nil, &mu)
 }
 
-// TestPendingCircuitClose_OperatorRequired_JSONRoundTrip locks in that the
-// OperatorRequired flag round-trips through Marshal/Unmarshal (serialized to
-// SQLite as part of risk_pending_circuit_closes_json). A bug where the flag
-// gets dropped would silently re-promote the entry to auto-close on reload.
 func TestPendingCircuitClose_OperatorRequired_JSONRoundTrip(t *testing.T) {
 	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
 		PlatformPendingCloseOKXSpot: {
@@ -411,7 +365,6 @@ func TestPendingCircuitClose_OperatorRequired_JSONRoundTrip(t *testing.T) {
 		},
 		PlatformPendingCloseHyperliquid: {
 			Symbols: []PendingCircuitCloseSymbol{{Symbol: "ETH", Size: 0.1}},
-			// OperatorRequired omitted — expect false after roundtrip.
 		},
 	}}
 	blob := src.MarshalPendingCircuitClosesJSON()
@@ -431,11 +384,6 @@ func TestPendingCircuitClose_OperatorRequired_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPendingCircuitClose_RHOptionsMarkerEntry_JSONRoundTrip locks in that a
-// Robinhood options pending with only a Size=0 underlier marker (no open legs)
-// survives marshal→unmarshal intact. The MarshalPendingCircuitClosesJSON filter
-// drops entries where len(Symbols)==0 but NOT entries with one marker symbol
-// whose Size happens to be 0 — this test pins that distinction.
 func TestPendingCircuitClose_RHOptionsMarkerEntry_JSONRoundTrip(t *testing.T) {
 	src := &RiskState{PendingCircuitCloses: map[string]*PendingCircuitClose{
 		PlatformPendingCloseRobinhoodOptions: {

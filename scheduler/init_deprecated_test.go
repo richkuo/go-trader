@@ -4,8 +4,8 @@ import "testing"
 
 func TestDeprecatedStrategiesNotInDefaultFallbackLists(t *testing.T) {
 	deprecated := map[string]bool{
-		"amd_ifvg":          true, // #1023
-		"donchian_breakout": true, // #985
+		"amd_ifvg":          true,
+		"donchian_breakout": true,
 		"range_scalper":     true,
 		"session_breakout":  true,
 		"vol_momentum":      true,

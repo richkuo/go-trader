@@ -140,9 +140,9 @@ func (c *countingDMSender) SendOwnerDM(s string) {
 }
 
 func TestNotifyProtectionFill_NilSenderIsNoop(t *testing.T) {
-	// Untyped nil interface — must not panic.
+
 	notifyProtectionFill(nil, true, ProtectionFillAlert{StrategyID: "x"})
-	// Typed nil *MultiNotifier wrapped in non-nil interface — must not panic.
+
 	var mn *MultiNotifier
 	notifyProtectionFill(mn, true, ProtectionFillAlert{StrategyID: "x"})
 }
@@ -219,28 +219,27 @@ func TestNotifyTPSLFillsEnabled_DefaultsToTrue(t *testing.T) {
 
 func TestHyperliquidClearedTPTier_TierIndex(t *testing.T) {
 	sc := tieredTPATRSC()
-	// Tier 0 cleared, tier 1 active → idx=0
+
 	pos := &Position{Quantity: 0.422, TPOIDs: []int64{0, 222}}
 	if idx, ok := hyperliquidClearedTPTier(sc, pos, 0.211); !ok || idx != 0 {
 		t.Errorf("tier 0 cleared: idx=%d ok=%v, want 0,true", idx, ok)
 	}
-	// Tier 0 active, tier 1 cleared → idx=1
+
 	pos = &Position{Quantity: 0.422, TPOIDs: []int64{111, 0}}
 	if idx, ok := hyperliquidClearedTPTier(sc, pos, 0.211); !ok || idx != 1 {
 		t.Errorf("tier 1 cleared: idx=%d ok=%v, want 1,true", idx, ok)
 	}
-	// All tiers zero, full-close qty match → final tier (idx=1)
+
 	pos = &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}}
 	if idx, ok := hyperliquidClearedTPTier(sc, pos, 0.422); !ok || idx != 1 {
 		t.Errorf("final tier: idx=%d ok=%v, want 1,true", idx, ok)
 	}
-	// All zero but qty mismatch → not attributable without armed tiers
+
 	pos = &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}, TPArmedTiers: []bool{false, false}}
 	if _, ok := hyperliquidClearedTPTier(sc, pos, 0.1); ok {
 		t.Error("ambiguous all-zero with mismatched qty must not attribute when tiers never armed")
 	}
-	// All zero, dust drift, every tier armed — hyperliquidClearedTPTier stays
-	// false; hlAttemptCloseFromArmedTPClears handles booking (#777).
+
 	pos = &Position{Quantity: 0.422, TPOIDs: []int64{0, 0}, TPArmedTiers: []bool{true, true}}
 	if !hyperliquidAllTiersArmedAndCleared(sc, pos) {
 		t.Error("expected all tiers armed and cleared for dust path")

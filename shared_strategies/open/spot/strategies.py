@@ -1,89 +1,50 @@
-"""Spot strategy shim \u2014 platform-filtered view of shared_strategies.registry.
-
-All strategy implementations live in ``shared_strategies/open/registry.py``; this
-file exposes the subset tagged ``platforms=("spot", ...)`` with any spot-specific
-``variants`` applied. ``check_strategy.py`` and the spot backtester path import
-from this module via sys.path insertion (``from strategies import ...``), so
-the surface (``STRATEGY_REGISTRY`` dict, ``apply_strategy``, ``list_strategies``,
-``get_strategy``) must stay stable.
-"""
-
 import importlib.util
 import json
 import os
 import sys
 from typing import Dict, List, Optional
-
 import pandas as pd
-
-_TOOLS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "shared_tools")
+_TOOLS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shared_tools')
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
-
 from strategy_composition import strip_unsupported_position_context
 
-
 def _load_registry_module():
-    """Load ``shared_strategies/open/registry.py`` as an isolated module.
-
-    We use ``spec_from_file_location`` instead of a package import so this
-    shim works whether callers put ``shared_strategies/open/spot/`` or the repo
-    root on sys.path \u2014 and so spot and futures shims each get a fresh
-    registry instance (the ``test_both_registries_coexist`` contract).
-    """
-    registry_path = os.path.join(os.path.dirname(__file__), "..", "registry.py")
-    spec = importlib.util.spec_from_file_location("_strategy_registry_spot", registry_path)
+    registry_path = os.path.join(os.path.dirname(__file__), '..', 'registry.py')
+    spec = importlib.util.spec_from_file_location('_strategy_registry_spot', registry_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
 _registry = _load_registry_module()
-
-STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("spot", include_hidden=True)
-DISCOVERY_STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry("spot")
-
+STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry('spot', include_hidden=True)
+DISCOVERY_STRATEGY_REGISTRY: Dict[str, dict] = _registry.build_registry('spot')
 
 def get_strategy(name: str) -> dict:
     if name not in STRATEGY_REGISTRY:
-        raise ValueError(f"Unknown strategy: {name}. Available: {list(STRATEGY_REGISTRY.keys())}")
+        raise ValueError(f'Unknown strategy: {name}. Available: {list(STRATEGY_REGISTRY.keys())}')
     return STRATEGY_REGISTRY[name]
-
 
 def list_strategies() -> List[str]:
     return list(DISCOVERY_STRATEGY_REGISTRY.keys())
 
-
-def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict] = None) -> pd.DataFrame:
-    """Apply a named strategy with optional parameter overrides."""
+def apply_strategy(name: str, df: pd.DataFrame, params: Optional[dict]=None) -> pd.DataFrame:
     strat = get_strategy(name)
-    p = {**strat["default_params"], **(params or {})}
-    p = strip_unsupported_position_context(strat["fn"], p)
-    return strat["fn"](df, **p)
+    p = {**strat['default_params'], **(params or {})}
+    p = strip_unsupported_position_context(strat['fn'], p)
+    return strat['fn'](df, **p)
 
-
-def validate_params(name: str, params: Optional[dict] = None,
-                    default_params: Optional[dict] = None) -> None:
-    """Validate ``params`` against ``name``'s declared constraints WITHOUT
-    running it, raising ``ValueError`` on violation (#1338). ``default_params``
-    defaults to this platform's merged defaults so cross-parameter constraints
-    resolve any omitted operand to the value the spot strategy would see."""
+def validate_params(name: str, params: Optional[dict]=None, default_params: Optional[dict]=None) -> None:
     if default_params is None:
-        default_params = get_strategy(name)["default_params"]
+        default_params = get_strategy(name)['default_params']
     _registry.validate_params(name, params or {}, default_params)
 
-
 def validate_param_value(name: str, param: str, value) -> None:
-    """Loudly validate one override ``value`` for ``param`` against the
-    single-parameter constraints declared on ``name`` (#1338)."""
     _registry.validate_param_value(name, param, value)
-
-
-if __name__ == "__main__":
-    if "--list-json" in sys.argv:
-        print(json.dumps([{"id": name, "description": DISCOVERY_STRATEGY_REGISTRY[name]["description"]} for name in list_strategies()]))
+if __name__ == '__main__':
+    if '--list-json' in sys.argv:
+        print(json.dumps([{'id': name, 'description': DISCOVERY_STRATEGY_REGISTRY[name]['description']} for name in list_strategies()]))
     else:
-        print(f"Registered strategies: {list_strategies()}")
+        print(f'Registered strategies: {list_strategies()}')
         for name in list_strategies():
             s = DISCOVERY_STRATEGY_REGISTRY[name]
             print(f"  {name}: {s['description']}")

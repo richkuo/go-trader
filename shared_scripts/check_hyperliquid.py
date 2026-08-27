@@ -1,43 +1,3 @@
-#!/usr/bin/env python3
-"""
-Hyperliquid perps strategy check script.
-Fetches OHLCV from Hyperliquid, runs strategy, outputs JSON to stdout, exits.
-
-Signal check mode (paper or live):
-    check_hyperliquid.py <strategy> <symbol> <timeframe> [--mode=paper|live]
-
-Batched signal check mode (read-only, #1442) — N strategies that share one
-(symbol, timeframe, ohlcv-limit, atr-method) key evaluated in one process:
-    check_hyperliquid.py --batch-check --symbol=BTC --timeframe=1h \
-        --ohlcv-limit 200 --atr-method=simple [--mark-price=MID] \
-        [--regime-enabled --regime-windows-spec-json JSON] \
-        [--regime-payload-json JSON]
-    stdin:  {"v": 1, "slots": [{"id": ..., "strategy": ..., "mode": ...,
-                                "htf_filter": bool, "strategy_refs": {...},
-                                "regime_atr_window": ..., "position_side": ...,
-                                "position_ctx": {...}}, ...]}
-    stdout: {"platform","symbol","timeframe","timestamp","error","error_scope",
-             "results": [{"id", ...single-mode decision fields...}, ...]}
-    Exit 0 when every slot succeeds, 1 otherwise; JSON is always printed.
-
-Execution mode (live only, called by Go as phase 2):
-    check_hyperliquid.py --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live]
-        [--stop-loss-pct=3.0]         # optional: place a reduce-only SL trigger after fill (#412)
-        [--cancel-stop-loss-oid=OID]  # optional: cancel this trigger OID before the order
-        [--prev-pos-qty=0.5]          # optional: existing position qty being flipped, so the SL
-                                      # is sized against the *new* net position (total_sz - prev) (#421)
-        [--margin-mode=isolated|cross] # optional: enforce margin mode via update_leverage before the
-        [--leverage=N]                #   order (only on a fresh open from flat — HL rejects mode
-                                      #   changes on an open position) (#486)
-
-Trailing stop update mode (live only):
-    check_hyperliquid.py --update-stop-loss --symbol=BTC --side=long|short --size=0.01 \
-        --trigger-px=62000 --cancel-stop-loss-oid=OID [--mode=live]
-
-Fetch ATR mode (read-only, used by manual-open when --atr is omitted):
-    check_hyperliquid.py --fetch-atr --symbol=BTC --timeframe=1h [--period=14]
-"""
-
 import sys
 import os
 import json
@@ -46,9 +6,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-
 class SafeEncoder(json.JSONEncoder):
-    """JSON encoder that converts NaN/Inf to null (Python None)."""
 
     def default(self, obj):
         return super().default(obj)
@@ -66,189 +24,83 @@ class SafeEncoder(json.JSONEncoder):
         if isinstance(obj, (list, tuple)):
             return [self._sanitize(v) for v in obj]
         return obj
-
-# Add paths: platforms/hyperliquid/ directly (avoids naming conflict with hyperliquid SDK),
-# shared_strategies/open/futures/ for apply_strategy (Hyperliquid is a perps exchange), shared_tools/ for utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'hyperliquid'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_strategies', 'open', 'futures'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_tools'))
-
 from atr import ensure_atr_indicator, latest_atr
 from hl_user_fills import apply_user_fills_lookup
 from regime import latest_regime, parse_regime_windows_spec_json, prepare_check_regime
 
-
 def _make_dataframe(candles):
-    """Convert raw OHLCV list to pandas DataFrame compatible with strategy functions."""
     import pandas as pd
-    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df = df.set_index("datetime")
+    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+    df = df.set_index('datetime')
     df.sort_index(inplace=True)
     return df
 
-
 def _position_ctx_from_args(args):
     ctx = {}
-    side = (args.position_side or "").lower()
+    side = (args.position_side or '').lower()
     if side:
-        ctx["side"] = side
-    for attr, key in (
-        ("position_avg_cost", "avg_cost"),
-        ("position_qty", "current_quantity"),
-        ("position_initial_qty", "initial_quantity"),
-        ("position_entry_atr", "entry_atr"),
-    ):
+        ctx['side'] = side
+    for attr, key in (('position_avg_cost', 'avg_cost'), ('position_qty', 'current_quantity'), ('position_initial_qty', 'initial_quantity'), ('position_entry_atr', 'entry_atr')):
         value = getattr(args, attr, None)
         if value is not None:
             ctx[key] = value
-    regime = (getattr(args, "position_regime", "") or "").strip()
+    regime = (getattr(args, 'position_regime', '') or '').strip()
     if regime:
-        ctx["regime"] = regime
+        ctx['regime'] = regime
     return ctx
-
-
-# --- #1442: shared-market-state signal evaluation -------------------------
-# The signal check is split into a shared part (fetch, DataFrame build, ATR
-# base, display-price resolution) and a per-strategy part (regime prep,
-# strategy params, open/close evaluation, indicator extraction). The
-# single-strategy entry point runs one slot through the pair; --batch-check
-# runs N slots that share one (symbol, timeframe, ohlcv-limit, atr-method)
-# key through the same code, so batched and unbatched decisions come from one
-# implementation rather than two.
-
 BATCH_PROTOCOL_VERSION = 1
 
-
 class SharedSignalStateError(Exception):
-    """Shared market state could not be built (fetch failure, short history).
-
-    Distinct from a per-strategy fault: every slot in a batch is affected, so
-    the batch reports it once under error_scope="shared_state".
-    """
-
+    pass
 
 class InsufficientCandlesError(SharedSignalStateError):
-    """Fewer than 30 candles came back for the shared key."""
 
     def __init__(self, count):
         self.count = int(count)
-        super().__init__(f"Insufficient data: {self.count} candles")
-
-
-FUTURES_STRATEGIES_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..", "shared_strategies", "open", "futures", "strategies.py")
-
+        super().__init__(f'Insufficient data: {self.count} candles')
+FUTURES_STRATEGIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared_strategies', 'open', 'futures', 'strategies.py')
 
 def _futures_strategies_module():
-    """Resolve the futures open-strategy registry module.
-
-    `strategies` is an ambiguous top-level name — the spot, futures and options
-    registries all use it. In a subprocess the sys.path order above settles it,
-    but when this file is loaded IN-PROCESS (the batch unit tests, the backtest
-    parity tool, pytest -n auto) another module may already own the name, and a
-    bare import would silently bind the wrong registry.
-
-    The fast path is therefore accepted only when the bound module IS the
-    futures registry file. Identifying it by a function name would not do:
-    shared_strategies/open/spot/strategies.py defines apply_strategy too, so a
-    name check accepts the spot registry in exactly the situation this helper
-    exists to survive. Anything else loads the futures registry by path.
-    """
     try:
         import strategies as mod
-        if os.path.realpath(getattr(mod, "__file__", "") or "") == os.path.realpath(FUTURES_STRATEGIES_PATH):
+        if os.path.realpath(getattr(mod, '__file__', '') or '') == os.path.realpath(FUTURES_STRATEGIES_PATH):
             return mod
     except ImportError:
         pass
     import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "_check_hyperliquid_futures_strategies", FUTURES_STRATEGIES_PATH)
+    spec = importlib.util.spec_from_file_location('_check_hyperliquid_futures_strategies', FUTURES_STRATEGIES_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
-
 def _signal_check_deps():
-    """Resolve the strategy/composition callables the signal path needs.
-
-    Imports stay function-local because sys.path is patched at module import
-    time; both entry points call this so they bind the same implementations.
-    """
     from types import SimpleNamespace
-
     _strategies = _futures_strategies_module()
     apply_strategy = _strategies.apply_strategy
     get_strategy = _strategies.get_strategy
     list_strategies = _strategies.list_strategies
-    from close_registry_loader import (
-        evaluate as close_evaluate,
-        get_strategy as get_close_strategy,
-        list_strategies as list_close_strategies,
-    )
-    from strategy_composition import (
-        evaluate_open_close,
-        finalize_decision,
-        normalize_signal,
-        parse_close_strategies,
-        reject_backtest_only_strategies,
-        validate_close_strategy_names,
-    )
-
-    return SimpleNamespace(
-        apply_strategy=apply_strategy,
-        get_strategy=get_strategy,
-        list_strategies=list_strategies,
-        close_evaluate=close_evaluate,
-        get_close_strategy=get_close_strategy,
-        list_close_strategies=list_close_strategies,
-        evaluate_open_close=evaluate_open_close,
-        finalize_decision=finalize_decision,
-        normalize_signal=normalize_signal,
-        parse_close_strategies=parse_close_strategies,
-        reject_backtest_only_strategies=reject_backtest_only_strategies,
-        validate_close_strategy_names=validate_close_strategy_names,
-    )
-
+    from close_registry_loader import evaluate as close_evaluate, get_strategy as get_close_strategy, list_strategies as list_close_strategies
+    from strategy_composition import evaluate_open_close, finalize_decision, normalize_signal, parse_close_strategies, reject_backtest_only_strategies, validate_close_strategy_names
+    return SimpleNamespace(apply_strategy=apply_strategy, get_strategy=get_strategy, list_strategies=list_strategies, close_evaluate=close_evaluate, get_close_strategy=get_close_strategy, list_close_strategies=list_close_strategies, evaluate_open_close=evaluate_open_close, finalize_decision=finalize_decision, normalize_signal=normalize_signal, parse_close_strategies=parse_close_strategies, reject_backtest_only_strategies=reject_backtest_only_strategies, validate_close_strategy_names=validate_close_strategy_names)
 
 def _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies):
     configured_names = [open_strategy or strategy_name]
     deps.reject_backtest_only_strategies(configured_names, deps.get_strategy)
-    deps.validate_close_strategy_names(
-        deps.parse_close_strategies(close_strategies),
-        deps.get_strategy,
-        deps.get_close_strategy,
-        deps.list_strategies,
-        deps.list_close_strategies,
-    )
+    deps.validate_close_strategy_names(deps.parse_close_strategies(close_strategies), deps.get_strategy, deps.get_close_strategy, deps.list_strategies, deps.list_close_strategies)
 
-
-def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
-                              ohlcv_limit=200, atr_method="simple", mark_price=0.0,
-                              regime_enabled=False, regime_windows_spec=None,
-                              regime_payload_json=None, mode="paper",
-                              regime_period=14, regime_adx_threshold=20.0):
-    """Build the market state every slot on one batch key shares (#1442).
-
-    adapter is required unless df is supplied prebuilt (the backtest parity
-    tool drives the evaluator fetch-free). Raises SharedSignalStateError when
-    the shared data is unusable, so the caller can report one batch-level
-    sentinel instead of N identical per-strategy errors.
-    """
+def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None, ohlcv_limit=200, atr_method='simple', mark_price=0.0, regime_enabled=False, regime_windows_spec=None, regime_payload_json=None, mode='paper', regime_period=14, regime_adx_threshold=20.0):
     if df is None:
         if adapter is None:
-            raise SharedSignalStateError("no adapter and no prebuilt DataFrame")
-        print(f"Fetching {symbol} {timeframe} from Hyperliquid ({mode})...", file=sys.stderr)
+            raise SharedSignalStateError('no adapter and no prebuilt DataFrame')
+        print(f'Fetching {symbol} {timeframe} from Hyperliquid ({mode})...', file=sys.stderr)
         candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=ohlcv_limit)
         if not candles or len(candles) < 30:
             raise InsufficientCandlesError(len(candles) if candles else 0)
         df = _make_dataframe(candles)
-
-    # Display-price freshening, resolved once. Go forwards its cycle-local
-    # allMids snapshot via --mark-price so this subprocess can skip its own
-    # /info call (#768 fix #3); the adapter fallback is used only when the
-    # flag is absent.
     price_override = 0.0
     if mark_price and mark_price > 0:
         price_override = float(mark_price)
@@ -259,208 +111,118 @@ def build_shared_signal_state(symbol, timeframe, *, adapter=None, df=None,
                 price_override = float(mid)
         except Exception:
             pass
-
-    return {
-        "adapter": adapter,
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "mode": mode,
-        "df": df,
-        "atr_method": atr_method,
-        "atr": latest_atr(df, method=atr_method),
-        "price_override": price_override,
-        "regime_enabled": regime_enabled,
-        "regime_windows_spec": regime_windows_spec,
-        "regime_payload_json": regime_payload_json,
-        # Classifier defaults match prepare_check_regime's, so the daemon's
-        # behavior is unchanged; the backtest parity tool overrides them to
-        # compare against its own configured classifier.
-        "regime_period": regime_period,
-        "regime_adx_threshold": regime_adx_threshold,
-        # Memos: identical inputs for every slot on this key, so they are
-        # fetched at most once per batch instead of once per strategy.
-        "htf_cache": {},
-        "funding_scalar": None,
-        "funding_records": None,
-    }
-
+    return {'adapter': adapter, 'symbol': symbol, 'timeframe': timeframe, 'mode': mode, 'df': df, 'atr_method': atr_method, 'atr': latest_atr(df, method=atr_method), 'price_override': price_override, 'regime_enabled': regime_enabled, 'regime_windows_spec': regime_windows_spec, 'regime_payload_json': regime_payload_json, 'regime_period': regime_period, 'regime_adx_threshold': regime_adx_threshold, 'htf_cache': {}, 'funding_scalar': None, 'funding_records': None}
 
 def _shared_funding_scalar(shared, symbol):
-    """Current + 7d-average funding rate for delta_neutral_funding, memoized."""
-    if shared.get("funding_scalar") is not None:
-        return shared["funding_scalar"]
-    adapter = shared.get("adapter")
+    if shared.get('funding_scalar') is not None:
+        return shared['funding_scalar']
+    adapter = shared.get('adapter')
     params = {}
     if adapter is not None:
         try:
             current_rate = adapter.get_funding_rate(symbol)
             history = adapter.get_funding_history(symbol, days=7)
-            avg_rate = (sum(r["rate"] for r in history) / len(history)) if history else 0.0
-            params = {
-                "current_funding_rate": current_rate,
-                "avg_funding_rate_7d": avg_rate,
-            }
-            print(f"Funding rate {symbol}: current={current_rate:.6f} avg7d={avg_rate:.6f}", file=sys.stderr)
+            avg_rate = sum((r['rate'] for r in history)) / len(history) if history else 0.0
+            params = {'current_funding_rate': current_rate, 'avg_funding_rate_7d': avg_rate}
+            print(f'Funding rate {symbol}: current={current_rate:.6f} avg7d={avg_rate:.6f}', file=sys.stderr)
         except Exception as e:
-            print(f"Warning: failed to fetch funding rate: {e}", file=sys.stderr)
-    shared["funding_scalar"] = params
+            print(f'Warning: failed to fetch funding rate: {e}', file=sys.stderr)
+    shared['funding_scalar'] = params
     return params
 
-
 def _shared_funding_records(shared, symbol):
-    """Per-bar funding history aligned to the OHLCV window, memoized.
-
-    Paginated range fetch: the OHLCV window can exceed the single-call
-    funding_history cap (~500 hourly records), e.g. 200 4h bars.
-    """
-    if shared.get("funding_records") is not None:
-        return shared["funding_records"]
-    adapter = shared.get("adapter")
+    if shared.get('funding_records') is not None:
+        return shared['funding_records']
+    adapter = shared.get('adapter')
     records = None
     if adapter is not None:
         try:
-            start_ms = int(shared["df"]["timestamp"].iloc[0])
+            start_ms = int(shared['df']['timestamp'].iloc[0])
             records = adapter.get_funding_history_range(symbol, start_ms)
-            print(f"Funding history {symbol}: {len(records)} records since bar0",
-                  file=sys.stderr)
+            print(f'Funding history {symbol}: {len(records)} records since bar0', file=sys.stderr)
         except Exception as e:
-            print(f"Warning: failed to fetch funding history: {e}", file=sys.stderr)
-    shared["funding_records"] = records if records is not None else []
-    return shared["funding_records"]
-
+            print(f'Warning: failed to fetch funding history: {e}', file=sys.stderr)
+    shared['funding_records'] = records if records is not None else []
+    return shared['funding_records']
 
 def _shared_htf_frame(shared, sym, tf, limit):
-    """Memoized higher-timeframe frame fetch for the HTF trend filter.
-
-    Every slot on one batch key asks for the same (sym, tf, limit); the memo
-    returns a copy so a filter that annotates the frame cannot leak columns
-    into a peer slot.
-    """
-    cache = shared["htf_cache"]
+    cache = shared['htf_cache']
     key = (sym, tf, limit)
     if key not in cache:
-        adapter = shared.get("adapter")
+        adapter = shared.get('adapter')
         candles = adapter.get_ohlcv(sym, interval=tf, limit=limit) if adapter is not None else None
         cache[key] = _make_dataframe(candles) if candles else None
     frame = cache[key]
     return frame.copy() if frame is not None else None
 
-
 def evaluate_signal_slot(shared, slot, deps=None):
-    """Evaluate one strategy against the shared market state (#1442).
-
-    Returns the decision dict the single-strategy mode prints. The frame is
-    copied per slot so a strategy that annotates its input cannot change what
-    a peer slot sees — which is also what makes a batched slot's output equal
-    its solo run by construction.
-    """
     if deps is None:
         deps = _signal_check_deps()
-
-    strategy_name = slot["strategy"]
-    mode = slot.get("mode") or shared.get("mode") or "paper"
-    open_strategy = slot.get("open_strategy") or None
-    close_strategies = slot.get("close_strategies") or None
-    close_params_by_name = slot.get("close_params_by_name") or None
-    strategy_params_override = slot.get("params") or None
-    position_side = slot.get("position_side") or ""
-    position_ctx = slot.get("position_ctx") or None
-    htf_filter_enabled = bool(slot.get("htf_filter"))
-    regime_atr_window = slot.get("regime_atr_window") or ""
-
+    strategy_name = slot['strategy']
+    mode = slot.get('mode') or shared.get('mode') or 'paper'
+    open_strategy = slot.get('open_strategy') or None
+    close_strategies = slot.get('close_strategies') or None
+    close_params_by_name = slot.get('close_params_by_name') or None
+    strategy_params_override = slot.get('params') or None
+    position_side = slot.get('position_side') or ''
+    position_ctx = slot.get('position_ctx') or None
+    htf_filter_enabled = bool(slot.get('htf_filter'))
+    regime_atr_window = slot.get('regime_atr_window') or ''
     _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
-
-    symbol = shared["symbol"]
-    timeframe = shared["timeframe"]
-    atr_method = shared["atr_method"]
-    df = shared["df"].copy()
-
+    symbol = shared['symbol']
+    timeframe = shared['timeframe']
+    atr_method = shared['atr_method']
+    df = shared['df'].copy()
     open_close_enabled = bool(open_strategy or close_strategies)
     funding_aware_name = open_strategy or strategy_name
-
     strategy_params = {}
-    if strategy_name == "delta_neutral_funding":
+    if strategy_name == 'delta_neutral_funding':
         strategy_params.update(_shared_funding_scalar(shared, symbol))
-    if funding_aware_name == "funding_skew":
+    if funding_aware_name == 'funding_skew':
         records = _shared_funding_records(shared, symbol)
         if records:
-            strategy_params["funding_records"] = records
-
-    stdout_regime, live_regime, strategy_regime = prepare_check_regime(
-        df,
-        regime_enabled=shared["regime_enabled"],
-        period=shared.get("regime_period", 14),
-        adx_threshold=shared.get("regime_adx_threshold", 20.0),
-        windows_spec=shared["regime_windows_spec"],
-        atr_window=regime_atr_window,
-        injected_payload_json=shared["regime_payload_json"],
-    )
-    strategy_params["regime"] = strategy_regime
+            strategy_params['funding_records'] = records
+    stdout_regime, live_regime, strategy_regime = prepare_check_regime(df, regime_enabled=shared['regime_enabled'], period=shared.get('regime_period', 14), adx_threshold=shared.get('regime_adx_threshold', 20.0), windows_spec=shared['regime_windows_spec'], atr_window=regime_atr_window, injected_payload_json=shared['regime_payload_json'])
+    strategy_params['regime'] = strategy_regime
     if strategy_params_override:
         merged = {**strategy_params_override, **strategy_params}
         strategy_params = merged
     decision = None
     if open_close_enabled:
-        market_ctx = {"mark_price": float(df["close"].iloc[-1])}
-        atr_now = shared["atr"]
+        market_ctx = {'mark_price': float(df['close'].iloc[-1])}
+        atr_now = shared['atr']
         if atr_now > 0:
-            market_ctx["atr"] = atr_now
-        # #733: live regime label for tiered_tp_atr_live_regime evaluator.
-        # Falls back to the position's frozen regime via the evaluator if
-        # this is empty (e.g. regime detection disabled mid-position).
+            market_ctx['atr'] = atr_now
         if live_regime:
-            market_ctx["regime"] = live_regime
-        evaluation = deps.evaluate_open_close(
-            deps.apply_strategy,
-            deps.get_strategy,
-            df,
-            strategy_name,
-            open_strategy,
-            deps.parse_close_strategies(close_strategies),
-            position_side,
-            strategy_params or None,
-            position_ctx,
-            close_evaluate=deps.close_evaluate,
-            market_ctx=market_ctx,
-            close_params_by_name=close_params_by_name,
-        )
+            market_ctx['regime'] = live_regime
+        evaluation = deps.evaluate_open_close(deps.apply_strategy, deps.get_strategy, df, strategy_name, open_strategy, deps.parse_close_strategies(close_strategies), position_side, strategy_params or None, position_ctx, close_evaluate=deps.close_evaluate, market_ctx=market_ctx, close_params_by_name=close_params_by_name)
         result_df = evaluation.open_result_df
         signal = evaluation.open_signal
     else:
         result_df = deps.apply_strategy(strategy_name, df, strategy_params or None)
-        signal = deps.normalize_signal(result_df.iloc[-1].get("signal", 0))
-
+        signal = deps.normalize_signal(result_df.iloc[-1].get('signal', 0))
     ensure_atr_indicator(result_df, method=atr_method)
     last = result_df.iloc[-1]
-    price = float(last["close"])
-
-    # Apply HTF trend filter if enabled (skip for funding-rate strategies — #103)
+    price = float(last['close'])
     htf_info = {}
     htf_strategy_name = open_strategy or strategy_name
-    if htf_filter_enabled and htf_strategy_name not in ("delta_neutral_funding", "funding_skew"):
+    if htf_filter_enabled and htf_strategy_name not in ('delta_neutral_funding', 'funding_skew'):
         from htf_filter import htf_trend_filter, apply_htf_filter
 
         def _fetch_htf(sym, tf, limit):
             return _shared_htf_frame(shared, sym, tf, limit)
-
         htf_info = htf_trend_filter(symbol, timeframe, _fetch_htf)
         original_signal = signal
-        signal = apply_htf_filter(signal, htf_info.get("htf_trend", 0))
+        signal = apply_htf_filter(signal, htf_info.get('htf_trend', 0))
         if signal != original_signal:
             print(f"HTF filter: {original_signal} → {signal} (HTF trend={htf_info.get('htf_trend')})", file=sys.stderr)
-
     if open_close_enabled:
         decision = deps.finalize_decision(evaluation, position_side, signal)
-        signal = decision["signal"]
-
-    if shared["price_override"] > 0:
-        price = shared["price_override"]
-
+        signal = decision['signal']
+    if shared['price_override'] > 0:
+        price = shared['price_override']
     indicators = {}
-    skip_cols = {
-        "open", "high", "low", "close", "volume",
-        "timestamp", "signal", "position", "datetime",
-    }
+    skip_cols = {'open', 'high', 'low', 'close', 'volume', 'timestamp', 'signal', 'position', 'datetime'}
     for col in result_df.columns:
         if col in skip_cols:
             continue
@@ -472,402 +234,191 @@ def evaluate_signal_slot(shared, slot, deps=None):
                     indicators[col] = round(fval, 6)
             except (ValueError, TypeError):
                 pass
-
-    # Merge HTF indicators
     if htf_info:
         for k, v in htf_info.items():
             if isinstance(v, (int, float)):
                 indicators[k] = v
-
-    output = {
-        "strategy": strategy_name,
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "signal": signal,
-        "price": round(price, 2),
-        "indicators": indicators,
-        "regime": stdout_regime,
-        "mode": mode,
-        "platform": "hyperliquid",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    output = {'strategy': strategy_name, 'symbol': symbol, 'timeframe': timeframe, 'signal': signal, 'price': round(price, 2), 'indicators': indicators, 'regime': stdout_regime, 'mode': mode, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat()}
     if decision:
         output.update(decision)
     return output
 
-
-def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False,
-                     strategy_params_override=None, open_strategy=None,
-                     close_strategies=None,
-                     position_side="", position_ctx=None,
-                     regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window="",
-                     regime_payload_json=None,
-                     close_params_by_name=None,
-                     atr_method="simple",
-                     mark_price=0.0):
-    """Run strategy signal check using Hyperliquid OHLCV data."""
+def run_signal_check(strategy_name, symbol, timeframe, mode, htf_filter_enabled=False, strategy_params_override=None, open_strategy=None, close_strategies=None, position_side='', position_ctx=None, regime_enabled=False, regime_windows_spec=None, ohlcv_limit=200, regime_atr_window='', regime_payload_json=None, close_params_by_name=None, atr_method='simple', mark_price=0.0):
     try:
         from adapter import HyperliquidExchangeAdapter
-
         deps = _signal_check_deps()
         _validate_slot_strategy_names(deps, strategy_name, open_strategy, close_strategies)
-
         adapter = HyperliquidExchangeAdapter()
-
-        shared = build_shared_signal_state(
-            symbol, timeframe,
-            adapter=adapter,
-            ohlcv_limit=ohlcv_limit,
-            atr_method=atr_method,
-            mark_price=mark_price,
-            regime_enabled=regime_enabled,
-            regime_windows_spec=regime_windows_spec,
-            regime_payload_json=regime_payload_json,
-            mode=mode,
-        )
-        output = evaluate_signal_slot(shared, {
-            "id": strategy_name,
-            "strategy": strategy_name,
-            "mode": mode,
-            "htf_filter": htf_filter_enabled,
-            "params": strategy_params_override,
-            "open_strategy": open_strategy,
-            "close_strategies": close_strategies,
-            "close_params_by_name": close_params_by_name,
-            "position_side": position_side,
-            "position_ctx": position_ctx,
-            "regime_atr_window": regime_atr_window,
-        }, deps=deps)
+        shared = build_shared_signal_state(symbol, timeframe, adapter=adapter, ohlcv_limit=ohlcv_limit, atr_method=atr_method, mark_price=mark_price, regime_enabled=regime_enabled, regime_windows_spec=regime_windows_spec, regime_payload_json=regime_payload_json, mode=mode)
+        output = evaluate_signal_slot(shared, {'id': strategy_name, 'strategy': strategy_name, 'mode': mode, 'htf_filter': htf_filter_enabled, 'params': strategy_params_override, 'open_strategy': open_strategy, 'close_strategies': close_strategies, 'close_params_by_name': close_params_by_name, 'position_side': position_side, 'position_ctx': position_ctx, 'regime_atr_window': regime_atr_window}, deps=deps)
         print(json.dumps(output, cls=SafeEncoder))
-
     except InsufficientCandlesError as e:
-        print(json.dumps({
-            "strategy": strategy_name,
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "signal": 0,
-            "price": 0,
-            "indicators": {},
-            "mode": mode,
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }, cls=SafeEncoder))
+        print(json.dumps({'strategy': strategy_name, 'symbol': symbol, 'timeframe': timeframe, 'signal': 0, 'price': 0, 'indicators': {}, 'mode': mode, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': str(e)}, cls=SafeEncoder))
         sys.exit(1)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
-            "strategy": strategy_name,
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "signal": 0,
-            "price": 0,
-            "indicators": {},
-            "regime": None,
-            "mode": mode,
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }, cls=SafeEncoder))
+        print(json.dumps({'strategy': strategy_name, 'symbol': symbol, 'timeframe': timeframe, 'signal': 0, 'price': 0, 'indicators': {}, 'regime': None, 'mode': mode, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': str(e)}, cls=SafeEncoder))
         sys.exit(1)
 
-
 def parse_batch_slots(raw_stdin):
-    """Parse the --batch-check stdin envelope into a slot list (#1442)."""
     payload = json.loads(raw_stdin)
     if not isinstance(payload, dict):
-        raise ValueError("batch payload must be a JSON object")
-    version = payload.get("v", BATCH_PROTOCOL_VERSION)
+        raise ValueError('batch payload must be a JSON object')
+    version = payload.get('v', BATCH_PROTOCOL_VERSION)
     if int(version) != BATCH_PROTOCOL_VERSION:
-        raise ValueError(f"unsupported batch protocol version {version}")
-    slots = payload.get("slots")
+        raise ValueError(f'unsupported batch protocol version {version}')
+    slots = payload.get('slots')
     if not isinstance(slots, list) or not slots:
         raise ValueError("batch payload must carry a non-empty 'slots' array")
     seen = set()
     out = []
     for idx, slot in enumerate(slots):
         if not isinstance(slot, dict):
-            raise ValueError(f"slot {idx} must be a JSON object")
-        slot_id = str(slot.get("id") or "").strip()
+            raise ValueError(f'slot {idx} must be a JSON object')
+        slot_id = str(slot.get('id') or '').strip()
         if not slot_id:
             raise ValueError(f"slot {idx} is missing 'id'")
         if slot_id in seen:
-            raise ValueError(f"duplicate slot id {slot_id!r}")
+            raise ValueError(f'duplicate slot id {slot_id!r}')
         seen.add(slot_id)
-        refs = slot.get("strategy_refs")
+        refs = slot.get('strategy_refs')
         if refs:
             from strategy_composition import parse_strategy_refs_arg
             parsed = parse_strategy_refs_arg(refs if isinstance(refs, str) else json.dumps(refs))
             if parsed:
                 slot = dict(slot)
-                slot["open_strategy"] = parsed["open_name"]
-                slot["close_strategies"] = parsed["close_csv"]
-                slot["params"] = parsed["open_params"]
-                slot["close_params_by_name"] = parsed["close_params_by_name"]
-        if not str(slot.get("strategy") or "").strip():
+                slot['open_strategy'] = parsed['open_name']
+                slot['close_strategies'] = parsed['close_csv']
+                slot['params'] = parsed['open_params']
+                slot['close_params_by_name'] = parsed['close_params_by_name']
+        if not str(slot.get('strategy') or '').strip():
             raise ValueError(f"slot {slot_id!r} is missing 'strategy'")
         out.append(slot)
     return out
 
-
 def _batch_slot_error(slot, symbol, timeframe, message):
-    return {
-        "id": slot.get("id", ""),
-        "strategy": slot.get("strategy", ""),
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "signal": 0,
-        "price": 0,
-        "indicators": {},
-        "regime": None,
-        "mode": slot.get("mode") or "paper",
-        "platform": "hyperliquid",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "error": message,
-    }
+    return {'id': slot.get('id', ''), 'strategy': slot.get('strategy', ''), 'symbol': symbol, 'timeframe': timeframe, 'signal': 0, 'price': 0, 'indicators': {}, 'regime': None, 'mode': slot.get('mode') or 'paper', 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': message}
 
-
-def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_method="simple",
-                           mark_price=0.0, regime_enabled=False, regime_windows_spec=None,
-                           regime_payload_json=None, adapter=None, df=None):
-    """Evaluate N strategy slots that share one market-data key (#1442).
-
-    Shared-state failure emits one batch-level sentinel with
-    error_scope="shared_state" and no results, so the operator can tell it
-    apart from a per-strategy fault. Each slot is wrapped in its own handler:
-    one failing strategy returns an error for that slot only.
-    """
-    envelope = {
-        "platform": "hyperliquid",
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "error": "",
-        "error_scope": "",
-        "results": [],
-    }
+def run_batch_signal_check(symbol, timeframe, slots, *, ohlcv_limit=200, atr_method='simple', mark_price=0.0, regime_enabled=False, regime_windows_spec=None, regime_payload_json=None, adapter=None, df=None):
+    envelope = {'platform': 'hyperliquid', 'symbol': symbol, 'timeframe': timeframe, 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': '', 'error_scope': '', 'results': []}
     try:
         deps = _signal_check_deps()
         if adapter is None and df is None:
             from adapter import HyperliquidExchangeAdapter
             adapter = HyperliquidExchangeAdapter()
-        shared = build_shared_signal_state(
-            symbol, timeframe,
-            adapter=adapter,
-            df=df,
-            ohlcv_limit=ohlcv_limit,
-            atr_method=atr_method,
-            mark_price=mark_price,
-            regime_enabled=regime_enabled,
-            regime_windows_spec=regime_windows_spec,
-            regime_payload_json=regime_payload_json,
-        )
+        shared = build_shared_signal_state(symbol, timeframe, adapter=adapter, df=df, ohlcv_limit=ohlcv_limit, atr_method=atr_method, mark_price=mark_price, regime_enabled=regime_enabled, regime_windows_spec=regime_windows_spec, regime_payload_json=regime_payload_json)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        envelope["error"] = str(e)
-        envelope["error_scope"] = "shared_state"
-        return envelope, 1
-
+        envelope['error'] = str(e)
+        envelope['error_scope'] = 'shared_state'
+        return (envelope, 1)
     failed = False
     for slot in slots:
         try:
             output = evaluate_signal_slot(shared, slot, deps=deps)
-            output["id"] = slot.get("id", "")
-            envelope["results"].append(output)
+            output['id'] = slot.get('id', '')
+            envelope['results'].append(output)
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             failed = True
-            envelope["results"].append(
-                _batch_slot_error(slot, symbol, timeframe, str(e)))
-    return envelope, (1 if failed else 0)
-
+            envelope['results'].append(_batch_slot_error(slot, symbol, timeframe, str(e)))
+    return (envelope, 1 if failed else 0)
 
 def _classify_sl_response(sdk_response: dict):
-    """Classify a trigger-order SDK response into one of:
-
-      ("resting", oid)        — order is now resting on the book (happy path)
-      ("filled",  oid_or_0)   — order filled at submit (price was already through the trigger)
-      ("error",   reason_str) — SDK reported an error in the status payload
-      ("missing", None)       — couldn't find a status entry (malformed response)
-
-    HL responses look like:
-      {"status":"ok","response":{"type":"order","data":{"statuses":[ <status> ]}}}
-
-    where <status> is one of `{"resting":{"oid":N}}`, `{"filled":{...,"oid":N}}`,
-    or `{"error":"..."}`. Distinguishing these matters because an instant-fill
-    means the position is already closed on-chain — surfacing it as "no resting
-    OID" the way the previous _extract_resting_oid did made the scheduler log
-    a placement error and leave virtual state thinking the position is open. (#421)
-    """
     try:
-        statuses = sdk_response.get("response", {}).get("data", {}).get("statuses", [])
+        statuses = sdk_response.get('response', {}).get('data', {}).get('statuses', [])
         if not statuses:
-            return ("missing", None)
+            return ('missing', None)
         status = statuses[0] if isinstance(statuses[0], dict) else {}
-        if "resting" in status and isinstance(status["resting"], dict):
-            oid = status["resting"].get("oid")
-            return ("resting", int(oid) if oid is not None else 0)
-        if "filled" in status and isinstance(status["filled"], dict):
-            oid = status["filled"].get("oid")
-            return ("filled", int(oid) if oid is not None else 0)
-        if "error" in status:
-            return ("error", str(status["error"]))
+        if 'resting' in status and isinstance(status['resting'], dict):
+            oid = status['resting'].get('oid')
+            return ('resting', int(oid) if oid is not None else 0)
+        if 'filled' in status and isinstance(status['filled'], dict):
+            oid = status['filled'].get('oid')
+            return ('filled', int(oid) if oid is not None else 0)
+        if 'error' in status:
+            return ('error', str(status['error']))
     except Exception as e:
-        return ("error", f"_classify_sl_response: {e}")
-    return ("missing", None)
-
-
+        return ('error', f'_classify_sl_response: {e}')
+    return ('missing', None)
 
 def _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids):
-    """Resolve a stop-loss placement whose OUTCOME could not be read.
-
-    #1456 review rounds 15 and 16. An unreadable status entry and a post-submit
-    exception are *outcome unknown*, never *rejected*: the order may well be
-    resting. Diff the open-order book against ``pre_oids`` — the snapshot taken
-    immediately BEFORE submitting — and resolve the ambiguity at the source:
-
-      ("resting", oid) — exactly one NEW oid appeared: that is the order we just
-                         placed. Report it as a normal resting placement.
-      ("none",    None) — no new oid: nothing rested. A genuine failure, which
-                         the caller reports as before (recorded state cleared,
-                         re-placed next cycle).
-      ("unknown", None) — the book could not be re-read, or the diff is
-                         ambiguous. Only THIS residue is handed to Go as
-                         ``stop_loss_outcome_unknown``, where recorded state is
-                         KEPT and no re-place is licensed.
-
-    Callers must snapshot BEFORE submitting and must not place any other order
-    (e.g. TP tiers) between the snapshot and this call, or the diff cannot
-    attribute a fresh oid to this stop-loss.
-    """
     if pre_oids is None:
-        return ("unknown", None)
+        return ('unknown', None)
     try:
         now_oids = adapter.open_order_oids(symbol)
     except Exception as oe:
-        print(f"[WARN] outcome-unknown SL placement: open_order_oids({symbol}) re-read failed: {oe}", file=sys.stderr)
-        return ("unknown", None)
+        print(f'[WARN] outcome-unknown SL placement: open_order_oids({symbol}) re-read failed: {oe}', file=sys.stderr)
+        return ('unknown', None)
     if now_oids is None:
-        return ("unknown", None)
+        return ('unknown', None)
     fresh = [int(o) for o in now_oids if int(o) not in pre_oids]
     if len(fresh) == 1:
-        print(f"[WARN] unreadable SL placement response resolved to resting oid={fresh[0]}", file=sys.stderr)
-        return ("resting", fresh[0])
+        print(f'[WARN] unreadable SL placement response resolved to resting oid={fresh[0]}', file=sys.stderr)
+        return ('resting', fresh[0])
     if not fresh:
-        return ("none", None)
-    return ("unknown", None)
-
+        return ('none', None)
+    return ('unknown', None)
 
 def _snapshot_open_oids(adapter, symbol):
-    """Pre-submit open-order snapshot for _resolve_sl_placement_by_book_diff.
-
-    Returns a set of oids, or None when the book could not be read (which makes
-    the diff impossible and forces the outcome-unknown residue).
-    """
     try:
         oids = adapter.open_order_oids(symbol)
     except Exception as oe:
-        print(f"[WARN] pre-placement open_order_oids({symbol}) failed: {oe}; an unreadable placement will not be resolvable", file=sys.stderr)
+        print(f'[WARN] pre-placement open_order_oids({symbol}) failed: {oe}; an unreadable placement will not be resolvable', file=sys.stderr)
         return None
     if oids is None:
         return None
-    return set(int(o) for o in oids)
-
+    return set((int(o) for o in oids))
 
 def _classify_cancel_response(sdk_response):
-    """Classify an order-cancel SDK response into ("ok", "") or ("error", reason).
-
-    HL reports a REJECTED cancel inside a normal-looking response body rather
-    than raising: {"status": "err", ...} at the top level, or a per-order
-    {"error": "..."} entry under response.data.statuses (per-order successes
-    appear there as the string "success" or an empty dict, depending on SDK
-    version). Treating "the call did not raise" as landed can clear a recorded
-    stop OID while the order still rests on the book (#1456 review round 10).
-
-    Fails closed: any shape that does not CONFIRM the landing classifies as
-    ("error", ...), so callers keep the recorded OID tracked.
-    """
     try:
         if not isinstance(sdk_response, dict):
-            return ("error", f"unexpected cancel response: {sdk_response}")
-        if sdk_response.get("status") != "ok":
-            return ("error", str(sdk_response))
-        data = sdk_response.get("response", {}).get("data", {})
-        statuses = data.get("statuses") if isinstance(data, dict) else None
+            return ('error', f'unexpected cancel response: {sdk_response}')
+        if sdk_response.get('status') != 'ok':
+            return ('error', str(sdk_response))
+        data = sdk_response.get('response', {}).get('data', {})
+        statuses = data.get('statuses') if isinstance(data, dict) else None
         if not isinstance(statuses, list) or not statuses:
-            return ("error", f"cancel returned no per-order status: {sdk_response}")
+            return ('error', f'cancel returned no per-order status: {sdk_response}')
         for st in statuses:
-            if isinstance(st, dict) and "error" in st:
-                return ("error", str(st["error"]))
-        return ("ok", "")
+            if isinstance(st, dict) and 'error' in st:
+                return ('error', str(st['error']))
+        return ('ok', '')
     except Exception as e:
-        return ("error", f"_classify_cancel_response: {e}")
+        return ('error', f'_classify_cancel_response: {e}')
 
 def _oid_is_open(open_oids: set[int] | None, oid: int) -> bool:
-    return oid > 0 and open_oids is not None and int(oid) in open_oids
-
+    return oid > 0 and open_oids is not None and (int(oid) in open_oids)
 
 def _oid_filled_externally(adapter, oid: int, since_ms: int, fill_hints=None) -> dict:
-    """Check whether ``oid`` has filled on-chain by querying userFills.
-
-    When ``fill_hints`` is provided (oid → hint dict from the Go reconciler's
-    same-cycle prefetch, #759), only a **confirmed fill** (``filled: true``)
-    short-circuits ``lookup_fill_fee_by_oid``. A ``filled: false`` hint does
-    not — Go's prefetch can miss on transient indexer errors, so Python keeps
-    an independent userFills attempt with its own retry budget.
-
-    Returns a dict with at minimum ``{"filled": bool}``. When filled, also
-    includes ``size`` (summed across partial fills) and the ``fee`` /
-    ``closed_pnl`` fields surfaced by ``lookup_fill_fee_by_oid``. Failure to
-    query is non-fatal: the caller treats {"filled": False} as "we don't
-    know" and proceeds with re-placement only when we have positive evidence
-    the order was cancelled (open-orders fetch succeeded and OID absent).
-
-    Used by run_sync_protection to avoid the over-close hazard where a TP
-    OID that has actually filled (shrinking the on-chain position) is
-    re-placed at the same price sized against stale virtual qty (#604 review #1).
-    """
     if oid <= 0:
-        return {"filled": False}
+        return {'filled': False}
     if fill_hints is not None:
         hint = fill_hints.get(int(oid))
-        if hint is not None and hint.get("filled"):
-            return {
-                "filled": True,
-                "fee": float(hint.get("fee", 0) or 0),
-                "closed_pnl": float(hint.get("closed_pnl", 0) or 0),
-                "count": int(hint.get("count", 0) or 0),
-            }
+        if hint is not None and hint.get('filled'):
+            return {'filled': True, 'fee': float(hint.get('fee', 0) or 0), 'closed_pnl': float(hint.get('closed_pnl', 0) or 0), 'count': int(hint.get('count', 0) or 0)}
     try:
         lookup = adapter.lookup_fill_fee_by_oid(int(oid), since_ms)
     except Exception as e:
-        print(f"[WARN] userFills lookup({oid}) failed: {e}", file=sys.stderr)
-        return {"filled": False, "error": str(e)}
+        print(f'[WARN] userFills lookup({oid}) failed: {e}', file=sys.stderr)
+        return {'filled': False, 'error': str(e)}
     if not lookup:
-        return {"filled": False}
-    return {
-        "filled": True,
-        "fee": float(lookup.get("fee", 0) or 0),
-        "closed_pnl": float(lookup.get("closed_pnl", 0) or 0),
-        "count": int(lookup.get("count", 0) or 0),
-    }
-
+        return {'filled': False}
+    return {'filled': True, 'fee': float(lookup.get('fee', 0) or 0), 'closed_pnl': float(lookup.get('closed_pnl', 0) or 0), 'count': int(lookup.get('count', 0) or 0)}
 
 def _normalize_tp_tiers(tp_tiers=None, tp1_atr_mult=0.0, tp1_fraction=0.0, tp2_atr_mult=0.0):
-    """Return canonical cumulative TP tiers as (atr_multiple, close_fraction)."""
     raw_tiers = tp_tiers
     if raw_tiers is None:
         raw_tiers = []
         if tp1_atr_mult > 0 and tp1_fraction > 0:
-            raw_tiers.append({"atr_multiple": tp1_atr_mult, "close_fraction": tp1_fraction})
+            raw_tiers.append({'atr_multiple': tp1_atr_mult, 'close_fraction': tp1_fraction})
         if tp2_atr_mult > 0:
-            raw_tiers.append({"atr_multiple": tp2_atr_mult, "close_fraction": 1.0})
-
+            raw_tiers.append({'atr_multiple': tp2_atr_mult, 'close_fraction': 1.0})
     tiers = []
     for tier in raw_tiers or []:
         if isinstance(tier, dict):
-            multiple = tier.get("atr_multiple", tier.get("multiple", tier.get("Multiple")))
-            fraction = tier.get("close_fraction", tier.get("fraction", tier.get("Fraction")))
+            multiple = tier.get('atr_multiple', tier.get('multiple', tier.get('Multiple')))
+            fraction = tier.get('close_fraction', tier.get('fraction', tier.get('Fraction')))
         else:
             try:
                 multiple, fraction = tier
@@ -881,7 +432,6 @@ def _normalize_tp_tiers(tp_tiers=None, tp1_atr_mult=0.0, tp1_fraction=0.0, tp2_a
         if multiple > 0 and fraction > 0:
             tiers.append((multiple, fraction))
     tiers.sort(key=lambda item: item[0])
-
     prev_fraction = 0.0
     for _multiple, fraction in tiers:
         if fraction <= prev_fraction:
@@ -889,27 +439,10 @@ def _normalize_tp_tiers(tp_tiers=None, tp1_atr_mult=0.0, tp1_fraction=0.0, tp2_a
         prev_fraction = fraction
     if len(tiers) < 2:
         return []
-
-    # Match Go: the last on-chain TP order always covers everything remaining,
-    # preserving the old TP2 behavior for two-tier configs ending below 100%.
     tiers[-1] = (tiers[-1][0], 1.0)
     return tiers
 
-
 def compute_tp_tier_sizes(size, tiers, floor_size_fn):
-    """Compute per-tier reduce-only sizes that cover the full lot-aligned position.
-
-    Non-final tiers are pre-floored so each on-chain order is lot-aligned;
-    the final tier absorbs the remainder via integer-lot subtraction
-    (`floor_size(size) - sum(non-final floors)`) so per-tier truncation
-    cannot strand a permanent residual (#628).
-
-    `tiers` is the normalized output of `_normalize_tp_tiers`: a list of
-    (atr_multiple, cumulative_fraction) with the final fraction == 1.0.
-
-    Returns a list of float sizes the same length as `tiers`. Returns all
-    zeros when `size <= 0` or `tiers` is empty.
-    """
     if not tiers or size <= 0:
         return [0.0] * len(tiers)
     floored_total = floor_size_fn(size)
@@ -928,53 +461,24 @@ def compute_tp_tier_sizes(size, tiers, floor_size_fn):
         sizes.append(tier_size)
     return sizes
 
-
-def run_sync_protection(
-    symbol,
-    side,
-    size,
-    avg_cost,
-    entry_atr,
-    mode,
-    stop_loss_atr_mult=0.0,
-    tp1_atr_mult=0.0,
-    tp1_fraction=0.0,
-    tp2_atr_mult=0.0,
-    stop_loss_oid=0,
-    tp1_oid=0,
-    tp2_oid=0,
-    tp_tiers=None,
-    tp_oids=None,
-    tp_armed_tiers=None,
-    force_sl_replace=False,
-    force_tp_replace=None,
-    cancel_tp_oids=None,
-    reconcile_fill_hints_json="",
-):
-    """Verify/re-place per-strategy reduce-only SL/TP orders (#601)."""
-    if mode != "live":
-        print(json.dumps({"error": "--sync-protection requires --mode=live"}, cls=SafeEncoder))
+def run_sync_protection(symbol, side, size, avg_cost, entry_atr, mode, stop_loss_atr_mult=0.0, tp1_atr_mult=0.0, tp1_fraction=0.0, tp2_atr_mult=0.0, stop_loss_oid=0, tp1_oid=0, tp2_oid=0, tp_tiers=None, tp_oids=None, tp_armed_tiers=None, force_sl_replace=False, force_tp_replace=None, cancel_tp_oids=None, reconcile_fill_hints_json=''):
+    if mode != 'live':
+        print(json.dumps({'error': '--sync-protection requires --mode=live'}, cls=SafeEncoder))
         sys.exit(1)
     side = side.lower()
-    if side not in ("long", "short"):
-        print(json.dumps({"error": f"invalid side {side!r}"}, cls=SafeEncoder))
+    if side not in ('long', 'short'):
+        print(json.dumps({'error': f'invalid side {side!r}'}, cls=SafeEncoder))
         sys.exit(1)
     if avg_cost <= 0 or entry_atr <= 0:
-        print(json.dumps({"error": "avg-cost and entry-atr must be > 0"}, cls=SafeEncoder))
+        print(json.dumps({'error': 'avg-cost and entry-atr must be > 0'}, cls=SafeEncoder))
         sys.exit(1)
-    # Shared-coin dust can drive size to 0 while surplus TP OIDs still need cancel (#843).
-    if size <= 0 and not cancel_tp_oids:
-        print(json.dumps({"error": "size must be > 0"}, cls=SafeEncoder))
+    if size <= 0 and (not cancel_tp_oids):
+        print(json.dumps({'error': 'size must be > 0'}, cls=SafeEncoder))
         sys.exit(1)
-
-    out = {
-        "platform": "hyperliquid",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    out = {'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat()}
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-
         fill_hints = None
         if reconcile_fill_hints_json:
             try:
@@ -982,48 +486,28 @@ def run_sync_protection(
                 if isinstance(parsed, list):
                     fill_hints = {}
                     for item in parsed:
-                        if isinstance(item, dict) and "oid" in item:
-                            fill_hints[int(item["oid"])] = item
+                        if isinstance(item, dict) and 'oid' in item:
+                            fill_hints[int(item['oid'])] = item
             except json.JSONDecodeError as je:
-                print(f"[WARN] reconcile_fill_hints_json: {je}", file=sys.stderr)
-
+                print(f'[WARN] reconcile_fill_hints_json: {je}', file=sys.stderr)
         open_oids = None
         try:
             open_oids = adapter.open_order_oids(symbol)
         except Exception as oe:
-            out["open_order_check_error"] = str(oe)
-            print(f"[WARN] open_order_oids({symbol}) failed: {oe}; will place only missing zero-OID protection", file=sys.stderr)
-
-        close_is_buy = side == "short"
-
-        # Wide window for the userFills "did this OID fill?" lookup. We don't
-        # know how long the prior OID was outstanding, so look back 7 days —
-        # any fill older than that is irrelevant (the OID would have been
-        # rotated long since). Bounding at 7d keeps the indexer scan cheap
-        # but still catches fills that occurred during a multi-day outage.
+            out['open_order_check_error'] = str(oe)
+            print(f'[WARN] open_order_oids({symbol}) failed: {oe}; will place only missing zero-OID protection', file=sys.stderr)
+        close_is_buy = side == 'short'
         fill_check_since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
 
         def _resolve_missing_oid(prev_oid: int):
-            """Decide what to do with a previously-recorded OID that is no
-            longer in open_orders. Returns one of:
-                ("place",   None)  — OID never existed or was cancelled; place new
-                ("filled",  fill)  — OID actually filled on-chain; do NOT re-place
-                ("unknown", None)  — open_orders fetch failed; defer
-            (#604 review #1)
-            """
             if prev_oid <= 0:
-                return ("place", None)
+                return ('place', None)
             if open_oids is None:
-                # We couldn't fetch open_orders — don't re-place a TP/SL
-                # without knowing whether the prior one is still resting.
-                # Re-placement here is what would over-close: better to
-                # surface the failure and try again next cycle.
-                return ("unknown", None)
+                return ('unknown', None)
             fill = _oid_filled_externally(adapter, prev_oid, fill_check_since_ms, fill_hints)
-            if fill.get("filled"):
-                return ("filled", fill)
-            return ("place", None)
-
+            if fill.get('filled'):
+                return ('filled', fill)
+            return ('place', None)
         surplus_cancel_failed = []
         surplus_cancel_filled = []
         for surplus_oid in cancel_tp_oids or []:
@@ -1031,1039 +515,616 @@ def run_sync_protection(
             if oid <= 0:
                 continue
             action, fill = _resolve_missing_oid(oid)
-            if action == "filled":
+            if action == 'filled':
                 surplus_cancel_filled.append(oid)
-                print(
-                    f"[WARN] surplus TP OID={oid} already filled on-chain; not canceling — reconciler will book the close",
-                    file=sys.stderr,
-                )
+                print(f'[WARN] surplus TP OID={oid} already filled on-chain; not canceling — reconciler will book the close', file=sys.stderr)
                 continue
-            if action == "unknown":
+            if action == 'unknown':
                 surplus_cancel_failed.append(oid)
                 continue
             try:
                 adapter.cancel_order_by_oid(symbol, oid)
             except Exception as ce:
                 surplus_cancel_failed.append(oid)
-                print(
-                    f"[WARN] cancel surplus TP OID={oid} failed: {ce}",
-                    file=sys.stderr,
-                )
+                print(f'[WARN] cancel surplus TP OID={oid} failed: {ce}', file=sys.stderr)
         if surplus_cancel_failed:
-            out["tp_cancel_failed_oids"] = surplus_cancel_failed
+            out['tp_cancel_failed_oids'] = surplus_cancel_failed
         if surplus_cancel_filled:
-            out["tp_cancel_filled_oids"] = surplus_cancel_filled
-
+            out['tp_cancel_filled_oids'] = surplus_cancel_filled
         if stop_loss_atr_mult > 0:
-            if side == "long":
+            if side == 'long':
                 sl_px = avg_cost - stop_loss_atr_mult * entry_atr
             else:
                 sl_px = avg_cost + stop_loss_atr_mult * entry_atr
             sl_px = adapter.round_perps_trigger_px(symbol, sl_px)
 
-            # #1450 contract: ``stop_loss_trigger_px`` reports the trigger of the
-            # order THIS sync put on the book — never the price a plan merely
-            # derived. Go writes it straight into pos.StopLossTriggerPx, so
-            # emitting it on a branch that places nothing records a price no
-            # order rests at. That fiction is not cosmetic: the per-cycle #1450
-            # audit reads the recorded trigger, and a derived-but-unreachable
-            # value makes it cancel and re-place a perfectly healthy order every
-            # cycle for the life of the position. Every branch below that ends
-            # without a placement leaves the field ABSENT, and Go then keeps the
-            # trigger it already had.
             def _sl_placed(px):
-                out["stop_loss_trigger_px"] = px
+                out['stop_loss_trigger_px'] = px
 
             def _resolve_unknown_sl(reason, pre_oids):
-                """Resolve a placement whose OUTCOME could not be read.
-
-                #1456 review round 15 (Optional 1). An unreadable status entry
-                and a post-submit exception are *outcome unknown*, never
-                *rejected*: the order may well be resting. Reporting them as a
-                bare ``stop_loss_error`` made Go clear pos.StopLossOID AND
-                pos.StopLossTriggerPx (cancel_stop_loss_succeeded with no OID),
-                raise a "the position has NO exchange-side stop" CRITICAL that
-                is false, and then let the NEXT sync place a second full-size
-                reduce-only stop that nothing tracks.
-
-                Resolve the ambiguity at the source instead of propagating it:
-                diff the open-order book against the snapshot taken immediately
-                before submitting. Exactly one NEW oid is the order we just
-                placed — adopt it and report a normal resting placement. No new
-                oid means nothing rested, which is a genuine failure and clears
-                as before. Only when the book cannot be re-read, or the diff is
-                ambiguous, does ``stop_loss_outcome_unknown`` go out, and Go
-                then DEFERS (keeps recorded state, no false CRITICAL) exactly
-                as an unconfirmed cancel already does.
-
-                This runs before any TP placement in run_sync_protection, so a
-                fresh oid in the diff can only be this stop-loss.
-                """
-                # #1456 review round 19 (Optional 1): the error text travels
-                # ONLY on the "none" branch. A placement resolved to a resting
-                # order is a SUCCESS — Go records the OID, and emitting
-                # ``stop_loss_error`` alongside it made
-                # formatProtectionSyncWarnings fire a false "SL sync failed"
-                # DM for a position that is protected. The ambiguous-diff
-                # residue reports ``stop_loss_outcome_unknown`` alone too: Go
-                # raises its own accurate CRITICAL for that shape, and the
-                # generic partial-failure WARNING would only stack on top of
-                # it.
-                out["stop_loss_error"] = reason
+                out['stop_loss_error'] = reason
                 kind, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
-                if kind == "resting":
-                    del out["stop_loss_error"]
-                    out["stop_loss_oid"] = oid
+                if kind == 'resting':
+                    del out['stop_loss_error']
+                    out['stop_loss_oid'] = oid
                     _sl_placed(sl_px)
-                elif kind == "unknown":
-                    del out["stop_loss_error"]
-                    out["stop_loss_outcome_unknown"] = True
-                # kind == "none": nothing rests, a genuine failure. Keep the
-                # error and leave the outcome-unknown flag off so Go clears
-                # the dead OID and re-places from the empty-OID path, as
-                # before.
+                elif kind == 'unknown':
+                    del out['stop_loss_error']
+                    out['stop_loss_outcome_unknown'] = True
 
             def _place_sl():
-                # Snapshot the book BEFORE submitting so an unreadable response
-                # can be resolved by diff. `open_oids` is the top-of-call fetch;
-                # None means that fetch failed and no diff is possible.
-                pre_oids = set(int(o) for o in open_oids) if open_oids is not None else None
+                pre_oids = set((int(o) for o in open_oids)) if open_oids is not None else None
                 try:
                     resp = adapter.place_stop_loss(symbol, size, sl_px, close_is_buy)
                     kind, payload = _classify_sl_response(resp)
-                    if kind == "resting":
-                        out["stop_loss_oid"] = payload
+                    if kind == 'resting':
+                        out['stop_loss_oid'] = payload
                         _sl_placed(sl_px)
-                    elif kind == "filled":
-                        out["stop_loss_filled_immediately"] = True
+                    elif kind == 'filled':
+                        out['stop_loss_filled_immediately'] = True
                         _sl_placed(sl_px)
-                    elif kind == "error":
-                        # Positively REJECTED by the exchange — nothing rests.
-                        # Clearing recorded state is correct here.
-                        out["stop_loss_error"] = f"place_stop_loss SDK error: {payload}"
+                    elif kind == 'error':
+                        out['stop_loss_error'] = f'place_stop_loss SDK error: {payload}'
                     else:
-                        _resolve_unknown_sl(f"place_stop_loss returned no usable status: {resp}", pre_oids)
+                        _resolve_unknown_sl(f'place_stop_loss returned no usable status: {resp}', pre_oids)
                 except Exception as se:
                     _resolve_unknown_sl(str(se), pre_oids)
-
-            if _oid_is_open(open_oids, stop_loss_oid) and not force_sl_replace:
-                # Pure echo — the existing order keeps resting at whatever
-                # trigger it was placed at. Nothing to report.
-                out["stop_loss_oid"] = int(stop_loss_oid)
+            if _oid_is_open(open_oids, stop_loss_oid) and (not force_sl_replace):
+                out['stop_loss_oid'] = int(stop_loss_oid)
             elif _oid_is_open(open_oids, stop_loss_oid) and force_sl_replace:
                 if size <= 0:
-                    out["stop_loss_oid"] = int(stop_loss_oid)
+                    out['stop_loss_oid'] = int(stop_loss_oid)
                 else:
-                    # #1456 review round 9: once this cancel lands the resting
-                    # OID is gone from the book. If the replacement below then
-                    # fails, Go must clear pos.StopLossOID/StopLossTriggerPx
-                    # instead of leaving them pointed at a dead order. Emitted
-                    # even when False so an unconfirmed cancel never reads as
-                    # "safe to clear".
-                    #
-                    # #1456 review round 10: "landed" means the exchange
-                    # RESPONSE confirmed it (a rejected cancel arrives without
-                    # raising) AND only then is the replacement placed — a
-                    # failed cancel defers placement to the next sync instead of
-                    # resting two full-size reduce-only stops on one position.
                     cancel_ok = False
                     try:
-                        kind, payload = _classify_cancel_response(
-                            adapter.cancel_order_by_oid(symbol, int(stop_loss_oid)))
-                        if kind == "ok":
+                        kind, payload = _classify_cancel_response(adapter.cancel_order_by_oid(symbol, int(stop_loss_oid)))
+                        if kind == 'ok':
                             cancel_ok = True
                         else:
-                            out["stop_loss_error"] = f"force replace cancel rejected: {payload}"
+                            out['stop_loss_error'] = f'force replace cancel rejected: {payload}'
                     except Exception as ce:
-                        out["stop_loss_error"] = f"force replace cancel: {ce}"
-                    out["cancel_stop_loss_succeeded"] = cancel_ok
+                        out['stop_loss_error'] = f'force replace cancel: {ce}'
+                    out['cancel_stop_loss_succeeded'] = cancel_ok
                     if cancel_ok:
                         _place_sl()
             else:
                 action, fill = _resolve_missing_oid(stop_loss_oid)
-                if action == "filled":
-                    out["stop_loss_filled_externally"] = True
-                    out["stop_loss_fill"] = fill
-                    print(f"[WARN] stop-loss OID={stop_loss_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
-                elif action == "place" and size > 0:
+                if action == 'filled':
+                    out['stop_loss_filled_externally'] = True
+                    out['stop_loss_fill'] = fill
+                    print(f'[WARN] stop-loss OID={stop_loss_oid} already filled on-chain; not re-placing — reconciler will book the close', file=sys.stderr)
+                elif action == 'place' and size > 0:
                     _place_sl()
-                # action=="unknown" → leave SL OID untouched, retry next cycle
-
-        # #1456 review round 18 (Optional 1): a submit-filled SL has FLATTENED
-        # the position on-chain. Walking the TP tiers below would place
-        # reduce-only limit orders against a position that no longer exists,
-        # sized off the virtual quantity — and Go books the close and returns
-        # BEFORE applyHyperliquidProtectionSync, so any OID those placements
-        # returned was dropped from tracking for good. Place nothing once the
-        # SL reported an immediate fill.
         tiers = _normalize_tp_tiers(tp_tiers, tp1_atr_mult, tp1_fraction, tp2_atr_mult)
-        if out.get("stop_loss_filled_immediately"):
-            print(
-                f"[WARN] TP protection skipped for {symbol}: SL filled at submit — "
-                f"the position is flat on-chain and no TP orders are placed",
-                file=sys.stderr,
-            )
+        if out.get('stop_loss_filled_immediately'):
+            print(f'[WARN] TP protection skipped for {symbol}: SL filled at submit — the position is flat on-chain and no TP orders are placed', file=sys.stderr)
         elif tiers:
             existing_tp_oids = list(tp_oids or [])
             if not existing_tp_oids and (tp1_oid > 0 or tp2_oid > 0):
                 existing_tp_oids = [tp1_oid, tp2_oid]
             if len(existing_tp_oids) < len(tiers):
                 existing_tp_oids.extend([0] * (len(tiers) - len(existing_tp_oids)))
-
-            # Normalize to lot precision before computing tier sizes.  Go's
-            # float64 arithmetic (pos.Quantity -= closeQty) can drift just below
-            # a lot boundary (e.g. 0.011 - 0.010 = 0.000999...) even though the
-            # true virtual qty is exactly one lot.  round() matches what
-            # place_stop_loss already does for SL size.
             size = adapter.round_size(symbol, size)
             if size <= 0:
-                print(
-                    f"[INFO] TP protection skipped for {symbol}: virtual qty "
-                    f"rounds to zero at lot precision — peer TPs cover the on-chain position",
-                    file=sys.stderr,
-                )
+                print(f'[INFO] TP protection skipped for {symbol}: virtual qty rounds to zero at lot precision — peer TPs cover the on-chain position', file=sys.stderr)
             else:
                 tp_oids_out = list(existing_tp_oids[:len(tiers)])
                 tp_pxs = []
-                tp_errors = [""] * len(tiers)
+                tp_errors = [''] * len(tiers)
                 tp_filled_externally = [False] * len(tiers)
                 tp_fills = [None] * len(tiers)
                 tp_filled_immediately = [False] * len(tiers)
-                armed = [bool(x) for x in (tp_armed_tiers or [])]
+                armed = [bool(x) for x in tp_armed_tiers or []]
                 if len(armed) < len(tiers):
                     armed.extend([False] * (len(tiers) - len(armed)))
                 else:
-                    armed = armed[: len(tiers)]
-                force_tp = [bool(x) for x in (force_tp_replace or [])]
+                    armed = armed[:len(tiers)]
+                force_tp = [bool(x) for x in force_tp_replace or []]
                 if len(force_tp) < len(tiers):
                     force_tp.extend([False] * (len(tiers) - len(force_tp)))
                 else:
-                    force_tp = force_tp[: len(tiers)]
-                tier_sizes = compute_tp_tier_sizes(
-                    size, tiers, lambda sz: adapter.floor_size(symbol, sz)
-                )
-
-                for idx, ((atr_mult, _cumulative_fraction), tier_size) in enumerate(
-                    zip(tiers, tier_sizes)
-                ):
-                    raw_px = avg_cost + atr_mult * entry_atr if side == "long" else avg_cost - atr_mult * entry_atr
+                    force_tp = force_tp[:len(tiers)]
+                tier_sizes = compute_tp_tier_sizes(size, tiers, lambda sz: adapter.floor_size(symbol, sz))
+                for idx, ((atr_mult, _cumulative_fraction), tier_size) in enumerate(zip(tiers, tier_sizes)):
+                    raw_px = avg_cost + atr_mult * entry_atr if side == 'long' else avg_cost - atr_mult * entry_atr
                     rounded_px = adapter.round_perps_trigger_px(symbol, raw_px)
                     tp_pxs.append(rounded_px)
                     prev_oid = int(existing_tp_oids[idx]) if idx < len(existing_tp_oids) else 0
                     tier_armed = armed[idx] if idx < len(armed) else False
-
                     if tier_size <= 0:
                         continue
-                    if _oid_is_open(open_oids, prev_oid) and not (idx < len(force_tp) and force_tp[idx]):
+                    if _oid_is_open(open_oids, prev_oid) and (not (idx < len(force_tp) and force_tp[idx])):
                         tp_oids_out[idx] = prev_oid
                         continue
                     if _oid_is_open(open_oids, prev_oid) and idx < len(force_tp) and force_tp[idx]:
                         try:
                             adapter.cancel_order_by_oid(symbol, int(prev_oid))
                         except Exception as ce:
-                            tp_errors[idx] = f"force replace cancel: {ce}"
+                            tp_errors[idx] = f'force replace cancel: {ce}'
                             continue
-                        try:
-                            resp = adapter.place_take_profit_limit(
-                                symbol, tier_size, rounded_px, close_is_buy
-                            )
-                            kind, payload = _classify_sl_response(resp)
-                            if kind == "resting":
-                                tp_oids_out[idx] = payload
-                            elif kind == "filled":
-                                tp_filled_immediately[idx] = True
-                            elif kind == "error":
-                                tp_errors[idx] = (
-                                    f"place_take_profit_limit SDK error: {payload}"
-                                )
-                            else:
-                                tp_errors[idx] = (
-                                    f"place_take_profit_limit returned no usable status: {resp}"
-                                )
-                        except Exception as te:
-                            tp_errors[idx] = str(te)
-                        continue
-
-                    # #749: OID 0 means "no resting order" both before first placement
-                    # and after a tier filled (Go zeros the slot; TPArmedTiers marks
-                    # the tier as armed). Only the latter must skip re-placement —
-                    # otherwise cumulative fractions are re-applied to the reduced
-                    # size and tier 1 comes back as a "new TP1".
-                    if prev_oid <= 0 and tier_armed:
-                        tp_oids_out[idx] = 0
-                        continue
-
-                    action, fill = _resolve_missing_oid(prev_oid)
-                    if action == "filled":
-                        tp_oids_out[idx] = 0
-                        tp_filled_externally[idx] = True
-                        tp_fills[idx] = fill
-                        print(f"[WARN] TP{idx + 1} OID={prev_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
-                    elif action == "place":
                         try:
                             resp = adapter.place_take_profit_limit(symbol, tier_size, rounded_px, close_is_buy)
                             kind, payload = _classify_sl_response(resp)
-                            if kind == "resting":
+                            if kind == 'resting':
                                 tp_oids_out[idx] = payload
-                            elif kind == "filled":
+                            elif kind == 'filled':
                                 tp_filled_immediately[idx] = True
-                            elif kind == "error":
-                                tp_errors[idx] = f"place_take_profit_limit SDK error: {payload}"
+                            elif kind == 'error':
+                                tp_errors[idx] = f'place_take_profit_limit SDK error: {payload}'
                             else:
-                                tp_errors[idx] = f"place_take_profit_limit returned no usable status: {resp}"
+                                tp_errors[idx] = f'place_take_profit_limit returned no usable status: {resp}'
                         except Exception as te:
                             tp_errors[idx] = str(te)
-                    # action=="unknown" → echo previous OID, retry next cycle
-
-                out["tp_oids"] = tp_oids_out
-                out["tp_pxs"] = tp_pxs
+                        continue
+                    if prev_oid <= 0 and tier_armed:
+                        tp_oids_out[idx] = 0
+                        continue
+                    action, fill = _resolve_missing_oid(prev_oid)
+                    if action == 'filled':
+                        tp_oids_out[idx] = 0
+                        tp_filled_externally[idx] = True
+                        tp_fills[idx] = fill
+                        print(f'[WARN] TP{idx + 1} OID={prev_oid} already filled on-chain; not re-placing — reconciler will book the close', file=sys.stderr)
+                    elif action == 'place':
+                        try:
+                            resp = adapter.place_take_profit_limit(symbol, tier_size, rounded_px, close_is_buy)
+                            kind, payload = _classify_sl_response(resp)
+                            if kind == 'resting':
+                                tp_oids_out[idx] = payload
+                            elif kind == 'filled':
+                                tp_filled_immediately[idx] = True
+                            elif kind == 'error':
+                                tp_errors[idx] = f'place_take_profit_limit SDK error: {payload}'
+                            else:
+                                tp_errors[idx] = f'place_take_profit_limit returned no usable status: {resp}'
+                        except Exception as te:
+                            tp_errors[idx] = str(te)
+                out['tp_oids'] = tp_oids_out
+                out['tp_pxs'] = tp_pxs
                 if any(tp_errors):
-                    out["tp_errors"] = tp_errors
+                    out['tp_errors'] = tp_errors
                 if any(tp_filled_externally):
-                    out["tp_filled_externally"] = tp_filled_externally
-                    out["tp_fills"] = tp_fills
+                    out['tp_filled_externally'] = tp_filled_externally
+                    out['tp_fills'] = tp_fills
                 if any(tp_filled_immediately):
-                    out["tp_filled_immediately"] = tp_filled_immediately
-
-                # Legacy fields stay populated for older callers/tests during the
-                # migration from fixed TP1/TP2 fields to the N-tier slice (#612).
+                    out['tp_filled_immediately'] = tp_filled_immediately
                 if len(tp_oids_out) > 0 and tp_oids_out[0] > 0:
-                    out["tp1_oid"] = tp_oids_out[0]
+                    out['tp1_oid'] = tp_oids_out[0]
                 if len(tp_oids_out) > 1 and tp_oids_out[1] > 0:
-                    out["tp2_oid"] = tp_oids_out[1]
+                    out['tp2_oid'] = tp_oids_out[1]
                 if len(tp_pxs) > 0:
-                    out["tp1_px"] = tp_pxs[0]
+                    out['tp1_px'] = tp_pxs[0]
                 if len(tp_pxs) > 1:
-                    out["tp2_px"] = tp_pxs[1]
+                    out['tp2_px'] = tp_pxs[1]
                 if len(tp_errors) > 0 and tp_errors[0]:
-                    out["tp1_error"] = tp_errors[0]
+                    out['tp1_error'] = tp_errors[0]
                 if len(tp_errors) > 1 and tp_errors[1]:
-                    out["tp2_error"] = tp_errors[1]
+                    out['tp2_error'] = tp_errors[1]
                 if len(tp_filled_externally) > 0 and tp_filled_externally[0]:
-                    out["tp1_filled_externally"] = True
-                    out["tp1_fill"] = tp_fills[0]
+                    out['tp1_filled_externally'] = True
+                    out['tp1_fill'] = tp_fills[0]
                 if len(tp_filled_externally) > 1 and tp_filled_externally[1]:
-                    out["tp2_filled_externally"] = True
-                    out["tp2_fill"] = tp_fills[1]
-
+                    out['tp2_filled_externally'] = True
+                    out['tp2_fill'] = tp_fills[1]
         print(json.dumps(out, cls=SafeEncoder))
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        out["error"] = str(e)
+        out['error'] = str(e)
         print(json.dumps(out, cls=SafeEncoder))
         sys.exit(1)
 
-
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=""):
-    """Place a live market order on Hyperliquid, optionally wrapping it with
-    a stop-loss trigger (open) or cancelling a stale SL trigger (close).
-
-    When ``close_full_position`` is True the call uses ``adapter.market_close(sz=None)``
-    instead of ``market_open``, which closes the entire on-chain residual without
-    a sized order. This eliminates dust on final tiered-TP legs (#592).
-
-    ``prev_pos_qty`` is the absolute quantity of any existing position being
-    flipped through (e.g. long→short). On a flip, total_sz from the fill is
-    closeQty + newQty, so the SL must be sized against ``total_sz - prev_pos_qty``
-    to avoid placing an oversized reduce-only trigger that HL may reject (#421).
-    For pure opens from flat (no flip), pass 0 — full total_sz is the new
-    position size."""
-    if mode != "live":
-        print(json.dumps({"error": "--execute requires --mode=live"}, cls=SafeEncoder))
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode='', leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=''):
+    if mode != 'live':
+        print(json.dumps({'error': '--execute requires --mode=live'}, cls=SafeEncoder))
         sys.exit(1)
-
-    # Track cancel state outside the main try/except so the scheduler still
-    # learns whether the stale SL was freed even if the subsequent market_open
-    # raises. Otherwise pos.StopLossOID points at a dead OID for another cycle
-    # and the next signal tries to cancel a non-existent order. (#421)
-    cancel_err = ""
+    cancel_err = ''
     cancel_oids = cancel_oid if isinstance(cancel_oid, list) else [cancel_oid]
     cancel_oids = [int(oid) for oid in cancel_oids if int(oid or 0) > 0]
     cancel_attempted = len(cancel_oids) > 0
     cancel_succeeded = False
-
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-
-        is_buy = side.lower() == "buy"
-
-        # Enforce margin mode + leverage before placing the order (#486).
-        # Fail closed: if HL rejects this we abort the order rather than
-        # silently opening into the wrong margin mode. When a peer strategy
-        # has already opened the same coin (#491), HL has the desired state
-        # pinned and would reject a fresh update_leverage call — so skip the
-        # call when get_position_leverage confirms the on-chain state already
-        # matches. LoadConfig validates that all peers share margin_mode and
-        # leverage, so a match here is the expected case.
+        is_buy = side.lower() == 'buy'
         if margin_mode:
-            if margin_mode not in ("isolated", "cross"):
-                print(json.dumps({
-                    "execution": None,
-                    "platform": "hyperliquid",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'",
-                }, cls=SafeEncoder))
+            if margin_mode not in ('isolated', 'cross'):
+                print(json.dumps({'execution': None, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'"}, cls=SafeEncoder))
                 sys.exit(1)
             if leverage < 1:
-                print(json.dumps({
-                    "execution": None,
-                    "platform": "hyperliquid",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": f"--margin-mode requires --leverage >= 1, got {leverage}",
-                }, cls=SafeEncoder))
+                print(json.dumps({'execution': None, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f'--margin-mode requires --leverage >= 1, got {leverage}'}, cls=SafeEncoder))
                 sys.exit(1)
             current = None
-            # Go pulls clearinghouseState once per cycle (fetchHyperliquidState)
-            # and forwards the per-coin leverage + margin mode via
-            # --account-leverage / --account-margin-mode (#768 fix #4). When
-            # provided, skip get_position_leverage entirely — the snapshot is
-            # the same /info endpoint Python would call. Zero staleness risk:
-            # this subprocess runs in the same cycle Go produced the snapshot,
-            # and update_leverage failures still trip the original fail-loud
-            # safety path below.
-            if account_leverage and account_margin_mode in ("isolated", "cross"):
-                current = {"margin_mode": account_margin_mode, "leverage": int(account_leverage)}
+            if account_leverage and account_margin_mode in ('isolated', 'cross'):
+                current = {'margin_mode': account_margin_mode, 'leverage': int(account_leverage)}
             else:
                 try:
                     current = adapter.get_position_leverage(symbol)
                 except Exception as ce:
-                    # Don't fail-closed on a state-fetch hiccup — the
-                    # update_leverage call below will fail loudly if the on-chain
-                    # state actually disagrees, preserving the original safety
-                    # behavior. We still log so the cause is debuggable.
-                    print(f"[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage", file=sys.stderr)
-            if current is not None and current.get("margin_mode") == margin_mode and current.get("leverage") == int(leverage):
-                print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) SKIPPED (HL state already matches)", file=sys.stderr)
+                    print(f'[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage', file=sys.stderr)
+            if current is not None and current.get('margin_mode') == margin_mode and (current.get('leverage') == int(leverage)):
+                print(f'update_leverage({symbol}, {leverage}x, mode={margin_mode}) SKIPPED (HL state already matches)', file=sys.stderr)
             else:
                 try:
-                    adapter.update_leverage(int(leverage), symbol, is_cross=(margin_mode == "cross"))
-                    print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK", file=sys.stderr)
+                    adapter.update_leverage(int(leverage), symbol, is_cross=margin_mode == 'cross')
+                    print(f'update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK', file=sys.stderr)
                 except Exception as ue:
                     traceback.print_exc(file=sys.stderr)
-                    print(json.dumps({
-                        "execution": None,
-                        "platform": "hyperliquid",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
-                    }, cls=SafeEncoder))
+                    print(json.dumps({'execution': None, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f'update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}'}, cls=SafeEncoder))
                     sys.exit(1)
-
-        # Cancel stale SL first: we want to free the trigger slot before
-        # possibly spending another one on the new entry. A cancel failure is
-        # non-fatal (SL may have already triggered on-chain, in which case the
-        # position sync will detect the close on the next cycle) but is
-        # surfaced in the JSON so the scheduler can log it.
         if cancel_attempted:
             cancel_errors = []
             try:
                 for oid in cancel_oids:
                     try:
-                        # #1456 review round 10: only a response-confirmed cancel
-                        # may report success — a rejected cancel leaves the stale
-                        # SL tracked so the next sync re-handles it.
-                        kind, payload = _classify_cancel_response(
-                            adapter.cancel_trigger_order(symbol, oid))
-                        if kind == "ok":
+                        kind, payload = _classify_cancel_response(adapter.cancel_trigger_order(symbol, oid))
+                        if kind == 'ok':
                             cancel_succeeded = True
                         else:
-                            cancel_errors.append(f"{oid}: {payload}")
-                            print(f"[WARN] cancel_trigger_order({symbol}, {oid}) rejected: {payload}", file=sys.stderr)
+                            cancel_errors.append(f'{oid}: {payload}')
+                            print(f'[WARN] cancel_trigger_order({symbol}, {oid}) rejected: {payload}', file=sys.stderr)
                     except Exception as ce:
-                        cancel_errors.append(f"{oid}: {ce}")
-                        print(f"[WARN] cancel_trigger_order({symbol}, {oid}) failed: {ce}", file=sys.stderr)
+                        cancel_errors.append(f'{oid}: {ce}')
+                        print(f'[WARN] cancel_trigger_order({symbol}, {oid}) failed: {ce}', file=sys.stderr)
             finally:
                 if cancel_errors:
-                    cancel_err = "; ".join(cancel_errors)
-
-        # Bound the userFills lookup window to "shortly before submit" so the
-        # post-fill query (#585) doesn't have to scan unrelated history.
-        # 10s buffer absorbs local-vs-indexer clock skew.
-        fills_since_ms = int(time.time() * 1000) - 10_000
-
+                    cancel_err = '; '.join(cancel_errors)
+        fills_since_ms = int(time.time() * 1000) - 10000
         if close_full_position:
-            # Final-tier TP close (#592): close the entire on-chain residual
-            # without specifying a size so rounding drift never leaves dust.
             result = adapter.market_close(symbol, sz=None)
         else:
             result = adapter.market_open(symbol, is_buy, size)
-
-        # Extract fill info from SDK response structure:
-        # {"status": "ok", "response": {"type": "order", "data": {"statuses": [...]}}}
         fill = {}
         try:
-            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+            statuses = result.get('response', {}).get('data', {}).get('statuses', [])
             if statuses:
-                filled = statuses[0].get("filled", {})
-                fill = {
-                    "avg_px": float(filled.get("avgPx", 0) or 0),
-                    "total_sz": float(filled.get("totalSz", 0) or 0),
-                }
-                # Extract exchange order ID if present
-                oid = filled.get("oid")
+                filled = statuses[0].get('filled', {})
+                fill = {'avg_px': float(filled.get('avgPx', 0) or 0), 'total_sz': float(filled.get('totalSz', 0) or 0)}
+                oid = filled.get('oid')
                 if oid is not None:
-                    fill["oid"] = int(oid)
-                # Extract fee if present in response (HL placeOrder response
-                # currently omits this — keep the read for forward compat).
-                fee = filled.get("fee")
+                    fill['oid'] = int(oid)
+                fee = filled.get('fee')
                 if fee is not None:
-                    fill["fee"] = float(fee)
+                    fill['fee'] = float(fee)
         except Exception:
             pass
-
-        # The HL placeOrder response does not include `fee`; the real fee is
-        # only available via the userFills indexer endpoint (#585). Query it
-        # by OID so partial fills across multiple price levels aggregate
-        # correctly. Failures here fall back to the modeled fee on the Go
-        # side — non-fatal.
-        if fill.get("oid"):
+        if fill.get('oid'):
             try:
-                lookup = adapter.lookup_fill_fee_by_oid(fill["oid"], fills_since_ms)
+                lookup = adapter.lookup_fill_fee_by_oid(fill['oid'], fills_since_ms)
                 if not lookup:
                     print(f"[WARN] userFills lookup returned no fills for oid={fill['oid']}", file=sys.stderr)
                 elif not apply_user_fills_lookup(fill, lookup):
                     print(f"[WARN] userFills lookup returned malformed fill data for oid={fill['oid']}", file=sys.stderr)
             except Exception as fe:
                 print(f"[WARN] userFills lookup failed for oid={fill['oid']}: {fe}", file=sys.stderr)
-
-        # Place the stop-loss trigger on successful opens only. We only try to
-        # place an SL when the main order actually filled; a zero-size fill
-        # usually means the order was rejected and there's nothing to protect.
-        sl_err = ""
+        sl_err = ''
         sl_filled_immediately = False
-        # Net new-position size: on a flip (long→short or vice versa) total_sz
-        # is closeQty + newQty, but reduce-only triggers must be sized against
-        # the resulting net position (#421).
-        net_new_sz = max(fill.get("total_sz", 0) - max(prev_pos_qty, 0.0), 0.0)
-        if stop_loss_pct > 0 and fill.get("avg_px", 0) > 0 and net_new_sz > 0:
-            entry_px = fill["avg_px"]
+        net_new_sz = max(fill.get('total_sz', 0) - max(prev_pos_qty, 0.0), 0.0)
+        if stop_loss_pct > 0 and fill.get('avg_px', 0) > 0 and (net_new_sz > 0):
+            entry_px = fill['avg_px']
             sl_size = net_new_sz
-            # Stop-loss fires against the opposite direction of the open:
-            # long open (is_buy=True)  → SL sells when price drops below entry*(1-pct).
-            # short open (is_buy=False) → SL buys when price rises above entry*(1+pct).
             if is_buy:
                 trigger_px = entry_px * (1.0 - stop_loss_pct / 100.0)
                 sl_is_buy = False
             else:
                 trigger_px = entry_px * (1.0 + stop_loss_pct / 100.0)
                 sl_is_buy = True
-            # Pre-round to HL's per-asset px tick so the recorded value matches
-            # the price the order actually rests at — the scheduler books PnL
-            # off this field on StopLossFilledImmediately (#421 review).
             trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
             try:
                 sl_resp = adapter.place_stop_loss(symbol, sl_size, trigger_px, sl_is_buy)
                 kind, payload = _classify_sl_response(sl_resp)
-                if kind == "resting":
-                    fill["stop_loss_oid"] = payload
-                    fill["stop_loss_trigger_px"] = trigger_px
-                elif kind == "filled":
-                    # Price was already through the trigger — the SL filled at
-                    # submit time, so the position just got stopped out. No OID
-                    # to track. Surface as a distinct field so the scheduler
-                    # can reconcile virtual state instead of treating it as a
-                    # placement error and leaving the position recorded as open.
+                if kind == 'resting':
+                    fill['stop_loss_oid'] = payload
+                    fill['stop_loss_trigger_px'] = trigger_px
+                elif kind == 'filled':
                     sl_filled_immediately = True
-                    fill["stop_loss_trigger_px"] = trigger_px
-                    print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
-                elif kind == "error":
-                    sl_err = f"place_stop_loss SDK error: {payload}"
-                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                    fill['stop_loss_trigger_px'] = trigger_px
+                    print(f'[WARN] stop-loss filled immediately at submit (price already through {trigger_px})', file=sys.stderr)
+                elif kind == 'error':
+                    sl_err = f'place_stop_loss SDK error: {payload}'
+                    print(f'[WARN] {sl_err}', file=sys.stderr)
                 else:
-                    sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
-                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                    sl_err = f'place_stop_loss returned no usable status: {sl_resp}'
+                    print(f'[WARN] {sl_err}', file=sys.stderr)
             except Exception as se:
                 sl_err = str(se)
-                print(f"[WARN] place_stop_loss({symbol}, {sl_size}, {trigger_px}) failed: {se}", file=sys.stderr)
-
-        out = {
-            "execution": {
-                "action": "buy" if is_buy else "sell",
-                "symbol": symbol,
-                "size": size,
-                "fill": fill,
-            },
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+                print(f'[WARN] place_stop_loss({symbol}, {sl_size}, {trigger_px}) failed: {se}', file=sys.stderr)
+        out = {'execution': {'action': 'buy' if is_buy else 'sell', 'symbol': symbol, 'size': size, 'fill': fill}, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat()}
         if cancel_err:
-            out["cancel_stop_loss_error"] = cancel_err
+            out['cancel_stop_loss_error'] = cancel_err
         if cancel_succeeded:
-            out["cancel_stop_loss_succeeded"] = True
+            out['cancel_stop_loss_succeeded'] = True
         if sl_err:
-            out["stop_loss_error"] = sl_err
+            out['stop_loss_error'] = sl_err
         if sl_filled_immediately:
-            out["stop_loss_filled_immediately"] = True
+            out['stop_loss_filled_immediately'] = True
         print(json.dumps(out, cls=SafeEncoder))
-
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        err_payload = {
-            "execution": None,
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }
-        # Always surface cancel state on failure paths too so the scheduler
-        # can clear pos.StopLossOID even when the subsequent open raises (#421).
+        err_payload = {'execution': None, 'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': str(e)}
         if cancel_err:
-            err_payload["cancel_stop_loss_error"] = cancel_err
+            err_payload['cancel_stop_loss_error'] = cancel_err
         if cancel_succeeded:
-            err_payload["cancel_stop_loss_succeeded"] = True
+            err_payload['cancel_stop_loss_succeeded'] = True
         print(json.dumps(err_payload, cls=SafeEncoder))
         sys.exit(1)
 
-
 def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
-    """Cancel the old resting SL trigger and place a replacement for an open
-    position. ``side`` is the current position side, not the trigger order side.
-    Margin mode / leverage flags are intentionally absent: HL rejects changes
-    on an open position, and this mode only updates protection for an open leg.
-    """
-    if mode != "live":
-        print(json.dumps({"error": "--update-stop-loss requires --mode=live"}, cls=SafeEncoder))
+    if mode != 'live':
+        print(json.dumps({'error': '--update-stop-loss requires --mode=live'}, cls=SafeEncoder))
         sys.exit(1)
-
-    cancel_err = ""
+    cancel_err = ''
     cancel_attempted = cancel_oid > 0
     cancel_succeeded = False
-    sl_err = ""
+    sl_err = ''
     sl_filled_immediately = False
     sl_filled_externally = False
     resting_oid = 0
-    open_order_check_error = ""
-
+    open_order_check_error = ''
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-
         side = side.lower()
-        if side not in ("long", "short"):
-            print(json.dumps({
-                "platform": "hyperliquid",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": f"invalid side {side!r}, expected 'long' or 'short'",
-            }, cls=SafeEncoder))
+        if side not in ('long', 'short'):
+            print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f"invalid side {side!r}, expected 'long' or 'short'"}, cls=SafeEncoder))
             sys.exit(1)
-
         open_oids = None
         if cancel_attempted:
             try:
                 open_oids = adapter.open_order_oids(symbol)
             except Exception as oe:
                 open_order_check_error = str(oe)
-                print(f"[WARN] open_order_oids({symbol}) failed: {oe}; deferring trailing SL replacement", file=sys.stderr)
-
+                print(f'[WARN] open_order_oids({symbol}) failed: {oe}; deferring trailing SL replacement', file=sys.stderr)
         fill_check_since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
         should_place = True
         if cancel_attempted:
             if open_oids is None:
                 should_place = False
             elif _oid_is_open(open_oids, cancel_oid):
-                # #1456 review round 10: a cancel counts as landed only when the
-                # exchange RESPONSE confirms it — a rejected cancel arrives as a
-                # normal body, not an exception. An unconfirmed cancel leaves the
-                # old order possibly resting, so the replacement must defer to
-                # the next update instead of stacking a second full-size stop.
                 try:
-                    kind, payload = _classify_cancel_response(
-                        adapter.cancel_trigger_order(symbol, cancel_oid))
-                    if kind == "ok":
+                    kind, payload = _classify_cancel_response(adapter.cancel_trigger_order(symbol, cancel_oid))
+                    if kind == 'ok':
                         cancel_succeeded = True
                     else:
                         cancel_err = payload
                         should_place = False
-                        print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected: {payload}; not placing replacement", file=sys.stderr)
+                        print(f'[WARN] cancel_trigger_order({symbol}, {cancel_oid}) rejected: {payload}; not placing replacement', file=sys.stderr)
                 except Exception as ce:
                     cancel_err = str(ce)
                     should_place = False
-                    print(f"[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}; not placing replacement", file=sys.stderr)
+                    print(f'[WARN] cancel_trigger_order({symbol}, {cancel_oid}) failed: {ce}; not placing replacement', file=sys.stderr)
             else:
                 fill = _oid_filled_externally(adapter, cancel_oid, fill_check_since_ms, None)
-                if fill.get("filled"):
+                if fill.get('filled'):
                     sl_filled_externally = True
                     should_place = False
-                    print(f"[WARN] stop-loss OID={cancel_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
-
-        sl_is_buy = side == "short"
-        # #1456 review round 11: a placement whose outcome Go cannot READ is not
-        # one Hyperliquid positively rejected — the order may have rested. The
-        # in-cycle retry must stay off this shape (a second full-size reduce-only
-        # stop would rest untracked); only a classified rejection may retry.
+                    print(f'[WARN] stop-loss OID={cancel_oid} already filled on-chain; not re-placing — reconciler will book the close', file=sys.stderr)
+        sl_is_buy = side == 'short'
         place_unknown = False
         trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
         if should_place:
-            # #1456 review round 16 (Optional 2): snapshot the book immediately
-            # before submitting so an unreadable outcome can be RESOLVED here
-            # rather than handed to Go as an ambiguity every consumer — the
-            # walker clamp retry, the audit clamp, the static-scalar re-arm, the
-            # one-shot fixed-ATR arm — must then resolve by choosing between
-            # duplicating an order and leaving the position naked. On the cancel
-            # path open_oids is the pre-cancel read, which still works: the diff
-            # only looks for oids that are NEW, and the cancelled one leaves.
-            # A fresh arm (cancel_oid == 0) has no such read, so take one.
-            pre_oids = set(int(o) for o in open_oids) if open_oids is not None else _snapshot_open_oids(adapter, symbol)
+            pre_oids = set((int(o) for o in open_oids)) if open_oids is not None else _snapshot_open_oids(adapter, symbol)
             try:
                 sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
                 kind, payload = _classify_sl_response(sl_resp)
-                if kind == "resting":
+                if kind == 'resting':
                     resting_oid = payload
-                elif kind == "filled":
+                elif kind == 'filled':
                     sl_filled_immediately = True
-                    print(f"[WARN] stop-loss filled immediately at submit (price already through {trigger_px})", file=sys.stderr)
-                elif kind == "error":
-                    # Positively REJECTED by the exchange — nothing rests, so
-                    # this is never outcome-unknown.
-                    sl_err = f"place_stop_loss SDK error: {payload}"
-                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                    print(f'[WARN] stop-loss filled immediately at submit (price already through {trigger_px})', file=sys.stderr)
+                elif kind == 'error':
+                    sl_err = f'place_stop_loss SDK error: {payload}'
+                    print(f'[WARN] {sl_err}', file=sys.stderr)
                 else:
-                    sl_err = f"place_stop_loss returned no usable status: {sl_resp}"
-                    print(f"[WARN] {sl_err}", file=sys.stderr)
+                    sl_err = f'place_stop_loss returned no usable status: {sl_resp}'
+                    print(f'[WARN] {sl_err}', file=sys.stderr)
                     resolved, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
-                    if resolved == "resting":
+                    if resolved == 'resting':
                         resting_oid = oid
-                    elif resolved == "unknown":
+                    elif resolved == 'unknown':
                         place_unknown = True
             except Exception as se:
                 sl_err = str(se)
-                print(f"[WARN] place_stop_loss({symbol}, {size}, {trigger_px}) failed: {se}", file=sys.stderr)
+                print(f'[WARN] place_stop_loss({symbol}, {size}, {trigger_px}) failed: {se}', file=sys.stderr)
                 resolved, oid = _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids)
-                if resolved == "resting":
+                if resolved == 'resting':
                     resting_oid = oid
-                elif resolved == "unknown":
+                elif resolved == 'unknown':
                     place_unknown = True
-
-        out = {
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "stop_loss_trigger_px": trigger_px,
-        }
+        out = {'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'stop_loss_trigger_px': trigger_px}
         if resting_oid:
-            out["stop_loss_oid"] = resting_oid
+            out['stop_loss_oid'] = resting_oid
         if cancel_err:
-            out["cancel_stop_loss_error"] = cancel_err
+            out['cancel_stop_loss_error'] = cancel_err
         if cancel_succeeded:
-            out["cancel_stop_loss_succeeded"] = True
+            out['cancel_stop_loss_succeeded'] = True
         if open_order_check_error:
-            out["open_order_check_error"] = open_order_check_error
+            out['open_order_check_error'] = open_order_check_error
         if sl_err:
-            out["stop_loss_error"] = sl_err
+            out['stop_loss_error'] = sl_err
         if sl_filled_immediately:
-            out["stop_loss_filled_immediately"] = True
+            out['stop_loss_filled_immediately'] = True
         if sl_filled_externally:
-            out["stop_loss_filled_externally"] = True
+            out['stop_loss_filled_externally'] = True
         if place_unknown:
-            out["stop_loss_outcome_unknown"] = True
+            out['stop_loss_outcome_unknown'] = True
         print(json.dumps(out, cls=SafeEncoder))
-
     except SystemExit:
         raise
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        err_payload = {
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }
+        err_payload = {'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': str(e)}
         if cancel_err:
-            err_payload["cancel_stop_loss_error"] = cancel_err
+            err_payload['cancel_stop_loss_error'] = cancel_err
         if cancel_succeeded:
-            err_payload["cancel_stop_loss_succeeded"] = True
+            err_payload['cancel_stop_loss_succeeded'] = True
         print(json.dumps(err_payload, cls=SafeEncoder))
         sys.exit(1)
 
-
-def run_fetch_atr(symbol: str, timeframe: str, period: int, atr_method: str = "simple"):
-    """Fetch OHLCV from Hyperliquid and emit latest ATR as JSON.
-
-    Used by manual-open when --atr is omitted so manual positions get the
-    same ATR baseline strategy opens compute via ensure_atr_indicator (#689).
-    Emits {"atr": <float>, "candles": <int>} on success; {"error": "..."} on
-    failure (still exits 0 so Go can parse the JSON and decide whether to
-    fall back to computeFallbackATR).
-    """
+def run_fetch_atr(symbol: str, timeframe: str, period: int, atr_method: str='simple'):
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
         candles = adapter.get_ohlcv(symbol, interval=timeframe, limit=200)
         if not candles or len(candles) < period + 1:
-            print(json.dumps({
-                "error": f"insufficient candles: got {len(candles) if candles else 0}, need {period + 1}",
-                "candles": len(candles) if candles else 0,
-            }, cls=SafeEncoder))
+            print(json.dumps({'error': f'insufficient candles: got {(len(candles) if candles else 0)}, need {period + 1}', 'candles': len(candles) if candles else 0}, cls=SafeEncoder))
             return
         df = _make_dataframe(candles)
         atr = latest_atr(df, period=period, method=atr_method)
-        if not (atr > 0):
-            print(json.dumps({
-                "error": "latest ATR is not positive",
-                "candles": len(candles),
-            }, cls=SafeEncoder))
+        if not atr > 0:
+            print(json.dumps({'error': 'latest ATR is not positive', 'candles': len(candles)}, cls=SafeEncoder))
             return
-        print(json.dumps({"atr": atr, "candles": len(candles)}, cls=SafeEncoder))
+        print(json.dumps({'atr': atr, 'candles': len(candles)}, cls=SafeEncoder))
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({"error": f"{type(e).__name__}: {e}"}, cls=SafeEncoder))
+        print(json.dumps({'error': f'{type(e).__name__}: {e}'}, cls=SafeEncoder))
 
-
-def run_limit_open(symbol, side, size, limit_px, mode, tif="Alo",
-                   margin_mode="", leverage=0, account_leverage=0,
-                   account_margin_mode=""):
-    """Place a resting NON-reduce-only limit order to open a position (#883).
-
-    Unlike --execute (a market order that must fill immediately) this places a
-    maker limit order that rests until ``limit_px`` is reached, then exits with
-    the resting OID. NO stop-loss / take-profit is armed here — there is no fill
-    at placement, so the scheduler arms protection post-fill via the existing
-    per-cycle manual protection sync (#883 design point 4).
-
-    Margin mode / leverage are enforced before placement exactly like --execute,
-    so the resting order carries the operator's intended leverage when it fills.
-    """
-    if mode != "live":
-        print(json.dumps({"error": "--limit-open requires --mode=live"}, cls=SafeEncoder))
+def run_limit_open(symbol, side, size, limit_px, mode, tif='Alo', margin_mode='', leverage=0, account_leverage=0, account_margin_mode=''):
+    if mode != 'live':
+        print(json.dumps({'error': '--limit-open requires --mode=live'}, cls=SafeEncoder))
         sys.exit(1)
-
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-
         side = side.lower()
-        if side not in ("buy", "sell"):
-            print(json.dumps({
-                "platform": "hyperliquid",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": f"invalid side {side!r}, expected 'buy' or 'sell'",
-            }, cls=SafeEncoder))
+        if side not in ('buy', 'sell'):
+            print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f"invalid side {side!r}, expected 'buy' or 'sell'"}, cls=SafeEncoder))
             sys.exit(1)
-        is_buy = side == "buy"
-
-        # Enforce margin mode + leverage from flat before resting the order
-        # (mirrors run_execute). The position is flat at placement (limit hasn't
-        # filled), so HL accepts the update. Reuse Go's clearinghouse snapshot
-        # when forwarded to skip a duplicate /info call.
+        is_buy = side == 'buy'
         if margin_mode:
-            if margin_mode not in ("isolated", "cross"):
-                print(json.dumps({
-                    "platform": "hyperliquid",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'",
-                }, cls=SafeEncoder))
+            if margin_mode not in ('isolated', 'cross'):
+                print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f"invalid margin_mode {margin_mode!r}, expected 'isolated' or 'cross'"}, cls=SafeEncoder))
                 sys.exit(1)
             if leverage < 1:
-                print(json.dumps({
-                    "platform": "hyperliquid",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": f"--margin-mode requires --leverage >= 1, got {leverage}",
-                }, cls=SafeEncoder))
+                print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f'--margin-mode requires --leverage >= 1, got {leverage}'}, cls=SafeEncoder))
                 sys.exit(1)
             current = None
-            if account_leverage and account_margin_mode in ("isolated", "cross"):
-                current = {"margin_mode": account_margin_mode, "leverage": int(account_leverage)}
+            if account_leverage and account_margin_mode in ('isolated', 'cross'):
+                current = {'margin_mode': account_margin_mode, 'leverage': int(account_leverage)}
             else:
                 try:
                     current = adapter.get_position_leverage(symbol)
                 except Exception as ce:
-                    print(f"[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage", file=sys.stderr)
-            if current is not None and current.get("margin_mode") == margin_mode and current.get("leverage") == int(leverage):
-                print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) SKIPPED (HL state already matches)", file=sys.stderr)
+                    print(f'[WARN] get_position_leverage({symbol}) failed: {ce}; will call update_leverage', file=sys.stderr)
+            if current is not None and current.get('margin_mode') == margin_mode and (current.get('leverage') == int(leverage)):
+                print(f'update_leverage({symbol}, {leverage}x, mode={margin_mode}) SKIPPED (HL state already matches)', file=sys.stderr)
             else:
                 try:
-                    adapter.update_leverage(int(leverage), symbol, is_cross=(margin_mode == "cross"))
-                    print(f"update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK", file=sys.stderr)
+                    adapter.update_leverage(int(leverage), symbol, is_cross=margin_mode == 'cross')
+                    print(f'update_leverage({symbol}, {leverage}x, mode={margin_mode}) OK', file=sys.stderr)
                 except Exception as ue:
                     traceback.print_exc(file=sys.stderr)
-                    print(json.dumps({
-                        "platform": "hyperliquid",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "error": f"update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}",
-                    }, cls=SafeEncoder))
+                    print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f'update_leverage failed (margin_mode={margin_mode}, leverage={leverage}): {ue}'}, cls=SafeEncoder))
                     sys.exit(1)
-
         try:
             resp = adapter.limit_open(symbol, is_buy, size, limit_px, tif=tif)
         except Exception as oe:
             traceback.print_exc(file=sys.stderr)
-            print(json.dumps({
-                "platform": "hyperliquid",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": f"limit_open failed: {oe}",
-            }, cls=SafeEncoder))
+            print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f'limit_open failed: {oe}'}, cls=SafeEncoder))
             sys.exit(1)
-
         kind, payload = _classify_sl_response(resp)
-        out = {
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "limit_price": limit_px,
-            "tif": tif,
-        }
-        if kind == "resting":
-            out["order_oid"] = int(payload)
-            out["status"] = "resting"
-        elif kind == "filled":
-            # Gtc price was already marketable and filled at submit. The order
-            # is not resting; the scheduler reconcile will detect the fill by
-            # OID on its next poll exactly as it would for a delayed fill.
-            out["order_oid"] = int(payload)
-            out["status"] = "filled"
-            print(f"[WARN] limit order filled immediately at submit (price already marketable)", file=sys.stderr)
-        elif kind == "error":
-            # Alo rejection of a marketable price lands here — surface so the
-            # operator re-prices instead of silently degrading to a taker fill.
-            out["status"] = "error"
-            out["error"] = f"limit order rejected: {payload}"
+        out = {'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'limit_price': limit_px, 'tif': tif}
+        if kind == 'resting':
+            out['order_oid'] = int(payload)
+            out['status'] = 'resting'
+        elif kind == 'filled':
+            out['order_oid'] = int(payload)
+            out['status'] = 'filled'
+            print(f'[WARN] limit order filled immediately at submit (price already marketable)', file=sys.stderr)
+        elif kind == 'error':
+            out['status'] = 'error'
+            out['error'] = f'limit order rejected: {payload}'
         else:
-            out["status"] = "error"
-            out["error"] = f"limit order returned no usable status: {resp}"
+            out['status'] = 'error'
+            out['error'] = f'limit order returned no usable status: {resp}'
         print(json.dumps(out, cls=SafeEncoder))
-        if out["status"] == "error":
+        if out['status'] == 'error':
             sys.exit(1)
-
     except SystemExit:
         raise
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }, cls=SafeEncoder))
+        print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': str(e)}, cls=SafeEncoder))
         sys.exit(1)
 
-
 def run_limit_status(symbol, oids, mode, since_ms=0):
-    """Report resting/fill status for one or more limit-order OIDs (#883).
-
-    For each OID emit ``{oid, resting, filled_size, avg_px, fee, count}`` where
-    ``resting`` reflects HL's open-orders book and the fill fields are the
-    cumulative on-chain fills summed across partial legs. The scheduler combines
-    these: ``resting=false`` + ``filled_size>=order_size`` ⇒ fully filled;
-    ``resting=false`` + ``filled_size<order_size`` ⇒ cancelled/expired with a
-    (possibly zero) partial fill; ``resting=true`` ⇒ still working, adopt any
-    incremental fill and keep polling.
-
-    open_orders fetch failure is reported as ``open_orders_error`` and
-    ``resting`` is left null so the caller defers the cancelled/expired verdict
-    (never books a phantom cancellation on a transient indexer error).
-    """
-    if mode != "live":
-        print(json.dumps({"error": "--limit-status requires --mode=live"}, cls=SafeEncoder))
+    if mode != 'live':
+        print(json.dumps({'error': '--limit-status requires --mode=live'}, cls=SafeEncoder))
         sys.exit(1)
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-
         if since_ms <= 0:
-            # Default lookback: 7 days. Resting orders can sit far longer than a
-            # market fill's 10s window, so the userFills scan must reach back to
-            # at least the order's placement.
             since_ms = int(time.time() * 1000) - 7 * 24 * 60 * 60 * 1000
-
         open_oids = None
-        open_orders_error = ""
+        open_orders_error = ''
         try:
             open_oids = adapter.open_order_oids(symbol)
         except Exception as oe:
             open_orders_error = str(oe)
-            print(f"[WARN] open_order_oids({symbol}) failed: {oe}", file=sys.stderr)
-
+            print(f'[WARN] open_order_oids({symbol}) failed: {oe}', file=sys.stderr)
         results = []
         for oid in oids:
             oid = int(oid)
-            entry = {"oid": oid}
+            entry = {'oid': oid}
             if open_oids is not None:
-                entry["resting"] = oid in open_oids
+                entry['resting'] = oid in open_oids
             else:
-                entry["resting"] = None
+                entry['resting'] = None
             summary = {}
             try:
                 summary = adapter.fills_summary_by_oid(oid, since_ms)
             except Exception as fe:
-                print(f"[WARN] fills_summary_by_oid({oid}) failed: {fe}", file=sys.stderr)
-                entry["fills_error"] = str(fe)
-            entry["filled_size"] = float(summary.get("filled_size", 0) or 0)
-            entry["avg_px"] = float(summary.get("avg_px", 0) or 0)
-            entry["fee"] = float(summary.get("fee", 0) or 0)
-            entry["count"] = int(summary.get("count", 0) or 0)
+                print(f'[WARN] fills_summary_by_oid({oid}) failed: {fe}', file=sys.stderr)
+                entry['fills_error'] = str(fe)
+            entry['filled_size'] = float(summary.get('filled_size', 0) or 0)
+            entry['avg_px'] = float(summary.get('avg_px', 0) or 0)
+            entry['fee'] = float(summary.get('fee', 0) or 0)
+            entry['count'] = int(summary.get('count', 0) or 0)
             results.append(entry)
-
-        out = {
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "orders": results,
-        }
+        out = {'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'orders': results}
         if open_orders_error:
-            out["open_orders_error"] = open_orders_error
+            out['open_orders_error'] = open_orders_error
         print(json.dumps(out, cls=SafeEncoder))
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }, cls=SafeEncoder))
+        print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': str(e)}, cls=SafeEncoder))
         sys.exit(1)
 
-
 def run_cancel_order(symbol, oid, mode):
-    """Cancel a resting order by OID (#883). Idempotent: a "not found" cancel
-    (order already filled or already cancelled) is reported as a non-fatal
-    warning, not an error, so the scheduler's cancel+finalize path is safe to
-    retry across cycles."""
-    if mode != "live":
-        print(json.dumps({"error": "--cancel-order requires --mode=live"}, cls=SafeEncoder))
+    if mode != 'live':
+        print(json.dumps({'error': '--cancel-order requires --mode=live'}, cls=SafeEncoder))
         sys.exit(1)
     try:
         from adapter import HyperliquidExchangeAdapter
         adapter = HyperliquidExchangeAdapter()
-        out = {
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "oid": int(oid),
-        }
+        out = {'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'oid': int(oid)}
         try:
             adapter.cancel_order_by_oid(symbol, int(oid))
-            out["cancelled"] = True
+            out['cancelled'] = True
         except Exception as ce:
-            # Treat as non-fatal: the order may have already filled or been
-            # cancelled. The caller re-polls fill status to reconcile truth.
-            out["cancelled"] = False
-            out["cancel_error"] = str(ce)
-            print(f"[WARN] cancel_order_by_oid({symbol}, {oid}) failed: {ce}", file=sys.stderr)
+            out['cancelled'] = False
+            out['cancel_error'] = str(ce)
+            print(f'[WARN] cancel_order_by_oid({symbol}, {oid}) failed: {ce}', file=sys.stderr)
         print(json.dumps(out, cls=SafeEncoder))
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        print(json.dumps({
-            "platform": "hyperliquid",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        }, cls=SafeEncoder))
+        print(json.dumps({'platform': 'hyperliquid', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': str(e)}, cls=SafeEncoder))
         sys.exit(1)
 
-
 def main():
-    if "--batch-check" in sys.argv:
-        # Batched signal check (#1442): N strategy slots that share one
-        # (symbol, timeframe, ohlcv-limit, atr-method) key are evaluated in one
-        # process against one candle fetch and one indicator base. Shared flags
-        # ride argv; the per-slot arguments ride a JSON envelope on stdin
-        # because N x strategy-refs JSON outgrows a comfortable argv. The Go
-        # scheduler owns the decision to batch — this script never re-dispatches
-        # itself.
+    if '--batch-check' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--batch-check", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--timeframe", required=True)
-        parser.add_argument("--ohlcv-limit", type=int, default=200)
-        parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
-        parser.add_argument("--mark-price", type=float, default=0.0)
-        parser.add_argument("--regime-enabled", action="store_true", default=False)
-        parser.add_argument("--regime-windows-spec-json", default="")
-        parser.add_argument("--regime-payload-json", default=None)
-        parser.add_argument("--probe-only", action="store_true",
-            help="Startup compatibility probe (#1442): validate argv shape and exit 0 before reading stdin.")
+        parser.add_argument('--batch-check', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--timeframe', required=True)
+        parser.add_argument('--ohlcv-limit', type=int, default=200)
+        parser.add_argument('--atr-method', default='simple', choices=['simple', 'wilder'])
+        parser.add_argument('--mark-price', type=float, default=0.0)
+        parser.add_argument('--regime-enabled', action='store_true', default=False)
+        parser.add_argument('--regime-windows-spec-json', default='')
+        parser.add_argument('--regime-payload-json', default=None)
+        parser.add_argument('--probe-only', action='store_true', help='Startup compatibility probe (#1442): validate argv shape and exit 0 before reading stdin.')
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
@@ -2073,316 +1134,194 @@ def main():
             slots = parse_batch_slots(sys.stdin.read())
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
-            print(json.dumps({
-                "platform": "hyperliquid",
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "error": f"invalid batch payload: {e}",
-                "error_scope": "shared_state",
-                "results": [],
-            }, cls=SafeEncoder))
+            print(json.dumps({'platform': 'hyperliquid', 'symbol': symbol, 'timeframe': timeframe, 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': f'invalid batch payload: {e}', 'error_scope': 'shared_state', 'results': []}, cls=SafeEncoder))
             sys.exit(1)
         regime_windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json or None)
-        envelope, exit_code = run_batch_signal_check(
-            symbol, timeframe, slots,
-            ohlcv_limit=args.ohlcv_limit,
-            atr_method=args.atr_method,
-            mark_price=args.mark_price,
-            regime_enabled=args.regime_enabled,
-            regime_windows_spec=regime_windows_spec,
-            regime_payload_json=args.regime_payload_json,
-        )
+        envelope, exit_code = run_batch_signal_check(symbol, timeframe, slots, ohlcv_limit=args.ohlcv_limit, atr_method=args.atr_method, mark_price=args.mark_price, regime_enabled=args.regime_enabled, regime_windows_spec=regime_windows_spec, regime_payload_json=args.regime_payload_json)
         print(json.dumps(envelope, cls=SafeEncoder))
         if exit_code:
             sys.exit(exit_code)
         return
-    if "--fetch-atr" in sys.argv:
+    if '--fetch-atr' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--fetch-atr", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--timeframe", required=True)
-        parser.add_argument("--period", type=int, default=14)
-        # #1277: resolved atr_method forwarded by Go so a manual-open's fetched
-        # EntryATR matches the strategy's own check-cycle stamping.
-        parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
-        parser.add_argument("--probe-only", action="store_true",
-            help="Startup compatibility probe: validate argv shape and exit 0.")
+        parser.add_argument('--fetch-atr', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--timeframe', required=True)
+        parser.add_argument('--period', type=int, default=14)
+        parser.add_argument('--atr-method', default='simple', choices=['simple', 'wilder'])
+        parser.add_argument('--probe-only', action='store_true', help='Startup compatibility probe: validate argv shape and exit 0.')
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
         run_fetch_atr(args.symbol, args.timeframe, args.period, args.atr_method)
         return
-    if "--sync-protection" in sys.argv:
+    if '--sync-protection' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--sync-protection", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--side", required=True, choices=["long", "short"])
-        parser.add_argument("--size", type=float, required=True)
-        parser.add_argument("--avg-cost", type=float, required=True)
-        parser.add_argument("--entry-atr", type=float, required=True)
-        parser.add_argument("--stop-loss-atr-mult", type=float, default=0.0)
-        parser.add_argument("--tp1-atr-mult", type=float, default=0.0)
-        parser.add_argument("--tp1-fraction", type=float, default=0.0)
-        parser.add_argument("--tp2-atr-mult", type=float, default=0.0)
-        parser.add_argument("--tp-tiers-json", default="")
-        parser.add_argument("--stop-loss-oid", type=int, default=0)
-        parser.add_argument("--tp1-oid", type=int, default=0)
-        parser.add_argument("--tp2-oid", type=int, default=0)
-        parser.add_argument("--tp-oids-json", default="")
-        parser.add_argument("--tp-armed-tiers-json", default="")
-        parser.add_argument(
-            "--reconcile-fill-hints-json",
-            default="",
-            help="Optional JSON array from Go reconciler prefetch (#759); skips duplicate userFills per OID.",
-        )
-        parser.add_argument(
-            "--force-sl-replace",
-            action="store_true",
-            help="#843: cancel resting SL and re-place when dynamic regime changes.",
-        )
-        parser.add_argument(
-            "--force-tp-replace-json",
-            default="",
-            help="#843: JSON bool[] — cancel+replace resting TP tiers when true.",
-        )
-        parser.add_argument(
-            "--cancel-tp-oids-json",
-            default="",
-            help="#843: JSON int[] — surplus resting TP OIDs to cancel after tier-count shrink.",
-        )
-        parser.add_argument("--mode", default="live")
+        parser.add_argument('--sync-protection', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--side', required=True, choices=['long', 'short'])
+        parser.add_argument('--size', type=float, required=True)
+        parser.add_argument('--avg-cost', type=float, required=True)
+        parser.add_argument('--entry-atr', type=float, required=True)
+        parser.add_argument('--stop-loss-atr-mult', type=float, default=0.0)
+        parser.add_argument('--tp1-atr-mult', type=float, default=0.0)
+        parser.add_argument('--tp1-fraction', type=float, default=0.0)
+        parser.add_argument('--tp2-atr-mult', type=float, default=0.0)
+        parser.add_argument('--tp-tiers-json', default='')
+        parser.add_argument('--stop-loss-oid', type=int, default=0)
+        parser.add_argument('--tp1-oid', type=int, default=0)
+        parser.add_argument('--tp2-oid', type=int, default=0)
+        parser.add_argument('--tp-oids-json', default='')
+        parser.add_argument('--tp-armed-tiers-json', default='')
+        parser.add_argument('--reconcile-fill-hints-json', default='', help='Optional JSON array from Go reconciler prefetch (#759); skips duplicate userFills per OID.')
+        parser.add_argument('--force-sl-replace', action='store_true', help='#843: cancel resting SL and re-place when dynamic regime changes.')
+        parser.add_argument('--force-tp-replace-json', default='', help='#843: JSON bool[] — cancel+replace resting TP tiers when true.')
+        parser.add_argument('--cancel-tp-oids-json', default='', help='#843: JSON int[] — surplus resting TP OIDs to cancel after tier-count shrink.')
+        parser.add_argument('--mode', default='live')
         args = parser.parse_args()
         tp_tiers = json.loads(args.tp_tiers_json) if args.tp_tiers_json else None
         tp_oids = json.loads(args.tp_oids_json) if args.tp_oids_json else None
-        tp_armed_tiers = (
-            json.loads(args.tp_armed_tiers_json) if args.tp_armed_tiers_json else None
-        )
-        force_tp_replace = (
-            json.loads(args.force_tp_replace_json) if args.force_tp_replace_json else None
-        )
-        cancel_tp_oids = (
-            json.loads(args.cancel_tp_oids_json) if args.cancel_tp_oids_json else None
-        )
-        run_sync_protection(
-            args.symbol,
-            args.side,
-            args.size,
-            args.avg_cost,
-            args.entry_atr,
-            args.mode,
-            stop_loss_atr_mult=args.stop_loss_atr_mult,
-            tp1_atr_mult=args.tp1_atr_mult,
-            tp1_fraction=args.tp1_fraction,
-            tp2_atr_mult=args.tp2_atr_mult,
-            stop_loss_oid=args.stop_loss_oid,
-            tp1_oid=args.tp1_oid,
-            tp2_oid=args.tp2_oid,
-            tp_tiers=tp_tiers,
-            tp_oids=tp_oids,
-            tp_armed_tiers=tp_armed_tiers,
-            force_sl_replace=bool(args.force_sl_replace),
-            force_tp_replace=force_tp_replace,
-            cancel_tp_oids=cancel_tp_oids,
-            reconcile_fill_hints_json=args.reconcile_fill_hints_json or "",
-        )
-    elif "--update-stop-loss" in sys.argv:
+        tp_armed_tiers = json.loads(args.tp_armed_tiers_json) if args.tp_armed_tiers_json else None
+        force_tp_replace = json.loads(args.force_tp_replace_json) if args.force_tp_replace_json else None
+        cancel_tp_oids = json.loads(args.cancel_tp_oids_json) if args.cancel_tp_oids_json else None
+        run_sync_protection(args.symbol, args.side, args.size, args.avg_cost, args.entry_atr, args.mode, stop_loss_atr_mult=args.stop_loss_atr_mult, tp1_atr_mult=args.tp1_atr_mult, tp1_fraction=args.tp1_fraction, tp2_atr_mult=args.tp2_atr_mult, stop_loss_oid=args.stop_loss_oid, tp1_oid=args.tp1_oid, tp2_oid=args.tp2_oid, tp_tiers=tp_tiers, tp_oids=tp_oids, tp_armed_tiers=tp_armed_tiers, force_sl_replace=bool(args.force_sl_replace), force_tp_replace=force_tp_replace, cancel_tp_oids=cancel_tp_oids, reconcile_fill_hints_json=args.reconcile_fill_hints_json or '')
+    elif '--update-stop-loss' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--update-stop-loss", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--side", required=True, choices=["long", "short"])
-        parser.add_argument("--size", type=float, required=True)
-        parser.add_argument("--trigger-px", type=float, required=True)
-        parser.add_argument("--mode", default="live")
-        parser.add_argument("--cancel-stop-loss-oid", type=int, default=0,
-                            help="cancel this trigger OID before placing the replacement (#501)")
+        parser.add_argument('--update-stop-loss', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--side', required=True, choices=['long', 'short'])
+        parser.add_argument('--size', type=float, required=True)
+        parser.add_argument('--trigger-px', type=float, required=True)
+        parser.add_argument('--mode', default='live')
+        parser.add_argument('--cancel-stop-loss-oid', type=int, default=0, help='cancel this trigger OID before placing the replacement (#501)')
         args = parser.parse_args()
-        run_update_stop_loss(args.symbol, args.side, args.size, args.trigger_px, args.mode,
-                             cancel_oid=args.cancel_stop_loss_oid)
-    elif "--execute" in sys.argv:
-        # Execute mode: --execute --symbol=BTC --side=buy|sell --size=0.01 [--mode=live]
-        # Or for final-tier TP closes: --execute --symbol=ETH --side=sell --close-full-position
+        run_update_stop_loss(args.symbol, args.side, args.size, args.trigger_px, args.mode, cancel_oid=args.cancel_stop_loss_oid)
+    elif '--execute' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--execute", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--side", required=True, choices=["buy", "sell"])
-        # --size is required unless --close-full-position is set (#592)
-        parser.add_argument("--size", type=float, default=0.0)
-        parser.add_argument("--close-full-position", action="store_true", default=False,
-                            help="close entire on-chain residual via market_close(sz=None); mutually exclusive with --size (#592)")
-        parser.add_argument("--mode", default="live")
-        parser.add_argument("--stop-loss-pct", type=float, default=0.0,
-                            help="place a reduce-only SL trigger this pct away from fill (#412)")
-        parser.add_argument("--cancel-stop-loss-oid", type=int, action="append", default=[],
-                            help="cancel this trigger OID before placing the new order (#412)")
-        parser.add_argument("--prev-pos-qty", type=float, default=0.0,
-                            help="abs qty of existing position being flipped, so SL is sized against the new net position (#421)")
-        parser.add_argument("--margin-mode", default="",
-                            help="enforce 'isolated' or 'cross' margin via update_leverage before the order; only safe on a fresh open from flat (#486)")
-        parser.add_argument("--leverage", type=float, default=0.0,
-                            help="leverage to set alongside --margin-mode (HL update_leverage takes both in one call) (#486)")
-        parser.add_argument("--account-leverage", type=int, default=0,
-                            help="on-chain leverage observed in Go's clearinghouseState snapshot; when paired with --account-margin-mode lets Python skip the duplicate get_position_leverage /info call (#768)")
-        parser.add_argument("--account-margin-mode", default="",
-                            help="on-chain margin mode observed in Go's clearinghouseState snapshot; see --account-leverage (#768)")
-        parser.add_argument("--probe-only", action="store_true",
-                            help="Startup compatibility probe (PR #769): validate execute-mode argv shape — including --account-leverage / --account-margin-mode — and exit 0 without trading.")
+        parser.add_argument('--execute', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--side', required=True, choices=['buy', 'sell'])
+        parser.add_argument('--size', type=float, default=0.0)
+        parser.add_argument('--close-full-position', action='store_true', default=False, help='close entire on-chain residual via market_close(sz=None); mutually exclusive with --size (#592)')
+        parser.add_argument('--mode', default='live')
+        parser.add_argument('--stop-loss-pct', type=float, default=0.0, help='place a reduce-only SL trigger this pct away from fill (#412)')
+        parser.add_argument('--cancel-stop-loss-oid', type=int, action='append', default=[], help='cancel this trigger OID before placing the new order (#412)')
+        parser.add_argument('--prev-pos-qty', type=float, default=0.0, help='abs qty of existing position being flipped, so SL is sized against the new net position (#421)')
+        parser.add_argument('--margin-mode', default='', help="enforce 'isolated' or 'cross' margin via update_leverage before the order; only safe on a fresh open from flat (#486)")
+        parser.add_argument('--leverage', type=float, default=0.0, help='leverage to set alongside --margin-mode (HL update_leverage takes both in one call) (#486)')
+        parser.add_argument('--account-leverage', type=int, default=0, help="on-chain leverage observed in Go's clearinghouseState snapshot; when paired with --account-margin-mode lets Python skip the duplicate get_position_leverage /info call (#768)")
+        parser.add_argument('--account-margin-mode', default='', help="on-chain margin mode observed in Go's clearinghouseState snapshot; see --account-leverage (#768)")
+        parser.add_argument('--probe-only', action='store_true', help='Startup compatibility probe (PR #769): validate execute-mode argv shape — including --account-leverage / --account-margin-mode — and exit 0 without trading.')
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
         if not args.close_full_position and args.size <= 0:
-            print(json.dumps({"error": "--size must be > 0 unless --close-full-position is set"}))
+            print(json.dumps({'error': '--size must be > 0 unless --close-full-position is set'}))
             sys.exit(1)
-        run_execute(args.symbol, args.side, args.size, args.mode,
-                    stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid,
-                    prev_pos_qty=args.prev_pos_qty,
-                    margin_mode=args.margin_mode, leverage=args.leverage,
-                    close_full_position=args.close_full_position,
-                    account_leverage=args.account_leverage,
-                    account_margin_mode=args.account_margin_mode)
-    elif "--limit-open" in sys.argv:
-        # Resting limit-order open: --limit-open --symbol=BTC --side=buy
-        #   --size=0.01 --limit-price=58000 [--tif=Alo] [--mode=live] (#883)
+        run_execute(args.symbol, args.side, args.size, args.mode, stop_loss_pct=args.stop_loss_pct, cancel_oid=args.cancel_stop_loss_oid, prev_pos_qty=args.prev_pos_qty, margin_mode=args.margin_mode, leverage=args.leverage, close_full_position=args.close_full_position, account_leverage=args.account_leverage, account_margin_mode=args.account_margin_mode)
+    elif '--limit-open' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--limit-open", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--side", required=True, choices=["buy", "sell"])
-        parser.add_argument("--size", type=float, required=True)
-        parser.add_argument("--limit-price", type=float, required=True)
-        parser.add_argument("--tif", default="Alo", choices=["Alo", "Gtc", "Ioc"],
-                            help="time-in-force: Alo=post-only maker (default), Gtc=allow immediate marketable fill")
-        parser.add_argument("--mode", default="live")
-        parser.add_argument("--margin-mode", default="",
-                            help="enforce 'isolated'/'cross' via update_leverage before resting the order (#486 parity)")
-        parser.add_argument("--leverage", type=float, default=0.0)
-        parser.add_argument("--account-leverage", type=int, default=0)
-        parser.add_argument("--account-margin-mode", default="")
-        parser.add_argument("--probe-only", action="store_true",
-                            help="Startup compatibility probe (#883): validate argv shape and exit 0 without trading.")
+        parser.add_argument('--limit-open', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--side', required=True, choices=['buy', 'sell'])
+        parser.add_argument('--size', type=float, required=True)
+        parser.add_argument('--limit-price', type=float, required=True)
+        parser.add_argument('--tif', default='Alo', choices=['Alo', 'Gtc', 'Ioc'], help='time-in-force: Alo=post-only maker (default), Gtc=allow immediate marketable fill')
+        parser.add_argument('--mode', default='live')
+        parser.add_argument('--margin-mode', default='', help="enforce 'isolated'/'cross' via update_leverage before resting the order (#486 parity)")
+        parser.add_argument('--leverage', type=float, default=0.0)
+        parser.add_argument('--account-leverage', type=int, default=0)
+        parser.add_argument('--account-margin-mode', default='')
+        parser.add_argument('--probe-only', action='store_true', help='Startup compatibility probe (#883): validate argv shape and exit 0 without trading.')
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
         if args.size <= 0:
-            print(json.dumps({"error": "--size must be > 0"}))
+            print(json.dumps({'error': '--size must be > 0'}))
             sys.exit(1)
         if args.limit_price <= 0:
-            print(json.dumps({"error": "--limit-price must be > 0"}))
+            print(json.dumps({'error': '--limit-price must be > 0'}))
             sys.exit(1)
-        run_limit_open(args.symbol, args.side, args.size, args.limit_price, args.mode,
-                       tif=args.tif, margin_mode=args.margin_mode, leverage=args.leverage,
-                       account_leverage=args.account_leverage,
-                       account_margin_mode=args.account_margin_mode)
-    elif "--limit-status" in sys.argv:
-        # Resting limit-order fill poll: --limit-status --symbol=BTC
-        #   --oids-json='[123,456]' [--since-ms=N] [--mode=live] (#883)
+        run_limit_open(args.symbol, args.side, args.size, args.limit_price, args.mode, tif=args.tif, margin_mode=args.margin_mode, leverage=args.leverage, account_leverage=args.account_leverage, account_margin_mode=args.account_margin_mode)
+    elif '--limit-status' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--limit-status", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--oids-json", required=True,
-                            help="JSON array of resting order OIDs to poll")
-        parser.add_argument("--since-ms", type=int, default=0,
-                            help="userFills lookback floor in epoch ms; 0 = default 7-day window")
-        parser.add_argument("--mode", default="live")
-        parser.add_argument("--probe-only", action="store_true",
-                            help="Startup compatibility probe (#883): validate argv shape and exit 0.")
+        parser.add_argument('--limit-status', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--oids-json', required=True, help='JSON array of resting order OIDs to poll')
+        parser.add_argument('--since-ms', type=int, default=0, help='userFills lookback floor in epoch ms; 0 = default 7-day window')
+        parser.add_argument('--mode', default='live')
+        parser.add_argument('--probe-only', action='store_true', help='Startup compatibility probe (#883): validate argv shape and exit 0.')
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
         try:
             oids = json.loads(args.oids_json)
         except Exception as e:
-            print(json.dumps({"error": f"invalid --oids-json: {e}"}))
+            print(json.dumps({'error': f'invalid --oids-json: {e}'}))
             sys.exit(1)
         if not isinstance(oids, list):
-            print(json.dumps({"error": "--oids-json must be a JSON array"}))
+            print(json.dumps({'error': '--oids-json must be a JSON array'}))
             sys.exit(1)
         run_limit_status(args.symbol, oids, args.mode, since_ms=args.since_ms)
-    elif "--cancel-order" in sys.argv:
-        # Cancel a resting order by OID: --cancel-order --symbol=BTC --oid=123 (#883)
+    elif '--cancel-order' in sys.argv:
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("--cancel-order", action="store_true")
-        parser.add_argument("--symbol", required=True)
-        parser.add_argument("--oid", type=int, required=True)
-        parser.add_argument("--mode", default="live")
-        parser.add_argument("--probe-only", action="store_true",
-                            help="Startup compatibility probe (#883): validate argv shape and exit 0.")
+        parser.add_argument('--cancel-order', action='store_true')
+        parser.add_argument('--symbol', required=True)
+        parser.add_argument('--oid', type=int, required=True)
+        parser.add_argument('--mode', default='live')
+        parser.add_argument('--probe-only', action='store_true', help='Startup compatibility probe (#883): validate argv shape and exit 0.')
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
         if args.oid <= 0:
-            print(json.dumps({"error": "--oid must be > 0"}))
+            print(json.dumps({'error': '--oid must be > 0'}))
             sys.exit(1)
         run_cancel_order(args.symbol, args.oid, args.mode)
     else:
-        # Signal check mode: <strategy> <symbol> <timeframe> [--mode=paper|live] [--htf-filter]
         import argparse
         parser = argparse.ArgumentParser()
-        parser.add_argument("strategy")
-        parser.add_argument("symbol")
-        parser.add_argument("timeframe")
-        parser.add_argument("--mode", default="paper")
-        parser.add_argument("--htf-filter", action="store_true", default=False)
-        parser.add_argument("--regime-enabled", action="store_true", default=False)
-        parser.add_argument("--regime-windows-spec-json", default="")
-        parser.add_argument("--ohlcv-limit", type=int, default=200)
-        parser.add_argument("--regime-atr-window", default="")
-        # #879: precomputed global-store regime payload; presence (even empty)
-        # disables inline regime computation.
-        parser.add_argument("--regime-payload-json", default=None)
-        # #1277: ATR smoothing method for the standard_atr surface (EntryATR
-        # stamping + market_ctx["atr"]). Forwarded by Go from the resolved
-        # atr_method config; "simple" is the frozen legacy default.
-        parser.add_argument("--atr-method", default="simple", choices=["simple", "wilder"])
-        parser.add_argument("--regime-directional-window", default="")
-        parser.add_argument("--params", default=None)
-        parser.add_argument("--open-strategy", default=None)
-        parser.add_argument("--close-strategies", default=None)
-        parser.add_argument("--strategy-refs", default=None,
-                            help="#640: JSON {'open':{name,params},'closes':[{name,params}...]}; "
-                                 "supersedes --params/--open-strategy/--close-strategies when set")
-        parser.add_argument("--position-side", default="")
-        parser.add_argument("--position-avg-cost", type=float, default=None)
-        parser.add_argument("--position-qty", type=float, default=None)
-        parser.add_argument("--position-initial-qty", type=float, default=None)
-        parser.add_argument("--position-entry-atr", type=float, default=None)
-        parser.add_argument("--position-regime", default="")
-        parser.add_argument("--mark-price", type=float, default=0.0,
-            help="Optional mid from Go's fetchHyperliquidMids cycle; when >0 skips adapter.get_spot_price's duplicate /info allMids call (#768).")
-        parser.add_argument("--probe-only", action="store_true",
-            help="Startup compatibility probe (#645): validate argv shape and exit 0.")
+        parser.add_argument('strategy')
+        parser.add_argument('symbol')
+        parser.add_argument('timeframe')
+        parser.add_argument('--mode', default='paper')
+        parser.add_argument('--htf-filter', action='store_true', default=False)
+        parser.add_argument('--regime-enabled', action='store_true', default=False)
+        parser.add_argument('--regime-windows-spec-json', default='')
+        parser.add_argument('--ohlcv-limit', type=int, default=200)
+        parser.add_argument('--regime-atr-window', default='')
+        parser.add_argument('--regime-payload-json', default=None)
+        parser.add_argument('--atr-method', default='simple', choices=['simple', 'wilder'])
+        parser.add_argument('--regime-directional-window', default='')
+        parser.add_argument('--params', default=None)
+        parser.add_argument('--open-strategy', default=None)
+        parser.add_argument('--close-strategies', default=None)
+        parser.add_argument('--strategy-refs', default=None, help="#640: JSON {'open':{name,params},'closes':[{name,params}...]}; supersedes --params/--open-strategy/--close-strategies when set")
+        parser.add_argument('--position-side', default='')
+        parser.add_argument('--position-avg-cost', type=float, default=None)
+        parser.add_argument('--position-qty', type=float, default=None)
+        parser.add_argument('--position-initial-qty', type=float, default=None)
+        parser.add_argument('--position-entry-atr', type=float, default=None)
+        parser.add_argument('--position-regime', default='')
+        parser.add_argument('--mark-price', type=float, default=0.0, help="Optional mid from Go's fetchHyperliquidMids cycle; when >0 skips adapter.get_spot_price's duplicate /info allMids call (#768).")
+        parser.add_argument('--probe-only', action='store_true', help='Startup compatibility probe (#645): validate argv shape and exit 0.')
         args = parser.parse_args()
         if args.probe_only:
             sys.exit(0)
         from strategy_composition import parse_strategy_refs_arg
         refs = parse_strategy_refs_arg(args.strategy_refs)
-        open_strategy_name = refs["open_name"] if refs else args.open_strategy
-        close_strategies_arg = refs["close_csv"] if refs else args.close_strategies
-        params_override = refs["open_params"] if refs else (json.loads(args.params) if args.params else None)
-        close_params_by_name = refs["close_params_by_name"] if refs else None
+        open_strategy_name = refs['open_name'] if refs else args.open_strategy
+        close_strategies_arg = refs['close_csv'] if refs else args.close_strategies
+        params_override = refs['open_params'] if refs else json.loads(args.params) if args.params else None
+        close_params_by_name = refs['close_params_by_name'] if refs else None
         position_ctx = _position_ctx_from_args(args)
         regime_windows_spec = parse_regime_windows_spec_json(args.regime_windows_spec_json or None)
-        run_signal_check(
-            args.strategy, args.symbol, args.timeframe, args.mode,
-            args.htf_filter, params_override, open_strategy_name,
-            close_strategies_arg,
-            args.position_side, position_ctx,
-            regime_enabled=args.regime_enabled,
-            regime_windows_spec=regime_windows_spec,
-            ohlcv_limit=args.ohlcv_limit,
-            regime_atr_window=args.regime_atr_window,
-            regime_payload_json=args.regime_payload_json,
-            close_params_by_name=close_params_by_name,
-            atr_method=args.atr_method,
-            mark_price=args.mark_price,
-        )
-
-
-if __name__ == "__main__":
+        run_signal_check(args.strategy, args.symbol, args.timeframe, args.mode, args.htf_filter, params_override, open_strategy_name, close_strategies_arg, args.position_side, position_ctx, regime_enabled=args.regime_enabled, regime_windows_spec=regime_windows_spec, ohlcv_limit=args.ohlcv_limit, regime_atr_window=args.regime_atr_window, regime_payload_json=args.regime_payload_json, close_params_by_name=close_params_by_name, atr_method=args.atr_method, mark_price=args.mark_price)
+if __name__ == '__main__':
     main()

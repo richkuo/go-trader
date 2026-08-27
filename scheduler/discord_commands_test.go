@@ -9,13 +9,12 @@ import (
 )
 
 func TestDiscordBackend(t *testing.T) {
-	// No Discord backend present.
+
 	mn := NewMultiNotifier()
 	if got := mn.DiscordBackend(); got != nil {
 		t.Fatalf("expected nil DiscordBackend on empty notifier, got %v", got)
 	}
 
-	// Discord backend present (zero-value *DiscordNotifier is fine for identity).
 	d := &DiscordNotifier{}
 	mn2 := NewMultiNotifier(notifierBackend{notifier: d})
 	if got := mn2.DiscordBackend(); got != d {
@@ -29,22 +28,22 @@ func TestAuthorizeCommand(t *testing.T) {
 		name, invoker, guildID string
 		wantOK                 bool
 	}{
-		{"status", "anyone", "guild1", true}, // read-only in guild OK
-		{"status", "anyone", "", true},       // read-only in DM OK
+		{"status", "anyone", "guild1", true},
+		{"status", "anyone", "", true},
 		{"positions", "anyone", "guild1", true},
-		{"logs", "anyone", "guild1", false}, // logs is ops now: guild rejected
-		{"logs", "intruder", "", false},     // logs is ops now: non-owner DM rejected
-		{"logs", owner, "", true},           // logs is ops now: owner DM OK
-		{"restart", owner, "", true},        // ops: owner in DM OK
-		{"restart", owner, "guild1", false}, // ops: owner in guild rejected (must be DM)
-		{"restart", "intruder", "", false},  // ops: non-owner in DM rejected
+		{"logs", "anyone", "guild1", false},
+		{"logs", "intruder", "", false},
+		{"logs", owner, "", true},
+		{"restart", owner, "", true},
+		{"restart", owner, "guild1", false},
+		{"restart", "intruder", "", false},
 		{"backtest", owner, "", true},
 		{"backtest", "intruder", "", false},
-		// #1400 clear-cash-reconcile: owner-DM only (resumes live buys).
+
 		{"clear-cash-reconcile", owner, "", true},
 		{"clear-cash-reconcile", owner, "guild1", false},
 		{"clear-cash-reconcile", "intruder", "", false},
-		{"unknown", owner, "", false}, // unknown command rejected
+		{"unknown", owner, "", false},
 	}
 	for _, c := range cases {
 		ok, reason := authorizeCommand(c.name, c.invoker, c.guildID, owner)
@@ -58,16 +57,8 @@ func TestAuthorizeCommand(t *testing.T) {
 	}
 }
 
-// discordCommandNameRe is Discord's CHAT_INPUT command-name constraint for our
-// ASCII command set: 1..32 chars, lowercase letters, digits, dash, underscore.
 var discordCommandNameRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
 
-// TestSlashCommandsNamespaced locks the #891 namespacing invariants: every
-// registered command is prefixed with commandPrefix, is a valid Discord command
-// name, and strips back (as interactionCreate does) to a bare ID that is exactly
-// one of the routable commands in readOnlyCommandNames or opsCommandNames. The
-// stripped set must equal the union of those maps — so a command added to
-// slashCommands() without a classification (or vice versa) fails the build.
 func TestSlashCommandsNamespaced(t *testing.T) {
 	registered := map[string]bool{}
 	for _, c := range slashCommands() {
@@ -196,19 +187,18 @@ func TestFormatStatusResponse_CashReconcileRequired(t *testing.T) {
 	if !strings.Contains(got, "CASH RECONCILE REQUIRED") {
 		t.Fatalf("expected reconcile banner, got: %s", got)
 	}
-	// IDs are collected in sortedAppStateIDs order then appended when latched —
-	// assert both appear and unlatched does not.
+
 	if !strings.Contains(got, "a-latched") || !strings.Contains(got, "z-latched") {
 		t.Fatalf("expected both latched IDs, got: %s", got)
 	}
 	if strings.Contains(got, "m-ok") && strings.Contains(got[strings.Index(got, "CASH RECONCILE REQUIRED"):], "m-ok") {
 		t.Fatalf("unlatched strategy must not appear in reconcile list, got: %s", got)
 	}
-	// sortedAppStateIDs sorts keys; latched append order follows that sort.
+
 	idx := strings.Index(got, "CASH RECONCILE REQUIRED:")
 	list := got[idx:]
 	if !strings.Contains(list, "a-latched, z-latched") && !strings.Contains(list, "a-latched,z-latched") {
-		// format uses strings.Join(reconcileIDs, ", ") after walking sortedAppStateIDs
+
 		if !(strings.Contains(list, "a-latched") && strings.Index(list, "a-latched") < strings.Index(list, "z-latched")) {
 			t.Fatalf("expected a-latched before z-latched in sorted list, got: %s", list)
 		}
@@ -237,7 +227,7 @@ func TestFormatPositionsResponse(t *testing.T) {
 }
 
 func TestFormatPnLResponse(t *testing.T) {
-	// hl-a: pv = 1*60 = 60, cap 50 -> +10 (+20%). hl-b: pv = 50, cap 50 -> 0.
+
 	got := formatPnLResponse(testPnLState(), map[string]float64{"BTC": 60})
 	if !strings.Contains(got, "+10.00") || !strings.Contains(got, "+20.00%") {
 		t.Errorf("expected hl-a pnl +10 (+20%%), got: %s", got)
@@ -252,8 +242,7 @@ func TestFormatPnLResponsePooledReturnsAreUndefined(t *testing.T) {
 		"hl-a": {
 			ID: "hl-a", Platform: "hyperliquid", Cash: -200,
 			SharedWalletPoolBudget: true,
-			// Ephemeral flag deliberately false: fallback/save-failure paths
-			// must still honor the durable pool marker.
+
 			SharedWalletPerformanceOnly: false,
 		},
 		"hl-b": {
@@ -377,7 +366,7 @@ func TestFormatCircuitBreakersResponse(t *testing.T) {
 
 func TestFormatDeadStrategiesResponse(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{"hl-a": {ID: "hl-a"}, "hl-b": {ID: "hl-b"}}}
-	lifetime := map[string]LifetimeTradeStats{"hl-a": {PositionsOpened: 3}} // hl-b is dead
+	lifetime := map[string]LifetimeTradeStats{"hl-a": {PositionsOpened: 3}}
 	got := formatDeadStrategiesResponse(state, lifetime)
 	if !strings.Contains(got, "hl-b") || strings.Contains(got, "hl-a") {
 		t.Errorf("expected only hl-b listed as dead, got: %s", got)
@@ -392,9 +381,9 @@ func TestFormatLeaderboardResponse(t *testing.T) {
 			{ID: "hl-b", Platform: "hyperliquid"},
 		},
 	}
-	state := testPnLState() // hl-a +20%, hl-b 0%
+	state := testPnLState()
 	got := formatLeaderboardResponse(cfg, state, map[string]float64{"BTC": 60}, nil, 5)
-	// hl-a should rank above hl-b.
+
 	ai := strings.Index(got, "hl-a")
 	bi := strings.Index(got, "hl-b")
 	if ai < 0 || bi < 0 || ai > bi {
@@ -426,7 +415,7 @@ func TestFormatCorrelationResponseDeterministicTies(t *testing.T) {
 			"SOL": {NetDeltaUSD: 500, ConcentrationPct: 50},
 		},
 	}
-	// Equal concentration -> tie-break by asset name ascending, stable across runs.
+
 	first := formatCorrelationResponse(snap)
 	for i := 0; i < 20; i++ {
 		if got := formatCorrelationResponse(snap); got != first {
@@ -459,19 +448,17 @@ func TestParseBacktestSummary(t *testing.T) {
 		}
 	}
 
-	// Missing labels degrade to a dash rather than erroring.
 	if got := parseBacktestSummary("no metrics here"); !strings.Contains(got, "—") {
 		t.Errorf("expected dash for missing metrics, got: %s", got)
 	}
 }
 
 func TestTruncateForDiscord(t *testing.T) {
-	// Short input is returned unchanged.
+
 	if got := truncateForDiscord("hello"); got != "hello" {
 		t.Errorf("short input mutated: %q", got)
 	}
 
-	// Over-limit ASCII input is capped to 2000 bytes with an ellipsis.
 	long := strings.Repeat("a", 2500)
 	got := truncateForDiscord(long)
 	if len(got) > 2000 {
@@ -481,8 +468,7 @@ func TestTruncateForDiscord(t *testing.T) {
 		t.Errorf("expected ellipsis suffix, got tail: %q", got[len(got)-5:])
 	}
 
-	// Multibyte runes at the cut boundary must not be split (no invalid bytes).
-	multibyte := strings.Repeat("🛑", 1000) // 4 bytes each = 4000 bytes
+	multibyte := strings.Repeat("🛑", 1000)
 	got = truncateForDiscord(multibyte)
 	if len(got) > 2000 {
 		t.Errorf("truncated multibyte output exceeds 2000 bytes: %d", len(got))

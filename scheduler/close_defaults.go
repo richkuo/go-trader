@@ -7,33 +7,6 @@ import (
 	"strings"
 )
 
-// close_defaults.go implements the #866 user_defaults override layer — the
-// middle of the three-layer close-default resolution:
-//
-//	system_close_defaults  (Go constant / Python mirror, the built-in fallback)
-//	  → user_defaults        (this file — a top-level config.json block)
-//	    → strategy_close_defaults  (inline tp_tiers on a strategy's close ref)
-//
-// Resolution is implemented by *injection at load*: for any close ref that omits
-// tp_tiers, if user_defaults.close names that evaluator, its tp_tiers is copied
-// into the ref's Params before validation/runtime. A ref that already carries an
-// explicit tp_tiers (the strategy layer) is left untouched, and a ref with no
-// matching user entry falls through to the evaluator's system default unchanged.
-// Because injection happens inside loadConfig for both the old and new config on
-// SIGHUP, downstream validation, runtime resolution, and hot-reload comparison
-// all see the resolved tiers transparently — no separate plumbing required.
-
-// closeDefaultsSupported is the set of close evaluators whose default ladder can
-// be overridden via user_defaults.close (#866). Every member resolves its tier
-// list purely through tp_tiers, so an injected tp_tiers cleanly wins over the
-// system default with no precedence ambiguity.
-//
-// Deliberately EXCLUDED:
-//   - tiered_tp_atr_regime / tiered_tp_atr_live_regime: their use_defaults form
-//     expands a RegimeATRBlock baseline (regimeATRDefaults), and that interacts
-//     with an injected tp_tiers in per-regime ways that belong with the
-//     per-regime retune in #870 — not this mechanism issue.
-//   - tiered_tp_atr_live_regime_dynamic: trend_regime-shaped, no tp_tiers.
 var closeDefaultsSupported = map[string]struct{}{
 	"tiered_tp_pct":              {},
 	"tiered_tp_atr":              {},
@@ -48,15 +21,11 @@ const (
 	userCloseDefaultRegimeATRKey             = "regime_atr"
 )
 
-// closeDefaultsTierEvaluator reports whether name accepts a user_defaults.close
-// override (see closeDefaultsSupported).
 func closeDefaultsTierEvaluator(name string) bool {
 	_, ok := closeDefaultsSupported[strings.ToLower(strings.TrimSpace(name))]
 	return ok
 }
 
-// closeDefaultsSupportedNames returns the sorted supported evaluator names for
-// operator-facing error text.
 func closeDefaultsSupportedNames() []string {
 	names := make([]string, 0, len(closeDefaultsSupported))
 	for name := range closeDefaultsSupported {
@@ -87,7 +56,6 @@ func closeDefaultsEntry(defaults CloseDefaultsMap, name string) (map[string]inte
 	return nil, false
 }
 
-// validateUserDefaults checks the user_defaults block shape at load.
 func validateUserDefaults(defaults *UserDefaultsConfig) []string {
 	if defaults == nil {
 		return nil
@@ -100,11 +68,6 @@ func validateUserDefaults(defaults *UserDefaultsConfig) []string {
 	return errs
 }
 
-// validateUserCloseDefaults checks the user_defaults.close block shape at load:
-// every key must be a tp_tiers-shaped close evaluator, and every entry must
-// carry a non-nil tp_tiers and no other keys. The tier *contents* are validated
-// per-evaluator once injected into a consuming strategy (so a regime ladder is
-// checked against that strategy's classifier vocabulary, etc.).
 func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 	if len(defaults) == 0 {
 		return nil
@@ -144,11 +107,7 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 			errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: missing tp_tiers", name))
 			continue
 		}
-		// Deep-validate the ladder here so a malformed user default (empty list,
-		// wrong type, non-monotonic ratchet tiers) is attributed to
-		// user_defaults.close — not to the strategy it later injects into. An
-		// empty tp_tiers is rejected loudly: it would otherwise inject `[]` and
-		// silently suppress the system default (runtime resolves to zero tiers).
+
 		errs = append(errs, validateUserCloseDefaultTiers(name, tp)...)
 		if normName == trailingTPRatchetRegimeCloseName {
 			if raw, ok := entry[userCloseDefaultTrailingStopATRRegimeKey]; ok {
@@ -159,12 +118,6 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 	return errs
 }
 
-// validateUserCloseDefaultTiers validates a user_defaults.close tp_tiers value
-// (scalar list, or regime-keyed map for the *_regime ratchet) with errors
-// attributed to the user_defaults.close block. Ratchet ladders also get the
-// context-free monotonicity check; the regime-exhaustiveness and initial-trail
-// checks stay per-strategy (they need the consuming strategy's classifier and
-// trailing_stop_atr_mult).
 func validateUserCloseDefaultTiers(name string, tp interface{}) []string {
 	ctx := fmt.Sprintf("user_defaults.close[%q].tp_tiers", name)
 	isRatchet := isTrailingTPRatchetCloseName(name)
@@ -283,16 +236,12 @@ func validateUserCloseDefaultTrailingStopATRRegime(name string, raw interface{})
 	return errs
 }
 
-// applyUserCloseDefaultsToRef injects the user_defaults.close tp_tiers for ref's
-// evaluator when the ref omits its own tp_tiers (the strategy layer wins). A
-// no-op when ref is nil, already carries tp_tiers, or has no matching user
-// entry. Returns true when an injection occurred (for logging/tests).
 func applyUserCloseDefaultsToRef(ref *StrategyRef, defaults CloseDefaultsMap) bool {
 	if ref == nil || len(defaults) == 0 {
 		return false
 	}
 	if _, hasExplicit := closeTierListParam(ref.Params); hasExplicit {
-		return false // strategy_close_defaults layer wins
+		return false
 	}
 	entry, ok := closeDefaultsEntry(defaults, ref.Name)
 	if !ok {
@@ -347,8 +296,6 @@ func cloneInterfaceMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-// regimeATRBlockIsUseDefaultsOnly reports whether the operator supplied only
-// use_defaults:true (no explicit trend_regime map). Safe before ResolveSurface.
 func regimeATRBlockIsUseDefaultsOnly(b *RegimeATRBlock) bool {
 	if b == nil || b.raw == nil {
 		return false
@@ -458,9 +405,6 @@ func applyUserCloseDefaultRatchetRegimeTrails(cfg *Config) {
 	}
 }
 
-// applyUserCloseDefaults injects user_defaults.close into every strategy's close
-// ref. Called once per load (and per SIGHUP reload) after close-ref
-// normalization, before validation.
 func applyUserCloseDefaults(cfg *Config) {
 	defaults := cfg.userDefaultsClose()
 	if len(defaults) == 0 {

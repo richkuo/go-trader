@@ -7,15 +7,6 @@ import (
 	"time"
 )
 
-// #1105 OKX exchange-sourced cash-flow journal (shadow phase): the bills
-// settled-cash convention (balChg authoritative, USDT-only, fail-closed on
-// unclassified bills), dedup, single-stream cursor discipline, snapshot
-// bounding, baseline anchoring, and usability gating.
-
-// A USDT bill's settled-cash delta is its authoritative balChg (already nets
-// pnl/fee/funding/transfer). A known type is classifiable; an unknown type
-// still books balChg but is NOT known (latches incomplete); a non-USDT bill
-// contributes $0 and is never known.
 func TestOKXBillSettledDelta(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -41,9 +32,6 @@ func TestOKXBillSettledDelta(t *testing.T) {
 	}
 }
 
-// billId is the canonical key; the type:ts:tradeId form is the fallback when
-// billId is absent or "0". Namespaced "okxbill:" so it can never collide with
-// the HL fill/funding/transfer namespaces in the shared table.
 func TestOKXBillDedupID(t *testing.T) {
 	withID := okxBillRecord{BillID: "374241568037822465", Type: "2", TimeMs: 1700000000000, TradeID: "tx1"}
 	if got, want := okxBillDedupID(withID), "okxbill:374241568037822465"; got != want {
@@ -63,9 +51,6 @@ func newOKXJournalKey() SharedWalletKey {
 	return SharedWalletKey{Platform: "okx", Account: "okx-api-key-123"}
 }
 
-// First contact anchors the baseline to the supplied eq/uPnL snapshot and the
-// bills cursor to now, fetching NO history; OKX uses only the FillsSinceMs
-// cursor (funding/transfers stay 0).
 func TestOKXCashflowJournalBaselineAnchor(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -90,15 +75,11 @@ func TestOKXCashflowJournalBaselineAnchor(t *testing.T) {
 	}
 }
 
-// End-to-end fetch -> ingest -> sum with a stubbed bills feed. The settled sum
-// is Σ balChg over USDT bills; the expected equity closes the loop against a
-// hand-computed eq.
 func TestOKXCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
 	t0 := time.UnixMilli(1700000000000).UTC()
 
-	// Anchor at eq=1000, uPnL=0, cursor t0.
 	if r := fetchOKXCashflowJournalEvents(db, key, 1000.0, 0.0, t0); !r.StateFound {
 		t.Fatal("baseline init failed")
 	}
@@ -107,11 +88,11 @@ func TestOKXCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	defer func() { fetchOKXAccountBills = orig }()
 	fetchOKXAccountBills = func(sinceMs int64) ([]okxBillRecord, bool, error) {
 		return []okxBillRecord{
-			{BillID: "b1", TimeMs: t0.UnixMilli() + 10, Ccy: "USDT", Type: "2", BalChg: -0.5, Pnl: 0, Fee: 0.5}, // open fee
+			{BillID: "b1", TimeMs: t0.UnixMilli() + 10, Ccy: "USDT", Type: "2", BalChg: -0.5, Pnl: 0, Fee: 0.5},
 			{BillID: "b2", TimeMs: t0.UnixMilli() + 20, Ccy: "USDT", Type: "2", BalChg: 19.7, Pnl: 20, Fee: 0.3},
-			{BillID: "b3", TimeMs: t0.UnixMilli() + 5, Ccy: "USDT", Type: "8", BalChg: -1.0}, // funding
-			{BillID: "b4", TimeMs: t0.UnixMilli() + 6, Ccy: "USDT", Type: "1", BalChg: 100},  // transfer in
-			{BillID: "b5", TimeMs: t0.UnixMilli() + 7, Ccy: "USDT", Type: "1", BalChg: -51},  // transfer out
+			{BillID: "b3", TimeMs: t0.UnixMilli() + 5, Ccy: "USDT", Type: "8", BalChg: -1.0},
+			{BillID: "b4", TimeMs: t0.UnixMilli() + 6, Ccy: "USDT", Type: "1", BalChg: 100},
+			{BillID: "b5", TimeMs: t0.UnixMilli() + 7, Ccy: "USDT", Type: "1", BalChg: -51},
 		}, false, nil
 	}
 
@@ -129,7 +110,7 @@ func TestOKXCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sum: %v", err)
 	}
-	const wantSettled = -0.5 + 19.7 - 1.0 + 100 - 51 // 67.2
+	const wantSettled = -0.5 + 19.7 - 1.0 + 100 - 51
 	if math.Abs(settled-wantSettled) > 1e-9 {
 		t.Fatalf("settled sum = %v, want %v", settled, wantSettled)
 	}
@@ -141,14 +122,12 @@ func TestOKXCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	if drift := res.AccountValue - expected; math.Abs(drift) > 1e-9 {
 		t.Errorf("journal drift = %v, want ~0", drift)
 	}
-	// Single cursor advanced past the latest bill (t0+20).
+
 	if st.FillsSinceMs != t0.UnixMilli()+20+1 {
 		t.Errorf("bills cursor = %d, want %d", st.FillsSinceMs, t0.UnixMilli()+21)
 	}
 }
 
-// A bill settled AFTER the eq snapshot is deferred to next cycle: not booked,
-// cursor not advanced past it.
 func TestOKXCashflowJournalSnapshotBound(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -160,10 +139,10 @@ func TestOKXCashflowJournalSnapshotBound(t *testing.T) {
 		Key: key, State: base, StateFound: true, BillsFetched: true,
 		Bills: []okxBillRecord{
 			{BillID: "in", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 10},
-			{BillID: "after", TimeMs: 250, Ccy: "USDT", Type: "2", BalChg: 999}, // settled after cutoff
+			{BillID: "after", TimeMs: 250, Ccy: "USDT", Type: "2", BalChg: 999},
 		},
 	}
-	st := ingestOKXCashflowJournalEvents(db, res, 200) // cutoff 200
+	st := ingestOKXCashflowJournalEvents(db, res, 200)
 	sum, err := db.SumCashflowJournal(key.Platform, key.Account)
 	if err != nil {
 		t.Fatalf("sum: %v", err)
@@ -176,11 +155,6 @@ func TestOKXCashflowJournalSnapshotBound(t *testing.T) {
 	}
 }
 
-// A NON-capped fetch advances the cursor past the last booked bill (maxTime+1),
-// but a CAPPED fetch advances only TO maxTime so the boundary millisecond — which
-// the cap may have split across a same-ms group — is re-read next cycle. This is
-// the cursor-side complement of the adapter's fail-closed cap: a capped/truncated
-// page is not a safe contiguous prefix at its final millisecond.
 func TestOKXCashflowJournalCappedAdvancesOnlyToMaxTime(t *testing.T) {
 	mk := func(capped bool) CashflowJournalState {
 		db := newCashflowJournalTestDB(t)
@@ -193,7 +167,7 @@ func TestOKXCashflowJournalCappedAdvancesOnlyToMaxTime(t *testing.T) {
 			Key: key, State: base, StateFound: true, BillsFetched: true, Capped: capped,
 			Bills: []okxBillRecord{
 				{BillID: "a", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 5},
-				{BillID: "b", TimeMs: 200, Ccy: "USDT", Type: "2", BalChg: 5}, // maxTime = 200
+				{BillID: "b", TimeMs: 200, Ccy: "USDT", Type: "2", BalChg: 5},
 			},
 		}
 		return ingestOKXCashflowJournalEvents(db, res, cashflowCutoffAll)
@@ -206,11 +180,6 @@ func TestOKXCashflowJournalCappedAdvancesOnlyToMaxTime(t *testing.T) {
 	}
 }
 
-// A capped cycle whose booked bills all share one millisecond must NOT strand the
-// truncated same-ms siblings: the cursor stays at that ms, and a later non-capped
-// cycle re-reads it and books the previously-truncated sibling (dedup absorbs the
-// re-read of the already-booked ones). Covers the single-ms-overflow and
-// max_bills-truncation must-survive cases end to end.
 func TestOKXCashflowJournalCappedSameMsSiblingNotStranded(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -219,8 +188,6 @@ func TestOKXCashflowJournalCappedSameMsSiblingNotStranded(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Cycle 1: a capped fetch returns only the first slice of a >page_limit block
-	// all at ts=150. The cursor must stay at 150, not advance to 151.
 	c1 := okxCashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, BillsFetched: true, Capped: true,
 		Bills: []okxBillRecord{
@@ -234,17 +201,13 @@ func TestOKXCashflowJournalCappedSameMsSiblingNotStranded(t *testing.T) {
 		t.Fatalf("capped cycle: cursor = %d, want 150 (must re-read the boundary ms)", st1.FillsSinceMs)
 	}
 
-	// Cycle 2: the block has cleared (no longer capped). Re-fetch from 150 returns
-	// the three already-booked siblings (deduped) PLUS the previously-truncated
-	// sibling s4 (also ts=150) and a newer bill at 200. s4 must be booked — it was
-	// stranded behind cursor 151 under the pre-fix maxTime+1 advance.
 	c2 := okxCashflowJournalFetchResult{
 		Key: key, State: st1, StateFound: true, BillsFetched: true, Capped: false,
 		Bills: []okxBillRecord{
-			{BillID: "s1", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // dup
-			{BillID: "s2", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // dup
-			{BillID: "s3", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // dup
-			{BillID: "s4", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1}, // the stranded sibling
+			{BillID: "s1", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1},
+			{BillID: "s2", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1},
+			{BillID: "s3", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1},
+			{BillID: "s4", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 1},
 			{BillID: "n1", TimeMs: 200, Ccy: "USDT", Type: "2", BalChg: 7},
 		},
 	}
@@ -256,18 +219,12 @@ func TestOKXCashflowJournalCappedSameMsSiblingNotStranded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sum: %v", err)
 	}
-	// 4 same-ms siblings (each +1, dedup keeps each once) + 1 newer (+7) = 11.
+
 	if math.Abs(sum-11) > 1e-9 {
 		t.Errorf("same-ms sibling stranded or double-counted: sum = %v, want 11", sum)
 	}
 }
 
-// Budget-exhaustion case: a capped fetch can return an incomplete prefix whose
-// UNFETCHED tail is at NEWER timestamps (ts > maxTime), not just same-ms. The
-// cursor must not advance to maxTime+1, and a later cleared cycle must re-read
-// from maxTime and book that newer tail. (The adapter now reports capped=True on
-// loop-budget exhaustion; the Go side only sees res.Capped, so the cursor
-// discipline is identical regardless of WHY the fetch was capped.)
 func TestOKXCashflowJournalCappedNewerTailNotStranded(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -276,8 +233,6 @@ func TestOKXCashflowJournalCappedNewerTailNotStranded(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Cycle 1: capped prefix ending at ts=160. The feed actually has more bills at
-	// ts=170/180 (the budget-exhausted tail) not returned this cycle.
 	c1 := okxCashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, BillsFetched: true, Capped: true,
 		Bills: []okxBillRecord{
@@ -290,14 +245,12 @@ func TestOKXCashflowJournalCappedNewerTailNotStranded(t *testing.T) {
 		t.Fatalf("capped cycle: cursor = %d, want 160 (must not pass the unfetched newer tail)", st1.FillsSinceMs)
 	}
 
-	// Cycle 2: feed drained (not capped). Re-fetch from 160 returns the boundary
-	// bill b (dup) plus the previously-stranded newer tail at 170/180.
 	c2 := okxCashflowJournalFetchResult{
 		Key: key, State: st1, StateFound: true, BillsFetched: true, Capped: false,
 		Bills: []okxBillRecord{
-			{BillID: "b", TimeMs: 160, Ccy: "USDT", Type: "2", BalChg: 2}, // dup
-			{BillID: "c", TimeMs: 170, Ccy: "USDT", Type: "2", BalChg: 3}, // stranded tail
-			{BillID: "d", TimeMs: 180, Ccy: "USDT", Type: "2", BalChg: 4}, // stranded tail
+			{BillID: "b", TimeMs: 160, Ccy: "USDT", Type: "2", BalChg: 2},
+			{BillID: "c", TimeMs: 170, Ccy: "USDT", Type: "2", BalChg: 3},
+			{BillID: "d", TimeMs: 180, Ccy: "USDT", Type: "2", BalChg: 4},
 		},
 	}
 	st2 := ingestOKXCashflowJournalEvents(db, c2, cashflowCutoffAll)
@@ -308,13 +261,11 @@ func TestOKXCashflowJournalCappedNewerTailNotStranded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sum: %v", err)
 	}
-	if math.Abs(sum-11) > 1e-9 { // 2 + 2 + 3 + 4, b booked once
+	if math.Abs(sum-11) > 1e-9 {
 		t.Errorf("newer tail stranded or double-counted: sum = %v, want 11", sum)
 	}
 }
 
-// An unclassified bill (unknown type) latches incomplete AND still books its
-// authoritative balChg so the running drift surfaces it.
 func TestOKXCashflowJournalUnclassifiedLatchesIncomplete(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -325,7 +276,7 @@ func TestOKXCashflowJournalUnclassifiedLatchesIncomplete(t *testing.T) {
 	res := okxCashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, BillsFetched: true,
 		Bills: []okxBillRecord{
-			{BillID: "u1", TimeMs: 150, Ccy: "USDT", Type: "999", BalChg: 7}, // unknown type
+			{BillID: "u1", TimeMs: 150, Ccy: "USDT", Type: "999", BalChg: 7},
 		},
 	}
 	st := ingestOKXCashflowJournalEvents(db, res, cashflowCutoffAll)
@@ -338,8 +289,6 @@ func TestOKXCashflowJournalUnclassifiedLatchesIncomplete(t *testing.T) {
 	}
 }
 
-// A non-USDT bill cannot reconcile against the USDT eq: it contributes $0,
-// latches incomplete, and does NOT corrupt the USDT settled sum.
 func TestOKXCashflowJournalNonSettlementCcyFailsClosed(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -364,8 +313,6 @@ func TestOKXCashflowJournalNonSettlementCcyFailsClosed(t *testing.T) {
 	}
 }
 
-// A bill insert failure halts the cursor at the failed bill so a crash can never
-// strand an un-booked event behind an advanced watermark.
 func TestOKXCashflowJournalHaltsCursorOnPersistFailure(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -373,7 +320,7 @@ func TestOKXCashflowJournalHaltsCursorOnPersistFailure(t *testing.T) {
 	if err := db.UpsertCashflowJournalState(key.Platform, key.Account, base); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Close the DB so every insert fails; the cursor must not advance.
+
 	db.Close()
 	res := okxCashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, BillsFetched: true,
@@ -385,7 +332,6 @@ func TestOKXCashflowJournalHaltsCursorOnPersistFailure(t *testing.T) {
 	}
 }
 
-// reconcile is usable only when bills fetched, not capped, and not incomplete.
 func TestOKXCashflowJournalReconcileUsability(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := newOKXJournalKey()
@@ -396,7 +342,6 @@ func TestOKXCashflowJournalReconcileUsability(t *testing.T) {
 	orig := fetchOKXAccountBills
 	defer func() { fetchOKXAccountBills = orig }()
 
-	// Clean, classifiable bill → usable.
 	fetchOKXAccountBills = func(int64) ([]okxBillRecord, bool, error) {
 		return []okxBillRecord{{BillID: "b1", TimeMs: t0.UnixMilli() + 10, Ccy: "USDT", Type: "2", BalChg: 5}}, false, nil
 	}
@@ -409,7 +354,6 @@ func TestOKXCashflowJournalReconcileUsability(t *testing.T) {
 		t.Errorf("clean cycle drift = %v, want ~0", rec.Drift)
 	}
 
-	// Capped fetch → not usable even though a baseline exists.
 	fetchOKXAccountBills = func(int64) ([]okxBillRecord, bool, error) {
 		return []okxBillRecord{{BillID: "b2", TimeMs: snap.UnixMilli() + 10, Ccy: "USDT", Type: "2", BalChg: 1}}, true, nil
 	}
@@ -419,7 +363,6 @@ func TestOKXCashflowJournalReconcileUsability(t *testing.T) {
 		t.Fatalf("capped cycle: rec=%+v, want not usable", rec2)
 	}
 
-	// Fetch error → nil-ish: StateFound true but bills not fetched, not usable.
 	fetchOKXAccountBills = func(int64) ([]okxBillRecord, bool, error) {
 		return nil, false, errors.New("okx bills 500")
 	}
@@ -430,7 +373,6 @@ func TestOKXCashflowJournalReconcileUsability(t *testing.T) {
 	}
 }
 
-// reconcile returns nil for a non-OKX key (HL stays on its own path).
 func TestOKXCashflowJournalRejectsNonOKXKey(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
@@ -439,8 +381,6 @@ func TestOKXCashflowJournalRejectsNonOKXKey(t *testing.T) {
 	}
 }
 
-// The shadow logger never mutates driftResults — the OKX alarm stays on the
-// capital-weight split.
 func TestOKXCashflowJournalShadowDoesNotMutate(t *testing.T) {
 	key := newOKXJournalKey()
 	results := []sharedWalletDriftResult{
@@ -453,9 +393,6 @@ func TestOKXCashflowJournalShadowDoesNotMutate(t *testing.T) {
 	}
 }
 
-// parseOKXBillsOutput follows the same 5-case matrix as the other OKX fetch
-// parsers: clean success, exit-0-with-error, exit-nonzero-with-error,
-// exit-nonzero-no-error, and unparseable.
 func TestParseOKXBillsOutput(t *testing.T) {
 	clean := []byte(`{"bills":[{"bill_id":"b1","ts_ms":1700000000000,"ccy":"USDT","type":"2","bal_chg":19.7,"pnl":20,"fee":0.3}],"capped":false,"platform":"okx","timestamp":"t"}`)
 	res, _, err := parseOKXBillsOutput(clean, "", nil)

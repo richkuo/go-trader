@@ -15,7 +15,7 @@ func limitTestBoolPtr(b bool) *bool { return &b }
 func errInjected() error { return errors.New("injected subprocess error") }
 
 func TestBuildHyperliquidLimitOpenArgs(t *testing.T) {
-	// Plain Alo order, no margin enforcement.
+
 	got := buildHyperliquidLimitOpenArgs("BTC", "buy", 0.01, 58000, "Alo", "", 0, hlExecuteSnapshot{})
 	joined := strings.Join(got, " ")
 	for _, want := range []string{"--limit-open", "--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=58000", "--tif=Alo", "--mode=live"} {
@@ -27,7 +27,6 @@ func TestBuildHyperliquidLimitOpenArgs(t *testing.T) {
 		t.Errorf("argv should omit --margin-mode when empty: %v", got)
 	}
 
-	// Margin mode + leverage + account snapshot forwarded.
 	got = buildHyperliquidLimitOpenArgs("ETH", "sell", 1.5, 3000, "Gtc", "cross", 5, hlExecuteSnapshot{AccountLeverage: 5, AccountMarginMode: "cross"})
 	joined = strings.Join(got, " ")
 	for _, want := range []string{"--margin-mode=cross", "--leverage=5", "--account-leverage=5", "--account-margin-mode=cross", "--tif=Gtc"} {
@@ -36,7 +35,6 @@ func TestBuildHyperliquidLimitOpenArgs(t *testing.T) {
 		}
 	}
 
-	// Empty tif defaults to Alo.
 	got = buildHyperliquidLimitOpenArgs("BTC", "buy", 0.01, 1, "", "", 0, hlExecuteSnapshot{})
 	if !strings.Contains(strings.Join(got, " "), "--tif=Alo") {
 		t.Errorf("empty tif should default to Alo: %v", got)
@@ -53,8 +51,6 @@ func TestParseHyperliquidLimitOpenOutput(t *testing.T) {
 		t.Errorf("got status=%q oid=%d", res.Status, res.OrderOID)
 	}
 
-	// An Alo rejection arrives as status=error + JSON, alongside a non-nil runErr
-	// (exit 1). The JSON is authoritative — parse must surface it, not bury it.
 	rejected := []byte(`{"platform":"hyperliquid","timestamp":"t","status":"error","error":"limit order rejected: post only order would have immediately matched"}`)
 	res, _, err = parseHyperliquidLimitOpenOutput(rejected, "stderr", errInjected())
 	if err != nil {
@@ -64,14 +60,13 @@ func TestParseHyperliquidLimitOpenOutput(t *testing.T) {
 		t.Errorf("got status=%q error=%q", res.Status, res.Error)
 	}
 
-	// Garbage stdout + runErr → wrapped error.
 	if _, _, err := parseHyperliquidLimitOpenOutput([]byte("not json"), "", errInjected()); err == nil {
 		t.Error("expected error for garbage stdout")
 	}
 }
 
 func TestParseHyperliquidLimitStatusOutput(t *testing.T) {
-	// resting=true, partial fill.
+
 	out := []byte(`{"platform":"hyperliquid","timestamp":"t","orders":[{"oid":1,"resting":true,"filled_size":0.4,"avg_px":2000,"fee":0.2,"count":1}]}`)
 	res, _, err := parseHyperliquidLimitStatusOutput(out, "", nil)
 	if err != nil {
@@ -88,8 +83,6 @@ func TestParseHyperliquidLimitStatusOutput(t *testing.T) {
 		t.Errorf("got filled=%g avg=%g", o.FilledSize, o.AvgPx)
 	}
 
-	// resting=null (open-orders fetch failed) must decode to a nil pointer so the
-	// scheduler defers the cancelled verdict.
 	out = []byte(`{"platform":"hyperliquid","timestamp":"t","open_orders_error":"boom","orders":[{"oid":1,"resting":null,"filled_size":0,"avg_px":0,"fee":0,"count":0}]}`)
 	res, _, err = parseHyperliquidLimitStatusOutput(out, "", nil)
 	if err != nil {
@@ -109,7 +102,7 @@ func TestParseHyperliquidCancelOrderOutput(t *testing.T) {
 	if err != nil || !res.Cancelled || res.OID != 7 {
 		t.Fatalf("got res=%+v err=%v", res, err)
 	}
-	// Non-fatal "already gone" cancel: cancelled=false + cancel_error, exit 0.
+
 	out = []byte(`{"platform":"hyperliquid","timestamp":"t","oid":7,"cancelled":false,"cancel_error":"order not found"}`)
 	res, _, err = parseHyperliquidCancelOrderOutput(out, "", nil)
 	if err != nil {
@@ -121,11 +114,11 @@ func TestParseHyperliquidCancelOrderOutput(t *testing.T) {
 }
 
 func TestLimitStatusSinceMs(t *testing.T) {
-	// Zero time → 0 (Python falls back to its 7-day window).
+
 	if got := limitStatusSinceMs(time.Time{}); got != 0 {
 		t.Errorf("zero time should map to 0, got %d", got)
 	}
-	// A real placement time → that time minus a 60s skew buffer, in ms.
+
 	created := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	want := created.Add(-60 * time.Second).UnixMilli()
 	if got := limitStatusSinceMs(created); got != want {
@@ -133,15 +126,12 @@ func TestLimitStatusSinceMs(t *testing.T) {
 	}
 }
 
-// TestReconcilePendingLimitOrdersAnchorsLookbackToPlacement is the #886 review
-// regression: the fill poll must reach back to the order's placement time, not a
-// rolling 7-day window, so a fill on an order resting >7 days is never missed.
 func TestReconcilePendingLimitOrdersAnchorsLookbackToPlacement(t *testing.T) {
 	sc, state := newLimitTestStrategy()
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
-	// Order placed 30 days ago — far outside the default 7-day window.
+
 	placed := time.Now().UTC().Add(-30 * 24 * time.Hour)
 	db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
@@ -166,7 +156,7 @@ func TestReconcilePendingLimitOrdersAnchorsLookbackToPlacement(t *testing.T) {
 	if gotSinceMs != want {
 		t.Errorf("status poll sinceMs = %d, want %d (anchored to 30-day-old placement, not a 7-day window)", gotSinceMs, want)
 	}
-	// Sanity: the anchor is well before a 7-day-only window would reach.
+
 	sevenDaysAgo := time.Now().UTC().Add(-7 * 24 * time.Hour).UnixMilli()
 	if gotSinceMs >= sevenDaysAgo {
 		t.Errorf("sinceMs %d should be older than 7 days ago %d", gotSinceMs, sevenDaysAgo)
@@ -249,15 +239,13 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 	defer func() { tradeRecorder = origRecorder }()
 	now := time.Now().UTC()
 
-	// First fill 0.4 @ 2000.
 	o := PendingLimitOrder{ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001, LimitPrice: 2000, OrderSize: 1.0, FilledSize: 0}
 	if _, err := applyLimitFillProgress(state, sc, o, 0.4, 2000, 0.2, 50, ATRMethodSimple, now); err != nil {
 		t.Fatalf("first fill: %v", err)
 	}
-	// Watermark advances (simulating the reconcile loop).
+
 	o.FilledSize, o.AvgFillPrice, o.FillFee = 0.4, 2000, 0.2
 
-	// Second fill grows to cumulative 1.0 @ VWAP 2010, cumulative fee 0.5.
 	n, err := applyLimitFillProgress(state, sc, o, 1.0, 2010, 0.5, 50, ATRMethodSimple, now)
 	if err != nil {
 		t.Fatalf("grow: %v", err)
@@ -275,15 +263,11 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 	if pos.InitialQuantity != 1.0 {
 		t.Errorf("pos.InitialQuantity = %g, want 1.0", pos.InitialQuantity)
 	}
-	// Cash deducts only the delta fee across both legs: 0.2 + (0.5-0.2) = 0.5.
+
 	if got := state.Strategies[sc.ID].Cash; got != 10000-0.5 {
 		t.Errorf("cash = %g, want %g", got, 10000-0.5)
 	}
 
-	// #886 review: a multi-partial fill must count as ONE opened position. The
-	// first leg is a real open (trade_type=perps); each growth leg is tagged
-	// scale_in so LifetimeTradeStats' open-count (is_close=0 AND
-	// trade_type<>'scale_in') excludes it — matching a single market open.
 	hist := state.Strategies[sc.ID].TradeHistory
 	if len(hist) != 2 {
 		t.Fatalf("expected 2 trade legs, got %d", len(hist))
@@ -294,7 +278,7 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 	if hist[1].TradeType != scaleInTradeType {
 		t.Errorf("growth leg should be tagged %q (excluded from open-count), got %q", scaleInTradeType, hist[1].TradeType)
 	}
-	// Both legs share the position_id so W/L grouping stays correct.
+
 	if hist[0].PositionID == "" || hist[0].PositionID != hist[1].PositionID {
 		t.Errorf("legs must share position_id: %q vs %q", hist[0].PositionID, hist[1].PositionID)
 	}
@@ -302,7 +286,7 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 
 func TestApplyLimitFillProgressOwnerGuard(t *testing.T) {
 	sc, state := newLimitTestStrategy()
-	// Pre-existing foreign position; a first fill must NOT adopt it.
+
 	state.Strategies[sc.ID].Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 3, OwnerStrategyID: "someone-else"}
 	o := PendingLimitOrder{ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001, LimitPrice: 2000, OrderSize: 0.5, FilledSize: 0}
 	if _, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, ATRMethodSimple, time.Now().UTC()); err == nil {
@@ -556,16 +540,9 @@ func TestManualCloseCancelsPartialLimitRemainderBeforeFlatten(t *testing.T) {
 	}
 }
 
-// TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill is the review-2
-// regression (#1263): when the scheduler adopts a limit fill (persisting the
-// watermark) after the CLI's position snapshot but before flushing the grown
-// position to the DB, a full close on a SHARED coin must flatten the true,
-// larger on-chain size — not the stale snapshot — so it never leaves an
-// untracked residual after the daemon books flat on IsFullClose.
 func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T) {
 	cfg, sc, db := newPartialLimitPositionHarness(t)
-	// Share ETH with a live peer so closeFullPosition is false (sized close, not
-	// market_close) — the only path where the stale snapshot leaks a residual.
+
 	peer := StrategyConfig{
 		ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid",
 		Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Leverage: 10,
@@ -573,9 +550,6 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 	}
 	cfg.Strategies = append(cfg.Strategies, peer)
 
-	// The watermark on the resting row is already advanced to 0.7 (the daemon
-	// adopted the new fill in-memory) while the DB position snapshot still reads
-	// the stale 0.4 (SaveState has not flushed the grown position yet).
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 {
 		t.Fatalf("want one resting row, got %d", len(orders))
@@ -584,8 +558,6 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 		t.Fatalf("advance watermark: %v", err)
 	}
 
-	// Status: off-book, cumulative fill 0.7 @ VWAP 2005 == watermark → fully
-	// adopted, no unadopted fill; the cleared fill is the true position size.
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
@@ -621,8 +593,7 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 	if actions[0].Quantity != 0.7 {
 		t.Fatalf("queued close quantity = %g, want 0.7 (true size)", actions[0].Quantity)
 	}
-	// Realized PnL must use the true qty (0.7) and cumulative VWAP (2005), net of
-	// the close fee: 0.7*(2010-2005) - 0.4 = 3.1.
+
 	if got := actions[0].RealizedPnL; got < 3.09 || got > 3.11 {
 		t.Fatalf("queued RealizedPnL = %g, want ~3.10 (0.7*(2010-2005)-0.4)", got)
 	}
@@ -631,12 +602,6 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 	}
 }
 
-// staleReconcileCloseHarness sets up the #1263 stale-snapshot scenario for
-// manual-close --qty tests: the DB position reads the stale 0.4 while the
-// resting limit row's watermark is advanced to the true adopted 0.7 (the daemon
-// adopted the fill but has not flushed the grown position). The status/cancel
-// stubs report the order off-book at 0.7, so clearResting reconciles the
-// snapshot up to 0.7 before the --qty bounds are evaluated.
 func staleReconcileCloseHarness(t *testing.T) (*Config, StrategyConfig, *StateDB) {
 	t.Helper()
 	cfg, sc, db := newPartialLimitPositionHarness(t)
@@ -660,11 +625,6 @@ func staleReconcileCloseHarness(t *testing.T) (*Config, StrategyConfig, *StateDB
 	return cfg, sc, db
 }
 
-// TestManualCloseAcceptsExplicitQtyMatchingReconciledSize is the #1263 review-3
-// (finding 2) regression: an explicit --qty equal to the true, already-adopted
-// size must be accepted — not refused against the stale, smaller pre-reconcile
-// snapshot. Pre-fix the bounds check ran before clearResting, so --qty 0.7 was
-// rejected as "exceeds open position 0.4".
 func TestManualCloseAcceptsExplicitQtyMatchingReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
 	deps := newCLIManualCoreDeps(cfg, db, nil)
@@ -686,12 +646,6 @@ func TestManualCloseAcceptsExplicitQtyMatchingReconciledSize(t *testing.T) {
 	}
 }
 
-// TestManualClosePartialQtyBetweenStaleAndReconciledSize covers the finding-2
-// must-survive "between" case: --qty 0.5 sits between the stale 0.4 snapshot and
-// the true 0.7. Pre-fix it was rejected (0.5 > 0.4). Post-fix it is a valid
-// partial close of EXACTLY 0.5 against the reconciled 0.7 — an explicit --qty is
-// never scaled up to the reconciled full size, so the close never removes more
-// than the operator asked for.
 func TestManualClosePartialQtyBetweenStaleAndReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
 	deps := newCLIManualCoreDeps(cfg, db, nil)
@@ -718,9 +672,6 @@ func TestManualClosePartialQtyBetweenStaleAndReconciledSize(t *testing.T) {
 	}
 }
 
-// TestManualCloseRejectsQtyExceedingReconciledSize confirms the bounds rejection
-// now reports the RECONCILED size (0.7), not the stale snapshot (0.4): --qty 0.9
-// exceeds even the true adopted size and is refused with the true figure.
 func TestManualCloseRejectsQtyExceedingReconciledSize(t *testing.T) {
 	cfg, sc, db := staleReconcileCloseHarness(t)
 	deps := newCLIManualCoreDeps(cfg, db, nil)
@@ -735,20 +686,10 @@ func TestManualCloseRejectsQtyExceedingReconciledSize(t *testing.T) {
 	}
 }
 
-// staleReadRowGoneCloseHarness reproduces the #1263 review-4 window: the CLI's
-// initial loadState captures a stale 0.4 snapshot, then — while the CLI is
-// (conceptually) blocked acquiring the global manual-action lock — the daemon
-// adopts the terminal limit fill, flushes the grown 0.7 to state.db, and deletes
-// the pending_limit_orders row (flush-before-delete). By the time clearResting
-// runs it finds NO row (clearedQty==0), so the fix must re-read the fresh 0.7
-// from state.db rather than size against the stale 0.4. The coin is shared with
-// a live peer so closeFullPosition=false (a sized close, the only path that
-// leaks a residual). The injected loadState returns the stale snapshot on its
-// first call and delegates to the real DB (0.7) thereafter.
 func staleReadRowGoneCloseHarness(t *testing.T) (StrategyConfig, manualCoreDeps, *StateDB) {
 	t.Helper()
 	cfg, sc, db := newPartialLimitPositionHarness(t)
-	// Post-race truth in state.db: row deleted, position grown to 0.7.
+
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 {
 		t.Fatalf("want one resting row, got %d", len(orders))
@@ -765,7 +706,7 @@ func staleReadRowGoneCloseHarness(t *testing.T) (StrategyConfig, manualCoreDeps,
 	if err := db.SaveState(st); err != nil {
 		t.Fatalf("save grown position: %v", err)
 	}
-	// Share ETH with a live peer so closeFullPosition is false (sized close).
+
 	cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 		ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid",
 		Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Leverage: 10,
@@ -790,11 +731,6 @@ func staleReadRowGoneCloseHarness(t *testing.T) (StrategyConfig, manualCoreDeps,
 	return sc, deps, db
 }
 
-// TestManualCloseRereadsFreshPositionWhenRowDeletedBeforeClearResting is the
-// #1263 review-4 regression: a full close whose pre-lock snapshot is stale (0.4)
-// and whose resting row was flushed+deleted before clearResting must flatten the
-// true, re-read 0.7 on a shared coin — never the stale snapshot, which would
-// leak an untracked residual after the daemon books the IsFullClose row flat.
 func TestManualCloseRereadsFreshPositionWhenRowDeletedBeforeClearResting(t *testing.T) {
 	sc, deps, db := staleReadRowGoneCloseHarness(t)
 	var gotCloseQty float64
@@ -820,11 +756,6 @@ func TestManualCloseRereadsFreshPositionWhenRowDeletedBeforeClearResting(t *test
 	}
 }
 
-// TestManualCloseExplicitQtyValidatedAgainstRereadWhenRowGone covers review-4
-// must-survive case 3: an explicit --qty equal to the true adopted size (0.7)
-// exceeds the stale pre-lock snapshot (0.4) with no resting row left to
-// reconcile. Pre-fix the bound at :1020 validated against 0.4 and wrongly
-// refused it; the fresh re-read makes 0.7 a valid full close.
 func TestManualCloseExplicitQtyValidatedAgainstRereadWhenRowGone(t *testing.T) {
 	sc, deps, db := staleReadRowGoneCloseHarness(t)
 	var gotCloseQty float64
@@ -1001,8 +932,6 @@ func TestPendingLimitOrderCRUD(t *testing.T) {
 	}
 }
 
-// withStubbedLimitDeps swaps the subprocess hooks the reconcile uses and returns
-// a restore func. The protection sync is stubbed so no .venv is needed.
 func withStubbedLimitDeps(t *testing.T, status func(script, symbol string, oids []int64, sinceMs int64) (*HyperliquidLimitStatusResult, string, error), cancel func(script, symbol string, oid int64) (*HyperliquidCancelOrderResult, string, error)) {
 	t.Helper()
 	origStatus := runHyperliquidLimitStatusFn
@@ -1034,7 +963,6 @@ func TestReconcilePendingLimitOrdersFullFill(t *testing.T) {
 		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
 	})
 
-	// Status: fully filled, no longer resting.
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
@@ -1055,23 +983,12 @@ func TestReconcilePendingLimitOrdersFullFill(t *testing.T) {
 	if pos == nil || pos.Quantity != 0.5 || pos.AvgCost != 2000 {
 		t.Fatalf("position = %+v", pos)
 	}
-	// Terminal: row deleted.
+
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Errorf("expected row deleted, got %d (id=%d)", len(orders), id)
 	}
 }
 
-// TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete is the
-// #1263 review-3 regression: when a resting limit order fully fills and the
-// reconcile deletes its pending_limit_orders row in the SAME cycle, the grown
-// position must be durably flushed to state.db BEFORE the row disappears.
-// Otherwise a cross-process CLI (manual-close reading state.db) sees the row
-// gone while the DB position still understates the fill, and a sized shared-coin
-// close leaks an untracked residual. The reconcile grows the position only
-// in-memory; the end-of-cycle SaveState is what normally flushes it. This drives
-// reconcile in isolation (no end-of-cycle save) and asserts a fresh
-// cross-process read already sees the true size — proving the flush now happens
-// inside the reconcile, ahead of the delete.
 func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *testing.T) {
 	sc, state := newLimitTestStrategy()
 	dbPath := filepath.Join(t.TempDir(), "state.db")
@@ -1080,8 +997,7 @@ func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *te
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	// Seed the DB with the strategy (no position yet), mirroring a running daemon
-	// that persisted the strategy in a prior cycle.
+
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
@@ -1093,7 +1009,6 @@ func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *te
 		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
 	})
 
-	// Fully filled, no longer resting → terminal, row deleted this cycle.
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
@@ -1108,13 +1023,10 @@ func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *te
 
 	reconcilePendingLimitOrders(state, cfg, db, &mu, nil, nil)
 
-	// Terminal row deleted.
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Fatalf("terminal row not deleted: %+v", orders)
 	}
-	// The grown position is already durable in state.db (flush ran before the
-	// delete): a fresh cross-process read sees the true 0.5, not an absent/stale
-	// snapshot. Without the flush this reload would carry no ETH position.
+
 	fresh, err := LoadStateWithDB(cfg, db)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
@@ -1138,7 +1050,6 @@ func TestReconcilePendingLimitOrdersPartialThenComplete(t *testing.T) {
 		LimitPrice: 2000, OrderSize: 1.0, TIF: "Alo", EntryATR: 50, CreatedAt: time.Now().UTC(),
 	})
 
-	// Cycle 1: partial 0.4, still resting.
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
@@ -1158,7 +1069,6 @@ func TestReconcilePendingLimitOrdersPartialThenComplete(t *testing.T) {
 		t.Fatalf("watermark not persisted: %+v", orders)
 	}
 
-	// Cycle 2: completes to 1.0, no longer resting.
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
@@ -1190,7 +1100,6 @@ func TestReconcilePendingLimitOrdersCancelRequested(t *testing.T) {
 		CancelRequested: true, CreatedAt: time.Now().UTC(),
 	})
 
-	// Still resting, no fill. Cancel must be issued; row retained for next cycle.
 	cancelCalls := 0
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
@@ -1214,7 +1123,6 @@ func TestReconcilePendingLimitOrdersCancelRequested(t *testing.T) {
 		t.Error("no position should exist for an unfilled cancelled order")
 	}
 
-	// Next cycle: order gone (resting=false), no fill → finalize + delete.
 	withStubbedLimitDeps(t,
 		func(string, string, []int64, int64) (*HyperliquidLimitStatusResult, string, error) {
 			return &HyperliquidLimitStatusResult{Orders: []HyperliquidLimitOrderStatus{
@@ -1236,7 +1144,7 @@ func TestReconcilePendingLimitOrdersExpiry(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
-	// expires_at in the past → TTL expiry triggers a cancel.
+
 	db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
 		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,
@@ -1261,9 +1169,6 @@ func TestReconcilePendingLimitOrdersExpiry(t *testing.T) {
 	}
 }
 
-// TestReconcilePendingLimitOrdersDeferOnUnknownBook verifies that when the
-// open-orders fetch failed (resting=nil) the reconcile does NOT finalize the
-// row as cancelled — it waits for a definitive book state.
 func TestReconcilePendingLimitOrdersDeferOnUnknownBook(t *testing.T) {
 	sc, state := newLimitTestStrategy()
 	cfg := &Config{Strategies: []StrategyConfig{sc}}

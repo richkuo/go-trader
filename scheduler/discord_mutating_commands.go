@@ -14,41 +14,8 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// This file implements the mutating Discord slash commands deferred from the
-// first cut (#867) to a follow-up (#868): /config show, /config set,
-// /add-strategy, /remove-strategy, /add-platform, /paper-to-live.
-//
-// Safety model (carried over from the issue's design constraints):
-//   - Auth: owner-only AND DM-only — the command names are registered in
-//     opsCommandNames (discord_commands.go) and gated by authorizeCommand.
-//   - Config writes go through writeValidatedConfigRoot (atomic temp →
-//     LoadConfigForProbe validation → rename) or, for per-strategy tuner
-//     fields, the existing applyStrategyConfigPatch path. Both serialize on
-//     ss.configWriteMu so they can't race the dashboard tuner.
-//   - Apply semantics: SIGHUP hot-reload where applyHotReloadConfig allows it
-//     (validated live; rejected reloads keep the running config), else a
-//     systemctl restart for shape changes the reload path blocks (strategy
-//     add/remove, paper→live arg edits). The reply states which path was taken.
-//   - The two most destructive commands (/remove-strategy, /paper-to-live)
-//     require an out-of-band DM "confirm" before they touch the config.
-//
-// The validation/patch helpers are pure (operate on a decoded
-// map[string]json.RawMessage) so they are unit-testable without a Discord
-// gateway or a live daemon — see discord_mutating_commands_test.go.
-
-// configSecretReplacement is the placeholder substituted for secret-bearing
-// config fields in /config show output.
 const configSecretReplacement = "***redacted***"
 
-// ---------------------------------------------------------------------------
-// Pure helpers — config redaction
-// ---------------------------------------------------------------------------
-
-// redactConfigForDisplay parses a config file's JSON and replaces secret-bearing
-// fields with a placeholder so the result is safe to post in a DM. Only the
-// Discord/Telegram token fields are persisted in the config file; platform API
-// keys and the status token live in the environment (StatusToken is json:"-"),
-// never on disk. Returns indented JSON.
 func redactConfigForDisplay(raw []byte) (string, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &root); err != nil {
@@ -63,10 +30,6 @@ func redactConfigForDisplay(raw []byte) (string, error) {
 	return string(out), nil
 }
 
-// redactSectionKeys replaces the named string keys inside root[section] with the
-// redaction placeholder, but only when the existing value is a non-empty string
-// (so an absent/empty token isn't made to look set). No-op when the section is
-// missing or not an object.
 func redactSectionKeys(root map[string]json.RawMessage, section string, keys ...string) {
 	raw, ok := root[section]
 	if !ok {
@@ -97,10 +60,6 @@ func redactSectionKeys(root map[string]json.RawMessage, section string, keys ...
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers — strategy array access
-// ---------------------------------------------------------------------------
-
 func configStrategies(root map[string]json.RawMessage) ([]json.RawMessage, error) {
 	raw, ok := root["strategies"]
 	if !ok {
@@ -130,17 +89,6 @@ func strategyRawID(raw json.RawMessage) string {
 	return item.ID
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers — /add-strategy
-// ---------------------------------------------------------------------------
-
-// buildAddStrategyEntry constructs a new strategy JSON object for /add-strategy.
-// Restricted to the two platforms whose strategies are fully self-contained in
-// the config file with no extra per-strategy credentials beyond the env-provided
-// wallet/API key: Hyperliquid perps and BinanceUS spot. New perps strategies are
-// always created in paper mode — promotion to live is the deliberate, separately
-// confirmed /paper-to-live step. Returns the generated strategy ID and the
-// marshaled object.
 func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessage, error) {
 	name = strings.TrimSpace(name)
 	asset = strings.ToUpper(strings.TrimSpace(asset))
@@ -164,8 +112,7 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 		if isBidirectionalPerpsStrategy(name) {
 			direction = DirectionBoth
 		}
-		// No explicit SL field: all-omitted defaults to 1.0×ATR + max_drawdown_pct backstop.
-		// Set a stop via `/go-trader-config set strategies.<id>.stop_loss_atr_mult <val>` before /go-trader-paper-to-live.
+
 		obj = map[string]interface{}{
 			"id":               id,
 			"type":             "perps",
@@ -201,9 +148,6 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 	return id, b, nil
 }
 
-// isSimpleAssetToken reports whether s is a plain alphanumeric ticker (no slash,
-// whitespace, or punctuation) so a generated strategy ID / arg can't smuggle
-// shell or path metacharacters.
 func isSimpleAssetToken(s string) bool {
 	if s == "" {
 		return false
@@ -217,8 +161,6 @@ func isSimpleAssetToken(s string) bool {
 	return true
 }
 
-// addStrategyToRoot appends a new strategy generated from (name, platform, asset)
-// to root["strategies"], rejecting a duplicate ID. Returns the new ID.
 func addStrategyToRoot(root map[string]json.RawMessage, name, platform, asset string) (string, error) {
 	id, entry, err := buildAddStrategyEntry(name, platform, asset)
 	if err != nil {
@@ -240,14 +182,6 @@ func addStrategyToRoot(root map[string]json.RawMessage, name, platform, asset st
 	return id, nil
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers — /remove-strategy
-// ---------------------------------------------------------------------------
-
-// removeStrategyFromRoot deletes the strategy with the given ID from
-// root["strategies"]. Errors if not found, or if it is the only strategy (the
-// config must keep at least one — validateConfig and the daemon assume a
-// non-empty fleet).
 func removeStrategyFromRoot(root map[string]json.RawMessage, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -274,15 +208,6 @@ func removeStrategyFromRoot(root map[string]json.RawMessage, id string) error {
 	return setConfigStrategies(root, list)
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers — /paper-to-live
-// ---------------------------------------------------------------------------
-
-// flipStrategyToLive rewrites the matched strategy's `--mode=paper` arg to
-// `--mode=live` in place. Returns the before/after args for the confirmation
-// reply. Errors if the strategy is missing, is already live, or has no `--mode`
-// arg at all (spot/options strategies have no paper/live mode and trade live by
-// construction — there is nothing to flip).
 func flipStrategyToLive(root map[string]json.RawMessage, id string) (before, after []string, err error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -346,14 +271,6 @@ func flipStrategyToLive(root map[string]json.RawMessage, id string) (before, aft
 	return before, args, nil
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers — /config set
-// ---------------------------------------------------------------------------
-
-// classifyConfigSetKey splits a /config set key into a top-level key or a
-// per-strategy "strategies.<id>.<field>" target. Strategy IDs and the supported
-// fields contain no dots, so the first dot after the "strategies." prefix
-// separates the ID from the field.
 func classifyConfigSetKey(key string) (kind, id, field string) {
 	key = strings.TrimSpace(key)
 	if rest, ok := strings.CutPrefix(key, "strategies."); ok {
@@ -365,10 +282,6 @@ func classifyConfigSetKey(key string) (kind, id, field string) {
 	return "top", "", ""
 }
 
-// buildTunerOverride converts a per-strategy field + raw string value into the
-// override map consumed by mergeStrategyTunerOverrides / applyStrategyConfigPatch.
-// Supports the hot-reloadable runtime/risk fields the dashboard tuner already
-// patches. "null"/"none"/"" clears the optional stop-loss fields.
 func buildTunerOverride(field, value string) (map[string]json.RawMessage, error) {
 	v := strings.TrimSpace(value)
 	mk := func(raw string) map[string]json.RawMessage {
@@ -413,9 +326,6 @@ func buildTunerOverride(field, value string) (map[string]json.RawMessage, error)
 	return nil, fmt.Errorf("unsupported strategy field %q (supported: interval_seconds, direction, invert_signal, leverage, stop_loss_pct, stop_loss_atr_mult)", field)
 }
 
-// applyTopLevelConfigSet patches a supported top-level key into root and reports
-// whether the change requires a restart (true) or hot-reloads via SIGHUP (false).
-// The supported set is a curated allowlist — arbitrary nested edits are rejected.
 func applyTopLevelConfigSet(root map[string]json.RawMessage, key, value string) (restartRequired bool, summary string, err error) {
 	key = strings.TrimSpace(key)
 	value = strings.TrimSpace(value)
@@ -478,7 +388,6 @@ func applyTopLevelConfigSet(root map[string]json.RawMessage, key, value string) 
 	return false, "", fmt.Errorf("unsupported config key %q (top-level: interval_seconds, default_stop_loss_atr_mult, auto_update, leaderboard_post_time, discord.leaderboard_top_n; per-strategy: strategies.<id>.<field>)", key)
 }
 
-// setNestedRaw sets root[section][key] = v, creating the section object if absent.
 func setNestedRaw(root map[string]json.RawMessage, section, key string, v interface{}) error {
 	obj := map[string]json.RawMessage{}
 	if raw, ok := root[section]; ok {
@@ -499,13 +408,6 @@ func setNestedRaw(root map[string]json.RawMessage, section, key string, v interf
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers — /add-platform guide + confirmation parsing
-// ---------------------------------------------------------------------------
-
-// addPlatformKnown lists the platforms /add-platform can describe, mapped to a
-// human label. Secrets live in /opt/go-trader/.env (never the config file), so
-// the command emits a setup checklist rather than writing credentials to disk.
 var addPlatformKnown = map[string]string{
 	"hyperliquid": "Hyperliquid perps",
 	"binanceus":   "BinanceUS spot",
@@ -517,9 +419,6 @@ var addPlatformKnown = map[string]string{
 	"luno":        "Luno spot",
 }
 
-// platformSetupGuide returns the setup checklist for a known platform. It does
-// not mutate the config: platform credentials are read from the environment, so
-// there is nothing safe to write to the on-disk config for setup.
 func platformSetupGuide(name string) (string, error) {
 	n := strings.ToLower(strings.TrimSpace(name))
 	label, ok := addPlatformKnown[n]
@@ -545,7 +444,6 @@ func platformSetupGuide(name string) (string, error) {
 	return sb.String(), nil
 }
 
-// confirmYes reports whether a DM reply affirmatively confirms a destructive action.
 func confirmYes(reply string) bool {
 	switch strings.ToLower(strings.TrimSpace(reply)) {
 	case "y", "yes", "confirm", "ok":
@@ -554,15 +452,6 @@ func confirmYes(reply string) bool {
 	return false
 }
 
-// ---------------------------------------------------------------------------
-// Safe write + apply triggers
-// ---------------------------------------------------------------------------
-
-// writeValidatedConfigRoot marshals root, validates it through LoadConfigForProbe
-// against a temp file, and atomically renames it over configPath. Mirrors the
-// tail of applyStrategyConfigPatch so every mutating command shares one safe
-// write. Rejects a pre-v13 file (the running daemon migrates on load, so the
-// live file is always current here — a pre-v13 file means something is wrong).
 func writeValidatedConfigRoot(configPath string, root map[string]json.RawMessage) error {
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -588,20 +477,10 @@ func writeValidatedConfigRoot(configPath string, root map[string]json.RawMessage
 	return os.Rename(tmpPath, configPath)
 }
 
-// requestSIGHUPReload signals this process to hot-reload its config, reusing the
-// existing validated SIGHUP path (applyHotReloadConfig). The reload runs
-// asynchronously on the main loop; an incompatible change is rejected there and
-// the running config is kept (the file change then applies on the next restart).
 func requestSIGHUPReload() error {
 	return syscall.Kill(os.Getpid(), syscall.SIGHUP)
 }
 
-// ---------------------------------------------------------------------------
-// Discord handlers
-// ---------------------------------------------------------------------------
-
-// configOpsReady returns the live config path, or an error explaining why the
-// mutating commands are unavailable (no status server / no config path wired).
 func (d *DiscordNotifier) configOpsReady() (string, error) {
 	if d.ss == nil {
 		return "", fmt.Errorf("status server not wired; config commands unavailable")
@@ -613,16 +492,10 @@ func (d *DiscordNotifier) configOpsReady() (string, error) {
 	return p, nil
 }
 
-// mutateConfig serializes a read → mutate → validated-write cycle on the live
-// config file under configWriteMu so it can't race the dashboard tuner or the
-// #1258 structural endpoints. Delegates to the shared StatusServer helper —
-// path is always d.ss.configPath (configOpsReady returned it).
 func (d *DiscordNotifier) mutateConfig(_ string, fn func(root map[string]json.RawMessage) error) error {
 	return d.ss.mutateConfigRoot(fn)
 }
 
-// followupText posts a deferred-interaction follow-up message (truncated to the
-// Discord limit). Used after deferAck for the mutating commands.
 func followupText(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
 	if content == "" {
 		content = "(no output)"
@@ -632,11 +505,10 @@ func followupText(s *discordgo.Session, i *discordgo.InteractionCreate, content 
 	})
 }
 
-// applyConfigChange triggers the chosen apply path and posts the result.
 func (d *DiscordNotifier) applyConfigChange(s *discordgo.Session, i *discordgo.InteractionCreate, restartRequired bool, doneMsg string) {
 	if restartRequired {
 		followupText(s, i, doneMsg+"\nApplying via **service restart** — this instance briefly goes offline; the new one resumes the cycle.")
-		// Fire-and-forget; this process is about to be replaced.
+
 		go func() {
 			_ = restartSelf()
 		}()
@@ -649,8 +521,6 @@ func (d *DiscordNotifier) applyConfigChange(s *discordgo.Session, i *discordgo.I
 	followupText(s, i, doneMsg+"\nApplied via **SIGHUP hot-reload**; effective next cycle. (If the reload is rejected as incompatible — e.g. an open-position guard — the running config is kept and the file change applies on the next restart; check logs.)")
 }
 
-// confirmDestructive sends an out-of-band DM and waits up to 60s for an explicit
-// "confirm" reply before a destructive command proceeds.
 func (d *DiscordNotifier) confirmDestructive(userID, prompt string) bool {
 	resp, err := d.AskDM(userID, prompt+"\n\nReply `confirm` within 60s to proceed (anything else cancels).", 60*time.Second)
 	if err != nil {
@@ -659,8 +529,6 @@ func (d *DiscordNotifier) confirmDestructive(userID, prompt string) bool {
 	return confirmYes(resp)
 }
 
-// handleConfigShow posts the current config with secrets redacted, as a file
-// attachment (the config easily exceeds the 2000-char message limit).
 func (d *DiscordNotifier) handleConfigShow(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
@@ -688,10 +556,6 @@ func (d *DiscordNotifier) handleConfigShow(s *discordgo.Session, i *discordgo.In
 	})
 }
 
-// handleConfigSet patches one config key. Per-strategy keys
-// (strategies.<id>.<field>) route through the dashboard tuner's validated patch
-// path; the curated top-level keys go through applyTopLevelConfigSet. The apply
-// path (SIGHUP vs restart) is chosen per field.
 func (d *DiscordNotifier) handleConfigSet(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
@@ -753,8 +617,6 @@ func (d *DiscordNotifier) handleConfigSet(s *discordgo.Session, i *discordgo.Int
 	d.applyConfigChange(s, i, restartRequired, "Set "+summary+".")
 }
 
-// handleAddStrategy adds a new (paper-mode) strategy and restarts to load it
-// (strategy set changes are blocked by the hot-reload path).
 func (d *DiscordNotifier) handleAddStrategy(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
@@ -778,9 +640,6 @@ func (d *DiscordNotifier) handleAddStrategy(s *discordgo.Session, i *discordgo.I
 	d.applyConfigChange(s, i, true, fmt.Sprintf("Added strategy `%s` (paper mode).", newID))
 }
 
-// handleRemoveStrategy removes a strategy from the config after a DM confirm and
-// restarts (strategy set changes can't hot-reload). The strategy's positions and
-// trade history in the state DB are not touched.
 func (d *DiscordNotifier) handleRemoveStrategy(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	path, err := d.configOpsReady()
@@ -807,8 +666,6 @@ func (d *DiscordNotifier) handleRemoveStrategy(s *discordgo.Session, i *discordg
 	d.applyConfigChange(s, i, true, fmt.Sprintf("Removed strategy `%s`.", id))
 }
 
-// handleAddPlatform replies with the env-based setup checklist for a platform.
-// It writes no secrets — credentials live in the environment.
 func (d *DiscordNotifier) handleAddPlatform(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	name := optionString(opts, "name", "")
 	guide, err := platformSetupGuide(name)
@@ -819,9 +676,6 @@ func (d *DiscordNotifier) handleAddPlatform(s *discordgo.Session, i *discordgo.I
 	respondText(s, i, guide)
 }
 
-// handlePaperToLive flips a strategy from paper to live after a DM confirm and
-// restarts (the args change can't hot-reload). The strongest confirmation gate:
-// it switches a strategy to placing real orders with real funds.
 func (d *DiscordNotifier) handlePaperToLive(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	if _, err := d.configOpsReady(); err != nil {
@@ -849,10 +703,6 @@ func (d *DiscordNotifier) handlePaperToLive(s *discordgo.Session, i *discordgo.I
 	d.applyConfigChange(s, i, true, msg)
 }
 
-// handleClearCashReconcile clears CashReconcileRequired for one strategy after
-// the owner confirms books were reconciled against the venue (#1400). Does not
-// invent cash — only drops the latch so live buys may resume. Persists via
-// SaveState when available so the clear survives restart before the next cycle.
 func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *discordgo.InteractionCreate, opts []*discordgo.ApplicationCommandInteractionDataOption) {
 	deferAck(s, i)
 	id := optionString(opts, "strategy", "")
@@ -877,10 +727,7 @@ func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *disc
 	cash, cleared, err := clearCashReconcileRequiredForStrategy(d.ss.state, id)
 	var saveErr error
 	if err == nil && cleared && d.ss.stateDB != nil {
-		// Persist immediately so a restart before the next cycle SaveState
-		// does not resurrect the latch (and re-block buys the operator just
-		// cleared). Holding mu across SQLite matches the main-loop SaveState
-		// sites that already serialize state under the same lock.
+
 		saveErr = SaveStateWithDB(d.ss.state, d.cfg, d.ss.stateDB)
 	}
 	d.ss.mu.Unlock()
@@ -900,8 +747,6 @@ func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *disc
 	followupText(s, i, msg)
 }
 
-// subcommandOptions extracts the chosen subcommand name and its options from a
-// command-with-subcommands interaction (e.g. /config show, /config set).
 func subcommandOptions(data discordgo.ApplicationCommandInteractionData) (string, []*discordgo.ApplicationCommandInteractionDataOption) {
 	for _, o := range data.Options {
 		if o.Type == discordgo.ApplicationCommandOptionSubCommand {

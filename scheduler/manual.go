@@ -8,19 +8,10 @@ import (
 	"time"
 )
 
-// defaultManualMarginUSD is the implicit --margin value used by manual-open
-// when the operator omits all sizing flags (#691). --record-only still requires
-// an explicit --size since the operator placed the on-chain order themselves.
 const defaultManualMarginUSD = 50.0
 
-// defaultManualStopLossATRMult is the implicit stop_loss_atr_mult applied to
-// HL type=manual strategies that omit all stop fields (#691). Kept separate
-// from DefaultStopLossATRMult (1.0) so non-manual perps keep their own default.
 const defaultManualStopLossATRMult = 2.0
 
-// runManualOpen implements `go-trader manual-open <strategy-id>`.
-// It places an on-chain HL order (or records an existing fill with --record-only),
-// then enqueues the fill in pending_manual_actions for the scheduler to drain.
 func runManualOpen(args []string) int {
 	fs := flag.NewFlagSet("manual-open", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
@@ -38,10 +29,6 @@ func runManualOpen(args []string) int {
 	recordOnly := fs.Bool("record-only", false, "Register an existing fill without placing a new on-chain order")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
 
-	// #711: stdlib flag.Parse stops at the first positional arg, so the
-	// documented `manual-open <strategy-id> --flag value` form fails to parse
-	// the trailing flags. Reorder to put the positional last so both
-	// orderings work.
 	args = reorderArgsForPositional(args, collectBoolFlagNames(fs))
 
 	if err := fs.Parse(args); err != nil {
@@ -64,11 +51,6 @@ func runManualOpen(args []string) int {
 		return 1
 	}
 
-	// #883: resting-limit-order placement is a self-contained fire-and-exit path
-	// — it places the maker order, persists its OID, and returns. The scheduler
-	// owns fill detection + protection arming (there is no synchronous fill
-	// here), so it stays in the CLI instead of the #1257 shared core; it reuses
-	// the core's side/sizing validation helpers.
 	if *limitPrice > 0 {
 		resolvedSide, openSide, sideErr := resolveManualOpenSide(cfg, sc, *side)
 		if sideErr != nil {
@@ -87,9 +69,7 @@ func runManualOpen(args []string) int {
 		if marginDefaulted {
 			fmt.Fprintf(os.Stderr, "[manual-open] no sizing flag provided; defaulting to --margin %g\n", resolvedMargin)
 		}
-		// Ioc is intentionally NOT accepted here: an immediate-or-cancel order
-		// never rests, so it doesn't fit a feature about resting limit orders.
-		// (adapter.limit_open still supports Ioc for any future internal use.)
+
 		if *tif != "Alo" && *tif != "Gtc" {
 			fmt.Fprintf(os.Stderr, "error: --tif must be Alo or Gtc, got %q\n", *tif)
 			return 2
@@ -106,7 +86,6 @@ func runManualOpen(args []string) int {
 		}
 		defer stateDB.Close()
 
-		// Fix #4: guard against placing into a kill-switched or CB-pending account.
 		if !*dryRun {
 			state, loadErr := LoadStateWithDB(cfg, stateDB)
 			if loadErr != nil {
@@ -122,25 +101,17 @@ func runManualOpen(args []string) int {
 						return 1
 					}
 				}
-				// #1269: a resting limit open is still a position-increasing
-				// entry — refuse while the daily loss limit is tripped, same
-				// as the market-order core path.
+
 				if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}
-				// #1344: a resting limit open still grows gross notional once it
-				// fills — refuse while over cap, same as the market-order core path.
+
 				if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked (closes and SL edits are unaffected)\n", detail)
 					return 1
 				}
-				// #1270: a resting limit open increases exposure in resolvedSide's
-				// direction once it fills — refuse while that direction's bucket
-				// is capped or this asset is over-concentrated in that direction.
-				// nil prices → AvgCost valuation; the concentration basis comes
-				// from manualExposureCapStatus, same as the market-order core
-				// path (manualStateViewFromState).
+
 				capSt := manualExposureCapStatus(cfg, state)
 				if blocked, why := exposureCapManualEntryBlock(capSt, extractAsset(sc), resolvedSide); blocked {
 					fmt.Fprintf(os.Stderr, "error: %s — manual limit-open (%s) blocked (closes and SL edits are unaffected)\n", why, resolvedSide)
@@ -176,12 +147,9 @@ func runManualOpen(args []string) int {
 	}
 	defer stateDB.Close()
 
-	// Build notifier for warning paths (no-op when Discord/Telegram not configured).
 	notifier, closeNotifier := buildNotifierFromConfig(cfg)
 	defer closeNotifier()
 
-	// #1257: the market-order path runs in the shared core (same code as the
-	// dashboard endpoint); this wrapper only parses flags and replays output.
 	res, coreErr := manualOpenCore(newCLIManualCoreDeps(cfg, stateDB, notifier), sc, manualOpenInputs{
 		StrategyID: strategyID,
 		Side:       *side,
@@ -198,18 +166,8 @@ func runManualOpen(args []string) int {
 	return printManualCoreOutcome(res, coreErr)
 }
 
-// runManualAdd implements `go-trader manual-add <strategy-id>` (#873). It scales
-// into an EXISTING manual position: places a same-side on-chain HL order (or
-// records an existing fill with --record-only), then enqueues an "add" action
-// for the scheduler to blend in. The side is inferred from the open position;
-// EntryATR, the regime label, and the TP tier geometry stay frozen — only the
-// on-chain protection SIZING is re-based on the next scheduler cycle.
 func runManualAdd(args []string) int {
-	// #873: manual-add is the operator-intent path and deliberately bypasses the
-	// allow_scale_in flag and the scaleInLiveProtectionResizable load-time guard
-	// (those gate the strategy-flag perps path only). That is safe because a
-	// type=manual strategy always auto-configures an ATR stop-loss, which the
-	// protection-sync resize path can grow after an add.
+
 	fs := flag.NewFlagSet("manual-add", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
 	size := fs.Float64("size", 0, "Add size in base units (coin qty)")
@@ -258,7 +216,6 @@ func runManualAdd(args []string) int {
 	return printManualCoreOutcome(res, coreErr)
 }
 
-// runManualClose implements `go-trader manual-close <strategy-id>`.
 func runManualClose(args []string) int {
 	fs := flag.NewFlagSet("manual-close", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
@@ -302,10 +259,6 @@ func runManualClose(args []string) int {
 	return printManualCoreOutcome(res, coreErr)
 }
 
-// runForceClose implements `go-trader force-close <strategy-id>` for live HL
-// perps strategies. It submits the venue close immediately, then enqueues the
-// confirmed fill for the scheduler drain so state/trade mutation stays in the
-// daemon-owned path.
 func runForceClose(args []string) int {
 	return runForceCloseWithCloser(args, defaultHyperliquidForceCloseCloser)
 }
@@ -355,9 +308,6 @@ func runForceCloseWithCloser(args []string, closer HyperliquidLiveCloser) int {
 	return printManualCoreOutcome(res, coreErr)
 }
 
-// printManualCoreOutcome replays a core's ordered output lines on the streams
-// the pre-#1257 monolith used, prints the failure (if any) to stderr, and
-// maps it to the CLI exit code.
 func printManualCoreOutcome(res *manualCoreResult, err error) int {
 	if res != nil {
 		for _, l := range res.lines {
@@ -375,22 +325,12 @@ func printManualCoreOutcome(res *manualCoreResult, err error) int {
 	return 0
 }
 
-// manualAlert captures one strategy's successfully drained manual actions so the
-// caller can emit trade alerts AFTER releasing mu. drainPendingManualActions runs
-// under mu.Lock and sendTradeAlerts re-acquires mu.RLock; since sync.RWMutex is
-// not reentrant, alerting inside the drain would self-deadlock (#880).
 type manualAlert struct {
 	sc     StrategyConfig
 	ss     *StrategyState
-	trades int // count of trades appended this drain for this strategy
+	trades int
 }
 
-// drainPendingManualActions reads all rows from pending_manual_actions, applies
-// them to the in-memory AppState, then deletes the drained rows. It returns one
-// manualAlert per strategy that had >=1 action successfully applied (with the
-// aggregated trade count) so the caller can fire sendTradeAlerts outside the
-// state write lock (#880). Called at the top of each scheduler cycle before
-// dueStrategies is built.
 func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) []manualAlert {
 	if stateDB == nil {
 		return nil
@@ -411,7 +351,7 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 
 	var maxDrained int64
 	applied := make(map[string]*manualAlert)
-	var order []string // preserves id-sorted insertion order for deterministic alert emission
+	var order []string
 	for _, a := range actions {
 		if err := applyManualAction(state, cfg, scByID, a); err != nil {
 			fmt.Printf("[manual] failed to apply action %d (%s %s): %v\n", a.ID, a.Action, a.StrategyID, err)
@@ -420,11 +360,7 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 		if a.ID > maxDrained {
 			maxDrained = a.ID
 		}
-		// Trade-recording actions (open via recordPositionOpen, close/add via
-		// RecordTrade) append exactly one trade per successful apply; aggregate
-		// per strategy so sendTradeAlerts alerts the correct tail slice of
-		// TradeHistory. SL-only actions (#1050 update-sl/cancel-sl) record no
-		// trade — skip alert bookkeeping so the tail slice isn't misaligned.
+
 		if !manualActionRecordsTrade(a.Action) {
 			continue
 		}
@@ -450,9 +386,6 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 	return alerts
 }
 
-// applyManualAction materialises one pending_manual_actions row into AppState.
-// cfg is needed only to fall back to drain-time atr_method resolution for
-// "open" rows queued before the atr_method column existed (#1277).
 func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyConfig, a PendingManualAction) error {
 	sc, hasSC := scByID[a.StrategyID]
 	if !hasSC {
@@ -484,7 +417,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			AvgCost:                         a.FillPrice,
 			EntryATR:                        a.EntryATR,
 			Side:                            a.Side,
-			Multiplier:                      1, // perps
+			Multiplier:                      1,
 			Leverage:                        sc.Leverage,
 			OwnerStrategyID:                 a.StrategyID,
 			OpenedAt:                        now,
@@ -493,12 +426,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			TPOIDs:                          a.TPOIDs,
 			RatchetFallbackNormalizePending: a.RatchetFallbackNormalizePending,
 		}
-		// #1277: freeze the atr_method the EntryATR was computed under, so
-		// checkATRMethodDriftAtStartup sees manual positions too. Prefer the
-		// queue-time value carried on the row (resolved next to the EntryATR
-		// fetch in manualOpenCore); fall back to drain-time resolution only
-		// for rows queued before the column existed — leaving it "" would
-		// permanently hide this position from the drift check.
+
 		pos.ATRMethodAtOpen = normalizeATRMethod(a.ATRMethod)
 		if pos.ATRMethodAtOpen == "" {
 			pos.ATRMethodAtOpen = resolveATRMethod(sc, cfg)
@@ -528,7 +456,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			Manual:            true,
 		}
 		recordPositionOpen(ss, sc, &trade, pos)
-		// Fix #1: perps open deducts only the fee; notional stays virtual.
+
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied open: %s %s %.6f %s @ $%.4f\n",
 			a.StrategyID, a.Side, a.Quantity, a.Symbol, a.FillPrice)
@@ -551,9 +479,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
 			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
-		// Use the explicit IsFullClose intent flag rather than a tolerance
-		// heuristic, so a deliberate 99% partial close isn't silently
-		// collapsed into a full close.
+
 		closedFull := a.IsFullClose
 		side := closeTradeSide(pos.Side)
 		closeLabel := operatorCloseLabel(sc)
@@ -573,52 +499,32 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			ExchangeFee:     a.FillFee,
 			FeeSource:       FeeSourceUserFills,
 			IsClose:         true,
-			RealizedPnL:     a.RealizedPnL + a.FillFee, // action PnL is net; gross row adds the fee back
+			RealizedPnL:     a.RealizedPnL + a.FillFee,
 			PnLGross:        true,
 			Manual:          sc.Type == "manual",
 		}
 		RecordTrade(ss, trade)
 		if sc.Type != "manual" {
-			// #1159: route through the hedge-aware accumulator so a hedge leg
-			// force-closed alongside its primary never feeds the loss streak.
+
 			recordPositionTradeResult(ss, pos, a.RealizedPnL)
 		}
-		// Fix #1: perps close credits only the realized PnL; notional was never debited.
+
 		ss.Cash += a.RealizedPnL
 
 		if closedFull {
 			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, operatorCloseReason(sc), now)
 			delete(ss.Positions, a.Symbol)
-			// #1456 review round 8: this is a position-close site like any
-			// other — without the shared hook, a reopen on the same coin
-			// inherited a stale liquidation-alert throttle and its first
-			// past-liquidation observation could be suppressed for up to
-			// alert_throttle_interval. The hook self-guards on HL perps/manual.
+
 			clearHLPerpsPositionAlertThrottles(ss, a.Symbol)
 		} else {
-			// #1159: capture the hedge leg's pre-reduce size before the
-			// decrement — the proportional re-anchor below needs both sides.
+
 			preReduceQty := pos.Quantity
 			preReduceBasis := pos.HedgePrimaryQtyBasis
 			pos.Quantity -= a.Quantity
 			if sc.Type != "manual" {
 				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
 			}
-			// #1159: a partially closed hedge leg must re-anchor its quantity
-			// watermark, or the next hedge sync would diff the new hedge size
-			// against the OLD basis and reduce a second time — compounding the
-			// operator's single close into a runaway under-hedge.
-			//
-			// (Review round 2) The re-anchor is PROPORTIONAL TO WHAT ACTUALLY
-			// FILLED, not a flat stamp of the primary's post-reduce quantity.
-			// `a.Quantity` is the exchange's real fill, so a short-filled
-			// coupled reduce leaves the leg larger than its proportional
-			// target; stamping the primary quantity would claim exact
-			// alignment, hedgeTargetDecision would compute delta==0, and the
-			// surplus would be stranded for the life of the position — the
-			// same defect hedgeReducedBasis fixes on the reconciler path.
-			// Neither reconcile nor the ledger can catch it, because virtual
-			// and on-chain both moved by the same filled quantity.
+
 			if pos.isHedgeLeg() {
 				pos.HedgePrimaryQtyBasis = hedgeBasisAfterPartialReduce(preReduceBasis, preReduceQty, pos.Quantity)
 			}
@@ -627,10 +533,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			closeLabel, a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
 
 	case "add":
-		// #873 manual scale-in: blend an add leg into the open position. Side is
-		// inferred from the position at CLI time; freezes EntryATR/regime/TP
-		// geometry (applyScaleIn) and grows InitialQuantity. The next manual
-		// protection sync re-sizes the on-chain SL/TP via ScaleInResizePending.
+
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s; open one first", a.StrategyID, a.Symbol)
@@ -663,16 +566,13 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		trade.Regime = pos.Regime
 		trade.EntryATR = pos.EntryATR
 		RecordTrade(ss, trade)
-		// Perps add deducts only the fee; notional stays virtual (mirrors open).
+
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied scale-in: %s +%.6f %s @ $%.4f (new qty %.6f, avg $%.4f)\n",
 			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, pos.Quantity, pos.AvgCost)
 
 	case "update-sl":
-		// #1050: adopt a manually-moved stop-loss. The CLI already cancelled the
-		// old OID and placed the new trigger on-chain; this only syncs the
-		// in-memory OID + trigger so the daemon tracks the live order. No trade
-		// is recorded (an SL move is not a fill).
+
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
@@ -686,9 +586,7 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			a.StrategyID, a.Symbol, a.StopLossTriggerPx, a.StopLossOID)
 
 	case "cancel-sl":
-		// #1050: adopt a manually-cancelled stop-loss. The CLI already cancelled
-		// the OID on-chain; clear the in-memory trigger so the daemon no longer
-		// believes the position is protected. No trade is recorded.
+
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
@@ -707,8 +605,6 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 	return nil
 }
 
-// findManualStrategy locates a type=manual strategy by ID in the config,
-// printing a clear error if not found or wrong type.
 func findManualStrategy(cfg *Config, id string) (StrategyConfig, bool) {
 	sc, err := lookupManualStrategy(cfg, id)
 	if err != nil {
@@ -842,10 +738,6 @@ func operatorCloseReason(sc StrategyConfig) string {
 	return "manual_close"
 }
 
-// collectBoolFlagNames returns the names of bool flags registered on fs.
-// reorderArgsForPositional uses this to avoid consuming the strategy-id
-// positional as the value of a preceding bool flag. Derived from the FlagSet
-// (rather than a hardcoded map) so new bool flags self-register.
 func collectBoolFlagNames(fs *flag.FlagSet) map[string]bool {
 	out := map[string]bool{}
 	fs.VisitAll(func(f *flag.Flag) {
@@ -857,16 +749,6 @@ func collectBoolFlagNames(fs *flag.FlagSet) map[string]bool {
 	return out
 }
 
-// reorderArgsForPositional moves positional (non-flag) arguments to the end
-// so Go's stdlib flag.Parse — which stops at the first non-flag — can still
-// parse flags placed after a positional. This makes both invocation styles
-// work for `manual-open` / `manual-close` (#711):
-//
-//	manual-open <strategy-id> --flag value
-//	manual-open --flag value <strategy-id>
-//
-// boolFlags lists flags that take no value (so we don't consume the next arg
-// as their value when it is actually the positional).
 func reorderArgsForPositional(args []string, boolFlags map[string]bool) []string {
 	var flagArgs, positional []string
 	i := 0
@@ -897,14 +779,8 @@ func reorderArgsForPositional(args []string, boolFlags map[string]bool) []string
 	return append(flagArgs, positional...)
 }
 
-// manualMarkFetcher matches fetchHyperliquidMids for dependency injection in
-// tests of resolveManualOpenOrderSize.
 type manualMarkFetcher func(coins []string) (map[string]float64, error)
 
-// resolveManualOpenOrderSize converts --size/--margin/--notional inputs into a
-// concrete coin qty for the HL execute call. --size is explicit; --margin and
-// --notional need a price reference (HL mid) to compute the qty. Returns
-// (qty, mark, err); on --size path mark is 0. (#711)
 func resolveManualOpenOrderSize(sc StrategyConfig, size, notional, margin float64, fetch manualMarkFetcher) (float64, float64, error) {
 	if size > 0 {
 		return size, 0, nil
@@ -928,8 +804,6 @@ func resolveManualOpenOrderSize(sc StrategyConfig, size, notional, margin float6
 	return qty, mark, nil
 }
 
-// resolveManualSize converts the sizing inputs to a coin qty.
-// price=0 is acceptable for --size (qty is already explicit).
 func resolveManualSize(size, notional, margin, price, leverage float64) float64 {
 	if size > 0 {
 		return size
@@ -960,13 +834,6 @@ func countSizingFlags(size, notional, margin float64) int {
 	return n
 }
 
-// manualPositionOwnedByStrategy gates manual close paths on owner identity to
-// prevent one manual strategy from flattening a peer's wallet exposure on a
-// shared coin (#620). An empty OwnerStrategyID is treated as owned for
-// backward-compat with positions opened before #569 stamped owners and with
-// reconciler-discovered positions that have no recorded owner; tightening that
-// further would silently strand pre-existing positions and break reconciler
-// adoption. New manual paths must always stamp OwnerStrategyID.
 func manualPositionOwnedByStrategy(pos *Position, strategyID string) bool {
 	return pos == nil || pos.OwnerStrategyID == "" || pos.OwnerStrategyID == strategyID
 }
@@ -991,7 +858,6 @@ func hyperliquidCloseScopeStrategies(strategies []StrategyConfig) []StrategyConf
 	return out
 }
 
-// openTradeSide converts a position side ("long"/"short") to the trade buy/sell side for an open.
 func openTradeSide(posSide string) string {
 	if posSide == "short" {
 		return "sell"
@@ -999,14 +865,6 @@ func openTradeSide(posSide string) string {
 	return "buy"
 }
 
-// resolveManualRatchetRegimeLabel runs the regime check at manual-open CLI time
-// and returns the current ATR-window regime label for a type=manual strategy
-// whose close evaluator is trailing_tp_ratchet_regime (#1115). Impure — it spawns
-// the regime subprocess (runHyperliquidCheck) with a flat posCtx (the position
-// isn't open yet, so this reads the current/entry regime). Returns "" when the
-// strategy isn't a regime ratchet, regime is disabled, or the check fails; the
-// pure manualRatchetOpeningTrailOrFallback below turns that into a protective
-// fallback so the open is never naked.
 func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *MultiNotifier) string {
 	if cfg == nil || cfg.Regime == nil || !cfg.Regime.Enabled {
 		return ""
@@ -1015,7 +873,7 @@ func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *M
 		return ""
 	}
 	logger := &StrategyLogger{stratID: sc.ID, writer: os.Stderr}
-	posCtx := positionCtxFromPosition(nil) // flat at open: read the current (entry) regime
+	posCtx := positionCtxFromPosition(nil)
 	result, _, _, ok := runHyperliquidCheck(&sc, nil, posCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, nil)
 	if !ok || result == nil {
 		return ""
@@ -1024,16 +882,6 @@ func resolveManualRatchetRegimeLabel(sc StrategyConfig, cfg *Config, notifier *M
 	return strings.TrimSpace(payload.Label(resolveStrategyRegimeWindow(sc, "atr", cfg.Regime), cfg.Regime))
 }
 
-// manualRatchetOpeningTrailOrFallback resolves the inline opening-trail multiple
-// armed at manual-open for a trailing_tp_ratchet_regime manual (#1115). It NEVER
-// returns <= 0: the per-regime opening trail (fellBack=false) when the resolved
-// regime label indexes a positive distance in the block, otherwise the protective
-// defaultManualStopLossATRMult fallback (fellBack=true) so the position is never
-// armed naked. Pure (no subprocess) so the safety-critical resolve-vs-fallback
-// branch is unit-tested directly — the regime label is resolved upstream by the
-// impure resolveManualRatchetRegimeLabel. Covers: empty label (regime read
-// failed) → fallback; label with no/zero configured trail → fallback; good label
-// → per-regime trail.
 func manualRatchetOpeningTrailOrFallback(block *RegimeATRBlock, label string, fallbackMult float64) (float64, bool) {
 	if block != nil && strings.TrimSpace(label) != "" {
 		if mult, ok := resolveRegimeATR(*block, label); ok && mult > 0 {
@@ -1046,17 +894,10 @@ func manualRatchetOpeningTrailOrFallback(block *RegimeATRBlock, label string, fa
 	return defaultManualStopLossATRMult, true
 }
 
-// runManualCloseEval runs the close-evaluator loop for a single type=manual
-// strategy that has an open position. Called from the main scheduler loop.
-// Returns (closeFraction, closePrice, ok). The live regime no longer rides on
-// the check output (#879): the caller reads the global regime store for this
-// strategy's signature directly, which also covers the flat case — this eval
-// doesn't even spawn a subprocess then — so status/dashboard show a regime
-// for manual strategies without a position.
 func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (float64, float64, bool) {
 	pos := ss.Positions[sc.Symbol]
 	if pos == nil {
-		return 0, 0, true // flat — nothing to do
+		return 0, 0, true
 	}
 
 	posCtx := positionCtxFromPosition(pos)

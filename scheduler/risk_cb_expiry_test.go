@@ -1,22 +1,11 @@
 package main
 
-// #1392 — circuit-breaker cooldown-expiry invariants.
-//
-// Spun out of #1345 (closed as not-a-bug): after CircuitBreakerUntil expires,
-// the same CheckRisk call clears the latch then re-evaluates both firing arms
-// before any allowed return. These tests pin that "clear then immediately
-// re-check" contract so a future early-return between the clear and the
-// drawdown arm cannot silently re-enable trading while drawdown is still
-// breached.
-
 import (
 	"strings"
 	"testing"
 	"time"
 )
 
-// expiredCBLatch returns a RiskState whose circuit breaker is latched but whose
-// cooldown window already ended — the setup every expiry-cycle case needs.
 func expiredCBLatch(peak, maxDD float64, losses int) RiskState {
 	return RiskState{
 		PeakValue:           peak,
@@ -28,9 +17,6 @@ func expiredCBLatch(peak, maxDD float64, losses int) RiskState {
 	}
 }
 
-// #1392: cooldown expired + drawdown still over MaxDrawdownPct → same-call
-// re-latch with the max-drawdown reason (not the latched "circuit breaker
-// active" reason), CircuitBreaker true again, CircuitBreakerUntil re-armed.
 func TestCheckRisk_CooldownExpired_DrawdownStillBreached_Relatches(t *testing.T) {
 	s := &StrategyState{
 		ID:              "cb-expiry-dd-breach",
@@ -43,7 +29,6 @@ func TestCheckRisk_CooldownExpired_DrawdownStillBreached_Relatches(t *testing.T)
 	}
 	sc := &StrategyConfig{ID: s.ID, Type: "spot", MaxDrawdownPct: 20}
 
-	// Peak $10k, portfolio $7k → 30% > 20% — must re-fire on this call.
 	before := time.Now().UTC()
 	allowed, reason := CheckRisk(sc, s, 7000, nil, nil, nil)
 	if allowed {
@@ -59,8 +44,6 @@ func TestCheckRisk_CooldownExpired_DrawdownStillBreached_Relatches(t *testing.T)
 	assertCBLatchDuration(t, s, before, 24*time.Hour)
 }
 
-// #1392: cooldown expired + drawdown recovered → trading allowed and breaker
-// fully cleared (no sticky latch).
 func TestCheckRisk_CooldownExpired_DrawdownRecovered_Allows(t *testing.T) {
 	s := &StrategyState{
 		ID:              "cb-expiry-dd-ok",
@@ -73,7 +56,6 @@ func TestCheckRisk_CooldownExpired_DrawdownRecovered_Allows(t *testing.T) {
 	}
 	sc := &StrategyConfig{ID: s.ID, Type: "spot", MaxDrawdownPct: 20}
 
-	// Peak $10k, portfolio $9.5k → 5% < 20% — clear must stick.
 	allowed, reason := CheckRisk(sc, s, 9500, nil, nil, nil)
 	if !allowed {
 		t.Fatalf("expired CB + recovered drawdown must allow trading, got reason=%q", reason)
@@ -86,16 +68,12 @@ func TestCheckRisk_CooldownExpired_DrawdownRecovered_Allows(t *testing.T) {
 	}
 }
 
-// #1392: cooldown expired after a loss-streak fire → ConsecutiveLosses resets
-// to 0 and trading is allowed. The streak arm is intentionally time-only: the
-// clear at risk.go:1431 zeroes the counter so the streak cannot re-latch
-// forever (the only other reset is a winning trade).
 func TestCheckRisk_CooldownExpired_LossStreak_ResetsAndAllows(t *testing.T) {
 	s := &StrategyState{
 		ID:              "cb-expiry-streak",
 		Type:            "spot",
 		Cash:            10000,
-		RiskState:       expiredCBLatch(10000, 50, 5), // streak that originally fired
+		RiskState:       expiredCBLatch(10000, 50, 5),
 		Positions:       map[string]*Position{},
 		OptionPositions: map[string]*OptionPosition{},
 		TradeHistory:    []Trade{},
@@ -115,25 +93,18 @@ func TestCheckRisk_CooldownExpired_LossStreak_ResetsAndAllows(t *testing.T) {
 	}
 }
 
-// #1392: perps with no open positions after a CB force-close fall back to
-// peak-relative drawdown on the expiry cycle (#292). When peak-relative is
-// under the threshold, the clear sticks — the closed positions *are* the
-// recovery; margin-based drawdown no longer applies with margin=0.
 func TestCheckRisk_CooldownExpired_PerpsFlat_PeakRelativeUnderThreshold_Allows(t *testing.T) {
 	s := &StrategyState{
 		ID:              "cb-expiry-perps-flat",
 		Type:            "perps",
-		Cash:            900, // realized losses from the force-close
+		Cash:            900,
 		RiskState:       expiredCBLatch(1000, 25, 0),
-		Positions:       map[string]*Position{}, // flat — force-close already drained
+		Positions:       map[string]*Position{},
 		OptionPositions: map[string]*OptionPosition{},
 		TradeHistory:    []Trade{},
 	}
 	sc := &StrategyConfig{ID: s.ID, Type: "perps", Leverage: 20, MaxDrawdownPct: 25}
 
-	// Peak $1000, cash-only portfolio $900 → peak-relative 10% < 25%.
-	// If the expiry path incorrectly kept a margin-based numerator with
-	// denom=0, drawdown semantics would be wrong; peak-relative must win.
 	pv := PortfolioValue(s, nil)
 	allowed, reason := CheckRisk(sc, s, pv, nil, nil, nil)
 	if !allowed {
@@ -148,9 +119,6 @@ func TestCheckRisk_CooldownExpired_PerpsFlat_PeakRelativeUnderThreshold_Allows(t
 	}
 }
 
-// Companion to the flat-under-threshold case: after positions are closed, a
-// still-breached peak-relative drawdown must re-latch on the expiry cycle
-// (same clear-then-recheck invariant, peak-relative denominator).
 func TestCheckRisk_CooldownExpired_PerpsFlat_PeakRelativeStillBreached_Relatches(t *testing.T) {
 	s := &StrategyState{
 		ID:              "cb-expiry-perps-flat-breach",
@@ -163,7 +131,6 @@ func TestCheckRisk_CooldownExpired_PerpsFlat_PeakRelativeStillBreached_Relatches
 	}
 	sc := &StrategyConfig{ID: s.ID, Type: "perps", Leverage: 20, MaxDrawdownPct: 25}
 
-	// Peak $1000, cash $700 → 30% > 25% peak-relative → re-fire.
 	before := time.Now().UTC()
 	allowed, reason := CheckRisk(sc, s, PortfolioValue(s, nil), nil, nil, nil)
 	if allowed {

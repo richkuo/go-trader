@@ -1,20 +1,10 @@
 package main
 
-// ui_regime.go — portfolio-level regime view (#879).
-//
-// GET /api/regime serves the current cycle's global regime store: one entry
-// per distinct (data platform, symbol, timeframe, spec) signature, with the
-// per-window classifier snapshots plus both-vocabulary views (adx3 always
-// from the real full-period ADX classifier). This is the market-property
-// regime surface the per-strategy dashboard endpoints can't provide — it
-// exists even for flat manual strategies and is identical across peers.
-
 import (
 	"net/http"
 	"time"
 )
 
-// UIRegimeWindow is one window's snapshot in the API response.
 type UIRegimeWindow struct {
 	Regime     string             `json:"regime"`
 	Score      float64            `json:"score"`
@@ -23,7 +13,6 @@ type UIRegimeWindow struct {
 	Composite7 string             `json:"composite7,omitempty"`
 }
 
-// UIRegimeEntry is one store bundle in the API response.
 type UIRegimeEntry struct {
 	Platform  string                    `json:"platform"`
 	Symbol    string                    `json:"symbol"`
@@ -33,7 +22,6 @@ type UIRegimeEntry struct {
 	At        time.Time                 `json:"at"`
 }
 
-// uiRegimeEntries projects the store snapshot into the API shape.
 func uiRegimeEntries(store *RegimeStore) ([]UIRegimeEntry, time.Time) {
 	bundles, builtAt := store.Snapshot()
 	out := make([]UIRegimeEntry, 0, len(bundles))

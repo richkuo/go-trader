@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// #1455 regression tests: a fire-time model-only circuit-breaker close row is
-// corrected to the real exchange fill instead of stacking a second, PnL-free
-// defensive row. Partial fills reconcile slice-by-slice against the SAME row
-// until the persisted basis quantity is fully covered (#1455 review).
-
 func resetModelOnlyReconcileHooks(t *testing.T) {
 	t.Helper()
 	prevUpdater := modelOnlyCloseUpdater
@@ -24,10 +19,6 @@ func resetModelOnlyReconcileHooks(t *testing.T) {
 	})
 }
 
-// fireModelOnlyCircuitBreakerClose reproduces the fire-time state a per-position
-// circuit breaker leaves behind: CheckRisk -> forceCloseAllPositions books the
-// mark-derived estimate, deletes the virtual position, and buffers the
-// closed_positions row.
 func fireModelOnlyCircuitBreakerClose(t *testing.T) *StrategyState {
 	t.Helper()
 	s := &StrategyState{
@@ -53,9 +44,6 @@ func fireModelOnlyCircuitBreakerClose(t *testing.T) *StrategyState {
 	return s
 }
 
-// manualModelOnlyCloseState builds a strategy holding one uncorrected
-// model-only row plus its matching buffered closed_positions basis, with
-// caller-controlled timestamps/side/quantity.
 func manualModelOnlyCloseState(id, symbol string, ts time.Time, qty, avgCost float64, side string, estPx float64) *StrategyState {
 	dirSign := 1.0
 	if side == "short" {
@@ -88,7 +76,7 @@ func TestModelOnlyClose_FillReconcilesInsteadOfSecondRow(t *testing.T) {
 	modelOnlyCloseUpdater = func(u modelOnlyCloseCorrection) error { got = &u; return nil }
 	s := fireModelOnlyCircuitBreakerClose(t)
 	rowsBefore := len(s.TradeHistory)
-	cashAfterFire := s.Cash // 1000 - 400 (model estimate)
+	cashAfterFire := s.Cash
 
 	out := reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 777, "")
 	if out != modelOnlyReconcileApplied {
@@ -112,7 +100,7 @@ func TestModelOnlyClose_FillReconcilesInsteadOfSecondRow(t *testing.T) {
 		t.Errorf("details should mark the correction: %s", trade.Details)
 	}
 	wantNet := wantGross - 3.0
-	// Cash: fire booked -400; the true result is -203, so cash must move +197.
+
 	if s.Cash != cashAfterFire+wantNet+400 {
 		t.Errorf("cash = %.4f; want %.4f (fill-derived)", s.Cash, cashAfterFire+wantNet+400)
 	}
@@ -135,9 +123,8 @@ func TestModelOnlyClose_PartialThenResidualCoversFullQuantity(t *testing.T) {
 	resetModelOnlyReconcileHooks(t)
 	var last *modelOnlyCloseCorrection
 	modelOnlyCloseUpdater = func(u modelOnlyCloseCorrection) error { u2 := u; last = &u2; return nil }
-	s := fireModelOnlyCircuitBreakerClose(t) // cash 600, DailyPnL -400, streak 1
+	s := fireModelOnlyCircuitBreakerClose(t)
 
-	// First leg fills HALF the basis at a different price/fee.
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 1.0, 2900, 2.0, 777, "") != modelOnlyReconcileApplied {
 		t.Fatal("first partial fill must reconcile")
 	}
@@ -145,7 +132,7 @@ func TestModelOnlyClose_PartialThenResidualCoversFullQuantity(t *testing.T) {
 	if trade == nil {
 		t.Fatal("partially-reconciled row must stay matchable for the residual retry")
 	}
-	// gross1 = 1*(2900-3000) = -100; est share = -200; delta = (-100-2)-(-200) = +98.
+
 	if s.Cash != 600+98 {
 		t.Errorf("cash after first leg = %.2f; want 698", s.Cash)
 	}
@@ -157,7 +144,7 @@ func TestModelOnlyClose_PartialThenResidualCoversFullQuantity(t *testing.T) {
 		t.Errorf("partial row = qty %.2f pnl %.2f fee %.2f oid %q src %q; want 1/-100/2/''/reconcile_adjustment",
 			trade.Quantity, trade.RealizedPnL, trade.ExchangeFee, trade.ExchangeOrderID, trade.FeeSource)
 	}
-	if trade.Price != 2800 { // estimate price preserved while partial
+	if trade.Price != 2800 {
 		t.Errorf("partial row price = %.2f; want the estimate price 2800", trade.Price)
 	}
 	if !strings.Contains(trade.Details, "partial") || !strings.Contains(trade.Details, modelOnlyDetailMarker) {
@@ -167,12 +154,11 @@ func TestModelOnlyClose_PartialThenResidualCoversFullQuantity(t *testing.T) {
 		t.Errorf("first-leg DB correction must be incomplete with the estimate price: %+v", last)
 	}
 
-	// Residual leg completes the basis at yet another price/fee.
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 1.0, 2950, 1.0, 778, "") != modelOnlyReconcileApplied {
 		t.Fatal("residual fill must reconcile against the same row")
 	}
 	trade = &s.TradeHistory[len(s.TradeHistory)-1]
-	// gross2 = -50; est share = -200; delta = (-50-1)-(-200) = +149.
+
 	if s.Cash != 847 {
 		t.Errorf("cash after both legs = %.2f; want 847 (= 1000 + true net -153)", s.Cash)
 	}
@@ -194,7 +180,6 @@ func TestModelOnlyClose_PartialThenResidualCoversFullQuantity(t *testing.T) {
 		t.Errorf("final DB correction = %+v; want complete 778 cum -150 fee 3 vwap 2925", last)
 	}
 
-	// A third fill has no basis left — it must NOT book phantom PnL.
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 1.0, 2950, 1.0, 779, "") != modelOnlyReconcileNone {
 		t.Fatal("fill beyond the reconciled basis must be refused")
 	}
@@ -203,17 +188,16 @@ func TestModelOnlyClose_PartialThenResidualCoversFullQuantity(t *testing.T) {
 func TestModelOnlyClose_ShortResidualCrossingAvgCostFlipsStreak(t *testing.T) {
 	resetModelOnlyReconcileHooks(t)
 	now := time.Now().UTC()
-	s := manualModelOnlyCloseState("hl-short", "SOL", now, 10, 95, "short", 90) // est win +50 → streak 0
+	s := manualModelOnlyCloseState("hl-short", "SOL", now, 10, 95, "short", 90)
 	if s.RiskState.ConsecutiveLosses != 0 {
 		t.Fatalf("precondition: estimated win resets the streak, got %d", s.RiskState.ConsecutiveLosses)
 	}
 	cashBefore := s.Cash
 
-	// The real fill lands ABOVE avg cost: the "win" was actually a loss.
 	if reconcileModelOnlyCloseWithFill(s, "SOL", 10, 101, 2.0, 990, "") != modelOnlyReconcileApplied {
 		t.Fatal("short fill must reconcile")
 	}
-	// gross = 10*(95-101) = -60; delta = (-60-2) - (+50) = -112.
+
 	if s.Cash != cashBefore-112 {
 		t.Errorf("cash = %.2f; want %.2f", s.Cash, cashBefore-112)
 	}
@@ -225,7 +209,7 @@ func TestModelOnlyClose_ShortResidualCrossingAvgCostFlipsStreak(t *testing.T) {
 func TestModelOnlyClose_BookedLossTurnedWinDecrementsStreak(t *testing.T) {
 	resetModelOnlyReconcileHooks(t)
 	now := time.Now().UTC()
-	s := manualModelOnlyCloseState("hl-loss", "AVAX", now, 2, 3000, "long", 2800) // est loss -400 → streak 1
+	s := manualModelOnlyCloseState("hl-loss", "AVAX", now, 2, 3000, "long", 2800)
 	if s.RiskState.ConsecutiveLosses != 1 {
 		t.Fatalf("precondition: fire-time loss books streak 1, got %d", s.RiskState.ConsecutiveLosses)
 	}
@@ -255,7 +239,7 @@ func TestModelOnlyClose_OverFillClampsToBasisQuantity(t *testing.T) {
 		t.Errorf("clamped row = qty %.2f pnl %.2f fee %.2f; want 2/-200/4 (fee scaled to the covered slice)",
 			done.Quantity, done.RealizedPnL, done.ExchangeFee)
 	}
-	// delta = (-200-4) - (-400) = +196
+
 	if s.Cash != 600+196 {
 		t.Errorf("cash = %.2f; want 796", s.Cash)
 	}
@@ -301,8 +285,6 @@ func TestModelOnlyClose_SurvivesRestartBetweenFireAndFill(t *testing.T) {
 	s := fireModelOnlyCircuitBreakerClose(t)
 	ts := findModelOnlyCloseTrade(s, "ETH").Timestamp
 
-	// Simulate a restart: the in-memory closed-position buffer is gone (it was
-	// flushed before the crash), but the persisted basis survives in SQLite.
 	s.ClosedPositions = nil
 	modelOnlyCloseBasisLoader = func(strategyID, symbol, closeReason string, closedAt time.Time) (*modelOnlyClosedBasis, error) {
 		if strategyID != "hl-cb-eth" || symbol != "ETH" || closeReason != "circuit_breaker" || !closedAt.Equal(ts) {
@@ -330,7 +312,7 @@ func TestModelOnlyClose_LoaderFailureFallsBackToDefensive(t *testing.T) {
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 779, "") != modelOnlyReconcileNone {
 		t.Fatal("a failed basis lookup must not reconcile")
 	}
-	// And the unexplained fill falls through to the defensive zero-PnL branch.
+
 	applyHyperliquidCircuitCloseFill(s, "ETH", 2.0, 2900, 3.0, 2.0, 779, "")
 	if len(s.TradeHistory) != rowsBefore+1 {
 		t.Fatalf("expected the defensive row fallback, rows=%d", len(s.TradeHistory))
@@ -361,7 +343,7 @@ func TestModelOnlyClose_HedgeLegAdjustsDailyPnLNeverStreak(t *testing.T) {
 		ID: "hl-cb-hedge", Type: "perps", Platform: "hyperliquid",
 		RiskState: RiskState{DailyPnL: -50, ConsecutiveLosses: 2, DailyPnLDate: now.Format("2006-01-02")},
 	}
-	// Consistent fire-time row: short 10 @ avg 95 estimated at 95.5 → PnL -5.
+
 	s.TradeHistory = []Trade{{
 		Timestamp: now, StrategyID: s.ID, Symbol: "SOL", Side: "sell", Quantity: 10,
 		Price: 95.5, Value: 955, TradeType: hedgeTradeType, IsClose: true,
@@ -389,22 +371,21 @@ func TestModelOnlyClose_HedgeLegAdjustsDailyPnLNeverStreak(t *testing.T) {
 func TestModelOnlyClose_DayCrossingCorrectionSkipsDailyMeter(t *testing.T) {
 	resetModelOnlyReconcileHooks(t)
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
-	// 25h back always lands on a different UTC day while staying inside the
-	// 48h match window.
+
 	ts := time.Now().UTC().Add(-25 * time.Hour)
 	s := manualModelOnlyCloseState("hl-day", "ETH", ts, 2, 3000, "long", 2800)
-	s.RiskState.DailyPnL = -50 // today's meter, unrelated to yesterday's fire
+	s.RiskState.DailyPnL = -50
 	dailyBefore := s.RiskState.DailyPnL
 	cashBefore := s.Cash
 
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 2, 3100, 5.0, 920, "") != modelOnlyReconcileApplied {
 		t.Fatal("next-day correction must still reconcile cash")
 	}
-	// Cash carries the true-up...
+
 	if delta := s.Cash - cashBefore; delta != (2*(3100-3000)-5.0)-(-400) {
 		t.Errorf("cash delta = %.2f; want %.2f", delta, (2*(3100-3000)-5.0)-(-400))
 	}
-	// ...but today's daily-loss meter is untouched.
+
 	if s.RiskState.DailyPnL != dailyBefore {
 		t.Errorf("DailyPnL = %.2f; want unchanged %.2f (correction of another day's trade)", s.RiskState.DailyPnL, dailyBefore)
 	}
@@ -445,9 +426,6 @@ func TestModelOnlyClose_PersistFailureRollsBackAndAlerts(t *testing.T) {
 		t.Errorf("alert must describe the actual recovery (offline repair), got: %s", warns[0])
 	}
 
-	// The caller still books the fill durably on this outcome (#1455 review
-	// round 2 optional 2): a full fill's drain observation is never
-	// re-presented, so dropping it would lose the exchange fee forever.
 	rowsBeforeDefensive := len(s.TradeHistory)
 	applyHyperliquidCircuitCloseFill(s, "ETH", 2.0, 2900, 3.0, 2.0, 930, "")
 	if len(s.TradeHistory) != rowsBeforeDefensive+1 {
@@ -458,7 +436,6 @@ func TestModelOnlyClose_PersistFailureRollsBackAndAlerts(t *testing.T) {
 		t.Errorf("defensive audit row = oid %q fee %.2f pnl %.2f; want 930/3/0", defensive.ExchangeOrderID, defensive.ExchangeFee, defensive.RealizedPnL)
 	}
 
-	// Consistent state again: the SAME fill retries cleanly.
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 930, "") != modelOnlyReconcileApplied {
 		t.Fatal("retry after rollback must reconcile")
@@ -473,8 +450,6 @@ func TestModelOnlyClose_ReasonMismatchAndAgeBoundTakeDefensiveBranch(t *testing.
 	s := fireModelOnlyCircuitBreakerClose(t)
 	rowsBefore := len(s.TradeHistory)
 
-	// A regime-flip or kill-switch fill must never correct a circuit-breaker
-	// row from a different close event.
 	for _, reason := range []string{"regime_direction_flip", "kill_switch"} {
 		if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 940, reason) != modelOnlyReconcileNone {
 			t.Fatalf("%s fill must not correct a circuit_breaker row", reason)
@@ -489,7 +464,6 @@ func TestModelOnlyClose_ReasonMismatchAndAgeBoundTakeDefensiveBranch(t *testing.
 		t.Error("mismatched-reason fill must leave the model row untouched")
 	}
 
-	// Age bound: a stale uncorrected row stays matchable never.
 	stale := manualModelOnlyCloseState("hl-stale", "DOT", time.Now().UTC().Add(-modelOnlyReconcileMaxAge-time.Hour), 2, 3000, "long", 2800)
 	if reconcileModelOnlyCloseWithFill(stale, "DOT", 2, 2900, 1, 942, "") != modelOnlyReconcileNone {
 		t.Fatal("a row past the age bound must not reconcile")
@@ -563,8 +537,6 @@ func TestModelOnlyClose_RealDBTransactionUpdatesAllThreeRows(t *testing.T) {
 		t.Errorf("diagnostics = (%.2f, %.2f); want (2900, -203)", dPx, dPnl)
 	}
 
-	// Reconciliation is one-shot: the WHERE clause no longer matches — a
-	// replayed partial correction against a completed row fails the same way.
 	u2 := u
 	u2.Complete = false
 	u2.OID = ""
@@ -600,7 +572,7 @@ func TestModelOnlyClose_DiagnosticsErrorFailsWholeTransaction(t *testing.T) {
 	if _, err := sdb.db.Exec(cpSQL, trade.StrategyID, "ETH", 2, 3000, "long", 1, "", formatTime(now), 2800, -400, "circuit_breaker", 60); err != nil {
 		t.Fatalf("insert closed_position: %v", err)
 	}
-	// Force a genuine SQL failure on the diagnostics statement only.
+
 	if _, err := sdb.db.Exec(`DROP TABLE trade_diagnostics`); err != nil {
 		t.Fatalf("drop trade_diagnostics: %v", err)
 	}
@@ -613,7 +585,7 @@ func TestModelOnlyClose_DiagnosticsErrorFailsWholeTransaction(t *testing.T) {
 	if err := sdb.ReconcileModelOnlyClose(u); err == nil {
 		t.Fatal("a real SQL error on the diagnostics update must fail the transaction")
 	}
-	// Nothing else may have committed.
+
 	var feeSrc string
 	if err := sdb.db.QueryRow(`SELECT fee_source FROM trades WHERE strategy_id=? AND timestamp=?`, trade.StrategyID, formatTime(now)).Scan(&feeSrc); err != nil {
 		t.Fatalf("read trades: %v", err)
@@ -631,9 +603,6 @@ func TestModelOnlyClose_EndToEndThroughRealSQLite(t *testing.T) {
 	}
 	defer sdb.Close()
 
-	// Production wiring: eager trade inserts, eager diagnostics inserts, the
-	// real updater, and the real basis loader — no stubs anywhere on the path
-	// that runs live.
 	prevRec := tradeRecorder
 	prevDiag := tradeDiagnosticsRecorder
 	prevUpd := modelOnlyCloseUpdater
@@ -658,8 +627,6 @@ func TestModelOnlyClose_EndToEndThroughRealSQLite(t *testing.T) {
 		t.Fatal("SaveState must clear the closed-position buffer (production flush semantics)")
 	}
 
-	// Restart semantics: the buffer is gone; the loader recovers the basis
-	// from the persisted closed_positions row through formatTime round-trip.
 	s.ClosedPositions = nil
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 900, "") != modelOnlyReconcileApplied {
 		t.Fatal("end-to-end reconcile through real SQLite must succeed")
@@ -690,9 +657,7 @@ func TestModelOnlyClose_EndToEndThroughRealSQLite(t *testing.T) {
 }
 
 func TestModelOnlyClose_SharedCoinWritesNoModelOnlyRow(t *testing.T) {
-	// #620 scope guard under #1455: a strategy sharing its coin with a peer
-	// takes the operator-required path — no pending close, no fire-time sweep,
-	// therefore no model-only row to reconcile.
+
 	sc := StrategyConfig{ID: "hl-a", Platform: "hyperliquid", Type: "perps",
 		Args: []string{"sma", "ETH", "1h", "--mode=live"}}
 	peer := StrategyConfig{ID: "hl-manual-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
@@ -704,15 +669,11 @@ func TestModelOnlyClose_SharedCoinWritesNoModelOnlyRow(t *testing.T) {
 }
 
 func TestModelOnlyClose_TwoSliceTransientStreakNeverMovesMidSequence(t *testing.T) {
-	// #1455 review round 2 must-survive (a): estimate -$400, slice 1 +$100,
-	// slice 2 -$500 — the final result is a loss, so the streak must remain
-	// exactly the fire-time count through BOTH legs. The old per-slice
-	// comparison decremented on the transient positive intermediate state and
-	// could never move back.
+
 	resetModelOnlyReconcileHooks(t)
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
 	now := time.Now().UTC()
-	s := manualModelOnlyCloseState("hl-trans", "ETH", now, 2, 3000, "long", 2800) // est -400 → streak 1
+	s := manualModelOnlyCloseState("hl-trans", "ETH", now, 2, 3000, "long", 2800)
 	if s.RiskState.ConsecutiveLosses != 1 {
 		t.Fatalf("precondition: streak 1 after the fire-time loss, got %d", s.RiskState.ConsecutiveLosses)
 	}
@@ -727,19 +688,18 @@ func TestModelOnlyClose_TwoSliceTransientStreakNeverMovesMidSequence(t *testing.
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 1, 2500, 0, 802, "") != modelOnlyReconcileApplied {
 		t.Fatal("slice 2 must reconcile")
 	}
-	// Final cumulative gross = +100 + (2500-3000) = -400: still a loss.
+
 	if s.RiskState.ConsecutiveLosses != 1 {
 		t.Errorf("final realized loss must keep the streak at 1, got %d", s.RiskState.ConsecutiveLosses)
 	}
 }
 
 func TestModelOnlyClose_TwoSliceTransientLossNeverOvercountsStreak(t *testing.T) {
-	// Must-survive (b): estimate +$50 win (streak 0), slice 1 transiently
-	// negative, slice 2 restoring a final win — the counter must never move.
+
 	resetModelOnlyReconcileHooks(t)
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
 	now := time.Now().UTC()
-	s := manualModelOnlyCloseState("hl-win", "ETH", now, 2, 3000, "long", 3050) // est +100 → streak 0
+	s := manualModelOnlyCloseState("hl-win", "ETH", now, 2, 3000, "long", 3050)
 	if s.RiskState.ConsecutiveLosses != 0 {
 		t.Fatalf("precondition: streak 0 after the fire-time win, got %d", s.RiskState.ConsecutiveLosses)
 	}
@@ -759,10 +719,7 @@ func TestModelOnlyClose_TwoSliceTransientLossNeverOvercountsStreak(t *testing.T)
 }
 
 func TestModelOnlyClose_InFlightSliceOIDsAreDuplicateProof(t *testing.T) {
-	// #1455 review round 2 optional 3 must-survive (a): while a sequence is
-	// open the row's ExchangeOrderID is empty, so the same OID presented again
-	// must be refused by the oids= token scan — otherwise the slice books
-	// twice.
+
 	resetModelOnlyReconcileHooks(t)
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
 	s := fireModelOnlyCircuitBreakerClose(t)
@@ -782,7 +739,6 @@ func TestModelOnlyClose_InFlightSliceOIDsAreDuplicateProof(t *testing.T) {
 		t.Fatalf("replayed OID must not extend the filled quantity: %+v", trade)
 	}
 
-	// Must-survive (b): a genuinely distinct slice OID still applies.
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 1.0, 2950, 1.0, 701, "") != modelOnlyReconcileApplied {
 		t.Fatal("distinct residual OID must reconcile")
 	}
@@ -790,15 +746,13 @@ func TestModelOnlyClose_InFlightSliceOIDsAreDuplicateProof(t *testing.T) {
 	if done.ExchangeOrderID != "701" || !strings.Contains(done.Details, "oids=700") {
 		t.Errorf("completed row must carry the final OID with earlier slices recorded: %q / %q", done.ExchangeOrderID, done.Details)
 	}
-	// Must-survive (c): the completed row stays duplicate-proof via its OID.
+
 	applyHyperliquidCircuitCloseFill(s, "ETH", 1.0, 2950, 1.0, 1.0, 701, "")
 	if len(s.TradeHistory) != rows {
 		t.Fatal("completed row replay must stay a no-op")
 	}
 }
 
-// seedModelOnlyCloseInDB persists an uncorrected model-only trades row plus its
-// circuit_breaker closed_positions basis — the production restart shape.
 func seedModelOnlyCloseInDB(t *testing.T, sdb *StateDB, strategyID string, now time.Time) {
 	t.Helper()
 	trade := Trade{
@@ -818,11 +772,7 @@ func seedModelOnlyCloseInDB(t *testing.T, sdb *StateDB, strategyID string, now t
 }
 
 func TestLoadModelOnlyCloseBasis_ReasonGuardHoldsOnProductionPath(t *testing.T) {
-	// #1455 review round 2 Needs Fixing 1: SaveState clears the in-memory
-	// buffer, so the LOADER is the only basis source production executes —
-	// the same-event guard must hold there too, not only in tests with the
-	// hook stubbed out. A kill_switch/regime fill arriving while only a stale
-	// CB row exists must take the defensive branch, never match the CB row.
+
 	resetModelOnlyReconcileHooks(t)
 	dbPath := filepath.Join(t.TempDir(), "state.db")
 	sdb, err := OpenStateDB(dbPath)
@@ -837,8 +787,6 @@ func TestLoadModelOnlyCloseBasis_ReasonGuardHoldsOnProductionPath(t *testing.T) 
 	strat := &StrategyState{ID: "r2-guard", Type: "perps", Platform: "hyperliquid"}
 	seedModelOnlyCloseInDB(t, sdb, strat.ID, now)
 
-	// Restart semantics: trade history rehydrated from SQLite, the
-	// closed-position buffer gone — the loader is the live basis source.
 	history, err := sdb.RecentTradesForStrategy(strat.ID, 100)
 	if err != nil {
 		t.Fatalf("rehydrate trades: %v", err)
@@ -863,8 +811,6 @@ func TestLoadModelOnlyCloseBasis_ReasonGuardHoldsOnProductionPath(t *testing.T) 
 		t.Errorf("stale CB model row must stay untouched by a mismatched-reason fill, pnl=%.2f", rpnl)
 	}
 
-	// Must-survive (c): a genuine circuit-breaker fill after a restart still
-	// reconciles through the persisted reason-matched basis.
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 961, "") != modelOnlyReconcileApplied {
 		t.Fatal("genuine CB fill after restart must reconcile via the persisted basis")
 	}
@@ -894,8 +840,6 @@ func TestWarnAbandonedPartialModelClose_AlertsOncePerCooldown(t *testing.T) {
 		t.Errorf("the alert must be throttled within the cooldown window, got: %s", again)
 	}
 
-	// An untouched (not yet filled) model-only row is NOT an abandoned
-	// sequence — no alert until a real slice has landed.
 	fresh := manualModelOnlyCloseState("hl-fresh", "DOT", now, 2, 3000, "long", 2800)
 	t.Cleanup(func() { modelOnlyAbandonedAlerts.Delete("hl-fresh|DOT") })
 	if msg := warnAbandonedPartialModelClose(fresh, "DOT", now); msg != "" {
@@ -904,10 +848,7 @@ func TestWarnAbandonedPartialModelClose_AlertsOncePerCooldown(t *testing.T) {
 }
 
 func TestTradeLedgerNoOIDReconcileMatches_SkipsInFlightPartialRows(t *testing.T) {
-	// #1455 review round 2 optional 4: an in-flight partial model-only row
-	// (fill-reconciled marker, slice quantity) must never match a fill here —
-	// the rewrite would stamp an OID that blocks the residual from ever
-	// reconciling. Untouched legacy-shaped rows stay repairable.
+
 	now := time.Now().UTC()
 	fillMap := map[string]HLFillSummary{
 		"700": {Coin: "ETH", Qty: 1.0, Px: 2900, Fee: 2.0, Count: 1,
@@ -982,16 +923,14 @@ func TestMarkModelOnlyCloseAbandoned_PersistsIdempotentTag(t *testing.T) {
 }
 
 func TestModelOnlyClose_PreFireStreakRecoveredFromRowStamp(t *testing.T) {
-	// #1455 review round 3 must-survive (a): pre-fire streak 3, estimate a
-	// WIN (fire RESET the counter to 0), fill reveals a loss — the counter
-	// must end at 4, not 1.
+
 	resetModelOnlyReconcileHooks(t)
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
 	now := time.Now().UTC()
-	estGross := 2.0 * (3010 - 3000) // +20 estimated win
+	estGross := 2.0 * (3010 - 3000)
 	s := &StrategyState{
 		ID: "hl-pre3", Type: "perps", Platform: "hyperliquid", Cash: 1000,
-		RiskState: RiskState{ConsecutiveLosses: 0, DailyPnLDate: now.Format("2006-01-02")}, // fire zeroed it
+		RiskState: RiskState{ConsecutiveLosses: 0, DailyPnLDate: now.Format("2006-01-02")},
 	}
 	s.TradeHistory = []Trade{{
 		Timestamp: now, StrategyID: s.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
@@ -1011,13 +950,11 @@ func TestModelOnlyClose_PreFireStreakRecoveredFromRowStamp(t *testing.T) {
 		t.Errorf("pre-fire 3 + true loss must end at 4, got %d", got)
 	}
 
-	// Must-survive (b): pre-fire streak 4, estimate a LOSS (fire booked 5),
-	// fill reveals a win — the counter must reset to 0.
 	s2 := &StrategyState{
 		ID: "hl-pre4", Type: "perps", Platform: "hyperliquid", Cash: 1000,
-		RiskState: RiskState{ConsecutiveLosses: 5, DailyPnLDate: now.Format("2006-01-02")}, // 4 + fire-time loss
+		RiskState: RiskState{ConsecutiveLosses: 5, DailyPnLDate: now.Format("2006-01-02")},
 	}
-	estLoss := 2.0 * (2800 - 3000) // -400 estimated loss
+	estLoss := 2.0 * (2800 - 3000)
 	s2.TradeHistory = []Trade{{
 		Timestamp: now, StrategyID: s2.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
 		Price: 2800, Value: 5600, TradeType: "perps", PositionID: "pos-q", IsClose: true,
@@ -1035,8 +972,6 @@ func TestModelOnlyClose_PreFireStreakRecoveredFromRowStamp(t *testing.T) {
 		t.Errorf("true win must reset the streak to 0, got %d", got)
 	}
 
-	// Must-survive (c): a hedge leg leaves any non-zero streak untouched in
-	// both directions.
 	sh := &StrategyState{
 		ID: "hl-hedge-st", Type: "perps", Platform: "hyperliquid",
 		RiskState: RiskState{ConsecutiveLosses: 7, DailyPnLDate: now.Format("2006-01-02")},
@@ -1060,21 +995,16 @@ func TestModelOnlyClose_PreFireStreakRecoveredFromRowStamp(t *testing.T) {
 }
 
 func TestModelOnlyClose_StreakClassifiedOnNetPnL(t *testing.T) {
-	// #1455 review round 6 must-survive: the TRUE outcome is classified on
-	// the NET figure (cumGross - cumFee), matching RecordTradeResult — a fill
-	// inside the fee band (gross >= 0, net < 0) is a LOSS for the streak.
+
 	resetModelOnlyReconcileHooks(t)
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
 	now := time.Now().UTC()
 
-	// (a): estimate a LOSS (fire booked pre-fire+1), fill nets +0.20 gross
-	// but -0.40 after the fee — still a loss, so the counter stays at 4
-	// (never resets to 0 on the pre-fee sign).
 	s := &StrategyState{
 		ID: "hl-fee-a", Type: "perps", Platform: "hyperliquid", Cash: 1000,
-		RiskState: RiskState{ConsecutiveLosses: 4, DailyPnLDate: now.Format("2006-01-02")}, // 3 + fire-time loss
+		RiskState: RiskState{ConsecutiveLosses: 4, DailyPnLDate: now.Format("2006-01-02")},
 	}
-	estLoss := 2.0 * (2990 - 3000) // -20 estimated loss
+	estLoss := 2.0 * (2990 - 3000)
 	s.TradeHistory = []Trade{{
 		Timestamp: now, StrategyID: s.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
 		Price: 2990, Value: 5980, TradeType: "perps", PositionID: "pos-fa", IsClose: true,
@@ -1092,14 +1022,11 @@ func TestModelOnlyClose_StreakClassifiedOnNetPnL(t *testing.T) {
 		t.Errorf("net loss inside the fee band must keep pre-fire+1 = 4, got %d", got)
 	}
 
-	// (b): estimate a WIN (fire RESET to 0), fill nets +0.10 gross but
-	// -0.40 after the fee — a net loss, so the counter must become
-	// pre-fire+1 = 3, not stay 0.
 	s2 := &StrategyState{
 		ID: "hl-fee-b", Type: "perps", Platform: "hyperliquid", Cash: 1000,
-		RiskState: RiskState{ConsecutiveLosses: 0, DailyPnLDate: now.Format("2006-01-02")}, // fire zeroed it
+		RiskState: RiskState{ConsecutiveLosses: 0, DailyPnLDate: now.Format("2006-01-02")},
 	}
-	estWin := 2.0 * (3010 - 3000) // +20 estimated win
+	estWin := 2.0 * (3010 - 3000)
 	s2.TradeHistory = []Trade{{
 		Timestamp: now, StrategyID: s2.ID, Symbol: "ETH", Side: "sell", Quantity: 2,
 		Price: 3010, Value: 6020, TradeType: "perps", PositionID: "pos-fb", IsClose: true,
@@ -1117,8 +1044,6 @@ func TestModelOnlyClose_StreakClassifiedOnNetPnL(t *testing.T) {
 		t.Errorf("net loss under an estimated win must become pre-fire+1 = 3, got %d", got)
 	}
 
-	// (c): a HEDGE leg in the same fee band leaves any non-zero streak
-	// untouched in both directions.
 	sh := &StrategyState{
 		ID: "hl-fee-hedge", Type: "perps", Platform: "hyperliquid",
 		RiskState: RiskState{ConsecutiveLosses: 7, DailyPnLDate: now.Format("2006-01-02")},
@@ -1142,11 +1067,7 @@ func TestModelOnlyClose_StreakClassifiedOnNetPnL(t *testing.T) {
 }
 
 func TestModelOnlyClose_BasisLookupErrorAlertsNoRowsStaySilent(t *testing.T) {
-	// #1455 review round 3 optional 2 must-survive (a): a genuine query
-	// failure raises the operator alert, not just stdout. (b): an ordinary
-	// unexplained fill (sql.ErrNoRows from the loader) stays silent on the
-	// alert channel while still taking the defensive branch. (c): the model
-	// row is untouched either way, so a restart can still reconcile it.
+
 	resetModelOnlyReconcileHooks(t)
 	var warns []string
 	prevWarn := tradePersistWarn
@@ -1159,7 +1080,7 @@ func TestModelOnlyClose_BasisLookupErrorAlertsNoRowsStaySilent(t *testing.T) {
 	modelOnlyCloseBasisLoader = func(string, string, string, time.Time) (*modelOnlyClosedBasis, error) {
 		return nil, fmt.Errorf("database is locked")
 	}
-	s.ClosedPositions = nil // force the loader path
+	s.ClosedPositions = nil
 	rowsBefore := len(s.TradeHistory)
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 2.0, 2900, 3.0, 840, "") != modelOnlyReconcileNone {
 		t.Fatal("a failed lookup must not reconcile")
@@ -1183,10 +1104,7 @@ func TestModelOnlyClose_BasisLookupErrorAlertsNoRowsStaySilent(t *testing.T) {
 }
 
 func TestWarnAbandonedPartialModelClose_MarksRowForOfflineRepair(t *testing.T) {
-	// #1455 review round 3 optional 1: the FIRST abandonment observation tags
-	// the row [reconcile-abandoned] so backfill trade-ledger may repair it —
-	// the recovery the DM names — and later cycles stay silent past the
-	// cooldown because the tag, not the throttle, ends the condition.
+
 	resetModelOnlyReconcileHooks(t)
 	var marks int
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
@@ -1219,10 +1137,7 @@ func TestWarnAbandonedPartialModelClose_MarksRowForOfflineRepair(t *testing.T) {
 }
 
 func TestModelOnlyClose_PreStreakStampSurvivesMultiSliceRewrites(t *testing.T) {
-	// #1455 review round 4 must-survive (a): TWO slices, pre-fire streak 3,
-	// estimate a WIN (fire reset to 0), cumulative real result a loss — the
-	// completing slice must still see the stamp the fire wrote, so the
-	// counter ends at 4 even though slice 1 rewrote Details.
+
 	resetModelOnlyReconcileHooks(t)
 	modelOnlyCloseUpdater = func(modelOnlyCloseCorrection) error { return nil }
 	now := time.Now().UTC()
@@ -1254,13 +1169,11 @@ func TestModelOnlyClose_PreStreakStampSurvivesMultiSliceRewrites(t *testing.T) {
 	if reconcileModelOnlyCloseWithFill(s, "ETH", 1, 2800, 0, 861, "") != modelOnlyReconcileApplied {
 		t.Fatal("slice 2 must reconcile")
 	}
-	// Cumulative gross = +100 + (2800-3000) = -100: a loss.
+
 	if got := s.RiskState.ConsecutiveLosses; got != 4 {
 		t.Errorf("two-slice est-win→real-loss must reconstruct pre-fire+1 = 4, got %d", got)
 	}
 
-	// Must-survive (b): TWO slices, pre-fire streak 4, estimate a LOSS, final
-	// result a win → 0.
 	s2 := &StrategyState{
 		ID: "hl-ms4", Type: "perps", Platform: "hyperliquid", Cash: 1000,
 		RiskState: RiskState{ConsecutiveLosses: 5, DailyPnLDate: now.Format("2006-01-02")},
@@ -1279,7 +1192,7 @@ func TestModelOnlyClose_PreStreakStampSurvivesMultiSliceRewrites(t *testing.T) {
 	if reconcileModelOnlyCloseWithFill(s2, "ETH", 1, 2700, 0, 862, "") != modelOnlyReconcileApplied {
 		t.Fatal("slice 1 must reconcile")
 	}
-	// Cumulative gross = (2700-3000) + (3400-3000) = +100: a win.
+
 	if reconcileModelOnlyCloseWithFill(s2, "ETH", 1, 3400, 0, 863, "") != modelOnlyReconcileApplied {
 		t.Fatal("slice 2 must reconcile")
 	}
@@ -1287,8 +1200,6 @@ func TestModelOnlyClose_PreStreakStampSurvivesMultiSliceRewrites(t *testing.T) {
 		t.Errorf("two-slice est-loss→real-win must reset the streak to 0, got %d", got)
 	}
 
-	// Must-survive (c): a hedge-leg multi-slice sequence never touches the
-	// streak in either direction.
 	sh := &StrategyState{
 		ID: "hl-ms-hedge", Type: "perps", Platform: "hyperliquid",
 		RiskState: RiskState{ConsecutiveLosses: 6, DailyPnLDate: now.Format("2006-01-02")},

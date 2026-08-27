@@ -1,36 +1,7 @@
 #!/usr/bin/env bash
-# #1056: Move a deployment's runtime config out of the deploy tree so no
-# rsync/git-clean/rm operation can ever reach it, then leave a transition
-# symlink behind so existing tooling (update.sh, ad-hoc --config-less runs)
-# keeps working.
-#
-#   before:  <deploy>/scheduler/config.json            (real file, in the tree)
-#   after:   /var/lib/go-trader[/<instance>]/config.json   (real file, out of tree)
-#            <deploy>/scheduler/config.json -> <target>     (symlink)
-#
-# This script ONLY moves the file and creates the symlink. It does NOT edit live
-# systemd units — it prints the exact edits to apply afterward (the daemon must
-# be launched with `--config <target>` and the new dir made writable, which the
-# shipped units do via StateDirectory=go-trader[/%i]).
-#
-# Idempotent: a config that is already a symlink is left untouched.
-#
-# STOP THE SERVICE FIRST: the script refuses to run while this deployment's
-# daemon is live (it would clobber the new symlink on the next config write or
-# crash-restart). Stop the unit, migrate, re-point ExecStart, then start.
-#
-# Usage:
-#   scripts/migrate-config-out-of-tree.sh                     # cwd deploy -> /var/lib/go-trader/config.json
-#   scripts/migrate-config-out-of-tree.sh --instance live     # -> /var/lib/go-trader/live/config.json
-#   scripts/migrate-config-out-of-tree.sh --deploy-dir /opt/go-trader-live --instance live
-#   scripts/migrate-config-out-of-tree.sh --base /etc/go-trader --instance live   # prints ReadWritePaths form
-#   scripts/migrate-config-out-of-tree.sh --owner go-trader:go-trader
-#   scripts/migrate-config-out-of-tree.sh --dry-run
-#   scripts/migrate-config-out-of-tree.sh --force            # skip the running-daemon refusal (you stopped it yourself)
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=update_helpers.sh
 source "${SCRIPT_DIR}/update_helpers.sh"
 
 deploy_dir="$(pwd)"
@@ -61,9 +32,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# systemd instance names flow into paths and unit names. Reject not just stray
-# characters but '.'/'..' (escape the target dir) and leading '-' (misparses as
-# a flag) — see update_validate_instance_name.
 if [[ -n "$instance" && "$(update_validate_instance_name "$instance")" != "ok" ]]; then
     echo "error: --instance must be a simple name (alphanumerics, dash, dot, underscore; not '.'/'..'; no leading dash). Got: $instance" >&2
     exit 2
@@ -96,22 +64,6 @@ case "$state" in
         : ;;  # proceed
 esac
 
-# Only past this point is a mutating mv/ln impending (state == regular). The
-# already-migrated (symlink) and missing cases have exited above, so gating the
-# daemon-running refusal here keeps a re-run on an already-migrated deployment a
-# true idempotent no-op even with the daemon live (#1060 review) — nothing is
-# clobbered when the path is already a symlink.
-#
-# Refuse to migrate while THIS deployment's daemon is still running: its
-# --config still points at scheduler/config.json, which we are about to turn
-# into a symlink. A config write (UI tuner, Discord /config) or a Restart=always
-# crash-restart in the window before the unit is re-pointed does
-# os.Rename(tmp, configPath) — and rename(2) over a symlink REPLACES the symlink
-# with a real file in the tree, orphaning the moved copy and losing that write.
-# Detect the daemon by working directory (== deploy_dir, where the symlink
-# lives) via the existing tested predicate. Best-effort: needs /proc, so
-# non-Linux/undetectable falls through to the stop-first guidance printed at the
-# end. --force overrides.
 if [[ "$force" -ne 1 ]] && command -v pgrep >/dev/null 2>&1; then
     running_pid=""
     while IFS= read -r pid; do
@@ -133,8 +85,6 @@ if [[ "$force" -ne 1 ]] && command -v pgrep >/dev/null 2>&1; then
     fi
 fi
 
-# Never clobber anything at the target (another instance's config, or a
-# half-finished prior run). Refuse on any existing path — even a broken symlink.
 if [[ -e "$target" || -L "$target" ]]; then
     echo "error: target already exists: $target — refusing to overwrite. Inspect and move it aside manually." >&2
     exit 1
@@ -153,13 +103,9 @@ cmd mkdir -p "$target_dir"
 cmd mv "$src" "$target"
 cmd ln -s "$target" "$src"
 if [[ -n "$owner" ]]; then
-    # Best-effort: systemd StateDirectory re-asserts ownership on next start,
-    # so a chown failure here (e.g. not root) is non-fatal.
     cmd chown "$owner" "$target_dir" "$target" || echo "[migrate] warning: chown $owner failed (non-fatal; StateDirectory will fix it on restart)" >&2
 fi
 
-# Base-aware: StateDirectory only works for /var/lib bases; any other base must
-# use ReadWritePaths or the daemon points at a never-made-writable dir (#1060).
 writable_directive=$(update_config_writable_directive "$base" "$instance")
 
 cat <<EOF

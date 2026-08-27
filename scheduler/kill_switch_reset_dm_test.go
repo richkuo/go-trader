@@ -17,7 +17,7 @@ func TestParseKillSwitchResetDMTimeout_DefaultsToSixHours(t *testing.T) {
 	if d != DefaultKillSwitchResetDMTimeout {
 		t.Fatalf("got %s, want %s", d, DefaultKillSwitchResetDMTimeout)
 	}
-	// Regression: former hard-coded AskOwnerDM wait was 30m (#1368).
+
 	if DefaultKillSwitchResetDMTimeout == 30*time.Minute {
 		t.Fatal("default must not be the former hard-coded 30m")
 	}
@@ -195,9 +195,6 @@ func TestLoadConfigForProbe_DoesNotMutateAdoptedKillSwitchResetDMTimeout(t *test
 	}
 }
 
-// TestKillSwitchResetAskTimeoutIndependentOfAlertThrottle locks the #1368
-// invariant: the KS reset AskOwnerDM wait must not be sourced from
-// alert_throttle_interval.
 func TestKillSwitchResetAskTimeoutIndependentOfAlertThrottle(t *testing.T) {
 	prevKS := killSwitchResetDMTimeout
 	prevThrottle := alertThrottleInterval
@@ -262,8 +259,6 @@ func TestKillSwitchResetDMTimeout_ConcurrentProbeDoesNotRace(t *testing.T) {
 	}
 }
 
-// TestTryClaimKillSwitchResetPrompt_SingleOwner: while held, a second claim
-// must fail; after release, a later claim must succeed (#1396).
 func TestTryClaimKillSwitchResetPrompt_SingleOwner(t *testing.T) {
 	var running atomic.Bool
 	if !tryClaimKillSwitchResetPrompt(&running) {
@@ -282,10 +277,6 @@ func TestTryClaimKillSwitchResetPrompt_SingleOwner(t *testing.T) {
 	releaseKillSwitchResetPrompt(&running)
 }
 
-// TestTryClaimKillSwitchResetPrompt_ConcurrentClaimRelease stresses the
-// single-flight claim/release path under the race detector (#1396). The
-// pre-fix plain bool was read/written from the main loop and the AskOwnerDM
-// goroutine with no synchronization.
 func TestTryClaimKillSwitchResetPrompt_ConcurrentClaimRelease(t *testing.T) {
 	var running atomic.Bool
 	const goroutines = 64
@@ -299,7 +290,7 @@ func TestTryClaimKillSwitchResetPrompt_ConcurrentClaimRelease(t *testing.T) {
 			for r := 0; r < rounds; r++ {
 				if tryClaimKillSwitchResetPrompt(&running) {
 					claims.Add(1)
-					// Hold briefly so concurrent claimants observe the held state.
+
 					releaseKillSwitchResetPrompt(&running)
 				}
 			}

@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// stubFetcher returns canned balances/errors for tests so we never hit the network.
 func stubFetcher(balances map[SharedWalletKey]float64, errs map[SharedWalletKey]error) WalletBalanceFetcher {
 	return func(key SharedWalletKey) (float64, error) {
 		if err, ok := errs[key]; ok {
@@ -19,8 +18,6 @@ func stubFetcher(balances map[SharedWalletKey]float64, errs map[SharedWalletKey]
 	}
 }
 
-// TestDetectSharedWallets_MultipleHLPerps verifies that two live Hyperliquid
-// perps strategies on the same account are detected as sharing one wallet.
 func TestDetectSharedWallets_MultipleHLPerps(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -43,8 +40,6 @@ func TestDetectSharedWallets_MultipleHLPerps(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_PaperModeIgnored verifies that paper-mode HL strategies
-// are not treated as shared (they don't actually touch a real account).
 func TestDetectSharedWallets_PaperModeIgnored(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -59,8 +54,6 @@ func TestDetectSharedWallets_PaperModeIgnored(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_SingleStrategyNotShared verifies that a single
-// strategy on a wallet is NOT classified as shared (no double-count concern).
 func TestDetectSharedWallets_SingleStrategyNotShared(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -74,8 +67,6 @@ func TestDetectSharedWallets_SingleStrategyNotShared(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_OKX_PerpsLive verifies OKX perps live recognition via
-// OKX_API_KEY (#357 phase 1a). The API key uniquely identifies the account.
 func TestWalletKeyFor_OKX_PerpsLive(t *testing.T) {
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
 
@@ -91,7 +82,6 @@ func TestWalletKeyFor_OKX_PerpsLive(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_OKX_PaperNoKey verifies paper-mode OKX returns no key.
 func TestWalletKeyFor_OKX_PaperNoKey(t *testing.T) {
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
 
@@ -103,8 +93,6 @@ func TestWalletKeyFor_OKX_PaperNoKey(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_OKX_SpotNoKey verifies OKX spot is NOT recognized — only
-// perps/swap uses margin positions that need shared-wallet grouping (#357).
 func TestWalletKeyFor_OKX_SpotNoKey(t *testing.T) {
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
 
@@ -116,7 +104,6 @@ func TestWalletKeyFor_OKX_SpotNoKey(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_OKX_MissingEnvVar verifies missing OKX_API_KEY returns no key.
 func TestWalletKeyFor_OKX_MissingEnvVar(t *testing.T) {
 	t.Setenv("OKX_API_KEY", "")
 
@@ -128,8 +115,6 @@ func TestWalletKeyFor_OKX_MissingEnvVar(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_TopStep_FuturesLive verifies TopStep futures live recognition
-// via TOPSTEP_ACCOUNT_ID (#357 phase 1a).
 func TestWalletKeyFor_TopStep_FuturesLive(t *testing.T) {
 	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
 
@@ -145,7 +130,6 @@ func TestWalletKeyFor_TopStep_FuturesLive(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_TopStep_PaperNoKey verifies paper-mode TopStep returns no key.
 func TestWalletKeyFor_TopStep_PaperNoKey(t *testing.T) {
 	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
 
@@ -157,8 +141,6 @@ func TestWalletKeyFor_TopStep_PaperNoKey(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_TopStep_MissingEnvVar verifies missing TOPSTEP_ACCOUNT_ID
-// returns no key.
 func TestWalletKeyFor_TopStep_MissingEnvVar(t *testing.T) {
 	t.Setenv("TOPSTEP_ACCOUNT_ID", "")
 
@@ -170,9 +152,6 @@ func TestWalletKeyFor_TopStep_MissingEnvVar(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_Robinhood_CryptoLive verifies Robinhood crypto spot live
-// recognition via ROBINHOOD_USERNAME (#357 phase 1a). Multiple strategies
-// trading the same asset from one RH account share its spot balance.
 func TestWalletKeyFor_Robinhood_CryptoLive(t *testing.T) {
 	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
 
@@ -188,7 +167,6 @@ func TestWalletKeyFor_Robinhood_CryptoLive(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_Robinhood_PaperNoKey verifies paper-mode RH returns no key.
 func TestWalletKeyFor_Robinhood_PaperNoKey(t *testing.T) {
 	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
 
@@ -200,8 +178,6 @@ func TestWalletKeyFor_Robinhood_PaperNoKey(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_Robinhood_OptionsNoKey verifies RH options is NOT recognized
-// (leg-aware close semantics are out of scope — tracked in #363).
 func TestWalletKeyFor_Robinhood_OptionsNoKey(t *testing.T) {
 	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
 
@@ -213,12 +189,6 @@ func TestWalletKeyFor_Robinhood_OptionsNoKey(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_OKXIncludedAfterFetcher locks in #360 phase 2
-// of #357: two live OKX perps strategies on the same API key are now grouped
-// as a shared wallet because fetch_okx_balance.py provides real-balance
-// lookup via defaultSharedWalletBalance. Before #360, OKX was deliberately
-// excluded to avoid freezing the portfolio peak via fallback every cycle in
-// computeTotalPortfolioValue.
 func TestDetectSharedWallets_OKXIncludedAfterFetcher(t *testing.T) {
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
 
@@ -238,12 +208,6 @@ func TestDetectSharedWallets_OKXIncludedAfterFetcher(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_TopStepExcludedNoFetcher — #1106 phase 4 of #1100 runs
-// the TopStep cash-flow journal in SHADOW only and deliberately keeps TopStep OUT
-// of platformsWithSharedWalletBalanceFetcher, so its unverified equity feed never
-// reaches the live computeTotalPortfolioValue / kill-switch path. TopStep is
-// therefore still excluded from detectSharedWallets (the kill-switch grouping),
-// even though walletKeyFor recognizes the live wallet.
 func TestDetectSharedWallets_TopStepExcludedNoFetcher(t *testing.T) {
 	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
 
@@ -263,13 +227,9 @@ func TestDetectSharedWallets_TopStepExcludedNoFetcher(t *testing.T) {
 	}
 }
 
-// TestDetectTopStepSharedWallet — the shadow cash-flow journal (#1106) detects
-// 2+ live TopStep strategies on one account INDEPENDENTLY of the kill-switch
-// sharedWallets map, so it can run without the equity touching portfolio risk.
 func TestDetectTopStepSharedWallet(t *testing.T) {
 	t.Setenv("TOPSTEP_ACCOUNT_ID", "ts-account-42")
 
-	// 2+ live → shared.
 	twoLive := []StrategyConfig{
 		{ID: "ts-sma-es", Platform: "topstep", Type: "futures", Args: []string{"sma", "ES", "15m", "--mode=live"}, Capital: 5000},
 		{ID: "ts-rsi-nq", Platform: "topstep", Type: "futures", Args: []string{"rsi", "NQ", "15m", "--mode=live"}, Capital: 5000},
@@ -277,18 +237,16 @@ func TestDetectTopStepSharedWallet(t *testing.T) {
 	if key, ok := detectTopStepSharedWallet(twoLive); !ok || key.Account != "ts-account-42" {
 		t.Fatalf("expected 2 live TopStep strategies to be a shared wallet, got ok=%v key=%+v", ok, key)
 	}
-	// Excluded from the kill-switch grouping at the same time.
+
 	if len(detectSharedWallets(twoLive)) != 0 {
 		t.Errorf("TopStep must stay out of detectSharedWallets (kill-switch path)")
 	}
 
-	// Single live → not shared.
 	oneLive := twoLive[:1]
 	if _, ok := detectTopStepSharedWallet(oneLive); ok {
 		t.Errorf("a single live TopStep strategy is not a shared wallet")
 	}
 
-	// Paper strategies → not recognized → not shared.
 	paper := []StrategyConfig{
 		{ID: "ts-sma-es", Platform: "topstep", Type: "futures", Args: []string{"sma", "ES", "15m", "--mode=paper"}, Capital: 5000},
 		{ID: "ts-rsi-nq", Platform: "topstep", Type: "futures", Args: []string{"rsi", "NQ", "15m", "--mode=paper"}, Capital: 5000},
@@ -298,7 +256,6 @@ func TestDetectTopStepSharedWallet(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_RobinhoodExcludedNoFetcher — same as OKX, for Robinhood.
 func TestDetectSharedWallets_RobinhoodExcludedNoFetcher(t *testing.T) {
 	t.Setenv("ROBINHOOD_USERNAME", "rh-user@example.com")
 
@@ -313,12 +270,6 @@ func TestDetectSharedWallets_RobinhoodExcludedNoFetcher(t *testing.T) {
 	}
 }
 
-// TestHasSharedWalletBalanceFetcher_HLAndOKX locks in the contract that HL and
-// OKX (#360 phase 2 of #357) have portfolio-value balance fetchers today.
-// TopStep is intentionally false during the #1106 shadow phase — its unverified
-// equity feeds the shadow journal only, never computeTotalPortfolioValue — and
-// flips true in Phase 4b alongside verification. When RH adds a fetcher, update
-// this in the same PR as the fetcher wiring.
 func TestHasSharedWalletBalanceFetcher_HLAndOKX(t *testing.T) {
 	cases := map[string]bool{
 		"hyperliquid": true,
@@ -335,10 +286,6 @@ func TestHasSharedWalletBalanceFetcher_HLAndOKX(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_MixedHLAndOKX verifies that when HL and OKX live
-// strategies are configured together, BOTH are grouped as shared wallets
-// after #360 phase 2 of #357 (OKX gained a balance fetcher). Guards against
-// future refactors accidentally cross-contaminating the platform filter.
 func TestDetectSharedWallets_MixedHLAndOKX(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xhl")
 	t.Setenv("OKX_API_KEY", "okx-key-abc")
@@ -364,10 +311,6 @@ func TestDetectSharedWallets_MixedHLAndOKX(t *testing.T) {
 	}
 }
 
-// TestWalletKeyFor_SplitModeLiveRecognized verifies that the split-form
-// "--mode live" (separate args) is recognized as live, not just the joined
-// "--mode=live" form. HasLiveStrategy accepts both forms; walletKeyFor must
-// agree so a split-form config does not silently bypass shared-wallet grouping.
 func TestWalletKeyFor_SplitModeLiveRecognized(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -383,8 +326,6 @@ func TestWalletKeyFor_SplitModeLiveRecognized(t *testing.T) {
 	}
 }
 
-// TestDetectSharedWallets_NoEnvVar verifies that without HYPERLIQUID_ACCOUNT_ADDRESS
-// no wallets are detected as shared (we have no way to identify them).
 func TestDetectSharedWallets_NoEnvVar(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
@@ -399,10 +340,6 @@ func TestDetectSharedWallets_NoEnvVar(t *testing.T) {
 	}
 }
 
-// TestComputeTotalPortfolioValue_SharedWalletUsesRealBalance is the core
-// regression test for issue #243: two live HL strategies on the same account
-// must contribute the real wallet balance ONCE, not the sum of their per-strategy
-// PortfolioValue.
 func TestComputeTotalPortfolioValue_SharedWalletUsesRealBalance(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -421,7 +358,7 @@ func TestComputeTotalPortfolioValue_SharedWalletUsesRealBalance(t *testing.T) {
 	}
 
 	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, walletBalances, nil)
-	want := 5000.0 // single wallet, NOT 5000 + 5000
+	want := 5000.0
 	if got != want {
 		t.Errorf("expected total=%v (real wallet balance); got %v (likely double-counted)", want, got)
 	}
@@ -430,10 +367,6 @@ func TestComputeTotalPortfolioValue_SharedWalletUsesRealBalance(t *testing.T) {
 	}
 }
 
-// TestComputeTotalPortfolioValue_FallbackSumsMemberPVs verifies issue #452:
-// when the real-balance fetch fails for a shared wallet, fallback must sum the
-// member strategy PVs. The real-balance path above still prevents #243
-// double-counting; fallback has no fetched wallet value to de-duplicate.
 func TestComputeTotalPortfolioValue_FallbackSumsMemberPVs(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -448,8 +381,6 @@ func TestComputeTotalPortfolioValue_FallbackSumsMemberPVs(t *testing.T) {
 		},
 	}
 
-	// Empty walletBalances (simulates fetch failure) — should fall back to
-	// 4000 + 6000 = 10000, not max(4000, 6000) = 6000.
 	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
 	want := 10000.0
 	if got != want {
@@ -460,9 +391,6 @@ func TestComputeTotalPortfolioValue_FallbackSumsMemberPVs(t *testing.T) {
 	}
 }
 
-// TestComputeTotalPortfolioValue_FallbackKeepsPeakFreezeSignal verifies that
-// the #452 sum fallback still tells main.go not to ratchet PeakValue upward
-// during a balance-fetch failure.
 func TestComputeTotalPortfolioValue_FallbackKeepsPeakFreezeSignal(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -470,7 +398,7 @@ func TestComputeTotalPortfolioValue_FallbackKeepsPeakFreezeSignal(t *testing.T) 
 		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
 		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
 	}
-	// Simulate a real wallet of ~7000 split across two strategies.
+
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"hl-a": {ID: "hl-a", Cash: 3500, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
@@ -487,9 +415,6 @@ func TestComputeTotalPortfolioValue_FallbackKeepsPeakFreezeSignal(t *testing.T) 
 	}
 }
 
-// TestComputeTotalPortfolioValue_MixedSharedAndNonShared verifies that a mix of
-// shared-wallet and standalone strategies sums correctly: real balance once for
-// the shared wallet PLUS per-strategy PV for the standalone ones.
 func TestComputeTotalPortfolioValue_MixedSharedAndNonShared(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -506,11 +431,11 @@ func TestComputeTotalPortfolioValue_MixedSharedAndNonShared(t *testing.T) {
 		},
 	}
 	walletBalances := map[SharedWalletKey]float64{
-		{Platform: "hyperliquid", Account: "0xtest"}: 7500, // wallet has dropped from 10k to 7500
+		{Platform: "hyperliquid", Account: "0xtest"}: 7500,
 	}
 
 	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, walletBalances, nil)
-	want := 9500.0 // 7500 (shared wallet) + 2000 (spot)
+	want := 9500.0
 	if got != want {
 		t.Errorf("expected mixed total=%v; got %v", want, got)
 	}
@@ -519,13 +444,6 @@ func TestComputeTotalPortfolioValue_MixedSharedAndNonShared(t *testing.T) {
 	}
 }
 
-// TestComputeTotalPortfolioValue_MixedPaperAndLiveHL verifies the edge case
-// raised in the PR review (#256): one --mode=paper HL strategy and one
-// --mode=live HL strategy on the same env-var address. walletKeyFor filters
-// on live-mode, so neither should be classified as shared (the single live
-// strategy is alone on its wallet); the live strategy contributes its own PV
-// like any non-shared strategy, and the paper strategy is always non-shared.
-// No real-balance fetch should be needed because nothing is shared.
 func TestComputeTotalPortfolioValue_MixedPaperAndLiveHL(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -534,8 +452,6 @@ func TestComputeTotalPortfolioValue_MixedPaperAndLiveHL(t *testing.T) {
 		{ID: "hl-live-eth", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
 	}
 
-	// Sanity-check that detection matches expectation: nothing shared, since
-	// only one live strategy is on the wallet.
 	shared := detectSharedWallets(strategies)
 	if len(shared) != 0 {
 		t.Fatalf("expected no shared wallets in mixed paper+live setup; got %d", len(shared))
@@ -549,7 +465,7 @@ func TestComputeTotalPortfolioValue_MixedPaperAndLiveHL(t *testing.T) {
 	}
 
 	got, usedFallback := computeTotalPortfolioValue(strategies, state, nil, nil, nil)
-	want := 9500.0 // both strategies contribute their PV independently
+	want := 9500.0
 	if got != want {
 		t.Errorf("expected mixed paper+live total=%v; got %v", want, got)
 	}
@@ -558,10 +474,6 @@ func TestComputeTotalPortfolioValue_MixedPaperAndLiveHL(t *testing.T) {
 	}
 }
 
-// TestComputeTotalPortfolioValue_NoSharedWalletsBehavesLikeOldSum verifies that
-// when no strategies share a wallet, the function reduces to the original
-// per-strategy sum (no behavioral change for non-shared setups — issue #243
-// acceptance criterion).
 func TestComputeTotalPortfolioValue_NoSharedWalletsBehavesLikeOldSum(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
@@ -586,8 +498,6 @@ func TestComputeTotalPortfolioValue_NoSharedWalletsBehavesLikeOldSum(t *testing.
 	}
 }
 
-// TestFetchSharedWalletBalances_StubReturnsBalance verifies that the fetcher
-// shim collects balances from the injected fetcher.
 func TestFetchSharedWalletBalances_StubReturnsBalance(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -607,8 +517,6 @@ func TestFetchSharedWalletBalances_StubReturnsBalance(t *testing.T) {
 	}
 }
 
-// TestFetchSharedWalletBalances_RecordsErrors verifies that fetcher errors are
-// surfaced via the errs map (so the caller can warn-and-fall-back).
 func TestFetchSharedWalletBalances_RecordsErrors(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -628,9 +536,6 @@ func TestFetchSharedWalletBalances_RecordsErrors(t *testing.T) {
 	}
 }
 
-// TestComputeInitialPortfolioPeak_SharedWalletUsesBalance verifies that
-// PeakValue init uses the real wallet balance once for shared wallets instead
-// of summing per-strategy capital.
 func TestComputeInitialPortfolioPeak_SharedWalletUsesBalance(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -643,15 +548,12 @@ func TestComputeInitialPortfolioPeak_SharedWalletUsesBalance(t *testing.T) {
 	fetcher := stubFetcher(map[SharedWalletKey]float64{key: 8000}, nil)
 
 	got := computeInitialPortfolioPeak(strategies, fetcher)
-	want := 10000.0 // 8000 wallet + 2000 spot
+	want := 10000.0
 	if got != want {
 		t.Errorf("expected peak=%v; got %v", want, got)
 	}
 }
 
-// TestComputeInitialPortfolioPeak_FallbackOnFetchError verifies that when the
-// fetch fails the peak falls back to the sum of per-strategy capital so the
-// risk loop is not initialized with a 0 wallet.
 func TestComputeInitialPortfolioPeak_FallbackOnFetchError(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -663,34 +565,27 @@ func TestComputeInitialPortfolioPeak_FallbackOnFetchError(t *testing.T) {
 	fetcher := stubFetcher(nil, map[SharedWalletKey]error{key: errors.New("network down")})
 
 	got := computeInitialPortfolioPeak(strategies, fetcher)
-	want := 10000.0 // fallback to summed capital
+	want := 10000.0
 	if got != want {
 		t.Errorf("expected fallback peak=%v; got %v", want, got)
 	}
 }
 
-// TestComputeInitialPortfolioPeak_LegacyCapitalPct verifies that single-strategy
-// capital_pct setups still derive wallet balance via Capital / CapitalPct and
-// count each platform once — preserving the pre-#243 behavior so existing
-// non-shared setups are unchanged.
 func TestComputeInitialPortfolioPeak_LegacyCapitalPct(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
-	// Single capital_pct strategy: Capital=2500, CapitalPct=0.5 → wallet=5000.
 	strategies := []StrategyConfig{
 		{ID: "binance-spot", Platform: "binanceus", Type: "spot", Capital: 2500, CapitalPct: 0.5},
 		{ID: "spot-eth", Platform: "binanceus", Type: "spot", Capital: 1000},
 	}
 
 	got := computeInitialPortfolioPeak(strategies, nil)
-	want := 6000.0 // 5000 (derived wallet via legacy) + 1000 (fixed capital)
+	want := 6000.0
 	if got != want {
 		t.Errorf("expected legacy capital_pct peak=%v; got %v", want, got)
 	}
 }
 
-// TestComputeInitialPortfolioPeak_NoSharedWalletsSumsCapital verifies that
-// existing non-shared setups are unchanged.
 func TestComputeInitialPortfolioPeak_NoSharedWalletsSumsCapital(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
@@ -706,11 +601,6 @@ func TestComputeInitialPortfolioPeak_NoSharedWalletsSumsCapital(t *testing.T) {
 	}
 }
 
-// --- rebaselinePortfolioPeakAfterPrune (#650) ---
-
-// TestRebaselinePortfolioPeakAfterPrune_SumsRemainingPerStrategyPeaks verifies
-// that the rebaselined peak sums RiskState.PeakValue from surviving strategies,
-// dropping the contribution of the pruned one.
 func TestRebaselinePortfolioPeakAfterPrune_SumsRemainingPerStrategyPeaks(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
@@ -728,9 +618,6 @@ func TestRebaselinePortfolioPeakAfterPrune_SumsRemainingPerStrategyPeaks(t *test
 	}
 }
 
-// TestRebaselinePortfolioPeakAfterPrune_FloorAtCapitalSum verifies that when a
-// surviving strategy has zero per-strategy peak (cold-start) the result floors
-// at computeInitialPortfolioPeak so we never under-baseline.
 func TestRebaselinePortfolioPeakAfterPrune_FloorAtCapitalSum(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
@@ -739,21 +626,18 @@ func TestRebaselinePortfolioPeakAfterPrune_FloorAtCapitalSum(t *testing.T) {
 		{ID: "spot-eth", Platform: "binanceus", Type: "spot", Capital: 3000},
 	}}
 	state := &AppState{Strategies: map[string]*StrategyState{
-		// One surviving strategy with no per-strategy peak yet.
+
 		"spot-btc": {ID: "spot-btc"},
 		"spot-eth": {ID: "spot-eth"},
 	}}
 
 	got := rebaselinePortfolioPeakAfterPrune(state, cfg, nil)
-	want := 8000.0 // floor: 5000 + 3000
+	want := 8000.0
 	if got != want {
 		t.Errorf("expected floored peak=%v; got %v", want, got)
 	}
 }
 
-// TestRebaselinePortfolioPeakAfterPrune_FallbackToCapitalWhenPeakMissing verifies
-// that strategies missing per-strategy peak fall back to their configured
-// capital (mixed with surviving strategies that do have peaks).
 func TestRebaselinePortfolioPeakAfterPrune_FallbackToCapitalWhenPeakMissing(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
@@ -763,25 +647,19 @@ func TestRebaselinePortfolioPeakAfterPrune_FallbackToCapitalWhenPeakMissing(t *t
 	}}
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"spot-btc": {ID: "spot-btc", RiskState: RiskState{PeakValue: 6000}},
-		"spot-eth": {ID: "spot-eth"}, // no peak yet → use capital
+		"spot-eth": {ID: "spot-eth"},
 	}}
 
 	got := rebaselinePortfolioPeakAfterPrune(state, cfg, nil)
-	want := 9000.0 // 6000 (peak) + 3000 (capital fallback)
+	want := 9000.0
 	if got != want {
 		t.Errorf("expected mixed peak=%v; got %v", want, got)
 	}
 }
 
-// TestRebaselinePortfolioPeakAfterPrune_PreventsImmediateKillSwitch is the
-// regression test for #650: pre-fix, a stale peak from a pruned multi-strategy
-// run latched the kill switch on the first cycle. With the fix, the rebaseline
-// reflects only surviving strategies so CheckPortfolioRisk does not fire.
 func TestRebaselinePortfolioPeakAfterPrune_PreventsImmediateKillSwitch(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
-	// Surviving config: one strategy that itself peaked at $9034 and is still
-	// sitting at $9034 (no drawdown on what's left).
 	cfg := &Config{Strategies: []StrategyConfig{
 		{ID: "spot-btc", Platform: "binanceus", Type: "spot", Capital: 5000},
 	}}
@@ -789,7 +667,7 @@ func TestRebaselinePortfolioPeakAfterPrune_PreventsImmediateKillSwitch(t *testin
 		Strategies: map[string]*StrategyState{
 			"spot-btc": {ID: "spot-btc", RiskState: RiskState{PeakValue: 9034.24}},
 		},
-		PortfolioRisk: PortfolioRiskState{PeakValue: 15148.90}, // pre-prune peak
+		PortfolioRisk: PortfolioRiskState{PeakValue: 15148.90},
 	}
 
 	state.PortfolioRisk.PeakValue = rebaselinePortfolioPeakAfterPrune(state, cfg, nil)
@@ -804,8 +682,6 @@ func TestRebaselinePortfolioPeakAfterPrune_PreventsImmediateKillSwitch(t *testin
 	}
 }
 
-// Post-prune rebaseline must match the deduped per-cycle total when a live
-// manual shares a deduped HL wallet (#921 review).
 func TestRebaselinePortfolioPeakAfterPrune_MatchesRiskPathTotalWithManual(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	cfg := &Config{Strategies: []StrategyConfig{
@@ -840,7 +716,6 @@ func TestRebaselinePortfolioPeakAfterPrune_MatchesRiskPathTotalWithManual(t *tes
 	}
 }
 
-// Without a shared wallet (single perps), live manual capital must still count.
 func TestRebaselinePortfolioPeakAfterPrune_SinglePerpsPlusManualSumsManual(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	cfg := &Config{Strategies: []StrategyConfig{
@@ -858,7 +733,6 @@ func TestRebaselinePortfolioPeakAfterPrune_SinglePerpsPlusManualSumsManual(t *te
 	}
 }
 
-// Zero-capital live manual on a deduped wallet is a no-op for the sum.
 func TestRebaselinePortfolioPeakAfterPrune_DedupedManualZeroCapitalUnchanged(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	cfg := &Config{Strategies: []StrategyConfig{
@@ -880,11 +754,6 @@ func TestRebaselinePortfolioPeakAfterPrune_DedupedManualZeroCapitalUnchanged(t *
 	}
 }
 
-// --- computeSubsetPortfolioValue tests (#915) ---
-
-// TestComputeSubsetPortfolioValue_FullyContainedWallet verifies that when all
-// shared-wallet members are in the subset, the real balance is used once (no
-// double-count) — same result as computeTotalPortfolioValue for the whole account.
 func TestComputeSubsetPortfolioValue_FullyContainedWallet(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -899,11 +768,10 @@ func TestComputeSubsetPortfolioValue_FullyContainedWallet(t *testing.T) {
 		},
 	}
 	walletBalances := map[SharedWalletKey]float64{
-		{Platform: "hyperliquid", Account: "0xtest"}: 8000, // real balance after fees
+		{Platform: "hyperliquid", Account: "0xtest"}: 8000,
 	}
 	accountShared := detectSharedWallets(allStrategies)
 
-	// Subset = all strategies → fully contained → real balance used once.
 	got, fb := computeSubsetPortfolioValue(allStrategies, state, nil, walletBalances, accountShared)
 	if got != 8000 {
 		t.Errorf("fully-contained subset: want 8000 (real balance), got %.2f", got)
@@ -913,9 +781,6 @@ func TestComputeSubsetPortfolioValue_FullyContainedWallet(t *testing.T) {
 	}
 }
 
-// TestComputeSubsetPortfolioValue_StradddlingWalletVirtualSum verifies that when
-// a shared wallet has members OUTSIDE the subset (straddle), the subset members
-// are virtual-summed rather than deduped — the real balance cannot be split.
 func TestComputeSubsetPortfolioValue_StraddlingWalletVirtualSum(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -934,8 +799,7 @@ func TestComputeSubsetPortfolioValue_StraddlingWalletVirtualSum(t *testing.T) {
 	}
 	accountShared := detectSharedWallets(allStrategies)
 
-	// Subset contains only one of two wallet members → straddle → virtual sum.
-	subset := allStrategies[:1] // just hl-btc
+	subset := allStrategies[:1]
 	got, fb := computeSubsetPortfolioValue(subset, state, nil, walletBalances, accountShared)
 	if got != 4000 {
 		t.Errorf("straddling wallet subset: want 4000 (virtual sum of hl-btc only), got %.2f", got)
@@ -945,8 +809,6 @@ func TestComputeSubsetPortfolioValue_StraddlingWalletVirtualSum(t *testing.T) {
 	}
 }
 
-// TestComputeSubsetPortfolioValue_MixedSharedAndNonShared verifies the common
-// case: a shared-wallet channel plus a non-shared standalone strategy.
 func TestComputeSubsetPortfolioValue_MixedSharedAndNonShared(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -967,9 +829,8 @@ func TestComputeSubsetPortfolioValue_MixedSharedAndNonShared(t *testing.T) {
 	}
 	accountShared := detectSharedWallets(allStrategies)
 
-	// Subset = all three → fully-contained wallet + non-shared spot.
 	got, fb := computeSubsetPortfolioValue(allStrategies, state, nil, walletBalances, accountShared)
-	want := 7500.0 + 2000.0 // real HL balance + spot PV
+	want := 7500.0 + 2000.0
 	if got != want {
 		t.Errorf("mixed subset: want %.2f, got %.2f", want, got)
 	}
@@ -978,8 +839,6 @@ func TestComputeSubsetPortfolioValue_MixedSharedAndNonShared(t *testing.T) {
 	}
 }
 
-// TestComputeSubsetPortfolioValue_MissingBalance verifies that a missing
-// wallet balance triggers usedFallback=true and falls back to virtual sum.
 func TestComputeSubsetPortfolioValue_MissingBalance(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -995,7 +854,6 @@ func TestComputeSubsetPortfolioValue_MissingBalance(t *testing.T) {
 	}
 	accountShared := detectSharedWallets(allStrategies)
 
-	// walletBalances empty → fallback to virtual sum.
 	got, fb := computeSubsetPortfolioValue(allStrategies, state, nil, nil, accountShared)
 	if got != 10000 {
 		t.Errorf("missing balance: want 10000 (fallback sum), got %.2f", got)
@@ -1005,9 +863,6 @@ func TestComputeSubsetPortfolioValue_MissingBalance(t *testing.T) {
 	}
 }
 
-// TestComputeTotalPortfolioValue_DelegatesCorrectly verifies that the refactored
-// computeTotalPortfolioValue (delegating to computeSubsetPortfolioValue) gives
-// identical results to the pre-#915 inline implementation for the whole-account case.
 func TestComputeTotalPortfolioValue_DelegatesCorrectly(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 
@@ -1028,7 +883,7 @@ func TestComputeTotalPortfolioValue_DelegatesCorrectly(t *testing.T) {
 	}
 
 	got, fb := computeTotalPortfolioValue(strategies, state, nil, walletBalances, nil)
-	want := 9000.0 + 2000.0 // real HL balance + spot
+	want := 9000.0 + 2000.0
 	if got != want {
 		t.Errorf("delegation: want %.2f, got %.2f", want, got)
 	}
@@ -1037,9 +892,6 @@ func TestComputeTotalPortfolioValue_DelegatesCorrectly(t *testing.T) {
 	}
 }
 
-// TestComputeInitialPortfolioPeak_SharedWalletManualNoDoubleCount verifies
-// peak init uses the real wallet balance once when a same-account live manual
-// shares the HL wallet with 2+ perps (#921).
 func TestComputeInitialPortfolioPeak_SharedWalletManualNoDoubleCount(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	strategies := []StrategyConfig{
@@ -1056,7 +908,6 @@ func TestComputeInitialPortfolioPeak_SharedWalletManualNoDoubleCount(t *testing.
 	}
 }
 
-// Peak init fallback sums perps + manual capital exactly once each.
 func TestComputeInitialPortfolioPeak_SharedWalletManualFallback(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	strategies := []StrategyConfig{
@@ -1073,8 +924,6 @@ func TestComputeInitialPortfolioPeak_SharedWalletManualFallback(t *testing.T) {
 	}
 }
 
-// Cold-start peak must match the first-cycle risk-path total so a flat account
-// shows 0% equity drawdown on cycle 1 (#921 review).
 func TestComputeInitialPortfolioPeak_MatchesRiskPathTotalOnColdStart(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	strategies := []StrategyConfig{
@@ -1109,9 +958,6 @@ func TestComputeInitialPortfolioPeak_MatchesRiskPathTotalOnColdStart(t *testing.
 	}
 }
 
-// A same-account live manual strategy is outside detectSharedWallets membership
-// but inside the wallet real balance. Risk-path total must not add its modeled
-// PV on top of the balance (#921).
 func TestComputeTotalPortfolioValue_SharedWalletManualNoDoubleCount(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	strategies := []StrategyConfig{
@@ -1136,7 +982,6 @@ func TestComputeTotalPortfolioValue_SharedWalletManualNoDoubleCount(t *testing.T
 	}
 }
 
-// Missing balance: fallback sums perps + manual member PVs once each (no double count).
 func TestComputeTotalPortfolioValue_SharedWalletManualFallback(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	strategies := []StrategyConfig{
@@ -1160,8 +1005,6 @@ func TestComputeTotalPortfolioValue_SharedWalletManualFallback(t *testing.T) {
 	}
 }
 
-// Paper / record-only same-account manuals carry a separate virtual book and
-// must stay in the per-strategy sum — only live manuals are deduped (#921).
 func TestComputeTotalPortfolioValue_PaperManualNotDeduped(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	strategies := []StrategyConfig{
@@ -1212,7 +1055,7 @@ func TestSharedWalletPoolAvailableMarginReservesAllAccountPositions(t *testing.T
 		map[string]float64{"BTC": 100, "ETH": 200, "SOL": 50},
 		shared, map[SharedWalletKey]float64{key: 1000},
 	)
-	// Deployed margin: BTC 20 + ETH 40 + manual SOL 25.
+
 	if !pooled || !balanceKnown || available != 915 {
 		t.Fatalf("available=%v pooled=%v known=%v, want 915/true/true", available, pooled, balanceKnown)
 	}
@@ -1270,8 +1113,7 @@ func TestSharedWalletPoolAvailableMarginReservesUnderwaterEntryMargin(t *testing
 		map[string]float64{"BTC": 70, "ETH": 250},
 		shared, map[SharedWalletKey]float64{key: 1000},
 	)
-	// BTC is underwater, so reserve entry margin: 1*100/5 = 20.
-	// ETH is above entry, so reserve mark margin: 2*250/10 = 50.
+
 	if !pooled || !balanceKnown || available != 930 {
 		t.Fatalf("available=%v pooled=%v known=%v, want 930/true/true", available, pooled, balanceKnown)
 	}
@@ -1325,17 +1167,12 @@ func TestResolveSharedWalletRiskBalancesProtectsDeferredPoolExit(t *testing.T) {
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xpool"}
 	cache := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 
-	// The new config is allocated, but the durable marker proves the books have
-	// not been reseeded yet. With no current or prior balance the equity arm
-	// must be suppressed rather than evaluating the zero-baseline books.
 	resolved, stale, complete := resolveSharedWalletRiskBalances(
 		strategies, states, shared, nil, cache, 1)
 	if stale || complete || len(resolved) != 0 {
 		t.Fatalf("deferred exit miss: resolved=%v stale=%v complete=%v", resolved, stale, complete)
 	}
 
-	// The process-local latch independently protects the interval between
-	// deferring the exit and any later state inspection.
 	deferredStrategies := append([]StrategyConfig(nil), strategies...)
 	deferredStrategies[0].sharedWalletModeDeferred = true
 	_, stale, complete = resolveSharedWalletRiskBalances(
@@ -1344,8 +1181,6 @@ func TestResolveSharedWalletRiskBalancesProtectsDeferredPoolExit(t *testing.T) {
 		t.Fatalf("process-local deferred exit must suppress equity: stale=%v complete=%v", stale, complete)
 	}
 
-	// If the exchange recovers before the first risk evaluation, normal equity
-	// evaluation resumes immediately from the real balance.
 	resolved, stale, complete = resolveSharedWalletRiskBalances(
 		strategies, states, shared, map[SharedWalletKey]float64{key: 8000}, cache, 2)
 	if stale || !complete || resolved[key] != 8000 {
@@ -1470,26 +1305,22 @@ func TestSharedWalletPoolFlipPreservesSignedAccountHeadroom(t *testing.T) {
 	}{
 		{
 			name: "deficit remains after release and closes only",
-			// Equity 100 - reservations 60 and 120 = -80; releasing 60
-			// still leaves -20, so the new side must be zero.
+
 			flippingQty: 6, peerQty: 12, wantAvailable: -80, wantSize: 6,
 		},
 		{
 			name: "deficit before release sizes within true remainder",
-			// Equity 100 - reservations 60 and 60 = -20; releasing 60
-			// leaves exactly 40 for the new side.
+
 			flippingQty: 6, peerQty: 6, wantAvailable: -20, wantSize: 10,
 		},
 		{
 			name: "only position can reuse full equity",
-			// Equity 100 - own reservation 60 = 40; releasing 60 leaves
-			// the full 100 for the new side.
+
 			flippingQty: 6, wantAvailable: 40, wantSize: 16,
 		},
 		{
 			name: "healthy wallet keeps existing sizing",
-			// Equity 100 - reservations 20 and 20 = 60; releasing 20
-			// leaves 80 for the new side.
+
 			flippingQty: 2, peerQty: 2, wantAvailable: 60, wantSize: 10,
 		},
 	}

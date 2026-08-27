@@ -17,7 +17,7 @@ import (
 
 const (
 	tuningPromotionJournalFile = "promotions.json"
-	tuningApplyBodyLimit       = 4 << 10 // 4 KiB — identity triple only
+	tuningApplyBodyLimit       = 4 << 10
 	tuningResultsSchemaV2      = 2
 
 	tuningPromoPending      = "pending"
@@ -135,8 +135,6 @@ func (m *tuningRunManager) loadPromotionJournal() (tuningPromotionJournal, error
 	return journal, nil
 }
 
-// tuningJournalLoadHook is an optional test hook fired on every journal load.
-// Production leaves it nil.
 var tuningJournalLoadHook func()
 
 func (m *tuningRunManager) storePromotionJournal(journal tuningPromotionJournal) error {
@@ -185,9 +183,6 @@ func (m *tuningRunManager) getPromotion(runID, strategyID, suggestionKey string)
 	return journal.Promotions[idx], true, nil
 }
 
-// promotionIndex loads promotions.json once and returns records keyed by
-// tuningPromotionKey. Used by the polled eligibility overlay so one detail GET
-// does not re-read the journal once per ranked row.
 func (m *tuningRunManager) promotionIndex() (map[string]tuningPromotionRecord, error) {
 	m.journalMu.Lock()
 	defer m.journalMu.Unlock()
@@ -390,8 +385,6 @@ func rawFieldPresence(root map[string]json.RawMessage, key string) (json.RawMess
 	return append(json.RawMessage(nil), raw...), true
 }
 
-// extractLiveBaselineHook is an optional test hook fired on every live-baseline
-// extract. Production leaves it nil.
 var extractLiveBaselineHook func()
 
 func extractLivePromotionBaseline(root map[string]json.RawMessage, strategyID string) (tuningPromotionBaseline, error) {
@@ -440,8 +433,6 @@ func extractLiveOpenStrategy(root map[string]json.RawMessage, strategyID string)
 	return baseline.OpenStrategy, baseline.OpenStrategyPresent, nil
 }
 
-// replaceStrategyOpenStrategy sets the target strategy's open_strategy to patch
-// verbatim. It refuses zero or duplicate strategy id matches.
 func replaceStrategyOpenStrategy(root map[string]json.RawMessage, strategyID string, patch json.RawMessage) error {
 	if strategyID == "" {
 		return errors.New("strategy id is required")
@@ -495,8 +486,7 @@ func (m *tuningRunManager) resolveApplyTarget(runID, strategyID, suggestionKey s
 	if !validTuningRunID(runID) {
 		return tuningApplyTarget{}, tuningReasonRunMissing, os.ErrNotExist
 	}
-	// Applied records must stay idempotent even after #1382 prune removed the
-	// run directory and in-memory record. Check the journal before any run lookup.
+
 	if promo, ok, jerr := m.getPromotion(runID, strategyID, suggestionKey); jerr == nil && ok && promo.State == tuningPromoApplied {
 		return tuningApplyTarget{
 			RunID: runID, StrategyID: strategyID, SuggestionKey: suggestionKey,
@@ -646,8 +636,7 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 		liveRootOK = liveRoot
 	}
 	promoIdx, promoErr := m.promotionIndex()
-	// Cache one live baseline lookup per strategy id — ranked rows under the
-	// same strategy share it (polled detail GET must not rescan N times).
+
 	liveBaselines := map[string]tuningPromotionBaseline{}
 	liveBaselineErrs := map[string]error{}
 	lookupLive := func(strategyID string) (*tuningPromotionBaseline, error) {
@@ -720,7 +709,7 @@ func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason s
 			if rec.AppliedAt != nil {
 				at = *rec.AppliedAt
 			}
-			// Idempotent retry of an already-finalized promotion — no reload signal.
+
 			return tuningReasonAlreadyApplied, at, "", nil
 		case tuningPromoManualReview:
 			return tuningReasonManualReview, time.Time{}, "", errors.New("promotion requires manual review")
@@ -729,8 +718,6 @@ func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason s
 		}
 	}
 
-	// Optimistic pre-check avoids journaling an obvious drift. The in-transaction
-	// compare under configWriteMu remains the authoritative gate.
 	if root, err := readConfigRootMap(ss.configPath); err != nil {
 		return tuningReasonConflict, time.Time{}, "", err
 	} else if liveBaseline, err := extractLivePromotionBaseline(root, target.StrategyID); err != nil {
@@ -780,8 +767,7 @@ func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, 
 		if err := ss.tuning.upsertPromotion(rec); err != nil {
 			return tuningReasonConflict, time.Time{}, "", err
 		}
-		// Config already matches on disk, but the running daemon may still hold
-		// the pre-crash in-memory value — signal reload like a fresh apply.
+
 		return tuningReasonAlreadyApplied, now, ss.triggerConfigReload(), nil
 	}
 	liveBaseline, err := extractLivePromotionBaseline(root, target.StrategyID)
@@ -812,13 +798,11 @@ func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending 
 		return finalizePendingManualReview(ss.tuning, pending, "baseline drifted during apply", tuningReasonBaselineDrift, errTuningBaselineDrifted)
 	}
 	if isTuningStrategyIdentityError(err) {
-		// Strategy removed/duplicated between the unlocked pre-check and the
-		// locked write — settle pending to manual_review so retries cannot
-		// loop on the same permanent identity failure forever.
+
 		return finalizePendingManualReview(ss.tuning, pending, "target strategy missing or ambiguous during apply", tuningReasonManualReview, err)
 	}
 	if err != nil {
-		// Transient/unrelated errors leave pending so a clean retry can proceed.
+
 		return tuningReasonConflict, time.Time{}, "", err
 	}
 	now := ss.tuning.now()
@@ -828,9 +812,7 @@ func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending 
 	if err := ss.tuning.upsertPromotion(pending); err != nil {
 		return tuningReasonConflict, time.Time{}, "", err
 	}
-	// Mirror every other UI config-write path: signal SIGHUP so the daemon
-	// adopts the promoted open_strategy. A failed signal degrades to a warning
-	// string — the write already landed.
+
 	return tuningReasonApplied, now, ss.triggerConfigReload(), nil
 }
 

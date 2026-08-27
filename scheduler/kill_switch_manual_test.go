@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-// #1454 regression tests: live type=manual strategies join the kill-switch
-// close scope, fill booking, virtual-quantity split, resting-trigger cancel,
-// and unconfigured-coin detection. Before this fix a mixed fleet skipped
-// manual-only coins silently and booked model-only rows for them even when a
-// real exchange fill existed.
-
 func TestPlanKillSwitchClose_ManualOnlyCoinClosedAndBooked(t *testing.T) {
 	roster := []StrategyConfig{
 		{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
@@ -90,8 +84,7 @@ func TestPlanKillSwitchClose_ManualOnlyCoinCloseFailureLatches(t *testing.T) {
 	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		return nil, fmt.Errorf("simulated HL close failure")
 	}
-	// Post-close verification fetch must still show the position open — the
-	// closer failed, so nothing closed it on-chain.
+
 	fetcher, _ := stubHLStateFetcher(positions, nil)
 
 	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, roster,
@@ -126,8 +119,7 @@ func TestPlanKillSwitchClose_MixedFleetUnconfiguredCoinBlocksFlat(t *testing.T) 
 			Platform: "hyperliquid",
 		}, nil
 	}
-	// Post-close verification fetch must still show the position open — the
-	// closer failed, so nothing closed it on-chain.
+
 	fetcher, _ := stubHLStateFetcher(positions, nil)
 
 	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, roster,
@@ -206,7 +198,7 @@ func TestCollectHLKillSwitchStopOIDs_IncludesManualTriggers(t *testing.T) {
 func TestCollectHLKillSwitchStopOIDs_LowerCaseManualSymbolFallsBackToRawKey(t *testing.T) {
 	strategies := map[string]*StrategyState{
 		"hl-manual-sol-live": {Positions: map[string]*Position{
-			"sol": {StopLossOID: 444}, // operator-entered lower-case symbol
+			"sol": {StopLossOID: 444},
 		}},
 	}
 	roster := []StrategyConfig{
@@ -214,8 +206,7 @@ func TestCollectHLKillSwitchStopOIDs_LowerCaseManualSymbolFallsBackToRawKey(t *t
 			Args: []string{"hold", "sol", "1h", "--mode=live"}},
 	}
 	out := collectHLKillSwitchStopOIDs(strategies, roster)
-	// RAW key: the stop-OID map is consumed by forceCloseHyperliquidLive's
-	// raw on-chain p.Coin lookup.
+
 	if !reflect.DeepEqual(out["sol"], []int64{444}) {
 		t.Errorf("sol OIDs = %v; want [444] under the raw configured symbol", out["sol"])
 	}
@@ -243,15 +234,13 @@ func TestModelOnlyCloseAlert_ThrottledPerStrategySymbol(t *testing.T) {
 }
 
 func TestQueueModelOnlyCloseAlert_DrainsAndSkipsEmpty(t *testing.T) {
-	drainModelOnlyCloseAlerts() // clear any residue from other tests
+	drainModelOnlyCloseAlerts()
 	queueModelOnlyCloseAlert("", "ETH", 1.0)
 	queueModelOnlyCloseAlert("strat", "", 1.0)
 	if got := drainModelOnlyCloseAlerts(); len(got) != 0 {
 		t.Fatalf("empty strategy/symbol must not queue, got %+v", got)
 	}
 
-	// Direct queue path with fresh keys (the shared global throttle may already
-	// hold slots from other tests — use unique IDs).
 	id := "queue-drain-test-strat"
 	queueModelOnlyCloseAlert(id, "UNIQ", 2.5)
 	got := drainModelOnlyCloseAlerts()
@@ -270,11 +259,7 @@ func TestQueueModelOnlyCloseAlert_DrainsAndSkipsEmpty(t *testing.T) {
 }
 
 func TestPlanKillSwitchClose_DeclaredButFlatHedgeCoinStaysUnowned(t *testing.T) {
-	// #1159 invariant under the #1454 roster: a coin a strategy merely DECLARES
-	// as its hedge — with no held leg — may carry a genuinely foreign position,
-	// so it must stay outside the close scope even though the roster now spans
-	// perps+manual. It must, however, be REPORTED as unowned rather than
-	// silently skipped.
+
 	roster := []StrategyConfig{
 		{ID: "hl-perps-eth-live", Platform: "hyperliquid", Type: "perps",
 			Args:  []string{"sma", "ETH", "1h", "--mode=live"},
@@ -293,7 +278,7 @@ func TestPlanKillSwitchClose_DeclaredButFlatHedgeCoinStaysUnowned(t *testing.T) 
 	in := defaultHLInputs("0xaddr", true, positions, roster,
 		"portfolio drawdown 25.0% exceeds limit 20.0%",
 		time.Second, closer, fetcher)
-	in.HLHedgeCoins = map[string]bool{} // nothing HELD — SOL is declared-but-flat
+	in.HLHedgeCoins = map[string]bool{}
 	plan := planKillSwitchClose(in)
 
 	if plan.OnChainConfirmedFlat {
@@ -313,9 +298,6 @@ func TestPlanKillSwitchClose_DeclaredButFlatHedgeCoinStaysUnowned(t *testing.T) 
 	}
 }
 
-// #1457 review round 2: a HELD latch must not discard what the closers
-// positively settled. HL legs with confirmed fills book the real fill;
-// unsettled legs stay in the book for the retry.
 func TestApplyKillSwitchSettledLegsWhileLatched_BooksConfirmedHLFill(t *testing.T) {
 	cfgs := []StrategyConfig{
 		{ID: "hl-eth", Platform: "hyperliquid", Type: "perps",
@@ -354,8 +336,6 @@ func TestApplyKillSwitchSettledLegsWhileLatched_BooksConfirmedHLFill(t *testing.
 		t.Errorf("booked fill = PnL %.4f fee %.4f; want 100 / 0.5", booked.RealizedPnL, booked.ExchangeFee)
 	}
 
-	// Re-running on the next latched cycle (already-flat recovery re-finding
-	// the same fill) must be a no-op — no double booking (#954 dedupe).
 	before := len(state.TradeHistory)
 	applyKillSwitchSettledLegsWhileLatched(strategies, cfgs, &plan, cfgs, virtualQty,
 		map[string]float64{"ETH": 2100}, nil)
@@ -376,7 +356,7 @@ func TestApplyKillSwitchSettledLegsWhileLatched_UnsettledLegStays(t *testing.T) 
 		},
 	}
 	strategies := map[string]*StrategyState{"hl-sol": state}
-	plan := KillSwitchClosePlan{OnChainConfirmedFlat: false} // SOL close ERRORED — no fill
+	plan := KillSwitchClosePlan{OnChainConfirmedFlat: false}
 
 	applyKillSwitchSettledLegsWhileLatched(strategies, cfgs, &plan, cfgs, nil,
 		map[string]float64{"SOL": 90}, nil)
@@ -413,7 +393,7 @@ func TestApplyKillSwitchSettledLegsWhileLatched_OKXClosedCoinBooksModelOnly(t *t
 	}
 	strategies := map[string]*StrategyState{"okx-btc": okxState, "hl-btc": hlState}
 	plan := KillSwitchClosePlan{OnChainConfirmedFlat: false}
-	plan.OKXCloseReport.ClosedCoins = []string{"BTC"} // OKX leg settled; HL coin UNRELATED
+	plan.OKXCloseReport.ClosedCoins = []string{"BTC"}
 
 	applyKillSwitchSettledLegsWhileLatched(strategies, append(append([]StrategyConfig{}, okxCfgs...), hlCfgs...),
 		&plan, nil, nil, map[string]float64{"BTC": 51000}, nil)
@@ -424,8 +404,7 @@ func TestApplyKillSwitchSettledLegsWhileLatched_OKXClosedCoinBooksModelOnly(t *t
 	if len(okxState.TradeHistory) != 1 || !okxState.TradeHistory[0].IsClose {
 		t.Fatalf("OKX close row missing: %+v", okxState.TradeHistory)
 	}
-	// Platform gating: the OKX closed-coin set must never touch an HL strategy's
-	// same-named symbol — that leg settles only through its own fill or sweep.
+
 	if hlState.Positions["BTC"] == nil || math.Abs(hlState.Positions["BTC"].Quantity-3.0) > 1e-9 {
 		t.Errorf("HL position must be untouched by the OKX settled set, got %+v", hlState.Positions)
 	}
@@ -444,10 +423,6 @@ func TestSettledKillSwitchSymbols_PlatformKeyed(t *testing.T) {
 	}
 }
 
-// #1454 review: every kill-switch surface must resolve a manual strategy's
-// coin through the ONE symbol-first resolver, so a hand-written args list
-// whose args[1] diverges from Symbol can never split close scope from fill
-// booking / trigger cancel.
 func TestHyperliquidRawCoin_ManualSymbolWinsOverArgs(t *testing.T) {
 	sc := StrategyConfig{Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
 		Args: []string{"hold", "BTC", "1h", "--mode=live"}}
@@ -465,11 +440,7 @@ func TestHyperliquidRawCoin_ManualSymbolWinsOverArgs(t *testing.T) {
 }
 
 func TestForceCloseHyperliquidLive_ManualDivergentArgsStaysInCloseScope(t *testing.T) {
-	// A manual strategy whose hand-written args[1] names a different coin than
-	// its configured symbol must still be closed and booked under sc.Symbol —
-	// the pre-review resolver treated args[1] as authoritative for the close
-	// scope only, leaving the real position unowned while every booking surface
-	// keyed under the symbol.
+
 	roster := []StrategyConfig{
 		{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
 			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
@@ -521,8 +492,7 @@ func TestForceCloseHyperliquidLive_ManualDivergentArgsStaysInCloseScope(t *testi
 
 func TestForceCloseAllPositions_ModelOnlyAlertLiveGate(t *testing.T) {
 	drainModelOnlyCloseAlerts()
-	// Unique (strategy, symbol) per sub-case: the global throttle holds slots
-	// for the process lifetime, so shared keys would mask later firings.
+
 	liveHL := StrategyConfig{ID: "mo-gate-live-hl", Platform: "hyperliquid", Type: "perps",
 		Args: []string{"sma", "MOHLIVE", "1h", "--mode=live"}}
 	paperHL := StrategyConfig{ID: "mo-gate-paper-hl", Platform: "hyperliquid", Type: "perps",
@@ -540,7 +510,6 @@ func TestForceCloseAllPositions_ModelOnlyAlertLiveGate(t *testing.T) {
 		return &Position{Symbol: sym, Quantity: 1.0, AvgCost: 100, Side: "long"}
 	}
 
-	// Paper HL perps: model-only row is expected bookkeeping — NO alert.
 	forceCloseAllPositions(mkState(paperHL.ID, "MOHPAPER", long("MOHPAPER")), &paperHL,
 		map[string]float64{"MOHPAPER": 90}, nil)
 	for _, a := range drainModelOnlyCloseAlerts() {
@@ -549,7 +518,6 @@ func TestForceCloseAllPositions_ModelOnlyAlertLiveGate(t *testing.T) {
 		}
 	}
 
-	// Live OKX spot (no auto-close path): still alerts.
 	forceCloseAllPositions(mkState(okxSpot.ID, "MOOKX", long("MOOKX")), &okxSpot,
 		map[string]float64{"MOOKX": 90}, nil)
 	foundOKX := false
@@ -562,7 +530,6 @@ func TestForceCloseAllPositions_ModelOnlyAlertLiveGate(t *testing.T) {
 		t.Error("live non-HL venue with no auto-close path must still raise the model-only DM")
 	}
 
-	// Live HL perps: alerts.
 	forceCloseAllPositions(mkState(liveHL.ID, "MOHLIVE", long("MOHLIVE")), &liveHL,
 		map[string]float64{"MOHLIVE": 90}, nil)
 	foundHL := false
@@ -575,8 +542,6 @@ func TestForceCloseAllPositions_ModelOnlyAlertLiveGate(t *testing.T) {
 		t.Error("live HL perps force-close without a fill must raise the model-only DM")
 	}
 
-	// Corrupt position (qty<=0 OR avgCost<=0): #1009 books a zero-PnL leg with
-	// details set → silent on every mode.
 	corruptPos := &Position{Symbol: "MOCORRUPT", Quantity: -1e-7, AvgCost: 0, Side: "long"}
 	forceCloseAllPositions(mkState(liveHL.ID, "MOCORRUPT", corruptPos), &liveHL,
 		map[string]float64{"MOCORRUPT": 90}, nil)

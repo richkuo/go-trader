@@ -5,9 +5,6 @@ import (
 	"time"
 )
 
-// TestPositionSLAfterFieldsRoundTrip verifies that the new #708 columns
-// (sl_adjusted_tiers_processed, post_tp_trailing_atr_mult) survive a
-// save/load cycle.
 func TestPositionSLAfterFieldsRoundTrip(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().UTC().Truncate(time.Nanosecond)
@@ -56,8 +53,6 @@ func TestPositionSLAfterFieldsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPositionSLAfterFields_DefaultsForLegacyRow confirms that a row written
-// without explicit values lands on the documented defaults (0, nil).
 func TestPositionSLAfterFields_DefaultsForLegacyRow(t *testing.T) {
 	db := openTestDB(t)
 	state := &AppState{

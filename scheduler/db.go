@@ -15,17 +15,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// initialCapitalGuardWarn is the operator-visible hook for #343 baseline-guard
-// warnings. main.go wires it to the owner DM after MultiNotifier is built so
-// silent overwrites surface beyond stderr. Nil-safe: SaveState falls back to
-// stderr-only when the hook isn't set (early boot, tests).
 var initialCapitalGuardWarn func(msg string)
 
-// initialCapitalGuardWarned dedups baseline-guard warnings to one per strategy
-// per process lifetime. Without this the per-cycle SaveState would re-emit the
-// same warning forever once config drifts from the persisted baseline. Cleared
-// on restart so a still-broken caller is re-flagged after redeploy.
-var initialCapitalGuardWarned sync.Map // map[string]struct{}, key = strategy ID
+var initialCapitalGuardWarned sync.Map
 
 const schemaDDL = `
 CREATE TABLE IF NOT EXISTS app_state (
@@ -445,12 +437,10 @@ CREATE TABLE IF NOT EXISTS regime_reversal_alerts (
 );
 `
 
-// StateDB wraps a SQLite database for persistent state storage.
 type StateDB struct {
 	db *sql.DB
 }
 
-// OpenStateDB opens (or creates) the SQLite database at the given path.
 func OpenStateDB(path string) (*StateDB, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -486,218 +476,136 @@ func OpenStateDB(path string) (*StateDB, error) {
 	return sdb, nil
 }
 
-// migrateSchema adds columns that may be missing from older databases.
 func (sdb *StateDB) migrateSchema() error {
-	// Add exchange_order_id and exchange_fee to trades table (added in #219).
+
 	migrations := []string{
 		"ALTER TABLE trades ADD COLUMN exchange_order_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE trades ADD COLUMN exchange_fee REAL NOT NULL DEFAULT 0",
-		// Position lifecycle tracking (#288).
+
 		"ALTER TABLE positions ADD COLUMN opened_at TEXT NOT NULL DEFAULT ''",
-		// Portfolio margin drawdown + kill-switch source tracking (#296 review).
+
 		"ALTER TABLE portfolio_risk ADD COLUMN current_margin_drawdown_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE kill_switch_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
-		// Portfolio warning diagnostics (#904).
+
 		"ALTER TABLE portfolio_risk ADD COLUMN warn_band_entered_at TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE portfolio_risk ADD COLUMN last_warning_equity_dd_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN last_warning_margin_dd_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN warning_equity_delta_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN warning_margin_delta_pct REAL NOT NULL DEFAULT 0",
-		// Per-leaderboard-summary last-post timestamps stored as JSON (#308).
+
 		"ALTER TABLE app_state ADD COLUMN last_leaderboard_summaries TEXT NOT NULL DEFAULT ''",
-		// Per-channel regular summary last-post timestamps stored as JSON (#474).
+
 		"ALTER TABLE app_state ADD COLUMN last_summary_post TEXT NOT NULL DEFAULT ''",
-		// Per-trade HL stop-loss trigger OID (#412).
+
 		"ALTER TABLE positions ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
-		// Per-trade HL stop-loss trigger price for later-fill reconciliation (#421).
+
 		"ALTER TABLE positions ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
-		// Trailing SL high/low-water mark while the position is open (#501).
+
 		"ALTER TABLE positions ADD COLUMN stop_loss_high_water_px REAL NOT NULL DEFAULT 0",
-		// Lifetime round-trip / win-loss tracking (#455). is_close marks closing
-		// legs; realized_pnl carries the per-trade realized PnL.
+
 		"ALTER TABLE trades ADD COLUMN is_close INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN realized_pnl REAL NOT NULL DEFAULT 0",
 		"CREATE INDEX IF NOT EXISTS idx_trades_close ON trades(strategy_id, is_close)",
-		// Per-position trade grouping (#471).
+
 		"ALTER TABLE trades ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE option_positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_position ON trades(strategy_id, position_id)",
-		// Position-aware close evaluator context (#496).
+
 		"ALTER TABLE positions ADD COLUMN initial_quantity REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
-		// Market regime label at trade time (#482).
+
 		"ALTER TABLE trades ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE trades ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
-		// Manual trade flag (#569).
+
 		"ALTER TABLE trades ADD COLUMN manual INTEGER NOT NULL DEFAULT 0",
-		// Operator-intent full-close flag for manual close actions (#569 review).
+
 		"ALTER TABLE pending_manual_actions ADD COLUMN is_full_close INTEGER NOT NULL DEFAULT 0",
-		// Per-strategy HL reduce-only take-profit OIDs (#601).
+
 		"ALTER TABLE positions ADD COLUMN tp1_oid INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN tp2_oid INTEGER NOT NULL DEFAULT 0",
-		// Variable-length per-strategy HL reduce-only take-profit OIDs (#612).
+
 		"ALTER TABLE positions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
-		// Inline TP OIDs for manual-open actions so the scheduler drain sets pos.TPOIDs (#632).
+
 		"ALTER TABLE pending_manual_actions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
-		// SL arming method + TP tier snapshot at fill time (#669). stop_loss_atr_mult
-		// stays nullable: NULL = legacy/unknown or non-ATR arming (pct/margin/trailing-pct);
-		// non-NULL = ATR-armed at the recorded multiplier. tp_tiers_json carries the
-		// full tier snapshot ([{atr_multiple,close_fraction},...]) so historical
-		// tier-config edits don't erase the record. Both columns are additive — no
-		// backfill of legacy rows.
+
 		"ALTER TABLE trades ADD COLUMN stop_loss_atr_mult REAL",
 		"ALTER TABLE trades ADD COLUMN tp_tiers_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN stop_loss_atr_mult REAL",
 		"ALTER TABLE positions ADD COLUMN tp_tiers_json TEXT NOT NULL DEFAULT ''",
-		// Immutable trade-row snapshot of protection OIDs known at open time (#674).
+
 		"ALTER TABLE trades ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
-		// Post-TP stop-loss adjustment watermark + post-TP trailing distance (#708).
-		// sl_adjusted_tiers_processed counts how many leading tiers have been
-		// processed; 0 = none, matching the Go zero value so the column never
-		// needs a backfill for legacy rows.
+
 		"ALTER TABLE positions ADD COLUMN sl_adjusted_tiers_processed INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN post_tp_trailing_atr_mult REAL",
-		// Per-tier "was ever armed" tracking so a tier whose first placement
-		// failed (OID=0, never armed) can be distinguished from a tier that
-		// filled (OID=0 after Python zeros it). Empty string = legacy row;
-		// findHighestClearedTier degrades to legacy behavior for those (#716).
+
 		"ALTER TABLE positions ADD COLUMN tp_armed_tiers_json TEXT NOT NULL DEFAULT ''",
-		// Multi-window regime stamps at position open (#792).
+
 		"ALTER TABLE positions ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN regime_windows_json TEXT NOT NULL DEFAULT ''",
-		// #843 dynamic close confirm-cycle state.
+
 		"ALTER TABLE positions ADD COLUMN regime_pending_label TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN regime_pending_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN regime_applied_label TEXT NOT NULL DEFAULT ''",
-		// #873 scale-in / pyramiding per-position state.
+
 		"ALTER TABLE positions ADD COLUMN scale_in_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN last_add_price REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN added_notional_usd REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN risk_anchor_price REAL NOT NULL DEFAULT 0",
-		// #873: durable resize-pending flag so a restart between an add and the
-		// deferred trailing-SL re-size still grows the on-chain stop next cycle.
+
 		"ALTER TABLE positions ADD COLUMN scale_in_resize_pending INTEGER NOT NULL DEFAULT 0",
-		// #1121: durable one-shot marker so a manual-open ratchet fallback SL can
-		// widen once to the configured per-regime trail after the daemon stamps regime.
+
 		"ALTER TABLE positions ADD COLUMN ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE pending_manual_actions ADD COLUMN ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0",
-		// #954 gross PnL convention marker + fee provenance. pnl_gross=1 rows
-		// store the PRE-FEE realized PnL in realized_pnl with the deducted fee
-		// always stamped in exchange_fee; legacy rows (0) store net PnL and
-		// stamp exchange_fee only when a real fill fee was captured. All sums
-		// must go through tradeNetPnLSQL / tradeLedgerDeltaSQL (trade_pnl.go)
-		// so the two conventions never mix. fee_source records provenance:
-		// 'userfills' (real exchange fee) vs 'modeled' (taker-rate estimate) —
-		// `backfill trade-ledger` targets modeled rows for repair.
+
 		"ALTER TABLE trades ADD COLUMN pnl_gross INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN fee_source TEXT NOT NULL DEFAULT ''",
-		// #998: regime-profile allocation persistence. open_profile freezes the
-		// profile for the life of a position; active_profile keeps the flat
-		// switch state across restarts.
+
 		"ALTER TABLE positions ADD COLUMN open_profile TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE strategies ADD COLUMN active_profile TEXT NOT NULL DEFAULT ''",
-		// #1085: freeze the directional-certification verdict at open so it
-		// survives restarts — without this an open CERTIFIED position reloads as
-		// uncertified (pos.Regime persists, so the open-time stamp is never
-		// re-derived) and gets migrated to base direction (req-2 violation).
+
 		"ALTER TABLE positions ADD COLUMN direction_certified_at_open INTEGER NOT NULL DEFAULT 0",
-		// #1085 (per-state sign gate): freeze the certified PER-STATE direction
-		// map at open so an open position's sign gating (hold-on-transition AND the
-		// #822 orphan check) uses the open-time evidence, immune to a live-artifact
-		// change (req 2). Empty string = uncertified at open → base direction.
+
 		"ALTER TABLE positions ADD COLUMN direction_certified_states_json TEXT NOT NULL DEFAULT ''",
-		// #1137: LLM entry-analysis idempotency marker + completed verdict.
-		// Both persist so a restart never re-dispatches an analysis and a
-		// finished verdict survives to the close-time diagnostics row.
+
 		"ALTER TABLE positions ADD COLUMN llm_analysis_requested INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN llm_verdict TEXT NOT NULL DEFAULT ''",
-		// #1277 optional hardening: freeze the resolved atr_method at open so
-		// checkATRMethodDriftAtStartup can detect a config edit + restart (not
-		// SIGHUP) that changed the effective method while the position stayed
-		// open — a gap the SIGHUP hot-reload guard can't see. "" = pre-#1277
-		// position, never stamped.
+
 		"ALTER TABLE positions ADD COLUMN atr_method_at_open TEXT NOT NULL DEFAULT ''",
-		// #1159 correlated hedge legs: hedge_for names the PRIMARY symbol an
-		// auto-managed hedge leg is coupled to ('' = ordinary position), and
-		// hedge_primary_qty_basis is the primary quantity the leg was last
-		// sized against. Ownership is recovered from these persisted columns at
-		// startup and NEVER inferred from coin -> configured-symbol mapping.
+
 		"ALTER TABLE positions ADD COLUMN hedge_for TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN hedge_primary_qty_basis REAL NOT NULL DEFAULT 0",
-		// #1277 hardening (review round 2): manual opens resolve atr_method at
-		// queue time (next to the EntryATR fetch in manualOpenCore) and carry
-		// it through the pending queue so the drain stamps the method the ATR
-		// was actually computed under — a drain-time re-resolve would mask a
-		// config edit + restart landing between queue and drain. "" = row
-		// queued pre-upgrade; the drain falls back to drain-time resolution.
+
 		"ALTER TABLE pending_manual_actions ADD COLUMN atr_method TEXT NOT NULL DEFAULT ''",
-		// #1394: persist the live-spot cash-reconcile latch so a restart (or a
-		// second restart after ValidateState clamped cash to 0) cannot silently
-		// clear the "books still need reconciliation" guard.
+
 		"ALTER TABLE strategies ADD COLUMN cash_reconcile_required INTEGER NOT NULL DEFAULT 0",
-		// #1408: remember whether a strategy's cash book is currently a
-		// zero-baseline shared-wallet performance book. This makes pool entry
-		// and exit one-time transitions rather than restart-time reseeds.
+
 		"ALTER TABLE strategies ADD COLUMN shared_wallet_pool_budget INTEGER NOT NULL DEFAULT 0",
-		// #1411: Hurst entry-gate hysteresis latch (JSON: threshold key +
-		// armed/disarmed state + last reading). Persisted so a disarmed gate
-		// survives a restart instead of silently re-arming on the next cycle;
-		// the embedded key discards the latch whenever a threshold changes.
+
 		"ALTER TABLE strategies ADD COLUMN hurst_gate_state TEXT NOT NULL DEFAULT ''",
-		// #1431: paper replay mirror's durable cursor (highest applied decision
-		// ID), saved in the same transaction as the book mutation it records so
-		// a crash between save and the shared log's mark-applied can never
-		// re-apply (or drop) a mirrored decision on restart.
+
 		"ALTER TABLE strategies ADD COLUMN replay_mirror_watermark INTEGER NOT NULL DEFAULT 0",
-		// #1411: freeze the gate's H reading and applied size multiplier at
-		// open so a closed trade's diagnostics row can attribute its size.
-		// 0 = unstamped. The sentinel rests ONLY on the LOWER bound: every
-		// finite H is > 0 and the multiplier lands in [size_floor, 1.0].
-		// hurst_at_open is NOT capped at 1 (hurst_gate.go RANGE NOTE — the
-		// runtime metric reads ~2.0 on a near-smooth series), so a stored
-		// value above 1 is legal; never add a CHECK or a clamp against 1.
+
 		"ALTER TABLE positions ADD COLUMN hurst_at_open REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN hurst_size_mult REAL NOT NULL DEFAULT 0",
-		// #1411: diagnostics-only columns; nullable, matching the other
-		// optional trade_diagnostics metrics. Never near llm_verdict, whose
-		// sole writer stays the #1147 close path.
+
 		"ALTER TABLE trade_diagnostics ADD COLUMN hurst_at_open REAL",
 		"ALTER TABLE trade_diagnostics ADD COLUMN hurst_size_mult REAL",
-		// #1444 (PR review): one-shot latch for the manual valuation-basis peak
-		// migration. Manual positions moved from an AvgCost valuation onto the
-		// live mark rail, so the sticky peak accumulated under the old basis
-		// has to be shifted by the basis delta exactly once. Persisted so a
-		// restart cannot move the peak a second time. Legacy DBs default to 0
-		// and run the migration on their first fully-marked cycle, which is
-		// exactly the upgrade case this closes.
+
 		"ALTER TABLE portfolio_risk ADD COLUMN manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0",
-		// #1449 (PR review): marks current_drawdown_pct as the floored
-		// decision value of an untrusted cycle rather than a direct
-		// measurement, so operator surfaces can label a percentage that does
-		// not reconcile with peak_value. Legacy DBs default to 0 and are
-		// re-stamped on their first cycle with a measurable equity total.
+
 		"ALTER TABLE portfolio_risk ADD COLUMN drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0",
-		// #1449 (PR review round 3): start of the unbroken run of over-limit
-		// untrusted equity readings that is currently deferring the portfolio
-		// latch. Persisted so a crash-restart loop cannot keep restarting the
-		// deferral window and disarm the latch forever. Legacy DBs default to
-		// empty, which reads back as the zero time — no deferral in flight,
-		// which is the correct state for a DB written before the window
-		// existed.
+
 		"ALTER TABLE portfolio_risk ADD COLUMN untrusted_over_limit_since TEXT NOT NULL DEFAULT ''",
-		// #1395: composite index so LoadState's per-strategy trade query can
-		// satisfy filter (strategy_id) + order (timestamp DESC, rowid DESC) from
-		// one index instead of the single-column strategy/timestamp indexes.
+
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_timestamp ON trades(strategy_id, timestamp DESC, rowid DESC)",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
 			msg := err.Error()
-			// "duplicate column name" means the column already exists — skip
-			// (ADD COLUMN idempotency).
+
 			if strings.Contains(msg, "duplicate column") {
 				continue
 			}
@@ -711,8 +619,7 @@ func (sdb *StateDB) migrateSchema() error {
 }
 
 func firstTwoTPOIDs(oids []int64) (int64, int64) {
-	// TODO(#612): drop legacy tp1_oid/tp2_oid writes after one release once
-	// all deployed binaries read tp_oids_json.
+
 	var first, second int64
 	if len(oids) > 0 {
 		first = oids[0]
@@ -746,9 +653,6 @@ func parseRegimeWindowsJSON(raw string) map[string]string {
 	return out
 }
 
-// marshalStringMapJSON / parseStringMapJSON are the generic map[string]string
-// JSON codecs for persisted snapshot maps that aren't regime windows (e.g. the
-// #1085 frozen certified per-state direction map). Empty/unparseable -> "".
 func marshalStringMapJSON(m map[string]string) string {
 	if len(m) == 0 {
 		return ""
@@ -797,12 +701,6 @@ func parseTPOIDsJSON(raw string, legacyTP1, legacyTP2 int64) []int64 {
 	return oids
 }
 
-// marshalTPArmedTiersJSON / parseTPArmedTiersJSON persist Position.TPArmedTiers
-// (#716 item 2). An empty slice marshals to the empty string so legacy DB
-// rows (column added with an empty default) round-trip cleanly.
-// parseTPArmedTiersJSON returns nil for empty or malformed input; callers
-// treat nil as a legacy row and rely on backfillTPArmedTiers below to
-// assume any tier with a positive OID was armed.
 func marshalTPArmedTiersJSON(armed []bool) string {
 	if len(armed) == 0 {
 		return ""
@@ -825,12 +723,6 @@ func parseTPArmedTiersJSON(raw string) []bool {
 	return armed
 }
 
-// backfillTPArmedTiers infers the armed state of legacy positions loaded from
-// rows persisted before tp_armed_tiers_json existed. A pre-#716 row carries
-// pos.TPArmedTiers == nil; we assume any tier with a positive OID at load time
-// was successfully armed at some point. Tiers with OID=0 on a legacy row are
-// left unarmed — conservative: better to skip a real fill than to fire on a
-// never-armed tier.
 func backfillTPArmedTiers(pos *Position) {
 	if pos == nil || pos.TPArmedTiers != nil {
 		return
@@ -845,48 +737,14 @@ func backfillTPArmedTiers(pos *Position) {
 	pos.TPArmedTiers = armed
 }
 
-// backfillTradeCloseFlags is a one-time best-effort backfill (#455) for
-// pre-existing rows in the trades table that lack is_close/realized_pnl.
-// New rows always insert with explicit values, so this only runs against
-// rows where is_close=0 AND realized_pnl=0 — rows already populated by a
-// fresh insert won't be touched.
-//
-// The heuristic looks at the Details string (the only structured signal
-// available on legacy rows): close legs always include "PnL" (some sites
-// use "PnL: $X.XX", others "PnL=$X.XX"), and "expired ITM" identifies
-// option assignments / call-aways. We extract the realized PnL via the
-// shared regex and flip is_close=1 for matched rows. Best-effort: a row
-// whose Details was truncated or never carried a PnL substring stays at
-// is_close=0 (and undercounts by the same margin as the legacy in-memory
-// counters did pre-#455).
-//
-// Known asymmetry: the HL on-chain "no virtual position" branch emitted
-// "Circuit breaker on-chain close (no virtual position), fill=… fee=$…"
-// in its Details — no PnL token. Pre-#455 rows from that branch therefore
-// stay is_close=0 here, while post-#455 rows from the same branch land
-// is_close=1, realized_pnl=0 (written directly by hyperliquid_balance.go).
 func (sdb *StateDB) backfillTradeCloseFlags() error {
-	// Only flag rows that haven't been touched. Detect close trades by
-	// the "PnL" substring (covers "PnL: $X" and "PnL=$X" forms) — this
-	// matches every Details string emitted by a close-leg RecordTrade
-	// call site at the time of #455.
-	// #954: gross-convention rows are excluded outright. A zero-gross close
-	// (no-mark-price AvgCost booking, exact breakeven) legitimately has
-	// realized_pnl=0 with a "PnL: $..." Details token carrying the NET value;
-	// parsing that into realized_pnl while pnl_gross=1 stays set would make
-	// tradeNetPnL subtract the fee twice. This migration is legacy-rows-only
-	// by definition.
+
 	_, err := sdb.db.Exec(`UPDATE trades SET is_close = 1
 		WHERE is_close = 0 AND realized_pnl = 0 AND COALESCE(pnl_gross, 0) = 0 AND details LIKE '%PnL%'`)
 	if err != nil {
 		return fmt.Errorf("backfill is_close: %w", err)
 	}
-	// Parse the realized PnL out of the Details string. SQLite lacks
-	// regexp by default, so we walk the rows in Go. Restrict to rows that
-	// have both is_close=1 and a "PnL" token: realized_pnl=0 rows without
-	// a PnL substring (e.g. the HL-fallback "no virtual position" branch)
-	// can never match parseDetailsPnL and would be re-scanned every boot
-	// otherwise.
+
 	rows, err := sdb.db.Query(`SELECT rowid, details FROM trades
 		WHERE is_close = 1 AND realized_pnl = 0 AND COALESCE(pnl_gross, 0) = 0 AND details LIKE '%PnL%'`)
 	if err != nil {
@@ -933,15 +791,8 @@ func (sdb *StateDB) backfillTradeCloseFlags() error {
 	return tx.Commit()
 }
 
-// pnlPattern matches the realized-PnL substring emitted by close-leg
-// RecordTrade Details strings: "PnL: $-1.23", "PnL=$4.56", "PnL: 7.89".
-// Both colon and equals are accepted; the dollar sign and sign are
-// optional. Whitespace between "PnL" and the value is tolerated.
 var pnlPattern = regexp.MustCompile(`PnL\s*[:=]\s*\$?(-?\d+(?:\.\d+)?)`)
 
-// parseDetailsPnL extracts the realized PnL value from a trade Details
-// string. Returns (0, false) when no PnL token is present. Used by the
-// #455 backfill to populate realized_pnl on legacy rows.
 func parseDetailsPnL(details string) (float64, bool) {
 	m := pnlPattern.FindStringSubmatch(details)
 	if len(m) < 2 {
@@ -954,19 +805,6 @@ func parseDetailsPnL(details string) (float64, bool) {
 	return v, true
 }
 
-// migratePendingCircuitClosesColumn handles the #356/#359 pending-close column
-// across its three possible DB states, gated on a PRAGMA table_info lookup so
-// this is a true fixed point under repeated startups:
-//
-//   - Pre-#356 DB (neither column): ADD COLUMN risk_pending_circuit_closes_json.
-//   - Post-#356, pre-#359 DB (legacy column only): RENAME to the new name.
-//   - Post-#359 DB (new column only): no-op.
-//
-// The earlier version unconditionally ran ADD COLUMN + RENAME, which re-added
-// a ghost risk_pending_hl_close_json on every post-rename startup (PR #365
-// review). CREATE TABLE uses the legacy name so fresh installs land in the
-// pre-#359 branch and get renamed; keeping CREATE TABLE untouched avoids a
-// schema fork between fresh installs and migrated DBs.
 func (sdb *StateDB) migratePendingCircuitClosesColumn() error {
 	hasLegacy, hasNew, err := sdb.strategiesColumnPresence()
 	if err != nil {
@@ -974,9 +812,7 @@ func (sdb *StateDB) migratePendingCircuitClosesColumn() error {
 	}
 	switch {
 	case hasNew:
-		// Already migrated (or legacy column somehow lingers alongside — the
-		// app only reads/writes the new column, so leave as-is rather than
-		// risk a destructive DROP COLUMN).
+
 		return nil
 	case hasLegacy:
 		_, err := sdb.db.Exec("ALTER TABLE strategies RENAME COLUMN risk_pending_hl_close_json TO risk_pending_circuit_closes_json")
@@ -987,8 +823,6 @@ func (sdb *StateDB) migratePendingCircuitClosesColumn() error {
 	}
 }
 
-// strategiesColumnPresence reports whether the strategies table currently has
-// the legacy (#356) and/or generalized (#359) pending-circuit-close columns.
 func (sdb *StateDB) strategiesColumnPresence() (hasLegacy, hasNew bool, err error) {
 	rows, err := sdb.db.Query("PRAGMA table_info(strategies)")
 	if err != nil {
@@ -1013,14 +847,10 @@ func (sdb *StateDB) strategiesColumnPresence() (hasLegacy, hasNew bool, err erro
 	return hasLegacy, hasNew, rows.Err()
 }
 
-// Close closes the database connection.
 func (sdb *StateDB) Close() error {
 	return sdb.db.Close()
 }
 
-// InsertTrade persists a single trade row immediately (#289). This is invoked
-// via the tradeRecorder hook the moment a trade is appended to TradeHistory,
-// so trades survive mid-cycle crashes even if SaveState never runs.
 func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -1047,7 +877,6 @@ func (sdb *StateDB) InsertTrade(strategyID string, trade Trade) error {
 	return nil
 }
 
-// RecentTrades returns the newest trade rows since a cutoff, newest first.
 func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -1089,7 +918,6 @@ func (sdb *StateDB) RecentTrades(since time.Time, limit int) ([]Trade, error) {
 	return out, nil
 }
 
-// RecentTradesForStrategy returns the newest trade rows for one strategy.
 func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Trade, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -1134,10 +962,6 @@ func (sdb *StateDB) RecentTradesForStrategy(strategyID string, limit int) ([]Tra
 	return out, nil
 }
 
-// UpdateTradeStampedFields updates open-trade snapshot fields on an existing
-// trade row identified by (strategy_id, timestamp). The normal same-cycle open
-// path writes these fields in InsertTrade; this remains for fallback arming
-// after the open row already exists.
 func (sdb *StateDB) UpdateTradeStampedFields(strategyID string, ts time.Time, entryATR float64, stopLossOID int64, stopLossTriggerPx float64, tpOIDs []int64, stopLossATRMult *float64, tpTiersJSON string) error {
 	_, err := sdb.db.Exec(
 		`UPDATE trades SET entry_atr = ?, stop_loss_oid = ?, stop_loss_trigger_px = ?, tp_oids_json = ?, stop_loss_atr_mult = ?, tp_tiers_json = ? WHERE strategy_id = ? AND timestamp = ?`,
@@ -1146,22 +970,6 @@ func (sdb *StateDB) UpdateTradeStampedFields(strategyID string, ts time.Time, en
 	return err
 }
 
-// ReconcileModelOnlyClose corrects a fire-time model-only circuit-breaker
-// close with the real exchange fill (#1455) in ONE transaction: the trades row,
-// its closed_positions row, and the #1147 trade_diagnostics capture. Row
-// identity is database-side — (strategy_id, timestamp) for trades per
-// UpdateTradeStampedFields, (strategy_id, symbol, close_reason, closed_at) for
-// closed_positions, and (strategy_id, position_id, closed_at) for
-// trade_diagnostics — so the correction survives a restart between the CB fire
-// and the fill. The trades WHERE clause re-asserts the uncorrected shape
-// (empty OID + reconcile_adjustment) so an already-completed row can never be
-// corrected twice. During a partial-fill sequence (#1455 review finding 1) the
-// update writes CUMULATIVE filled state and keeps the empty OID; only a
-// complete correction stamps the OID and swaps the fee source.
-//
-// Hedge legs have no diagnostics row (captureTradeDiagnostics skips them), so
-// a zero-row diagnostics update is success there; a returned error on any
-// statement fails the whole transaction (#1455 review optional 3).
 func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -1206,7 +1014,7 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	}
 
 	if u.PositionID != "" {
-		// Hedge legs never reach the diagnostics capture; zero rows is fine.
+
 		if _, err := tx.Exec(
 			`UPDATE trade_diagnostics SET exit_price = ?, realized_pnl = ?
 			 WHERE strategy_id = ? AND position_id = ? AND closed_at = ?`,
@@ -1217,13 +1025,6 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	return tx.Commit()
 }
 
-// LoadModelOnlyCloseBasis recovers the accounting basis of a persisted
-// circuit-breaker closed_positions row so a restart between the CB fire and
-// the real fill does not lose the reconcile path (#1455). closeReason is part
-// of the identity: a fill may only recover a basis produced by the SAME close
-// event, and this loader is the only basis source production executes after
-// SaveState clears the in-memory buffer (#1455 review round 2) — hardcoding
-// one reason here made the same-event guard test-only.
 func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol, closeReason string, closedAt time.Time) (*modelOnlyClosedBasis, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -1240,11 +1041,6 @@ func (sdb *StateDB) LoadModelOnlyCloseBasis(strategyID, symbol, closeReason stri
 	return &b, nil
 }
 
-// MarkModelOnlyCloseAbandoned tags an in-flight partial fill-reconciled row as
-// abandoned (#1455 review round 3 optional 1): the drain observed the coin flat
-// on-chain, so the residual is never coming through this path. The tag releases
-// scheduler ownership — `backfill trade-ledger` skips LIVE in-flight rows but
-// repairs ABANDONED ones, which is the recovery the owner DM names. Idempotent.
 func (sdb *StateDB) MarkModelOnlyCloseAbandoned(strategyID, symbol string, ts time.Time) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -1257,10 +1053,6 @@ func (sdb *StateDB) MarkModelOnlyCloseAbandoned(strategyID, symbol string, ts ti
 	return err
 }
 
-// nullableFloat64 returns a *float64 unchanged for use with database/sql so a
-// nil pointer maps to SQL NULL while a non-nil pointer's value is bound. The
-// helper exists purely as a callsite-readability anchor — passing the *float64
-// directly works the same way under database/sql but obscures intent.
 func nullableFloat64(v *float64) interface{} {
 	if v == nil {
 		return nil
@@ -1268,7 +1060,6 @@ func nullableFloat64(v *float64) interface{} {
 	return *v
 }
 
-// nullableString mirrors nullableFloat64 for *string columns (NULL when nil).
 func nullableString(v *string) interface{} {
 	if v == nil {
 		return nil
@@ -1276,23 +1067,6 @@ func nullableString(v *string) interface{} {
 	return *v
 }
 
-// SetInitialCapital is the ONLY sanctioned way to change a strategy's
-// initial_capital baseline (#343). All other write paths go through SaveState,
-// which preserves the existing baseline. Callers are expected to be an
-// explicit user command (CLI flag, admin script, config-drift reconciler at
-// startup), not normal runtime state persistence.
-//
-// Concurrency: runs inside a transaction so a concurrent SaveState observes
-// either the pre- or post-override value, never an interleaved snapshot. With
-// SQLite's single-writer model and SetMaxOpenConns(1), a SaveState already in
-// progress will serialize behind this update.
-//
-// In-memory caveat: this only updates the persisted row. Any AppState already
-// in memory still holds the stale value until reloaded — risk/PnL calculations
-// that fire before the next process restart (or in-place reload of state) will
-// continue to use the pre-override baseline. The startup config-drift path in
-// main.go handles this by mutating in-memory state alongside the DB write;
-// callers invoking this directly mid-run must do the same or accept the gap.
 func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -1319,18 +1093,12 @@ func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
-	// Allow the guard to fire again for this strategy if a future SaveState
-	// still tries to revert the new baseline — the override is a fresh state
-	// of the world.
+
 	initialCapitalGuardWarned.Delete(strategyID)
 	fmt.Fprintf(os.Stderr, "[state] initial_capital override for %s set to $%.2f (#343)\n", strategyID, value)
 	return nil
 }
 
-// PersistSharedWalletPoolStateTransition atomically stores the cash/baseline/
-// risk reset and durable mode marker produced by applySharedWalletPoolStateMode.
-// Immediate persistence prevents a crash between transition and the next
-// SaveState from applying the allocation change twice on restart.
 func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -1364,14 +1132,6 @@ func (sdb *StateDB) PersistSharedWalletPoolStateTransition(s *StrategyState) err
 	return nil
 }
 
-// SaveState writes the full AppState to SQLite within a single transaction.
-//
-// Side effect (#343): when the in-memory StrategyState carries an
-// initial_capital that disagrees with the persisted baseline, SaveState
-// rewrites the in-memory field to match the persisted value. Callers should
-// not rely on the post-save struct holding their original value — the
-// persisted baseline is treated as the source of truth. Use
-// StateDB.SetInitialCapital to change a baseline.
 func (sdb *StateDB) SaveState(state *AppState) error {
 	tx, err := sdb.db.Begin()
 	if err != nil {
@@ -1379,7 +1139,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer tx.Rollback()
 
-	// 1. Upsert app_state singleton.
 	lbSummariesJSON := ""
 	if len(state.LastLeaderboardSummaries) > 0 {
 		raw, err := json.Marshal(state.LastLeaderboardSummaries)
@@ -1407,9 +1166,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("upsert app_state: %w", err)
 	}
 
-	// 2. Snapshot existing initial_capital per strategy so the save path can
-	// never silently rewrite a PnL baseline (#343). Captured before DELETE so
-	// the CASCADE doesn't erase the prior values first.
 	existingInitCaps := make(map[string]float64)
 	existingRows, err := tx.Query("SELECT id, initial_capital FROM strategies")
 	if err != nil {
@@ -1424,22 +1180,17 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 		existingInitCaps[id] = existing
 	}
-	// rows.Next() returns false on both exhaustion and mid-iteration error;
-	// without this Err() check a transient SQLite failure would yield a
-	// silently-incomplete snapshot and leave un-snapshotted strategies
-	// unprotected by the baseline guard for this save cycle.
+
 	if err := existingRows.Err(); err != nil {
 		existingRows.Close()
 		return fmt.Errorf("iterate existing initial_capital: %w", err)
 	}
 	existingRows.Close()
 
-	// 3. Delete all strategies (CASCADE deletes positions + option_positions).
 	if _, err := tx.Exec("DELETE FROM strategies"); err != nil {
 		return fmt.Errorf("delete strategies: %w", err)
 	}
 
-	// 4. Insert strategies with flattened risk state.
 	stmtStrat, err := tx.Prepare(`INSERT OR REPLACE INTO strategies (id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
@@ -1468,11 +1219,7 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	defer stmtOpt.Close()
 
 	for _, s := range state.Strategies {
-		// Immutable baseline guard (#343): if a prior initial_capital exists
-		// and the incoming value disagrees, keep the prior value so PnL
-		// history stays comparable across restarts, state restores, and
-		// position closes. A baseline change requires an explicit override
-		// via StateDB.SetInitialCapital.
+
 		if prev, ok := existingInitCaps[s.ID]; ok && prev > 0 && s.InitialCapital != prev {
 			applyInitialCapitalGuard(s, prev)
 		}
@@ -1541,13 +1288,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 5. Append-only trades: insert any TradeHistory rows that have not yet been
-	//    persisted (t.persisted == false). LoadState and successful RecordTrade
-	//    both flip the flag to true, so SaveState only flushes the backlog —
-	//    including any rows whose eager InsertTrade earlier in the cycle
-	//    failed, even if later-timestamped rows were persisted successfully
-	//    (fixes the MAX(timestamp) dedup gap that would silently drop
-	//    out-of-order retries).
 	stmtTrade, err := tx.Prepare(`INSERT INTO trades (strategy_id, timestamp, symbol, position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, regime, entry_atr, stop_loss_oid, stop_loss_trigger_px, tp_oids_json, manual, stop_loss_atr_mult, tp_tiers_json, pnl_gross, fee_source)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
@@ -1555,8 +1295,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	}
 	defer stmtTrade.Close()
 
-	// Track which rows were flushed in this tx so we can mark them persisted
-	// only after Commit succeeds (avoids marking true on a rolled-back tx).
 	type trackedFlush struct {
 		strat *StrategyState
 		index int
@@ -1584,8 +1322,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 4b. Append buffered ClosedPosition records (#288). Skip the prepare when
-	// no strategy has any buffered closes this cycle — the typical case.
 	hasClosed := false
 	for _, s := range state.Strategies {
 		if len(s.ClosedPositions) > 0 {
@@ -1615,7 +1351,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 4c. Append buffered ClosedOptionPosition records (#288).
 	hasClosedOpt := false
 	for _, s := range state.Strategies {
 		if len(s.ClosedOptionPositions) > 0 {
@@ -1648,9 +1383,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 4d. Flush deferred trade_diagnostics rows (#1435 replay path). Native
-	// closes still eager-insert; replayed full-closes buffer here so the row
-	// commits with the close, not before it.
 	var flushedDiags []TradeDiagnosticsRow
 	for _, s := range state.Strategies {
 		rows, err := flushPendingDiagnosticsFor(tx, s)
@@ -1660,7 +1392,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		flushedDiags = append(flushedDiags, rows...)
 	}
 
-	// 6. Upsert portfolio_risk singleton.
 	ksActive := 0
 	if state.PortfolioRisk.KillSwitchActive {
 		ksActive = 1
@@ -1688,7 +1419,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		return fmt.Errorf("upsert portfolio_risk: %w", err)
 	}
 
-	// 7. Kill switch events: replace all (capped at maxKillSwitchEvents).
 	if _, err := tx.Exec("DELETE FROM kill_switch_events"); err != nil {
 		return fmt.Errorf("delete kill_switch_events: %w", err)
 	}
@@ -1706,7 +1436,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 	}
 
-	// 8. Upsert correlation_snapshot singleton as JSON.
 	snapJSON := "{}"
 	if state.CorrelationSnapshot != nil {
 		data, err := json.Marshal(state.CorrelationSnapshot)
@@ -1722,19 +1451,13 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	// Clear buffered ClosedPositions / ClosedOptionPositions only after a
-	// successful commit so that a mid-transaction failure does not silently
-	// lose history entries. Note: if SaveState fails repeatedly (e.g. disk
-	// full) these buffers grow unbounded until a successful commit drains
-	// them — acceptable given the cycle cadence, but worth knowing.
+
 	for _, s := range state.Strategies {
 		s.ClosedPositions = nil
 		s.ClosedOptionPositions = nil
 		s.pendingTradeDiagnostics = nil
 	}
-	// Mark flushed trades as persisted only after the tx has committed —
-	// otherwise a rollback would leave the flag claiming rows are in DB when
-	// they aren't, and the next SaveState would silently skip them.
+
 	for _, f := range flushed {
 		f.strat.TradeHistory[f.index].persisted = true
 	}
@@ -1782,13 +1505,6 @@ func enqueueFlushedDiagnostics(rows []TradeDiagnosticsRow) {
 	}
 }
 
-// SaveStrategyBook persists one strategy's book without rewriting the rest of
-// the fleet. Live positions and option_positions are deleted then rewritten
-// for this strategy only (do not rely on INSERT OR REPLACE of the parent
-// firing ON DELETE CASCADE). Trades, closed_positions, and deferred
-// diagnostics are append-only in the same transaction. Used by the paper
-// replay mirror so persisting one replayed decision does not DELETE/reinsert
-// every unrelated strategy (#1435).
 func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -1803,10 +1519,6 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 	}
 	defer tx.Rollback()
 
-	// LoadState returns (nil, nil) when app_state is missing. A first-cycle
-	// replay save that wrote only the strategy row would then be invisible on
-	// restart and the pending log would re-apply into an empty book. Seed a
-	// default singleton without clobbering an existing cycle-end snapshot.
 	if _, err := tx.Exec(`INSERT INTO app_state (id, cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries, last_summary_post)
 		VALUES (1, 0, '', '', '', '')
 		ON CONFLICT(id) DO NOTHING`); err != nil {
@@ -1854,11 +1566,6 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 		return fmt.Errorf("insert strategy %s: %w", s.ID, err)
 	}
 
-	// Wipe this strategy's live book before rewrite. A second persist of the
-	// same still-open symbol must not UNIQUE-fail on (strategy_id, symbol),
-	// and a full close (zero inserts) must not leave a stale row for
-	// LoadState to resurrect. INSERT OR REPLACE on strategies can CASCADE
-	// the children, but that is not the persist contract — delete explicitly.
 	if _, err := tx.Exec(`DELETE FROM positions WHERE strategy_id = ?`, s.ID); err != nil {
 		return fmt.Errorf("delete positions for %s: %w", s.ID, err)
 	}
@@ -2008,15 +1715,6 @@ func (sdb *StateDB) SaveStrategyBook(s *StrategyState) error {
 	return nil
 }
 
-// QueryClosedPositions returns closed-position history ordered by closed_at desc,
-// optionally filtered by strategy/symbol/time bounds. Used by status endpoints
-// and leaderboard analytics (#288).
-//
-// Time filters rely on RFC3339Nano being lexicographically comparable (which it
-// is — UTC 4-digit year, zero-padded components, fixed-width nanoseconds), so
-// string comparison against formatTime(t) is equivalent to a chronological
-// compare. Changing formatTime to a non-lexicographic format would silently
-// break the since/until bounds here.
 func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until time.Time, limit, offset int) ([]ClosedPosition, int, error) {
 	var where []string
 	var args []interface{}
@@ -2036,8 +1734,7 @@ func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until
 		where = append(where, "closed_at <= ?")
 		args = append(args, formatTime(until))
 	}
-	// whereClause is composed from a fixed allowlist of fragments above — no
-	// user-controlled SQL is ever concatenated, values flow through ? placeholders.
+
 	whereClause := ""
 	if len(where) > 0 {
 		whereClause = "WHERE " + strings.Join(where, " AND ")
@@ -2083,8 +1780,6 @@ func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until
 	return out, total, nil
 }
 
-// QueryClosedOptionPositions returns closed option-position history ordered by
-// closed_at desc, optionally filtered by strategy/underlying/time bounds (#288).
 func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, since, until time.Time, limit, offset int) ([]ClosedOptionPosition, int, error) {
 	var where []string
 	var args []interface{}
@@ -2152,10 +1847,8 @@ func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, si
 	return out, total, nil
 }
 
-// LoadState reads the full AppState from SQLite.
-// Returns (nil, nil) if the database has no data (fresh DB).
 func (sdb *StateDB) LoadState() (*AppState, error) {
-	// 1. Load app_state singleton.
+
 	var cycleCount int
 	var lastCycleStr, lastLeaderboardDate, lastLBSummariesJSON, lastSummaryPostJSON string
 	err := sdb.db.QueryRow("SELECT cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries, last_summary_post FROM app_state WHERE id = 1").
@@ -2189,7 +1882,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		Strategies:               make(map[string]*StrategyState),
 	}
 
-	// 2. Load strategies.
 	rows, err := sdb.db.Query(`SELECT id, type, platform, cash, initial_capital,
 		risk_peak_value, risk_max_drawdown_pct, risk_current_drawdown_pct,
 		risk_daily_pnl, risk_daily_pnl_date, risk_consecutive_losses,
@@ -2227,12 +1919,10 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
 		s.CashReconcileRequired = cashReconcileInt != 0
 		s.SharedWalletPoolBudget = poolBudgetInt != 0
-		// #1411: restore the Hurst gate latch. A malformed/blank value loads
-		// as the unknown state, which re-derives from the next valid reading.
+
 		s.HurstGate = unmarshalHurstGateStateJSON(hurstGateJSON)
 		s.SharedWalletPerformanceOnly = s.SharedWalletPoolBudget
-		// #998: restore the flat-switch active profile; the pending counter
-		// re-arms from zero on restart (a restart can only delay a switch).
+
 		if activeProfile != "" {
 			s.RegimeProfile = &RegimeProfileState{ActiveProfile: activeProfile}
 		}
@@ -2245,7 +1935,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("iterate strategies: %w", err)
 	}
 
-	// 3. Load positions for each strategy.
 	posRows, err := sdb.db.Query("SELECT strategy_id, symbol, COALESCE(position_id, '') AS position_id, quantity, initial_quantity, avg_cost, entry_atr, side, multiplier, owner_strategy_id, opened_at, stop_loss_oid, stop_loss_trigger_px, stop_loss_high_water_px, COALESCE(tp1_oid, 0) AS tp1_oid, COALESCE(tp2_oid, 0) AS tp2_oid, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(tp_armed_tiers_json, '') AS tp_armed_tiers_json, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(sl_adjusted_tiers_processed, 0) AS sl_adjusted_tiers_processed, post_tp_trailing_atr_mult, COALESCE(regime, '') AS regime, COALESCE(regime_windows_json, '') AS regime_windows_json, COALESCE(regime_pending_label, '') AS regime_pending_label, COALESCE(regime_pending_count, 0) AS regime_pending_count, COALESCE(regime_applied_label, '') AS regime_applied_label, COALESCE(scale_in_count, 0) AS scale_in_count, COALESCE(last_add_price, 0) AS last_add_price, COALESCE(added_notional_usd, 0) AS added_notional_usd, COALESCE(risk_anchor_price, 0) AS risk_anchor_price, COALESCE(scale_in_resize_pending, 0) AS scale_in_resize_pending, COALESCE(ratchet_fallback_normalize_pending, 0) AS ratchet_fallback_normalize_pending, COALESCE(open_profile, '') AS open_profile, COALESCE(direction_certified_at_open, 0) AS direction_certified_at_open, COALESCE(direction_certified_states_json, '') AS direction_certified_states_json, COALESCE(llm_analysis_requested, 0) AS llm_analysis_requested, COALESCE(llm_verdict, '') AS llm_verdict, COALESCE(atr_method_at_open, '') AS atr_method_at_open, COALESCE(hedge_for, '') AS hedge_for, COALESCE(hedge_primary_qty_basis, 0) AS hedge_primary_qty_basis, COALESCE(hurst_at_open, 0) AS hurst_at_open, COALESCE(hurst_size_mult, 0) AS hurst_size_mult FROM positions")
 	if err != nil {
 		return nil, fmt.Errorf("load positions: %w", err)
@@ -2295,7 +1984,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("iterate positions: %w", err)
 	}
 
-	// 4. Load option positions for each strategy.
 	optRows, err := sdb.db.Query(`SELECT strategy_id, id, COALESCE(position_id, '') AS position_id, underlying, option_type, strike, expiry, dte,
 		action, quantity, entry_premium, entry_premium_usd, current_value_usd,
 		delta, gamma, theta, vega, opened_at FROM option_positions`)
@@ -2324,8 +2012,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("iterate option_positions: %w", err)
 	}
 
-	// 5. Load most recent maxTradeHistory trades per strategy, bounded in SQL
-	// (full history stays in SQLite; see idx_trades_strategy_timestamp).
 	for id, s := range state.Strategies {
 		tradeRows, err := sdb.db.Query(`SELECT timestamp, strategy_id, symbol, COALESCE(position_id, '') AS position_id, side, quantity, price, value, trade_type, details, exchange_order_id, exchange_fee, is_close, realized_pnl, COALESCE(regime, '') AS regime, COALESCE(entry_atr, 0) AS entry_atr, COALESCE(stop_loss_oid, 0) AS stop_loss_oid, COALESCE(stop_loss_trigger_px, 0) AS stop_loss_trigger_px, COALESCE(tp_oids_json, '') AS tp_oids_json, COALESCE(manual, 0) AS manual, stop_loss_atr_mult, COALESCE(tp_tiers_json, '') AS tp_tiers_json, COALESCE(pnl_gross, 0) AS pnl_gross, COALESCE(fee_source, '') AS fee_source
 			FROM trades WHERE strategy_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`, id, maxTradeHistory)
@@ -2352,15 +2038,14 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 				v := slATRMult.Float64
 				t.StopLossATRMult = &v
 			}
-			t.persisted = true // loaded from DB → already persisted; SaveState will skip.
+			t.persisted = true
 			allTrades = append(allTrades, t)
 		}
 		tradeRows.Close()
 		if err := tradeRows.Err(); err != nil {
 			return nil, fmt.Errorf("iterate trades for %s: %w", id, err)
 		}
-		// Query returns newest-first (bounded by LIMIT in SQL); reverse to
-		// chronological order for in-memory consumers.
+
 		for i, j := 0, len(allTrades)-1; i < j; i, j = i+1, j-1 {
 			allTrades[i], allTrades[j] = allTrades[j], allTrades[i]
 		}
@@ -2370,7 +2055,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		s.TradeHistory = allTrades
 	}
 
-	// 6. Load portfolio_risk.
 	var ksActiveInt, warnSentInt, basisRebaselinedInt, ddSubstitutedInt int
 	var ksAtStr, warnBandEnteredAtStr, untrustedOverLimitSinceStr string
 	err = sdb.db.QueryRow("SELECT peak_value, current_drawdown_pct, current_margin_drawdown_pct, kill_switch_active, kill_switch_at, warning_sent, COALESCE(warn_band_entered_at, '') AS warn_band_entered_at, COALESCE(last_warning_equity_dd_pct, 0) AS last_warning_equity_dd_pct, COALESCE(last_warning_margin_dd_pct, 0) AS last_warning_margin_dd_pct, COALESCE(warning_equity_delta_pct, 0) AS warning_equity_delta_pct, COALESCE(warning_margin_delta_pct, 0) AS warning_margin_delta_pct, COALESCE(manual_mark_basis_rebaselined, 0) AS manual_mark_basis_rebaselined, COALESCE(drawdown_reading_substituted, 0) AS drawdown_reading_substituted, COALESCE(untrusted_over_limit_since, '') AS untrusted_over_limit_since FROM portfolio_risk WHERE id = 1").
@@ -2389,7 +2073,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	state.PortfolioRisk.WarningSent = warnSentInt != 0
 	state.PortfolioRisk.WarnBandEnteredAt = parseTime(warnBandEnteredAtStr)
 
-	// 7. Load kill switch events.
 	evtRows, err := sdb.db.Query("SELECT timestamp, type, source, drawdown_pct, portfolio_value, peak_value, details FROM kill_switch_events ORDER BY rowid ASC")
 	if err != nil {
 		return nil, fmt.Errorf("load kill_switch_events: %w", err)
@@ -2408,7 +2091,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		return nil, fmt.Errorf("iterate kill_switch_events: %w", err)
 	}
 
-	// 8. Load correlation_snapshot.
 	var snapJSON string
 	err = sdb.db.QueryRow("SELECT snapshot_json FROM correlation_snapshot WHERE id = 1").Scan(&snapJSON)
 	if err == nil && snapJSON != "{}" {
@@ -2424,31 +2106,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 	return state, nil
 }
 
-// LifetimeTradeStats holds the per-strategy lifetime totals derived from
-// the trades table (#455/#471/#607). PositionsOpened is the lifetime count
-// of open legs (is_close=0 rows) — the #T column in summaries / leaderboard
-// shows positions entered, not closed round trips, so partial-close legs
-// don't inflate the count and still-open positions are included. Wins and
-// Losses are derived from closed round trips grouped by position_id and
-// partitioned by strict net realized PnL sign (PnL > 0 → win, PnL < 0 →
-// loss); breakeven round trips are excluded from both buckets. Legacy close
-// rows without a position_id fall back to one synthetic group per row.
-// tradeStatsExcludedTypesSQL lists the trade_type values that must never
-// count as an independent round-trip in lifetime #T / W-L stats. It is
-// interpolated into both the open-count and the close-side round-trip
-// aggregation so a type is excluded from BOTH sides or neither.
-//
-//   - scale_in (#873): an add leg is open-side on an EXISTING position id, not
-//     a new round trip.
-//   - funding: a periodic cash event, not a trade.
-//   - hedge (#1159): a correlated hedge leg is coupled risk management for the
-//     primary thesis, not independent alpha. Counting its opens would double
-//     the strategy's trade count, and counting its closes would manufacture a
-//     mirror-image win for every primary loss (and vice versa), dragging the
-//     W/L ratio toward 50% regardless of edge. Its PnL and fees still book to
-//     the owning strategy's ledger — tradeLedgerDeltaSQL / tradeNetPnLSQL
-//     deliberately ignore trade_type — so the strategy's equity curve
-//     reflects the hedge while its trade STATISTICS do not.
 const tradeStatsExcludedTypesSQL = `('scale_in', 'funding', 'hedge')`
 
 type LifetimeTradeStats struct {
@@ -2457,24 +2114,12 @@ type LifetimeTradeStats struct {
 	Losses          int `json:"losses"`
 }
 
-// LifetimeTradeStatsAll returns lifetime stats for every strategy that has
-// any trade row in the trades table. Strategies with no trades are absent
-// from the result; callers should treat a missing key as an all-zero
-// struct. PositionsOpened counts is_close=0 rows; Wins/Losses come from
-// closed-round-trip aggregation. Used by FormatCategorySummary (#455) and
-// the leaderboard (#580) to render lifetime #T / W/L columns that are
-// immune to kill-switch / circuit-breaker resets of the in-memory RiskState
-// counters.
 func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
 	}
 	out := make(map[string]LifetimeTradeStats)
 
-	// #873: scale-in add legs are open-side (is_close=0) on an EXISTING
-	// position id, not new positions — exclude them so #T stays the count of
-	// distinct round-trips opened. W/L below is unaffected (it groups close
-	// legs, which a scale-in never is).
 	openRows, err := sdb.db.Query(`SELECT strategy_id, COUNT(*)
 		FROM trades
 		WHERE is_close = 0 AND trade_type NOT IN ` + tradeStatsExcludedTypesSQL + `
@@ -2536,9 +2181,6 @@ func (sdb *StateDB) LifetimeTradeStatsAll() (map[string]LifetimeTradeStats, erro
 	return out, nil
 }
 
-// LifetimeTradeStatsForStrategy returns lifetime stats for one strategy. This
-// keeps dashboard status polling from scanning and grouping the full trades
-// table on every request.
 func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTradeStats, error) {
 	if sdb == nil || sdb.db == nil {
 		return LifetimeTradeStats{}, fmt.Errorf("state db unavailable")
@@ -2548,8 +2190,7 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	}
 	var out LifetimeTradeStats
 	var opens sql.NullInt64
-	// #873: exclude scale-in add legs — they are open-side legs on an existing
-	// position, not new round-trips (mirrors LifetimeTradeStatsAll).
+
 	if err := sdb.db.QueryRow(`SELECT COUNT(*)
 		FROM trades
 		WHERE strategy_id = ? AND is_close = 0 AND trade_type NOT IN `+tradeStatsExcludedTypesSQL+``, strategyID).Scan(&opens); err != nil {
@@ -2580,8 +2221,6 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	return out, nil
 }
 
-// QueryTradeHistory returns trades filtered by optional strategy/symbol/time bounds,
-// ordered by timestamp desc, with limit/offset pagination.
 func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until time.Time, limit, offset int) ([]Trade, int, error) {
 	var where []string
 	var args []interface{}
@@ -2607,7 +2246,6 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 		whereClause = "WHERE " + strings.Join(where, " AND ")
 	}
 
-	// Count total matching.
 	var total int
 	if err := sdb.db.QueryRow("SELECT COUNT(*) FROM trades "+whereClause, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count trades: %w", err)
@@ -2657,8 +2295,6 @@ func (sdb *StateDB) QueryTradeHistory(strategyID, symbol string, since, until ti
 	return trades, total, nil
 }
 
-// QueryTradingViewExportTrades returns all trades for the given strategies in
-// chronological order for deterministic CSV export.
 func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -2701,13 +2337,10 @@ func (sdb *StateDB) QueryTradingViewExportTrades(strategyIDs []string) ([]Trade,
 	return trades, nil
 }
 
-// PendingManualAction is a row from the pending_manual_actions queue table
-// written by operator CLIs (manual-open / manual-close / force-close) and
-// drained by the scheduler at the top of each cycle (#569/#1140).
 type PendingManualAction struct {
 	ID                              int64
 	StrategyID                      string
-	Action                          string // "open" | "close" | "add" | "update-sl" | "cancel-sl"
+	Action                          string
 	Symbol                          string
 	Side                            string
 	Quantity                        float64
@@ -2717,16 +2350,14 @@ type PendingManualAction struct {
 	StopLossOID                     int64
 	StopLossTriggerPx               float64
 	EntryATR                        float64
-	ATRMethod                       string // open-only: atr_method resolved at queue time, next to the EntryATR fetch (#1277)
+	ATRMethod                       string
 	RealizedPnL                     float64
-	IsFullClose                     bool    // close-only: operator/scheduler intent flag (avoids tolerance heuristics on the drain side)
-	TPOIDs                          []int64 // open: placed TP OIDs; close: canceled TP OIDs that must be cleared for re-arm
-	RatchetFallbackNormalizePending bool    // open-only: one-shot normalize marker for fallback ratchet SL (#1121)
+	IsFullClose                     bool
+	TPOIDs                          []int64
+	RatchetFallbackNormalizePending bool
 	CreatedAt                       time.Time
 }
 
-// InsertPendingManualAction enqueues an operator action for the scheduler to
-// drain on its next cycle.
 func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -2748,7 +2379,6 @@ func (sdb *StateDB) InsertPendingManualAction(a PendingManualAction) error {
 	return err
 }
 
-// LoadPendingManualActions returns all queued actions ordered by id (oldest first).
 func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
@@ -2777,7 +2407,6 @@ func (sdb *StateDB) LoadPendingManualActions() ([]PendingManualAction, error) {
 	return actions, rows.Err()
 }
 
-// DeletePendingManualActionsThrough deletes all rows with id <= maxID.
 func (sdb *StateDB) DeletePendingManualActionsThrough(maxID int64) error {
 	if sdb == nil || sdb.db == nil {
 		return nil
@@ -2786,32 +2415,24 @@ func (sdb *StateDB) DeletePendingManualActionsThrough(maxID int64) error {
 	return err
 }
 
-// PendingLimitOrder is a row from the pending_limit_orders table (#883). Unlike
-// PendingManualAction (which holds an already-filled action awaiting scheduler
-// adoption), a PendingLimitOrder is a *resting* on-chain limit order with no
-// fill at placement time. The scheduler polls each row by order_oid every cycle
-// and grows the tracked position as fills arrive. filled_size / avg_fill_price /
-// fill_fee are watermarks: the cumulative quantity already adopted into the
-// position so the next poll only books the incremental delta.
 type PendingLimitOrder struct {
 	ID              int64
 	StrategyID      string
 	Symbol          string
-	Side            string // "long" | "short"
+	Side            string
 	OrderOID        int64
 	LimitPrice      float64
 	OrderSize       float64
 	TIF             string
-	FilledSize      float64 // cumulative qty already booked into the position
-	AvgFillPrice    float64 // size-weighted avg fill price booked so far
-	FillFee         float64 // cumulative fee booked so far
-	EntryATR        float64 // operator-supplied entry ATR (0 = fetch at fill)
-	CancelRequested bool    // operator manual-cancel flips this; scheduler cancels + finalizes
+	FilledSize      float64
+	AvgFillPrice    float64
+	FillFee         float64
+	EntryATR        float64
+	CancelRequested bool
 	ExpiresAt       time.Time
 	CreatedAt       time.Time
 }
 
-// boolToInt maps a bool to the 0/1 integer SQLite stores for boolean columns.
 func boolToInt(b bool) int {
 	if b {
 		return 1
@@ -2819,8 +2440,6 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// InsertPendingLimitOrder records a freshly-placed resting limit order for the
-// scheduler to poll. Returns the new row id.
 func (sdb *StateDB) InsertPendingLimitOrder(o PendingLimitOrder) (int64, error) {
 	if sdb == nil || sdb.db == nil {
 		return 0, fmt.Errorf("state db unavailable")
@@ -2841,7 +2460,6 @@ func (sdb *StateDB) InsertPendingLimitOrder(o PendingLimitOrder) (int64, error) 
 	return res.LastInsertId()
 }
 
-// LoadPendingLimitOrders returns all resting limit orders ordered by id.
 func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, nil
@@ -2869,8 +2487,6 @@ func (sdb *StateDB) LoadPendingLimitOrders() ([]PendingLimitOrder, error) {
 	return orders, rows.Err()
 }
 
-// UpdatePendingLimitOrderFill advances the watermark fields after the scheduler
-// books an incremental fill for a resting order.
 func (sdb *StateDB) UpdatePendingLimitOrderFill(id int64, filledSize, avgFillPrice, fillFee float64) error {
 	if sdb == nil || sdb.db == nil {
 		return nil
@@ -2881,9 +2497,6 @@ func (sdb *StateDB) UpdatePendingLimitOrderFill(id int64, filledSize, avgFillPri
 	return err
 }
 
-// MarkPendingLimitOrderCancelRequested flags a resting order for cancellation by
-// the scheduler. Returns the number of rows affected so the caller can tell the
-// operator whether a matching open order existed.
 func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol string) (int64, error) {
 	if sdb == nil || sdb.db == nil {
 		return 0, fmt.Errorf("state db unavailable")
@@ -2897,8 +2510,6 @@ func (sdb *StateDB) MarkPendingLimitOrderCancelRequested(strategyID, symbol stri
 	return res.RowsAffected()
 }
 
-// DeletePendingLimitOrder removes a single resting-order row by id (terminal:
-// fully filled, cancelled, or expired).
 func (sdb *StateDB) DeletePendingLimitOrder(id int64) error {
 	if sdb == nil || sdb.db == nil {
 		return nil
@@ -2907,9 +2518,6 @@ func (sdb *StateDB) DeletePendingLimitOrder(id int64) error {
 	return err
 }
 
-// CountPendingLimitOrders returns the number of resting limit orders for a
-// strategy/symbol. Used by manual-open to reject a second resting order (or an
-// open position) for the same coin before placing.
 func (sdb *StateDB) CountPendingLimitOrders(strategyID, symbol string) (int, error) {
 	if sdb == nil || sdb.db == nil {
 		return 0, nil
@@ -2921,9 +2529,6 @@ func (sdb *StateDB) CountPendingLimitOrders(strategyID, symbol string) (int, err
 	return n, err
 }
 
-// EarliestTradeTimestamp returns the oldest trade timestamp across the given
-// strategy IDs, or zero time when none exist. Used by `go-trader backfill
-// hl-fees` to set the lower bound on the userFills query.
 func (sdb *StateDB) EarliestTradeTimestamp(strategyIDs []string) (time.Time, error) {
 	if sdb == nil || sdb.db == nil {
 		return time.Time{}, fmt.Errorf("state db unavailable")
@@ -2951,10 +2556,6 @@ func (sdb *StateDB) EarliestTradeTimestamp(strategyIDs []string) (time.Time, err
 	return parseTime(ts.String), nil
 }
 
-// ListTradesForBackfill returns the trade rows for one strategy that the
-// backfill planner needs (rowid + the columns it reads/rewrites). Ordered by
-// timestamp ascending so the cash replay runs in the same order as the live
-// fills did.
 func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -2987,9 +2588,6 @@ func (sdb *StateDB) ListTradesForBackfill(strategyID string) ([]TradeBackfillRow
 	return out, rows.Err()
 }
 
-// ClosedPositionRow captures the closed_positions columns the backfill needs
-// to match its rows back to a position_id (which closed_positions itself does
-// not store yet — only trades does, since #471).
 type ClosedPositionRow struct {
 	ID          int64
 	Symbol      string
@@ -2997,10 +2595,6 @@ type ClosedPositionRow struct {
 	RealizedPnL float64
 }
 
-// LoadClosedPositionRows returns the closed_positions rows for one strategy
-// in close-time order. The backfill matches each row to a close-leg trade row
-// (same symbol + matching timestamp) to recover the position_id grouping
-// since closed_positions has no position_id column of its own.
 func (sdb *StateDB) LoadClosedPositionRows(strategyID string) ([]ClosedPositionRow, error) {
 	if sdb == nil || sdb.db == nil {
 		return nil, fmt.Errorf("state db unavailable")
@@ -3027,13 +2621,6 @@ func (sdb *StateDB) LoadClosedPositionRows(strategyID string) ([]ClosedPositionR
 	return out, rows.Err()
 }
 
-// ApplyBackfillPlan writes the planner's changes to disk inside one
-// transaction: trade row updates, closed_positions PnL recompute, and the
-// strategies.cash baseline. Caller is responsible for ensuring no scheduler
-// is concurrently issuing SaveState — SQLite serializes writers so the
-// transaction itself is safe, but a SaveState fired right after a successful
-// commit will overwrite the recomputed cash with whatever value its
-// in-memory AppState held.
 func (sdb *StateDB) ApplyBackfillPlan(plan BackfillPlan) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -3057,8 +2644,6 @@ func (sdb *StateDB) ApplyBackfillPlan(plan BackfillPlan) error {
 		}
 	}
 
-	// closed_positions are pinned by rowid (planner resolved each one back
-	// to a position_id via close-leg trade timestamps).
 	cpStmt, err := tx.Prepare(
 		"UPDATE closed_positions SET realized_pnl = ? WHERE id = ? AND strategy_id = ?",
 	)
@@ -3079,7 +2664,6 @@ func (sdb *StateDB) ApplyBackfillPlan(plan BackfillPlan) error {
 	return tx.Commit()
 }
 
-// formatTime converts a time.Time to RFC 3339 string, or "" for zero time.
 func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -3087,7 +2671,6 @@ func formatTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// parseTime converts an RFC 3339 string to time.Time, returning zero time for "".
 func parseTime(s string) time.Time {
 	if s == "" {
 		return time.Time{}

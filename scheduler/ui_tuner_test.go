@@ -240,8 +240,7 @@ func TestPatchStrategyJSONSkipsUntouched(t *testing.T) {
 }
 
 func TestRequireMutatingAPIAuth(t *testing.T) {
-	// #1256 (#1229 security model): unset status_token no longer blocks
-	// mutations — the dashboard is loopback-only and unauthenticated by design.
+
 	ss := NewStatusServer(NewAppState(), nil, "", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/strategies/x/config", nil)
 	w := httptest.NewRecorder()
@@ -249,7 +248,6 @@ func TestRequireMutatingAPIAuth(t *testing.T) {
 		t.Fatal("expected auth success when status_token unset")
 	}
 
-	// A configured token is still enforced.
 	ss = NewStatusServer(NewAppState(), nil, "secret", nil, nil)
 	w = httptest.NewRecorder()
 	if ss.requireMutatingAPIAuth(w, req) {
@@ -303,8 +301,6 @@ func TestFetchStrategyDefaultParamsCachesSchemaLoad(t *testing.T) {
 		t.Fatalf("first load unexpected: loads=%d desc=%q first=%v", loads, desc, first)
 	}
 
-	// Same (type, open name) must not re-invoke the schema loader — even for a
-	// different strategy id — so tuning-page poll storms stay off pythonSemaphore.
 	second, desc2, err := fetchStrategyDefaultParamsWith(scB, load)
 	if err != nil {
 		t.Fatalf("cached load: %v", err)
@@ -316,7 +312,6 @@ func TestFetchStrategyDefaultParamsCachesSchemaLoad(t *testing.T) {
 		t.Fatalf("cached values = desc=%q params=%v", desc2, second)
 	}
 
-	// Returned maps must be defensive copies of the cache entry.
 	second["fast"] = float64(99)
 	third, _, err := fetchStrategyDefaultParamsWith(scA, load)
 	if err != nil {
@@ -326,7 +321,6 @@ func TestFetchStrategyDefaultParamsCachesSchemaLoad(t *testing.T) {
 		t.Fatalf("cache mutated via caller map: loads=%d third=%v", loads, third)
 	}
 
-	// Distinct open strategies keep distinct cache entries.
 	other, otherDesc, err := fetchStrategyDefaultParamsWith(scC, load)
 	if err != nil {
 		t.Fatalf("other strategy load: %v", err)

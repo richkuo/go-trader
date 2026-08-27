@@ -12,68 +12,20 @@ import (
 	"time"
 )
 
-// #1442 — batched Hyperliquid signal checks.
-//
-// A deployment runs many strategies against one coin. The regime bundle
-// (#879) and the OHLCV disk cache (#839) already deduplicate the regime
-// computation and the candle fetch; what stays duplicated per strategy is the
-// interpreter start, the module imports, the DataFrame build and the indicator
-// base. This lane evaluates every DUE strategy that shares one market-data key
-// in a single check_hyperliquid.py --batch-check call.
-//
-// Invariants this file exists to keep:
-//   - Grouping (partitionHyperliquidBatchGroups) is PURE — no locks, no global
-//     reads, no I/O. It runs over dueStrategies only, so a strategy whose
-//     interval has not elapsed is never batched.
-//   - The per-slot position snapshot takes ONE mu.RLock read, in the Phase-1
-//     pattern, AFTER reconcileHyperliquidAccountPositions has booked external
-//     closes. Snapshotting earlier would feed pre-reconcile position contexts
-//     into close evaluators. No lock is held across the subprocess and
-//     strategiesMu is never involved, so the lock ORDER is unchanged.
-//   - Only the subprocess is replaced. runHyperliquidCheck consumes a cached
-//     slot and runs the identical post-parse pipeline, so everything
-//     downstream — risk, execution, the #1431 replay choke points, hedging —
-//     is byte-identical to the per-strategy path.
-//   - A group of one produces no batch: that strategy takes the existing
-//     spawn path untouched.
-
 const hyperliquidCheckScript = "shared_scripts/check_hyperliquid.py"
 
-// hlBatchPythonDefaultOhlcvLimit mirrors check_hyperliquid.py's --ohlcv-limit
-// argparse default. When regime is disabled Go appends no --ohlcv-limit flag,
-// so the key must carry the value the script would actually use.
 const hlBatchPythonDefaultOhlcvLimit = 200
 
-// hlBatchProtocolVersion mirrors BATCH_PROTOCOL_VERSION in check_hyperliquid.py.
 const hlBatchProtocolVersion = 1
 
-// hlBatchTimeout is the deadline for one batched call. A var so tests can
-// shrink it. Batching concentrates N strategies' compute under one deadline,
-// which is the one place it adds risk; a timeout renders as the existing
-// "script timed out after %s" text, so it classifies transient exactly like a
-// per-strategy timeout does (script_failure_alerts.go).
 var hlBatchTimeout = scriptTimeout
 
-// hlBatchDisabledEnv is the operator escape hatch. Setting it to "0" (or
-// "false"/"off") reverts every group to the proven per-strategy path without a
-// rebuild and without a config key.
 const hlBatchDisabledEnv = "GO_TRADER_HL_BATCH"
 
-// hlBatchSharedFailureFallbackThreshold is the number of CONSECUTIVE
-// shared-state failures on one group before the pre-pass stops batching it.
-// Without this, a batch-path defect blinds every strategy on the coin for as
-// long as it persists; the fallback bounds that to three cycles and then runs
-// the per-strategy path, which is known good.
 const hlBatchSharedFailureFallbackThreshold = 3
 
-// hlBatchFallbackRetryEvery is how often a fallen-back group re-attempts the
-// batched path (every Nth cycle it would otherwise have batched), so a
-// transient outage self-heals without operator action.
 const hlBatchFallbackRetryEvery = 10
 
-// hlBatchKey identifies one shared market-data computation. DataPlatform
-// mirrors regimeBundleKey.Platform's rationale: it is the OHLCV SOURCE, not
-// sc.Platform. Every argument outside this key travels per slot.
 type hlBatchKey struct {
 	DataPlatform string
 	Symbol       string
@@ -86,17 +38,13 @@ func (k hlBatchKey) String() string {
 	return fmt.Sprintf("%s/%s/%s/limit=%d/atr=%s", k.DataPlatform, k.Symbol, k.Timeframe, k.OhlcvLimit, k.ATRMethod)
 }
 
-// hlBatchGroup is one key and the due strategies that share it, in due order.
 type hlBatchGroup struct {
 	Key     hlBatchKey
 	Members []StrategyConfig
 }
 
-// Batchable reports whether the group is worth one batched call. A single
-// member is dispatched by the untouched per-strategy path.
 func (g hlBatchGroup) Batchable() bool { return len(g.Members) >= 2 }
 
-// MemberIDs returns the group's strategy IDs in due order.
 func (g hlBatchGroup) MemberIDs() []string {
 	out := make([]string, 0, len(g.Members))
 	for _, sc := range g.Members {
@@ -105,13 +53,6 @@ func (g hlBatchGroup) MemberIDs() []string {
 	return out
 }
 
-// hyperliquidBatchEligible reports whether sc's check can ride a batched call.
-//
-// The argv allowlist is deliberately strict: sc.Args must be exactly the three
-// positionals the script expects plus an optional --mode. Any other configured
-// flag would have to be translated into the slot envelope, and a flag the
-// translator does not know about would be silently dropped — so an unknown
-// argv shape falls back to the per-strategy path instead.
 func hyperliquidBatchEligible(sc StrategyConfig) bool {
 	if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 		return false
@@ -148,8 +89,6 @@ func hyperliquidBatchArgsSupported(args []string) bool {
 	return true
 }
 
-// hyperliquidModeFromArgs extracts --mode from sc.Args, matching the check
-// script's argparse default of "paper".
 func hyperliquidModeFromArgs(args []string) string {
 	for i, arg := range args {
 		if strings.HasPrefix(arg, "--mode=") {
@@ -166,7 +105,6 @@ func hyperliquidModeFromArgs(args []string) string {
 	return "paper"
 }
 
-// hyperliquidTimeframe extracts the timeframe positional from perps args.
 func hyperliquidTimeframe(args []string) string {
 	if len(args) >= 3 {
 		return strings.TrimSpace(args[2])
@@ -174,8 +112,6 @@ func hyperliquidTimeframe(args []string) string {
 	return ""
 }
 
-// hlBatchKeyForStrategy derives sc's batch key. ok=false means sc is not
-// batchable at all.
 func hlBatchKeyForStrategy(sc StrategyConfig, cfg *Config) (hlBatchKey, bool) {
 	if !hyperliquidBatchEligible(sc) {
 		return hlBatchKey{}, false
@@ -202,11 +138,6 @@ func hlBatchKeyForStrategy(sc StrategyConfig, cfg *Config) (hlBatchKey, bool) {
 	}, true
 }
 
-// partitionHyperliquidBatchGroups partitions the DUE strategies by batch key.
-// Pure: no locks, no globals, no I/O — call it with the already-built due list
-// so a strategy whose interval has not elapsed can never enter a batch. Groups
-// come back sorted by key so operator logs and tests are deterministic;
-// members keep due order.
 func partitionHyperliquidBatchGroups(due []StrategyConfig, cfg *Config) []hlBatchGroup {
 	byKey := make(map[hlBatchKey][]StrategyConfig)
 	for _, sc := range due {
@@ -224,8 +155,6 @@ func partitionHyperliquidBatchGroups(due []StrategyConfig, cfg *Config) []hlBatc
 	return out
 }
 
-// hlBatchSlot is one strategy's per-slot payload inside the stdin envelope.
-// Every field here is deliberately OUTSIDE hlBatchKey.
 type hlBatchSlot struct {
 	ID              string          `json:"id"`
 	Strategy        string          `json:"strategy"`
@@ -237,22 +166,16 @@ type hlBatchSlot struct {
 	PositionCtx     map[string]any  `json:"position_ctx,omitempty"`
 }
 
-// hlBatchRequest is the stdin envelope check_hyperliquid.py --batch-check reads.
 type hlBatchRequest struct {
 	Version int           `json:"v"`
 	Slots   []hlBatchSlot `json:"slots"`
 }
 
-// HyperliquidBatchSlotResult is one slot's decision inside the batch response.
-// It embeds HyperliquidResult so a slot flows into the existing per-strategy
-// pipeline verbatim.
 type HyperliquidBatchSlotResult struct {
 	ID string `json:"id"`
 	HyperliquidResult
 }
 
-// HyperliquidBatchResult is the batch response envelope. ErrorScope ==
-// "shared_state" means the shared market data failed and no slot ran.
 type HyperliquidBatchResult struct {
 	Platform   string                       `json:"platform"`
 	Symbol     string                       `json:"symbol"`
@@ -265,10 +188,6 @@ type HyperliquidBatchResult struct {
 
 const hlBatchSharedStateScope = "shared_state"
 
-// buildHyperliquidBatchSlot builds one slot from the same inputs the
-// per-strategy argv builder consumes. scForCheck must already carry the #998
-// profile params and the on-chain-protection close filter, exactly as
-// runHyperliquidCheck applies them.
 func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig) (hlBatchSlot, error) {
 	slot := hlBatchSlot{
 		ID:              sc.ID,
@@ -285,9 +204,7 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 	if len(refsArgs) == 2 {
 		slot.StrategyRefs = json.RawMessage(refsArgs[1])
 	}
-	// Mirror appendOpenCloseArgs exactly: position context only travels when
-	// the strategy uses the open/close composition model, and a zero float is
-	// omitted (the flag would not be appended, so Python sees argparse's None).
+
 	if usesOpenCloseConfig(scForCheck) {
 		ctx := map[string]any{}
 		if side := strings.TrimSpace(posCtx.Side); side != "" {
@@ -308,10 +225,6 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 	return slot, nil
 }
 
-// hlBatchPutFloat mirrors appendPositionFloatArg's zero-skip so a batched slot
-// and the per-strategy argv carry the same set of position fields. The value
-// is round-tripped through the same 'f'/-1 formatting the argv uses, so the
-// two paths hand Python identical decimal text.
 func hlBatchPutFloat(ctx map[string]any, key string, value float64) {
 	if value == 0 {
 		return
@@ -323,7 +236,6 @@ func hlBatchPutFloat(ctx map[string]any, key string, value float64) {
 	ctx[key] = parsed
 }
 
-// hlBatchRegimeATRWindow mirrors appendStrategyRegimeWindowArgs.
 func hlBatchRegimeATRWindow(sc StrategyConfig, regime *RegimeConfig) string {
 	if regime == nil || !regime.Enabled || !regimeMultiWindowEnabled(regime) {
 		return ""
@@ -334,8 +246,6 @@ func hlBatchRegimeATRWindow(sc StrategyConfig, regime *RegimeConfig) string {
 	return ""
 }
 
-// hlBatchSharedArgs builds the shared argv for one group. markPrice <= 0 omits
-// the flag, matching runHyperliquidCheck.
 func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON string, hasRegimePayload bool, markPrice float64) []string {
 	args := []string{
 		"--batch-check",
@@ -359,10 +269,6 @@ func hlBatchSharedArgs(key hlBatchKey, regime *RegimeConfig, regimePayloadJSON s
 	return args
 }
 
-// hlBatchAlertConfig is the synthetic StrategyConfig identity a shared-state
-// failure is tracked under, so the existing 3-strike / transient / recovery
-// machinery throttles per GROUP rather than firing one DM per member
-// (regimeBundleAlertConfig pattern, #829).
 func hlBatchAlertConfig(key hlBatchKey) StrategyConfig {
 	return StrategyConfig{
 		ID:       "hl-batch[" + key.Symbol + "/" + key.Timeframe + "]",
@@ -371,9 +277,6 @@ func hlBatchAlertConfig(key hlBatchKey) StrategyConfig {
 	}
 }
 
-// parseHyperliquidBatchOutput parses a batch response. It mirrors
-// RunHyperliquidCheck's contract: JSON is parsed even on a non-zero exit,
-// because the script prints its envelope and then exits 1 when any slot failed.
 func parseHyperliquidBatchOutput(stdout []byte) (*HyperliquidBatchResult, error) {
 	var out HyperliquidBatchResult
 	if err := json.Unmarshal(stdout, &out); err != nil {
@@ -382,23 +285,6 @@ func parseHyperliquidBatchOutput(stdout []byte) (*HyperliquidBatchResult, error)
 	return &out, nil
 }
 
-// hyperliquidBatchSlotFingerprint renders the exact per-slot inputs a check
-// would carry, as canonical JSON. The pre-pass records it alongside each
-// member's outcome and runHyperliquidCheck recomputes it at dispatch time: if
-// anything the check reads changed between the snapshot and the strategy's own
-// loop iteration, the cached slot is discarded and that strategy spawns its own
-// check. That makes "the batched decision used this strategy's current inputs"
-// a checked fact rather than an argument about what else the cycle can touch.
-//
-// The cycle mark price is deliberately NOT part of the signature. --mark-price
-// only freshens the REPORTED price (check_hyperliquid.py resolves it into
-// price_override, which overwrites output["price"] and nothing else); the
-// decision reads market_ctx["mark_price"] = the last closed bar's close, which
-// travels in the candles. Folding the mark in made the first member's rounded
-// write-back (prices[symbol] = round(mid, 2)) invalidate every later member of
-// the same group, so the cycle paid for the batch AND still spawned N-1 checks.
-// The dispatch-time mark is applied to the cached decision instead — see
-// hyperliquidBatchDisplayPrice.
 func hyperliquidBatchSlotFingerprint(sc StrategyConfig, posCtx PositionCtx, regime *RegimeConfig) (string, error) {
 	slot, err := buildHyperliquidBatchSlot(sc, posCtx, regime)
 	if err != nil {
@@ -413,33 +299,22 @@ func hyperliquidBatchSlotFingerprint(sc StrategyConfig, posCtx PositionCtx, regi
 	return string(blob), nil
 }
 
-// hyperliquidBatchDisplayPrice renders the dispatch-time mark exactly as the
-// per-strategy path would report it. check_hyperliquid.py emits
-// round(price, 2), so a batched member that adopts the cycle's current mark
-// must round identically or the two lanes would report — and paper-fill at —
-// different prices for the same decision.
 func hyperliquidBatchDisplayPrice(markPrice float64) float64 {
 	return math.Round(markPrice*100) / 100
 }
 
-// hlBatchMemberOutcome is one member's cached result for this cycle.
-// Result != nil means the slot decided; Err != "" means the member must take
-// the failure branch runHyperliquidCheck would have taken.
 type hlBatchMemberOutcome struct {
 	Result *HyperliquidResult
-	// Err is the failure message when Result is nil.
+
 	Err string
-	// Mode selects which per-strategy alert branch the member takes.
+
 	Mode scriptFailureMode
-	// Stderr is the batch call's stderr, logged per member.
+
 	Stderr string
-	// Fingerprint is the slot input signature recorded at snapshot time; see
-	// hyperliquidBatchSlotFingerprint.
+
 	Fingerprint string
 }
 
-// hlBatchCycleResults is the cycle-local map the dispatch loop consumes. Built
-// before the loop and read-only afterwards, so it needs no lock.
 type hlBatchCycleResults struct {
 	byStrategy map[string]hlBatchMemberOutcome
 }
@@ -459,8 +334,6 @@ func (r *hlBatchCycleResults) put(id string, outcome hlBatchMemberOutcome) {
 	r.byStrategy[id] = outcome
 }
 
-// hlBatchFallbackTracker records consecutive shared-state failures per group
-// key and decides whether a group may batch this cycle.
 type hlBatchFallbackTracker struct {
 	mu      sync.Mutex
 	entries map[hlBatchKey]*hlBatchFallbackEntry
@@ -474,8 +347,6 @@ type hlBatchFallbackEntry struct {
 
 var hlBatchFallback = &hlBatchFallbackTracker{}
 
-// Allow reports whether key may run a batched call this cycle. A group in
-// fallback retries every hlBatchFallbackRetryEvery cycles.
 func (t *hlBatchFallbackTracker) Allow(key hlBatchKey) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -491,8 +362,6 @@ func (t *hlBatchFallbackTracker) Allow(key hlBatchKey) bool {
 	return false
 }
 
-// RecordSharedFailure counts one shared-state failure and reports whether this
-// failure is the one that trips the fallback.
 func (t *hlBatchFallbackTracker) RecordSharedFailure(key hlBatchKey) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -516,8 +385,6 @@ func (t *hlBatchFallbackTracker) RecordSharedFailure(key hlBatchKey) bool {
 	return false
 }
 
-// RecordSuccess clears the streak and reports whether the group just came back
-// from fallback.
 func (t *hlBatchFallbackTracker) RecordSuccess(key hlBatchKey) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -530,9 +397,6 @@ func (t *hlBatchFallbackTracker) RecordSuccess(key hlBatchKey) bool {
 	return recovered
 }
 
-// hyperliquidBatchEnabled reports whether batching is permitted at all.
-// GO_TRADER_HL_BATCH=0 is the operator rollback: instant, no rebuild, no
-// config key, every group reverts to the per-strategy path.
 func hyperliquidBatchEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(hlBatchDisabledEnv))) {
 	case "0", "false", "off", "no":
@@ -541,8 +405,6 @@ func hyperliquidBatchEnabled() bool {
 	return true
 }
 
-// runHyperliquidBatchCheckFn is the subprocess invoker — a package var so Go
-// tests never spawn Python (runRegimeBundleCheckFn precedent).
 var runHyperliquidBatchCheckFn = runHyperliquidBatchCheck
 
 func runHyperliquidBatchCheck(script string, args []string, stdinJSON []byte) (*HyperliquidBatchResult, string, error) {
@@ -561,8 +423,6 @@ func runHyperliquidBatchCheck(script string, args []string, stdinJSON []byte) (*
 	return parsed, stderrStr, nil
 }
 
-// hlBatchGroupInput is one group plus the per-member snapshot the slot builder
-// needs, captured under the Phase-1 RLock.
 type hlBatchGroupInput struct {
 	Key       hlBatchKey
 	Members   []StrategyConfig
@@ -570,9 +430,6 @@ type hlBatchGroupInput struct {
 	MarkPrice float64
 }
 
-// runHyperliquidBatchGroups executes one batched call per batchable group and
-// returns the cycle-local result map. It never mutates state and never holds a
-// lock; groups run sequentially through the existing read-only Python lane.
 func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier *MultiNotifier, logf func(string, ...any)) *hlBatchCycleResults {
 	results := &hlBatchCycleResults{}
 	if logf == nil {
@@ -585,9 +442,7 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 	for _, in := range inputs {
 		payloadJSON, hasPayload, uniform := hlBatchGroupRegimePayload(in.Members, rc)
 		if !uniform {
-			// Impossible for a well-formed group (every member shares the
-			// regime signature the key implies), so a mismatch means an
-			// assumption broke: do not batch, and say so loudly.
+
 			logf("[WARN] hl-batch %s: members disagree on the injected regime payload; falling back to per-strategy checks", in.Key)
 			continue
 		}
@@ -637,17 +492,11 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 		}
 		drift := hlBatchApplySlots(results, in, fingerprints, out, stderr, logf)
 		if stderr != "" {
-			// Logged ONCE under the group identity: this is one call's combined
-			// stderr covering every member, so it describes the group's work,
-			// not any single strategy's.
+
 			logf("[INFO] hl-batch %s: stderr: %s", in.Key, stderr)
 		}
 		if drift > 0 {
-			// Envelope drift is a batching-path fault, so it counts against the
-			// SAME streak a shared-state failure does: the affected members
-			// already self-heal via their own spawns this cycle, and a drift
-			// that persists trips the group back to per-strategy checks instead
-			// of paying for a batch call that cannot account for its members.
+
 			msg := fmt.Sprintf("batch response accounted for %d of %d strategies; the rest ran their own checks",
 				len(in.Members)-drift, len(in.Members))
 			notifyBatchSharedStateFailure(notifier, hlBatchAlertConfig(in.Key), msg, in.MemberIDsOrdered())
@@ -666,7 +515,6 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 	return results
 }
 
-// MemberIDsOrdered returns the group's member IDs in due order.
 func (in hlBatchGroupInput) MemberIDsOrdered() []string {
 	out := make([]string, 0, len(in.Members))
 	for _, sc := range in.Members {
@@ -675,22 +523,6 @@ func (in hlBatchGroupInput) MemberIDsOrdered() []string {
 	return out
 }
 
-// hlBatchApplySharedFailure records ONE alert on the synthetic group identity
-// and leaves every member as a map MISS.
-//
-// A miss is the whole point. The member's own spawn then runs in the SAME
-// cycle, so a fault confined to the batching path — envelope drift, an
-// OOM-killed child, N slots blowing the single shared deadline that each
-// strategy used to get to itself — cannot blank close evaluation, trailing-SL
-// cancel+replace, the ratchet, protection sync or hedge sync for the whole
-// coin. Caching the failure instead would have skipped all of that for every
-// member, for up to hlBatchSharedFailureFallbackThreshold cycles. Falling
-// through is never worse than the unbatched path: a genuine upstream outage
-// fails those spawns exactly as it does today.
-//
-// Member failure trackers stay untouched here for the same reason as before —
-// a shared outage is not the member's script failing, so the group identity
-// carries the alert and any per-member DM comes from that member's own spawn.
 func hlBatchApplySharedFailure(in hlBatchGroupInput, errMsg, stderr string, notifier *MultiNotifier, logf func(string, ...any)) {
 	logf("[ERROR] hl-batch %s: shared state failed (%d strategies fall back to their own checks this cycle): %s", in.Key, len(in.Members), errMsg)
 	if stderr != "" {
@@ -703,24 +535,6 @@ func hlBatchApplySharedFailure(in hlBatchGroupInput, errMsg, stderr string, noti
 	}
 }
 
-// hlBatchApplySlots maps the response's slots back onto members and returns the
-// number of members the response failed to account for.
-//
-// A member with no slot, or a duplicated slot id, is left a map MISS — the same
-// treatment hlBatchApplySharedFailure gives every member on a shared fault, and
-// for the same reason. A missing or duplicated slot is a fault of the batching
-// PROTOCOL, not of that strategy. Caching it as a crash would return ok=false
-// from runHyperliquidCheck and blank close evaluation, the trailing-SL
-// cancel+replace, the ratchet, protection sync and hedge sync for that member
-// this cycle; a miss instead runs that member's own check in the SAME cycle, so
-// a batch-path-only fault can never leave a strategy with fewer chances at its
-// protective maintenance than the unbatched path would have given it. The
-// returned count is what lets a persistent drift trip the group's fallback
-// instead of repeating forever.
-//
-// A genuine per-slot error payload is NOT batch-specific — the script really
-// did fail for that strategy — so it stays a cached soft error and must never
-// become a re-spawn, or every strategy error would double the process count.
 func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, fingerprints map[string]string, out *HyperliquidBatchResult, stderr string, logf func(string, ...any)) int {
 	byID := make(map[string]*HyperliquidResult, len(out.Results))
 	dupes := map[string]bool{}
@@ -750,10 +564,7 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 			logf("[ERROR] hl-batch %s: response is missing the slot for %s; that strategy runs its own check this cycle", in.Key, sc.ID)
 			drift++
 		case res.Error != "":
-			// Soft slot error: exactly the per-strategy "Script returned
-			// error" branch. Result is cleared so no downstream code can read
-			// a zero-signal error payload as a decision to hold. This member
-			// keeps the call's stderr because its own traceback is in there.
+
 			results.put(sc.ID, hlBatchMemberOutcome{
 				Err:         res.Error,
 				Mode:        scriptFailureError,
@@ -761,10 +572,7 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 				Fingerprint: fingerprints[sc.ID],
 			})
 		default:
-			// No stderr: the batch call's stderr is the GROUP's combined
-			// output, so stamping it here would replay a peer's traceback
-			// under this healthy strategy's identity, N times over. The
-			// caller logs it once under the group line instead.
+
 			results.put(sc.ID, hlBatchMemberOutcome{Result: res, Fingerprint: fingerprints[sc.ID]})
 		}
 	}
@@ -776,18 +584,6 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 	return drift
 }
 
-// snapshotHyperliquidBatchGroups captures, under ONE mu.RLock read, the
-// per-member position context each slot needs.
-//
-// Placement matters: this must run AFTER reconcileHyperliquidAccountPositions
-// has booked externally-closed positions, or a close evaluator would be handed
-// a position the exchange no longer holds. It therefore cannot be folded into
-// the earlier due-list RLock. It is a read-only Phase-1-shaped block: no
-// writes, no strategiesMu, no lock held across the subprocess.
-//
-// The #998 regime-profile params are resolved here on a LOCAL copy so the slot
-// carries the same merged params the per-strategy argv would. resolveRegimeProfile
-// is pure and the dispatch loop remains the sole committer of the switch state.
 func snapshotHyperliquidBatchGroups(groups []hlBatchGroup, state *AppState, mu *sync.RWMutex, cfg *Config, prices map[string]float64) []hlBatchGroupInput {
 	var rc *RegimeConfig
 	if cfg != nil {
@@ -808,8 +604,7 @@ func snapshotHyperliquidBatchGroups(groups []hlBatchGroup, state *AppState, mu *
 		for _, sc := range group.Members {
 			stratState := state.Strategies[sc.ID]
 			if stratState == nil {
-				// The dispatch loop skips a strategy with no state; a batch
-				// must not evaluate one either.
+
 				continue
 			}
 			snap := memberSnapshot{sc: sc}
@@ -859,10 +654,6 @@ func snapshotHyperliquidBatchGroups(groups []hlBatchGroup, state *AppState, mu *
 	return out
 }
 
-// runHyperliquidBatchPrePass is the whole #1442 pre-pass: group the due
-// strategies, snapshot their inputs, and run one batched call per group.
-// Returns nil when batching is disabled or nothing is batchable, which makes
-// every dispatch a map miss and the cycle byte-identical to before this issue.
 func runHyperliquidBatchPrePass(due []StrategyConfig, state *AppState, mu *sync.RWMutex, cfg *Config, prices map[string]float64, notifier *MultiNotifier, logf func(string, ...any)) *hlBatchCycleResults {
 	if !hyperliquidBatchEnabled() {
 		return nil
@@ -891,9 +682,6 @@ func runHyperliquidBatchPrePass(due []StrategyConfig, state *AppState, mu *sync.
 	return runHyperliquidBatchGroups(inputs, cfg, notifier, logf)
 }
 
-// hlBatchGroupRegimePayload resolves the group's shared --regime-payload-json.
-// uniform=false means the members disagreed, which the caller treats as a
-// reason not to batch rather than a reason to guess.
 func hlBatchGroupRegimePayload(members []StrategyConfig, rc *RegimeConfig) (payload string, has bool, uniform bool) {
 	for i, sc := range members {
 		raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, rc)

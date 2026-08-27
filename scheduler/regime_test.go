@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-// ─── validateConfig — AllowedRegimes ─────────────────────────────────────────
-
 func TestConfigValidation_AllowedRegimes_AcceptsEmpty(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Strategies[0].AllowedRegimes = []string{}
@@ -50,8 +48,6 @@ func TestConfigValidation_AllowedRegimes_AcceptsAllThreeLabels(t *testing.T) {
 		t.Fatalf("all three valid labels should pass, got: %v", err)
 	}
 }
-
-// ─── RegimeConfig validation ──────────────────────────────────────────────────
 
 func TestConfigValidation_RegimeConfig_NilIsValid(t *testing.T) {
 	cfg := minimalSpotConfig()
@@ -101,8 +97,6 @@ func TestConfigValidation_RegimeConfig_ThresholdOver100Invalid(t *testing.T) {
 	}
 }
 
-// ─── regimeAllowsEntry ────────────────────────────────────────────────────────
-
 func TestRegimeAllowsEntry_EmptyAllowedAlwaysTrue(t *testing.T) {
 	if !regimeAllowsEntry(nil, "ranging") {
 		t.Error("nil AllowedRegimes should always allow entry")
@@ -129,9 +123,6 @@ func TestRegimeAllowsEntry_NonMatchingLabel(t *testing.T) {
 	}
 }
 
-// TestRegimeAllowsEntry_BareDirectionalCoversSubLabels: #1124 family rule on
-// the entry gate — a bare ranging_directional in allowed matches its _up/_down
-// sub-labels (one-directional bare→subs).
 func TestRegimeAllowsEntry_BareDirectionalCoversSubLabels(t *testing.T) {
 	allowed := []string{"ranging_directional"}
 	if !regimeAllowsEntry(allowed, "ranging_directional_up") {
@@ -145,8 +136,6 @@ func TestRegimeAllowsEntry_BareDirectionalCoversSubLabels(t *testing.T) {
 	}
 }
 
-// TestRegimeAllowsEntry_ExplicitSubLabelDoesNotCoverBareOrSibling: the family
-// expansion is one-directional — an explicit _up does NOT match bare or _down.
 func TestRegimeAllowsEntry_ExplicitSubLabelDoesNotCoverBareOrSibling(t *testing.T) {
 	allowed := []string{"ranging_directional_up"}
 	if regimeAllowsEntry(allowed, "ranging_directional") {
@@ -155,22 +144,19 @@ func TestRegimeAllowsEntry_ExplicitSubLabelDoesNotCoverBareOrSibling(t *testing.
 	if regimeAllowsEntry(allowed, "ranging_directional_down") {
 		t.Error("explicit _up should NOT cover ranging_directional_down")
 	}
-	// Still matches itself.
+
 	if !regimeAllowsEntry(allowed, "ranging_directional_up") {
 		t.Error("explicit _up should match itself")
 	}
 }
 
 func TestRegimeAllowsEntry_EmptyCurrentAllowsWhenListNonEmpty(t *testing.T) {
-	// When regime field is empty (script disabled / not available), allow entry
-	// so existing strategies without regime are unaffected.
+
 	allowed := []string{"trending_up"}
 	if !regimeAllowsEntry(allowed, "") {
 		t.Error("empty regime string (script did not compute regime) should not block entry")
 	}
 }
-
-// ─── regimeBlocksOpen — close legs always pass through ──────────────────────
 
 func TestRegimeBlocksOpen_BlocksOpenWhenNoPosition(t *testing.T) {
 	allowed := []string{"trending_up"}
@@ -187,11 +173,7 @@ func TestRegimeBlocksOpen_AllowsOpenWhenRegimeMatches(t *testing.T) {
 }
 
 func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
-	// Regression for review point 1 (#546): close legs must pass through the
-	// regime gate even when the current regime is not in the allowed list.
-	// Otherwise a long-then-ranging scenario would silently skip the close
-	// signal, contradicting "existing positions are always managed by close
-	// paths regardless".
+
 	allowed := []string{"trending_up"}
 	if regimeBlocksOpen(allowed, "ranging", 1.0, false) {
 		t.Error("close leg (posQty>0) must never be blocked by regime gate")
@@ -200,8 +182,7 @@ func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
 		t.Error("close leg (posQty>0) must never be blocked even on opposite regime")
 	}
 	if regimeBlocksOpen(allowed, "", 1.0, false) {
-		// Empty current regime is also "allow"; combined with posQty>0 this is
-		// doubly safe but we still assert it.
+
 		t.Error("close leg (posQty>0) must never be blocked when regime is empty")
 	}
 }
@@ -214,8 +195,6 @@ func TestRegimeBlocksOpen_EmptyAllowedNeverBlocks(t *testing.T) {
 		t.Error("empty allowed list (no gate configured) must never block")
 	}
 }
-
-// ─── StrategyDecisionFields includes Regime ───────────────────────────────────
 
 func TestStrategyDecisionFields_RegimeRoundTrip(t *testing.T) {
 	sdf := StrategyDecisionFields{Regime: &RegimePayload{Legacy: "trending_up"}}
@@ -247,15 +226,11 @@ func TestStrategyDecisionFields_RegimeOmitEmpty(t *testing.T) {
 	}
 }
 
-// ─── Config version bump ──────────────────────────────────────────────────────
-
 func TestCurrentConfigVersion_IsSeventeen(t *testing.T) {
 	if CurrentConfigVersion != 17 {
 		t.Errorf("expected CurrentConfigVersion=17, got %d", CurrentConfigVersion)
 	}
 }
-
-// ─── validateConfig — AllowedRegimes on options strategies ───────────────────
 
 func TestConfigValidation_AllowedRegimes_RejectsOnOptions(t *testing.T) {
 	cfg := minimalOptionsConfig()
@@ -282,7 +257,6 @@ func TestConfigValidation_AllowedRegimes_AcceptsOnSpotWithRegimeEnabled(t *testi
 	}
 }
 
-// captureStdout redirects os.Stdout for the duration of fn and returns what was printed.
 func captureStdout(fn func()) string {
 	orig := os.Stdout
 	r, w, _ := os.Pipe()
@@ -297,7 +271,7 @@ func captureStdout(fn func()) string {
 
 func TestConfigValidation_AllowedRegimes_WarnsWhenRegimeDisabled(t *testing.T) {
 	cfg := minimalSpotConfig()
-	cfg.Regime = nil // disabled
+	cfg.Regime = nil
 	cfg.Strategies[0].AllowedRegimes = []string{"trending_up"}
 	var out string
 	out = captureStdout(func() {
@@ -320,13 +294,11 @@ func TestConfigValidation_AllowedRegimes_NoWarnWhenRegimeEnabled(t *testing.T) {
 	}
 }
 
-// ─── hot-reload: AllowedRegimes is soft, Regime is restart-required ───────────
-
 func TestHotReload_AllowedRegimesChangeIsAccepted(t *testing.T) {
 	cfg := minimalSpotConfig()
 	next := minimalSpotConfig()
 	next.Strategies[0].AllowedRegimes = []string{"trending_up"}
-	// validateHotReloadCompatible only checks shape, not per-strategy soft fields
+
 	if err := validateHotReloadCompatible(&cfg, &next); err != nil {
 		t.Fatalf("AllowedRegimes change should be compatible with hot-reload, got: %v", err)
 	}
@@ -340,8 +312,6 @@ func TestHotReload_RegimeConfigChangeRequiresRestart(t *testing.T) {
 		t.Fatal("Regime config change should require restart")
 	}
 }
-
-// ─── helpers ─────────────────────────────────────────────────────────────────
 
 func minimalSpotConfig() Config {
 	return Config{

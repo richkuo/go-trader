@@ -14,15 +14,12 @@ const (
 	regimeOhlcvMargin        = 10
 )
 
-// RegimeSnapshot is one window's latest regime reading from a check script.
 type RegimeSnapshot struct {
 	Regime  string             `json:"regime"`
 	Score   float64            `json:"score"`
 	Metrics map[string]float64 `json:"metrics,omitempty"`
 }
 
-// RegimePayload holds either a legacy single label or a multi-window map.
-// JSON from check scripts is either a string or {"short": {...}, ...}.
 type RegimePayload struct {
 	Legacy    string
 	Windows   map[string]RegimeSnapshot
@@ -36,9 +33,6 @@ func (p RegimePayload) IsEmpty() bool {
 	return strings.TrimSpace(p.Legacy) == ""
 }
 
-// PrimaryLabel returns the display label for status/summary surfaces.
-// Legacy mode: the single label. Multi-window: medium window if configured,
-// else the smallest bar-count window name.
 func (p RegimePayload) PrimaryLabel(rc *RegimeConfig) string {
 	if !p.MultiMode {
 		return strings.TrimSpace(p.Legacy)
@@ -57,21 +51,13 @@ func (p RegimePayload) PrimaryLabel(rc *RegimeConfig) string {
 	return ""
 }
 
-// Label resolves the regime label for a consumer window key.
-// Empty or "default" in legacy mode uses the single label; in multi-window
-// mode uses primaryRegimeWindowKey when unset.
 func (p RegimePayload) Label(windowKey string, rc *RegimeConfig) string {
 	key := normalizeRegimeWindowKey(windowKey)
 	if !p.MultiMode {
 		return strings.TrimSpace(p.Legacy)
 	}
 	if key == "" || key == regimeWindowDefaultKey {
-		// With explicit regime.windows, the default selector maps to the
-		// primary window. Without them, the check script still emits a
-		// single-window payload keyed by "default" (regimeWindowsSpecJSON's
-		// empty-windows branch), so fall back to that literal key rather than
-		// no-op'ing to an empty label — an empty label silently disables both
-		// regime_directional_policy and the allowed_regimes gate (#797).
+
 		if regimeMultiWindowEnabled(rc) {
 			key = primaryRegimeWindowKey(rc)
 		} else {
@@ -87,7 +73,6 @@ func (p RegimePayload) Label(windowKey string, rc *RegimeConfig) string {
 	return ""
 }
 
-// WindowLabels returns window name -> label for stamping at open.
 func (p RegimePayload) WindowLabels() map[string]string {
 	if !p.MultiMode {
 		label := strings.TrimSpace(p.Legacy)
@@ -131,8 +116,7 @@ func (p *RegimePayload) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	if _, ok := raw["regime"]; ok {
-		// Flat legacy snapshot: {"regime":"trending_up","score":...} — not a
-		// multi-window map whose sole key happens to be named "regime".
+
 		if _, hasScore := raw["score"]; hasScore {
 			var snap RegimeSnapshot
 			if err := json.Unmarshal(data, &snap); err != nil {
@@ -346,13 +330,7 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 		errs = append(errs, validateRegimeWindowSpec(trimmed, spec, rc)...)
 	}
 	multi := regimeMultiWindowEnabled(rc)
-	// #1062: display_windows is a display-only summary filter, but a typo would
-	// silently fall back to the single primary regime string (indistinguishable
-	// from "feature off") — the #704-class misdiagnosis the unknown-key guards
-	// exist to prevent. Window labels are emitted only for configured windows
-	// (check_regime.compute_regime_bundle keys snapshots by windows_spec names),
-	// so every valid display name must be a regime.windows key — validate loudly
-	// at load instead of failing silent at render time.
+
 	if len(rc.DisplayWindows) > 0 {
 		if !multi {
 			errs = append(errs, "regime.display_windows requires regime.windows to be configured")
@@ -360,7 +338,7 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 			for _, name := range rc.DisplayWindows {
 				key := normalizeRegimeWindowKey(name)
 				if key == "" {
-					continue // blank entries are ignored at render time (treated as unset)
+					continue
 				}
 				if !regimeWindowExists(rc, key) {
 					errs = append(errs, fmt.Sprintf("regime.display_windows: %q not found in regime.windows (valid: %s)", name, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
@@ -390,10 +368,7 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 				errs = append(errs, fmt.Sprintf("%s: %s=%q not found in regime.windows (valid: %s)", prefix, pair.field, pair.value, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
 			}
 		}
-		// #907: regime_window_divergence window-existence is validated in
-		// validateStrategyRegimeVocabulary (after ResolveRaw populates the typed
-		// fields) — not here, because this function runs first and the fields are
-		// still empty at this point.
+
 	}
 	return errs
 }
@@ -439,8 +414,6 @@ func strategyRegimeWindowField(sc StrategyConfig, field string) string {
 	}
 }
 
-// positionFeatureRegimeLabel resolves a stamped regime label for ATR/directional
-// features using pos.RegimeWindows when present, without needing RegimeConfig.
 func positionFeatureRegimeLabel(pos *Position, sc StrategyConfig, feature string) string {
 	if pos == nil {
 		return ""
@@ -475,19 +448,6 @@ func strategyCurrentDirectionalRegime(stratState *StrategyState, sc StrategyConf
 	return strings.TrimSpace(stratState.Regime)
 }
 
-// strategyDisplayRegimeLabel resolves the regime label for operator-facing
-// status surfaces (Phase 6 status log, /status API, dashboard) using the
-// strategy's configured gate window (regime_gate_window) instead of the
-// shared-default window, so the displayed label matches what the strategy's
-// entry gate is actually evaluating (#1189).
-//
-// Display-only: stratState.Regime itself must stay untouched. It is also the
-// live fallback consulted by strategyCurrentDirectionalRegime/
-// strategyCurrentATRRegime whenever regime_directional_window/regime_atr_window
-// is left unset, which feeds the #822 orphan auto-close and dynamic-regime
-// close SL/TP tier resolution — repointing the shared field itself (rather
-// than adding this separate resolver) would silently change those live
-// trading decisions for any strategy overriding only regime_gate_window.
 func strategyDisplayRegimeLabel(stratState *StrategyState, sc StrategyConfig, rc *RegimeConfig) string {
 	if stratState == nil {
 		return ""
@@ -538,16 +498,6 @@ func applyRegimeGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfig,
 	return gateLabel, regimeBlocksOpen(sc.AllowedRegimes, gateLabel, posQty, failClosed)
 }
 
-// regimeGateFailClosedActive reports whether sc's entry gate is actively
-// failing closed RIGHT NOW (#1278): a gate is configured, the resolved failure
-// policy is "closed", the strategy is flat, and the cycle's regime store
-// cannot produce the gate-window label. Display-only consumer for the Phase 6
-// status log and /status surfaces — the authoritative per-dispatch decision
-// stays inside applyRegimeGate. Reads the live globalRegimeStore (not the
-// synced StrategyState labels) because a multi-window store failure retains
-// stale StrategyState.RegimeWindows entries, which would hide the marker
-// during exactly the outage it exists to surface. Call with mu (R)locked when
-// stratState belongs to the live AppState.
 func regimeGateFailClosedActive(sc StrategyConfig, stratState *StrategyState, rc *RegimeConfig) bool {
 	if len(sc.AllowedRegimes) == 0 || resolveRegimeGateOnFailure(sc, rc) != RegimeGateOnFailureClosed {
 		return false
@@ -559,10 +509,6 @@ func regimeGateFailClosedActive(sc StrategyConfig, stratState *StrategyState, rc
 	return strings.TrimSpace(regimeGateLabel(sc, payload, rc)) == ""
 }
 
-// decorateRegimeLabelGateClosed annotates an operator-facing regime label when
-// the fail-closed gate is actively suppressing opens (#1278): empty labels
-// become "? (gate closed)", a stale non-empty display label gets the marker
-// appended so the outage is visible either way.
 func decorateRegimeLabelGateClosed(label string) string {
 	if strings.TrimSpace(label) == "" {
 		return "? (gate closed)"
@@ -586,12 +532,7 @@ func stampPositionRegimeFromPayload(s *StrategyState, symbol string, payload Reg
 	if pos.Regime != "" {
 		return
 	}
-	// #1085: the directional-certification verdict is NOT stamped here. It is
-	// frozen at the entry instant by stampDirectionCertifiedAtOpenIfOpened (gated
-	// on a genuine open Trade), independent of when this regime LABEL records —
-	// the label warms up lazily in multi-window mode, and tying the verdict to it
-	// let a between-open-and-label SIGHUP cert change corrupt an open position's
-	// stamp. The label and the verdict have different "known-at" instants.
+
 	gateKey := resolveStrategyRegimeWindow(sc, "gate", rc)
 	if label := payload.Label(gateKey, rc); label != "" {
 		pos.Regime = label

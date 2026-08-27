@@ -24,15 +24,7 @@ type PortfolioWarningMessageInputs struct {
 	PerpsMargin float64
 	Recent      []Trade
 	Now         time.Time
-	// EquityGuardArmed mirrors the equityAvailable && PeakValue > 0 condition
-	// the risk check evaluated for this cycle (#1449 review). It decides which
-	// signal owns the "distance to kill switch" label: with the guard armed
-	// the latch belongs to equity and margin is only distance-to-limit, but on
-	// the unarmed path (pooled wallet with no trustworthy balance, or a
-	// PeakValue == 0 cold start) margin is the arm that flattens the book. The
-	// warn band is reachable on that path, since portfolioWarnBandSignals
-	// reports marginInBand independently of equityInBand, so the message must
-	// be able to tell the two apart rather than always pointing at equity.
+
 	EquityGuardArmed bool
 }
 
@@ -45,8 +37,6 @@ type portfolioWarningContributor struct {
 	NegativeWeight float64
 }
 
-// BuildPortfolioWarningMessage expands the single-line portfolio risk reason
-// into the operator triage block used by Discord warnings.
 func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	now := in.Now.UTC()
 	if now.IsZero() {
@@ -80,11 +70,7 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 		maxDD, warnDD, entered.Format("2006-01-02 15:04 UTC"), formatWarningDuration(now.Sub(entered))))
 
 	if in.EquityGuardArmed {
-		// The substituted marker is load-bearing here: on an untrusted cycle
-		// CurrentDrawdownPct is the floored decision value, so the percentage
-		// and the two dollar figures on this line do not reconcile. Labeling
-		// it stops an operator reading the mismatch as corrupt data during
-		// exactly the incident a post-mortem would reconstruct.
+
 		note := ""
 		if prs.DrawdownReadingSubstituted {
 			note = "* (carried forward; balance substituted this cycle, does not reconcile with the figures below)"
@@ -98,22 +84,6 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 	}
 	b.WriteByte('\n')
 
-	// #1448/#1449 review: "distance to kill switch" must name whichever arm
-	// can actually latch THIS cycle, and the two arms are mutually exclusive.
-	// With the equity guard armed the latch belongs to equity, so margin is
-	// distance-to-margin-LIMIT only — calling that distance-to-kill-switch
-	// would tell an operator mid-incident that a flatten is imminent when it
-	// is not. With the guard unarmed the margin arm is the one that flattens
-	// the book, so the labels swap: pointing at a stale equity figure the
-	// check did not update this cycle would put the operator's eyes on the
-	// wrong number. The #292 per-strategy circuit breaker acts on margin on
-	// every path.
-	//
-	// #1449 review round 3: a deferred latch is the one case where the equity
-	// distance reads 0.0% without a flatten following. Printing the bare
-	// distance there would tell the operator the book is about to close when
-	// the check has deliberately held it back, so the deferral takes over the
-	// line and names its own deadline instead.
 	switch {
 	case in.EquityGuardArmed && !prs.UntrustedOverLimitSince.IsZero():
 		b.WriteString(fmt.Sprintf("Distance to kill switch: equity %.1f%% is already OVER the %.1f%% limit, but the total is untrusted — full-book latch DEFERRED, escalates %s unless a trusted measurement lands first",
@@ -233,10 +203,6 @@ func portfolioWarningLead(contribs []portfolioWarningContributor) string {
 	return fmt.Sprintf("%s (dd=%.1f%%) is leading portfolio drawdown", contribs[0].ID, contribs[0].DrawdownPct)
 }
 
-// formatPortfolioWarningTrend renders the per-cycle deltas. includeEquity is
-// the armed flag: the risk check forces WarningEquityDeltaPct to 0 when the
-// equity total is unavailable, so printing it there would show a reassuring
-// "+0.0%" for a signal that was never measured (#1449 review).
 func formatPortfolioWarningTrend(prs PortfolioRiskState, includeEquity, includeMargin bool) string {
 	eq := prs.WarningEquityDeltaPct
 	margin := prs.WarningMarginDeltaPct

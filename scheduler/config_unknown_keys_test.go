@@ -7,10 +7,6 @@ import (
 	"testing"
 )
 
-// Sanity-check that the reflection-derived known-keys set actually contains
-// the fields operators rely on day-to-day. A future rename of a json tag that
-// also missed a deprecation here would otherwise silently turn live configs
-// into "unknown field" errors on the next deploy.
 func TestKnownStrategyConfigKeysCoversCoreFields(t *testing.T) {
 	known := knownStrategyConfigKeys()
 	mustHave := []string{
@@ -58,9 +54,6 @@ func TestValidateStrategyJSONKeysFlagsInventedTPField(t *testing.T) {
 	}
 }
 
-// #842: close_strategy is the canonical key and close_strategies is the
-// accepted legacy spelling (UnmarshalJSON still reads the array) — neither must
-// be flagged as an unknown field.
 func TestValidateStrategyJSONKeysAcceptsBothCloseSpellings(t *testing.T) {
 	raw := []byte(`{
 		"strategies": [
@@ -125,8 +118,6 @@ func TestValidateStrategyJSONKeysAcceptsAllKnownFields(t *testing.T) {
 	}
 }
 
-// #1048: the reflection-derived known-key set must include the new
-// circuit_breaker field so configs carrying it validate.
 func TestKnownStrategyConfigKeysIncludesCircuitBreaker(t *testing.T) {
 	if !knownStrategyConfigKeys()["circuit_breaker"] {
 		t.Fatal("circuit_breaker should be a known strategy config key")
@@ -211,7 +202,7 @@ func TestValidateStrategyJSONKeysReportsByIDDeterministically(t *testing.T) {
 		]
 	}`)
 	errs := validateStrategyJSONKeys(raw)
-	// Strategy-major order, key-sorted within each strategy.
+
 	want := []string{
 		`strategy[b-strat]: unknown field "aaa"`,
 		`strategy[b-strat]: unknown field "zzz"`,

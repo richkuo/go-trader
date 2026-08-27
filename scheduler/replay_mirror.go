@@ -7,35 +7,6 @@ import (
 	"time"
 )
 
-// replay_mirror.go — #1431 paper side of the live decision replay log.
-//
-// A PAPER HL perps strategy with replay_sharing="live_mirror" does not open
-// from its own check-script signal: each cycle it consumes the pending rows
-// the live deployment wrote (replay_log.go) and books the same actions
-// against its virtual book — opens/scale-ins at live's ACTUAL filled
-// quantity and VWAP, closes at paper's current mark (the only sanctioned
-// drift; live's exit fill is asynchronous — see the issue's replay-slippage
-// risk). Paper's own close re-evaluation and trailing/fixed-ATR SL loops keep
-// running as a backstop, so a close CAN beat the mirror; the later full_close
-// row then finds a flat book and is a no-op.
-//
-// Hedge legs need no replay rows: the state-derived hedge reconciler (#1159)
-// runs after the mirror applies and converges the hedge from the replayed
-// primary, exactly as it does for a natively-opened one.
-
-// replayMirrorProgress tracks the highest decision ID each mirrored strategy
-// has applied this process lifetime. The durable record is TWO-layered: the
-// shared log's replay_status (what the live writer sees) and the paper state
-// DB's strategies.replay_mirror_watermark (persisted in the SAME
-// SaveStrategyBook transaction as the book mutation). This in-memory
-// high-water covers the window where a row was applied to state but neither
-// durable record has it yet — without all three, a restart in the
-// apply→save→mark gap would either drop a mirrored trade (marked but never
-// saved) or double-book a scale_in (saved but never marked; opens/closes
-// self-heal via the flat/open guards, an add does not). Eager InsertTrade
-// and diagnostics inserts are suspended during apply so those rows join the
-// SaveStrategyBook transaction; otherwise a kill mid-save would leave a
-// committed trade or orphaned diagnostics row while rolling back the watermark.
 var replayMirrorProgress = struct {
 	sync.Mutex
 	last map[string]int64
@@ -55,10 +26,6 @@ func replayMirrorSetLastApplied(strategyID string, id int64) {
 	}
 }
 
-// #1436 — book-drift kinds that DM the owner. Fragments are the throttle-key
-// suffix and must stay exact: a rename would split the (strategy, kind) slot
-// and re-fire inside the current window. Close-while-flat is INFO and is
-// deliberately not a kind.
 const (
 	replayDriftKindOpenWhileHolding       = "open-while-holding"
 	replayDriftKindScaleInWhileMismatched = "scale-in-while-mismatched"
@@ -74,12 +41,6 @@ type replayDriftSlot struct {
 	lastNotifiedAt time.Time
 }
 
-// replayDriftTracker is the process-lifetime, once-per-window throttle for
-// paper book-drift DMs. Key is (strategy_id, kind). Restart clears the map
-// (same lifetime as LiveExecFailureThrottle) so the first post-restart drift
-// always notifies. Do NOT route through shouldNotifyDrainFailure — that
-// helper also re-alerts on every 10th event and would violate the
-// once-per-window rule.
 type replayDriftTracker struct {
 	mu      sync.Mutex
 	entries map[replayDriftKey]*replayDriftSlot
@@ -87,16 +48,8 @@ type replayDriftTracker struct {
 
 var replayDriftAlerts = &replayDriftTracker{}
 
-// replayDriftWarn is the operator-visible warning hook for throttled paper
-// book-drift skips (owner DM), mirroring decisionLogPersistWarn. When nil
-// (tests, subcommands), apply still consumes the row; nothing is sent.
-// Test caveat: tests that swap this hook must NOT use t.Parallel().
 var replayDriftWarn func(msg string)
 
-// Record reports whether this drift should notify. Fires when the slot is
-// empty or now.Sub(lastNotifiedAt) >= effectiveAlertThrottleInterval()
-// (config alert_throttle_interval, empty → 6h). Stamps lastNotifiedAt under
-// mu when it decides to notify, before the caller sends.
 func (t *replayDriftTracker) Record(strategyID, kind string, now time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -122,8 +75,6 @@ func (t *replayDriftTracker) reset() {
 	t.entries = make(map[replayDriftKey]*replayDriftSlot)
 }
 
-// sendReplayDriftWarns delivers already-throttled DM texts through the nil-safe
-// hook. Call AFTER mu.Unlock() — never from applyReplayedLiveDecisions.
 func sendReplayDriftWarns(msgs []string) {
 	if replayDriftWarn == nil {
 		return
@@ -152,41 +103,12 @@ func appendReplayDriftDM(dst *[]string, strategyID, kind, detail string, now tim
 	}
 }
 
-// applyReplayedLiveDecisions books every pending live decision for a mirrored
-// paper strategy against its virtual state. MUST be called under mu.Lock (it
-// mutates positions/cash/trades). price is paper's current mark from this
-// cycle's check; result carries the check's indicators/regime so replayed
-// opens get the same EntryATR/regime stamping a native paper open would.
-//
-// Rows are applied strictly in decision_id order. Every visited row is
-// returned in appliedIDs (drift skips included — a row the mirror cannot
-// apply, e.g. an open while paper is already holding, is an operator-visible
-// WARN plus a throttled owner DM, not a retry loop: leaving it pending would
-// wedge every later row behind it). Book-drift DMs (the three WARN skip
-// kinds) are returned in driftDMs already throttled; the caller sends them
-// AFTER mu.Unlock(). Live downtime needs no special-casing: a gap simply
-// produces no rows and paper holds its last replayed state until the next
-// decision appears (resume policy (c) from the issue).
 func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []ReplayDecision, price float64, result *HyperliquidResult, cfg *Config, logger *StrategyLogger) (appliedIDs []int64, trades int, details []string, driftDMs []string) {
-	// Replay bookings must not eager-InsertTrade. recordPositionOpen /
-	// bookPerpsClose / bookPerpsPartialCloseWithFillFee all call RecordTrade,
-	// which otherwise commits a trades row immediately. A kill during the
-	// caller's SaveStrategyBook would then leave that row on disk while
-	// rolling back positions + replay_mirror_watermark, and the next start
-	// would re-apply and insert a second copy (#1435). RecordTrade still
-	// appends in-memory (persisted=false); SaveStrategyBook inserts those
-	// rows in the same transaction as the book and watermark.
+
 	defer suspendEagerTradePersist()()
-	// Same for #1147 diagnostics: recordClosedPosition otherwise eager-inserts
-	// a trade_diagnostics row outside the save tx. A kill between that insert
-	// and the save commit would leave an orphan that the retry duplicates.
+
 	defer suspendEagerDiagnosticsPersist()()
 
-	// The skip threshold is the max of the process-lifetime high-water and the
-	// PERSISTED watermark: after a restart the in-memory map is empty and the
-	// watermark is the only record that a row's book mutation already hit disk
-	// (a crash between SaveState and MarkDecisionsApplied leaves such rows
-	// pending in the shared log — they are re-marked below, never re-applied).
 	lastApplied := replayMirrorLastApplied(sc.ID)
 	if s.ReplayMirrorWatermark > lastApplied {
 		lastApplied = s.ReplayMirrorWatermark
@@ -200,9 +122,7 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 	now := time.Now()
 	for _, row := range pending {
 		if row.DecisionID <= lastApplied {
-			// Already applied to the persisted book (watermark) or earlier this
-			// process (high-water) but the shared-log mark failed — skip the
-			// state mutation, re-mark only.
+
 			markApplied(row.DecisionID)
 			continue
 		}
@@ -240,8 +160,7 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 			}
 			n, trade := applyPerpsScaleIn(s, sc, row.Symbol, row.ReferencePrice, row.Quantity, 0, "", false, logger)
 			if n > 0 && trade != nil {
-				// Mirror live's decision timestamp so hold-duration analytics
-				// line up with the live book.
+
 				trade.Timestamp = row.DecidedAt
 				trade.Details = fmt.Sprintf("%s [replay_live_mirror]", trade.Details)
 				recordPositionOpen(s, sc, trade, pos)
@@ -272,9 +191,7 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 		case ReplayDecisionFullClose:
 			pos := s.Positions[row.Symbol]
 			if pos == nil || pos.Quantity <= 0 {
-				// Expected whenever paper's own close re-evaluation or
-				// trailing/fixed-ATR SL beat the mirror to the exit — the
-				// acceptance criterion's trailing_stop_loss_paper carve-out.
+
 				logger.Info("Replay mirror: live closed %s (%s) but paper is already flat — nothing to replay (#1431)", row.Symbol, row.CloseReason)
 				markApplied(row.DecisionID)
 				continue
@@ -293,20 +210,12 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 	}
 	replayMirrorSetLastApplied(sc.ID, lastApplied)
 	if lastApplied > s.ReplayMirrorWatermark {
-		// Advance the durable cursor IN MEMORY; the caller's SaveStrategyBook
-		// persists it in the same transaction as the book mutations above,
-		// BEFORE the shared log's MarkDecisionsApplied runs.
+
 		s.ReplayMirrorWatermark = lastApplied
 	}
 	return appliedIDs, trades, details, driftDMs
 }
 
-// replayBookOpen books a replayed live open against the flat paper book:
-// exact live filled quantity at live's VWAP (fillQty semantics — no sizing,
-// no slippage), modeled paper fee, and the same EntryATR/regime stamping a
-// native paper open receives. Direction is forced to "both": the row's side
-// IS the decision — a per-cycle regime_directional_policy resolution must not
-// re-interpret (or reject) live's already-executed open.
 func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, result *HyperliquidResult, cfg *Config, logger *StrategyLogger) (int, string) {
 	sig := 1
 	if row.Side == "short" {
@@ -328,7 +237,7 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 		}
 		return 0, ""
 	}
-	// Mirror live's decision timestamp so hold-duration analytics line up.
+
 	exec.OpenTrade.Timestamp = row.DecidedAt
 	exec.OpenTrade.Details = fmt.Sprintf("%s [replay_live_mirror]", exec.OpenTrade.Details)
 	if pos, ok := s.Positions[row.Symbol]; ok && pos != nil {
@@ -338,11 +247,7 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 	if result != nil {
 		stampPositionRegimeIfOpened(s, row.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	}
-	// Live's open-time stamps win over paper's own payload when the row
-	// carries them: the mirror reproduces live's stop geometry (EntryATR is
-	// the frozen basis every ATR stop/tier derives from) and regime label
-	// even when the two deployments' payloads disagree on the same bar.
-	// Rows written before the columns existed (0/"") keep the paper stamps.
+
 	if pos := s.Positions[row.Symbol]; pos != nil {
 		if row.EntryATR > 0 {
 			pos.EntryATR = row.EntryATR
@@ -359,11 +264,6 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 	return exec.TradesExecuted, fmt.Sprintf("[%s] REPLAY OPEN %s %s %.6f @ $%.2f", sc.ID, row.Side, row.Symbol, row.Quantity, row.ReferencePrice)
 }
 
-// mergeTradeDetails concatenates operator-facing per-cycle digest fragments
-// so a later booked action cannot silently drop an earlier one. Empty
-// fragments are skipped. Used by the paper replay arm, which runs AFTER
-// paper's own close/SL backstop in the same iteration and must not overwrite
-// that earlier detail (#1435).
 func mergeTradeDetails(existing string, parts ...string) string {
 	out := make([]string, 0, 1+len(parts))
 	if existing != "" {

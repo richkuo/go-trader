@@ -14,10 +14,6 @@ import (
 	"time"
 )
 
-// knownSubcommands lists the leading-position subcommand tokens dispatched in
-// main() before flag.Parse(). Kept in sync with that switch so
-// validateDaemonInvocation can detect a misplaced one and produce a useful
-// error instead of silently starting the daemon (#700).
 var knownSubcommands = []string{
 	"init",
 	"export",
@@ -36,12 +32,6 @@ var knownSubcommands = []string{
 	"version",
 }
 
-// validateDaemonInvocation rejects stray positional args that survived
-// flag.Parse() on the daemon path. The most common cause is a misplaced
-// subcommand, e.g. `./go-trader -config foo manual-open ...`, where
-// `-config foo` is consumed as a global flag and the remaining args are
-// silently dropped — without this guard the daemon would boot a second
-// scheduler instead of running the requested subcommand (#700).
 func validateDaemonInvocation(extra []string) error {
 	if len(extra) == 0 {
 		return nil
@@ -105,7 +95,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Load config
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
@@ -121,10 +110,6 @@ func main() {
 	}
 	fmt.Printf("Loaded config: %d strategies, interval=%ds\n", len(cfg.Strategies), cfg.IntervalSeconds)
 
-	// #1085: load the directional-certification artifact (SSoT for the
-	// regime->direction edge gate). Fail-closed — a missing/malformed artifact
-	// runs every regime_directional_policy strategy DEFAULT-OFF (base
-	// direction), never a wrong-side bet, and never crashes the daemon.
 	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, f+"\n", a...)
 	}))
@@ -133,43 +118,30 @@ func main() {
 		fmt.Println(line)
 	}
 
-	// #704: emit a one-line resolved summary per strategy so operators can
-	// audit close/SL/TP wiring without grepping the JSON. Best-effort — a
-	// failed re-read just means we can't mark explicit-vs-default but the
-	// summary still shows the resolved source.
 	explicitKeys, _ := loadStrategyExplicitKeys(*configPath)
 	for _, sc := range cfg.Strategies {
 		fmt.Println(formatStrategySummaryLine(sc, explicitKeys[sc.ID], cfg))
 	}
-	// #1275: warn loudly when a configured open strategy carries the M5
-	// fee-audit deprecate verdict (documented gross edge <= 0). Advisory only
-	// — the config keeps loading and trading; the same lines are replayed to
-	// the owner DM once the notifier is wired.
+
 	deprecatedEdgeWarnings := deprecatedEdgeStartupWarnings(cfg.Strategies)
 	for _, msg := range deprecatedEdgeWarnings {
 		fmt.Fprintln(os.Stderr, "[config] "+msg)
 	}
-	// #1269: surface a configured daily loss limit at startup so the operator
-	// can audit the portfolio-wide entry gate without grepping the JSON.
+
 	if line := dailyLossStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
 	}
-	// #1270: same for a configured same-direction exposure cap.
+
 	if line := exposureCapStartupSummaryLine(cfg.PortfolioRisk); line != "" {
 		fmt.Println(line)
 	}
 
-	// #339: Detect a missing state DB on a live deployment *before* OpenStateDB
-	// creates it — a wiped directory (vs. an in-place `git pull`) would otherwise
-	// silently produce a fresh empty DB and desync from exchange positions.
-	// Captured here and replayed to the owner DM once the notifier is wired.
 	var missingStateWarning string
 	if msg := CheckStatePresence(cfg.DBFile, cfg.Strategies); msg != "" && !AllowMissingState() {
 		fmt.Fprintln(os.Stderr, msg)
 		missingStateWarning = msg
 	}
 
-	// Open SQLite state database.
 	stateDB, err := OpenStateDB(cfg.DBFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open state DB: %v\n", err)
@@ -177,21 +149,12 @@ func main() {
 	}
 	defer stateDB.Close()
 
-	// Wire the immediate trade-persistence hook (#289) so every trade is
-	// written to SQLite the moment it is appended to TradeHistory — this
-	// survives mid-cycle crashes that would otherwise lose the in-memory batch.
 	tradeRecorder = stateDB.InsertTrade
-	// #1455: fire-time model-only circuit-breaker closes are reconciled to the
-	// real exchange fill in one transaction across trades/closed_positions/diagnostics.
+
 	modelOnlyCloseUpdater = stateDB.ReconcileModelOnlyClose
 	modelOnlyCloseBasisLoader = stateDB.LoadModelOnlyCloseBasis
 	modelOnlyCloseAbandonMarker = stateDB.MarkModelOnlyCloseAbandoned
 
-	// #1431: open the shared live→paper decision log when configured. Both
-	// the live writer deployment and the paper mirror deployment open the
-	// same path (WAL + busy_timeout cover the cross-process sharing). A
-	// configured-but-unopenable path is a startup-fatal misconfiguration —
-	// running on without it would silently desync every mirrored pair.
 	if strings.TrimSpace(cfg.ReplayLogPath) != "" {
 		dl, dlErr := OpenDecisionLogDB(cfg.ReplayLogPath)
 		if dlErr != nil {
@@ -202,12 +165,9 @@ func main() {
 		defer decisionLog.Close()
 		decisionLogWriter = decisionLog.InsertDecision
 	}
-	// Register which strategies write live decisions to the log (HL perps +
-	// --mode=live + replay_sharing=live_mirror). Rebuilt on every SIGHUP by
-	// applyHotReloadConfig.
+
 	rebuildReplayLiveSources(cfg)
 
-	// Load state: SQLite primary, JSON fallback with auto-migration.
 	state, err := LoadStateWithDB(cfg, stateDB)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load state: %v\n", err)
@@ -215,22 +175,15 @@ func main() {
 	}
 	ValidateState(state, cfg.Strategies)
 
-	// #87: Resolve capital_pct at startup so initial state gets the right capital.
 	resolveCapitalPct(cfg.Strategies)
 
-	// #343: Reconcile any operator-driven initial_capital changes from config
-	// against the persisted baseline. Without this, the SaveState guard would
-	// silently revert a legitimate "bump initial_capital in config.json" edit
-	// on the next cycle. Captured here, surfaced to the owner DM once the
-	// notifier is wired below.
 	initialCapitalChangeInfos, initialCapitalChangeErrors := ReconcileConfigInitialCapital(cfg, state, stateDB)
 
-	// Initialize new strategies and sync config values for existing ones
 	sharedWalletTransitionBlockers := sharedWalletPoolTransitionBlockers(cfg.Strategies, state)
 	var sharedWalletTransitionWarnings []string
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
-		// For live Hyperliquid strategies without capital_pct, override capital with the real wallet balance.
+
 		if sc.CapitalPct == 0 {
 			syncHyperliquidLiveCapital(sc)
 		}
@@ -240,20 +193,13 @@ func main() {
 			state.Strategies[sc.ID] = s
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
 		} else {
-			// Sync config → state (config is source of truth).
+
 			if s.RiskState.MaxDrawdownPct != sc.MaxDrawdownPct {
 				fmt.Printf("  Updated %s max_drawdown_pct: %.0f%% → %.0f%%\n", sc.ID, s.RiskState.MaxDrawdownPct, sc.MaxDrawdownPct)
 				s.RiskState.MaxDrawdownPct = sc.MaxDrawdownPct
 			}
 			s.Platform = sc.Platform
-			// #418 RC3 one-shot self-heal: pre-#418 deployments where
-			// reconcile overwrote pos.Leverage with the on-chain margin
-			// tier (e.g. configured 2x but stored 20x) would persist the
-			// stale value indefinitely under the new `== 0` write-path
-			// guard. Risk math reads sc.Leverage now, so this only fixes
-			// metadata visible to analytics/dashboards/future readers, but
-			// stamping config onto state at startup keeps the two sources
-			// of truth aligned.
+
 			if sc.Platform == "hyperliquid" && sc.Type == "perps" && sc.Leverage > 0 {
 				for sym, pos := range s.Positions {
 					if pos == nil {
@@ -272,12 +218,7 @@ func main() {
 			poolTransition, transitionErr = applySharedWalletPoolStateMode(*sc, s)
 		}
 		if transitionErr != nil {
-			// A transition can be unsafe while any wallet peer remains open,
-			// or a pool→capital_pct transition can be temporarily unresolvable
-			// when the exchange balance fetch fails. Keep every durable book
-			// marker intact, force the affected wallet into manage-only mode,
-			// and retry the one-time transition on a later flat restart.
-			// Exits/protection keep running; fresh opens/adds/flips may not.
+
 			msg := deferSharedWalletPoolTransition(sc, transitionErr)
 			fmt.Fprintf(os.Stderr, "[CRITICAL] %s\n", msg)
 			sharedWalletTransitionWarnings = append(sharedWalletTransitionWarnings, msg)
@@ -299,7 +240,6 @@ func main() {
 		}
 	}
 
-	// Prune strategies from state that are no longer in config
 	configIDs := make(map[string]bool)
 	for _, sc := range cfg.Strategies {
 		configIDs[sc.ID] = true
@@ -313,10 +253,6 @@ func main() {
 		}
 	}
 
-	// #650: After prune, rebaseline portfolio peak from surviving strategies'
-	// per-strategy peaks. Without this, the stale portfolio peak (sized for the
-	// pre-prune strategy set) can immediately latch the kill switch on the
-	// first risk-check cycle once current value drops to the surviving subset.
 	if pruned && state.PortfolioRisk.PeakValue > 0 {
 		oldPeak := state.PortfolioRisk.PeakValue
 		newPeak := rebaselinePortfolioPeakAfterPrune(state, cfg, nil)
@@ -326,47 +262,20 @@ func main() {
 		}
 	}
 
-	// #336/#656: Detect perps positions whose side conflicts with the
-	// configured direction (e.g. a short under direction="long", or a long
-	// under direction="short"). The executor can't reconcile this on its
-	// own — a fresh-open signal against the conflicting position nets on
-	// the exchange but flips virtually. Collect here, forward to owner DM
-	// once the notifier is wired below.
 	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
 
-	// #1277 optional hardening: detect a config edit + restart (not SIGHUP)
-	// that changed a strategy's effective atr_method while it still holds a
-	// position opened under the old one — the only gap the SIGHUP hot-reload
-	// guard (config_reload.go validateHotReloadStateCompatible) can't see.
-	// Collect here, forward to owner DM once the notifier is wired below.
 	atrMethodDriftWarnings := checkATRMethodDriftAtStartup(state, cfg)
 
-	// #1159: detect a config edit + restart that orphaned or re-pointed a live
-	// hedge leg. The SIGHUP guard blocks a hedge-block change while a leg is
-	// open, but a restart has no previous config to diff against — this is the
-	// only place that gap is visible. Non-destructive: the leg is left frozen
-	// and the operator is told, because guessing a close would liquidate real
-	// money on the strength of a config diff.
 	hedgeStateWarnings := validateHedgeStateConsistency(state, cfg)
 
-	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
-	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
-	// perps strategies on the same account), use the real on-exchange balance
-	// once instead of summing per-strategy capital — otherwise the peak is
-	// inflated and the kill switch can fire prematurely.
 	if state.PortfolioRisk.PeakValue == 0 {
 		total := computeInitialPortfolioPeak(cfg.Strategies, nil)
 		state.PortfolioRisk.PeakValue = total
 		fmt.Printf("  Portfolio peak initialized: $%.0f\n", total)
 	}
 
-	// #244: A latched portfolio kill switch should not survive a restart
-	// indefinitely on shared-wallet setups. If the real on-chain balance is
-	// fetchable for any shared wallet, treat startup as a safe reset point
-	// and unlatch the kill switch. Network failures preserve the latch.
 	ClearLatchedKillSwitchSharedWallet(state, cfg.Strategies, defaultSharedWalletBalance)
 
-	// Setup logging
 	logMgr, err := NewLogManager(cfg.LogDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to setup logging: %v\n", err)
@@ -374,15 +283,10 @@ func main() {
 	}
 	defer logMgr.Close()
 
-	// Mutex for state access (HTTP server reads)
 	var mu sync.RWMutex
 
-	// Initialize the cancellable read-only/side-effect contexts before the
-	// status server can accept a tuning job. The #1339 research lane rides the
-	// read-only context and must be killable from its first accepted request.
 	initShutdownContexts()
 
-	// Start HTTP status server. Priority: CLI flag > config > default.
 	statusPort := resolveStatusPort(*statusPortFlag, cfg.StatusPort)
 	server := NewStatusServer(state, &mu, cfg.StatusToken, cfg.Strategies, stateDB)
 	server.SetConfigContext(*configPath, cfg)
@@ -392,30 +296,13 @@ func main() {
 	} else {
 		server.tuning = tuningManager
 	}
-	// #1272: end single-threaded startup before the first state-reading
-	// goroutine (http.Serve). ClearLatchedKillSwitchSharedWallet above must
-	// stay before this call.
+
 	markSchedulerStarted()
 	if tuningManager != nil {
 		go tuningManager.run(shutdownReadOnlyCtx)
 	}
 	server.Start(statusPort)
 
-	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
-	//
-	// Phase 1 (signal goroutine below): set draining flag, cancel
-	// shutdownReadOnlyCtx, close stopCh. Do not save state, take locks, or
-	// call I/O — a panic in this goroutine would leave the daemon wedged.
-	//
-	// Phase 2 + 3 run on the main goroutine: the trading loop returns when
-	// it sees stopCh closed, then the deferred shutdown sequence further
-	// down (registered AFTER buildNotifierFromConfig so it runs BEFORE
-	// cleanupNotifier in LIFO order) waits for in-flight side-effecting
-	// subprocesses and persists state before the notifier flushes.
-	// #1147 trade-quality diagnostics: eager row insert on every full close
-	// (hook fires inside recordClosedPosition, under mu — same cost class as
-	// the tradeRecorder insert), async MFE/MAE enrichment outside mu. The
-	// worker's candle fetches ride runPythonReadOnly, so they cancel on drain.
 	diagWorker := newTradeDiagnosticsWorker(FetchUICandles, stateDB.UpdateTradeDiagnosticsMetrics)
 	diagWorker.UpdateStrategies(cfg.Strategies)
 	tradeDiagnosticsRecorder = stateDB.InsertTradeDiagnostics
@@ -433,19 +320,12 @@ func main() {
 		close(stopCh)
 	}()
 
-	// Initialize notification backends (Discord and/or Telegram).
 	notifier, cleanupNotifier := buildNotifierFromConfig(cfg)
 	defer cleanupNotifier()
 	fmt.Printf("Notification backends: %d active\n", notifier.BackendCount())
-	// #1257: the dashboard trade-action cores share the daemon notifier so
-	// their protection warnings reach the operator like the manual CLI's do.
+
 	server.SetNotifier(notifier)
 
-	// #1137 LLM entry analysis: dedicated async lane (own queue + concurrency
-	// cap, own per-job deadline — never the shared pythonSemaphore path). Rides
-	// shutdownReadOnlyCtx so in-flight analyses are cancelled immediately at
-	// SIGTERM instead of joining the side-effect drain. Advisory-only: the
-	// verdict stamp and channel digest are the only outputs.
 	llmWorker := newLLMEntryAnalysisWorker(
 		runLLMEntryAnalysisScript,
 		func(job llmEntryAnalysisJob, verdict string) {
@@ -455,21 +335,15 @@ func main() {
 			if !ok {
 				return
 			}
-			// Stamp only the exact position the analysis was dispatched for; a
-			// close/flip in the interim means the verdict has no home (the
-			// diagnostics row for that close keeps llm_verdict NULL).
+
 			if pos := s.Positions[job.Symbol]; pos != nil && pos.TradePositionID == job.PositionID {
 				pos.LLMVerdict = verdict
 			}
 		},
 		func(job llmEntryAnalysisJob, res *LLMEntryAnalysisResult) {
-			// Routing is per-strategy (#1137): DM on by default, channel off by
-			// default. Both resolved into job.Params at dispatch so the async
-			// digest honors the config in effect at open time.
+
 			for _, route := range notifier.tradeAlertRoutes(job.Platform, job.StratType, job.IsLive) {
-				// Per-route rendering mirrors sendTradeAlerts: plainText
-				// backends (e.g. Telegram) must not see literal markdown
-				// bold in the verdict line.
+
 				msg := formatLLMEntryAnalysisDigest(job, res, route.plainText)
 				if job.Params.NotifyDM && route.dmDest != "" {
 					if err := sendTradeDestination(route.notifier, route.dmDest, msg); err != nil {
@@ -497,8 +371,6 @@ func main() {
 		fmt.Printf("[WARN] llm_entry_analysis enabled but %s is not set — analyses will fail (advisory only, trading unaffected)\n", llmEntryAnalysisAPIKeyEnv)
 	}
 
-	// Attach Discord slash commands (issue #212). Non-fatal: registration
-	// failures are logged + DM'd to the owner but never stop the daemon.
 	if d := notifier.DiscordBackend(); d != nil {
 		if err := d.RegisterSlashCommands(server, cfg); err != nil {
 			fmt.Printf("[WARN] Discord slash command registration failed: %v\n", err)
@@ -510,22 +382,6 @@ func main() {
 		}
 	}
 
-	// Phase 2 + 3 of graceful shutdown — registered AFTER cleanupNotifier so
-	// LIFO ordering puts this defer BEFORE notifier flush. Sequence on
-	// natural return from the trading loop:
-	//
-	//   1. runDrain() — wait up to shutdownDrainCap for in-flight
-	//      side-effecting subprocesses (--execute, close_*.py,
-	//      sync-protection); cap fires → SIGKILL backstop.
-	//   2. SaveStateWithDB — final state persist.
-	//   3. cleanupNotifier (registered above, runs after this defer
-	//      returns) — Discord/Telegram HTTP flush so any "[shutdown]" DM
-	//      lands. stateDB.Close (line 63) and logMgr.Close (line 185) run
-	//      after.
-	//
-	// os.Exit code paths (--once with exit, --summary, --leaderboard, probe
-	// failure) bypass this defer; those paths are short-lived and don't
-	// leave side-effecting subprocesses in flight.
 	defer func() {
 		runDrain()
 		mu.Lock()
@@ -538,39 +394,24 @@ func main() {
 		fmt.Println("[shutdown] Complete.")
 	}()
 
-	// Route trade-persist warnings (#289) to owner DM so operators see
-	// immediate trade-DB failures instead of only stderr. Safe to wire after
-	// OpenStateDB — any RecordTrade calls between those two points still log
-	// to stderr via the nil-check in state.go.
 	if notifier.HasOwner() {
 		tradePersistWarn = func(msg string) {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
-		// #1431: decision-log insert failures (consecutive streak ≥ 3) to the
-		// owner DM — the live trade always stands, but the paper mirror is
-		// silently stale until the log recovers without this alert.
+
 		decisionLogPersistWarn = func(msg string) {
 			notifier.SendOwnerDM("[replay] " + msg)
 		}
-		// #1436: paper book-drift skips (open-while-holding /
-		// scale-in-while-mismatched / partial-close-while-flat) to the
-		// owner DM. Apply returns already-throttled texts; the send runs
-		// after mu.Unlock() so the Discord HTTP call is outside the lock.
+
 		replayDriftWarn = func(msg string) {
 			notifier.SendOwnerDM("[replay] " + msg)
 		}
-		// #343: Forward baseline-guard warnings (a SaveState caller tried to
-		// rewrite initial_capital) to the owner DM. Dedup is handled inside
-		// SaveState — this only fires once per strategy per process lifetime.
+
 		initialCapitalGuardWarn = func(msg string) {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
 
-	// #343: Forward startup config-driven baseline changes to the owner. Info
-	// DMs confirm a deliberate bump; ERROR DMs surface a persist failure where
-	// the DB still holds the prior baseline. Both are routine but worth
-	// surfacing so the change (or its failure) is visible.
 	if notifier.HasOwner() {
 		for _, msg := range initialCapitalChangeInfos {
 			notifier.SendOwnerDM("[state] " + msg)
@@ -580,74 +421,46 @@ func main() {
 		}
 	}
 
-	// A deferred pool transition is deliberately non-fatal so protection
-	// management stays live, but it requires prominent operator visibility
-	// because entries remain held until a successful flat restart.
 	if len(sharedWalletTransitionWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range sharedWalletTransitionWarnings {
 			notifier.SendOwnerDM("[state] CRITICAL: " + msg)
 		}
 	}
 
-	// #336/#656: Forward startup direction-vs-position warnings to the owner
-	// so the desync is surfaced even when the operator isn't tailing stderr.
 	if len(directionConfigWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range directionConfigWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
 
-	// #1277 optional hardening: forward startup atr_method-drift warnings —
-	// the only place that catches a config edit + restart-while-open, since
-	// the SIGHUP guard never runs on this path.
 	if len(atrMethodDriftWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range atrMethodDriftWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
 
-	// #1159: forward hedge state-vs-config gaps. A frozen hedge leg is real
-	// leveraged exposure that nothing will manage, so it must reach the owner
-	// even when nobody is tailing stderr.
 	if len(hedgeStateWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range hedgeStateWarnings {
 			notifier.SendOwnerDM("[state] " + msg)
 		}
 	}
 
-	// #1157: surface uncertified/expired directional policy to owner DM at startup.
 	notifyDirectionalCertStartupSummary(notifier, directionalCertSummaryLines)
 
-	// #1275: replay M5-deprecated-strategy warnings to the owner DM so an
-	// operator live-trading a documented negative-gross-edge strategy sees it
-	// even when not tailing stderr. One-time per startup; suppressed
-	// per-strategy by allow_deprecated.
 	if len(deprecatedEdgeWarnings) > 0 && notifier.HasOwner() {
 		for _, msg := range deprecatedEdgeWarnings {
 			notifier.SendOwnerDM("[config] " + msg)
 		}
 	}
 
-	// #339: Forward the missing-state-DB warning to the owner. Captured before
-	// OpenStateDB ran (which would have created an empty DB), surfaced here
-	// once the notifier is available.
 	if missingStateWarning != "" && notifier.HasOwner() {
 		notifier.SendOwnerDM("[state] " + missingStateWarning)
 	}
 
-	// -summary mode: post snapshot summary for the specified channel and exit.
-	// Checked early since it only needs config, state, and notifier — avoids
-	// launching the config-migration goroutine, update checks, and pricers
-	// that would be hard-killed by os.Exit.
 	if *summary != "" {
 		runSummaryAndExit(*summary, cfg, state, stateDB, notifier)
 	}
 
-	// -leaderboard mode: compute leaderboard on-demand and exit. Issue #313
-	// moved this from reading a pre-computed leaderboard.json to fetching fresh
-	// prices and building messages at invocation time — data is always current,
-	// and the scheduler no longer pays per-cycle compute/IO for data only used
-	// by this flag and the daily auto-post.
 	if *leaderboard {
 		if !notifier.HasBackends() {
 			fmt.Fprintf(os.Stderr, "No notification backends configured\n")
@@ -681,14 +494,10 @@ func main() {
 		}
 	}()
 
-	// Config migration: DM owner about new fields if config is behind current version.
 	if cfg.ConfigVersion < CurrentConfigVersion {
 		go runConfigMigrationDM(cfg, notifier, *configPath)
 	}
 
-	// #645: Verify each configured check script accepts the binary's argv
-	// shape before entering the trading loop. Exit ExitProbeFailure so
-	// systemd RestartPreventExitStatus= stops restart spam (one DM, stay down).
 	if err := probeCheckScripts(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "[startup] check-script compatibility probe failed: %v\n", err)
 		if notifier != nil && notifier.HasOwner() {
@@ -697,20 +506,6 @@ func main() {
 		os.Exit(ExitProbeFailure)
 	}
 
-	// #849: Singleton guard — claim an exclusive lock on the resolved state-DB
-	// path so a second daemon (e.g. an operator manually launching the binary
-	// alongside the systemd-managed instance, or an out-of-cgroup process from a
-	// signal-mode update) refuses to start instead of silently double-trading
-	// against the same state.db / exchange account.
-	//
-	// Scoped to the persistent daemon loop only: CLI subcommands and --summary /
-	// --leaderboard have already exited above, and --once is intentionally left
-	// unguarded (it's update.sh's post-deploy smoke and the operator's
-	// responsibility). The probe ran first because update.sh invokes the
-	// `probe` subcommand against the still-live old daemon during a deploy;
-	// that path never reaches here. The lock is a kernel flock the OS releases
-	// on exit/crash, so a SIGKILLed daemon leaves nothing stale to block the
-	// next start (see singleton_lock.go).
 	if !*once {
 		lock, lockErr := acquireStateDBLock(cfg.DBFile)
 		if lockErr != nil {
@@ -729,55 +524,27 @@ func main() {
 			}
 			os.Exit(ExitSingletonLock)
 		}
-		// Hold for the entire process lifetime. We deliberately do NOT release
-		// on the happy path: the OS drops the flock when the process exits,
-		// which is strictly after the deferred final SaveState + stateDB.Close
-		// have run. Releasing earlier (e.g. via defer) would run BEFORE those
-		// in LIFO order and open a window where a duplicate could grab the lock
-		// and start trading while we're still flushing state. Stashing it in a
-		// package var also keeps the fd reachable so its os.File finalizer
-		// can't close (and release) it mid-run.
+
 		heldStateDBLock = lock
 	}
 
-	// Track the last remote hash we notified about to avoid re-notifying on every cycle.
 	var lastNotifiedHash string
 
-	// Check for updates on startup (best-effort, non-blocking).
 	if cfg.AutoUpdate != "off" {
 		checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
 	}
 
-	// Platform pricers: Deribit uses live API; IBKR uses Black-Scholes with cached spot prices.
 	deribitPricer := NewDeribitPricer()
 	fmt.Println("Option pricers ready (deribit: live API, ibkr: Black-Scholes)")
 
-	// Track last-run time per strategy for per-strategy intervals.
-	// Single-writer invariant: lastRun is only mutated from the scheduler
-	// goroutine (this for-loop and the per-strategy continuations below).
-	// Reads from the same goroutine (the dueStrategies loop and the
-	// schedulerDelay calls) are safe without additional synchronization.
-	// If you ever split writes across goroutines, add explicit locking —
-	// the existing `mu` lock guards `state`, not `lastRun`.
 	lastRun := make(map[string]time.Time)
-	// #1456 review round 13: last time ANY #1450 liquidation audit pass ran
-	// (dispatch or off-cycle). Bounds the open-cycle blind spot's healing
-	// guarantee to the audit's own cadence instead of the fleet's slowest
-	// strategy interval — see the empty-branch clamp below.
+
 	var lastLiquidationAudit time.Time
-	// offCycleAuditSaveDirty latches when the #1450 off-cycle audit booked a
-	// realized close but its inline SaveStateWithDB failed. The close only
-	// lives in memory at that point, and the branch that produced it books
-	// nothing further, so without a retry the flush would wait for the next
-	// strategy to come due — the exact unbounded quiet window the inline save
-	// exists to close. The next quiet wake retries the flush even when that
-	// pass booked nothing (#1456 review round 14, Needs Fixing 1).
+
 	offCycleAuditSaveDirty := false
-	// Same single-writer invariant as lastRun; copied into AppState only during
-	// the save phase so restart throttling survives without widening state locks.
+
 	lastSummaryPost := cloneTimeMap(state.LastSummaryPost)
 
-	// Determine tick interval from configured strategy intervals, min 60s.
 	tickSeconds := schedulerTickSeconds(cfg)
 	fmt.Printf("Tick interval: %ds (strategies have individual intervals)\n", tickSeconds)
 	drawdownWarnThresholdPct := configuredDrawdownWarnThresholdPct(cfg)
@@ -790,9 +557,7 @@ func main() {
 			return
 		}
 		mu.Lock()
-		// #1275: snapshot the pre-reload strategy shapes so a hot reload that
-		// moves an open leg onto an M5-deprecated name (or drops an
-		// allow_deprecated ack) re-fires the deprecated-edge warning below.
+
 		prevStrategies := append([]StrategyConfig(nil), cfg.Strategies...)
 		changes, err := applyHotReloadConfig(cfg, nextCfg, state, notifier, server)
 		if err != nil {
@@ -804,15 +569,8 @@ func main() {
 		drawdownWarnThresholdPct = configuredDrawdownWarnThresholdPct(cfg)
 		mu.Unlock()
 
-		// #1147: refresh the diagnostics worker's strategy-ID → config
-		// snapshot so post-reload closes resolve the right fetch metadata.
 		diagWorker.UpdateStrategies(cfg.Strategies)
 
-		// #1085: refresh the directional-certification artifact on SIGHUP so a
-		// re-run of regime_1076_certify.py takes effect without a restart.
-		// Fail-closed on error (keeps default-off). Certification status changes
-		// never disturb an OPEN position — the entry gate keys on the live
-		// verdict only when flat; open positions ride under their open stamp.
 		setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 			fmt.Fprintf(os.Stderr, "[reload] "+f+"\n", a...)
 		}))
@@ -822,11 +580,6 @@ func main() {
 		}
 		notifyDirectionalCertStartupSummary(notifier, reloadCertLines)
 
-		// #1275: a hot reload can move a strategy's open leg onto an
-		// M5-deprecated name or flip allow_deprecated off — surface the same
-		// loud warning (stderr + owner DM) the startup path emits, but only
-		// for strategies whose deprecated-unacked state is new to this reload
-		// so unchanged strategies don't re-spam on every SIGHUP.
 		for _, msg := range newlyDeprecatedEdgeWarnings(prevStrategies, cfg.Strategies) {
 			fmt.Fprintln(os.Stderr, "[reload] "+msg)
 			if notifier.HasOwner() {
@@ -855,13 +608,6 @@ func main() {
 		}
 	}
 
-	// Wall-clock tracker for cfg.AutoUpdate == "daily". Initialized to now so
-	// the first daily check fires after 24h (matching the previous
-	// cycle-based behavior). We can't use cycle counts anymore because the
-	// scheduler no longer sleeps a fixed tick — schedulerDelay returns a
-	// variable delay (1s when due, up to the longest strategy interval
-	// otherwise), so cycle increments no longer correspond to wall-clock
-	// time.
 	lastAutoUpdateCheck := time.Now()
 
 	saveFailures := 0
@@ -869,13 +615,8 @@ func main() {
 	sharedWalletRiskBalances := make(map[SharedWalletKey]sharedWalletRiskBalanceSnapshot)
 	sharedWalletRiskGeneration := 0
 
-	// Main loop
 	for {
-		// Refuse new cycles once SIGTERM/SIGINT has fired. The signal handler
-		// closes stopCh; the inter-cycle wait at the bottom of this loop
-		// returns on stopCh, so under normal pacing we never reach here while
-		// draining. This early-out covers the race where SIGTERM arrives
-		// between the inter-cycle wait returning and the next iteration top.
+
 		if isDraining() {
 			fmt.Println("[shutdown] draining, exiting trading loop.")
 			return
@@ -892,46 +633,28 @@ func main() {
 		channelTrades := make(map[string]int)
 		channelTradeDetails := make(map[string][]string)
 
-		// #569: Drain pending manual-open / manual-close actions before the
-		// dueStrategies loop so newly-materialised positions are visible this cycle.
 		mu.Lock()
 		manualAlerts := drainPendingManualActions(state, cfg, stateDB)
 		mu.Unlock()
-		// #880: Emit trade alerts for adopted manual fills AFTER releasing mu.
-		// sendTradeAlerts re-acquires mu.RLock, so alerting inside the drain
-		// (which runs under mu.Lock) would self-deadlock. This gives manual fills
-		// the same DM/channel routing as normal live trades.
+
 		for _, ma := range manualAlerts {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
 		}
 
-		// #883: poll resting limit orders, adopt fills into tracked positions
-		// (arming protection immediately), and finalize filled/cancelled/expired
-		// orders. Runs after the manual drain so a same-cycle market action and a
-		// limit fill are both visible. Manages its own locking (network calls run
-		// outside mu); alerts fire after, like the drain (#880).
 		limitAlerts := reconcilePendingLimitOrders(state, cfg, stateDB, &mu, notifier, logMgr)
 		for _, ma := range limitAlerts {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
 		}
 
-		// #87: Resolve capital_pct → capital for strategies with dynamic sizing.
-		// Must run on cfg.Strategies (not dueStrategies) so resolved capital persists
-		// across cycles and is picked up by the value-copies in dueStrategies.
 		resolveCapitalPct(cfg.Strategies)
 
-		// Compute effective per-strategy intervals once per cycle under
-		// RLock; reuse the same map for due-detection and schedulerDelay
-		// below to avoid re-entering the lock and recomputing per strategy.
 		mu.RLock()
 		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
 
-		// Determine which strategies are due this tick
 		dueStrategies := make([]StrategyConfig, 0)
 		for _, sc := range cfg.Strategies {
-			// #100: Skip strategies where capital_pct is set but capital resolved to $0
-			// (balance fetch failed and no fallback capital configured).
+
 			if shouldSkipZeroCapital(sc) {
 				fmt.Printf("[ERROR] %s: capital_pct set but capital resolved to $0 — skipping\n", sc.ID)
 				continue
@@ -944,32 +667,11 @@ func main() {
 		}
 
 		if len(dueStrategies) == 0 {
-			// Nothing due, wait for next tick — but the #1450 audit must not
-			// inherit that sleep wholesale. Its "next cycle heals it" guarantee
-			// for a same-cycle-armed stop (#1456 review round 13, Optional 4)
-			// is bound by the fleet's minimum due interval; a single-strategy
-			// live HL perps fleet on a long interval would leave a fresh
-			// position's clamp window open for hours. When the audit's own
-			// cadence (the fastest live-HL-perps interval) has elapsed, run a
-			// dedicated audit cycle instead of sleeping past it; otherwise
-			// clamp the sleep so the loop wakes no later than that deadline.
+
 			if audSec := liquidationAuditIntervalSeconds(cfg.Strategies, intervals); audSec > 0 && os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
 				now := time.Now().UTC()
 				if lastLiquidationAudit.IsZero() || now.Sub(lastLiquidationAudit) >= time.Duration(audSec)*time.Second {
-					// #1456 review round 17 (Needs Fixing 2): this pass cancels
-					// and places LIVE reduce-only stops, re-arms static-scalar
-					// owners, books realized closes and converges on-chain hedge
-					// legs. The dispatch phase below refuses exactly that class
-					// of work once saveFailures hits 3; this branch sits BEFORE
-					// that gate and stays reachable while dueStrategies remains
-					// empty, so on a quiet fleet whose SQLite writes are failing
-					// it would move live orders every cadence while every booked
-					// close existed only in memory. Halt identically: place
-					// nothing, book nothing, until a save succeeds. The probe
-					// save is what lets a fleet that never comes due recover —
-					// the dispatch halt heals through its own end-of-cycle save
-					// attempt, and without a probe this branch has none — and
-					// the clock stamp keeps it to one attempt per cadence.
+
 					if saveFailures >= 3 {
 						fmt.Println("[CRITICAL] State save failed 3x, skipping off-cycle liquidation audit this pass")
 						offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, 0, offCycleAuditSaveDirty, saveFailures, true)
@@ -977,40 +679,9 @@ func main() {
 						continue
 					}
 					mutations := runOffCycleLiquidationAudit(cfg.Strategies, state, &mu, notifier, logMgr)
-					// Stamp unconditionally — including fetch failure — so a
-					// failing endpoint can never turn this branch into a hot
-					// retry loop; the next attempt waits out the full cadence.
-					//
-					// #1456 review round 16 (Optional 1): stamp COMPLETION time,
-					// not the pre-run `now`. This branch continues to the top of
-					// the loop without sleeping, so the next iteration re-tests
-					// time.Now().Sub(lastLiquidationAudit) >= audSec — already
-					// true whenever the pass itself took at least audSec. A pass
-					// that fetches clearinghouseState plus mids and spawns a
-					// placement subprocess per candidate can reach that on a slow
-					// API, and a persistently failing re-arm produces an action
-					// every pass, so the pre-run stamp would drive back-to-back
-					// exchange fetches and live placements with no pacing — the
-					// very hot loop the unconditional stamp exists to prevent.
-					// Re-eligibility is now a full cadence after COMPLETION.
+
 					lastLiquidationAudit = time.Now().UTC()
-					// #1456 review rounds 14 and 15 (Needs Fixing 1): the audit
-					// rewrites pos.StopLossOID / pos.StopLossTriggerPx on every
-					// clamp and re-arm, books realized closes through
-					// recordPerpsStopLossClose, and converges real on-chain
-					// hedge legs — all in memory until SaveState commits — then
-					// this branch CONTINUES past the
-					// loop body's only SaveStateWithDB. Because the branch is
-					// re-entered on every wake while dueStrategies stays empty,
-					// a quiet fleet could run pass after pass without ever
-					// reaching that save — the unsaved window is the whole
-					// quiet period, not one tick. After an unclean exit the
-					// position reloads open with cash unchanged while the
-					// exchange is flat, and the next reconcile re-books it as
-					// hl_sync_external at a later mark, after the operator was
-					// already DM'd the original close. Flush inline before
-					// sleeping, exactly as reconcilePendingLimitOrders does
-					// before its own continue. Nothing changed → no extra write.
+
 					offCycleAuditSaveDirty, saveFailures = flushOffCycleLiquidationAuditState(state, cfg, stateDB, &mu, mutations, offCycleAuditSaveDirty, saveFailures, false)
 					continue
 				}
@@ -1057,19 +728,12 @@ func main() {
 			cycle, cycleStart.UTC().Format("2006-01-02 15:04:05 UTC"),
 			len(dueStrategies), len(cfg.Strategies))
 
-		// Collect symbols that need prices. Spot strategies use the
-		// BinanceUS-formatted symbol directly (e.g. "BTC/USDT").
-		// Perps marks now come from the venues they live on — see
-		// collectPerpsMarkSymbols below — so perps are intentionally
-		// absent from this list, closing the HL-only coin [WARN] noise
-		// (#262) as a side effect.
 		symbols := collectPriceSymbols(cfg.Strategies)
-		// Futures (TopStep CME) on a separate price rail — #261.
+
 		futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
-		// Perps marks sourced from the venue the position lives on — #263.
+
 		hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
 
-		// Fetch current prices for portfolio valuation
 		prices := make(map[string]float64)
 		if len(symbols) > 0 {
 			p, err := FetchPrices(symbols)
@@ -1077,7 +741,7 @@ func main() {
 				fmt.Printf("[CRITICAL] Price fetch failed: %v — skipping cycle\n", err)
 				continue
 			}
-			// Filter out any zero prices returned by the script
+
 			for sym, price := range p {
 				if price > 0 {
 					prices[sym] = price
@@ -1090,7 +754,7 @@ func main() {
 				continue
 			}
 		}
-		// HL perps marks — best-effort; failure falls back to pos.AvgCost.
+
 		if len(hlPerpsCoins) > 0 {
 			hlMarks, err := fetchHyperliquidMids(hlPerpsCoins)
 			if err != nil {
@@ -1104,7 +768,7 @@ func main() {
 				}
 			}
 		}
-		// OKX perps marks — best-effort; failure falls back to pos.AvgCost.
+
 		if len(okxPerpsCoins) > 0 {
 			okxMarks, err := fetchOKXPerpsMids(okxPerpsCoins)
 			if err != nil {
@@ -1118,18 +782,13 @@ func main() {
 				}
 			}
 		}
-		// Futures marks are best-effort: a failed fetch falls back to
-		// pos.AvgCost in PortfolioNotional/Value (same as pre-#261), it is
-		// NOT a hard cycle skip. Log a [WARN] so stale exposure is visible.
+
 		if len(futuresSymbols) > 0 {
 			marks, mode, err := FetchFuturesMarks(futuresSymbols)
 			if err != nil {
 				fmt.Printf("[WARN] Futures marks fetch failed for %v: %v — portfolio notional will use entry cost for open futures positions\n", futuresSymbols, err)
 			} else {
-				// Main cycle loop is naturally rate-limited by the tick
-				// interval, so the paper_fallback warning can fire
-				// unthrottled here — one log per cycle on a sustained
-				// downgrade. /status uses a throttled logger instead.
+
 				if mode == FuturesMarkModePaperFallback {
 					fmt.Printf("[WARN] fetch_futures_marks: live mode init failed, degraded to paper (yfinance) — check TopStepX creds and network\n")
 				}
@@ -1149,28 +808,16 @@ func main() {
 			fmt.Println()
 		}
 
-		// totalPV holds the shared-wallet-adjusted portfolio value computed during
-		// the portfolio risk check; it is reused in the cycle summary log below
-		// so the summary doesn't double-count virtual cash in shared-wallet
-		// setups (#908).
 		var totalPV float64
 		sharedWallets := detectSharedWallets(cfg.Strategies)
-		// walletBalances is populated in the else branch below (where HL/OKX
-		// state is fetched) and reused by the summary and leaderboard paths
-		// that follow. Empty in the saveFailures>=3 fast-exit branch — those
-		// paths fall back to virtual-sum as before.
+
 		walletBalances := make(map[SharedWalletKey]float64)
 
-		// Process only due strategies
 		if saveFailures >= 3 {
 			fmt.Println("[CRITICAL] State save failed 3x, skipping trades this cycle")
-			// #879: the fan-out below is skipped, so clear the regime store —
-			// /api/regime must not keep serving the prior cycle's labels as
-			// fake-live while trading is suspended.
+
 			globalRegimeStore.resetForCycle(time.Now().UTC())
-			// #918: no balance fetch on this degenerate cycle, so clear any prior
-			// exchange-derived shared-wallet values to avoid serving stale equity
-			// from /status; display falls back to PortfolioValue.
+
 			mu.Lock()
 			for _, ss := range state.Strategies {
 				if ss != nil {
@@ -1185,35 +832,15 @@ func main() {
 			totalPV, _ = computeTotalPortfolioValue(cfg.Strategies, state, prices, nil, sharedWallets)
 			mu.RUnlock()
 		} else {
-			// #879: kick off the per-cycle global regime store — one regime
-			// subprocess per distinct (platform, symbol, timeframe, spec)
-			// signature among due strategies. Runs CONCURRENTLY with the
-			// portfolio risk / kill-switch phase below so a regime hang can
-			// never delay risk management; regimeStoreReady() blocks (with a
-			// phase budget) right before the check fan-out, the first store
-			// consumer. Every regime consumer this cycle (entry gates,
-			// stratState sync, stamp-at-open, check-script injection, flat
-			// manual, options, dashboard) reads this map; check scripts no
-			// longer compute regime inline.
+
 			regimeStoreReady := startRegimeStorePopulation(globalRegimeStore, dueStrategies, cfg.Regime, notifier)
-			// #42 / #243: Portfolio-level risk check before running any strategy.
-			//
-			// Fetch live Hyperliquid clearinghouseState ONCE per cycle (outside
-			// the lock) and reuse it for BOTH the shared-wallet balance (risk
-			// check) AND the on-chain position sync below — this halves the HL
-			// API round-trips when multiple live HL strategies are configured.
-			//
-			// Uses real exchange balances for shared wallets so multiple HL
-			// perps strategies on the same account don't get double-counted.
+
 			killSwitchFired := false
 			notionalBlocked := false
 			dailyLossEntriesHeld := false
 			exposureCapStatus := ExposureCapStatus{}
 			usedPVFallback := false
 
-			// Partition HL live strategies up-front: shared-wallet detection
-			// must see all strategies in cfg, while position sync only touches
-			// due strategies.
 			var hlLiveAll []StrategyConfig
 			for _, sc := range cfg.Strategies {
 				if sc.Platform == "hyperliquid" && sc.Type == "perps" && hyperliquidIsLive(sc.Args) {
@@ -1226,12 +853,7 @@ func main() {
 					hlLiveDue = append(hlLiveDue, sc)
 				}
 			}
-			// Reconcile lists extend hlLive* to include type=manual: manual
-			// positions are real on-chain HL positions that can be closed
-			// externally and must be reconciled. #1454: the kill switch now
-			// consumes this same perps+manual roster; trailing-stop arming and
-			// risk math remain the perps-only hlLiveAll consumers (#576) — do
-			// NOT widen hlLiveAll itself to reach them.
+
 			var hlReconcileAll []StrategyConfig
 			for _, sc := range cfg.Strategies {
 				if isHLLiveReconcilable(sc) {
@@ -1244,24 +866,9 @@ func main() {
 					hlReconcileDue = append(hlReconcileDue, sc)
 				}
 			}
-			// #1454: kill-switch roster — live HL perps PLUS live type=manual.
-			// #576 keeps hlLiveAll perps-only because trailing-stop arming and
-			// risk math depend on that meaning, but the kill switch must BOTH
-			// close and book fills for manual positions: they are real leveraged
-			// exposure on the same wallet. Built with isHLLiveReconcilable (the
-			// #620 peer-scope precedent) and consumed ONLY by the kill-switch
-			// surfaces below — never by trailing-stop or risk math.
-			// #1454 review: this is the SAME predicate that built hlReconcileAll,
-			// so the roster aliases that slice instead of re-filtering — one list,
-			// never two rosters to keep identical by hand. If a future change
-			// ever needs the kill switch to diverge from reconcile scope, give
-			// hlKillSwitchAll its own named predicate here.
+
 			hlKillSwitchAll := hlReconcileAll
 
-			// #345: Partition live OKX strategies for the kill-switch close
-			// path. Perps and spot are separated because only perps support
-			// a reduce-only close; spot is surfaced as a manual-intervention
-			// gap in the Discord message (see planKillSwitchClose).
 			var okxLivePerps []StrategyConfig
 			var okxLiveSpot []StrategyConfig
 			for _, sc := range cfg.Strategies {
@@ -1275,10 +882,6 @@ func main() {
 				}
 			}
 
-			// #346: Partition live Robinhood strategies for the kill-switch
-			// close path. Crypto (Type=="spot") is closable via market_sell;
-			// options is surfaced as a manual-intervention gap (sell-to-
-			// close vs buy-to-close semantics not yet handled).
 			var rhLiveCrypto []StrategyConfig
 			var rhLiveOptions []StrategyConfig
 			for _, sc := range cfg.Strategies {
@@ -1292,11 +895,6 @@ func main() {
 				}
 			}
 
-			// #347: Partition live TopStep futures strategies for the
-			// kill-switch close path. TopStepX supports reduce-all via
-			// market_close; CME trading-hour restrictions are handled by
-			// the latch-until-flat semantic (fires outside RTH stay
-			// latched until the venue reopens).
 			var tsLiveAll []StrategyConfig
 			for _, sc := range cfg.Strategies {
 				if sc.Platform == "topstep" && sc.Type == "futures" && topstepIsLive(sc.Args) {
@@ -1308,19 +906,11 @@ func main() {
 			hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
 			_, hlShared := sharedWallets[hlKey]
 
-			// Fetch HL clearinghouseState once if any consumer needs it:
-			// - shared-wallet risk check (2+ live HL strategies in cfg)
-			// - position sync for at least one due HL strategy
-			// walletBalances is declared at cycle scope (above) and populated here.
 			var hlPositions []HLPosition
 			var hlStateFetched bool
-			// hlSnapshotAt stamps when the accountValue/uPnL snapshot below was
-			// taken; the #1100 cash-flow journal bounds its settled-event
-			// ingestion to this instant so an in-flight fill cannot read as drift.
+
 			var hlSnapshotAt time.Time
-			// Fetch clearinghouseState whenever any live HL strategy exists (#356
-			// per-strategy circuit closes need fresh positions even if no HL
-			// strategy is due this cycle).
+
 			if hlAddr != "" && len(hlLiveAll) > 0 {
 				bal, pos, err := fetchHyperliquidState(hlAddr)
 				if err != nil {
@@ -1335,30 +925,18 @@ func main() {
 				}
 			}
 
-			// #954: pull funding payments + non-trade cash flows for each HL
-			// shared wallet (two HTTP POSTs, outside the state lock). Booked
-			// under the risk-phase write lock below, before the display
-			// reconcile, so this cycle's ledger sums include them. Skipped
-			// when the balance fetch failed — the reconcile skips the wallet
-			// then too, and the watermark keeps the events for next cycle.
 			var walletLedgerFetches []walletLedgerFetchResult
 			if hlShared && hlStateFetched {
 				walletLedgerFetches = append(walletLedgerFetches,
 					fetchWalletLedgerEvents(stateDB, hlKey, time.Now().UTC()))
 			}
 
-			// #360: Fetch OKX positions once if any live OKX perps strategy
-			// exists. Drives per-strategy circuit-breaker pending closes
-			// (PlatformRiskAssist.OKXPositions). Gated on OKX_API_KEY so
-			// paper-only configs skip the subprocess entirely.
 			okxHasCreds := os.Getenv("OKX_API_KEY") != ""
 			okxKey := SharedWalletKey{Platform: "okx", Account: os.Getenv("OKX_API_KEY")}
 			_, okxShared := sharedWallets[okxKey]
 			var okxPositions []OKXPosition
 			var okxStateFetched bool
-			// okxBalanceFetched / okxSnapshotAt mirror hlStateFetched / hlSnapshotAt:
-			// the #1105 OKX cash-flow journal bounds its bill ingestion to the eq
-			// snapshot instant so an in-flight bill cannot read as drift.
+
 			var okxBalanceFetched bool
 			var okxSnapshotUPnL float64
 			var okxSnapshotAt time.Time
@@ -1371,16 +949,9 @@ func main() {
 					okxPositions = pos
 				}
 			}
-			// #360 phase 2 of #357: fetch the unified USDT balance for the
-			// shared-wallet risk check when 2+ live OKX perps strategies share
-			// an API key. Independent subprocess so a fetch_positions outage
-			// doesn't starve the balance read.
+
 			if okxHasCreds && okxShared {
-				// #1105: one fetch_balance read yields a COHERENT (eq, uPnL) pair —
-				// eq feeds the #918 split (walletBalances) unchanged, and the same
-				// snapshot's uPnL (eq − cashBal) feeds the cash-flow journal, so its
-				// expected-equity and reconciled eq cancel the uPnL term exactly
-				// (no jitter from a separately-timed fetch_positions read).
+
 				if eq, upnl, err := defaultOKXEquitySnapshot(); err != nil {
 					fmt.Printf("[WARN] okx balance fetch failed: %v — falling back to per-wallet max this cycle\n", err)
 				} else {
@@ -1390,13 +961,7 @@ func main() {
 					okxSnapshotAt = time.Now().UTC()
 				}
 			}
-			// #362: Fetch TopStep positions once per cycle when any live TS
-			// futures strategy exists, so per-strategy CB enqueue
-			// (setTopStepCircuitBreakerPending) has a sizing source. The
-			// kill-switch plan builder has its own fetch path; we let it do
-			// its own call rather than plumb a pre-fetched TS slice through
-			// KillSwitchCloseInputs — the fetch is cheap (one HTTPS call)
-			// and keeps the kill-switch plumbing untouched.
+
 			var tsPositions []TopStepPosition
 			var tsStateFetched bool
 			if len(tsLiveAll) > 0 {
@@ -1408,18 +973,7 @@ func main() {
 					tsPositions = pos
 				}
 			}
-			// #1106 phase 4 of #1100: fetch the TopStep account equity for the
-			// shared-wallet cash-flow journal when 2+ live TopStep futures strategies
-			// share an account. One fetch_topstep_balance.py read yields a COHERENT
-			// (equity, uPnL) pair — both feed the SHADOW journal only.
-			//
-			// Unlike the HL/OKX blocks, the equity is NOT written into walletBalances:
-			// the TopStep /v1/account/balance feed is unverified, and routing it into
-			// computeTotalPortfolioValue would put it on the live all-platform kill
-			// switch (CheckPortfolioRisk) behind only a >0 check. The journal uses its
-			// own detectTopStepSharedWallet grouping (not the kill-switch sharedWallets
-			// map), so portfolio risk stays on the pre-PR per-strategy member-PV path
-			// until Phase 4b verifies the feed and promotes it.
+
 			tsKey, tsShared := detectTopStepSharedWallet(cfg.Strategies)
 			var tsBalanceFetched bool
 			var tsSnapshotEquity float64
@@ -1442,75 +996,20 @@ func main() {
 				cfg.Strategies, state.Strategies, sharedWallets, walletBalances,
 				sharedWalletRiskBalances, sharedWalletRiskGeneration)
 			totalPV, usedPVFallback = computeTotalPortfolioValue(cfg.Strategies, state, prices, riskWalletBalances, sharedWallets)
-			// #1444 (PR review): snapshot the open book here, under the same
-			// RLock as totalPV, so the one-shot valuation-basis peak migration
-			// below can require a COMPLETE mark set before it measures the
-			// basis shift. A separate snapshot from the end-of-cycle tripwire
-			// on purpose: that one runs after the strategy loop (perps publish
-			// their own marks inside it), this one has to agree with the
-			// prices map totalPV was just computed from.
+
 			riskOpenSymbols := snapshotOpenSymbolsByStrategy(state)
 			totalNotional := PortfolioNotional(state.Strategies, prices)
-			// #296: aggregate perps margin drawdown inputs alongside the
-			// equity total. These feed the portfolio margin WARNING, and the
-			// portfolio latch only on the paths where the equity guard cannot
-			// measure (pooled wallet without a trustworthy balance, or a cold
-			// start that has never recorded a positive valuation) — #1448.
-			// Per-position margin protection is the #292 per-strategy circuit
-			// breaker's job.
+
 			perpsLoss, perpsMargin := AggregatePerpsMarginInputs(state.Strategies, cfg.Strategies, prices)
-			// #1269: evaluate the portfolio-wide daily loss limit once per
-			// cycle (pure read — stale per-strategy days count as 0, matching
-			// what rolloverDailyPnL would reset them to).
+
 			dailyLossStatus := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC())
-			// #1270: evaluate the same-direction exposure cap once per cycle
-			// (pure read over positions + this cycle's prices; totalPV is the
-			// concentration basis). Like the notional cap, this measures the
-			// book as of cycle start — a position opened by an earlier strategy
-			// in the same cycle is picked up next cycle.
+
 			exposureCapStatus = evaluateExposureCap(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, prices, totalPV)
 			mu.RUnlock()
 
-			// #1444 (PR review): carries the one-shot basis-migration DM out of
-			// the write lock — notifier I/O never runs under mu (#880).
 			var manualBasisRebaselineDM string
 			mu.Lock()
-			// #243: Freeze peak during fallback cycles so a transient HL API
-			// blip cannot ratchet the high-water mark (peak is sticky, so a
-			// false peak would persist and could later trip a false drawdown).
-			// CheckPortfolioRisk auto-ratchets PeakValue when totalValue > peak;
-			// we snapshot before the call and restore if we're on a fallback
-			// or one-generation-stale cycle. Allocated-wallet fallback and a
-			// bounded pooled snapshot still evaluate equity against the frozen
-			// peak; a pooled wallet with no trustworthy snapshot suppresses
-			// only the equity arm inside checkPortfolioRiskWithEquityAvailability.
-			// #1444 (PR review): one-shot valuation-basis peak migration.
-			// #1444 moved manual positions off a frozen AvgCost valuation onto
-			// the live mark rail. PeakValue is sticky and ratchet-up-only, so
-			// the first post-upgrade cycle would otherwise compare a
-			// live-priced total against a cost-priced peak and could latch the
-			// kill switch — which force-closes the fleet before it latches
-			// (planKillSwitchClose below) — on an accounting change rather
-			// than a loss.
-			//
-			// The shift is measured, never assumed: recompute the SAME total
-			// against a prices map with the manual-only marks removed
-			// (PortfolioValue falls back to AvgCost on a missing key, which is
-			// exactly the pre-#1444 basis) and move the peak by that delta
-			// alone. Any real drawdown already accumulated survives untouched.
-			//
-			// Gated on the MANUAL-ONLY marks alone, not on a complete mark set
-			// across every position type (#1445 review). A missing mark on a
-			// manual-only coin would make the legacy total and the live total
-			// agree for the wrong reason and migrate the peak by too little, so
-			// that case still defers. A missing spot / OKX-perps / futures mark
-			// does not: it is absent from both prices and legacyPrices, falls
-			// back to pos.AvgCost in both, and cancels out of the delta exactly.
-			// Deferring on one would leave an underwater manual position
-			// live-priced in totalPV against a cost-basis peak for the whole
-			// outage — the exact spurious first-cycle fire this migration
-			// exists to prevent. The latch is only stamped once the measurement
-			// actually happened, so a deferred cycle simply retries next cycle.
+
 			if !state.PortfolioRisk.ManualMarkBasisRebaselined {
 				if unmarked := missingManualOnlyMarks(cfg.Strategies, riskOpenSymbols, prices); len(unmarked) > 0 {
 					fmt.Printf("[INFO] manual mark valuation-basis peak migration deferred: no live mark this cycle for open manual-only coin(s) %s\n", strings.Join(unmarked, ", "))
@@ -1535,20 +1034,11 @@ func main() {
 
 			origPeak := state.PortfolioRisk.PeakValue
 			prevWarningSent := state.PortfolioRisk.WarningSent
-			// #1449 review: pooledEquityComplete alone says the total EXISTS;
-			// it does not say the total is trustworthy. usedPVFallback (a
-			// failed shared-wallet balance fetch substituted by sum(member PV))
-			// and usedStaleRiskBalance (a one-generation-old cached balance)
-			// both leave it true while already being distrusted enough to roll
-			// the peak back below. Pass that distrust in so the risk check can
-			// freeze the ratchet and floor the drawdown itself, instead of the
-			// latch running off a number only the caller knows is substituted.
+
 			equityTrusted := pooledEquityComplete && !usedPVFallback && !usedStaleRiskBalance
 			portfolioAllowed, nb, portfolioWarning, portfolioReason := checkPortfolioRiskWithEquityAvailability(
 				&state.PortfolioRisk, cfg.PortfolioRisk, totalPV, totalNotional, perpsLoss, perpsMargin, pooledEquityComplete, equityTrusted)
-			// True only on the cycle that first enters the warn band; false on
-			// repeat cycles while still in band. Used to gate kill-switch event
-			// log appends — notifications still fire every cycle via portfolioWarning.
+
 			portfolioWarnBandEntered := portfolioWarning && !prevWarningSent
 			if (usedPVFallback || usedStaleRiskBalance || !pooledEquityComplete) && state.PortfolioRisk.PeakValue > origPeak {
 				state.PortfolioRisk.PeakValue = origPeak
@@ -1556,18 +1046,7 @@ func main() {
 			if !portfolioAllowed {
 				killSwitchFired = true
 				fmt.Printf("[CRITICAL] Portfolio kill switch: %s\n", portfolioReason)
-				// Virtual state mutation deferred until live closes confirm
-				// flat — see below. Without that gate, virtual state diverged
-				// from the exchange (#341): closing virtually but never sending
-				// the reduce-only order left on-chain positions live, and once
-				// virtual was empty no future cycle could detect the leak.
-				// Portfolio kill owns all live closes — drop per-strategy pending
-				// so per-strategy drains don't double-submit against an
-				// already-flattening venue. Operator-required pendings (OKX
-				// spot / RH options, #363) are also cleared: the portfolio
-				// kill path already surfaces those gaps via
-				// formatKillSwitchMessage, so leaving both sets of warnings
-				// in place would double-notify the operator.
+
 				for _, ss := range state.Strategies {
 					if ss != nil {
 						ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseHyperliquid)
@@ -1583,44 +1062,25 @@ func main() {
 			if notionalBlocked {
 				fmt.Printf("[WARN] %s\n", portfolioReason)
 			}
-			// #1269: hold position-increasing signals for the rest of the UTC
-			// day once the aggregate daily realized loss reaches the limit.
-			// Entry-suppression only — the manage-only paths below keep
-			// running, nothing is force-closed, and the gate clears itself at
-			// the UTC rollover (DailyPnL date keys roll per strategy). The
-			// once-per-day owner DM fires after mu is released below (#880
-			// convention: no notifier I/O under the state lock).
+
 			dailyLossEntriesHeld = dailyLossStatus.Tripped
 			if dailyLossEntriesHeld {
 				fmt.Printf("[WARN] %s — entries held until UTC rollover\n", dailyLossHoldDetail(dailyLossStatus))
 			}
-			// #1291 review: a configured pct arm that cannot evaluate is an
-			// auto-protective gap — surface it every cycle, not only in the
-			// pull-based /status (even while the USD arm still enforces).
+
 			if dailyLossStatus.PctBasisMiss {
 				fmt.Printf("[WARN] %s\n", dailyLossPctBasisMissWarning)
 			}
-			// #954: book this cycle's funding payments + non-trade flows into
-			// the ledger BEFORE the display reconcile reads the ledger sums —
-			// the wallet balance being reconciled already includes them.
+
 			ingestSharedWalletLedgers(stateDB, state, cfg.Strategies, sharedWallets, walletLedgerFetches)
-			// #918/#954: shared-wallet display reconciliation. HL wallets derive
-			// each member's display value from the local trades ledger
-			// (initial_capital + ledger PnL + owned uPnL); the real balance is a
-			// pure drift alarm. OKX wallets keep the #918 capital-weight split.
-			// Runs under the same write lock the risk check holds (mutates
-			// StrategyState.SharedWalletValue*).
+
 			driftResults := reconcileSharedWalletDisplayValues(cfg.Strategies, state, stateDB, sharedWallets, walletBalances, hlPositions, okxPositions, okxStateFetched)
 			mu.Unlock()
 
-			// #1444 (PR review): the valuation-basis peak migration is a
-			// one-shot, irreversible move of an auto-protective threshold —
-			// the operator hears about it on the channel they watch, once.
 			if manualBasisRebaselineDM != "" {
 				notifier.SendOwnerDM(manualBasisRebaselineDM)
 			}
-			// #1269: once-per-UTC-day owner DM on a tripped daily loss limit.
-			// Outside mu (notifier I/O never runs under the state lock, #880).
+
 			if dailyLossEntriesHeld {
 				today := time.Now().UTC().Format("2006-01-02")
 				if dailyLossAlertDue(true, dailyLossLastAlertDate, today) {
@@ -1628,9 +1088,7 @@ func main() {
 					notifier.SendOwnerDM(formatDailyLossTripDM(dailyLossStatus, time.Now().UTC()))
 				}
 			}
-			// #1291 review: once-per-UTC-day owner DM while a configured pct
-			// arm cannot evaluate (initial_capital basis is 0) — a silently
-			// inert protection must reach an active operator channel.
+
 			if dailyLossStatus.PctBasisMiss {
 				today := time.Now().UTC().Format("2006-01-02")
 				if dailyLossAlertDue(true, dailyLossPctBasisMissAlertDate, today) {
@@ -1638,12 +1096,7 @@ func main() {
 					notifier.SendOwnerDM(formatDailyLossPctBasisMissDM(dailyLossStatus, time.Now().UTC()))
 				}
 			}
-			// #1270: exposure-cap operator surfaces — per-cycle [WARN] while any
-			// arm is blocking, a fail-safe log for unpriceable positions excluded
-			// from the sums, and an owner DM edge-triggered on the transition
-			// into blocked (per direction / per asset; re-arms when the block
-			// clears). Outside mu — notifier I/O never runs under the state
-			// lock (#880).
+
 			if warnMsg := exposureCapCycleWarning(exposureCapStatus); warnMsg != "" {
 				fmt.Printf("[WARN] %s\n", warnMsg)
 			}
@@ -1659,91 +1112,31 @@ func main() {
 				notifier.SendOwnerDM(exposureCapDM)
 			}
 
-			// #1100: switch the HL shared-wallet drift alarm onto the
-			// exchange-sourced cash-flow journal — the wallet TOTAL is
-			// reconstructed from on-chain fills + funding + transfers instead of
-			// the internal trade ledger, so modeled-fee / fallback-price / model-
-			// only-cleanup rows no longer read as drift. Fails closed to the
-			// trade-ledger drift when the journal is not usable (incomplete,
-			// fetch miss, or operator opt-out via GO_TRADER_CASHFLOW_JOURNAL_ALARM).
-			// Runs outside the lock: HTTP fetch + DB-only journal writes, no
-			// StrategyState mutation. Reuses the reconcile's coherent accountValue
-			// / position snapshot (walletBalances[hlKey] + hlPositions @
-			// hlSnapshotAt) and bounds the journal to that snapshot. OKX/TopStep
-			// keep the trade-ledger / capital-weight path untouched.
 			if hlShared && hlStateFetched {
 				rec := reconcileCashflowJournal(stateDB, hlKey, walletBalances[hlKey], sumHLAccountUPnL(hlPositions), hlSnapshotAt)
 				applyCashflowJournalDriftBasis(driftResults, hlKey, rec, cashflowJournalAlarmEnabled())
 			}
 
-			// #1105: OKX cash-flow journal — SHADOW phase (Phase 3a of #1100). The
-			// wallet TOTAL is reconstructed from OKX's account-bills feed (every
-			// settled-cash movement is a bill carrying balChg) and reconciled
-			// against eq, exactly as the HL journal does, but it ONLY logs the
-			// journal-vs-capital-weight comparison each cycle — it never drives the
-			// OKX drift alarm, which stays on the #918 capital-weight split.
-			// Flipping the OKX alarm onto the journal is Phase 3b, gated on this
-			// shadow log proving the OKX bills feed / eq field in production. Runs
-			// outside the lock (subprocess fetch + DB-only writes) and is bounded to
-			// the COHERENT eq/uPnL snapshot from the single balance read above
-			// (walletBalances[okxKey] + okxSnapshotUPnL @ okxSnapshotAt) — no
-			// positions dependency, so eq and uPnL share one instant.
 			if okxShared && okxBalanceFetched {
 				okxRec := reconcileOKXCashflowJournal(stateDB, okxKey, walletBalances[okxKey], okxSnapshotUPnL, okxSnapshotAt)
 				logOKXCashflowJournalShadow(driftResults, okxKey, okxRec)
 			}
 
-			// #1106 phase 4 of #1100: TopStep cash-flow journal — SHADOW phase. The
-			// wallet equity is reconstructed from TopStep's settled fills (gross realized
-			// PnL − commission per fill) and reconciled against the account equity, exactly
-			// as the HL/OKX journals do, but it ONLY logs each cycle — there is no live
-			// TopStep shared-wallet alarm to drive (TopStep is display-skipped). Flipping a
-			// TopStep alarm onto the journal is Phase 4b, gated on this shadow log proving
-			// the feed/equity field AND the TopStepX endpoint contracts in production. Runs
-			// outside the lock (subprocess fetch + DB-only writes), bounded to the COHERENT
-			// equity/uPnL snapshot from the single balance read above.
 			if tsShared && tsBalanceFetched {
 				tsRec := reconcileTopStepCashflowJournal(stateDB, tsKey, tsSnapshotEquity, tsSnapshotUPnL, tsSnapshotAt)
 				logTopStepCashflowJournalShadow(driftResults, tsKey, tsRec)
 			}
 
-			// Fire throttled drift alarms outside the lock (notifier I/O). For HL
-			// this keys off the journal drift when the switch above applied it.
 			reportSharedWalletDrift(notifier, driftResults)
 
-			// #341 / #345 / #346 / #347: Submit market closes to
-			// Hyperliquid, OKX, Robinhood, AND TopStep for every non-zero
-			// on-chain / on-account position belonging to a configured
-			// live strategy. The planning step (planKillSwitchClose)
-			// runs OUTSIDE the lock — the close scripts are subprocesses
-			// that can take seconds. OKX spot and Robinhood options are
-			// surfaced as known gaps (no unified close primitive).
-			//
-			// Latch semantics: virtual state is mutated only when
-			// plan.OnChainConfirmedFlat is true (either platform failing
-			// flips the flag). Otherwise the kill switch stays latched and
-			// the next cycle re-enters this branch (CheckPortfolioRisk
-			// early-returns false while KillSwitchActive is true) and retries.
 			var plan KillSwitchClosePlan
 			var hlVirtualQty hlVirtualQuantitySnapshot
 			if killSwitchFired {
-				// Snapshot per-coin StopLossOIDs so the kill-switch close
-				// path can cancel resting SLs before flattening, freeing
-				// HL's open-order cap (#421 review point 1, #479).
-				// Sole-source: every live HL strategy's Position for the
-				// coin it trades. Shared coins may have multiple
-				// per-strategy SL triggers, so preserve every OID.
+
 				mu.RLock()
-				// #1454: the roster includes live manual strategies and every
-				// surface keys coins through hyperliquidRawCoin (RAW, case-
-				// preserved — NOT hyperliquidConfiguredCoin's normalized form),
-				// so a manual coin's resting SL/TP triggers are cancelled with
-				// the rest (#421/#479).
+
 				hlSLOIDs := collectHLKillSwitchStopOIDs(state.Strategies, hlKillSwitchAll)
-				// #1159: hedge coins the scheduler CURRENTLY holds a leg on.
-				// Gated on the held leg, not on config, so the kill switch
-				// never liquidates a foreign position sitting on a coin a
-				// strategy merely declares as its hedge.
+
 				hlHedgeCoins := map[string]bool{}
 				for _, sc := range hlLiveAll {
 					if ss, ok := state.Strategies[sc.ID]; ok {
@@ -1778,11 +1171,7 @@ func main() {
 					TSFetcher:         defaultTopStepPositionsFetcher,
 					PortfolioReason:   portfolioReason,
 					CloseTimeout:      90 * time.Second,
-					// Per-platform overrides: each platform gets its own
-					// independent context.WithTimeout so a slow platform
-					// cannot starve the others. Robinhood adds TOTP login
-					// overhead to every submit, so it gets a wider budget;
-					// the rest stay at the 90s default. (#350)
+
 					RHCloseTimeout: 150 * time.Second,
 				}
 				plan = planKillSwitchClose(inputs)
@@ -1791,12 +1180,6 @@ func main() {
 				}
 			}
 
-			// #1457 review round 2: a HELD latch (a foreign Unconfigured coin,
-			// one failed close) must not discard what the closers POSITIVELY
-			// settled — confirmed HL fills and non-HL coins the reports list as
-			// closed book immediately; everything unsettled waits for the
-			// retry. The latch itself stays held below (auto-reset and the full
-			// sweep remain gated on OnChainConfirmedFlat).
 			if killSwitchFired && !plan.OnChainConfirmedFlat {
 				mu.Lock()
 				applyKillSwitchSettledLegsWhileLatched(state.Strategies, cfg.Strategies, &plan, hlKillSwitchAll, hlVirtualQty, prices, nil)
@@ -1809,10 +1192,7 @@ func main() {
 				for _, sc := range cfg.Strategies {
 					if s, ok := state.Strategies[sc.ID]; ok {
 						forceCloseKillSwitchPositions(s, sc, prices, plan.CloseReport.Fills, hlKillSwitchAll, hlVirtualQty, nil)
-						// Pending HL circuit close was already cleared above
-						// when portfolio kill fired (line ~611); nothing to do
-						// here. The per-strategy pending field is owned by the
-						// portfolio kill path once it takes over flattening.
+
 					}
 				}
 				if !notifier.HasOwner() {
@@ -1844,23 +1224,12 @@ func main() {
 				notifier.SendToAllChannels(killSwitchMsg)
 			}
 
-			// #1451 folded alert (#1454): any model-only close row the sweep
-			// just booked reaches the owner here too — a latched fleet may have
-			// no due strategy this cycle, so the per-strategy drain site below
-			// would not run.
 			for _, moAlert := range drainModelOnlyCloseAlerts() {
 				if notifier.HasOwner() {
 					notifier.SendOwnerDM(formatModelOnlyCloseDM(moAlert))
 				}
 			}
 
-			// Warning alert: drawdown approaching kill switch threshold.
-			//
-			// #1449 review: the band can now persist indefinitely (a margin
-			// reading above the limit no longer ends it by latching), so the
-			// send is throttled. Reset first, unconditionally, so a band that
-			// cleared — or that ended because the kill switch latched — re-arms
-			// and its next entry notifies on the first cycle.
 			if !portfolioWarning {
 				portfolioWarningAlertsReset()
 			}
@@ -1870,26 +1239,17 @@ func main() {
 				warnEquityInBand, warnMarginInBand := portfolioWarnBandSignals(cfg.PortfolioRisk, &state.PortfolioRisk, pooledEquityComplete)
 				warnEquityDD := state.PortfolioRisk.CurrentDrawdownPct
 				warnMarginDD := state.PortfolioRisk.CurrentMarginDrawdownPct
-				// #1449 review round 3: non-zero means the equity arm measured
-				// OVER the limit on an untrusted total and the full-book latch
-				// is being held back (see untrustedEquityLatchDeferral).
+
 				warnLatchDeferredSince := state.PortfolioRisk.UntrustedOverLimitSince
 				mu.RUnlock()
 				notifyWarn, nextWarnAlerts := portfolioWarningShouldNotify(
 					portfolioWarningAlerts, warnEquityInBand, warnMarginInBand, warnEquityDD, warnMarginDD, warnNow)
 				portfolioWarningAlerts = nextWarnAlerts
-				// A deferred latch is an escalation, not a routine band cycle:
-				// the book is over the limit and the only thing holding the
-				// flatten back is a distrusted total. The throttle exists so a
-				// permanent warn band cannot spam the operator, but silence
-				// here would hide the one window in which a manual decision
-				// still changes the outcome. So it always sends.
+
 				if !warnLatchDeferredSince.IsZero() {
 					notifyWarn = true
 				}
 
-				// The recent-trade lookup only feeds the message body, so it is
-				// skipped on a throttled cycle along with the send.
 				var recentTrades []Trade
 				if notifyWarn && stateDB != nil {
 					if rows, err := stateDB.RecentTrades(warnNow.Add(-portfolioWarningRecentWindow), portfolioWarningMaxRows); err != nil {
@@ -1900,21 +1260,14 @@ func main() {
 				}
 				var warnMsg string
 				mu.Lock()
-				// The warn event names the LARGER of the two signals, so the
-				// audit row carries the headline number an operator would
-				// quote. This is a labeling choice for the warning band only:
-				// since #1448 the margin signal does not own the portfolio
-				// latch while the equity guard can measure.
+
 				source := "equity"
 				warnDD := state.PortfolioRisk.CurrentDrawdownPct
 				if state.PortfolioRisk.CurrentMarginDrawdownPct >= warnDD {
 					source = "margin"
 					warnDD = state.PortfolioRisk.CurrentMarginDrawdownPct
 				}
-				// Only append a kill-switch event on the transition INTO the
-				// warn band. Notifications repeat every cycle (portfolioWarning)
-				// but the 50-entry ring buffer must not be evicted by repeating
-				// "warning" entries that drown out triggered/reset transitions.
+
 				if portfolioWarnBandEntered {
 					addKillSwitchEvent(&state.PortfolioRisk, "warning", source, warnDD, totalPV, state.PortfolioRisk.PeakValue, portfolioReason)
 				}
@@ -1929,12 +1282,7 @@ func main() {
 						PerpsMargin: perpsMargin,
 						Recent:      recentTrades,
 						Now:         warnNow,
-						// #1449 review: same condition the risk check used for
-						// this cycle, so the message labels the arm that can
-						// actually latch. The peak read here is the one the
-						// check decided on: it only ratchets on a trusted
-						// cycle, and the untrusted rollback above is therefore
-						// a no-op rather than a value the message could miss.
+
 						EquityGuardArmed: pooledEquityComplete && state.PortfolioRisk.PeakValue > 0,
 					})
 				}
@@ -1943,10 +1291,7 @@ func main() {
 					notifier.SendToAllChannels(warnMsg)
 					notifier.SendOwnerDM(warnMsg)
 				}
-				// The stdout line stays per-cycle: the throttle exists for
-				// operator channels, and the log is where an incident review
-				// reconstructs how long the band ran. A deferred latch logs at
-				// CRITICAL — it is an over-limit book, not an approach to one.
+
 				if warnLatchDeferredSince.IsZero() {
 					fmt.Printf("[WARN] %s\n", portfolioReason)
 				} else {
@@ -1954,7 +1299,6 @@ func main() {
 				}
 			}
 
-			// Correlation tracking: compute per-asset directional exposure.
 			var corrWarnings []string
 			if cfg.Correlation != nil && cfg.Correlation.Enabled {
 				mu.RLock()
@@ -1973,10 +1317,6 @@ func main() {
 				notifier.SendOwnerDM(msg)
 			}
 
-			// Kill switch reset goroutine: prompt owner to reset via DM.
-			// AskOwnerDM wait is kill_switch_reset_dm_timeout (default 6h, #1368).
-			// Claim via atomic CAS so the main loop and the prompt goroutine
-			// never race on the single-flight flag (#1396).
 			if killSwitchFired && notifier.HasOwner() && tryClaimKillSwitchResetPrompt(&resetGoroutineRunning) {
 				resetPrompt := formatKillSwitchResetPrompt(killSwitchInstanceLabel(*configPath), hlAddr, plan)
 				resetDMTimeout := effectiveKillSwitchResetDMTimeout()
@@ -1992,10 +1332,7 @@ func main() {
 						return
 					}
 					mu.Lock()
-					// #1449 review: clears the drawdown readings as well as the
-					// latch flags — see ResetPortfolioKillSwitchManual. The
-					// returned reading is the pre-reset one, so the audit event
-					// still records the drawdown the operator reset from.
+
 					resetDrawdownPct := ResetPortfolioKillSwitchManual(&state.PortfolioRisk)
 					addKillSwitchEvent(&state.PortfolioRisk, "reset", "", resetDrawdownPct, 0, state.PortfolioRisk.PeakValue, "manual reset via DM")
 					if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
@@ -2008,9 +1345,7 @@ func main() {
 			}
 
 			if !killSwitchFired {
-				// #356: Live HL per-strategy circuit breaker closes (reduce-only,
-				// proportional on shared coins). Runs before reconcile so the next
-				// sync sees updated on-chain sizes.
+
 				if len(hlLiveAll) > 0 {
 					runPendingHyperliquidCircuitCloses(
 						shutdownSideEffectCtx,
@@ -2026,8 +1361,7 @@ func main() {
 						notifier.SendOwnerDM,
 					)
 				}
-				// #360: Live OKX per-strategy circuit breaker closes. Same shape
-				// as the HL drain — the pending map is keyed per platform.
+
 				if len(okxLivePerps) > 0 && okxHasCreds {
 					runPendingOKXCircuitCloses(
 						shutdownSideEffectCtx,
@@ -2043,11 +1377,7 @@ func main() {
 						notifier.SendOwnerDM,
 					)
 				}
-				// #362: Live TopStep per-strategy circuit breaker closes
-				// (market_close full-flatten, sole-peer only — whole-contract
-				// futures have no partial-close primitive). Outside-RTH
-				// rejections and other TopStepX errors keep the pending
-				// latched; the drain retries on the next cycle.
+
 				if len(tsLiveAll) > 0 {
 					runPendingTopStepCircuitCloses(
 						shutdownSideEffectCtx,
@@ -2062,13 +1392,7 @@ func main() {
 						notifier.SendOwnerDM,
 					)
 				}
-				// #361 phase 3: Live Robinhood crypto per-strategy circuit breaker
-				// closes. RH crypto has no reduce-only primitive, so each pending
-				// leg is a full-account market_sell guarded by a sole-ownership
-				// gate (DM the owner when a shared-coin config prevents a safe
-				// close). Lazy fetch — drain only calls the positions fetcher
-				// when pending/stuck-CB work is present, so idle cycles skip the
-				// TOTP login round-trip entirely.
+
 				if len(rhLiveCrypto) > 0 {
 					runPendingRobinhoodCircuitCloses(
 						shutdownSideEffectCtx,
@@ -2083,16 +1407,9 @@ func main() {
 						&mu,
 					)
 				}
-				// #363 phase 5: operator-gap per-strategy CB pending closes.
-				// OKX spot and Robinhood options have no safe automated close
-				// primitive — the drain emits a CRITICAL warning each cycle
-				// instead of submitting orders. Pending stays set until the
-				// operator flattens manually.
+
 				drainOperatorRequiredPendingCloses(state, notifier, &mu)
-				// Pre-phase: sync on-chain positions for due live HL strategies.
-				// Reuses the clearinghouseState already fetched above for the
-				// shared-wallet risk check (#243 review feedback) so we don't
-				// pay two HL API round-trips per cycle.
+
 				var hlReconcileFillHintsJSON []byte
 				if len(hlReconcileDue) > 0 && hlStateFetched {
 					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
@@ -2115,99 +1432,39 @@ func main() {
 							fmt.Fprintf(os.Stderr, "[WARN] hl-sync: json.Marshal(fillHints): %v\n", err)
 						}
 					}
-					// #971: surface persistent shared-coin reconciliation gaps
-					// (fail-closed residuals the reconciler could not confirm by
-					// exact OID, leaving a phantom virtual position) to the
-					// operator after a short confirmation window. Alerting only —
-					// never books or guesses, so the fail-closed invariant holds.
+
 					reportHLReconcileGaps(notifier, collectHLReconcileGapResults(state, &mu))
 				}
 
-				// #621/#1450: build the three coin-keyed views from the
-				// pre-fetched positions — on-chain |qty| for the SL size cap,
-				// exchange-reported liquidation prices, and the on-chain net
-				// side per coin. Single source of truth shared with the
-				// off-cycle audit pass (buildHLLiquidationMaps doc).
 				hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin := buildHLLiquidationMaps(hlPositions)
 
-				// #1450 audit: heal stops that sit past the liquidation price
-				// for the STATIC SCALAR owners (stop_loss_pct,
-				// stop_loss_margin_pct, the max_drawdown_pct fallback), which
-				// have no re-place mechanism of their own, and report the
-				// self-healing owners. Runs here — post-reconcile, pre-dispatch
-				// — so it cannot interleave with a walker cancel+replace on the
-				// same OID. This is also what catches a stop armed on the OPEN
-				// cycle, where the snapshot predated the position.
-				// hlStateFetched is threaded in rather than wrapping the call:
-				// without this cycle's snapshot both maps are empty, and an
-				// empty snapshot must never read as "every position is a
-				// phantom" (see runHyperliquidLiquidationAudit).
 				auditRes := runHyperliquidLiquidationAudit(cfg.Strategies, state, hlLiquidationPx, hlNetSideByCoin, hlOnChainAbsQty, hlStateFetched, &mu, notifier, time.Now().UTC())
-				// Stamp the audit clock whenever the audit RAN (fills or not) —
-				// the off-cycle pass keys off this and must not re-run a fresh
-				// dispatch-path audit immediately.
-				//
-				// #1456 review round 15 (Optional 2): "RAN" means it inspected
-				// THIS cycle's snapshot. runHyperliquidLiquidationAudit returns
-				// immediately when hlStateFetched is false — it examined no
-				// candidate and touched no order — so stamping there recorded an
-				// audit that never happened and suppressed the off-cycle pass
-				// for a full cadence. That pass performs its OWN independent
-				// fetch and may well succeed, so on the long-interval fleet it
-				// serves, one transient HL API failure handed back the healing
-				// window. The off-cycle pass's own unconditional stamp is
-				// separate and stays: it exists to stop a failing endpoint
-				// becoming a hot retry loop.
+
 				if hlStateFetched {
 					lastLiquidationAudit = time.Now().UTC()
 				}
 				if auditRes.ImmediateFills > 0 {
 					fmt.Printf("[WARN] #1450 liquidation audit: %d position(s) exited on a clamped stop this cycle\n", auditRes.ImmediateFills)
-					// A close booked here is a realized close like any other, so
-					// it gets the SAME operator notification the walker path
-					// produces — the channel trade line plus the per-strategy DM
-					// alert. Without this the only signal was the stdout line
-					// above and a throttled "tightened to $X" DM that does not
-					// say the position is now flat (and can be suppressed).
+
 					for _, cd := range auditRes.CloseDetails {
 						if chKey := notifier.resolveChannelKey(cd.SC.Platform, cd.SC.Type); chKey != "" {
 							channelTrades[chKey]++
 							channelTradeDetails[chKey+"|"+extractAsset(cd.SC)] = append(channelTradeDetails[chKey+"|"+extractAsset(cd.SC)], cd.Detail)
 						}
 					}
-					// Grouped per strategy (#1456 review round 17, Optional 1):
-					// sendTradeAlerts emits the LAST n rows per call, so one
-					// call per detail re-emitted the newest close twice and
-					// never reported the older one when a single strategy booked
-					// two closes this pass.
+
 					sendAuditCloseAlerts(auditRes.CloseDetails, state.Strategies, &mu, notifier)
 					totalTrades += len(auditRes.CloseDetails)
-					// #1456 review round 10 (Optional 3): an audit-booked close
-					// is a primary lifecycle event. Converge the correlated
-					// hedge leg through the ONE reconciler NOW — the audit
-					// closes strategies that are not due this cycle, and a
-					// hedge leg carries no stop by design, so without this it
-					// sits unmanaged until the owner's next due cycle.
+
 					if n := convergeHedgesAfterAuditClose(auditRes.CloseDetails, state.Strategies, &mu, prices, notifier, logMgr.GetStrategyLogger); n > 0 {
 						fmt.Printf("[WARN] #1450 liquidation audit: converged %d hedge leg(s) post-close\n", n)
 					}
 				}
 
-				// #879: the dispatch loop below is the first regime-store
-				// consumer — wait (bounded by regimeStorePhaseBudget) for the
-				// population kicked off before the risk phase.
 				regimeStoreReady()
-				// #1224: persist per-window labels, detect transitions, and
-				// alert on cross-window reversals. Sequential main loop,
-				// outside mu; fail-open — never blocks the dispatch below.
+
 				processRegimeTransitionAlerts(stateDB, globalRegimeStore, cfg.Regime, notifier, time.Now().UTC())
-				// #1442 pre-pass: evaluate the due HL perps strategies that
-				// share one market-data key in a single Python call. Placed
-				// HERE — after the HL account reconciler at the top of this
-				// block, so the slot snapshot sees post-reconcile positions,
-				// and after regimeStoreReady() so the injected regime payload
-				// is populated. A group of one produces nothing; a map miss in
-				// the loop below is the untouched per-strategy path.
+
 				hlBatchResults := runHyperliquidBatchPrePass(dueStrategies, state, &mu, cfg, prices, notifier, func(format string, a ...any) {
 					fmt.Printf(format+"\n", a...)
 				})
@@ -2224,15 +1481,11 @@ func main() {
 					}
 
 					hlLiveStrategy := sc.Type == "perps" && sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args)
-					// OKX serves both spot and perps in this snapshot block (see
-					// dispatch at the spot/perps cases below), so the live flag
-					// stays platform-only — adding sc.Type would regress one of
-					// the two paths.
+
 					okxLiveStrategy := sc.Platform == "okx" && okxIsLive(sc.Args)
 					rhLiveStrategy := sc.Type == "spot" && sc.Platform == "robinhood" && robinhoodIsLive(sc.Args)
 					tsLiveStrategy := sc.Type == "futures" && sc.Platform == "topstep" && topstepIsLive(sc.Args)
 
-					// Phase 1: RLock — read inputs needed for subprocess
 					mu.RLock()
 					pv := PortfolioValue(stratState, prices)
 					var posJSON string
@@ -2273,24 +1526,19 @@ func main() {
 								hlCash = stratState.Cash
 							}
 						}
-						// #998: snapshot the regime-profile switch state under the
-						// Phase-1 RLock so the lock-free resolution reads a stable copy.
+
 						if stratState.RegimeProfile != nil {
 							cp := *stratState.RegimeProfile
 							hlProfileState = &cp
 						}
-						// #873: scale-in's default per-add notional uses the
-						// strategy cash like a fresh open — captured for paper too
-						// (hlCash above is live-only), under the same RLock.
+
 						hlScaleInCash = stratState.Cash
 						if hlLiveStrategy {
 							if poolCash, pooled, _ := sharedWalletPoolAvailableMargin(sc, cfg.Strategies, state, prices, sharedWallets, walletBalances); pooled {
 								hlScaleInCash = poolCash
 							}
 						}
-						// Live-order sizing/cancel snapshots below are intentionally
-						// consumed only inside live execution branches. Paper paths
-						// should continue using PositionCtx only for close evaluation.
+
 						if sym := hyperliquidSymbol(sc.Args); sym != "" {
 							if pos, ok := stratState.Positions[sym]; ok {
 								hlPosCtx = positionCtxForCheck(sc, pos, cfg.Regime)
@@ -2379,7 +1627,6 @@ func main() {
 					}
 					mu.RUnlock()
 
-					// Phase 2: Lock — CheckRisk (fast, no I/O)
 					var riskAssist *PlatformRiskAssist
 					needHL := len(hlLiveAll) > 0
 					needOKX := okxStateFetched && len(okxLivePerps) > 0
@@ -2408,33 +1655,19 @@ func main() {
 						cbSnapshot = snapshotPerStrategyCircuitBreaker(stratState, prices)
 					}
 					mu.Unlock()
-					// #1449 review: a disabled circuit breaker that just crossed
-					// a halt threshold is an ABSENT auto-protective mechanism, so
-					// it escalates to the owner instead of only reaching the
-					// strategy log. Drained unconditionally (a suppression leaves
-					// allowed==true, so this cannot sit inside the !allowed
-					// branch) and outside mu, per the #880 no-notifier-I/O rule.
-					// Draining even with no owner keeps the queue bounded.
+
 					for _, cbAlert := range drainCircuitBreakerSuppressionAlerts() {
 						if notifier.HasOwner() {
 							notifier.SendOwnerDM(formatCircuitBreakerSuppressionDM(cbAlert))
 						}
 					}
-					// #1451 folded alert (#1454): a model-only force-close row is
-					// an estimate standing in for a real exchange close. Drained
-					// unconditionally outside mu, per the same #880 rule.
+
 					for _, moAlert := range drainModelOnlyCloseAlerts() {
 						if notifier.HasOwner() {
 							notifier.SendOwnerDM(formatModelOnlyCloseDM(moAlert))
 						}
 					}
-					// #1046: a latched per-strategy circuit breaker on an HL perps
-					// strategy with an open position falls through in manage-only
-					// mode rather than skipping — the dispatch below forces the
-					// signal to hold (0), which suppresses every entry/add/flip/
-					// close path while still running the Signal==0 trailing-SL/TP
-					// management so a stranded (e.g. shared-coin) position keeps
-					// ratcheting its stop-loss. All other blocks skip as before.
+
 					cbManageOnly := false
 					if !allowed {
 						notifyPerStrategyCircuitBreakerWithSnapshot(sc, cbSnapshot, reason, pv, totalPV, stateDB, notifier, killSwitchFired)
@@ -2449,17 +1682,6 @@ func main() {
 						}
 					}
 
-					// #1344: notional cap is an ENTRY hold, not a cycle skip.
-					// Pre-#1344 this site `continue`d the whole strategy when
-					// notionalBlocked, which also skipped close/reduce evaluation
-					// and perps trailing-SL / TP-ratchet / protection-sync. Holds
-					// now land per-signal via pausedBlocksSignal at the six
-					// dispatch sites below (plus pausedOptionsActions); Signal==0
-					// manage paths and position-reducing actions pass through.
-					//
-					// Any whole-strategy skip decision MUST route through
-					// notionalCapSkipsStrategyCycle (always false) so a helper
-					// regression fails CI — never a raw `if notionalBlocked { continue }`.
 					if notionalCapSkipsStrategyCycle(notionalBlocked) {
 						logger.Warn("Notional cap exceeded — skipping strategy cycle")
 						logger.Close()
@@ -2467,7 +1689,6 @@ func main() {
 						continue
 					}
 
-					// Phase 3 (no lock) + Phase 4 (Lock): subprocess then state mutation
 					trades := 0
 					var detail string
 					switch sc.Type {
@@ -2475,50 +1696,35 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 								prices[result.Symbol] = price
-								// #879: single-source regime — read the global store for this
-								// strategy's signature instead of the check output, and point
-								// result.Regime at it so stamp-at-open inside execute* shares it.
+
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
-								// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
-								// label gate above (whose semantics are untouched). advanceHurstGate
-								// runs unconditionally and signal-independently so the hysteresis
-								// latch advances on EVERY cycle, including Signal==0 manage cycles.
-								// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
-								// #1269 / #1344 arms below: fresh opens, adds and flips are held;
-								// closes, pure-close directional exits, trailing SL, the ratchet,
-								// protection sync and paper SL/TP simulation all pass through.
+
 								hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, okxPosQty)
 								if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 									logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 									result.Signal = 0
 								}
-								// #1150: paused — hold position-increasing signals (fresh open, add,
-								// flip); position-reducing actions pass so open positions ride their
-								// natural exit. The Signal==0 manage path below keeps running.
+
 								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 									result.Signal = 0
 								}
-								// #1269: daily loss limit tripped — identical hold semantics to pause:
-								// position-increasing signals held, position-reducing actions pass.
+
 								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
-								// #1344: portfolio notional cap — hold position-increasing signals
-								// only; closes/reductions and Signal==0 manage keep running.
+
 								if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false) {
 									logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 									result.Signal = 0
 								}
-								// #1270: same-direction exposure cap — only the capped direction's
-								// position-increasing signals are held; the other direction and all
-								// position-reducing actions pass.
+
 								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, true, false); capBlocked {
 									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
@@ -2542,8 +1748,7 @@ func main() {
 									mu.Unlock()
 									if cashAlert != "" {
 										notifySpotLiveCashOverBudget(notifier, cashAlert)
-										// Seed the cycle reminder so the founding
-										// over-budget DM is not immediately double-sent.
+
 										mu.RLock()
 										ids, _ := collectCashReconcileRequiredSnapshots(state)
 										mu.RUnlock()
@@ -2554,50 +1759,35 @@ func main() {
 						} else if sc.Platform == "robinhood" {
 							if result, signalStr, price, ok := runRobinhoodCheck(sc, prices, rhPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 								prices[result.Symbol] = price
-								// #879: single-source regime — read the global store for this
-								// strategy's signature instead of the check output, and point
-								// result.Regime at it so stamp-at-open inside execute* shares it.
+
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, rhPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
-								// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
-								// label gate above (whose semantics are untouched). advanceHurstGate
-								// runs unconditionally and signal-independently so the hysteresis
-								// latch advances on EVERY cycle, including Signal==0 manage cycles.
-								// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
-								// #1269 / #1344 arms below: fresh opens, adds and flips are held;
-								// closes, pure-close directional exits, trailing SL, the ratchet,
-								// protection sync and paper SL/TP simulation all pass through.
+
 								hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, rhPosQty)
 								if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 									logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 									result.Signal = 0
 								}
-								// #1150: paused — hold position-increasing signals (fresh open, add,
-								// flip); position-reducing actions pass so open positions ride their
-								// natural exit. The Signal==0 manage path below keeps running.
+
 								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 									result.Signal = 0
 								}
-								// #1269: daily loss limit tripped — identical hold semantics to pause:
-								// position-increasing signals held, position-reducing actions pass.
+
 								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
-								// #1344: portfolio notional cap — hold position-increasing signals
-								// only; closes/reductions and Signal==0 manage keep running.
+
 								if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false) {
 									logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 									result.Signal = 0
 								}
-								// #1270: same-direction exposure cap — only the capped direction's
-								// position-increasing signals are held; the other direction and all
-								// position-reducing actions pass.
+
 								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, rhPosQty, rhPosSide, true, false); capBlocked {
 									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
@@ -2621,8 +1811,7 @@ func main() {
 									mu.Unlock()
 									if cashAlert != "" {
 										notifySpotLiveCashOverBudget(notifier, cashAlert)
-										// Seed the cycle reminder so the founding
-										// over-budget DM is not immediately double-sent.
+
 										mu.RLock()
 										ids, _ := collectCashReconcileRequiredSnapshots(state)
 										mu.RUnlock()
@@ -2631,50 +1820,35 @@ func main() {
 								}
 							}
 						} else if result, signalStr, price, ok := runSpotCheck(sc, prices, spotPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
-							// #879: single-source regime — read the global store for this
-							// strategy's signature instead of the check output, and point
-							// result.Regime at it so stamp-at-open inside execute* shares it.
+
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, spotPosCtx.Quantity); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
-							// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
-							// label gate above (whose semantics are untouched). advanceHurstGate
-							// runs unconditionally and signal-independently so the hysteresis
-							// latch advances on EVERY cycle, including Signal==0 manage cycles.
-							// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
-							// #1269 / #1344 arms below: fresh opens, adds and flips are held;
-							// closes, pure-close directional exits, trailing SL, the ratchet,
-							// protection sync and paper SL/TP simulation all pass through.
+
 							hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, spotPosCtx.Quantity)
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
 							}
-							// #1150: paused — hold position-increasing signals (fresh open, add,
-							// flip); position-reducing actions pass so open positions ride their
-							// natural exit. The Signal==0 manage path below keeps running.
+
 							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
-							// #1269: daily loss limit tripped — identical hold semantics to pause:
-							// position-increasing signals held, position-reducing actions pass.
+
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
-							// #1344: portfolio notional cap — hold position-increasing signals
-							// only; closes/reductions and Signal==0 manage keep running.
+
 							if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false) {
 								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
-							// #1270: same-direction exposure cap — only the capped direction's
-							// position-increasing signals are held; the other direction and all
-							// position-reducing actions pass.
+
 							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, spotPosCtx.Quantity, spotPosCtx.Side, true, false); capBlocked {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
@@ -2686,9 +1860,7 @@ func main() {
 						}
 					case "options":
 						if result, signalStr, ok := runOptionsCheck(sc, posJSON, notifier, logger); ok {
-							// #1150: paused — drop open actions ("buy"/"sell" both OPEN
-							// option legs); "close" actions and the theta-harvest walker
-							// below still manage existing positions.
+
 							if sc.Paused {
 								kept, dropped := pausedOptionsActions(result.Actions)
 								if dropped > 0 {
@@ -2696,9 +1868,7 @@ func main() {
 								}
 								result.Actions = kept
 							}
-							// #1269: daily loss limit tripped — drop option open actions
-							// ("buy"/"sell" both OPEN legs); close actions and the
-							// theta-harvest walker still manage existing positions.
+
 							if dailyLossEntriesHeld {
 								kept, dropped := pausedOptionsActions(result.Actions)
 								if dropped > 0 {
@@ -2706,8 +1876,7 @@ func main() {
 								}
 								result.Actions = kept
 							}
-							// #1344: portfolio notional cap — drop option open actions; closes
-							// and the theta-harvest walker still manage existing positions.
+
 							if notionalBlocked {
 								kept, dropped := pausedOptionsActions(result.Actions)
 								if dropped > 0 {
@@ -2715,18 +1884,12 @@ func main() {
 								}
 								result.Actions = kept
 							}
-							// #1270: same-direction exposure cap — drop option OPEN actions
-							// whose coarse delta direction is capped ("buy"/"sell" both open
-							// legs; delta sign decides the direction). Close actions and the
-							// theta-harvest walker still manage existing positions.
+
 							if kept, dropped, capWhy := exposureCapOptionsActions(exposureCapStatus, extractAsset(sc), result.Actions); dropped > 0 {
 								logger.Warn("Exposure cap: %d option open action(s) dropped — %s (#1270)", dropped, capWhy)
 								result.Actions = kept
 							}
-							// #879: options regime now comes from the global store's
-							// (underlying, 4h, ADX-default) bundle instead of the
-							// check script's inline fetch; the injected payload keeps
-							// the script's own emitted label identical.
+
 							optionsRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							mu.Lock()
 							stratState.Regime = optionsRegime.PrimaryLabel(nil)
@@ -2739,12 +1902,7 @@ func main() {
 							}
 						}
 					case "perps":
-						// #998: regime-profile allocation resolves BEFORE the check
-						// subprocess so the active profile's params shape the signal
-						// itself (the merged params ride the --strategy-refs JSON).
-						// HL perps only; the switch reads the global regime store at
-						// the configured long window and the closed-bar hysteresis
-						// counter advances only when the bundle's BarTime moves.
+
 						var hlProfileNext RegimeProfileState
 						var hlProfileActive string
 						hlProfileResolved := false
@@ -2761,50 +1919,35 @@ func main() {
 						if sc.Platform == "okx" {
 							if result, signalStr, price, ok := runOKXCheck(sc, prices, okxPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 								prices[result.Symbol] = price
-								// #879: single-source regime — read the global store for this
-								// strategy's signature instead of the check output, and point
-								// result.Regime at it so stamp-at-open inside execute* shares it.
+
 								storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 								result.Regime = &storeRegime
 								if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, okxPosQty); regimeBlocked {
 									logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 									result.Signal = 0
 								}
-								// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
-								// label gate above (whose semantics are untouched). advanceHurstGate
-								// runs unconditionally and signal-independently so the hysteresis
-								// latch advances on EVERY cycle, including Signal==0 manage cycles.
-								// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
-								// #1269 / #1344 arms below: fresh opens, adds and flips are held;
-								// closes, pure-close directional exits, trailing SL, the ratchet,
-								// protection sync and paper SL/TP simulation all pass through.
+
 								hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, okxPosQty)
 								if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 									logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 									result.Signal = 0
 								}
-								// #1150: paused — hold position-increasing signals (fresh open, add,
-								// flip); position-reducing actions pass so open positions ride their
-								// natural exit. The Signal==0 manage path below keeps running.
+
 								if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 									logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 									result.Signal = 0
 								}
-								// #1269: daily loss limit tripped — identical hold semantics to pause:
-								// position-increasing signals held, position-reducing actions pass.
+
 								if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 									logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 									result.Signal = 0
 								}
-								// #1344: portfolio notional cap — hold position-increasing signals
-								// only; closes/reductions and Signal==0 manage keep running.
+
 								if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 									logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 									result.Signal = 0
 								}
-								// #1270: same-direction exposure cap — only the capped direction's
-								// position-increasing signals are held; the other direction and all
-								// position-reducing actions pass.
+
 								if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, okxPosQty, okxPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
 									logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 									result.Signal = 0
@@ -2828,8 +1971,7 @@ func main() {
 									mu.Unlock()
 									if cashAlert != "" {
 										notifySpotLiveCashOverBudget(notifier, cashAlert)
-										// Seed the cycle reminder so the founding
-										// over-budget DM is not immediately double-sent.
+
 										mu.RLock()
 										ids, _ := collectCashReconcileRequiredSnapshots(state)
 										mu.RUnlock()
@@ -2839,92 +1981,58 @@ func main() {
 							}
 						} else if result, signalStr, price, ok := runHyperliquidCheck(&sc, prices, hlPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger, hlBatchResults); ok {
 							prices[result.Symbol] = price
-							// #1046: circuit breaker latched — force hold so no entry/
-							// add/flip/close executes (every execution path below gates
-							// on Signal != 0, and executePerpsSignalWithLeverage returns
-							// early on signal==0). The Signal==0 trailing-SL/TP-ratchet
-							// management blocks below still run, keeping the open
-							// position's stop-loss ratcheting through the latch window.
+
 							if cbManageOnly {
 								result.Signal = 0
 							}
-							// #879: single-source regime — read the global store for this
-							// strategy's signature instead of the check output, and point
-							// result.Regime at it so stamp-at-open inside execute* shares it.
+
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, hlPosQty); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
-							// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
-							// label gate above (whose semantics are untouched). advanceHurstGate
-							// runs unconditionally and signal-independently so the hysteresis
-							// latch advances on EVERY cycle, including Signal==0 manage cycles.
-							// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
-							// #1269 / #1344 arms below: fresh opens, adds and flips are held;
-							// closes, pure-close directional exits, trailing SL, the ratchet,
-							// protection sync and paper SL/TP simulation all pass through.
+
 							hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, hlPosQty)
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
 							}
-							// #1150: paused — hold position-increasing signals (fresh open, add,
-							// flip); position-reducing actions pass so open positions ride their
-							// natural exit. The Signal==0 manage path below keeps running.
+
 							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
-							// #1269: daily loss limit tripped — identical hold semantics to pause:
-							// position-increasing signals held, position-reducing actions pass.
+
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
-							// #1344: portfolio notional cap — hold position-increasing signals
-							// only; closes/reductions and Signal==0 manage (trailing SL /
-							// TP ratchet / protection sync) keep running.
+
 							if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
-							// #1270: same-direction exposure cap — only the capped direction's
-							// position-increasing signals are held; the other direction and all
-							// position-reducing actions pass. result.Signal is already
-							// invert_signal-resolved here, so its sign IS the trade direction.
+
 							if capBlocked, capWhy := exposureCapBlocksSignal(exposureCapStatus, extractAsset(sc), result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)); capBlocked {
 								logger.Warn("Exposure cap: %s signal suppressed — %s (#1270)", signalStr, capWhy)
 								result.Signal = 0
 							}
-							// #1431: replay mirror — paper mirrors the live decision log, so
-							// the check script's own position-INCREASING signals (fresh opens,
-							// scale-in adds, flips) are suppressed exactly like a #1150 pause;
-							// closes, close-registry actions, trailing SL, the ratchet, and
-							// protection sync keep running as the paper-side backstop. The
-							// replayed decisions are applied below, before the hedge sync.
+
 							if replayMirrorPaperActive(sc) && pausedBlocksSignal(result.Signal, result.CloseFraction, hlPosQty, hlPosSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc)) {
 								logger.Info("Replay mirror: %s signal suppressed — entries mirror the live decision log (#1431)", signalStr)
 								result.Signal = 0
 							}
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
-							// #907: update per-strategy divergence state after regime sync.
-							// result.Divergence is populated by runHyperliquidCheck when
-							// regime_window_divergence is configured on sc.
+
 							updateStrategyDivergenceState(stratState, result.Divergence)
 							mu.Unlock()
 							var execResult *HyperliquidExecuteResult
 							liveExecFailed := false
-							// #1159: quantity of PRIMARY exposure this cycle added that the
-							// hedge does not yet cover. Non-zero enables the fail-closed
-							// unwind when the hedge order fails on the same cycle.
+
 							hedgeFreshExposureQty := 0.0
-							// #1416: true only when a tier STRICTLY tightened the trail this
-							// cycle. The walkers below then drop the min-move debounce so the
-							// tighter trigger lands now; a watermark-only advance leaves this
-							// false and stays fully debounced.
+
 							manageRatchetTightened := false
 							if result.Signal == 0 && hlPosQty > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, result.Symbol, price, &mu, logger)
@@ -2937,23 +2045,14 @@ func main() {
 								mu.RUnlock()
 							}
 							if result.Signal == 0 && hlPosQty > 0 && atrMultMissingEntryATR(sc, hlPosSnapshot) {
-								// ATR-mult is configured but the position is missing EntryATR — the
-								// open candle did not produce an ATR indicator, so the trailing loop
-								// will keep no-opping until the position closes. Emit a one-shot
-								// operator alert; the position is running unprotected. Fires for
-								// both live and paper since paper now runs the same trailing loop
-								// (#532).
+
 								notifyATRMultMissingEntryATROnce(sc, result.Symbol, notifier, logger)
 							}
 							if result.Signal == 0 && hlPosQty > 0 && tieredTPATRMissingEntryATR(sc, hlPosSnapshot) {
 								notifyTieredTPATRMissingEntryATROnce(sc, result.Symbol, notifier, logger)
 							}
 							if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && effectiveTrailingStopPct(sc, hlPosSnapshot) > 0 {
-								// Paper-mode trailing stop (#532): no exchange trigger order; the
-								// scheduler advances the high-water mark each cycle and books a
-								// synthetic close when mark crosses the trigger. Each strategy's
-								// virtual position is isolated in stratState.Positions, so peers
-								// on the same coin are unaffected by this strategy's breach.
+
 								newHighWater, newTrigger, breach, breachPx := runHyperliquidTrailingStopPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, trailingReplacePolicy{ratchetTightened: manageRatchetTightened})
 								mu.Lock()
 								if pos, ok3 := stratState.Positions[result.Symbol]; ok3 && pos.Quantity > 0 && pos.Side == hlPosSide {
@@ -2980,10 +2079,7 @@ func main() {
 								if capped {
 									logger.Warn("trailing SL arm: virtual qty %.6f > on-chain %.6f for %s; capping SL size to on-chain qty (#621)", hlPosQty, slEffectiveQty, result.Symbol)
 								}
-								// #873: after a scale-in grew the position, force a
-								// cancel+replace once the reconcile has confirmed the new
-								// on-chain size (!capped) so the trailing SL covers the
-								// new total without waiting for a trailing trigger move.
+
 								forceResize := hlScaleInResizePending && !capped
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, result.Symbol, hlPosSide, slEffectiveQty, hlPosSnapshot, price, hlStopLossHighWaterPx, hlStopLossTriggerPx, hlStopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manageRatchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, result.Symbol, hlPosSide)}, notifier, logger)
 								mu.Lock()
@@ -2991,12 +2087,7 @@ func main() {
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE TRAILING SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 								}
-								// The trailing walker owns the SL re-size whenever it fires
-								// (this block only runs when effectiveTrailingStopPct > 0), so
-								// it always clears the flag — including when the strategy also
-								// places on-chain TPs (the sync re-sizes those but defers the
-								// flag clear to here, #882 review). The sync clears the flag
-								// only for non-trailing SL owners.
+
 								if forceResize && updateConfirmed {
 									if p, ok := stratState.Positions[result.Symbol]; ok && p != nil {
 										p.ScaleInResizePending = false
@@ -3004,14 +2095,7 @@ func main() {
 								}
 								mu.Unlock()
 							}
-							// #562: Fixed ATR-derived stop-loss arming. EffectiveStopLossPct
-							// returns 0 at order-placement time when StopLossATRMult > 0, so
-							// the open leg lands without a trigger. On the cycle after open
-							// (Signal == 0, position exists, EntryATR stamped, no OID/trigger
-							// yet) we arm a one-shot fixed trigger at AvgCost ± mult*EntryATR.
-							// Subsequent cycles short-circuit because the position carries an
-							// OID (live) or TriggerPx (paper) — the trigger is fixed for the
-							// life of the position and never re-armed.
+
 							if !hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 								newTrigger, breach, breachPx := runHyperliquidFixedATRStopLossPaper(sc, hlPosSide, hlPosSnapshot, price, hlStopLossTriggerPx)
 								mu.Lock()
@@ -3030,27 +2114,10 @@ func main() {
 								}
 								mu.Unlock()
 							}
-							// #1456 review round 18 (Needs Fixing 1): also requires a
-							// CLEAN slate (no recorded trigger). A recorded trigger
-							// with no OID is the unreadable-placement residue — an
-							// order may rest under an unknown OID, so re-arming here
-							// would stack a second reduce-only stop.
+
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 && sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 && hlStopLossOID == 0 && hlStopLossTriggerPx == 0 {
 								triggerPx := fixedStopLossATRTriggerPx(sc, hlPosSide, hlPosSnapshot)
-								// #1450: a one-shot fixed-ATR arm has no
-								// re-place path of its own, so clamp BEFORE
-								// placement rather than healing it later.
-								// Tighten-only; 0 (unknown) leaves it alone.
-								//
-								// The alert is held until the placement has been
-								// ATTEMPTED (below, after the state apply releases
-								// mu): an arm whose order never rests leaves the
-								// position with no exchange-side stop, and calling
-								// that "tightened to $X" tells the operator the
-								// opposite of what happened. No defer here — this
-								// dispatch body runs directly inside main(), so a
-								// deferred call would not run until the process
-								// exits.
+
 								clampOffendingPx := 0.0
 								clampedTriggerPx := 0.0
 								clampArmAction := hlLiquidationActionRearmFailed
@@ -3083,13 +2150,7 @@ func main() {
 												stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 												logger.Info("Fixed ATR SL armed oid=%d @ $%.4f", slResult.StopLossOID, slResult.StopLossTriggerPx)
 											} else if slResult.StopLossOutcomeUnknown && slResult.StopLossTriggerPx > 0 {
-												// #1456 review round 18 (Needs Fixing 1): the
-												// arm's outcome is unreadable — the order may be
-												// resting under an OID nobody recorded. Record the
-												// REQUESTED trigger (OID stays 0) so this site's own
-												// `StopLossOID == 0` guard plus the audit's armed-at-
-												// reachable-trigger read submit no second placement,
-												// instead of re-placing on every Signal == 0 cycle.
+
 												pos.StopLossTriggerPx = slResult.StopLossTriggerPx
 												stampOpenTradeWithProtectionSnapshot(stratState, stateDB, sc, result.Symbol, pos)
 												logger.Warn("Fixed ATR SL outcome unreadable for %s: requested trigger $%.4f recorded (oid unknown)", result.Symbol, slResult.StopLossTriggerPx)
@@ -3098,64 +2159,37 @@ func main() {
 										mu.Unlock()
 									}
 								}
-								// #1450: report what ACTUALLY happened, with no
-								// lock held. "clamped" is claimed only when a stop
-								// is on the book; otherwise the position has no
-								// exchange-side stop and the operator is told so.
+
 								if clampedTriggerPx > 0 {
 									notifyHLStopPastLiquidation(sc, result.Symbol, hlPosSide, clampOffendingPx, clampedTriggerPx, armLiqPx, clampArmAction, notifier, logger, time.Now().UTC())
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal == 0 && hlPosQty > 0 {
 								if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, result.Symbol, &mu, notifier, logger, "HL protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
-									// #1456 review round 11: a submit-fill SL close booked by the
-									// sync gets the same trade line any other exit produces.
+
 									trades++
 									detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 								}
 								runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							}
-							// #873 scale-in: a same-direction signal on an open HL
-							// perps position ADDS size when allow_scale_in is
-							// enabled and the caps/spacing allow. Computed once
-							// from the Phase-1 snapshot so the live order and the
-							// Trade record agree (closing the #298 fill-without-
-							// Trade gap). Applies to live and paper; paper just
-							// blends (no on-chain order / re-size).
+
 							scaleInAddQty := 0.0
 							if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {
-								// #1268: risk_per_trade_pct + allow_scale_in is
-								// rejected at config load, so the notional
-								// default here never runs under risk sizing.
+
 								defOpenNotional := PerpsOpenNotional(hlScaleInCash, EffectiveSizingLeverage(sc), EffectiveExchangeLeverage(sc), EffectiveMarginPerTradeUSD(sc))
 								snap := scaleInSnapshot{Side: hlPosSide, Quantity: hlPosQty, AvgCost: hlAvgCost, EntryATR: hlEntryATR, ScaleInCount: hlScaleInCount, AddedNotionalUSD: hlAddedNotionalUSD, LastAddPrice: hlLastAddPrice}
 								if q, okAdd, reason := perpsScaleInDecision(sc, snap, result.Signal, price, defOpenNotional); okAdd {
-									// #1411: scale the ADD quantity by the current
-									// cycle's Hurst multiplier. Applied to the decided
-									// qty (not to defOpenNotional) so an explicit
-									// scale_in.add_notional_usd is scaled too. The
-									// max_adds / max_added_notional caps and the ATR
-									// spacing are evaluated on the UNSCALED intent —
-									// shrinking the add can only leave those caps
-									// satisfied, so the guardrail stays conservative.
-									// The frozen #873 RiskAnchorPrice geometry is
-									// untouched: the multiplier scales quantity only.
+
 									scaleInAddQty = q * hurstDecision.OpenSizeMult()
 								} else if reason != "" && reason != "not a same-direction add" {
 									logger.Info("Scale-in not taken for %s: %s", result.Symbol, reason)
 								}
 							}
 							if hyperliquidIsLive(sc.Args) && result.Signal != 0 {
-								// #768 fix #4: Forward Go's clearinghouseState
-								// snapshot for this coin so Python can skip its
-								// duplicate get_position_leverage /info call.
-								// Only meaningful when a peer/prior position
-								// has the leverage already pinned on-chain.
+
 								walletSnapshot := hlExecuteSnapshotForCoin(hlPositions, result.Symbol)
 								if scaleInAddQty > 0 {
-									// Add path: same-side market order; no SL/TP
-									// cancel, no update_leverage. The post-add
-									// protection sync re-sizes SL + un-cleared TPs.
+
 									if er, ok2 := runHyperliquidScaleInOrder(sc, result, scaleInAddQty, walletSnapshot, notifier, logger); ok2 {
 										execResult = er
 									} else {
@@ -3167,10 +2201,7 @@ func main() {
 										execResult = er
 									} else {
 										liveExecFailed = true
-										// Even on failure, if the Python side
-										// confirmed the stale-SL cancel went
-										// through, drop the dead OID so the next
-										// cycle doesn't try to cancel it again.
+
 										if er != nil && er.CancelStopLossSucceeded && hlStopLossOID > 0 {
 											sym := hyperliquidSymbol(sc.Args)
 											if sym != "" {
@@ -3194,16 +2225,7 @@ func main() {
 								} else {
 									trades, detail, openTrade, ratchetAlert = executeHyperliquidResultDeferredOpen(sc, stratState, result, execResult, signalStr, price, cfg.Regime, cfg, hurstDecision, logger)
 								}
-								// #1456 review round 12: journal the open/scale_in trade +
-								// replay decision BEFORE any same-cycle closer can run — the
-								// post-trade protection sync, the ratchet-tighten walker,
-								// and the #885 inline arm can all book a submit-fill SL close
-								// that DELETES the position. Recorded any later, the open
-								// decision was skipped (pos already nil) while the close side
-								// still journaled full_close, leaving the #1431 paper mirror
-								// a close with no matching open. Protection-snapshot fields
-								// stamped later are backfilled by the sync's
-								// stampOpenTradeWithProtectionSnapshot (#625/#669).
+
 								if openTrade != nil {
 									var pos *Position
 									if p, ok := stratState.Positions[result.Symbol]; ok {
@@ -3212,21 +2234,9 @@ func main() {
 									recordPositionOpen(stratState, sc, openTrade, pos)
 								}
 								mu.Unlock()
-								// #1110: deliver any ratchet-tighten DM after releasing the lock
-								// (Discord/Telegram HTTP must not run under mu). Nil-safe no-op
-								// when no tier tightened.
+
 								notifyRatchetTrigger(notifier, sc.NotifyRatchetTriggersEnabled(cfg), ratchetAlert)
-								// #1416: any execute cycle carries Signal != 0, so the manage-path
-								// walker never ran — the tighter PostTPTrailingATRMult stamped
-								// above would otherwise sit unenforced until a later Signal==0
-								// cycle. Exactly one owner moves the stop this cycle:
-								//   - a LIVE scale-in ADD routes through scaleInResizeTrailingSLNow
-								//     below, which alone knows the GROWN on-chain size; running the
-								//     helper here too would first rest an under-sized stop against
-								//     the stale pre-add snapshot and then replace it again.
-								//   - every other case (scale-out, paper add, no add) uses the
-								//     helper here — live AND paper, outside the execResult gate,
-								//     since paper has a nil execResult.
+
 								ratchetWalkerOwnedByScaleIn := scaleInAddQty > 0 && execResult != nil && trades > 0
 								if ratchetAlert != nil && !ratchetWalkerOwnedByScaleIn {
 									if extraTrades, slDetail := runTrailingStopUpdateAfterRatchetTighten(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin, &mu, notifier, logger); extraTrades > 0 {
@@ -3240,41 +2250,21 @@ func main() {
 										detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, result.Symbol, fillPx)
 									}
 									runPostTPStopLossAdjustment(sc, stratState, result.Symbol, price, cfg, &mu, notifier, logger, hlOnChainAbsQty)
-									// #873/#882: for a trailing-SL owner the post-trade sync
-									// re-sized only the on-chain TPs (the walker owns the SL).
-									// Grow the trailing SL NOW via the same walker primitive
-									// instead of deferring to the next Signal==0 cycle, so a
-									// scale-in's added size is covered immediately even on a
-									// long strategy interval. No-op for non-trailing owners
-									// (their SL was already re-sized + flag cleared by the sync)
-									// and when the add wasn't a scale-in (flag unset).
+
 									if scaleInAddQty > 0 {
 										filledAddQty := scaleInAddQty
 										if execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.TotalSz > 0 {
 											filledAddQty = execResult.Execution.Fill.TotalSz
 										}
-										// #1159: an add grows the primary past the hedge basis.
-										// If this cycle's hedge add then fails, only this
-										// increment is unwound — the pre-add position stays
-										// correctly hedged.
+
 										hedgeFreshExposureQty = filledAddQty
-										// #1416: when this add also cleared a ratchet tier, the same
-										// single pass must place the grown size at the NEW tighter
-										// trigger instead of re-placing the old wider one.
+
 										if extraTrades, slDetail := scaleInResizeTrailingSLNow(sc, stratState, result.Symbol, price, hlOnChainAbsQty, hlLiquidationPx, hlNetSideByCoin, filledAddQty, ratchetAlert != nil, &mu, notifier, logger); extraTrades > 0 {
 											trades += extraTrades
 											detail = slDetail
 										}
 									} else {
-										// #885: arm the initial trailing SL inline on the open
-										// cycle for ATR-trailing owners. They get no inline SL at
-										// the execute order (EffectiveStopLossPct defers to 0) and
-										// the sync above doesn't place one (the plan never reads
-										// the trailing fields), so without this they stay naked
-										// until the next Signal==0 walker cycle. No-op for every
-										// other owner and for close/partial-close legs (the
-										// helper's internal guards: live + trailing owner + no
-										// resting SL).
+
 										filledQty := 0.0
 										if execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.TotalSz > 0 {
 											filledQty = execResult.Execution.Fill.TotalSz
@@ -3284,30 +2274,7 @@ func main() {
 											detail = slDetail
 										}
 									}
-									// #1456 review round 14 (Needs Fixing 2): the open /
-									// scale_in trade row is recorded up front (round 12) so
-									// the #1431 decision log always carries its open leg
-									// before any same-cycle closer can delete the position.
-									// copyPositionOpenSnapshotToTrade therefore reads the
-									// stop fields BEFORE the #885 inline arm and the
-									// scale-in re-size above set them, and a PURE TRAILING
-									// owner never reaches the protection sync's own
-									// stampOpenTradeWithProtectionSnapshot backfill —
-									// buildHyperliquidProtectionPlan returns syncOK=false
-									// for it (slMult is 0 and trailing_tp_ratchet places no
-									// on-chain tiers), on this cycle and every later one.
-									// The open row then carried StopLossOID=0 /
-									// StopLossTriggerPx=0 permanently and the open DM
-									// omitted its "SL: $…" line for a position that DOES
-									// have a stop armed — the exact gap #625 added the
-									// stamp to close. Stamp from the position now, after
-									// whichever path armed it. stampOpenTradeFromPosition
-									// only fills fields that are still zero, so an OID
-									// already stamped (fixed-ATR / tiered owners, a
-									// scale-in onto an armed position) is never overwritten
-									// with a blank. Skipped when a submit-fill flattened
-									// the position this cycle — there is no open row left
-									// to backfill.
+
 									if openTrade != nil {
 										mu.Lock()
 										if pos, okPos := stratState.Positions[result.Symbol]; okPos && pos != nil && pos.Quantity > 0 {
@@ -3315,33 +2282,20 @@ func main() {
 										}
 										mu.Unlock()
 									}
-									// #1159: a fresh open (not an add — that branch set the
-									// quantity above) is the whole unhedged increment.
+
 									if scaleInAddQty <= 0 && openTrade != nil && openTrade.Quantity > 0 {
 										hedgeFreshExposureQty = openTrade.Quantity
 									}
 								}
 							}
-							// #998: stamp the active profile on a freshly opened
-							// position (freezes it for the position's life) and commit
-							// the resolved switch state. Runs whenever the check
-							// succeeded — independent of whether a trade executed — so
-							// the flat hysteresis counter advances every cycle.
+
 							if hlProfileResolved {
 								mu.Lock()
 								stampPositionProfileIfOpened(stratState, result.Symbol, hlProfileActive)
 								updateStrategyProfileState(stratState, hlProfileNext)
 								mu.Unlock()
 							}
-							// #1431: replay mirror — apply the live deployment's pending
-							// decisions (open/scale_in/partial_close/full_close) to the
-							// paper book. Placed after every native close/manage path above
-							// (paper's own close evaluation and SL loops run FIRST as the
-							// backstop) and before the hedge sync so the hedge converges on
-							// the replayed primary this same cycle. The pending-rows fetch
-							// runs outside mu; the apply runs under it. Live downtime simply
-							// yields no rows — paper holds its last replayed state and
-							// resumes on the next live decision (issue policy (c)).
+
 							if replayMirrorPaperActive(sc) && decisionLog != nil {
 								pending, perr := decisionLog.PendingDecisions(sc.ID)
 								switch {
@@ -3350,21 +2304,7 @@ func main() {
 								case len(pending) > 0:
 									mu.Lock()
 									appliedIDs, replayTrades, replayDetails, driftDMs := applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)
-									// Crash-atomicity (review finding): the applied
-									// book mutations + watermark + trade rows +
-									// deferred diagnostics must hit the state DB
-									// BEFORE the shared log marks the rows applied.
-									// Apply suspends eager InsertTrade and
-									// diagnostics so those rows join this tx; a
-									// kill during the save rolls them back with
-									// the watermark. Persist is THIS strategy
-									// only — a full-fleet SaveState here would
-									// rewrite every unrelated book while holding
-									// mu. Marking first would drop a mirrored
-									// trade on a kill between mark and the
-									// cycle-end save; saving first is safe
-									// because the persisted watermark makes the
-									// post-restart re-mark idempotent.
+
 									var saveErr error
 									if len(appliedIDs) > 0 {
 										saveErr = SaveStrategyBookWithDB(stratState, stateDB)
@@ -3378,35 +2318,18 @@ func main() {
 									if len(appliedIDs) > 0 {
 										switch {
 										case saveErr != nil:
-											// Rows stay pending; the in-memory
-											// high-water prevents a double-apply in
-											// THIS process, and nothing was marked, so
-											// a restart re-applies cleanly.
+
 											logger.Error("Replay mirror: state save failed after applying %d decision(s): %v — rows stay pending for retry (#1431)", len(appliedIDs), saveErr)
 										default:
 											if err := decisionLog.MarkDecisionsApplied(appliedIDs); err != nil {
-												// Not fatal: the persisted watermark +
-												// in-memory high-water make the
-												// re-mark next cycle idempotent.
+
 												logger.Error("Replay mirror: failed to mark %d decision(s) applied: %v (#1431)", len(appliedIDs), err)
 											}
 										}
 									}
 								}
 							}
-							// #1159: converge the correlated hedge leg to the target
-							// derived from the primary position. Placed here — after every
-							// execute/close/protection path for this cycle has settled —
-							// so ONE reconciler mirrors every primary lifecycle event:
-							// fresh open, scale-in add, evaluator partial/full close,
-							// on-chain SL/TP fill booked by reconcile, ratchet close, and
-							// external close. Also runs on the Signal==0 manage path and
-							// under pause (#1150) / latched-CB manage-only (#1046) /
-							// daily-loss hold (#1269), which is deliberate: hedge orders
-							// are coupled risk management, not signals. A held or paused
-							// primary cannot INCREASE, so under those states hedge sync
-							// can only reduce or close — exactly the direction that must
-							// never be blocked.
+
 							if HedgeEnabled(sc) {
 								runHedgeSync(sc, stratState, &mu, defaultHedgeExecutor(), hedgeSyncInputs{
 									PrimaryPx:         price,
@@ -3420,58 +2343,35 @@ func main() {
 					case "futures":
 						if result, signalStr, price, ok := runTopStepCheck(sc, prices, tsPosCtx, cfg.Regime, resolveATRMethod(sc, cfg), notifier, logger); ok {
 							prices[result.Symbol] = price
-							// #879: single-source regime — read the global store for this
-							// strategy's signature instead of the check output, and point
-							// result.Regime at it so stamp-at-open inside execute* shares it.
+
 							storeRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 							result.Regime = &storeRegime
 							if gateRegime, regimeBlocked := applyRegimeGate(sc, storeRegime, cfg.Regime, tsContracts); regimeBlocked {
 								logger.Info("Regime gate: open signal blocked (%s)", regimeGateBlockDetail(gateRegime))
 								result.Signal = 0
 							}
-							// #1411: Hurst entry gate — a STANDALONE gate layered on top of the
-							// label gate above (whose semantics are untouched). advanceHurstGate
-							// runs unconditionally and signal-independently so the hysteresis
-							// latch advances on EVERY cycle, including Signal==0 manage cycles.
-							// The hold is scoped by pausedBlocksSignal exactly as the #1150 /
-							// #1269 / #1344 arms below: fresh opens, adds and flips are held;
-							// closes, pure-close directional exits, trailing SL, the ratchet,
-							// protection sync and paper SL/TP simulation all pass through.
+
 							hurstDecision := advanceHurstGate(sc, storeRegime, cfg.Regime, stratState, &mu, tsContracts)
 							if hurstDecision.Holds && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 								logger.Info("Hurst gate: %s signal suppressed — %s (#1411)", signalStr, hurstDecision.Detail)
 								result.Signal = 0
 							}
-							// #1150: paused — hold position-increasing signals (fresh open, add,
-							// flip); position-reducing actions pass so open positions ride their
-							// natural exit. The Signal==0 manage path below keeps running.
-							// allowsLong=allowsShort=true: ExecuteFuturesSignalWithFillFee is
-							// unconditionally bidirectional — a sell on a long (closeFraction
-							// 0) closes AND opens a fresh short ("Open short … after closing
-							// long"), and a buy on a short mirrors it — so an opposite-side
-							// signal is never a pure close; only close-registry actions
-							// (closeFraction>0) reduce without reopening.
+
 							if sc.Paused && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 								logger.Info("Paused: %s signal suppressed — position-increasing actions held while paused (#1150)", signalStr)
 								result.Signal = 0
 							}
-							// #1269: daily loss limit tripped — identical hold semantics to pause:
-							// position-increasing signals held, position-reducing actions pass.
+
 							if dailyLossEntriesHeld && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 								logger.Info("Daily loss limit: %s signal suppressed — entries held until UTC rollover (#1269)", signalStr)
 								result.Signal = 0
 							}
-							// #1344: portfolio notional cap — gross notional includes futures
-							// (unlike #1270's crypto-only bucket), so TopStep is gated too.
-							// Position-increasing signals held; closeFraction>0 reductions pass.
+
 							if notionalBlocked && pausedBlocksSignal(result.Signal, result.CloseFraction, tsContracts, tsPosSide, true, true) {
 								logger.Warn("Notional cap: %s signal suppressed — new opens blocked, exits continue (#1344)", signalStr)
 								result.Signal = 0
 							}
-							// #1270: deliberately NOT gated by the same-direction exposure
-							// cap — CME futures are outside the phase-1 crypto bucket
-							// (computeAssetDeltas excludes type=futures), so the crypto
-							// bucket must not block futures entries.
+
 							mu.Lock()
 							syncStrategyRegimeState(stratState, storeRegime, cfg.Regime)
 							mu.Unlock()
@@ -3491,8 +2391,7 @@ func main() {
 							}
 						}
 					case "manual":
-						// #569: manual strategies have no open signal; only run
-						// close evaluators when a position is open.
+
 						mu.RLock()
 						pos := stratState.Positions[sc.Symbol]
 						mu.RUnlock()
@@ -3501,59 +2400,25 @@ func main() {
 							break
 						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
-							// Protection-sync must run before the close evaluator so
-							// the latter sees on-chain-reconciled qty. Post-TP SL
-							// adjustment is deferred to the post-stamp block below so
-							// regime-keyed *_atr_regime SL sees pos.Regime (#878 review).
+
 							if _, fillPx := runHyperliquidProtectionSync(sc, stratState, stateDB, sc.Symbol, &mu, notifier, logger, "HL manual protection synced", hlReconcileFillHintsJSON, hlLiquidationPx, hlNetSideByCoin); fillPx > 0 {
 								trades++
 								detail = fmt.Sprintf("[%s] LIVE PROTECTION SYNC SL %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
 							}
 						}
-						// #872: run the close evaluator and stamp the regime BEFORE
-						// arming the post-TP SL / ratchet / trailing walker below. The
-						// regime is the close-eval's classifier output, and the
-						// regime-keyed close features (trailing_tp_ratchet_regime,
-						// *_atr_regime SL/TP) resolve their tier table / trail distance
-						// from pos.Regime. Arming first (the previous order) left
-						// pos.Regime == "" on the first post-open cycle, so the regime
-						// trail no-op'd for one interval; stamping first arms it
-						// correctly on cycle 1.
+
 						closeFraction, _, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
-						// #879: the live regime comes from the global store, not the
-						// close-eval's check output — so a FLAT manual strategy now
-						// shows a live regime too (pre-#879 the HL check only ran
-						// with an open position, leaving regime=- while flat).
-						// If the bundle failed on the very cycle a manual position
-						// opened, the stamp below is an empty no-op and regime-keyed
-						// closes stay unarmed until a later cycle's bundle succeeds —
-						// the stamp is idempotent on pos.Regime == "", so it
-						// self-heals (documented fail-open tradeoff).
+
 						manualRegime := globalRegimeStore.PayloadForStrategy(sc, cfg.Regime)
 						if manualOK {
 							mu.Lock()
-							// Refresh the strategy-level live regime every cycle, like
-							// the other five dispatches do — this is what the Phase 6
-							// status line and dashboard read (stratState.Regime). Without
-							// it a manual strategy reports regime=- even with an open,
-							// correctly-stamped position (#872 review).
+
 							syncStrategyRegimeState(stratState, manualRegime, cfg.Regime)
-							// Stamp the current regime onto the position the first
-							// time we observe one. Idempotent — stampPosition-
-							// RegimeFromPayload only writes when pos.Regime == "" (and
-							// pos.RegimeWindows is empty) — so this fires exactly once,
-							// on the first close-eval cycle after open, regardless of
-							// live vs --record-only.
+
 							stampPositionRegimeIfOpened(stratState, sc.Symbol, manualRegime, sc, cfg.Regime)
 							mu.Unlock()
 						}
-						// #1115: alert (once per strategy/symbol) when an open manual
-						// position drifted across a close-evaluator default flip — opened
-						// under a tiered-TP close (resting TP OIDs) but the strategy now
-						// resolves to the ratchet (no on-chain TP). The SL stays protected
-						// (regime trail re-arms), but the stale TPs are no longer managed
-						// by the close evaluator, so surface it rather than silently
-						// changing the position's protection surface across a reload.
+
 						mu.RLock()
 						driftPos := stratState.Positions[sc.Symbol]
 						drifted := manualCloseEvaluatorDriftedFromTPs(sc, driftPos)
@@ -3571,17 +2436,10 @@ func main() {
 							}
 						}
 						if pos != nil && hyperliquidIsLive(sc.Args) {
-							// Manual ratchet + trailing walker run live-only by design
-							// (gated on hyperliquidIsLive): manual is a live trading
-							// tool, so a record-only manual config intentionally does
-							// not ratchet (unlike perps, which also runs a paper
-							// trailing path at main.go ~1537). Runs after the stamp
-							// above so regime-keyed trails / post-TP SL see pos.Regime
-							// on cycle 1.
+
 							runPostTPStopLossAdjustment(sc, stratState, sc.Symbol, prices[sc.Symbol], cfg, &mu, notifier, logger, hlOnChainAbsQty)
 							mark := prices[sc.Symbol]
-							// #1416: same as the perps manage path — a strict tighten drops
-							// the walker's min-move debounce for this cycle only.
+
 							manualRatchetTightened := false
 							if mark > 0 && strategyUsesTrailingTPRatchetClose(sc) {
 								ratchetAlert := applyTrailingTPRatchet(sc, stratState, sc.Symbol, mark, &mu, logger)
@@ -3597,22 +2455,15 @@ func main() {
 									logger.Warn("manual trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", pos.Quantity, slEffectiveQty, sc.Symbol)
 								}
 								prevSLOID := pos.StopLossOID
-								// #873: force a re-size when a manual scale-in grew the
-								// position (the trailing SL otherwise covers only the
-								// pre-add size until the next trigger move).
+
 								forceResize := pos.ScaleInResizePending && !capped
 								newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(sc, sc.Symbol, pos.Side, slEffectiveQty, pos, mark, pos.StopLossHighWaterPx, pos.StopLossTriggerPx, pos.StopLossOID, trailingReplacePolicy{forceResize: forceResize, ratchetTightened: manualRatchetTightened, liquidationPx: hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, sc.Symbol, pos.Side)}, notifier, logger)
 								mu.Lock()
-								// Shared handler with the perps path — books an immediate fill,
-								// updates a resting replacement, or clears a cancelled-without-rest
-								// OID. Previously this only handled the resting-replacement case.
+
 								if immediateFill, fillPx := applyTrailingStopUpdateResult(stratState, sc.Symbol, pos.Side, prevSLOID, newHighWater, updateConfirmed, slUpdate, "trailing_stop_loss_immediate", logger, 0); immediateFill {
 									logger.Info("[%s] manual trailing SL filled immediately %s @ $%.2f", sc.ID, sc.Symbol, fillPx)
 								}
-								// The manual trailing walker owns the SL re-size when it fires
-								// (ratchet closes place no on-chain TPs), so it always clears
-								// the flag; the sync defers the clear to here for trailing
-								// owners (#882 review).
+
 								if forceResize && updateConfirmed {
 									if p, ok := stratState.Positions[sc.Symbol]; ok && p != nil {
 										p.ScaleInResizePending = false
@@ -3635,8 +2486,7 @@ func main() {
 								if pos.Side == "short" {
 									closeSide = "buy"
 								}
-								// Fix #2: only cancel the SL on a full close; leave it resting on partial.
-								// Intent is full-close iff the close-eval returned closeFraction >= 1.
+
 								intentFullClose := closeFraction >= 1.0
 								cancelOID := int64(0)
 								if intentFullClose {
@@ -3670,9 +2520,7 @@ func main() {
 									logger.Error("manual close HL error: %s", execResult.Error)
 									break
 								}
-								// Cancel failures are non-fatal but leave reduce-only OIDs
-								// resting on-chain after the strategy is virtually flat —
-								// surface them so operators can verify TP/SL state.
+
 								if execResult.CancelStopLossError != "" {
 									logger.Warn("manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers",
 										sc.ID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
@@ -3723,13 +2571,12 @@ func main() {
 							key := chKey + "|" + extractAsset(sc)
 							channelTradeDetails[key] = append(channelTradeDetails[key], detail)
 						}
-						// DM trade alerts (Discord + Telegram)
+
 						sendTradeAlerts(sc, stratState, trades, &mu, notifier)
 					}
 
 					totalTrades += trades
 
-					// Phase 5: mark option positions with live prices (platform-aware).
 					mu.RLock()
 					markReqs := collectMarkRequests(stratState)
 					mu.RUnlock()
@@ -3738,7 +2585,7 @@ func main() {
 						if sc.Platform == "ibkr" {
 							pricer = NewIBKRPricer(prices)
 						} else {
-							pricer = deribitPricer // also used for OKX options
+							pricer = deribitPricer
 						}
 						markResults := fetchMarkPrices(markReqs, pricer, logger)
 						mu.Lock()
@@ -3746,15 +2593,12 @@ func main() {
 						mu.Unlock()
 					}
 
-					// Phase 6: RLock — status log
 					mu.RLock()
 					pv = displayStrategyValue(stratState, prices)
 					posCount := len(stratState.Positions) + len(stratState.OptionPositions)
 					cash := stratState.Cash
 					regimeLabel := strategyDisplayRegimeLabel(stratState, sc, cfg.Regime)
-					// #1278: name an actively fail-closed entry gate in the status
-					// line so an operator scanning logs during a regime-store
-					// outage sees WHY the strategy is not opening.
+
 					if regimeGateFailClosedActive(sc, stratState, cfg.Regime) {
 						regimeLabel = decorateRegimeLabelGateClosed(regimeLabel)
 					}
@@ -3767,10 +2611,7 @@ func main() {
 					if cashReconcile {
 						statusLine += " | CASH RECONCILE REQUIRED"
 					}
-					// #1411: surface the Hurst gate's live state on the status
-					// line so an operator can tell a disarmed gate from a quiet
-					// strategy. Display-only, rendered from the persisted latch;
-					// the authoritative decision stays at the dispatch sites.
+
 					if marker := hurstGateStatusMarkerForStrategy(sc, stratState, cfg.Regime, &mu); marker != "" {
 						statusLine += " | " + marker
 					}
@@ -3779,41 +2620,20 @@ func main() {
 					logger.Close()
 					lastRun[sc.ID] = time.Now()
 				}
-			} // end if !killSwitchFired
+			}
 		}
 
-		// #1444: missing-mark regression guard. A mark miss is silent by
-		// construction — prices[sym] reads 0.0, PortfolioValue falls back to
-		// pos.AvgCost, and every mark-gated manager (the HL trailing stop-loss
-		// walker, the TP ratchet) returns early behind its own `mark > 0` gate.
-		// Runs here, after the strategy loop, because perps strategies publish
-		// their own mark during the loop; an init-time guard would warn for them
-		// spuriously. The decision itself is the pure collectMissingMarkPositions
-		// so it stays testable without spawning Python.
 		mu.RLock()
 		openSymbolsByStrategy := snapshotOpenSymbolsByStrategy(state)
 		mu.RUnlock()
 		misses := collectMissingMarkPositions(cfg.Strategies, openSymbolsByStrategy, prices)
-		// #1444 (PR review): a stdout [WARN] is the same silent channel as the
-		// bug it was added to catch. A LIVE miss degrades an auto-protective
-		// mechanism — on HL perps/manual it stops the trailing stop-loss walker
-		// and the TP ratchet outright, and on every venue it reverts the
-		// position to AvgCost inside the portfolio kill switch's drawdown input
-		// — so it escalates to a throttled owner DM. A record-only miss breaks
-		// no management path — it only reverts
-		// that position to AvgCost inside the portfolio drawdown input — so it
-		// stays a log line and raises no live-protection alarm.
-		//
-		// Retain() drops slots for positions that are no longer missing, so a
-		// mark that comes back re-arms the alert immediately, with no restart.
+
 		missingMarkAlerts.Retain(misses)
 		alertNow := time.Now().UTC()
 		var missingMarkDMs []string
 		for _, miss := range misses {
 			if miss.Live {
-				// #1445 review: name only the managers this venue actually
-				// runs (markGatedManagers); the valuation fallback is the one
-				// consequence that holds everywhere.
+
 				disabled := "no mark-gated manager runs on this venue"
 				if len(miss.DisabledManagers) > 0 {
 					disabled = strings.Join(miss.DisabledManagers, ", ") + " cannot run this cycle"
@@ -3830,11 +2650,6 @@ func main() {
 			notifier.SendOwnerDM(dm)
 		}
 
-		// #1394/#1400: emit a throttled reminder for every strategy still
-		// needing cash reconciliation (covers DM-miss / restart). The latch
-		// clears only via /go-trader-clear-cash-reconcile — maybeClear below
-		// is a no-op retained so a future verified books-match clear can
-		// re-arm without rewiring this path (solvency alone does not clear).
 		mu.Lock()
 		for _, s := range state.Strategies {
 			maybeClearCashReconcileRequired(s)
@@ -3854,11 +2669,6 @@ func main() {
 			globalSpotCashReconcileReminder.ShouldNotify("", time.Now().UTC())
 		}
 
-		// Build per-channel strategy lists for channel-level summaries.
-		// Adjusted TOTAL rows are computed per-channel/per-asset below via
-		// computeSubsetDisplayValue using the hoisted walletBalances map so
-		// shared wallets are not double-counted in TOTAL rows (#915) and the
-		// TOTAL reconciles with exchange-derived per-strategy rows (#918).
 		mu.RLock()
 		channelStrats := make(map[string][]StrategyConfig)
 		for _, sc := range cfg.Strategies {
@@ -3873,25 +2683,16 @@ func main() {
 		elapsed := time.Since(cycleStart)
 		logMgr.LogSummary(cycle, elapsed, len(dueStrategies), totalTrades, totalPV)
 
-		// Pre-compute closed-position history once per cycle so per-channel /
-		// per-asset Sharpe calls (and the later ComputeSharpeByStrategy for
-		// leaderboard summaries) don't each re-query the DB. Nil when stateDB
-		// is nil — downstream callers treat that as "Sharpe unavailable".
 		closedByStrategy := LoadClosedPositionsByStrategy(stateDB, cfg)
 		rfr := RiskFreeRateOrDefault(cfg)
 
-		// Lifetime round-trip / W-L stats sourced from the trades table (#455).
-		// One DB round-trip per cycle; missing keys render as zero inside
-		// FormatCategorySummary. Errors are downgraded to a nil map so the
-		// summary still posts without in-memory lifetime counters (#472).
 		lifetimeStats := loadLifetimeStatsBestEffort(stateDB, "[summary]")
 
-		// Notification — one message per channel per asset, sent to all backends.
 		if notifier.HasBackends() {
 			summaryNow := time.Now().UTC()
 			mu.RLock()
 			for chKey, chStrats := range channelStrats {
-				// Only post if at least one due strategy maps to this channel key.
+
 				chRan := false
 				for _, sc := range dueStrategies {
 					if notifier.resolveChannelKey(sc.Platform, sc.Type) == chKey {
@@ -3903,26 +2704,20 @@ func main() {
 					continue
 				}
 				chTrades := channelTrades[chKey]
-				// Per-channel summary cadence (#30). Legacy default: continuous
-				// channel types (options/perps/futures/manual) post every channel run; spot
-				// posts hourly. Override per channel via cfg.SummaryFrequency.
-				// Trades always force a post so operators see executions
-				// immediately regardless of cadence.
+
 				continuous := isOptionsType(chStrats) || isFuturesType(chStrats) || isPerpsType(chStrats)
 				if !ShouldPostSummary(cfg.SummaryFrequency[chKey], continuous, chTrades > 0, lastSummaryPost[chKey], summaryNow) {
 					continue
 				}
 				assetGroups, assetKeys := groupByAsset(chStrats)
 				if len(assetKeys) <= 1 {
-					// Single asset (or none) → backwards-compatible single message without asset label.
+
 					detailKey := chKey + "|"
 					if len(assetKeys) == 1 {
 						detailKey = chKey + "|" + assetKeys[0]
 					}
 					chDetails := channelTradeDetails[detailKey]
-					// Compute shared-wallet-adjusted total for TOTAL row (#915);
-					// gated members sum exchange-derived values so the TOTAL
-					// reconciles with the per-strategy rows (#918).
+
 					chAdj, _ := computeSubsetDisplayValue(chStrats, state, prices, walletBalances, sharedWallets)
 					chSharpe := aggregateSharpe(closedByStrategy, chStrats, state, rfr)
 					msgs := FormatCategorySummary(cycle, elapsed, len(dueStrategies), chTrades, chAdj, prices, chDetails, chStrats, state, chKey, "", cfg.IntervalSeconds, chSharpe, lifetimeStats, cfg.Regime)
@@ -3930,14 +2725,11 @@ func main() {
 						notifier.SendToChannel(chKey, chKey, msg)
 					}
 				} else {
-					// Multiple assets → one message per asset.
+
 					for _, asset := range assetKeys {
 						assetStrats := assetGroups[asset]
 						assetDetails := channelTradeDetails[chKey+"|"+asset]
-						// Subset-adjusted total. Per-asset groups always straddle a
-						// multi-coin shared wallet; gated members sum their
-						// exchange-derived values so this one-row TOTAL matches
-						// the rows above it (#918), ungated keep #915 semantics.
+
 						assetAdj, _ := computeSubsetDisplayValue(assetStrats, state, prices, walletBalances, sharedWallets)
 						assetTrades := len(assetDetails)
 						assetSharpe := aggregateSharpe(closedByStrategy, assetStrats, state, rfr)
@@ -3952,14 +2744,10 @@ func main() {
 			mu.RUnlock()
 		}
 
-		// Save state after each cycle
 		mu.Lock()
 		state.LastCycle = time.Now().UTC()
 		state.LastSummaryPost = cloneTimeMap(lastSummaryPost)
 
-		// Periodic configurable leaderboard summaries (#308). Compute + update
-		// state.LastLeaderboardSummaries under Lock; post outside so Discord
-		// HTTPS latency can't stall the scheduler cycle.
 		var duePending []pendingLeaderboardSummary
 		if notifier.HasBackends() {
 			duePending = collectDueLeaderboardSummaries(cfg, state, prices, ComputeSharpeByStrategy(closedByStrategy, cfg, state), lifetimeStats, walletBalances, sharedWallets)
@@ -3970,12 +2758,10 @@ func main() {
 			fmt.Printf("[CRITICAL] Save state failed (%d/3): %v\n", saveFailures, err)
 		} else {
 			saveFailures = 0
-			// This save commits everything the off-cycle audit left in memory
-			// too, so its retry latch is discharged here as well.
+
 			offCycleAuditSaveDirty = false
 		}
 
-		// #175: Decide whether to auto-post daily leaderboard (check inside lock).
 		var postLeaderboard bool
 		if h, m, ok := ParseLeaderboardPostTime(cfg.LeaderboardPostTime); ok && notifier.HasBackends() {
 			now := time.Now().UTC()
@@ -3988,7 +2774,6 @@ func main() {
 		}
 		mu.Unlock()
 
-		// Post any configurable leaderboard summaries (#308) outside the lock.
 		for _, p := range duePending {
 			if err := notifier.SendMessage(p.channel, p.msg); err != nil {
 				fmt.Printf("[WARN] Leaderboard summary send to channel %s failed: %v\n", p.channel, err)
@@ -3998,15 +2783,8 @@ func main() {
 				p.key, p.topN, p.channel)
 		}
 
-		// Post leaderboard outside the lock to avoid holding mu during I/O.
-		// Issue #313: compute on-demand at post time instead of reading a
-		// pre-computed file. Build messages under RLock (state read), then
-		// post without the lock held so Discord HTTPS latency can't stall
-		// other goroutines.
 		if postLeaderboard {
-			// Persist LastLeaderboardPostDate immediately so a crash before
-			// the next cycle's SaveState cannot cause a duplicate daily post
-			// on restart.
+
 			stampDate := func() {
 				mu.Lock()
 				state.LastLeaderboardPostDate = time.Now().UTC().Format("2006-01-02")
@@ -4021,8 +2799,7 @@ func main() {
 			} else {
 				sharpeByStrategy := ComputeSharpeByStrategy(closedByStrategy, cfg, state)
 				mu.RLock()
-				// Pass hoisted walletBalances so the leaderboard TOTAL rows use
-				// shared-wallet-adjusted values (#915).
+
 				lbMessages := BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy, lifetimeStats, walletBalances, sharedWallets)
 				mu.RUnlock()
 				if len(lbMessages) == 0 {
@@ -4039,9 +2816,6 @@ func main() {
 			}
 		}
 
-		// Periodic update check (heartbeat: every cycle; daily: once per
-		// 24h wall-clock — was cycle-based, broke when schedulerDelay
-		// became variable, see lastAutoUpdateCheck above).
 		if cfg.AutoUpdate == "heartbeat" {
 			checkForUpdates(cfg, notifier, &lastNotifiedHash, &mu, state, stateDB)
 		} else if cfg.AutoUpdate == "daily" && time.Since(lastAutoUpdateCheck) >= 24*time.Hour {
@@ -4054,10 +2828,6 @@ func main() {
 			return
 		}
 
-		// Wait for next tick or shutdown. Recompute intervals here under
-		// RLock — drawdown state may have changed during the cycle, so
-		// re-evaluating ensures a strategy that just entered (or exited)
-		// the warning band gets the fast (or slow) cadence immediately.
 		mu.RLock()
 		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
 		mu.RUnlock()
@@ -4065,7 +2835,7 @@ func main() {
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
-			// Next tick
+
 		case <-reloadCh:
 			timer.Stop()
 			reloadConfig()
@@ -4078,23 +2848,12 @@ func main() {
 	}
 }
 
-// runSummaryAndExit posts a snapshot summary for the given channel key and exits.
-//
-// Lookup order (#308):
-//  1. If channelKey matches a cfg.LeaderboardSummaries[].Channel, build and
-//     post that configured leaderboard (platform + optional ticker + topN).
-//  2. Otherwise fall back to the legacy asset-grouped category summary, which
-//     requires strategies whose notifier-resolved channel key equals channelKey.
-//
-// It fetches current prices, formats the summary, posts to all notification
-// backends, and exits immediately.
 func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
 	if !notifier.HasBackends() {
 		fmt.Fprintf(os.Stderr, "No notification backends configured\n")
 		os.Exit(1)
 	}
 
-	// #308: Manual trigger for configured leaderboard summaries.
 	if lcs := findLeaderboardSummariesByChannel(cfg, channelKey); len(lcs) > 0 {
 		runLeaderboardSummariesAndExit(lcs, cfg, state, sdb, notifier)
 		return
@@ -4105,7 +2864,6 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 		os.Exit(1)
 	}
 
-	// Collect strategies for this channel.
 	var chStrats []StrategyConfig
 	for _, sc := range cfg.Strategies {
 		if notifier.resolveChannelKey(sc.Platform, sc.Type) == channelKey {
@@ -4117,10 +2875,8 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 		os.Exit(1)
 	}
 
-	// Collect spot symbols; perps/futures go through augmentMarksBestEffort.
 	symbols := collectPriceSymbols(cfg.Strategies)
 
-	// Fetch current prices.
 	prices := make(map[string]float64)
 	if len(symbols) > 0 {
 		p, err := FetchPrices(symbols)
@@ -4136,13 +2892,9 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	}
 	augmentMarksBestEffort(cfg, prices)
 
-	// Fetch shared-wallet balances for adjusted TOTAL rows (#915). Must be
-	// done without holding any state lock; best-effort — failure falls back
-	// to the per-strategy virtual sum for the TOTAL row.
 	summaryWalletBalances, _ := fetchSharedWalletBalances(cfg.Strategies, nil)
 	summaryAccountShared := detectSharedWallets(cfg.Strategies)
 
-	// Format and send summary using the same asset-grouping logic as the main loop.
 	closedByStrategy := LoadClosedPositionsByStrategy(sdb, cfg)
 	rfr := RiskFreeRateOrDefault(cfg)
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[summary]")
@@ -4172,7 +2924,6 @@ func runSummaryAndExit(channelKey string, cfg *Config, state *AppState, sdb *Sta
 	os.Exit(0)
 }
 
-// spotSymbol extracts the spot symbol from strategy args (e.g. "BTC/USDT").
 func spotSymbol(args []string) string {
 	if len(args) >= 2 {
 		return args[1]
@@ -4180,8 +2931,6 @@ func spotSymbol(args []string) string {
 	return ""
 }
 
-// runSpotCheck runs the spot check subprocess and returns the parsed result.
-// No state access. Returns (result, signalStr, price, ok); ok=false means skip execution.
 func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*SpotResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
@@ -4227,7 +2976,6 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	}
 	logger.Info("Signal: %s | %s @ $%.2f", signalStr, result.Symbol, result.Price)
 
-	// Use script price, fallback to fetched price
 	price := result.Price
 	if price <= 0 {
 		if p, ok := prices[result.Symbol]; ok {
@@ -4243,9 +2991,8 @@ func runSpotCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionC
 	return result, signalStr, price, true
 }
 
-// executeSpotResult applies a spot signal to state. Must be called under Lock.
 func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *SpotResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string) {
-	exec, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, hurst.OpenSizeMult(), logger) // #1411
+	exec, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, price, 0, 0, "", result.CloseFraction, hurst.OpenSizeMult(), logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -4255,9 +3002,7 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
-	// #1411: freeze the gate's H reading and applied multiplier for the
-	// close-time diagnostics row. Diagnostics-only; never read by any
-	// gating/sizing/close path afterwards.
+
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
@@ -4271,8 +3016,6 @@ func executeSpotResult(sc StrategyConfig, s *StrategyState, db *StateDB, result 
 	return trades, detail
 }
 
-// stampPositionRegimeIfOpened stamps regime on the position the first time
-// we observe one with a non-empty label (#733/#792).
 func stampPositionRegimeIfOpened(s *StrategyState, symbol string, payload RegimePayload, sc StrategyConfig, regime *RegimeConfig) {
 	stampPositionRegimeFromPayload(s, symbol, payload, sc, regime)
 }
@@ -4289,18 +3032,13 @@ func stampEntryATRIfOpened(s *StrategyState, symbol string, indicators map[strin
 	if !exists || pos == nil || pos.EntryATR != 0 {
 		return
 	}
-	// Plausibility: reject NaN and ATR > 50% of entry price when we have a cost
-	// baseline (almost certainly a unit mismatch or error in the strategy dataframe).
+
 	if atr != atr || (pos.AvgCost > 0 && atr > pos.AvgCost*0.5) {
 		return
 	}
 	pos.EntryATR = atr
 }
 
-// indicatorsATRValue extracts the check payload's "atr" for risk-per-trade
-// sizing (#1268), returning 0 when absent or non-positive. Plausibility
-// against price is enforced downstream in PerpsRiskStopDistance (same 50%-of-
-// price bound as stampEntryATRIfOpened).
 func indicatorsATRValue(indicators map[string]interface{}) float64 {
 	atr, ok := indicatorFloat(indicators, "atr")
 	if !ok || atr <= 0 {
@@ -4334,13 +3072,9 @@ func indicatorFloat(indicators map[string]interface{}, key string) (float64, boo
 	}
 }
 
-// runOptionsCheck runs the options check subprocess and returns the parsed result.
-// No state access. Returns (result, signalStr, ok); ok=false means skip execution.
 func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier, logger *StrategyLogger) (*OptionsResult, string, bool) {
 	args := append([]string{}, sc.Args...)
-	// #879: inject the global store's (underlying, 4h, ADX-default) bundle so
-	// check_options.py skips its inline regime fetch. The options signature
-	// ignores cfg.Regime — the inline path was never gated on it.
+
 	if raw, ok := globalRegimeStore.InjectionJSONForStrategy(sc, nil); ok {
 		args = append(args, "--regime-payload-json="+raw)
 	}
@@ -4378,8 +3112,6 @@ func runOptionsCheck(sc StrategyConfig, posJSON string, notifier *MultiNotifier,
 	return result, signalStr, true
 }
 
-// executeOptionsResult applies an options signal and theta harvest to state. Must be called under Lock.
-// Returns (trades, detail, harvestDetails).
 func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsResult, signalStr string, logger *StrategyLogger) (int, string, []string) {
 	trades, err := ExecuteOptionsSignal(s, result, logger)
 	if err != nil {
@@ -4402,9 +3134,6 @@ func executeOptionsResult(sc StrategyConfig, s *StrategyState, result *OptionsRe
 	return trades, detail, harvestDetails
 }
 
-// shouldSkipZeroCapital reports whether a strategy should be skipped because
-// capital_pct is set but capital resolved to $0 (balance fetch failed and
-// no fallback capital configured).
 func shouldSkipZeroCapital(sc StrategyConfig) bool {
 	return sc.CapitalPct > 0 && sc.Capital <= 0 && !sc.sharedWalletModeDeferred
 }
@@ -4446,8 +3175,6 @@ func isFreshPerStrategyCircuitBreaker(reason string) bool {
 		strings.HasPrefix(reason, RiskReasonConsecutiveLosses)
 }
 
-// sendTradeAlerts sends trade alerts via DM and/or channel for all configured backends.
-// trades is the number of new trades appended during this cycle.
 func sendTradeAlerts(sc StrategyConfig, stratState *StrategyState, trades int, mu *sync.RWMutex, notifier *MultiNotifier) {
 	isLive := isLiveArgs(sc.Args)
 	mode := "paper"
@@ -4500,7 +3227,6 @@ func hyperliquidIsLive(args []string) bool {
 	return isLiveArgs(args)
 }
 
-// hyperliquidSymbol extracts the coin symbol from perps strategy args (e.g. "BTC").
 func hyperliquidSymbol(args []string) string {
 	if len(args) >= 2 {
 		return args[1]
@@ -4508,50 +3234,20 @@ func hyperliquidSymbol(args []string) string {
 	return ""
 }
 
-// isHLLiveReconcilable reports whether sc should participate in on-chain
-// reconciliation. Both type=perps and type=manual are live HL positions that
-// can be closed externally; the reconciler is type-agnostic so both are safe.
-// #1454: the kill switch consumes this same roster. The perps-only hlLiveAll
-// consumers — trailing-stop arming and risk math — intentionally do NOT use
-// this predicate (#576); keep them on hlLiveAll.
 func isHLLiveReconcilable(sc StrategyConfig) bool {
 	return sc.Platform == "hyperliquid" &&
 		(sc.Type == "perps" || sc.Type == "manual") &&
 		hyperliquidIsLive(sc.Args)
 }
 
-// runHyperliquidCheck runs check_hyperliquid.py signal-check mode (Phase 3, no lock).
-//
-// sc is a pointer because the regime-aware directional policy (#779) needs
-// to mutate Direction + InvertSignal in the caller's local sc copy after
-// result.Regime is known, so downstream EffectiveDirection / perpsLiveOrderSize
-// / PerpsOrderSkipReason calls in execute paths see the effective values.
-// Mutation is scoped to the loop-local sc; cfg.Strategies is never touched.
-//
-// batch is the cycle-local #1442 batched-check result map, or nil. A map HIT
-// skips the spawn and runs the identical post-parse pipeline on the cached
-// slot; a map MISS takes the per-strategy spawn path unchanged. Everything
-// after this function is therefore blind to whether the decision came from a
-// batched call.
 func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger, batch *hlBatchCycleResults) (*HyperliquidResult, string, float64, bool) {
 	if outcome, ok := batch.lookup(sc.ID); ok {
-		// The cached slot is only usable when this strategy's check inputs are
-		// still exactly what the pre-pass snapshotted. Anything that moved
-		// since — position context, close refs or profile-merged params —
-		// falls through to this strategy's own check rather than deciding on a
-		// stale snapshot. The mark price is NOT one of those inputs: it sets
-		// only the reported price, so it is re-applied below instead of
-		// discarding an otherwise-current decision (see
-		// hyperliquidBatchSlotFingerprint).
+
 		fp, fpErr := hyperliquidBatchSlotFingerprint(*sc, posCtx, regime)
 		if fpErr == nil && fp == outcome.Fingerprint {
 			result := outcome.Result
 			if result != nil {
-				// Adopt the cycle's CURRENT mark on a copy, so the batched
-				// member reports the same price its own spawn would have and
-				// the cached slot stays unmutated. A slot that carries an
-				// error keeps Result == nil and takes the failure branch
-				// untouched — the price path must never resurrect it.
+
 				res := *result
 				if sym := hyperliquidSymbol(sc.Args); sym != "" {
 					if mid, ok := prices[sym]; ok && mid > 0 {
@@ -4566,10 +3262,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 		logger.Warn("Batched check inputs changed since the pre-pass snapshot; running this strategy's own check (#1442)")
 	}
 	args := append([]string{}, sc.Args...)
-	// Suppress in-process close evaluators that overlap on-chain reduce-only
-	// protection — running both races on the shared on-chain position
-	// (#604 review #2). Filter only changes the argv passed to Python; the
-	// stored config is untouched.
+
 	scForCheck := strategyConfigWithOnChainProtectionFilter(*sc)
 	args = appendOpenCloseArgs(args, scForCheck, posCtx)
 	if sc.HTFFilter {
@@ -4584,9 +3277,7 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	} else if len(refsArgs) > 0 {
 		args = append(args, refsArgs...)
 	}
-	// #768 fix #3: Forward Go's cycle-local allMids snapshot so Python skips
-	// its duplicate adapter.get_spot_price /info call. Same source, seconds
-	// old, used only to freshen the display price.
+
 	if sym := hyperliquidSymbol(sc.Args); sym != "" {
 		if mid, ok := prices[sym]; ok && mid > 0 {
 			args = append(args, fmt.Sprintf("--mark-price=%g", mid))
@@ -4605,11 +3296,6 @@ func runHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx P
 	return finishHyperliquidCheck(sc, prices, posCtx, regime, notifier, logger, result, stderr, errMsg, mode)
 }
 
-// finishHyperliquidCheck is everything runHyperliquidCheck does AFTER the
-// decision JSON exists: failure branches, the #779 directional policy, the
-// #907 divergence override, signal inversion, and the price fallback. Shared
-// verbatim by the per-strategy spawn and the #1442 batched slot, so a batched
-// decision cannot diverge from an unbatched one downstream of the subprocess.
 func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, notifier *MultiNotifier, logger *StrategyLogger, result *HyperliquidResult, stderr, errMsg string, mode scriptFailureMode) (*HyperliquidResult, string, float64, bool) {
 	if errMsg != "" {
 		switch {
@@ -4632,19 +3318,10 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 		logger.Info("stderr: %s", stderr)
 	}
 	clearScriptFailure(notifier, *sc)
-	// #779: resolve regime-aware directional policy BEFORE applySignalInversion
-	// so the invert decision uses the effective sc.InvertSignal. When flat,
-	// resolves from result.Regime (current cycle); while a position is open,
-	// uses posCtx.Regime (the regime stamped at open) so the position runs
-	// to its natural exit under the policy that opened it.
+
 	currentDirRegime := regimeDirectionalLabel(*sc, regimePayloadValue(result.Regime), regime)
 	posDirRegime := posCtx.DirectionalRegime
-	// #1085: evidence gate (PER STATE). When FLAT, key the entry side on the LIVE
-	// certified per-state direction map for this strategy's (asset,timeframe,classifier).
-	// When a position is OPEN, ride under the map frozen at open so an artifact
-	// expiry/refresh never re-gates it mid-position; a state whose configured side
-	// contradicts the certified sign (or is uncertified) resolves to base, so a
-	// certified cell can never bet opposite the evidence. Then per-position:
+
 	var dirCertStates map[string]string
 	if sc.RegimeDirectionalPolicy.IsConfigured() {
 		if posCtx.Quantity > 0 {
@@ -4657,22 +3334,14 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 		regimeKey := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, posCtx.Quantity)
 		logger.Info("Regime directional policy: regime=%s -> direction=%q invert_signal=%t",
 			regimeKey, entry.Direction, entry.InvertSignal)
-		// One-shot operator alert for pre-#741 legacy positions opened before
-		// regime stamping landed. The policy still applies, but the
-		// hold-on-transition contract (position runs under the regime it
-		// opened in) can't be honored for that position — it instead floats
-		// with the current regime until it closes naturally. Self-heals once
-		// the next entry stamps regime at open.
+
 		if legacyFallback {
 			if _, loaded := regimeDirectionalLegacyWarned.LoadOrStore(sc.ID, struct{}{}); !loaded {
 				logger.Warn("Regime directional policy: open position has no stamped regime (legacy pre-#741); resolving against current regime=%q. Hold-on-transition not guaranteed for this position; self-heals on next entry.", regimeKey)
 			}
 		}
 	}
-	// #907: regime window divergence override — runs AFTER applyRegimeDirectionalPolicy
-	// so the divergence wins when both are configured (medium-window policy entry is
-	// superseded by the short-window hard-flip). Only affects new-entry direction when flat;
-	// open positions keep hold-on-transition freeze (applyRegimeDivergenceOverride guards posQty).
+
 	if sc.RegimeWindowDivergence.IsConfigured() {
 		payload := regimePayloadValue(result.Regime)
 		divResult := applyRegimeDivergenceOverride(sc, payload, regime, posCtx.Quantity)
@@ -4706,12 +3375,6 @@ func finishHyperliquidCheck(sc *StrategyConfig, prices map[string]float64, posCt
 	return result, signalStr, price, true
 }
 
-// applySignalInversion flips a non-zero signal in place when InvertSignal is
-// set on the strategy. HOLD (0) is never flipped — only the BUY (+1) / SELL
-// (-1) sign is mirrored, so reverse-trend variants can reuse the same open
-// and close strategy refs without forking the Python module. LoadConfig
-// restricts InvertSignal to HL perps/manual strategies, so this helper is
-// only invoked from runHyperliquidCheck.
 func applySignalInversion(sc StrategyConfig, result *HyperliquidResult, logger *StrategyLogger) {
 	if !sc.InvertSignal || result == nil || result.Signal == 0 {
 		return
@@ -4732,21 +3395,6 @@ func signalLabel(signal int) string {
 	}
 }
 
-// shouldCloseFullPosition decides whether a HL close leg should call
-// adapter.market_close(sz=None) (close entire on-chain residual, no dust) vs.
-// a sized market_open in the opposite direction.
-//
-// Sole-peer guard: market_close(sz=None) flattens the entire wallet position,
-// not just this strategy's virtual share. When multiple configured live HL
-// strategies share a coin (#491/#494/#619), a final-tier TP/manual close on
-// strategy A would otherwise zero peer B's exposure too. Fall back to the
-// sized close path in that case — virtual tracking on-chain via fillQty makes
-// that path dust-tolerant within a single strategy's lifecycle (#592 review #1).
-//
-// Returns true only when close_fraction == 1.0 (final tier) AND the strategy
-// is the sole configured live HL strategy on this coin. Callers decide which
-// live strategy set is relevant; perps/manual close paths pass a list that
-// includes both types so manual and automated peers are isolated.
 func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []StrategyConfig) bool {
 	if closeFraction != 1.0 {
 		return false
@@ -4754,17 +3402,6 @@ func shouldCloseFullPosition(closeFraction float64, symbol string, hlLiveAll []S
 	return len(hlLiveStrategiesForCoin(symbol, hlLiveAll)) <= 1
 }
 
-// runHyperliquidExecuteOrder places a live market order (Phase 3, no lock).
-// Returns (execResult, ok); ok=false means order failed or was skipped, so
-// caller must not apply state updates.
-//
-// posSide is the current position side captured under RLock in Phase 1
-// ("long", "short", or "" for flat). We consult PerpsOrderSkipReason BEFORE
-// calling the Python executor: if ExecutePerpsSignalWithLeverage would treat the result
-// as a no-op, placing the live order would fill on-chain but never produce a
-// Trade record, leaving state silently behind actual exchange holdings. See
-// issue #298 — 0.716 ETH of live fills were lost this way because the
-// "already long, skipping buy" branch sat AFTER RunHyperliquidExecute.
 func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, price, cash float64, poolBalanceKnown bool, posQty float64, posSide string, avgCost, posLeverage float64, existingStopLossOID int64, existingTPOIDs []int64, hlLiveAll []StrategyConfig, walletSnapshot hlExecuteSnapshot, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*HyperliquidExecuteResult, bool) {
 	directionEnum := EffectiveDirection(sc)
 	if reason := PerpsOrderSkipReason(result.Signal, posSide, directionEnum); reason != "" {
@@ -4772,18 +3409,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #254/#497/#518/#1268: perps sizing — sizing_leverage scales cash →
-	// notional in the legacy formula; margin_per_trade_usd (when set) overrides
-	// to a margin-space formula so high exchange leverage doesn't shrink
-	// intent; risk_per_trade_pct (when set) sizes qty from the resolved stop
-	// distance (ATR owners read the check payload's indicators.atr — the same
-	// value stampEntryATRIfOpened later freezes, so sizing and SL geometry
-	// agree) and fails closed on fresh opens when the distance is unresolvable.
-	// #1411: the Hurst persistence multiplier rides on the sizing bundle so it
-	// lands inside PerpsOpenNotionalSized — the single point where an open's
-	// notional is computed. Fresh opens, bidirectional flips and the
-	// shared-wallet pool budget therefore all compose with it, and nothing
-	// rescales afterwards.
+
 	sizing := withEntrySizeMult(withSharedWalletPoolSizing(
 		sc,
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
@@ -4804,38 +3430,10 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		side = "sell"
 	}
 
-	// Stop-loss wiring (#412):
-	//   - cancel stale SL whenever a position exists with a known OID
-	//     (close path must free the trigger slot; flip path too, since the
-	//     new side gets a fresh SL below).
-	//   - place a new SL after the open leg unless the action is a pure close
-	//     (no new position will follow — see pureClose predicate below).
-	//     Skip for non-HL platforms or when pct<=0.
-	//   - on a flip, pass prev_pos_qty so the SL is sized against the new
-	//     net position (#421) — total_sz alone is closeQty+newQty.
-	// pureClose: the signal will close an existing position with no new open
-	// to follow. Holds for direction="long" + signal=-1 + long (close-only),
-	// direction="short" + signal=1 + short (close-only), and direction="both"
-	// only when there's nothing to flip into (never true here — flips always
-	// open a new side). Direction="short" + signal=-1 with orphan long is
-	// blocked by PerpsOrderSkipReason so it never reaches this code (#656).
 	pureClose := perpsCloseActionSuppressesNewSL(result.Signal, posSide, PerpsAllowsLong(sc), PerpsAllowsShort(sc), result.CloseFraction)
-	// Partial close (#519): a fractional close from the open/close registry
-	// must NOT cancel the resting stop-loss — the SL is reduce-only and will
-	// continue to protect the residual position; cancelling without
-	// re-placing would leave the remainder unprotected. Skip both the cancel
-	// and the new-SL placement on partial close. The trailing-stop loop
-	// resizes the SL on its own cadence (#502).
+
 	partialClose := result.CloseFraction > 0 && result.CloseFraction < 1
-	// flipping predicate must mirror perpsLiveOrderSize exactly — flips are
-	// only emitted under direction="both" (both directions allowed AND there's
-	// an opposite-side position to flip away from). A long-only strategy that
-	// inherited a short position would otherwise see prevPosQty=posQty here
-	// while perpsLiveOrderSize sized it as a fresh open without that offset,
-	// leaving net_new_sz negative and the SL silently undersized (#421 review).
-	// #1009: also require CloseFraction == 0 — a close action (any fraction > 0)
-	// is close-only, never a flip; the sizer's flip branch carries the same
-	// guard, so this mirror must too or prevPosQty diverges from the order size.
+
 	flipping := EffectiveDirection(sc) == DirectionBoth && posQty > 0 && result.CloseFraction == 0 && ((result.Signal == 1 && posSide == "short") || (result.Signal == -1 && posSide == "long"))
 	var cancelOID int64
 	if existingStopLossOID > 0 && posQty > 0 && !partialClose {
@@ -4847,11 +3445,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	}
 	var slPct float64
 	if !pureClose && !partialClose {
-		// EffectiveStopLossPct self-guards on platform/type and returns the
-		// explicit price %, derives it from stop_loss_margin_pct / leverage
-		// (#487), or falls back to max_drawdown_pct capped at 50% (#484).
-		// Validation in config.go guarantees stop_loss_pct and
-		// stop_loss_margin_pct are mutually exclusive.
+
 		slPct = EffectiveStopLossPct(sc)
 	}
 	var prevPosQty float64
@@ -4859,11 +3453,6 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		prevPosQty = posQty
 	}
 
-	// #486: enforce margin mode + leverage on fresh opens only. HL rejects
-	// updateLeverage on an open position, so flip/add legs (posQty > 0)
-	// inherit whatever mode was set when the position first opened. The
-	// initial open always lands here with posQty == 0 because perpsLiveOrderSize
-	// would have returned ok=false otherwise on a flat→close attempt.
 	marginMode := ""
 	leverageForOpen := 0.0
 	if posQty == 0 && sc.Platform == "hyperliquid" && sc.Type == "perps" && sc.MarginMode != "" {
@@ -4874,8 +3463,6 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		}
 	}
 
-	// Only log SL fields when at least one is set, to keep the common
-	// no-stop-loss case quiet.
 	if slPct > 0 || cancelOID > 0 || prevPosQty > 0 || marginMode != "" {
 		logger.Info("Placing live %s %s size=%.6f (sl_pct=%.2f cancel_oid=%d prev_pos_qty=%.6f margin_mode=%q leverage=%g)",
 			side, result.Symbol, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen)
@@ -4893,11 +3480,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
-	// On failure, the Python script may still report cancel_stop_loss_succeeded
-	// — propagate execResult to the caller so the stale OID can be cleared
-	// even when the open leg fails (#421). Caller treats ok=false as "do not
-	// apply state mutations" but inspects execResult.CancelStopLossSucceeded
-	// before discarding it.
+
 	direction := directionOpen
 	if side == "sell" {
 		direction = directionClose
@@ -4917,12 +3500,7 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 		logger.Warn("SL cancel failed (non-fatal): %s", execResult.CancelStopLossError)
 	}
 	if execResult.StopLossError != "" {
-		// Surface HL open-order-cap rejection as CRITICAL — the position is
-		// live without protection. HL rejects new trigger orders when the
-		// account has ≥1000 open orders (scales to 5000 with volume) (#479).
-		// Also route to notifier so operators see the unprotected-position
-		// state in chat, not just in stderr logs (#421 review point 7,
-		// mirrors the per-strategy CB notifier precedent in #415).
+
 		if isHLOpenOrderCapRejection(execResult.StopLossError) {
 			logger.Error("CRITICAL: HL open-order-cap rejected SL placement for %s — position is unprotected: %s",
 				result.Symbol, execResult.StopLossError)
@@ -4942,15 +3520,6 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	return execResult, true
 }
 
-// isHLOpenOrderCapRejection detects HL's open-order-cap rejection strings so
-// the scheduler can escalate them above WARN. HL rejects new orders (including
-// trigger/reduce-only) when the account has ≥1000 open orders (scales to 5000
-// with volume) (#479). Observed wordings include trigger-specific phrasings
-// like "Too many open trigger orders" / "trigger order rate limit" and the
-// generic "Too many open orders" form. We match any of these case-insensitively.
-// Conservative rather than exhaustive — false negatives (logged as WARN) are
-// acceptable; we only escalate on confirmed cap-rejection language to avoid
-// CRITICAL noise on unrelated failures.
 func isHLOpenOrderCapRejection(errStr string) bool {
 	lower := strings.ToLower(errStr)
 	hasCapVerb := strings.Contains(lower, "too many") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "max") || strings.Contains(lower, "limit") || strings.Contains(lower, "exceed")
@@ -4972,10 +3541,6 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	return trades, detail
 }
 
-// executeHyperliquidResultDeferredOpen applies a hyperliquid result to state.
-// Must be called under Lock. execResult is non-nil for successful live orders;
-// nil for paper mode. Live open trades are returned so the caller can run
-// same-cycle protection sync before the single INSERT.
 func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, *Trade, *RatchetTriggerAlert) {
 	fillPrice := price
 	var fillQty float64
@@ -4985,16 +3550,8 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	// #1268: sizing bundle resolved at the apply price; only consulted when
-	// this is a paper open (fillQty==0) — live orders were already sized in
-	// runHyperliquidExecuteOrder from the same config surface.
-	sizing := withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult()) // #1411
+	sizing := withEntrySizeMult(PerpsSizingFor(sc, fillPrice, indicatorsATRValue(result.Indicators)), hurst.OpenSizeMult())
 
-	// Thread exchange metadata into ExecutePerpsSignalWithLeverage so each Trade is built
-	// with the OID and fee before RecordTrade persists it (#289). Stamping the
-	// fields onto s.TradeHistory after the fact would never reach SQLite — the
-	// eager INSERT has already happened and SaveState's timestamp dedup skips
-	// re-inserts for the same trade.
 	var fillOID string
 	var fillFee float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
@@ -5016,15 +3573,14 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, openTrade != nil, sc, cfg)
-	stampHurstGateAtOpenIfOpened(s, result.Symbol, openTrade != nil, hurst) // #1411
+	stampHurstGateAtOpenIfOpened(s, result.Symbol, openTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		stampPositionProtectionSnapshot(pos, sc)
 	}
 	var ratchetAlert *RatchetTriggerAlert
 	if trades > 0 {
 		if pos, ok := s.Positions[result.Symbol]; ok {
-			// #1110: capture the tighten snapshot here (under the caller's lock) and
-			// return it so the caller can DM the owner after releasing mu.
+
 			_, ratchetAlert = applyTrailingTPRatchetToPosition(sc, pos, result.Symbol, price, logger)
 		}
 	}
@@ -5033,17 +3589,11 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	}
 	if trades > 0 {
 		if pos, ok := s.Positions[result.Symbol]; ok && effectiveTrailingStopPct(sc, pos) > 0 {
-			// Partial closes may reset this hint, but StopLossTriggerPx is the
-			// durable ratchet. The helper never lowers a favorable trigger.
+
 			pos.StopLossHighWaterPx = fillPrice
 		}
 	}
 
-	// Stamp the SL trigger OID onto the freshly-opened Position so the next
-	// signal-based close can cancel it (#412). Only the open side of a flip
-	// carries a new SL — the close leg deleted its Position before the open
-	// leg created the new one, so we attach to whatever Position sits at the
-	// symbol now.
 	if trades > 0 && execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil {
 		if slOID := execResult.Execution.Fill.StopLossOID; slOID > 0 {
 			if pos, ok := s.Positions[result.Symbol]; ok {
@@ -5054,22 +3604,13 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 
-	// Reconcile instant-fill stop-loss: when price was already through the
-	// trigger at submit, HL fills the SL immediately and the on-chain
-	// position is flat. Without this branch, virtual state would carry a
-	// phantom open position with StopLossOID=0 until the next reconcile
-	// cycle silently delete()s it via recordClosedPosition with PnL=0,
-	// losing the actual stop-loss in trade history (#421 review point 2).
-	// We synthesize the close at trigger_px so virtual state matches and
-	// the realized loss is booked correctly.
 	if trades > 0 && execResult != nil && execResult.StopLossFilledImmediately &&
 		execResult.Execution != nil && execResult.Execution.Fill != nil {
 		var pos *Position
 		if p, ok := s.Positions[result.Symbol]; ok {
 			pos = p
 		}
-		// The immediate-close leg records next; nil openTrade prevents the
-		// wrapper/caller from inserting the open a second time.
+
 		if recordPositionOpen(s, sc, openTrade, pos) {
 			openTrade = nil
 		}
@@ -5079,9 +3620,6 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		}
 	}
 
-	// #1137: fresh-open LLM analysis. Placed after the immediate-SL branch so
-	// an open that stopped out at submit (trades==2, position already gone)
-	// never dispatches.
 	queueLLMEntryAnalysisIfOpened(sc, s, result.Symbol, trades, openTrade, result.Indicators)
 
 	detail := ""
@@ -5097,8 +3635,7 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 		if p, ok := s.Positions[result.Symbol]; ok {
 			pos = p
 		}
-		// Paper mode has no post-unlock protection sync; record now and nil the
-		// deferred trade so the legacy wrapper cannot double-insert it.
+
 		if recordPositionOpen(s, sc, openTrade, pos) {
 			openTrade = nil
 		}
@@ -5106,12 +3643,10 @@ func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, r
 	return trades, detail, openTrade, ratchetAlert
 }
 
-// topstepIsLive reports whether --mode=live appears in strategy args.
 func topstepIsLive(args []string) bool {
 	return isLiveArgs(args)
 }
 
-// topstepSymbol extracts the futures symbol from strategy args (e.g. "ES").
 func topstepSymbol(args []string) string {
 	if len(args) >= 2 {
 		return args[1]
@@ -5119,7 +3654,6 @@ func topstepSymbol(args []string) string {
 	return ""
 }
 
-// runTopStepCheck runs check_topstep.py signal-check mode (Phase 3, no lock).
 func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
@@ -5182,14 +3716,6 @@ func runTopStepCheck(sc StrategyConfig, prices map[string]float64, posCtx Positi
 	return result, signalStr, price, true
 }
 
-// runTopStepExecuteOrder places a live futures order (Phase 3, no lock).
-//
-// posSide is the current position side captured under RLock in Phase 1
-// ("long", "short", or "" for flat). We consult FuturesOrderSkipReason BEFORE
-// calling the Python executor: without this guard a live sell fires while
-// posSide=="short" (Quantity is always positive so posQty<=0 cannot
-// distinguish short from flat) but ExecuteFuturesSignalWithFillFee is a no-op in that
-// state — producing a silent state drift identical in shape to #298/#300.
 func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cash, posQty float64, posSide string, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*TopStepExecuteResult, bool) {
 	if reason := FuturesOrderSkipReason(result.Signal, posSide); reason != "" {
 		logger.Info("Skipping live order for %s: %s", result.Symbol, reason)
@@ -5198,18 +3724,17 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 	isBuy := result.Signal == 1
 	var contracts int
 	if isBuy {
-		// #518: removed hardcoded 0.95 buffer; max_contracts caps headroom.
+
 		budget := cash
 		margin := result.ContractSpec.Margin
 		if margin <= 0 {
-			margin = price * result.ContractSpec.Multiplier // fallback
+			margin = price * result.ContractSpec.Multiplier
 		}
 		if budget < 1 || price <= 0 || margin <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
 			return nil, false
 		}
-		// #1411: scale before the whole-contract floor; a scaled count that
-		// floors to 0 refuses the open below rather than rounding up to 1.
+
 		contracts = int(budget * hurst.OpenSizeMult() / margin)
 		if sc.FuturesConfig != nil && sc.FuturesConfig.MaxContracts > 0 && contracts > sc.FuturesConfig.MaxContracts {
 			contracts = sc.FuturesConfig.MaxContracts
@@ -5225,9 +3750,7 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 		}
 		contracts = int(posQty)
 		if result.CloseFraction > 0 && result.CloseFraction < 1 {
-			// #519: partial close from the open/close registry, rounded
-			// DOWN to whole contracts so the residual position stays at
-			// least one contract.
+
 			partial := int(float64(contracts) * result.CloseFraction)
 			if partial < 1 {
 				logger.Info("Partial-close fraction %.4f rounds to 0 contracts for %s; skipping live order", result.CloseFraction, result.Symbol)
@@ -5267,7 +3790,6 @@ func runTopStepExecuteOrder(sc StrategyConfig, result *TopStepResult, price, cas
 	return execResult, true
 }
 
-// executeTopStepResult applies a TopStep futures result to state. Must be called under Lock.
 func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *TopStepResult, execResult *TopStepExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string) {
 	fillPrice := price
 	var fillContracts int
@@ -5288,7 +3810,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 		maxContracts = sc.FuturesConfig.MaxContracts
 	}
 
-	exec, err := ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger) // #1411
+	exec, err := ExecuteFuturesSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, result.ContractSpec, feePerContract, maxContracts, fillContracts, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, ""
@@ -5298,9 +3820,7 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
-	// #1411: freeze the gate's H reading and applied multiplier for the
-	// close-time diagnostics row. Diagnostics-only; never read by any
-	// gating/sizing/close path afterwards.
+
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
@@ -5318,12 +3838,10 @@ func executeTopStepResult(sc StrategyConfig, s *StrategyState, db *StateDB, resu
 	return trades, detail
 }
 
-// robinhoodIsLive reports whether --mode=live appears in strategy args.
 func robinhoodIsLive(args []string) bool {
 	return isLiveArgs(args)
 }
 
-// robinhoodSymbol extracts the coin symbol from strategy args (e.g. "BTC").
 func robinhoodSymbol(args []string) string {
 	if len(args) >= 2 {
 		return args[1]
@@ -5331,7 +3849,6 @@ func robinhoodSymbol(args []string) string {
 	return ""
 }
 
-// runRobinhoodCheck runs check_robinhood.py signal-check mode (Phase 3, no lock).
 func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*RobinhoodResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
@@ -5389,17 +3906,6 @@ func runRobinhoodCheck(sc StrategyConfig, prices map[string]float64, posCtx Posi
 	return result, signalStr, price, true
 }
 
-// runRobinhoodExecuteOrder places a live crypto order (Phase 3, no lock).
-//
-// posSide is the current position side captured under RLock in Phase 1
-// ("long", "short", or "" for flat). We consult SpotOrderSkipReason BEFORE
-// calling the Python executor: otherwise a no-op ExecuteSpotSignalWithFillFee (e.g.
-// already-long with signal=1) would not record the live fill — the same bug
-// class as #298. See #300.
-//
-// Test seams: robinhoodExecuteFn / okxExecuteFn default to the real
-// Run*Execute wrappers so #1394 reconcile-gate tests can stub venue placement
-// without spawning Python.
 var robinhoodExecuteFn = RunRobinhoodExecute
 var okxExecuteFn = RunOKXExecute
 
@@ -5414,13 +3920,12 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 	side := "buy"
 
 	if isBuy {
-		// #1394: hold further live buys while books still need reconciliation.
+
 		if cashReconcileBlocksLiveBuy(cashReconcileRequired, true) {
 			logger.Warn("Skipping live buy for %s: cash reconcile required (#1394)", result.Symbol)
 			return nil, false
 		}
-		// #518: removed hardcoded 0.95 buffer for spot live buy.
-		// #1411: the Hurst persistence multiplier scales the live buy notional.
+
 		amountUSD = cash * hurst.OpenSizeMult()
 		if amountUSD < 1 || price <= 0 {
 			logger.Info("Insufficient cash ($%.2f) for live buy", cash)
@@ -5434,9 +3939,7 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 		}
 		quantity = posQty
 		if result.CloseFraction > 0 && result.CloseFraction < 1 {
-			// #519: partial close from the open/close registry sizes the
-			// live order to the fraction so the exchange and virtual state
-			// agree on the close leg.
+
 			quantity = posQty * result.CloseFraction
 		}
 	}
@@ -5465,9 +3968,6 @@ func runRobinhoodExecuteOrder(sc StrategyConfig, result *RobinhoodResult, price,
 	return execResult, true
 }
 
-// executeRobinhoodResult applies a Robinhood result to state. Must be called under Lock.
-// cashOverBudgetAlert is non-empty when a live spot buy was booked past virtual
-// cash (#1394); callers must notify AFTER releasing mu.
 func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *RobinhoodResult, execResult *RobinhoodExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
@@ -5481,7 +3981,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	exec, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger) // #1411
+	exec, err := ExecuteSpotSignalWithFillFeeSizedDeferredOpen(s, result.Signal, result.Symbol, fillPrice, fillQty, fillFee, fillOID, result.CloseFraction, hurst.OpenSizeMult(), logger)
 	if err != nil {
 		logger.Error("Trade execution failed: %v", err)
 		return 0, "", ""
@@ -5491,9 +3991,7 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
-	// #1411: freeze the gate's H reading and applied multiplier for the
-	// close-time diagnostics row. Diagnostics-only; never read by any
-	// gating/sizing/close path afterwards.
+
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
@@ -5515,12 +4013,10 @@ func executeRobinhoodResult(sc StrategyConfig, s *StrategyState, db *StateDB, re
 	return trades, detail, cashAlert
 }
 
-// okxIsLive reports whether --mode=live appears in strategy args.
 func okxIsLive(args []string) bool {
 	return isLiveArgs(args)
 }
 
-// okxSymbol extracts the coin symbol from OKX strategy args (e.g. "BTC").
 func okxSymbol(args []string) string {
 	if len(args) >= 2 {
 		return args[1]
@@ -5528,7 +4024,6 @@ func okxSymbol(args []string) string {
 	return ""
 }
 
-// okxInstType extracts --inst-type from strategy args (default "swap").
 func okxInstType(args []string) string {
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "--inst-type=") {
@@ -5538,7 +4033,6 @@ func okxInstType(args []string) string {
 	return "swap"
 }
 
-// runOKXCheck runs check_okx.py signal-check mode (Phase 3, no lock).
 func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCtx, regime *RegimeConfig, atrMethod string, notifier *MultiNotifier, logger *StrategyLogger) (*OKXResult, string, float64, bool) {
 	args := append([]string{}, sc.Args...)
 	args = appendOpenCloseArgs(args, sc, posCtx)
@@ -5596,15 +4090,6 @@ func runOKXCheck(sc StrategyConfig, prices map[string]float64, posCtx PositionCt
 	return result, signalStr, price, true
 }
 
-// runOKXExecuteOrder places a live market order on OKX (Phase 3, no lock).
-//
-// posSide is the current position side captured under RLock in Phase 1
-// ("long", "short", or "" for flat). We consult Perps/SpotOrderSkipReason
-// BEFORE calling the Python executor — OKX covers both spot and perps, and
-// each has its own side-based no-op branches in ExecuteSpotSignalWithFillFee /
-// ExecutePerpsSignalWithLeverage that must be mirrored to avoid the #298 bug class
-// (live fill placed but no Trade recorded because the in-memory execution
-// returned 0). See #300.
 func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float64, poolBalanceKnown, cashReconcileRequired bool, posQty float64, posSide string, avgCost, posLeverage float64, hurst HurstGateDecision, notifier *MultiNotifier, logger *StrategyLogger) (*OKXExecuteResult, bool) {
 	var skip string
 	if sc.Type == "perps" {
@@ -5617,18 +4102,12 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		return nil, false
 	}
 	isBuy := result.Signal == 1
-	// #1394: hold further live SPOT buys while books still need reconciliation.
-	// Perps sizing is margin-based and out of scope for this latch.
+
 	if sc.Type != "perps" && cashReconcileBlocksLiveBuy(cashReconcileRequired, isBuy) {
 		logger.Warn("Skipping live buy for %s: cash reconcile required (#1394)", result.Symbol)
 		return nil, false
 	}
-	// #254/#497/#518: perps sizing uses PerpsOpenNotional (sizing_leverage or
-	// margin_per_trade_usd). EffectiveSizingLeverage returns 1 for spot, so
-	// the spot branch below remains a simple cash buy. #518 removed the
-	// hardcoded 0.95 safety buffer. risk_per_trade_pct (#1268) is HL-only, so
-	// PerpsSizingFor resolves zero risk fields here (validation rejects it on
-	// OKX at load).
+
 	sizing := withEntrySizeMult(withSharedWalletPoolSizing(
 		sc,
 		PerpsSizingFor(sc, price, indicatorsATRValue(result.Indicators)),
@@ -5637,7 +4116,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 		avgCost,
 		posLeverage,
 		poolBalanceKnown,
-	), hurst.OpenSizeMult()) // #1411
+	), hurst.OpenSizeMult())
 	var size float64
 	if sc.Type == "perps" {
 		var ok bool
@@ -5648,12 +4127,9 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 			return nil, false
 		}
 	} else {
-		// Spot sizing: buy opens from cash, sell closes posQty. AllowShorts
-		// does not apply to spot — SpotOrderSkipReason already blocked any
-		// signal=-1 without a long above.
+
 		if isBuy {
-			// #1411: scale the live spot buy budget before the $1 floor so a
-			// shrunk-to-nothing open is refused rather than placed.
+
 			budget := cash * hurst.OpenSizeMult()
 			if budget < 1 || price <= 0 {
 				logger.Info("Insufficient cash ($%.2f) for live buy %s", cash, result.Symbol)
@@ -5667,7 +4143,7 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 			}
 			size = posQty
 			if result.CloseFraction > 0 && result.CloseFraction < 1 {
-				// #519: partial close on OKX spot from the open/close registry.
+
 				size = posQty * result.CloseFraction
 			}
 		}
@@ -5702,9 +4178,6 @@ func runOKXExecuteOrder(sc StrategyConfig, result *OKXResult, price, cash float6
 	return execResult, true
 }
 
-// executeOKXResult applies an OKX result to state. Must be called under Lock.
-// cashOverBudgetAlert is non-empty when a live spot buy was booked past virtual
-// cash (#1394); callers must notify AFTER releasing mu. Perps never set it.
 func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *OKXResult, execResult *OKXExecuteResult, signalStr string, price float64, regime *RegimeConfig, cfg *Config, hurst HurstGateDecision, logger *StrategyLogger) (int, string, string) {
 	fillPrice := price
 	var fillQty float64
@@ -5718,11 +4191,6 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 		logger.Info("Live fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillQty, price)
 	}
 
-	// Thread fillOID/fillFee into the signal handlers so each Trade is built
-	// with the OID and fee before RecordTrade persists it (#456). Stamping the
-	// fields onto s.TradeHistory after the fact would never reach SQLite — the
-	// eager INSERT has already happened and SaveState's timestamp dedup skips
-	// re-inserts for the same trade.
 	var exec SignalExecutionResult
 	var err error
 	if sc.Type == "perps" {
@@ -5739,9 +4207,7 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	stampPositionRegimeIfOpened(s, result.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	stampDirectionCertifiedAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, regime)
 	stampATRMethodAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, sc, cfg)
-	// #1411: freeze the gate's H reading and applied multiplier for the
-	// close-time diagnostics row. Diagnostics-only; never read by any
-	// gating/sizing/close path afterwards.
+
 	stampHurstGateAtOpenIfOpened(s, result.Symbol, exec.OpenTrade != nil, hurst)
 	if pos, ok := s.Positions[result.Symbol]; ok {
 		recordPositionOpen(s, sc, exec.OpenTrade, pos)
@@ -5763,11 +4229,6 @@ func executeOKXResult(sc StrategyConfig, s *StrategyState, db *StateDB, result *
 	return trades, detail, cashAlert
 }
 
-// findLeaderboardSummariesByChannel returns every LeaderboardSummaryConfig
-// whose Channel matches channelID, preserving config order. A single channel
-// may have multiple entries (e.g. one unfiltered + one ticker-scoped); all are
-// returned so -summary posts what the operator configured. (#308, review item
-// 3 on #309)
 func findLeaderboardSummariesByChannel(cfg *Config, channelID string) []LeaderboardSummaryConfig {
 	var out []LeaderboardSummaryConfig
 	for _, lc := range cfg.LeaderboardSummaries {
@@ -5778,11 +4239,6 @@ func findLeaderboardSummariesByChannel(cfg *Config, channelID string) []Leaderbo
 	return out
 }
 
-// augmentMarksBestEffort fills prices with HL perps, OKX perps, and futures
-// marks for every position referenced by cfg.Strategies. Failures log [WARN]
-// to stderr; missing marks fall back to entry cost via PortfolioValue.
-// Shared by the one-shot channel-summary path and the configurable
-// leaderboard-summary path. (#308)
 func augmentMarksBestEffort(cfg *Config, prices map[string]float64) {
 	hlPerpsCoins, okxPerpsCoins := collectPerpsMarkSymbols(cfg.Strategies)
 	futuresSymbols := collectFuturesMarkSymbols(cfg.Strategies)
@@ -5813,9 +4269,6 @@ func augmentMarksBestEffort(cfg *Config, prices map[string]float64) {
 	}
 }
 
-// fetchPricesForSummary fetches spot + best-effort perps/futures marks needed
-// to revalue positions for the leaderboard summary. Failures are logged but
-// non-fatal — positions fall back to entry cost. (#308)
 func fetchPricesForSummary(cfg *Config) map[string]float64 {
 	prices := make(map[string]float64)
 	symbols := collectPriceSymbols(cfg.Strategies)
@@ -5835,16 +4288,11 @@ func fetchPricesForSummary(cfg *Config) map[string]float64 {
 	return prices
 }
 
-// runLeaderboardSummariesAndExit posts every matching LeaderboardSummaryConfig
-// and exits. Prices are fetched once and shared across all entries. Each
-// empty-result entry is reported to stderr but does not abort siblings; exits
-// 1 only if every entry produced no message. (#308, review item 3 on #309)
 func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config, state *AppState, sdb *StateDB, notifier *MultiNotifier) {
 	prices := fetchPricesForSummary(cfg)
 	sharpeByStrategy := ComputeSharpeByStrategy(LoadClosedPositionsByStrategy(sdb, cfg), cfg, state)
 	lifetimeStats := loadLifetimeStatsBestEffort(sdb, "[leaderboard]")
-	// CLI exit path holds no state lock — safe to fetch wallet balances once
-	// here and reuse across every summary (#915).
+
 	walletBalances, _ := fetchSharedWalletBalances(cfg.Strategies, nil)
 	accountShared := detectSharedWallets(cfg.Strategies)
 	posted := 0
@@ -5868,12 +4316,6 @@ func runLeaderboardSummariesAndExit(lcs []LeaderboardSummaryConfig, cfg *Config,
 	os.Exit(0)
 }
 
-// loadLifetimeStatsBestEffort fetches per-strategy lifetime round-trip stats
-// from the trades table, downgrading errors to a nil map (the same fallback
-// FormatCategorySummary uses) so leaderboard #T / W/L columns render zero
-// instead of failing the post. logPrefix tags the warning when the DB read
-// fails ("[summary]" for the per-cycle paths, "[leaderboard]" for the
-// on-demand paths). (#580)
 func loadLifetimeStatsBestEffort(sdb *StateDB, logPrefix string) map[string]LifetimeTradeStats {
 	if sdb == nil {
 		return nil
@@ -5894,8 +4336,6 @@ func cloneTimeMap(in map[string]time.Time) map[string]time.Time {
 	return out
 }
 
-// pendingLeaderboardSummary carries a computed summary from under-lock
-// computation to post-unlock I/O. (#308)
 type pendingLeaderboardSummary struct {
 	channel string
 	msg     string
@@ -5903,11 +4343,6 @@ type pendingLeaderboardSummary struct {
 	topN    int
 }
 
-// collectDueLeaderboardSummaries builds summaries for LeaderboardSummaries
-// entries whose Frequency has elapsed. Marks state.LastLeaderboardSummaries
-// optimistically so duplicate posts are avoided if the caller's Discord send
-// fails; same semantics as the previous in-lock implementation. Caller must
-// hold the write lock on state. (#308)
 func collectDueLeaderboardSummaries(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, walletBalances map[SharedWalletKey]float64, accountShared map[SharedWalletKey][]string) []pendingLeaderboardSummary {
 	if len(cfg.LeaderboardSummaries) == 0 {
 		return nil

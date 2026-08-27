@@ -6,11 +6,6 @@ import (
 	"testing"
 )
 
-// forceCloseRobinhoodLive unit tests — mirror the OKX tests in
-// okx_close_test.go. Each test asserts a single branch of the decision
-// logic so a regression produces a targeted failure rather than a
-// conflated ambiguous signal (#346).
-
 func TestForceCloseRobinhoodLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	rhLive := []StrategyConfig{
 		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
@@ -18,7 +13,7 @@ func TestForceCloseRobinhoodLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	}
 	positions := []RobinhoodPosition{
 		{Coin: "BTC", Size: 0.01, AvgPrice: 42000},
-		{Coin: "DOGE", Size: 100, AvgPrice: 0.08}, // unowned
+		{Coin: "DOGE", Size: 100, AvgPrice: 0.08},
 	}
 	var calls []string
 	closer := func(sym string) (*RobinhoodCloseResult, error) {
@@ -112,18 +107,14 @@ func TestForceCloseRobinhoodLive_CtxExpiredBeforeSubmit(t *testing.T) {
 }
 
 func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
-	// Robinhood crypto is spot-only — negative sizes shouldn't appear in
-	// practice. If a future change ever populates a negative balance (e.g.
-	// lent / staked), the close gate must NOT fire a market sell for |size|.
-	// Forward-compat guard against the Size > 0 vs Size != 0 ambiguity
-	// flagged in the #346 review.
+
 	rhLive := []StrategyConfig{
 		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
 			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
 	}
 	positions := []RobinhoodPosition{
-		{Coin: "BTC", Size: -0.01}, // owned coin, hypothetical negative
-		{Coin: "DOGE", Size: -100}, // unowned coin, hypothetical negative
+		{Coin: "BTC", Size: -0.01},
+		{Coin: "DOGE", Size: -100},
 	}
 	var calls []string
 	closer := func(sym string) (*RobinhoodCloseResult, error) {
@@ -148,10 +139,7 @@ func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
 }
 
 func TestForceCloseRobinhoodLive_OptionsStrategiesIgnored(t *testing.T) {
-	// Options strategies live in RHLiveOptions and must NOT appear in the
-	// crypto close loop — forceCloseRobinhoodLive should not attempt to
-	// "close" options as crypto. Guards against a future refactor that
-	// flattens the crypto/options partition.
+
 	mixed := []StrategyConfig{
 		{ID: "rh-ccall-spy", Platform: "robinhood", Type: "options",
 			Args: []string{"covered_call", "SPY", "1d", "--mode=live"}},
@@ -173,11 +161,6 @@ func TestForceCloseRobinhoodLive_OptionsStrategiesIgnored(t *testing.T) {
 	}
 }
 
-// Adapter-side AlreadyFlat: closer returns success with already_flat=true
-// (eventual-consistency window — Go-side fetch saw qty>0, but by the time
-// the adapter ran get_crypto_positions it returned qty<=0). The coin must
-// land in AlreadyFlat, NOT ClosedCoins, so operator messaging
-// distinguishes "we sent a close order" from "nothing to close" (#350).
 func TestForceCloseRobinhoodLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T) {
 	rhLive := []StrategyConfig{
 		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
@@ -209,9 +192,6 @@ func TestForceCloseRobinhoodLive_AdapterAlreadyFlatRoutedCorrectly(t *testing.T)
 	}
 }
 
-// SortedErrorCoins determinism — same rationale as HL / OKX: Go map
-// iteration is randomized and Discord output must be byte-stable across
-// calls for operator triage.
 func TestRobinhoodLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	r := RobinhoodLiveCloseReport{Errors: map[string]error{
 		"SOL": fmt.Errorf("e"), "BTC": fmt.Errorf("e"), "ETH": fmt.Errorf("e"),
@@ -228,11 +208,6 @@ func TestRobinhoodLiveCloseReport_SortedErrorCoins(t *testing.T) {
 	}
 }
 
-// parseRobinhoodCloseOutput tests — mirror the 5-case matrix established
-// by parseHyperliquidCloseOutput / parseOKXCloseOutput. These test the
-// load-bearing kill-switch contract that any ambiguous subprocess
-// response must surface as a non-nil error so the switch stays latched.
-
 func TestParseRobinhoodCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc-123"}},"platform":"robinhood","timestamp":"2026-04-19T10:00:00Z"}`)
 	result, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
@@ -245,8 +220,7 @@ func TestParseRobinhoodCloseOutput_CleanSuccess(t *testing.T) {
 }
 
 func TestParseRobinhoodCloseOutput_Exit0WithErrorField(t *testing.T) {
-	// Contract drift guard: Python shouldn't exit 0 with error populated,
-	// but if it happens the envelope is authoritative.
+
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x","error":"bad thing"}`)
 	_, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
 	if err == nil {
@@ -263,8 +237,7 @@ func TestParseRobinhoodCloseOutput_ExitNonZeroWithErrorEnvelope(t *testing.T) {
 }
 
 func TestParseRobinhoodCloseOutput_ExitNonZeroNoErrorField(t *testing.T) {
-	// Unexpected: must surface as failure so kill switch latches rather than
-	// silently report success on non-zero exit.
+
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x"}`)
 	_, _, err := parseRobinhoodCloseOutput(stdout, "stderr msg", fmt.Errorf("exit 2"))
 	if err == nil {
@@ -296,8 +269,6 @@ func TestParseRobinhoodCloseOutput_MalformedJSON(t *testing.T) {
 		t.Errorf("expected nil result on parse failure, got %+v", result)
 	}
 }
-
-// parseRobinhoodPositionsOutput tests — mirror parseOKXPositionsOutput.
 
 func TestParseRobinhoodPositionsOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"avg_price":42000}],"platform":"robinhood","timestamp":"x"}`)

@@ -12,10 +12,6 @@ import (
 	"time"
 )
 
-// TestAgentInfoCommandsCoverKnownSubcommands enforces that every dispatched
-// subcommand is documented in agentInfoCommands — the anti-staleness guard
-// that makes the capabilities section trustworthy (a new subcommand without a
-// doc entry fails CI).
 func TestAgentInfoCommandsCoverKnownSubcommands(t *testing.T) {
 	documented := map[string]bool{}
 	for _, c := range agentInfoCommands {
@@ -26,9 +22,7 @@ func TestAgentInfoCommandsCoverKnownSubcommands(t *testing.T) {
 			t.Errorf("subcommand %q is dispatched (knownSubcommands) but not documented in agentInfoCommands", sub)
 		}
 	}
-	// Reverse direction: every documented real command (excluding synthetic
-	// "(daemon)") must be a known subcommand, so docs can't reference a
-	// command that no longer exists.
+
 	known := map[string]bool{}
 	for _, sub := range knownSubcommands {
 		known[sub] = true
@@ -43,9 +37,6 @@ func TestAgentInfoCommandsCoverKnownSubcommands(t *testing.T) {
 	}
 }
 
-// TestAgentInfoEnvVarsCoverSource cross-checks the curated env-var registry
-// against every os.Getenv("...") literal in scheduler/*.go so the
-// security-sensitive surface can't silently drift.
 func TestAgentInfoEnvVarsCoverSource(t *testing.T) {
 	registered := map[string]bool{}
 	for _, v := range agentInfoEnvVars {
@@ -76,11 +67,6 @@ func TestAgentInfoEnvVarsCoverSource(t *testing.T) {
 		}
 	}
 
-	// The literal-regex pass above misses env vars read through a variable —
-	// notably shared_wallet.go's walletKeyRegistry, which does
-	// os.Getenv(entry.envVar). Cross-check that registry directly so the
-	// coverage guarantee survives registry/indirection reads (a fifth platform
-	// entry whose envVar is unregistered must fail this test).
 	for _, entry := range walletKeyRegistry {
 		if entry.envVar == "" {
 			continue
@@ -97,19 +83,19 @@ func TestReflectConfigSchema(t *testing.T) {
 	for _, f := range schema {
 		byName[f.JSONName] = f
 	}
-	// Required (no omitempty) key.
+
 	if f, ok := byName["interval_seconds"]; !ok {
 		t.Error("expected interval_seconds in config schema")
 	} else if f.Optional {
 		t.Error("interval_seconds has no omitempty; should be required")
 	}
-	// Optional key.
+
 	if f, ok := byName["db_file"]; !ok {
 		t.Error("expected db_file in config schema")
 	} else if !f.Optional {
 		t.Error("db_file has omitempty; should be optional")
 	}
-	// json:"-" field must be excluded.
+
 	if _, ok := byName["status_token"]; ok {
 		t.Error("status_token is json:\"-\" and must not appear in schema")
 	}
@@ -138,13 +124,11 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 
-	// Build a minimal DB via the real OpenStateDB (creates schema), then close
-	// it so agent-info opens it read-only as a separate process would.
 	sdb, err := OpenStateDB(dbPath)
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
-	// Seed a strategy + open position + cycle count.
+
 	if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('s1','perps','hyperliquid')`); err != nil {
 		t.Fatalf("seed strategy: %v", err)
 	}
@@ -154,8 +138,7 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	if _, err := sdb.db.Exec(`INSERT INTO app_state (id, cycle_count) VALUES (1, 42) ON CONFLICT(id) DO UPDATE SET cycle_count=42`); err != nil {
 		t.Fatalf("seed app_state: %v", err)
 	}
-	// Seed an open option position to confirm that class is included in the
-	// snapshot (an options account must not read as zero exposure).
+
 	if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('opt1','options','deribit')`); err != nil {
 		t.Fatalf("seed option strategy: %v", err)
 	}
@@ -180,7 +163,7 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	if !strings.Contains(live.Note, "8099") {
 		t.Errorf("live note should point at status port: %q", live.Note)
 	}
-	// Schema should include the core tables.
+
 	names := map[string]bool{}
 	for _, tb := range tables {
 		names[tb.Name] = true
@@ -191,8 +174,6 @@ func TestReadStateDBReadOnly(t *testing.T) {
 		}
 	}
 
-	// Read-only open must NOT have created a -wal write or mutated anything we
-	// can detect; re-open read-only again and confirm the row count is stable.
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Errorf("db vanished after read-only introspection: %v", err)
 	}
@@ -229,12 +210,11 @@ func TestRenderAgentInfoMarkdownAndChangelog(t *testing.T) {
 			t.Errorf("markdown missing %q", want)
 		}
 	}
-	// The generated file must never be AGENTS.md.
+
 	if strings.Contains(agentInfoGeneratedFile, "AGENTS.md") || agentInfoGeneratedFile == "AGENTS.md" {
 		t.Fatal("generated file must not be AGENTS.md (symlink to CLAUDE.md)")
 	}
 
-	// Changelog: two appends preserve history, newest first.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "AGENTS.generated.md")
 	if err := writeAgentInfoMarkdown(path, md, true, info, time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)); err != nil {
@@ -258,22 +238,16 @@ func TestRenderAgentInfoMarkdownAndChangelog(t *testing.T) {
 	}
 }
 
-// TestBareRefreshPreservesChangelog guards the invariant that a non-append
-// regeneration never silently drops prior changelog history (only an explicit
-// --append-changelog mutates it, by prepending). Covers the adversarial cases
-// from the review: bare refresh after an append, and alternating modes.
 func TestBareRefreshPreservesChangelog(t *testing.T) {
 	info := agentInfo{Version: "v1.0.0", Capabilities: agentInfoCommands, EnvVars: agentInfoEnvVars}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "AGENTS.generated.md")
 
-	// 1. Append establishes a history entry.
 	md := renderAgentInfoMarkdown(info)
 	if err := writeAgentInfoMarkdown(path, md, true, info, time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
-	// 2. Bare refresh (appendChangelog=false) must NOT drop the prior entry.
 	info.Version = "v1.1.0"
 	md2 := renderAgentInfoMarkdown(info)
 	if err := writeAgentInfoMarkdown(path, md2, false, info, time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)); err != nil {
@@ -287,12 +261,11 @@ func TestBareRefreshPreservesChangelog(t *testing.T) {
 	if strings.Count(s, "## Changelog") != 1 {
 		t.Errorf("changelog section should appear once, got %d", strings.Count(s, "## Changelog"))
 	}
-	// A bare refresh must not add a new dated entry — history is unchanged.
+
 	if strings.Contains(s, "v1.1.0") && strings.Contains(s, "2026-06-19") {
 		t.Error("bare refresh wrote a new changelog entry; only --append-changelog may")
 	}
 
-	// 3. A subsequent append prepends on top of the preserved history.
 	info.Version = "v1.2.0"
 	md3 := renderAgentInfoMarkdown(info)
 	if err := writeAgentInfoMarkdown(path, md3, true, info, time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)); err != nil {
@@ -308,9 +281,6 @@ func TestBareRefreshPreservesChangelog(t *testing.T) {
 	}
 }
 
-// TestChangelogCapBounded confirms the auto-generated file cannot grow without
-// bound: after many more than the cap of appends, only the newest
-// agentInfoChangelogMaxEntries entries survive, newest first.
 func TestChangelogCapBounded(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "AGENTS.generated.md")
@@ -320,7 +290,7 @@ func TestChangelogCapBounded(t *testing.T) {
 	total := agentInfoChangelogMaxEntries + 25
 	for i := 0; i < total; i++ {
 		info.Version = "v0.0." + strconv.Itoa(i)
-		// Distinct dates so entries are individually identifiable.
+
 		day := 1 + (i % 27)
 		if err := writeAgentInfoMarkdown(path, md, true, info, time.Date(2026, 1, day, 0, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("append %d: %v", i, err)
@@ -328,8 +298,7 @@ func TestChangelogCapBounded(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	s := string(data)
-	// Count entry lines only within the changelog block (the rendered body also
-	// uses "- " bullets for capabilities/env vars).
+
 	idx := strings.Index(s, "## Changelog")
 	if idx < 0 {
 		t.Fatal("no changelog block written")
@@ -338,7 +307,7 @@ func TestChangelogCapBounded(t *testing.T) {
 	if gotEntries != agentInfoChangelogMaxEntries {
 		t.Errorf("changelog retained %d entries, want cap %d", gotEntries, agentInfoChangelogMaxEntries)
 	}
-	// Newest (last appended) must be present; oldest must have aged out.
+
 	if !strings.Contains(s, "v0.0."+strconv.Itoa(total-1)) {
 		t.Error("newest entry missing after cap")
 	}
@@ -347,10 +316,6 @@ func TestChangelogCapBounded(t *testing.T) {
 	}
 }
 
-// TestReadOpenPositionsScanErrorSignalsFailure builds a positions table whose
-// quantity column holds a non-numeric value so the row scan fails mid-iteration.
-// readStateDBReadOnly must then mark the snapshot untrustworthy (DBPresent=false)
-// rather than return a silently truncated position list.
 func TestReadOpenPositionsScanErrorSignalsFailure(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "bad.db")
@@ -383,28 +348,12 @@ func TestReadOpenPositionsScanErrorSignalsFailure(t *testing.T) {
 	}
 }
 
-// TestLoadConfigSnapshotDoesNotMutateFile guards the core safety invariant:
-// agent-info is read-only, but LoadConfig migrates pre-current configs in place.
-// loadConfigSnapshot must load the effective shape without rewriting the input.
-//
-// The assertion is only meaningful when the input actually triggers a migration
-// write — so the test forces a pre-current config_version into the copy instead
-// of trusting config.example.json to stay below CurrentConfigVersion. If the
-// fixture is later bumped to (or past) the current version, the guard below
-// fails loudly rather than silently no-opping the migration and passing even if
-// loadConfigSnapshot regressed to writing through to the input.
 func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 	orig, err := os.ReadFile("config.example.json")
 	if err != nil {
 		t.Skipf("no config.example.json fixture: %v", err)
 	}
 
-	// Force the input to a version that still triggers a SYNCHRONOUS on-disk
-	// rewrite during LoadConfig (the v16 user-defaults pass fires for
-	// version<16). CurrentConfigVersion-1 stopped working at v17 (#1277):
-	// v17 is a stamp-only additive bump handled by the async DM migration,
-	// so a v16 input takes no load-time write path and the "input unchanged"
-	// guard below would be vacuous.
 	var raw map[string]any
 	if err := json.Unmarshal(orig, &raw); err != nil {
 		t.Fatalf("parse fixture: %v", err)
@@ -429,8 +378,7 @@ func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 	if cfg == nil || len(cfg.Strategies) == 0 {
 		t.Fatal("expected a loaded config with strategies")
 	}
-	// The load must have produced a higher effective version than the input —
-	// proving a migration genuinely ran (so "input unchanged" is a real guard).
+
 	if cfg.ConfigVersion <= 15 {
 		t.Fatalf("migration did not advance config_version (in=15, out=%d); test no longer exercises the write path", cfg.ConfigVersion)
 	}
@@ -440,8 +388,6 @@ func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 		t.Error("loadConfigSnapshot mutated the input config file (must be read-only)")
 	}
 
-	// A migration that writes a sibling (e.g. config.json.bak) next to the input
-	// is also a mutation of the operator's directory — assert nothing else appeared.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
@@ -453,8 +399,6 @@ func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 	}
 }
 
-// TestReadOnlyOpenDoesNotCreateDB confirms the read-only DSN never creates a DB
-// file (so agent-info on a fresh checkout doesn't spawn an empty state.db).
 func TestReadOnlyOpenDoesNotCreateDB(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "absent.db")

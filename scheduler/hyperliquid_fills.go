@@ -13,30 +13,11 @@ import (
 	"time"
 )
 
-// HLFillLookup carries the aggregated fee + closed PnL across the on-chain
-// fills that match a single logical close. A "logical close" can fragment
-// into multiple userFills entries (different price levels, partial fills),
-// so callers always receive the sum.
-//
-// Px is the size-weighted average fill price across matched records — i.e.
-// sum(sz*px) / sum(sz). 0 when the lookup missed or every record reported
-// zero size. Reconciler close paths prefer Px over the configured TP/mark
-// price when available so the booked Trade row reflects what actually
-// happened on-chain (#670, #673).
-//
-// ClosedPnLGross is Hyperliquid's reported `closedPnl` summed across the
-// matched fills. It is **gross of fees** — the exchange UI shows net PnL
-// after subtracting the trading fee. DO NOT plug this value into
-// Trade.RealizedPnL or any cash-bookkeeping path; doing so overstates
-// realized PnL by exactly the fee amount (#698). Realized PnL is always
-// computed locally from AvgCost/FillPx/Qty minus the real Fee (see
-// bookPerpsPartialCloseWithFillFee in portfolio.go). This field exists
-// for logging and operator-side reconciliation only.
 type HLFillLookup struct {
 	Fee            float64
 	ClosedPnLGross float64
-	FilledQty      float64 // sum of sz across matched fill records; 0 when lookup missed
-	Px             float64 // size-weighted avg fill price across matched records; 0 when missed
+	FilledQty      float64
+	Px             float64
 	Count          int
 	OID            int64
 }
@@ -61,8 +42,6 @@ func splitHyperliquidFillLookupByQty(lookup HLFillLookup, qty, totalQty float64)
 	return out, true
 }
 
-// hlFillRecord is the trimmed userFills payload we care about. The HL indexer
-// returns numeric fields as strings; ParseFloat tolerates missing/empty.
 type hlFillRecord struct {
 	Coin      string      `json:"coin"`
 	Sz        string      `json:"sz"`
@@ -72,18 +51,11 @@ type hlFillRecord struct {
 	ClosedPnl string      `json:"closedPnl"`
 	Time      int64       `json:"time"`
 	Dir       string      `json:"dir"`
-	// Tid is Hyperliquid's unique per-fill trade id; Hash is the L1 tx hash.
-	// Unused by the OID/coin-size reconciler lookups, they give the #1100
-	// cash-flow journal a stable per-fill dedup identity (a single OID can
-	// fragment into many partial fills, so OID alone is not unique).
+
 	Tid  json.Number `json:"tid"`
 	Hash string      `json:"hash"`
 }
 
-// fetchHyperliquidUserFillsByTime is a function variable so tests can stub the
-// HTTP layer without spinning up an httptest server (some reconciler tests
-// already stub clearinghouseState — composing two stubs in one process is
-// awkward when both target hlMainnetURL).
 var fetchHyperliquidUserFillsByTime = defaultFetchHyperliquidUserFillsByTime
 
 func defaultFetchHyperliquidUserFillsByTime(accountAddress string, startTimeMs int64) ([]hlFillRecord, error) {
@@ -119,22 +91,11 @@ func defaultFetchHyperliquidUserFillsByTime(accountAddress string, startTimeMs i
 	return fills, nil
 }
 
-// hlFillLookupRetries / hlFillLookupRetryDelay control the indexer-lag retry
-// budget. HL fills can take a few hundred ms to surface after the on-chain
-// trigger; we mirror the Python adapter's defaults (4 attempts × 500ms).
-// Variables (not consts) so tests can shorten without sleeps.
 var (
 	hlFillLookupRetries    = 4
 	hlFillLookupRetryDelay = 500 * time.Millisecond
 )
 
-// lookupHyperliquidFillByOID queries userFills for fills matching `oid`,
-// summing fee + closedPnl across partial fills. Retries with backoff to
-// absorb HL indexer lag. Returns ok=false when no fill matches within the
-// retry budget — callers fall back to the modeled fee.
-//
-// Note: aggregated closedPnl is stored in HLFillLookup.ClosedPnLGross — it
-// is gross of fees and must not be used for realized-PnL bookkeeping (#698).
 func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs int64) (HLFillLookup, bool) {
 	if oid <= 0 || accountAddress == "" {
 		return HLFillLookup{}, false
@@ -169,19 +130,6 @@ func lookupHyperliquidFillByOID(accountAddress string, oid int64, startTimeMs in
 	return HLFillLookup{}, false
 }
 
-// lookupHyperliquidFillByCoinSize is the fallback for closes detected without
-// a tracked OID — typically external UI closes for shared-coin peers, where
-// only the SL owner has an OID stamped on its Position. Matches by coin and
-// absolute size within `tolerance` (coin units).
-//
-// To avoid conflating multiple unrelated closes within the lookup window
-// (#596), fills are sorted newest-first; the first matching record's OID
-// anchors the result, and fee/closedPnl are aggregated across only that OID
-// (one logical close group, including any partial fills). When the anchor
-// has no OID, only that single record is returned.
-//
-// Note: aggregated closedPnl is stored in HLFillLookup.ClosedPnLGross — it
-// is gross of fees and must not be used for realized-PnL bookkeeping (#698).
 func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, tolerance float64, startTimeMs int64) (HLFillLookup, bool) {
 	if accountAddress == "" || coin == "" || absSize <= 0 {
 		return HLFillLookup{}, false
@@ -246,28 +194,14 @@ func lookupHyperliquidFillByCoinSize(accountAddress, coin string, absSize, toler
 	return HLFillLookup{}, false
 }
 
-// hlReconcileFillLookupWindow is how far back the reconciler looks for the
-// matching userFills entry. The reconciler runs once per scheduler cycle
-// (typically 60s+) but a fill could pre-date the cycle by minutes — for
-// example after a process restart with on-chain SL fired during downtime.
-// 24h is a generous default that still bounds the indexer scan; tests
-// shorten it.
 var hlReconcileFillLookupWindow = 24 * time.Hour
 
-// reconcileFillLookupSinceMs returns the userFills lookup window start in ms.
-// Tests stub the window via hlReconcileFillLookupWindow.
 func reconcileFillLookupSinceMs(now time.Time) int64 {
 	return now.Add(-hlReconcileFillLookupWindow).UnixMilli()
 }
 
-// hlReconcileFillSizeTolerance bounds the fuzzy size match in the coin+size
-// fallback. HL rounds to per-asset sz_decimals; 1e-4 covers the smallest
-// denominations (BTC sz_decimals=4) without admitting cross-strategy drift.
 const hlReconcileFillSizeTolerance = 1e-4
 
-// fillOIDMatches handles HL's mixed-type OID encoding: indexer responses
-// have arrived as both numeric and string-numeric depending on indexer
-// version. json.Number normalises both.
 func fillOIDMatches(f hlFillRecord, oid int64) bool {
 	if f.OID == "" {
 		return false
@@ -275,7 +209,7 @@ func fillOIDMatches(f hlFillRecord, oid int64) bool {
 	if v, err := f.OID.Int64(); err == nil {
 		return v == oid
 	}
-	// Fallback to string compare for floats / scientific notation.
+
 	return f.OID.String() == strconv.FormatInt(oid, 10)
 }
 
@@ -290,23 +224,8 @@ func parseHLFloat(s string) float64 {
 	return v
 }
 
-// lookupHyperliquidReconcileFillFee is the reconciler-facing fee resolver.
-// Tries OID lookup first (precise match against Position.StopLossOID); when
-// that returns no match — or no OID is known — falls back to the coin+size
-// search over the same indexer window. Stubbed to a no-op in tests that
-// don't exercise fee plumbing.
-//
-// Returns ok=false on any failure so callers fall back to the modeled fee
-// path. The function never returns an error: HL indexer hiccups should not
-// block the reconciler from clearing virtual state. Failures emit a single
-// stderr line so operators can correlate drift complaints with lookup misses.
 var lookupHyperliquidReconcileFillFee = defaultLookupHyperliquidReconcileFillFee
 
-// logHyperliquidReconcileFillLookup logs one INFO line per reconciler close
-// summarising whether the userFills lookup hit, missed, or was skipped.
-// Operators correlating drift / Trade.ExchangeFee=0 rows back to a specific
-// close event use these markers; emitted at INFO so they stay out of the
-// default-error stream during clean operation.
 func logHyperliquidReconcileFillLookup(logger *StrategyLogger, coin string, oid int64, expectedQty float64, lookup HLFillLookup, useFillFee bool) {
 	if logger == nil {
 		return
@@ -338,16 +257,8 @@ func defaultLookupHyperliquidReconcileFillFee(accountAddress, coin string, oid i
 	return HLFillLookup{}, false
 }
 
-// hlReconcileFillResolver returns the userFills lookup result for a (coin,
-// oid, expectedQty) tuple. The reconciler resolves fees via this indirection
-// so the locked apply phase can read pre-fetched results without making any
-// HTTP calls under mu.Lock(). See buildCachedHyperliquidReconcileFillResolver.
 type hlReconcileFillResolver func(coin string, oid int64, expectedQty float64) (HLFillLookup, bool)
 
-// HyperliquidProtectionFillHint is a reconciler-prefetched userFills snapshot
-// for one resting trigger OID. Passed to Python --sync-protection so it can
-// skip a duplicate userFills round-trip when the data was already resolved this
-// cycle (#759).
 type HyperliquidProtectionFillHint struct {
 	OID       int64   `json:"oid"`
 	Filled    bool    `json:"filled"`
@@ -356,21 +267,14 @@ type HyperliquidProtectionFillHint struct {
 	Count     int     `json:"count,omitempty"`
 }
 
-// noFillFeeResolver is the resolver used when fee lookups are disabled (no
-// account address) or when no candidate close events were detected. Always
-// returns ok=false so callers fall back to the modeled fee path.
 var noFillFeeResolver hlReconcileFillResolver = func(string, int64, float64) (HLFillLookup, bool) {
 	return HLFillLookup{}, false
 }
 
-// hyperliquidReconcileFeeCacheKey identifies one userFills lookup. Quantity is
-// rounded to 1e-8 so float identity comparisons across the snapshot/apply
-// boundary survive — HL sz_decimals tops out at 8 so the round is lossless
-// for legitimate fills.
 type hyperliquidReconcileFeeCacheKey struct {
 	coin string
 	oid  int64
-	qty  int64 // qty * 1e8, rounded
+	qty  int64
 }
 
 func makeHLReconcileFeeCacheKey(coin string, oid int64, qty float64) hyperliquidReconcileFeeCacheKey {
@@ -381,19 +285,6 @@ func makeHLReconcileFeeCacheKey(coin string, oid int64, qty float64) hyperliquid
 	}
 }
 
-// buildCachedHyperliquidReconcileFillResolver runs a brief RLock pass to
-// identify which (coin, oid, qty) lookups the reconciler is likely to need,
-// performs all userFills queries OUTSIDE the lock (each can take up to ~1.5s
-// under indexer-lag retry), then returns a pure map-reading resolver that the
-// locked apply phase calls, plus per-OID fill hints for Python --sync-protection
-// to avoid duplicate indexer calls in the same scheduler cycle (#759). Cache
-// misses fall back to noFillFeeResolver behavior — never to a network call —
-// so the lock-held region is bounded.
-//
-// The candidate-detection pass is permissive: false positives just mean an
-// extra HTTP query per cycle, false negatives mean a close books with the
-// modeled fee. Detector logic is duplicated approximately, not exactly, so
-// the apply phase remains the source of truth for whether a close fires.
 func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrategies []StrategyConfig, state *AppState, mu *sync.RWMutex, positions []HLPosition) (hlReconcileFillResolver, []HyperliquidProtectionFillHint) {
 	if accountAddress == "" {
 		return noFillFeeResolver, nil
@@ -439,10 +330,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			continue
 		}
 		onChainSize, present := onChainByCoin[sym]
-		// Trigger lookup when on-chain is absent OR signed-qty differs from
-		// virtual qty. Sign mismatch is intentional: it covers both Detector 1
-		// (full external close, on-chain ≈ 0) and Detector 2 (partial close
-		// where on-chain residual ≠ virtual).
+
 		mismatched := !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9
 		if !mismatched {
 			continue
@@ -450,23 +338,15 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
 			addCandidate(sym, pos.StopLossOID, pos.Quantity)
 		}
-		// #673: Pre-fetch each TP OID lookup so the apply phase can distinguish
-		// SL-fired vs TP-fired closes when the position goes flat. Without
-		// these, hlAttemptCloseFromTPFills always misses the cache and the
-		// reconciler falls through to the SL-trigger-price path.
+
 		for _, tpOID := range pos.TPOIDs {
 			if tpOID > 0 {
 				addCandidate(sym, tpOID, pos.Quantity)
 			}
 		}
-		// Always include the (coin, 0, qty) form so peers without a tracked
-		// OID — Detector 1 mark-based path and Detector 2 non-owner — hit a
-		// cached entry. The resolver drops to coin+size internally.
+
 		addCandidate(sym, 0, pos.Quantity)
-		// Sole-owner TP partial fills look up the drop qty (virtual - on-chain)
-		// rather than the full virtual qty (#670). Add a candidate when the
-		// on-chain residual is a same-direction strict subset of virtual so the
-		// coin+size fallback can match the partial fill record.
+
 		if present && onChainSize != 0 {
 			signedVirtual := pos.Quantity
 			if pos.Side == "short" {
@@ -477,8 +357,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			if sameDirection && onChainAbs+1e-9 < pos.Quantity {
 				addCandidate(sym, 0, pos.Quantity-onChainAbs)
 			}
-			// #777: all tiers armed+cleared with dust — prefetch per-tier fills
-			// (OID from open-trade snapshot when pos.TPOIDs are already zero).
+
 			if sameDirection && hyperliquidAllTiersArmedAndCleared(sc, pos) {
 				tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 				initQty := pos.InitialQuantity
@@ -498,12 +377,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 				}
 			}
 		}
-		// #1159: a hedge leg's coin is invisible to the loop above (it keys on
-		// hyperliquidConfiguredCoin, which only ever names a PRIMARY). Without
-		// a candidate here, an externally closed / liquidated hedge leg books
-		// through the reconciler with a modeled fee and no fill price instead
-		// of the real userFills VWAP. Sole ownership is guaranteed by the
-		// collision validation, so the coin+size form is unambiguous.
+
 		if hCoin := hedgeCoin(sc); hCoin != "" {
 			if hPos := ss.Positions[hCoin]; hPos != nil && hPos.isHedgeLeg() && hPos.Quantity > 0 {
 				onChainSize, present := onChainByCoin[hCoin]
@@ -519,10 +393,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			}
 		}
 	}
-	// Shared-coin aggregate paths: prefetch Detector 1's full-flat coin-level
-	// virtual qty and Detector 3's virtual/on-chain drift qty. Per-strategy
-	// prefetch above uses each strategy's own qty, but these detectors book
-	// against a wallet-level userFills row.
+
 	coinStratCount := make(map[string]int)
 	coinVirtualQty := make(map[string]float64)
 	for _, sc := range allStrategies {
@@ -582,9 +453,7 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		key := makeHLReconcileFeeCacheKey(c.coin, c.oid, c.qty)
 		ent := cache[key]
 		if _, exists := hintsByOID[c.oid]; exists {
-			// First candidate wins: duplicate (coin, oid, qty) keys are deduped
-			// above, and for oid>0 all qty variants share the same OID-keyed
-			// lookup result from defaultLookupHyperliquidReconcileFillFee.
+
 			continue
 		}
 		filled := ent.ok && ent.lookup.Count > 0

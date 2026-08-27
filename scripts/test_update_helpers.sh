@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Regression tests for scripts/update_helpers.sh (#790 review).
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=update_helpers.sh
 source "${SCRIPT_DIR}/update_helpers.sh"
 
 assert_eq() {
@@ -41,7 +39,6 @@ if [[ "$warn_out" == *'optional.env'* || "$warn_out" == *'ignore_errors'* ]]; th
     exit 1
 fi
 
-# --- #850: signal-mode redirect decision -------------------------------------
 assert_eq "$(update_signal_redirect_decision active /opt/go-trader/go-trader /opt/go-trader/go-trader)" \
     "redirect" "active unit running this binary -> redirect"
 assert_eq "$(update_signal_redirect_decision active /opt/other/go-trader /opt/go-trader/go-trader)" \
@@ -57,7 +54,6 @@ assert_eq "$(update_signal_redirect_decision active go-trader /opt/go-trader/go-
 assert_eq "$(update_signal_redirect_decision active /opt/go-trader/go-trader '')" \
     "" "empty swap target -> no redirect"
 
-# --- #850: rollback stray-process sweep predicate ----------------------------
 assert_eq "$(update_should_sweep_proc go-trader /opt/go-trader /opt/go-trader)" \
     "sweep" "go-trader in this deployment dir -> sweep"
 assert_eq "$(update_should_sweep_proc go-trader /opt/go-trader-2 /opt/go-trader)" \
@@ -69,75 +65,53 @@ assert_eq "$(update_should_sweep_proc go-trader /opt/go-trader '')" \
 assert_eq "$(update_should_sweep_proc go-trader '' /opt/go-trader)" \
     "" "unreadable proc cwd -> spare"
 
-# --- #1012: extension-based DB rsync excludes --------------------------------
 db_globs=$(update_db_rsync_excludes)
 assert_eq "$db_globs" $'*.db\n*.db-wal\n*.db-shm\n*.db.lock' \
     "db rsync excludes emit the full .db family, one glob per line"
-# Globs must be unanchored (no leading slash) so rsync matches at any depth.
 if printf '%s\n' "$db_globs" | grep -q '^/'; then
     echo "FAIL: db rsync globs must be unanchored (no leading slash)" >&2
     exit 1
 fi
-# Each suffix is distinct: *.db must NOT cover *.db-wal / *.db.lock (different
-# trailing chars), which is why all four globs are required.
 case "stale_instance.db" in *.db) ;; *) echo "FAIL: *.db should match stale_instance.db" >&2; exit 1;; esac
 case "state.db-wal" in *.db) echo "FAIL: *.db must not match state.db-wal" >&2; exit 1;; esac
 case "state.db.lock" in *.db) echo "FAIL: *.db must not match state.db.lock" >&2; exit 1;; esac
 
-# --- #1055: systemd --all deployment auto-discovery --------------------------
-# Normalizer: trims, requires absolute paths, collapses to one trailing slash,
-# drops empty/relative, and de-dupes preserving first-seen order.
 norm_in=$'/root/go-trader-live\n/root/.openclaw/workspace/go-trader-paper-1/\n\n  /opt/deploy/go-trader-x  \nrelative/dir\n/root/go-trader-live'
 assert_eq "$(printf '%s' "$norm_in" | normalize_systemd_deployment_dirs)" \
     $'/root/go-trader-live/\n/root/.openclaw/workspace/go-trader-paper-1/\n/opt/deploy/go-trader-x/' \
     "normalize: trailing slash, drop empty/relative, de-dupe, layout-independent"
 
-# A trailing-slash-only duplicate of a bare path must collapse to one entry.
 assert_eq "$(printf '%s\n' '/a/b' '/a/b/' | normalize_systemd_deployment_dirs)" \
     "/a/b/" "normalize: bare and trailing-slash forms de-dupe to one"
 
-# Empty input yields empty output (caller then falls back to the glob).
 assert_eq "$(printf '' | normalize_systemd_deployment_dirs)" "" \
     "normalize: empty input -> empty output"
 
-# Unit globs cover primary, plain per-deployment, and template-instance units.
 unit_globs=$(update_systemd_unit_globs)
 assert_eq "$unit_globs" $'go-trader.service\ngo-trader-*.service\ngo-trader@*.service' \
     "unit globs cover primary, plain, and template-instance units"
 
-# discover_*: when systemctl is absent (e.g. macOS dev/CI), emit nothing so the
-# caller falls back to the glob. Only assertable where systemctl is unavailable.
 if ! command -v systemctl >/dev/null 2>&1; then
     assert_eq "$(discover_deployment_dirs_from_systemd)" "" \
         "discover: no systemctl -> empty (glob fallback)"
 fi
 
-# Full pipeline with a stubbed systemctl (runs on every platform): list-units ->
-# show WorkingDirectory -> normalize. Exercises layout-independence (units in
-# unrelated parent dirs), de-dupe, the unset-WorkingDirectory unit (dropped by the
-# normalizer), and — critically (#1055 review) — that discovery passes --state=active
-# so a stopped-but-loaded unit with a valid WorkingDirectory is NEVER surfaced (and
-# thus never restarted/started by --all --restart).
 (
     systemctl() {
         case "$1" in
             list-units)
-                # Honor --state=active: real systemctl lists only running units then.
                 local active_only=0 a
                 for a in "$@"; do [[ "$a" == "--state=active" ]] && active_only=1; done
-                # --plain --no-legend rows: UNIT LOAD ACTIVE SUB DESCRIPTION
                 printf '%s\n' \
                     'go-trader.service           loaded active running primary' \
                     'go-trader-live.service      loaded active running live' \
                     'go-trader@paper-1.service   loaded active running paper-1' \
                     'go-trader@noworkdir.service loaded active running noworkdir'
                 if [[ "$active_only" != "1" ]]; then
-                    # Only --all (which we must NOT use) would surface this stopped unit.
                     printf '%s\n' 'go-trader@stopped.service   loaded inactive dead stopped'
                 fi
                 ;;
             show)
-                # show <unit> -p WorkingDirectory --value  ->  $2 is the unit
                 case "$2" in
                     go-trader.service) printf '%s\n' '/root/go-trader' ;;
                     go-trader-live.service) printf '%s\n' '/root/.openclaw/workspace/go-trader-live' ;;
@@ -152,15 +126,11 @@ fi
     got=$(discover_deployment_dirs_from_systemd)
     want=$'/root/go-trader/\n/root/.openclaw/workspace/go-trader-live/\n/srv/deploys/go-trader-paper-1/'
     assert_eq "$got" "$want" "discover: active-only, layout-independent, unset-WD dropped, stopped unit excluded"
-    # Explicit guard: the stopped deployment's dir must never appear (would be started).
     case "$got" in
         *go-trader-stopped*) echo "FAIL: discovery surfaced a stopped-but-loaded unit (--state=active not applied)" >&2; exit 1 ;;
     esac
 )
 
-# canonicalize_deployment_dir (#1055 review): symlink + /./ + // spellings of the
-# same dir resolve to one physical path so the --all dedup collapses them; a
-# non-existent path is returned trailing-slash-normalized (loop reports/skips it).
 canon_tmp=$(mktemp -d)
 canon_phys=$(cd "$canon_tmp" && pwd -P)/
 ln -s "$canon_tmp" "${canon_tmp}.link"
@@ -172,14 +142,12 @@ assert_eq "$(canonicalize_deployment_dir "${canon_tmp}/./")" "$canon_phys" \
     "canon: /./ segment normalized to the same physical path"
 assert_eq "$(canonicalize_deployment_dir "/no/such/go-trader-x")" "/no/such/go-trader-x/" \
     "canon: non-existent dir -> trailing-slash literal (no collapse)"
-# Two genuinely distinct dirs must NOT collapse.
 canon_b=$(mktemp -d)
 if [[ "$(canonicalize_deployment_dir "$canon_tmp")" == "$(canonicalize_deployment_dir "$canon_b")" ]]; then
     echo "FAIL: distinct dirs must not canonicalize to the same path" >&2; exit 1
 fi
 rm -rf "$canon_tmp" "${canon_tmp}.link" "$canon_b"
 
-# --- #1056: out-of-tree config migration state classifier -------------------
 mig_tmp=$(mktemp -d)
 assert_eq "$(update_config_migration_state "$mig_tmp/none.json")" \
     "missing" "absent config -> missing"
@@ -189,19 +157,14 @@ assert_eq "$(update_config_migration_state "$mig_tmp/real.json")" \
 ln -s "$mig_tmp/real.json" "$mig_tmp/link.json"
 assert_eq "$(update_config_migration_state "$mig_tmp/link.json")" \
     "symlink" "symlink -> symlink (already migrated; idempotent no-op)"
-# Adversarial: a DANGLING symlink (target already moved/removed) must still
-# classify as 'symlink', never 'missing' — otherwise a re-run would treat the
-# deployment as un-migrated and clobber the live config pointer.
 ln -s "$mig_tmp/gone.json" "$mig_tmp/dangling.json"
 assert_eq "$(update_config_migration_state "$mig_tmp/dangling.json")" \
     "symlink" "dangling symlink -> symlink (not missing)"
 rm -rf "$mig_tmp"
 
-# --- #1056: instance-name validation (PR #1060 review) -----------------------
 assert_eq "$(update_validate_instance_name live)" "ok" "plain name -> ok"
 assert_eq "$(update_validate_instance_name paper-hl-btc)" "ok" "dashed name -> ok"
 assert_eq "$(update_validate_instance_name paper_testing.1)" "ok" "underscore/dot -> ok"
-# Adversarial: path-escape and flag-misparse names the bare char-class let through.
 assert_eq "$(update_validate_instance_name ..)" "bad" "'..' -> bad (escapes target dir)"
 assert_eq "$(update_validate_instance_name .)" "bad" "'.' -> bad (escapes target dir)"
 assert_eq "$(update_validate_instance_name -live)" "bad" "leading dash -> bad (misparses as flag)"
@@ -209,7 +172,6 @@ assert_eq "$(update_validate_instance_name 'a/b')" "bad" "slash -> bad (path sep
 assert_eq "$(update_validate_instance_name 'a b')" "bad" "space -> bad (disallowed char)"
 assert_eq "$(update_validate_instance_name '')" "bad" "empty -> bad (caller handles no-instance separately)"
 
-# --- #1056: base-aware systemd writable directive (PR #1060 review) ----------
 assert_eq "$(update_config_writable_directive /var/lib/go-trader live)" \
     "StateDirectory=go-trader/live" "default base + instance -> StateDirectory subdir"
 assert_eq "$(update_config_writable_directive /var/lib/go-trader '')" \
@@ -219,10 +181,6 @@ assert_eq "$(update_config_writable_directive /etc/go-trader live)" \
 assert_eq "$(update_config_writable_directive /etc/go-trader '')" \
     "ReadWritePaths=/etc/go-trader" "non-/var/lib base, no instance -> ReadWritePaths"
 
-# --- #1056/#1060: re-running on an already-migrated (symlink) deployment must
-# be an idempotent no-op and must NOT trip the daemon-running refusal — that
-# refusal is gated to the mutating (regular-file) case only. (End-to-end over
-# the migrate script, since the ordering is script-level, not a pure helper.)
 mig2=$(mktemp -d)
 mkdir -p "$mig2/deploy/scheduler" "$mig2/var/live"
 : > "$mig2/var/live/config.json"
@@ -234,12 +192,10 @@ if [[ "$noop_out" != *"already migrated"* ]]; then
     echo "FAIL: expected 'already migrated' no-op message, got: $noop_out" >&2
     exit 1
 fi
-# And the no-op must not have mutated anything (symlink intact, target intact).
 [[ -L "$mig2/deploy/scheduler/config.json" ]] || { echo "FAIL: no-op altered the symlink" >&2; exit 1; }
 [[ -f "$mig2/var/live/config.json" ]] || { echo "FAIL: no-op altered the target" >&2; exit 1; }
 rm -rf "$mig2"
 
-# --- #1285: ExecStart --config extraction for the fleet config_version audit --
 assert_eq "$(update_execstart_config_path '{ path=/opt/go-trader/go-trader ; argv[]=/opt/go-trader/go-trader --config /var/lib/go-trader/config.json ; ignore_errors=no }')" \
     "/var/lib/go-trader/config.json" "systemd ExecStart show-value with --config <path>"
 assert_eq "$(update_execstart_config_path '/opt/go-trader/go-trader --config=/var/lib/go-trader/live/config.json --once')" \
@@ -249,7 +205,6 @@ assert_eq "$(update_execstart_config_path '/opt/go-trader/go-trader --status-por
 assert_eq "$(update_execstart_config_path '')" \
     "" "empty ExecStart -> empty"
 
-# --- #1285: fleet audit script — read-only, explicit-dir mode ----------------
 fleet=$(mktemp -d)
 mkdir -p "$fleet/ok/scheduler" "$fleet/old/scheduler" "$fleet/none/scheduler"
 printf '{"config_version": 16}\n' > "$fleet/ok/scheduler/config.json"
@@ -280,16 +235,13 @@ fi
 audit_out=$(bash "${SCRIPT_DIR}/check-config-versions.sh" "$fleet/missing-dir") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "fleet audit: missing config is a FAIL (cannot verify)"
 
-# The audit must never mutate a config it reads.
 assert_eq "$(cat "$fleet/old/scheduler/config.json")" '{"config_version": 12}' "fleet audit is read-only"
 rm -rf "$fleet"
 
-# --- #1430: live/paper config drift audit ----------------------------------
 drift=$(mktemp -d)
 mkdir -p "$drift/live/scheduler" "$drift/paper/scheduler" "$drift/paper2/scheduler" \
     "$drift/paper3/scheduler" "$drift/synced/scheduler" "$drift/broken/scheduler"
 
-# Live twin: 5-minute cadence, leveraged, margin-sized.
 cat > "$drift/live/scheduler/config.json" <<'JSON'
 {"config_version": 17, "strategies": [
   {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
@@ -304,7 +256,6 @@ cat > "$drift/live/scheduler/config.json" <<'JSON'
 ]}
 JSON
 
-# Paper twin with drifted cadence + sizing (the #1430 worked example shape).
 cat > "$drift/paper/scheduler/config.json" <<'JSON'
 {"config_version": 17, "strategies": [
   {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
@@ -315,7 +266,6 @@ cat > "$drift/paper/scheduler/config.json" <<'JSON'
 ]}
 JSON
 
-# Paper twin synced on cadence/sizing but differing elsewhere -> SKIP flag.
 cat > "$drift/paper2/scheduler/config.json" <<'JSON'
 {"config_version": 17, "strategies": [
   {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
@@ -326,9 +276,6 @@ cat > "$drift/paper2/scheduler/config.json" <<'JSON'
 ]}
 JSON
 
-# Paper twin with BOTH cadence drift AND an other-field difference -> SKIP
-# flag, but the cadence/sizing drift must still gate (exit 1) even when this
-# is the only pair audited.
 cat > "$drift/paper3/scheduler/config.json" <<'JSON'
 {"config_version": 17, "strategies": [
   {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
@@ -339,7 +286,6 @@ cat > "$drift/paper3/scheduler/config.json" <<'JSON'
 ]}
 JSON
 
-# Paper twin fully in sync (only --mode differs).
 cat > "$drift/synced/scheduler/config.json" <<'JSON'
 {"config_version": 17, "strategies": [
   {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",
@@ -352,9 +298,6 @@ JSON
 
 printf 'not json\n' > "$drift/broken/scheduler/config.json"
 
-# Paper twin with NO --mode token (daemon runs no-mode as paper) and drifted
-# cadence -> must pair with the live twin and gate, not be silently dropped
-# (PR #1434 review).
 mkdir -p "$drift/paper4/scheduler"
 cat > "$drift/paper4/scheduler/config.json" <<'JSON'
 {"config_version": 17, "strategies": [
@@ -366,7 +309,6 @@ cat > "$drift/paper4/scheduler/config.json" <<'JSON'
 ]}
 JSON
 
-# Drifted pair: exit 1, per-field drift lines, CANDIDATE verdict.
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "drift audit: drifted live/paper pair exits 1"
 if [[ "$audit_out" != *"hl-vwap-eth-60"* ]]; then
@@ -390,7 +332,6 @@ if [[ "$audit_out" == *"solo-live"* && "$audit_out" == *"PAIR solo-live"* ]]; th
     exit 1
 fi
 
-# In-sync pair: exit 0, IN SYNC verdict.
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/synced") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "0" "drift audit: in-sync pair exits 0"
 if [[ "$audit_out" != *"IN SYNC"* ]]; then
@@ -398,8 +339,6 @@ if [[ "$audit_out" != *"IN SYNC"* ]]; then
     exit 1
 fi
 
-# Other-fields-differ pair (sizing synced): SKIP flag, and NOT a hard failure —
-# the runbook gate fails only on syncable cadence/sizing drift.
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper2") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "0" "drift audit: other-fields-only drift flags SKIP but does not gate"
 if [[ "$audit_out" != *"SKIP"* || "$audit_out" != *"OTHER"* ]]; then
@@ -407,7 +346,6 @@ if [[ "$audit_out" != *"SKIP"* || "$audit_out" != *"OTHER"* ]]; then
     exit 1
 fi
 
-# Watched drift AND other drift together: still exit 1, flagged SKIP (leave alone).
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper" "$drift/paper2") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "drift audit: any cadence/sizing drift gates the runbook"
 if [[ "$audit_out" != *"CANDIDATE"* || "$audit_out" != *"SKIP"* ]]; then
@@ -415,9 +353,6 @@ if [[ "$audit_out" != *"CANDIDATE"* || "$audit_out" != *"SKIP"* ]]; then
     exit 1
 fi
 
-# Single watched+other pair: the cadence/sizing drift must gate (exit 1) even
-# though the pair is flagged SKIP — no second CANDIDATE pair may be needed to
-# trip the exit code (PR #1434 review).
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper3") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "drift audit: a single watched+other pair still gates on its cadence/sizing drift"
 if [[ "$audit_out" != *"SKIP"* ]]; then
@@ -429,9 +364,6 @@ if [[ "$audit_out" != *"DRIFT"* || "$audit_out" == *"VERDICT: OK"* ]]; then
     exit 1
 fi
 
-# Unset-mode (no --mode token) paper twin: the daemon runs no-mode as paper
-# (!isLiveArgs, scheduler/config.go:517), so the audit must pair it with the
-# live twin and gate on its drift — never silently drop it (PR #1434 review).
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/paper4") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "drift audit: no-mode paper twin pairs with live and gates on drift"
 if [[ "$audit_out" != *"PAIR hl-vwap-eth-60"* || "$audit_out" != *"interval_seconds"* ]]; then
@@ -443,8 +375,6 @@ if [[ "$audit_out" != *"--mode"* ]]; then
     exit 1
 fi
 
-# Inverse: an unset block with a unique id (no live twin) must NOT produce a
-# spurious pair or phantom drift.
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/synced") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "0" "drift audit: in-sync pair plus unique-id unset block exits 0"
 if [[ "$audit_out" == *"PAIR solo-unset"* || "$audit_out" == *"UNPAIRED solo-unset"* ]]; then
@@ -452,9 +382,6 @@ if [[ "$audit_out" == *"PAIR solo-unset"* || "$audit_out" == *"UNPAIRED solo-uns
     exit 1
 fi
 
-# Live id with BOTH an explicit --mode=paper twin and a no-mode block: pair the
-# explicit twin once, flag the no-mode block UNPAIRED — never double-report.
-# The explicit pair here is in sync, so nothing gates (exit 0).
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/synced" "$drift/paper4") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "0" "drift audit: in-sync explicit pair + UNPAIRED no-mode block exits 0"
 pair_count=$(printf '%s\n' "$audit_out" | grep -c '^PAIR ')
@@ -464,15 +391,12 @@ if [[ "$audit_out" != *"UNPAIRED"* ]]; then
     exit 1
 fi
 
-# Unreadable config: exit 1 (cannot certify the fleet).
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/live" "$drift/broken") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "drift audit: unreadable config exits 1"
 
-# Missing config: exit 1.
 audit_out=$(bash "${SCRIPT_DIR}/check-live-paper-config-drift.sh" "$drift/no-such-dir") && audit_rc=0 || audit_rc=$?
 assert_eq "$audit_rc" "1" "drift audit: missing config exits 1"
 
-# The audit must never mutate a config it reads.
 assert_eq "$(cat "$drift/paper/scheduler/config.json")" "$(cat <<'JSON'
 {"config_version": 17, "strategies": [
   {"id": "hl-vwap-eth-60", "type": "perps", "platform": "hyperliquid",

@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// postTPSLTestStrategy builds a perps strategy with a fixed ATR SL and a
-// tiered TP close ref carrying sl_after rules. Used by orchestrator tests.
 func postTPSLTestStrategy(slAfter interface{}, tiers []interface{}) StrategyConfig {
 	atrMult := 1.0
 	params := map[string]interface{}{
@@ -92,9 +90,7 @@ func TestComputePostTPStopLossTrigger_ATROffsetMode(t *testing.T) {
 		mult float64
 		want string
 	}{
-		// {atr_mult: 0} preserves "atr+0" so logs/DMs reflect the operator's
-		// explicit kind; Kind=="breakeven" still renders as "breakeven" via
-		// the trigger helper's own branch.
+
 		{0, "atr+0"},
 		{0.25, "atr+0.25"},
 		{-0.5, "atr-0.5"},
@@ -293,7 +289,7 @@ func TestParseSLAfterRule_Errors(t *testing.T) {
 }
 
 func TestParseStrategyTPSLAfterRules(t *testing.T) {
-	// strategy-level default + per-tier override
+
 	sc := StrategyConfig{
 		Type:     "perps",
 		Platform: "hyperliquid",
@@ -302,7 +298,7 @@ func TestParseStrategyTPSLAfterRules(t *testing.T) {
 			Params: map[string]interface{}{
 				"sl_after": "breakeven",
 				"tp_tiers": []interface{}{
-					// out of order intentionally — should sort by multiple
+
 					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0, "sl_after": map[string]interface{}{"atr_mult": 0.25}},
 					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
 				},
@@ -328,7 +324,7 @@ func TestParseStrategyTPSLAfterRules(t *testing.T) {
 	if !rules.HasAny() {
 		t.Fatal("HasAny() should be true")
 	}
-	// ForTier returns override or default
+
 	if got := rules.ForTier(0); got.Kind != "breakeven" {
 		t.Fatalf("ForTier(0) = %+v, want breakeven (inherited)", got)
 	}
@@ -453,7 +449,7 @@ func TestFormatSLAdjustmentAlert(t *testing.T) {
 	cases := []struct {
 		name string
 		a    SLAdjustmentAlert
-		want []string // substrings expected in the output
+		want []string
 	}{
 		{
 			"breakeven",
@@ -522,11 +518,11 @@ func TestNotifySLAdjustment_GatedOnEnabled(t *testing.T) {
 }
 
 func TestEffectiveTrailingStopPct_HonorsPostTPTrailingATRMult(t *testing.T) {
-	// Strategy has no sc.TrailingStop* configured — only post-TP transition.
+
 	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
 	mult := 1.0
 	pos := &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult}
-	// Expected pct = 1.0 * 5 / 100 * 100 = 5%
+
 	got := effectiveTrailingStopPct(sc, pos)
 	if math.Abs(got-5.0) > 1e-9 {
 		t.Fatalf("effectiveTrailingStopPct = %v, want 5", got)
@@ -543,9 +539,7 @@ func TestEffectiveTrailingStopPct_PostTPMissingATRReturnsZero(t *testing.T) {
 }
 
 func TestEffectiveTrailingStopPct_PostTPTakesPrecedenceOverStrategy(t *testing.T) {
-	// Hypothetically if both were set (validator would block, but the helper
-	// must still resolve unambiguously), post-TP wins because it represents
-	// state that has already transitioned post-fill.
+
 	trail := 2.0
 	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps", TrailingStopPct: &trail}
 	mult := 1.0
@@ -587,12 +581,6 @@ func TestValidatePostTPStopLossRules_RejectsTrailFromHereOnManual(t *testing.T) 
 	}
 }
 
-// #716 item 2 regression: a non-TP partial close (e.g. close-evaluator firing
-// signal=-1 to half the position) on a position whose tier 0 was never armed
-// (transient placement failure left OID=0 with armed[0]=false) must NOT
-// trigger the sl_after rule for tier 0. Pre-#716, findHighestClearedTier
-// looked only at OID==0 and would return idx=0 here, firing breakeven against
-// a tier that never existed.
 func TestRunPostTPStopLossAdjustment_SkipsNeverArmedTier(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -611,9 +599,7 @@ func TestRunPostTPStopLossAdjustment_SkipsNeverArmedTier(t *testing.T) {
 		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
 		AvgCost: 100, EntryATR: 5, Side: "long",
 		StopLossOID: 111, StopLossTriggerPx: 95,
-		// Tier 0 placement failed transiently — OID=0 with armed[0]=false.
-		// Tier 1 is resting with OID=222. A non-TP partial close has shrunk
-		// Quantity to 0.5 (half InitialQuantity).
+
 		TPOIDs:                   []int64{0, 222},
 		TPArmedTiers:             []bool{false, true},
 		SLAdjustedTiersProcessed: 0,
@@ -653,14 +639,14 @@ func TestRunPostTPStopLossAdjustment_BreakevenAfterTP1(t *testing.T) {
 	})
 	pos := &Position{
 		Symbol:                   "ETH",
-		Quantity:                 0.5, // half of initial = TP1 filled
+		Quantity:                 0.5,
 		InitialQuantity:          1.0,
 		AvgCost:                  100,
 		EntryATR:                 5,
 		Side:                     "long",
 		StopLossOID:              111,
 		StopLossTriggerPx:        95,
-		TPOIDs:                   []int64{0, 222}, // tier 0 filled
+		TPOIDs:                   []int64{0, 222},
 		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
@@ -686,11 +672,6 @@ func TestRunPostTPStopLossAdjustment_BreakevenAfterTP1(t *testing.T) {
 	}
 }
 
-// Locks in the fire-time alignment for tiered_tp_atr_regime + tp_atr_fraction:
-// the regime re-parse at runPostTPStopLossAdjustment must resolve the firing
-// tier's multiple AND the per-regime fraction against pos.Regime, then trail at
-// fraction × tier-multiple. Previously only reload gating + scalar/default fire
-// paths were covered (bot review #836, item 2).
 func TestRunPostTPStopLossAdjustment_RegimeTPATRFraction(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -701,7 +682,6 @@ func TestRunPostTPStopLossAdjustment_RegimeTPATRFraction(t *testing.T) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: triggerPx}, "", nil
 	}
 
-	// ADX 3-label regime tiers. Under "trending_up", tier 0 resolves to mult 2.0.
 	regimeTier := func(atr, frac float64) map[string]interface{} {
 		return map[string]interface{}{"trend_regime": map[string]interface{}{
 			"trending_up":   map[string]interface{}{"atr_multiple": atr, "close_fraction": frac},
@@ -734,7 +714,7 @@ func TestRunPostTPStopLossAdjustment_RegimeTPATRFraction(t *testing.T) {
 	}
 	pos := &Position{
 		Symbol:                   "ETH",
-		Quantity:                 0.5, // half of initial = TP1 filled
+		Quantity:                 0.5,
 		InitialQuantity:          1.0,
 		AvgCost:                  100,
 		EntryATR:                 5,
@@ -742,7 +722,7 @@ func TestRunPostTPStopLossAdjustment_RegimeTPATRFraction(t *testing.T) {
 		Regime:                   "trending_up",
 		StopLossOID:              111,
 		StopLossTriggerPx:        95,
-		TPOIDs:                   []int64{0, 222}, // tier 0 filled
+		TPOIDs:                   []int64{0, 222},
 		TPArmedTiers:             []bool{true, true},
 		SLAdjustedTiersProcessed: 0,
 	}
@@ -752,8 +732,7 @@ func TestRunPostTPStopLossAdjustment_RegimeTPATRFraction(t *testing.T) {
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-	// trail = 0.5 (fraction@trending_up) × 2.0 (tier-0 mult@trending_up) = 1.0× ATR.
-	// long trail trigger = mark − trail×ATR = 105 − 1.0×5 = 100.
+
 	if gotTrigger != 100 {
 		t.Fatalf("trigger=%v, want 100 (0.5×2.0×ATR(5) below mark 105)", gotTrigger)
 	}
@@ -828,7 +807,7 @@ func TestRunPostTPStopLossAdjustment_TrailFromHereTransition(t *testing.T) {
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-	// trail_from_here at mark=110, ATR=5, mult=1.0 → trigger = 110 - 5 = 105
+
 	if pos.StopLossTriggerPx != 105 {
 		t.Errorf("StopLossTriggerPx=%v, want 105", pos.StopLossTriggerPx)
 	}
@@ -871,7 +850,7 @@ func TestRunPostTPStopLossAdjustment_TPATRFractionUsesFiringTierMultiple(t *test
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-	// TP1 fired at 2×ATR; tp_atr_fraction=0.5 resolves to a 1×ATR trail.
+
 	if gotTrigger != 105 {
 		t.Fatalf("trigger=%v, want 105", gotTrigger)
 	}
@@ -908,8 +887,7 @@ func TestRunPostTPStopLossAdjustment_TPATRFractionUsesDefaultTierMultiple(t *tes
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-	// #870: default TP1 is 1.5×ATR; tp_atr_fraction=0.5 resolves to a 0.75×ATR
-	// trail → trigger = 110 - 0.75×5 = 106.25.
+
 	if gotTrigger != 106.25 {
 		t.Fatalf("trigger=%v, want 106.25", gotTrigger)
 	}
@@ -1003,7 +981,7 @@ func TestRunPostTPStopLossAdjustment_DefersWhenSLNotArmed(t *testing.T) {
 	pos := &Position{
 		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
 		AvgCost: 100, EntryATR: 5, Side: "long",
-		StopLossOID:  0, // not yet armed
+		StopLossOID:  0,
 		TPOIDs:       []int64{0, 222},
 		TPArmedTiers: []bool{true, true},
 	}
@@ -1018,9 +996,6 @@ func TestRunPostTPStopLossAdjustment_DefersWhenSLNotArmed(t *testing.T) {
 	}
 }
 
-// #714: SL replace must cap at on-chain qty when virtual > on-chain (e.g. a
-// manual TP shrank on-chain before the reconciler caught up). Mirrors the
-// trailing/fixed-ATR SL placement sites that already use hlSLEffectiveQty.
 func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1055,8 +1030,6 @@ func TestRunPostTPStopLossAdjustment_CapsAtOnChainQty(t *testing.T) {
 	}
 }
 
-// Confirms the no-cap path: when on-chain >= virtual (or map is nil/missing),
-// the subprocess receives the virtual qty unchanged.
 func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1091,9 +1064,7 @@ func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
 }
 
 func TestFindHighestClearedTier(t *testing.T) {
-	// All cases here assume tiers were armed at some point (`armed` matches
-	// `oids` shape, all true). The "never armed" variant is exercised
-	// separately in TestFindHighestClearedTier_NeverArmedSkipped (#716 item 2).
+
 	mkArmed := func(oids []int64) []bool {
 		out := make([]bool, len(oids))
 		for i := range out {
@@ -1131,8 +1102,6 @@ func TestFindHighestClearedTier(t *testing.T) {
 	}
 }
 
-// #716 item 2 — a tier that was never armed (OID=0 with armed[i]=false) must
-// not count as cleared, even if a partial close occurred from some other path.
 func TestFindHighestClearedTier_NeverArmedSkipped(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1145,7 +1114,7 @@ func TestFindHighestClearedTier_NeverArmedSkipped(t *testing.T) {
 			name:  "never armed tier 0, armed tier 1 still resting",
 			oids:  []int64{0, 222},
 			armed: []bool{false, true},
-			// Neither qualifies: tier 0 never armed, tier 1 still has a positive OID.
+
 			wantClear: false,
 		},
 		{
@@ -1199,7 +1168,7 @@ func TestValidatePostTPStopLossRules_RejectsSLAfterOnNonTieredCloseRef(t *testin
 			Name: "tp_at_pct",
 			Params: map[string]interface{}{
 				"pct":      0.05,
-				"sl_after": "breakeven", // not honored — should be flagged
+				"sl_after": "breakeven",
 			},
 		},
 	}
@@ -1222,7 +1191,7 @@ func TestValidatePostTPStopLossRules_RejectsSLAfterOnNonTieredTier(t *testing.T)
 		Platform:        "hyperliquid",
 		StopLossATRMult: &atrSL,
 		CloseStrategy: &StrategyRef{
-			Name: "tiered_tp_pct", // not the ATR variant
+			Name: "tiered_tp_pct",
 			Params: map[string]interface{}{
 				"tp_tiers": []interface{}{
 					map[string]interface{}{"pct": 0.05, "close_fraction": 0.5, "sl_after": "breakeven"},
@@ -1263,10 +1232,6 @@ func TestValidatePostTPStopLossRules_NoOpWhenAbsent(t *testing.T) {
 	}
 }
 
-// --- #736: sl_after trend_regime parsing -----------------------------------
-
-// slAfterRegimeRaw is a helper that builds the implicit atr_offset trend_regime
-// shape from a (label → atr) map. Used by the regime parser tests below.
 func slAfterRegimeRaw(entries map[string]float64) map[string]interface{} {
 	tr := map[string]interface{}{}
 	for label, atr := range entries {
@@ -1294,8 +1259,7 @@ func TestParseSLAfterRule_RegimeATROffset(t *testing.T) {
 	if got.ATRMult != 0 || got.TrailATRMult != 0 {
 		t.Fatalf("scalar fields should be zero, got %+v", got)
 	}
-	// Signed atr values must round-trip — the regime surface is the one
-	// place where 0 and negative atrs are legal.
+
 	for label, want := range map[string]float64{
 		"trending_up":   0.0,
 		"trending_down": 0.0,
@@ -1437,8 +1401,7 @@ func TestParseSLAfterRule_RegimeErrors(t *testing.T) {
 			wantInErr: "pick one shape",
 		},
 		{
-			// Misplaced trail_atr_mult in an atr_offset regime config: the
-			// pre-review parser silently dropped it. Now it surfaces.
+
 			name: "atr_offset_regime_with_stray_trail_atr_mult",
 			raw: map[string]interface{}{
 				"kind": "atr_offset",
@@ -1452,7 +1415,7 @@ func TestParseSLAfterRule_RegimeErrors(t *testing.T) {
 			wantInErr: "pick one shape",
 		},
 		{
-			// Misplaced atr_offset key inside a trail_from_here regime block.
+
 			name: "trail_regime_with_stray_atr_offset",
 			raw: map[string]interface{}{
 				"trail_from_here": map[string]interface{}{
@@ -1517,7 +1480,7 @@ func TestSLAfterRule_EqualRegime(t *testing.T) {
 	if a.Equal(c) {
 		t.Fatalf("rules with different atr values should not be Equal")
 	}
-	// Scalar vs regime: different shapes.
+
 	scalar := SLAfterRule{Kind: "atr_offset", ATRMult: 0.5}
 	if a.Equal(scalar) {
 		t.Fatalf("scalar atr_offset must not Equal regime atr_offset")
@@ -1597,10 +1560,6 @@ func TestSLAfterRule_ResolveForRegime(t *testing.T) {
 	}
 }
 
-// validatePostTPStopLossRules already rejects trail_from_here on type=manual
-// by checking rule.Kind (lines ~385-394 in scheduler/post_tp_sl.go). The
-// regime variant carries the same Kind, so the gate fires for both shapes
-// — this test makes that contract explicit (#736 acceptance criterion).
 func TestValidatePostTPStopLossRules_RejectsTrailRegimeOnManual(t *testing.T) {
 	atrSL := 1.5
 	sc := StrategyConfig{
@@ -1638,8 +1597,6 @@ func TestValidatePostTPStopLossRules_RejectsTrailRegimeOnManual(t *testing.T) {
 	}
 }
 
-// TestCloseTierListParam locks in the #841 canonical tier-list key: only
-// "tp_tiers" is accepted after v15 migration dropped the "tiers" alias.
 func TestCloseTierListParam(t *testing.T) {
 	tpVal := []interface{}{map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 1.0}}
 
@@ -1667,9 +1624,6 @@ func TestCloseTierListParam(t *testing.T) {
 	}
 }
 
-// TestParseStrategyTPSLAfterRules_UnifiedBlock verifies #841 2b sl_after
-// resolution: the active regime's scalar per-tier sl_after and tier multiples
-// are selected from a unified per-regime block (select-then-scalar).
 func TestParseStrategyTPSLAfterRules_UnifiedBlock(t *testing.T) {
 	mkTier := func(mult, frac, frac2, m2 float64) []interface{} {
 		return []interface{}{

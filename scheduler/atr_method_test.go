@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// --- resolveATRMethod precedence (#1277) -----------------------------------
-
 func TestResolveATRMethodPrecedence(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -35,7 +33,7 @@ func TestResolveATRMethodPrecedence(t *testing.T) {
 			}
 		})
 	}
-	// nil cfg must not panic and falls back to the per-strategy value / default.
+
 	if got := resolveATRMethod(StrategyConfig{ATRMethod: "wilder"}, nil); got != ATRMethodWilder {
 		t.Fatalf("nil cfg with per-strategy wilder: got %q", got)
 	}
@@ -56,8 +54,6 @@ func TestValidATRMethodValue(t *testing.T) {
 		}
 	}
 }
-
-// --- config validation ------------------------------------------------------
 
 func TestValidateConfigRejectsUnknownATRMethod(t *testing.T) {
 	cfg := Config{
@@ -112,13 +108,6 @@ func TestValidateConfigAcceptsWilderATRMethod(t *testing.T) {
 	}
 }
 
-// --- hot reload -------------------------------------------------------------
-
-// The effective ATR smoothing method feeds EntryATR stamping and the live
-// close-evaluator ATR; flipping it while a position is open would re-base
-// in-flight stop/TP geometry. Blocked while open, allowed when flat — and the
-// guard must fire on the RESOLVED value, so a global flip is caught for
-// inheriting strategies too.
 func TestValidateHotReloadStateCompatibleATRMethod(t *testing.T) {
 	mkCfg := func(global, strategy string) *Config {
 		cfg := minimalReloadConfig([]StrategyConfig{{
@@ -162,7 +151,7 @@ func TestValidateHotReloadStateCompatibleATRMethod(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("open position: resolved method unchanged, want accept, got: %v", err)
 			}
-			// Every shape must be accepted while flat.
+
 			if err := validateHotReloadStateCompatible(old, next, flatState); err != nil {
 				t.Fatalf("flat: want accept, got: %v", err)
 			}
@@ -170,9 +159,6 @@ func TestValidateHotReloadStateCompatibleATRMethod(t *testing.T) {
 	}
 }
 
-// A global atr_method flip must never trip the open-position guard on an
-// options strategy — options have no ATR surface (the per-strategy field is
-// rejected at load), so an open options position must not block the fleet.
 func TestValidateHotReloadStateCompatibleATRMethodSkipsOptions(t *testing.T) {
 	mk := func(global string) *Config {
 		cfg := minimalReloadConfig([]StrategyConfig{{
@@ -234,8 +220,6 @@ func TestApplyHotReloadConfigAppliesATRMethodWhenFlat(t *testing.T) {
 	}
 }
 
-// --- argv / probe contract ---------------------------------------------------
-
 func TestAppendATRMethodArg(t *testing.T) {
 	got := appendATRMethodArg([]string{"a", "ETH", "1h"}, ATRMethodWilder)
 	want := []string{"a", "ETH", "1h", "--atr-method=wilder"}
@@ -244,11 +228,6 @@ func TestAppendATRMethodArg(t *testing.T) {
 	}
 }
 
-// The runtime signal-check argv unconditionally carries --atr-method, so the
-// startup probe argvs that mirror it must carry the flag too — otherwise an
-// asymmetric deploy (new Go, stale Python) passes the probe and dies on the
-// first real cycle. fetch-atr gained the flag as well (#1277 manual-open
-// parity). The execute argv never carries it, so executeProbeArgv must NOT.
 func TestProbeArgvsCarryATRMethod(t *testing.T) {
 	has := func(argv []string) bool {
 		for _, a := range argv {
@@ -272,11 +251,6 @@ func TestProbeArgvsCarryATRMethod(t *testing.T) {
 	}
 }
 
-// --- migration ---------------------------------------------------------------
-
-// v17 is additive (atr_method with an absent-field default); migration only
-// re-stamps the version. A v16 config must come out stamped 17 with its
-// contents otherwise intact.
 func TestMigrateConfigStampsV17(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -303,8 +277,6 @@ func TestMigrateConfigStampsV17(t *testing.T) {
 	}
 }
 
-// --- init --json -------------------------------------------------------------
-
 func TestGenerateConfigEmitsATRMethod(t *testing.T) {
 	cfg := generateConfig(InitOptions{ATRMethod: "wilder"})
 	if cfg.ATRMethod != "wilder" {
@@ -319,12 +291,6 @@ func TestGenerateConfigEmitsATRMethod(t *testing.T) {
 	}
 }
 
-// --- stamp-at-open / restart-drift hardening (#1277 optional) --------------
-
-// stampATRMethodAtOpenIfOpened freezes the resolved method on a FRESH open
-// only — mirrors RiskAnchorPrice/EntryATR/DirectionCertifiedAtOpen
-// freeze-at-entry semantics so a later config change never silently re-bases
-// what an already-open position was sized under.
 func TestStampATRMethodAtOpenIfOpenedFreshOpen(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -351,9 +317,6 @@ func TestStampATRMethodAtOpenIfOpenedFreshOpen(t *testing.T) {
 	}
 }
 
-// A scale-in add (opened=false) must never re-stamp — the frozen value must
-// keep reflecting what the ORIGINAL entry was sized under, exactly like
-// RiskAnchorPrice is not updated on adds.
 func TestStampATRMethodAtOpenIfOpenedSkipsAdds(t *testing.T) {
 	s := &StrategyState{ID: "s", Positions: map[string]*Position{
 		"BTC": {Symbol: "BTC", Quantity: 2, ATRMethodAtOpen: ATRMethodSimple},
@@ -366,7 +329,6 @@ func TestStampATRMethodAtOpenIfOpenedSkipsAdds(t *testing.T) {
 	}
 }
 
-// Defensive: nil state, missing symbol, and a nil position must never panic.
 func TestStampATRMethodAtOpenIfOpenedNoOp(t *testing.T) {
 	stampATRMethodAtOpenIfOpened(nil, "BTC", true, StrategyConfig{}, &Config{})
 	s := &StrategyState{ID: "s", Positions: map[string]*Position{}}
@@ -376,11 +338,6 @@ func TestStampATRMethodAtOpenIfOpenedNoOp(t *testing.T) {
 	}
 }
 
-// checkATRMethodDriftAtStartup is the only place that catches a config edit +
-// process restart (not SIGHUP) that changed a strategy's effective atr_method
-// while a position stayed open — validateHotReloadStateCompatible only runs
-// on the SIGHUP path and has no "old" resolved value to diff against a fresh
-// process's config load.
 func TestCheckATRMethodDriftAtStartup(t *testing.T) {
 	mkState := func(atrMethodAtOpen string, qty float64) *AppState {
 		return &AppState{Strategies: map[string]*StrategyState{
@@ -411,7 +368,7 @@ func TestCheckATRMethodDriftAtStartup(t *testing.T) {
 
 	t.Run("global flip caught for an inheriting strategy", func(t *testing.T) {
 		state := mkState(ATRMethodSimple, 1)
-		cfg := mkCfg("") // per-strategy empty, inherits global
+		cfg := mkCfg("")
 		cfg.ATRMethod = "wilder"
 		warnings := checkATRMethodDriftAtStartup(state, cfg)
 		if len(warnings) != 1 {
@@ -463,8 +420,6 @@ func TestCheckATRMethodDriftAtStartup(t *testing.T) {
 	})
 }
 
-// --- summary line -------------------------------------------------------------
-
 func TestSummaryLineSurfacesNonDefaultATRMethod(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", ATRMethod: "wilder"}
 	if line := formatStrategySummaryLine(sc, nil, nil); !strings.Contains(line, "atr=wilder") {
@@ -483,11 +438,6 @@ func TestSummaryLineSurfacesNonDefaultATRMethod(t *testing.T) {
 		t.Errorf("options must never carry the atr= tag: %s", line)
 	}
 }
-
-// --- manual-open stamping (#1277 review round 2) ----------------------------
-// Manual positions run live-recomputed ATR close evaluators (the #1115 default
-// is tiered_tp_atr_live), so an unstamped manual open would permanently hide
-// the position from checkATRMethodDriftAtStartup.
 
 func TestApplyManualActionOpenStampsATRMethod(t *testing.T) {
 	newState := func(id string) *AppState {
@@ -511,8 +461,7 @@ func TestApplyManualActionOpenStampsATRMethod(t *testing.T) {
 		state := newState("hl-manual-eth-live")
 		a := open
 		a.ATRMethod = ATRMethodSimple
-		// Drain-time config resolves wilder — the carried queue-time method must
-		// win, because the EntryATR on the row was computed under it.
+
 		cfg := &Config{ATRMethod: "wilder"}
 		if err := applyManualAction(state, cfg, scByID, a); err != nil {
 			t.Fatalf("applyManualAction: %v", err)
@@ -525,7 +474,7 @@ func TestApplyManualActionOpenStampsATRMethod(t *testing.T) {
 
 	t.Run("pre-upgrade row falls back to drain-time resolution", func(t *testing.T) {
 		state := newState("hl-manual-eth-live")
-		a := open // ATRMethod empty: row queued before the column existed
+		a := open
 		cfg := &Config{ATRMethod: "wilder"}
 		if err := applyManualAction(state, cfg, scByID, a); err != nil {
 			t.Fatalf("applyManualAction: %v", err)
@@ -568,8 +517,6 @@ func TestApplyLimitFillProgressStampsATRMethodAtFirstFill(t *testing.T) {
 		t.Fatalf("ATRMethodAtOpen after first fill = %+v, want %q", pos, ATRMethodWilder)
 	}
 
-	// A subsequent partial fill grows the position but never re-stamps — the
-	// method is frozen at open like EntryATR/RiskAnchorPrice.
 	o.FilledSize = 0.4
 	o.FillFee = 0.2
 	if _, err := applyLimitFillProgress(state, sc, o, 1.0, 2010, 0.5, 50, ATRMethodSimple, now); err != nil {

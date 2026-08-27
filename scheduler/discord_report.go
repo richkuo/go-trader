@@ -13,25 +13,16 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-// defaultReportRepo is the GitHub repo the /report-an-issue command files issues against
-// when discord.report_repo is unset.
 const defaultReportRepo = "richkuo/go-trader"
 
-// githubAPIBaseURL is the GitHub REST API root; var (not const) so tests can point
-// it at an httptest server.
 var githubAPIBaseURL = "https://api.github.com"
 
-// githubIssueRequest is the JSON body for POST /repos/{owner}/{repo}/issues.
 type githubIssueRequest struct {
 	Title  string   `json:"title"`
 	Body   string   `json:"body"`
 	Labels []string `json:"labels,omitempty"`
 }
 
-// buildIssueRequest assembles the GitHub issue payload from the slash-command
-// inputs, appending a footer that records who filed it via /report-an-issue. label is
-// applied only when non-empty (GitHub silently ignores labels that don't exist
-// on the repo).
 func buildIssueRequest(title, body, label, reporter string) githubIssueRequest {
 	footer := "Filed via `/go-trader-report-an-issue`"
 	if r := strings.TrimSpace(reporter); r != "" {
@@ -46,8 +37,6 @@ func buildIssueRequest(title, body, label, reporter string) githubIssueRequest {
 	return req
 }
 
-// createGitHubIssue POSTs a new issue and returns its html_url and number.
-// repo is "owner/name". The caller is responsible for supplying a non-empty token.
 func createGitHubIssue(ctx context.Context, client *http.Client, repo, token string, payload githubIssueRequest) (htmlURL string, number int, err error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -83,8 +72,6 @@ func createGitHubIssue(ctx context.Context, client *http.Client, repo, token str
 	return parsed.HTMLURL, parsed.Number, nil
 }
 
-// interactionUserLabel renders a human-readable reporter label from the invoking
-// user (works in both guild and DM interactions).
 func interactionUserLabel(i *discordgo.InteractionCreate) string {
 	var u *discordgo.User
 	if i.Member != nil && i.Member.User != nil {
@@ -102,9 +89,6 @@ func interactionUserLabel(i *discordgo.InteractionCreate) string {
 	return "Discord ID " + u.ID
 }
 
-// handleReport files a GitHub issue from the /report-an-issue slash command. Owner-DM-gated
-// in authorizeCommand. Defers the ACK because the GitHub round-trip can exceed
-// Discord's 3s deadline, then delivers the issue URL (or an error) as a follow-up.
 func (d *DiscordNotifier) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate, data discordgo.ApplicationCommandInteractionData) {
 	title := optionString(data.Options, "title", "")
 	body := optionString(data.Options, "body", "")

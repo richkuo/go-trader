@@ -6,25 +6,23 @@ import (
 	"time"
 )
 
-// OptionPosition represents a tracked options position.
 type OptionPosition struct {
 	ID              string    `json:"id"`
 	TradePositionID string    `json:"position_id,omitempty"`
 	Underlying      string    `json:"underlying"`
-	OptionType      string    `json:"option_type"` // "call" or "put"
+	OptionType      string    `json:"option_type"`
 	Strike          float64   `json:"strike"`
 	Expiry          string    `json:"expiry"`
 	DTE             float64   `json:"dte"`
-	Action          string    `json:"action"` // "buy" or "sell"
+	Action          string    `json:"action"`
 	Quantity        float64   `json:"quantity"`
-	EntryPremium    float64   `json:"entry_premium"` // in underlying terms
+	EntryPremium    float64   `json:"entry_premium"`
 	EntryPremiumUSD float64   `json:"entry_premium_usd"`
 	CurrentValueUSD float64   `json:"current_value_usd"`
 	Greeks          OptGreeks `json:"greeks"`
 	OpenedAt        time.Time `json:"opened_at"`
 }
 
-// OptGreeks holds option Greeks.
 type OptGreeks struct {
 	Delta float64 `json:"delta"`
 	Gamma float64 `json:"gamma"`
@@ -32,7 +30,6 @@ type OptGreeks struct {
 	Vega  float64 `json:"vega"`
 }
 
-// OptionsAction from the Python check_options.py output.
 type OptionsAction struct {
 	Action     string    `json:"action"`
 	OptionType string    `json:"option_type"`
@@ -41,11 +38,10 @@ type OptionsAction struct {
 	DTE        float64   `json:"dte"`
 	Premium    float64   `json:"premium"`
 	PremiumUSD float64   `json:"premium_usd"`
-	Quantity   float64   `json:"quantity,omitempty"` // defaults to 1 if absent
+	Quantity   float64   `json:"quantity,omitempty"`
 	Greeks     OptGreeks `json:"greeks"`
 }
 
-// OptionsResult is the JSON output from check_options.py.
 type OptionsResult struct {
 	Strategy   string          `json:"strategy"`
 	Underlying string          `json:"underlying"`
@@ -58,7 +54,6 @@ type OptionsResult struct {
 	Error      string          `json:"error,omitempty"`
 }
 
-// ExecuteOptionsSignal processes options signals and manages positions.
 func ExecuteOptionsSignal(s *StrategyState, result *OptionsResult, logger *StrategyLogger) (int, error) {
 	if result.Signal == 0 || len(result.Actions) == 0 {
 		return 0, nil
@@ -115,7 +110,6 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		return 0, nil
 	}
 
-	// Calculate fees based on platform.
 	fee := CalculateOptionFee(s.Platform, cost, 1.0)
 
 	totalCost := cost + fee
@@ -142,7 +136,7 @@ func executeOptionBuy(s *StrategyState, result *OptionsResult, action *OptionsAc
 		Quantity:        qty,
 		EntryPremium:    action.Premium,
 		EntryPremiumUSD: cost,
-		CurrentValueUSD: cost, // initial value = cost
+		CurrentValueUSD: cost,
 		Greeks:          action.Greeks,
 		OpenedAt:        now,
 	}
@@ -181,13 +175,11 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		return 0, nil
 	}
 
-	// Collateral check for naked puts
 	if action.OptionType == "put" && action.Strike*qty > s.Cash {
 		logger.Info("Insufficient collateral for naked put: strike*qty=$%.2f > cash=$%.2f", action.Strike*qty, s.Cash)
 		return 0, nil
 	}
 
-	// Calculate fees based on platform.
 	fee := CalculateOptionFee(s.Platform, premium, 1.0)
 
 	netPremium := premium - fee
@@ -209,8 +201,8 @@ func executeOptionSell(s *StrategyState, result *OptionsResult, action *OptionsA
 		Action:          "sell",
 		Quantity:        qty,
 		EntryPremium:    action.Premium,
-		EntryPremiumUSD: netPremium,  // net after fees
-		CurrentValueUSD: -netPremium, // liability
+		EntryPremiumUSD: netPremium,
+		CurrentValueUSD: -netPremium,
 		Greeks:          action.Greeks,
 		OpenedAt:        now,
 	}
@@ -264,7 +256,7 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 				Details:     fmt.Sprintf("Close %s PnL=$%.2f", pos.ID, pnl),
 				IsClose:     true,
 				RealizedPnL: pnl,
-				PnLGross:    true, // no fee modeled on option closes: gross == net
+				PnLGross:    true,
 			}
 			trade.Regime = s.Regime
 			RecordTrade(s, trade)
@@ -278,7 +270,6 @@ func executeOptionClose(s *StrategyState, result *OptionsResult, action *Options
 	return closed, nil
 }
 
-// EncodePositionsJSON serializes current option positions for passing to Python scripts.
 func EncodePositionsJSON(positions map[string]*OptionPosition) string {
 	if len(positions) == 0 {
 		return "[]"
@@ -314,11 +305,8 @@ func EncodePositionsJSON(positions map[string]*OptionPosition) string {
 	return string(b)
 }
 
-// EncodeAllPositionsJSON serializes both option and spot positions into a single JSON array.
-// Spot positions include "position_type": "spot" so Python wheel logic can distinguish them.
-// Option entries omit position_type (backward-compatible: existing Python code ignores unknown items).
 func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[string]*Position) string {
-	// Use interface{} slice so option and spot entries can coexist in one array.
+
 	type optEntry struct {
 		OptionType string  `json:"option_type"`
 		Strike     float64 `json:"strike"`
@@ -332,7 +320,7 @@ func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[strin
 		Vega       float64 `json:"vega"`
 	}
 	type spotEntry struct {
-		PositionType string  `json:"position_type"` // always "spot"
+		PositionType string  `json:"position_type"`
 		Symbol       string  `json:"symbol"`
 		Quantity     float64 `json:"quantity"`
 		AvgCost      float64 `json:"avg_cost"`
@@ -370,8 +358,6 @@ func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[strin
 	return string(b)
 }
 
-// CheckThetaHarvest evaluates open options positions for early exit.
-// Returns trade details for any positions that were closed.
 func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *StrategyLogger) (int, []string) {
 	if cfg == nil || !cfg.Enabled {
 		return 0, nil
@@ -380,7 +366,6 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 	trades := 0
 	var details []string
 
-	// Collect positions to close (can't modify map while iterating)
 	type closeAction struct {
 		id     string
 		reason string
@@ -388,7 +373,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 	var toClose []closeAction
 
 	for id, pos := range s.OptionPositions {
-		// Theta harvesting only applies to sold options
+
 		if pos.Action != "sell" {
 			continue
 		}
@@ -398,17 +383,14 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			continue
 		}
 
-		// Current cost to buy back = absolute value of current liability
-		currentCost := -pos.CurrentValueUSD // CurrentValueUSD is negative for sold options
+		currentCost := -pos.CurrentValueUSD
 		if currentCost < 0 {
 			currentCost = 0
 		}
 
-		// Profit captured so far
 		profitUSD := entryPremium - currentCost
 		profitPct := (profitUSD / entryPremium) * 100
 
-		// Check profit target (e.g. captured 60% of premium)
 		if cfg.ProfitTargetPct > 0 && profitPct >= cfg.ProfitTargetPct {
 			toClose = append(toClose, closeAction{
 				id:     id,
@@ -417,7 +399,6 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			continue
 		}
 
-		// Check stop loss (e.g. loss exceeds 200% of premium)
 		if cfg.StopLossPct > 0 && profitPct < 0 {
 			lossPct := -profitPct
 			if lossPct >= cfg.StopLossPct {
@@ -429,7 +410,6 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			}
 		}
 
-		// Check DTE floor — force close near expiry to avoid gamma risk
 		if cfg.MinDTEClose > 0 && pos.DTE > 0 && pos.DTE <= cfg.MinDTEClose {
 			toClose = append(toClose, closeAction{
 				id:     id,
@@ -439,14 +419,12 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 		}
 	}
 
-	// Execute closes
 	for _, c := range toClose {
 		pos := s.OptionPositions[c.id]
 		if pos == nil {
 			continue
 		}
 
-		// Buy back the sold option at current value
 		buybackCost := -pos.CurrentValueUSD
 		if buybackCost < 0 {
 			buybackCost = 0
@@ -470,7 +448,7 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 			Details:     fmt.Sprintf("Theta harvest close %s PnL=$%.2f", pos.ID, pnl),
 			IsClose:     true,
 			RealizedPnL: pnl,
-			PnLGross:    true, // no fee modeled on option closes: gross == net
+			PnLGross:    true,
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)

@@ -19,8 +19,6 @@ test = [
     "pytest-mock>=3.14.0",
     "pytest-xdist>=3.6.0",
 ]
-# Charts for the consolidation research scripts only; not needed by the
-# production scheduler. Install with: uv sync --extra research
 research = [
     "matplotlib>=3.8.0",
 ]

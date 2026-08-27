@@ -12,69 +12,42 @@ import (
 	"time"
 )
 
-// StatusServer provides an HTTP endpoint for portfolio status.
 type StatusServer struct {
 	state          *AppState
 	mu             *sync.RWMutex
-	statusToken    string   // if non-empty, /status requires Authorization: Bearer <token>
-	priceSymbols   []string // BinanceUS spot symbols to always fetch prices for
-	futuresSymbols []string // CME futures contracts that need TopStep marks (#261)
-	hlPerpsCoins   []string // HL perps coins that need venue-native marks (#263)
-	okxPerpsCoins  []string // OKX perps coins that need venue-native marks (#263)
-	stateDB        *StateDB // SQLite DB for /history queries (may be nil)
+	statusToken    string
+	priceSymbols   []string
+	futuresSymbols []string
+	hlPerpsCoins   []string
+	okxPerpsCoins  []string
+	stateDB        *StateDB
 	candleFetcher  UICandleFetcher
 	candleCache    *UICandleCache
-	tuning         *tuningRunManager // #1339 persistent dedicated research lane
+	tuning         *tuningRunManager
 
-	// strategiesMu protects `strategies` independently of `mu`. SIGHUP holds
-	// the global state `mu.Lock()` across the reload (see config_reload.go);
-	// UpdateStrategies is invoked from that path, so reusing `mu` here would
-	// deadlock. Readers on the /api/strategies path also benefit: they no
-	// longer contend with the scheduler's state writes during dashboard polls.
 	strategiesMu  sync.RWMutex
-	strategies    []StrategyConfig // strategy configs for initial capital lookup
-	configPath    string           // live config file for tuner Apply (#811)
-	regime        *RegimeConfig    // global regime settings for simulate preview
-	configWriteMu sync.Mutex       // serializes dashboard config Apply writes
+	strategies    []StrategyConfig
+	configPath    string
+	regime        *RegimeConfig
+	configWriteMu sync.Mutex
 
-	// #1231 config-derived context for the read-only ops endpoints, refreshed
-	// via SetConfigContext on startup and SIGHUP. Guarded by strategiesMu
-	// (SetConfigContext runs from the reload path which already holds mu).
-	intervalSeconds   int              // global check interval for leaderboard entries
-	userCloseDefaults CloseDefaultsMap // user_defaults.close for /api/closing-strategies override marking
+	intervalSeconds   int
+	userCloseDefaults CloseDefaultsMap
 
-	// #1256 mutation surface. globalNotifyRatchet mirrors the top-level
-	// notify_ratchet_triggers (#1110) for GET /api/config/notifications
-	// (guarded by strategiesMu, refreshed via SetConfigContext).
-	// reloadConfig signals the process to hot-reload after a UI config write
-	// (requestSIGHUPReload in production; injectable for tests).
 	globalNotifyRatchet *bool
 	reloadConfig        func() error
 
-	// #1257 trade-action surface (ui_confirm.go / ui_trade_actions.go).
-	// uiCfg is the live *Config snapshot (guarded by strategiesMu, refreshed
-	// via SetConfigContext); uiNotifier is the daemon notifier (SetNotifier).
-	// confirmNonces holds the short-lived single-use confirm nonces.
 	uiCfg         *Config
 	uiNotifier    *MultiNotifier
 	confirmMu     sync.Mutex
 	confirmNonces map[string]confirmNonceEntry
-	// tradeActionMu serializes dashboard trade-action submits so the
-	// double-fire guard's check-then-submit is atomic (#1260 review).
+
 	tradeActionMu sync.Mutex
-	// tradeDepsHook lets tests stub the on-chain exec seams of the manual
-	// cores (nil in production).
+
 	tradeDepsHook func(*manualCoreDeps)
-	// #1258 structural mutations (ui_structural.go): restartFn is the restart
-	// trigger fired when a confirmed structural write asked for
-	// apply-via-restart (nil → restartSelf; injectable for tests).
+
 	restartFn func() error
 
-	// Throttled logging for repeated mark-fetch failures on the /status
-	// rail. /status can be polled frequently (oncall dashboard, monitoring),
-	// so we don't want to spam logs on every hit — but silently discarding
-	// errors leaves operators blind to a broken price rail. Emit the first
-	// occurrence immediately, then at most once per perpsErrLogInterval.
 	perpsErrMu              sync.Mutex
 	lastFuturesErrLoggedAt  time.Time
 	lastFuturesModeLoggedAt time.Time
@@ -82,21 +55,14 @@ type StatusServer struct {
 	lastOKXPerpsErrLoggedAt time.Time
 }
 
-// perpsErrLogInterval caps how often /status logs repeated mark-fetch
-// failures. 5m produces a reasonable audit trail without drowning the log
-// on sustained outages during frequent dashboard polling.
 const perpsErrLogInterval = 5 * time.Minute
 
-// DefaultStatusPort is the default TCP port for the status HTTP server.
 const DefaultStatusPort = 8099
 
-// statusPortMaxAttempts bounds the auto-fallback sweep. On collision we try
-// port, port+1, ..., port+statusPortMaxAttempts-1 before giving up.
 const statusPortMaxAttempts = 5
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
-	// Spot symbols fetched via BinanceUS; perps marks now sourced from the
-	// venue the position lives on (#263); futures on the TopStep rail (#261).
+
 	symbols := collectPriceSymbols(strategies)
 	futuresSymbols := collectFuturesMarkSymbols(strategies)
 	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
@@ -116,10 +82,6 @@ func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, stra
 	}
 }
 
-// UpdateStrategies refreshes config-derived status metadata after a hot reload.
-// Uses the dedicated strategiesMu — not the global state mu — because the SIGHUP
-// reload path already holds mu.Lock() when it calls this through
-// applyHotReloadConfig (config_reload.go), and the global mu is not reentrant.
 func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 	if ss == nil {
 		return
@@ -129,10 +91,6 @@ func (ss *StatusServer) UpdateStrategies(strategies []StrategyConfig) {
 	ss.strategies = append([]StrategyConfig(nil), strategies...)
 }
 
-// logFuturesErrThrottled emits a [WARN] line for a fetch_futures_marks
-// failure on the /status path, skipping emission if we have already
-// logged within perpsErrLogInterval. Thread-safe — /status handlers
-// run concurrently across requests.
 func (ss *StatusServer) logFuturesErrThrottled(err error) {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -145,8 +103,6 @@ func (ss *StatusServer) logFuturesErrThrottled(err error) {
 		ss.futuresSymbols, err, perpsErrLogInterval)
 }
 
-// logFuturesModeThrottled emits a [WARN] line when fetch_futures_marks
-// silently downgraded from live to paper mode on the /status path.
 func (ss *StatusServer) logFuturesModeThrottled() {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -159,8 +115,6 @@ func (ss *StatusServer) logFuturesModeThrottled() {
 		perpsErrLogInterval)
 }
 
-// logHLPerpsErrThrottled emits a [WARN] line for an HL perps marks fetch
-// failure on the /status path, throttled to once per perpsErrLogInterval.
 func (ss *StatusServer) logHLPerpsErrThrottled(err error) {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -173,8 +127,6 @@ func (ss *StatusServer) logHLPerpsErrThrottled(err error) {
 		ss.hlPerpsCoins, err, perpsErrLogInterval)
 }
 
-// logOKXPerpsErrThrottled emits a [WARN] line for an OKX perps marks fetch
-// failure on the /status path, throttled to once per perpsErrLogInterval.
 func (ss *StatusServer) logOKXPerpsErrThrottled(err error) {
 	ss.perpsErrMu.Lock()
 	defer ss.perpsErrMu.Unlock()
@@ -187,9 +139,6 @@ func (ss *StatusServer) logOKXPerpsErrThrottled(err error) {
 		ss.okxPerpsCoins, err, perpsErrLogInterval)
 }
 
-// resolveStatusPort applies the precedence CLI flag > config > DefaultStatusPort.
-// Non-positive values on either input are treated as "unset" and fall through
-// to the next layer. Returns DefaultStatusPort if neither is set.
 func resolveStatusPort(cliFlag, cfgPort int) int {
 	if cliFlag > 0 {
 		return cliFlag
@@ -200,12 +149,6 @@ func resolveStatusPort(cliFlag, cfgPort int) int {
 	return DefaultStatusPort
 }
 
-// bindWithFallback tries to bind localhost:port, then port+1, ..., up to
-// maxAttempts consecutive ports. Returns the bound listener and the port
-// that actually succeeded, or an error if all attempts failed. Each failed
-// attempt is logged with the real net.Listen error (not a speculative
-// "busy" message), so permission-denied and parse errors aren't masked
-// as port collisions.
 func bindWithFallback(port, maxAttempts int) (net.Listener, int, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -236,26 +179,20 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
 	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
 	mux.HandleFunc("/api/regime/transitions", ss.handleAPIRegimeTransitions)
-	// #1231 read-only ops endpoints (ui_ops.go). "/api/strategies/dead" is an
-	// exact pattern, so it wins over the "/api/strategies/" prefix handler.
+
 	mux.HandleFunc("/api/leaderboard", ss.handleAPILeaderboard)
 	mux.HandleFunc("/api/diagnostics", ss.handleAPIDiagnostics)
 	mux.HandleFunc("/api/cashflow", ss.handleAPICashflow)
 	mux.HandleFunc("/api/strategies/dead", ss.handleAPIDeadStrategies)
 	mux.HandleFunc("/api/closing-strategies", ss.handleAPIClosingStrategies)
 	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
-	// #1339 persistent strategy-tuning jobs. The exact collection route
-	// handles GET/POST; the longer prefix serves one stable run id.
-	// #1341 operator-explicit promotion (exact /apply sibling; never under /runs/).
+
 	mux.HandleFunc("/api/tuning/runs", ss.handleAPITuningRuns)
 	mux.HandleFunc("/api/tuning/runs/", ss.handleAPITuningRun)
 	mux.HandleFunc("/api/tuning/apply", ss.handleAPITuningApply)
-	// #1256 low-risk mutation surface (ui_mutations.go): global notification
-	// toggle; per-strategy pause + notification toggles route through the
-	// "/api/strategies/" prefix handler below.
+
 	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
-	// #1257 trade-action confirm nonce; the trade-action endpoints route
-	// through the "/api/strategies/" prefix handler below.
+
 	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
 	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
@@ -266,13 +203,7 @@ func (ss *StatusServer) Start(port int) {
 		return
 	}
 	if boundPort != port {
-		// Prominent fallback notice: operators running `--once` next to a
-		// live instance used to get a hard port-collision error; now the
-		// bind silently advances, so make the advance itself visible. A
-		// fallback on the daemon path can also mean a duplicate instance is
-		// already bound to the configured port — the #849 state-DB lock is the
-		// authoritative guard, but flag it loudly here too and point at the
-		// /health pid as the external detection signal.
+
 		fmt.Printf("[server] WARNING: requested port %d was in use, bound to %d instead — another go-trader may already be running on %d; compare /health pid across ports\n", port, boundPort, port)
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
@@ -281,9 +212,7 @@ func (ss *StatusServer) Start(port int) {
 	if ss.statusToken != "" {
 		fmt.Printf("[server] Dashboard API requires the configured status token\n")
 	} else {
-		// #1229/#1256: mutations (incl. leverage/direction/stop-loss via the
-		// tuner) are open to any loopback client when no token is set. Fine on
-		// a single-user host; on a shared host, set status_token.
+
 		fmt.Printf("[server] NOTE: status_token unset — dashboard mutations are open to any local (loopback) client; set status_token if other users can reach this host\n")
 	}
 	go func() {
@@ -296,16 +225,8 @@ func (ss *StatusServer) Start(port int) {
 func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// `pid` (#849) lets external monitoring detect a duplicate from the
-	// outside: alert when health.pid != systemd MainPID, or when two ports
-	// (8099/8100) both report healthy with different pids. It complements the
-	// state-DB flock — a cheap detection aid, not a replacement. Included on
-	// every branch (incl. draining) so the signal is always available.
 	pid := os.Getpid()
 
-	// 503 once SIGTERM has fired so any future load-balancer-style probe
-	// stops sending traffic immediately. Returns before the staleness check
-	// since the daemon is intentionally winding down.
 	if isDraining() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]any{"status": "draining", "pid": pid})
@@ -316,11 +237,6 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	lastCycle := ss.state.LastCycle
 	ss.mu.RUnlock()
 
-	// `version` is the build-stamped Version (#682) so scripts/update.sh can
-	// confirm the post-restart process matches the just-built binary before
-	// declaring the update successful (and rolling back otherwise). update.sh
-	// matches the `"version":"<ver>"` substring, which the sorted-key JSON
-	// encoding preserves regardless of the added pid field.
 	resp := map[string]any{
 		"status":  "ok",
 		"version": Version,
@@ -335,7 +251,7 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// #38: Optional bearer token auth for /status.
+
 	if ss.statusToken != "" {
 		if r.Header.Get("Authorization") != "Bearer "+ss.statusToken {
 			w.Header().Set("Content-Type", "application/json")
@@ -347,7 +263,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	prices := ss.fetchLiveMarkPrices()
 
-	// Re-acquire read lock to build the response
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
@@ -365,19 +280,19 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PoolBudget                     bool                       `json:"pool_budget,omitempty"`
 		RiskState                      RiskState                  `json:"risk_state"`
 		Regime                         string                     `json:"regime,omitempty"`
-		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`          // #1278: entry gate is actively failing closed — allowed_regimes configured, policy "closed", strategy flat, and the cycle store has no gate label; fresh opens are held
-		BaseDirection                  string                     `json:"base_direction,omitempty"`                   // #779: base direction from config (pre-policy resolution)
-		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`               // #779: base invert from config (pre-policy resolution)
-		EffectiveDirection             string                     `json:"effective_direction,omitempty"`              // #779: resolved direction for the active regime (policy override or base)
-		EffectiveInvertSignal          bool                       `json:"effective_invert_signal,omitempty"`          // #779: resolved invert for the active regime
-		RegimeDirectionalPolicy        bool                       `json:"regime_directional_policy,omitempty"`        // #779: true when strategy has a policy block configured
-		EffectivePolicyRegime          string                     `json:"effective_policy_regime,omitempty"`          // #779: regime key the resolver used (pos.Regime while open, current regime when flat); shown only when policy is configured
-		DirectionalCertificationStatus string                     `json:"directional_certification_status,omitempty"` // #1157: certified|expired|uncertified for the strategy's (asset,tf,classifier) cell
-		DirectionalCertificationCell   string                     `json:"directional_certification_cell,omitempty"`   // #1157: (asset,timeframe,classifier) certification key
-		RegimeDivergence               *RegimeDivergenceState     `json:"regime_divergence,omitempty"`                // #907: active window-divergence state; nil when none
-		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`                   // #998: active regime-profile allocation switch state; nil when none
-		Paused                         bool                       `json:"paused,omitempty"`                           // #1150: strategy is paused — position-increasing signals held; closes and SL/TP management still run
-		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`                            // #1159: auto-managed correlated hedge leg config + current leg; nil when no hedge is configured. Position rows carry hedge_for so the UI can badge the leg itself.
+		RegimeGateFailClosed           bool                       `json:"regime_gate_fail_closed,omitempty"`
+		BaseDirection                  string                     `json:"base_direction,omitempty"`
+		BaseInvertSignal               bool                       `json:"base_invert_signal,omitempty"`
+		EffectiveDirection             string                     `json:"effective_direction,omitempty"`
+		EffectiveInvertSignal          bool                       `json:"effective_invert_signal,omitempty"`
+		RegimeDirectionalPolicy        bool                       `json:"regime_directional_policy,omitempty"`
+		EffectivePolicyRegime          string                     `json:"effective_policy_regime,omitempty"`
+		DirectionalCertificationStatus string                     `json:"directional_certification_status,omitempty"`
+		DirectionalCertificationCell   string                     `json:"directional_certification_cell,omitempty"`
+		RegimeDivergence               *RegimeDivergenceState     `json:"regime_divergence,omitempty"`
+		RegimeProfile                  *RegimeProfileState        `json:"regime_profile,omitempty"`
+		Paused                         bool                       `json:"paused,omitempty"`
+		Hedge                          *HedgeStatus               `json:"hedge,omitempty"`
 	}
 
 	type StatusResp struct {
@@ -405,8 +320,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ReconciliationGaps: ss.state.ReconciliationGaps,
 	}
 
-	// Build config lookup for EffectiveInitialCapital. strategies has its own
-	// mutex now — see the strategiesMu doc on StatusServer.
 	ss.strategiesMu.RLock()
 	cfgByID := make(map[string]StrategyConfig, len(ss.strategies))
 	for _, sc := range ss.strategies {
@@ -423,10 +336,7 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-		// #779: surface base + effective directional policy so operators can
-		// verify why the bot is in long vs. short mode. Effective values are
-		// what the next signal will be evaluated under — pulled by replaying
-		// the resolver against the strategy's first open position (or flat).
+
 		dirView := directionalStatusForStrategy(sc, s, ss.regime, time.Now().UTC())
 
 		resp.Strategies[id] = StratStatus{
@@ -463,8 +373,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// fetchLiveMarkPrices returns best-effort mark prices for /status and dashboard
-// API handlers. Call without holding ss.mu.
 func (ss *StatusServer) fetchLiveMarkPrices() map[string]float64 {
 	symbolSet := make(map[string]bool)
 	for _, sym := range ss.priceSymbols {
@@ -518,8 +426,6 @@ func (ss *StatusServer) fetchLiveMarkPrices() map[string]float64 {
 	return prices
 }
 
-// directionalStatusView bundles the #779/#1157 directional-policy display
-// fields shared by /status and the dashboard per-strategy status endpoint.
 type directionalStatusView struct {
 	BaseDirection         string
 	BaseInvertSignal      bool
@@ -531,10 +437,6 @@ type directionalStatusView struct {
 	CertCell              string
 }
 
-// directionalStatusForStrategy replays the directional-policy resolver
-// (cert-gated per #1085/#1157) against the strategy's first open position, or
-// the live regime when flat. Read-only; caller supplies a consistent snapshot
-// of the strategy state (call under ss.mu.RLock, or on a cloned snapshot).
 func directionalStatusForStrategy(sc StrategyConfig, s *StrategyState, rc *RegimeConfig, now time.Time) directionalStatusView {
 	view := directionalStatusView{
 		BaseDirection:    EffectiveDirection(sc),

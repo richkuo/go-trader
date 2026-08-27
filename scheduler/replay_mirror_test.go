@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// #1431 — paper mirror apply path. These tests mutate the package-level
-// replayMirrorProgress high-water map; no t.Parallel().
-
 func replayMirrorTestSetup(t *testing.T, id string) (StrategyConfig, *StrategyState, *StrategyLogger) {
 	t.Helper()
 	sc := StrategyConfig{
@@ -51,18 +48,18 @@ func TestMirrorReplayOpenBooksLiveFill(t *testing.T) {
 	if pos == nil {
 		t.Fatal("no position booked")
 	}
-	// Live's ACTUAL filled qty + VWAP — not paper sizing, not paper's mark.
+
 	if pos.Quantity != 0.5 || pos.AvgCost != 1908.25 || pos.Side != "long" {
 		t.Errorf("position mismatch: %+v", pos)
 	}
-	// Live's decision timestamp is mirrored for hold-duration analytics.
+
 	if !pos.OpenedAt.Equal(decidedAt) {
 		t.Errorf("OpenedAt = %v, want %v", pos.OpenedAt, decidedAt)
 	}
 	if len(details) != 1 || !strings.Contains(details[0], "REPLAY OPEN") {
 		t.Errorf("details = %v", details)
 	}
-	// The open trade carries live's timestamp and the mirror tag.
+
 	if len(s.TradeHistory) != 1 || !s.TradeHistory[0].Timestamp.Equal(decidedAt) {
 		t.Fatalf("trade history = %+v", s.TradeHistory)
 	}
@@ -103,8 +100,7 @@ func TestMirrorReplayFullCloseBooksMirrorReason(t *testing.T) {
 		t.Fatalf("closed positions = %d, want 1", len(s.ClosedPositions))
 	}
 	cp := s.ClosedPositions[0]
-	// Paper books at its own current mark (1902), not live's fill (1900.5) —
-	// the sanctioned replay-slippage drift.
+
 	if cp.CloseReason != "replay_live_mirror" || cp.ClosePrice != 1902.0 {
 		t.Errorf("closed position = %+v, want reason replay_live_mirror @ 1902", cp)
 	}
@@ -115,8 +111,7 @@ func TestMirrorReplayFullCloseBooksMirrorReason(t *testing.T) {
 
 func TestMirrorReplayFullCloseWhenAlreadyFlat(t *testing.T) {
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	// Paper's own trailing SL beat the mirror (the trailing_stop_loss_paper
-	// carve-out): the full_close row is consumed as a no-op, not an error.
+
 	pending := []ReplayDecision{
 		{DecisionID: 9, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, CloseReason: "signal"},
 	}
@@ -166,8 +161,7 @@ func TestMirrorReplayPartialCloseReduces(t *testing.T) {
 
 func TestMirrorReplayDriftSkipsWithoutWedging(t *testing.T) {
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-	// Paper already holds a position when live's open arrives (drift) — the
-	// row is consumed with a WARN, and LATER rows still apply.
+
 	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 	pending := []ReplayDecision{
 		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1908},
@@ -195,9 +189,7 @@ func TestMirrorReplayHighWaterPreventsDoubleApply(t *testing.T) {
 	if trades != 2 || len(applied) != 2 {
 		t.Fatalf("first pass trades=%d applied=%v, want 2/2", trades, applied)
 	}
-	// Simulate a MarkDecisionsApplied failure: the same rows come back next
-	// cycle. The in-memory high-water must re-mark WITHOUT re-applying — a
-	// repeated scale_in would double the book.
+
 	applied, trades, _, _ = applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger)
 	if trades != 0 {
 		t.Fatalf("second pass re-applied %d trades — double-apply protection failed", trades)
@@ -211,10 +203,7 @@ func TestMirrorReplayHighWaterPreventsDoubleApply(t *testing.T) {
 }
 
 func TestMirrorSuppressionWiring(t *testing.T) {
-	// Structural lock (mirrors hurst_gate_wiring_test.go): the HL perps
-	// dispatch must hold the mirror's open suppression through
-	// pausedBlocksSignal so closes/reductions pass and only position-
-	// increasing signals are held.
+
 	src := string(mustReadFile(t, "main.go"))
 	if !strings.Contains(src, "replayMirrorPaperActive(sc) && pausedBlocksSignal(") {
 		t.Fatal("HL perps dispatch missing the #1431 replay-mirror suppression arm paired with pausedBlocksSignal")
@@ -231,8 +220,7 @@ func TestMirrorSuppressionWiring(t *testing.T) {
 }
 
 func TestMergeTradeDetailsPreservesEarlierNativeAction(t *testing.T) {
-	// Review optional (PR #1435 round 4): a same-cycle paper SL close must
-	// still appear in the digest after the mirror books a later action.
+
 	sl := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
 	replay := []string{"[hl-paper-eth] REPLAY OPEN long ETH 0.500000 @ $1908.25"}
 	got := mergeTradeDetails(sl, replay...)
@@ -257,8 +245,7 @@ func TestMergeTradeDetailsJoinsMultipleReplayRowsWithoutDroppingNative(t *testin
 }
 
 func TestMergeTradeDetailsEmptyReplayKeepsNative(t *testing.T) {
-	// Must-survive (3): replayTrades==0 does not call merge, but if it did
-	// with empty parts the native detail must survive.
+
 	native := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
 	if got := mergeTradeDetails(native); got != native {
 		t.Fatalf("empty parts dropped native: %q", got)
@@ -271,16 +258,8 @@ func TestMergeTradeDetailsEmptyReplayKeepsNative(t *testing.T) {
 	}
 }
 
-// ─── review-round-1 regression tests (atomicity, stamps, index) ─────────────
-
 func TestMirrorReplayPersistedWatermarkSurvivesRestart(t *testing.T) {
-	// Review finding 1, must-survive case (2)+(3): the process crashed AFTER
-	// SaveState persisted the open (row 1) + scale-in (row 2) and the
-	// watermark, but BEFORE MarkDecisionsApplied flipped the shared rows. On
-	// restart the in-memory high-water is empty; rows 1-2 come back pending.
-	// The persisted watermark must re-mark them WITHOUT re-applying — a
-	// repeated scale_in would double the book — while the genuinely new row 3
-	// still applies.
+
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
 	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1905, Side: "long", Multiplier: 1}
 	s.ReplayMirrorWatermark = 2
@@ -318,11 +297,10 @@ func TestMirrorReplayWatermarkAdvancesOnApply(t *testing.T) {
 }
 
 func TestMirrorReplayOpenSeedsLiveStamps(t *testing.T) {
-	// Review optional 1: live's open-time EntryATR/regime ride the row, and the
-	// mirror seeds them even when paper's own payload disagrees on the bar.
+
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
 	result := replayTestResult()
-	result.Indicators["atr"] = 99.0 // paper disagrees with live's 42.5
+	result.Indicators["atr"] = 99.0
 	pending := []ReplayDecision{
 		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, EntryATR: 42.5, Regime: "trending_up"},
 	}
@@ -339,8 +317,7 @@ func TestMirrorReplayOpenSeedsLiveStamps(t *testing.T) {
 }
 
 func TestMirrorReplayOpenFallsBackToPaperStamps(t *testing.T) {
-	// Rows written before the entry_atr/regime columns existed (0/"") keep the
-	// paper-payload stamps.
+
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
 	result := replayTestResult()
 	result.Indicators["atr"] = 33.0
@@ -356,9 +333,7 @@ func TestMirrorReplayOpenFallsBackToPaperStamps(t *testing.T) {
 }
 
 func TestMirrorSaveBeforeMarkWiring(t *testing.T) {
-	// Structural lock for review finding 1's invariant: inside the HL perps
-	// replay block the strategy-scoped state save (book + watermark + trades +
-	// diagnostics, one transaction) must run BEFORE the shared log's mark-applied.
+
 	src := string(mustReadFile(t, "main.go"))
 	applyIdx := strings.Index(src, "applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)")
 	if applyIdx < 0 {
@@ -378,9 +353,7 @@ func TestMirrorSaveBeforeMarkWiring(t *testing.T) {
 }
 
 func TestMirrorReplaySuspendsEagerTradePersist(t *testing.T) {
-	// Review optional (PR #1435 round 2): apply must not InsertTrade before
-	// SaveStrategyBook, so a kill during the save cannot leave a trade row while
-	// rolling back the watermark.
+
 	src := string(mustReadFile(t, "replay_mirror.go"))
 	if !strings.Contains(src, "defer suspendEagerTradePersist()()") {
 		t.Fatal("applyReplayedLiveDecisions missing suspendEagerTradePersist — replayed trades would eager-insert before the watermark save")
@@ -419,11 +392,7 @@ func TestMirrorReplaySuspendsEagerTradePersist(t *testing.T) {
 }
 
 func TestMirrorReplayKillDuringSaveDoesNotDuplicateTrades(t *testing.T) {
-	// Must-survive (1)+(2): production eager hook is armed, apply books
-	// open+scale-in, then the process is killed BEFORE SaveState. Restart
-	// re-applies from pending (watermark was never persisted). Trades must
-	// appear once after the post-restart save — not twice from the first
-	// apply's eager insert plus the re-apply.
+
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -449,7 +418,6 @@ func TestMirrorReplayKillDuringSaveDoesNotDuplicateTrades(t *testing.T) {
 		t.Fatalf("trades in DB after unsaved apply = %d, want 0 (eager persist would have written them)", n)
 	}
 
-	// Kill: in-memory high-water and watermark are gone; pending rows return.
 	sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
 	if _, trades, _, _ := applyReplayedLiveDecisions(sc2, s2, pending, 1910.0, replayTestResult(), &Config{}, logger2); trades != 2 {
 		t.Fatalf("restart re-apply trades = %d, want 2", trades)
@@ -469,8 +437,7 @@ func TestMirrorReplayKillDuringSaveDoesNotDuplicateTrades(t *testing.T) {
 }
 
 func TestMirrorReplayTradesFlushWithWatermarkSave(t *testing.T) {
-	// Must-survive (3): with eager persist off, SaveState's unpersisted-trade
-	// flush is the only persist, and it shares the watermark transaction.
+
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -516,8 +483,7 @@ func TestMirrorReplayTradesFlushWithWatermarkSave(t *testing.T) {
 }
 
 func TestSystemdTemplateGrantsSharedReplayDir(t *testing.T) {
-	// Review finding 2: two template instances must both be able to write the
-	// shared replay_log_path under ProtectSystem=strict.
+
 	src := string(mustReadFile(t, "../systemd/go-trader@.service"))
 	if !strings.Contains(src, "StateDirectory=go-trader/%i go-trader/shared") {
 		t.Fatal("template unit StateDirectory missing go-trader/shared — template instances cannot write the shared replay log path")
@@ -528,8 +494,7 @@ func TestSystemdTemplateGrantsSharedReplayDir(t *testing.T) {
 }
 
 func TestSaveStrategyBookDoesNotRewriteUnrelatedStrategies(t *testing.T) {
-	// Review optional (PR #1435 round 3): persisting one replayed decision
-	// must not grow with unrelated strategies or their trade history.
+
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -584,11 +549,7 @@ func TestSaveStrategyBookDoesNotRewriteUnrelatedStrategies(t *testing.T) {
 }
 
 func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
-	// Review optional (PR #1435 round 3): a replayed full-close must not
-	// eager-insert trade_diagnostics. Kill before SaveStrategyBook, restart,
-	// re-apply, then save — exactly one diagnostics row, matching the
-	// persisted close. Must-survive: two aborted attempts, then one commit;
-	// same position_id across abort and retry.
+
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -612,7 +573,6 @@ func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
 		{DecisionID: 3, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900.5, CloseReason: "signal"},
 	}
 
-	// Aborted attempt 1: apply, no save (kill during SaveStrategyBook).
 	if _, trades, _, _ := applyReplayedLiveDecisions(sc, s, pending, 1902.0, replayTestResult(), &Config{}, logger); trades != 1 {
 		t.Fatalf("first apply trades = %d, want 1", trades)
 	}
@@ -634,7 +594,6 @@ func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
 		t.Fatalf("diagnostics in DB after unsaved apply = %d, want 0", len(rows))
 	}
 
-	// Aborted attempt 2: restart, re-apply, still no save.
 	sc2, s2, logger2 := replayMirrorTestSetup(t, "hl-paper-eth")
 	s2.Positions["ETH"] = &Position{
 		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1,
@@ -668,7 +627,6 @@ func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
 		t.Fatalf("pending diagnostics after commit = %d, want 0", len(s2.pendingTradeDiagnostics))
 	}
 
-	// Retry after success: watermark skips re-apply; must not insert a second row.
 	sc3, s3, logger3 := replayMirrorTestSetup(t, "hl-paper-eth")
 	loaded, err := sdb.LoadState()
 	if err != nil {
@@ -697,9 +655,7 @@ func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
 }
 
 func TestSaveStrategyBookReplacesOpenPositionAcrossCycles(t *testing.T) {
-	// Review Needs Fixing (PR #1435 round 5): a second SaveStrategyBook while
-	// the same symbol stays open must not UNIQUE-fail, and a later close must
-	// not resurrect the old row.
+
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)

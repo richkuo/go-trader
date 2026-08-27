@@ -17,7 +17,6 @@ func TestNewLogManager(t *testing.T) {
 	}
 	defer lm.Close()
 
-	// Directory should have been created
 	if _, err := os.Stat(logDir); err != nil {
 		t.Errorf("log directory should exist: %v", err)
 	}
@@ -29,7 +28,7 @@ func TestNewLogManagerEmptyDir(t *testing.T) {
 		t.Fatalf("NewLogManager('') failed: %v", err)
 	}
 	defer lm.Close()
-	// Should succeed with no directory creation
+
 }
 
 func TestGetStrategyLogger(t *testing.T) {
@@ -48,15 +47,12 @@ func TestGetStrategyLogger(t *testing.T) {
 	}
 	defer sl.Close()
 
-	// Write some logs
 	sl.Info("test info message")
 	sl.Error("test error message")
 	sl.Warn("test warn message")
 
-	// Flush by closing
 	sl.Close()
 
-	// Check log file exists and has content
 	logFile := filepath.Join(logDir, "test-strategy.log")
 	data, err := os.ReadFile(logFile)
 	if err != nil {
@@ -94,7 +90,6 @@ func TestGetStrategyLoggerNoDir(t *testing.T) {
 	}
 	defer sl.Close()
 
-	// Should not panic when logging
 	sl.Info("test message")
 }
 
@@ -105,12 +100,12 @@ func TestStrategyLoggerCloseIdempotent(t *testing.T) {
 
 	sl, _ := lm.GetStrategyLogger("test")
 	sl.Close()
-	sl.Close() // should not panic
+	sl.Close()
 }
 
 func TestLogManagerClose(t *testing.T) {
 	dir := t.TempDir()
 	lm, _ := NewLogManager(filepath.Join(dir, "logs"))
-	lm.Close() // should not panic
-	lm.Close() // idempotent
+	lm.Close()
+	lm.Close()
 }

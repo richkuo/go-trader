@@ -6,14 +6,11 @@ import (
 	"os"
 )
 
-// balanceResult is the JSON output from check_balance.py.
 type balanceResult struct {
 	Balance float64 `json:"balance"`
 	Error   string  `json:"error,omitempty"`
 }
 
-// FetchPlatformBalance returns the account balance for the given platform.
-// Uses Go-native API calls where available, falls back to check_balance.py.
 func FetchPlatformBalance(platform string) (float64, error) {
 	switch platform {
 	case "hyperliquid":
@@ -27,7 +24,6 @@ func FetchPlatformBalance(platform string) (float64, error) {
 	}
 }
 
-// fetchPythonBalance calls check_balance.py for platforms without Go-native balance fetching.
 func fetchPythonBalance(platform string) (float64, error) {
 	args := []string{fmt.Sprintf("--platform=%s", platform)}
 	stdout, stderr, err := RunPythonScript("shared_scripts/check_balance.py", args)
@@ -45,10 +41,8 @@ func fetchPythonBalance(platform string) (float64, error) {
 	return result.Balance, nil
 }
 
-// resolveCapitalPct fetches wallet balances and updates Capital for strategies
-// that have CapitalPct set. Caches balance per platform to avoid redundant API calls.
 func resolveCapitalPct(strategies []StrategyConfig) {
-	// Find platforms that need balance queries.
+
 	needsBalance := make(map[string]bool)
 	for _, sc := range strategies {
 		if sc.CapitalPct > 0 {
@@ -59,7 +53,6 @@ func resolveCapitalPct(strategies []StrategyConfig) {
 		return
 	}
 
-	// Fetch balance per platform (cached).
 	balances := make(map[string]float64)
 	for platform := range needsBalance {
 		balance, err := FetchPlatformBalance(platform)
@@ -74,7 +67,6 @@ func resolveCapitalPct(strategies []StrategyConfig) {
 		balances[platform] = balance
 	}
 
-	// Update Capital for strategies with CapitalPct.
 	for i := range strategies {
 		sc := &strategies[i]
 		if sc.CapitalPct <= 0 {

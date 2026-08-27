@@ -89,7 +89,7 @@ func TestTradeOpenTPTiersJSON_NoTieredCloseReturnsEmpty(t *testing.T) {
 }
 
 func TestStampPositionProtectionSnapshot_NilPos(t *testing.T) {
-	stampPositionProtectionSnapshot(nil, StrategyConfig{}) // must not panic
+	stampPositionProtectionSnapshot(nil, StrategyConfig{})
 }
 
 func TestStampPositionProtectionSnapshot_Idempotent(t *testing.T) {
@@ -102,7 +102,6 @@ func TestStampPositionProtectionSnapshot_Idempotent(t *testing.T) {
 		t.Fatalf("first stamp: got %v", pos.StopLossATRMult)
 	}
 
-	// Idempotent: re-stamp with a different config does not overwrite.
 	otherMult := 9.9
 	stampPositionProtectionSnapshot(pos, StrategyConfig{StopLossATRMult: &otherMult})
 	if *pos.StopLossATRMult != 1.5 {
@@ -110,9 +109,6 @@ func TestStampPositionProtectionSnapshot_Idempotent(t *testing.T) {
 	}
 }
 
-// TestStampOpenTradeFromPositionBackfillsProtectionSnapshot verifies that the
-// SL ATR mult + TP tier snapshot stamped on Position post-fill flows onto the
-// most-recent open Trade row (#669).
 func TestStampOpenTradeFromPositionBackfillsProtectionSnapshot(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
@@ -142,7 +138,6 @@ func TestStampOpenTradeFromPositionBackfillsProtectionSnapshot(t *testing.T) {
 		t.Fatalf("in-memory TPTiersJSON: got %q, want %q", s.TradeHistory[0].TPTiersJSON, pos.TPTiersJSON)
 	}
 
-	// Verify SQLite row was updated.
 	var slMult float64
 	var tpTiersJSON string
 	if err := db.db.QueryRow(
@@ -156,9 +151,6 @@ func TestStampOpenTradeFromPositionBackfillsProtectionSnapshot(t *testing.T) {
 	}
 }
 
-// TestInsertTradePreservesNullStopLossATRMult verifies the nullness gate: a
-// pct-armed open trade lands as SQL NULL so analytics can distinguish ATR-armed
-// from pct-armed without back-computing.
 func TestInsertTradePreservesNullStopLossATRMult(t *testing.T) {
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
@@ -183,7 +175,6 @@ func TestInsertTradePreservesNullStopLossATRMult(t *testing.T) {
 		t.Fatalf("expected NULL for pct-armed trade, got %v", slMult)
 	}
 
-	// ATR-armed → non-NULL value preserved exactly.
 	mult := 1.25
 	atrArmed := Trade{Symbol: "ETH", Timestamp: ts.Add(time.Second), StrategyID: "s1", StopLossATRMult: &mult, TPTiersJSON: `[{"atr_multiple":1,"close_fraction":1}]`}
 	if err := db.InsertTrade(atrArmed.StrategyID, atrArmed); err != nil {
@@ -202,10 +193,6 @@ func TestInsertTradePreservesNullStopLossATRMult(t *testing.T) {
 	}
 }
 
-// TestApplyHyperliquidCircuitCloseFill_StampsProtectionSnapshot verifies that
-// the kill-switch on-chain close path copies StopLossATRMult and TPTiersJSON
-// from the position onto the Trade — without this the round-trip analytics
-// promise from #669 breaks for kill-switch closes (PR #671 review).
 func TestApplyHyperliquidCircuitCloseFill_StampsProtectionSnapshot(t *testing.T) {
 	mult := 1.5
 	tiersJSON := `[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1}]`
@@ -235,8 +222,6 @@ func TestApplyHyperliquidCircuitCloseFill_StampsProtectionSnapshot(t *testing.T)
 	}
 }
 
-// TestForceCloseAllPositions_StampsProtectionSnapshot verifies the same
-// round-trip on the circuit-breaker force-close path (risk.go).
 func TestForceCloseAllPositions_StampsProtectionSnapshot(t *testing.T) {
 	mult := 2.0
 	tiersJSON := `[{"atr_multiple":1,"close_fraction":0.5},{"atr_multiple":2,"close_fraction":1}]`

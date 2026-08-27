@@ -267,12 +267,12 @@ func TestValidateState(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["s1"] = &StrategyState{
 		ID:             "s1",
-		InitialCapital: -100, // invalid
-		Cash:           -50,  // negative
+		InitialCapital: -100,
+		Cash:           -50,
 		Positions: map[string]*Position{
 			"BTC/USDT": {Quantity: 0.01, Side: "long"},
-			"ETH/USDT": {Quantity: 0, Side: "long"},   // invalid: zero
-			"SOL/USDT": {Quantity: -1, Side: "short"}, // invalid: negative
+			"ETH/USDT": {Quantity: 0, Side: "long"},
+			"SOL/USDT": {Quantity: -1, Side: "short"},
 		},
 		OptionPositions: map[string]*OptionPosition{
 			"valid":   {Action: "buy", OptionType: "call", Quantity: 1},
@@ -325,18 +325,13 @@ func TestValidateState(t *testing.T) {
 	}
 }
 
-// TestValidatePerpsDirectionConfig exercises the #336/#656 startup check:
-// positions seeded into SQLite (via migration, paper→live handoff, or operator
-// edit) whose side conflicts with the configured direction must be flagged so
-// the operator sees the gap before the executor's flip path quietly desyncs
-// virtual state from the exchange on the next signal.
 func TestValidatePerpsDirectionConfig(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
 		ID:   "hl-triple-ema-eth",
 		Type: "perps",
 		Positions: map[string]*Position{
-			// Gap A: short under direction="long" (legacy AllowShorts=false).
+
 			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -344,7 +339,7 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 		ID:   "hl-bidir-btc",
 		Type: "perps",
 		Positions: map[string]*Position{
-			// Allowed: direction="both" tolerates either side.
+
 			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -352,7 +347,7 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 		ID:   "hl-bear-sol",
 		Type: "perps",
 		Positions: map[string]*Position{
-			// Gap B (#656): long under direction="short".
+
 			"SOL": {Symbol: "SOL", Quantity: 1.0, AvgCost: 200, Side: "long", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -360,7 +355,7 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 		ID:   "bn-sma-btc",
 		Type: "spot",
 		Positions: map[string]*Position{
-			// Non-perps: direction is irrelevant, must not warn.
+
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "long"},
 		},
 	}
@@ -390,8 +385,6 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 	}
 }
 
-// TestValidatePerpsDirectionConfig_NoConflicts confirms the validator is
-// silent when all perps positions match their strategy's direction.
 func TestValidatePerpsDirectionConfig_NoConflicts(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-triple-ema-eth"] = &StrategyState{
@@ -419,9 +412,6 @@ func TestValidatePerpsDirectionConfig_NoConflicts(t *testing.T) {
 	}
 }
 
-// TestValidatePerpsDirectionConfig_OrphanState verifies we don't crash when
-// state has a strategy that's been removed from config (pruning happens
-// separately in main.go but validators must tolerate the intermediate state).
 func TestValidatePerpsDirectionConfig_OrphanState(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["gone"] = &StrategyState{
@@ -437,9 +427,6 @@ func TestValidatePerpsDirectionConfig_OrphanState(t *testing.T) {
 	}
 }
 
-// TestValidatePerpsDirectionConfig_LegacyAllowShortsFallthrough verifies that
-// configs that have not been v14-migrated yet (Direction empty, AllowShorts
-// set) are still validated correctly via EffectiveDirection.
 func TestValidatePerpsDirectionConfig_LegacyAllowShortsFallthrough(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-legacy-eth"] = &StrategyState{
@@ -451,7 +438,7 @@ func TestValidatePerpsDirectionConfig_LegacyAllowShortsFallthrough(t *testing.T)
 	}
 	cfg := &Config{
 		Strategies: []StrategyConfig{
-			// Pre-v14 shape: Direction empty, AllowShorts=false → EffectiveDirection="long".
+
 			{ID: "hl-legacy-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
 		},
 	}
@@ -469,10 +456,6 @@ func makeRegimeDirectionalPolicyForValidation() *RegimeDirectionalPolicy {
 	}}
 }
 
-// #783/#1085: short under base direction=long is valid when the position opened
-// under a CERTIFIED policy (DirectionCertifiedAtOpen=true) and the stamped regime
-// allows short. Under #1085 the certification stamp is required — an uncertified
-// position resolves to base and is flagged for from-flat migration instead.
 func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingDown(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-mr-hype"] = &StrategyState{
@@ -494,9 +477,6 @@ func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingDown(t *testing
 	}
 }
 
-// #783/#1085: short with a CERTIFIED-at-open stamp under trending_up conflicts
-// with the policy's long-only direction for that regime (the legitimate
-// regime-flip warning that cites the stamped regime).
 func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingUpConflict(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-mr-hype"] = &StrategyState{
@@ -522,18 +502,13 @@ func TestValidatePerpsDirectionConfig_RegimePolicyStampedTrendingUpConflict(t *t
 	}
 }
 
-// #1085: an UNCERTIFIED (legacy/unstamped) directional position no longer rides
-// under the policy — the surface is default-off, so it validates against BASE
-// direction and a conflicting side surfaces for from-flat migration. This
-// inverts the pre-#1085 #783 "unstamped allowed → no warning" behavior: leaving
-// a refuted-premise short in place silently is exactly what #1085 prevents.
 func TestValidatePerpsDirectionConfig_RegimePolicyUncertifiedWarnsForMigration(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-mr-hype"] = &StrategyState{
 		ID:   "hl-mr-hype",
 		Type: "perps",
 		Positions: map[string]*Position{
-			// No DirectionCertifiedAtOpen stamp → uncertified/legacy.
+
 			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -552,7 +527,6 @@ func TestValidatePerpsDirectionConfig_RegimePolicyUncertifiedWarnsForMigration(t
 	}
 }
 
-// #784 re-review: warnings for multi-position strategies must be symbol-sorted.
 func TestValidatePerpsDirectionConfig_WarningOrderDeterministic(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["hl-multi"] = &StrategyState{
@@ -723,7 +697,6 @@ func TestSaveStateWithDB_Error(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "state.db")
 
-	// Create a broken StateDB by closing it before use.
 	db, err := OpenStateDB(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -739,7 +712,7 @@ func TestSaveStateWithDB_Error(t *testing.T) {
 }
 
 func TestNewStrategyState_ConfigInitialCapital(t *testing.T) {
-	// When config has InitialCapital set, it should be used instead of Capital.
+
 	cfg := StrategyConfig{
 		ID:             "hl-sma-btc",
 		Type:           "perps",
@@ -758,7 +731,7 @@ func TestNewStrategyState_ConfigInitialCapital(t *testing.T) {
 }
 
 func TestNewStrategyState_NoConfigInitialCapital(t *testing.T) {
-	// When config has no InitialCapital, it should fall back to Capital.
+
 	cfg := StrategyConfig{
 		ID:             "hl-sma-btc",
 		Type:           "perps",
@@ -772,8 +745,6 @@ func TestNewStrategyState_NoConfigInitialCapital(t *testing.T) {
 	}
 }
 
-// TestReconcileConfigInitialCapital covers the #343 startup bridge between
-// operator-driven config bumps and the SaveState baseline guard.
 func TestReconcileConfigInitialCapital(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenStateDB(filepath.Join(dir, "state.db"))
@@ -783,7 +754,6 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 	defer db.Close()
 	resetInitialCapitalGuardDedup(t)
 
-	// Seed DB with a $505 baseline.
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"hl-tema-eth": {
@@ -801,11 +771,10 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Config bumps the explicit field for one strategy, leaves the other alone.
 	cfg := &Config{
 		Strategies: []StrategyConfig{
 			{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 1000, InitialCapital: 1000},
-			{ID: "silent", Type: "spot", Capital: 200}, // no InitialCapital → no reconciliation
+			{ID: "silent", Type: "spot", Capital: 200},
 		},
 	}
 
@@ -817,7 +786,6 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 		t.Fatalf("errs = %v, want none", errs)
 	}
 
-	// In-memory mutation must happen so same-process risk calcs see the new value.
 	if got := state.Strategies["hl-tema-eth"].InitialCapital; got != 1000 {
 		t.Errorf("in-memory InitialCapital = %g, want 1000", got)
 	}
@@ -825,8 +793,6 @@ func TestReconcileConfigInitialCapital(t *testing.T) {
 		t.Errorf("untouched strategy InitialCapital = %g, want 200", got)
 	}
 
-	// Persist must stick across a SaveState (the baseline guard would have
-	// reverted it if SetInitialCapital didn't run).
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("SaveState after reconcile: %v", err)
 	}

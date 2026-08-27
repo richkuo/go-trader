@@ -110,9 +110,6 @@ func TestApplyHotReloadConfigAppliesAllowedFields(t *testing.T) {
 	var mu sync.RWMutex
 	server := NewStatusServer(state, &mu, "", cfg.Strategies, nil)
 
-	// SIGHUP path holds mu.Lock() across applyHotReloadConfig (see
-	// reloadConfig in main.go). Mirror that here so this test also covers
-	// the deadlock risk fixed by giving StatusServer.strategies its own mu.
 	type reloadResult struct {
 		changes []string
 		err     error
@@ -291,7 +288,6 @@ func TestApplyHotReloadConfigRejectsLeverageChangeWithOpenPerpsPosition(t *testi
 	}
 }
 
-// #486: margin_mode is hot-reloadable when flat — same envelope as Leverage.
 func TestApplyHotReloadConfigRejectsMarginModeChangeWithOpenPerpsPosition(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
@@ -321,7 +317,6 @@ func TestApplyHotReloadConfigRejectsMarginModeChangeWithOpenPerpsPosition(t *tes
 	}
 }
 
-// #486: margin_mode change is allowed when the strategy is flat.
 func TestApplyHotReloadConfigAllowsMarginModeChangeWhenFlat(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, MarginMode: "isolated",
@@ -371,9 +366,6 @@ func TestApplyHotReloadConfigPreservesRuntimeCapitalPctCapital(t *testing.T) {
 	}
 }
 
-// #491: hot-reload mirrors LoadConfig peer validation — a reload that would
-// introduce two HL perps strategies on the same coin with mismatched
-// margin_mode/leverage must be rejected.
 func TestApplyHotReloadConfigRejectsHLPeerMismatchOnReload(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth-a", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 5, MarginMode: "isolated",
@@ -474,9 +466,6 @@ func minimalReloadConfig(strategies []StrategyConfig) *Config {
 	}
 }
 
-// #656 — direction change while a position is open must be rejected. Toggling
-// from "long" → "short" mid-position would either orphan the existing long or
-// flip it on the next signal; both desync virtual state from the exchange.
 func TestApplyHotReloadConfigRejectsDirectionChangeWithOpenPerpsPosition(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
@@ -506,10 +495,6 @@ func TestApplyHotReloadConfigRejectsDirectionChangeWithOpenPerpsPosition(t *test
 	}
 }
 
-// #716 item 1 — adding an sl_after rule while a position is open must be
-// rejected. Without this guard, the new rule would engage on the next cleared
-// tier (post-TP machinery + trailing walker for trail_from_here) without the
-// validation the open respected.
 func TestApplyHotReloadConfigRejectsSLAfterAddWithOpenPosition(t *testing.T) {
 	tieredOpen := &StrategyRef{
 		Name: "tiered_tp_atr",
@@ -558,7 +543,6 @@ func TestApplyHotReloadConfigRejectsSLAfterAddWithOpenPosition(t *testing.T) {
 	}
 }
 
-// #716 item 1 — sl_after rule changes are allowed when the strategy is flat.
 func TestApplyHotReloadConfigAllowsSLAfterAddWhenFlat(t *testing.T) {
 	tieredOpen := &StrategyRef{
 		Name: "tiered_tp_atr",
@@ -599,8 +583,6 @@ func TestApplyHotReloadConfigAllowsSLAfterAddWhenFlat(t *testing.T) {
 	}
 }
 
-// #716 item 1 — switching from breakeven to trail_from_here mid-position is
-// the highest-risk transition (engages trailing walker without open validation).
 func TestApplyHotReloadConfigRejectsSLAfterModeChangeWithOpenPosition(t *testing.T) {
 	tierWithBreakeven := &StrategyRef{
 		Name: "tiered_tp_atr",
@@ -651,12 +633,6 @@ func TestApplyHotReloadConfigRejectsSLAfterModeChangeWithOpenPosition(t *testing
 	}
 }
 
-// #736 — switching sl_after from scalar atr_offset to a regime-aware shape
-// with a position open is a higher-risk transition than tweaking the scalar
-// value: the post-TP machinery would arm against a re-derived target the
-// open never saw. Verifies the existing tierSLAfterRules.EqualForReload site
-// picks up the new SLAfterRule.Equal contract (which compares regime blocks
-// via RegimeATRBlock.EqualForReload).
 func TestApplyHotReloadConfigRejectsSLAfterScalarToRegimeWithOpenPosition(t *testing.T) {
 	tierScalar := &StrategyRef{
 		Name: "tiered_tp_atr",
@@ -710,9 +686,6 @@ func TestApplyHotReloadConfigRejectsSLAfterScalarToRegimeWithOpenPosition(t *tes
 	}
 }
 
-// #736 — switching the regime block's per-label atr value (same shape, different
-// numbers) is also a shape change for hot-reload purposes — the resting SL was
-// armed against the old value at open.
 func TestApplyHotReloadConfigRejectsSLAfterRegimeValueChangeWithOpenPosition(t *testing.T) {
 	makeRef := func(ranging float64) *StrategyRef {
 		return &StrategyRef{
@@ -759,9 +732,6 @@ func TestApplyHotReloadConfigRejectsSLAfterRegimeValueChangeWithOpenPosition(t *
 	}
 }
 
-// #736 — identical regime configs across reload should pass (no shape change).
-// Guards against false-positive blocks once SLAfterRule.Equal handles regime
-// blocks via RegimeATRBlock.EqualForReload.
 func TestApplyHotReloadConfigAllowsSLAfterRegimeIdentical(t *testing.T) {
 	tierRegime := &StrategyRef{
 		Name: "tiered_tp_atr",
@@ -909,8 +879,6 @@ func TestApplyHotReloadConfigAllowsRegimeTierMultipleChangeWithoutSLAfter(t *tes
 	}
 }
 
-// #1062 — regime.display_windows is display-only and hot-reloads, but any other
-// regime field change still requires a restart.
 func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
 	regimeWith := func(display []string) *RegimeConfig {
 		return &RegimeConfig{
@@ -939,7 +907,6 @@ func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
 		return c
 	}
 
-	// (1) display-only change applies while a position is open.
 	t.Run("display-only change applies with open position", func(t *testing.T) {
 		cfg := stratWith(regimeWith(nil))
 		next := stratWith(regimeWith([]string{"composite_long"}))
@@ -956,11 +923,10 @@ func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
 		}
 	})
 
-	// (2) compound change (display_windows + a real regime field) still rejects.
 	t.Run("compound change still rejects", func(t *testing.T) {
 		cfg := stratWith(regimeWith(nil))
 		next := stratWith(regimeWith([]string{"composite_long"}))
-		next.Regime.ADXThreshold = 25 // a genuinely restart-required edit
+		next.Regime.ADXThreshold = 25
 		if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err == nil {
 			t.Fatal("regime change compounded with display_windows must still require restart")
 		}
@@ -969,7 +935,6 @@ func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
 		}
 	})
 
-	// (3) clearing display_windows reverts to render-all without a restart.
 	t.Run("clearing reverts to render-all", func(t *testing.T) {
 		cfg := stratWith(regimeWith([]string{"composite_long"}))
 		next := stratWith(regimeWith(nil))
@@ -982,11 +947,6 @@ func TestApplyHotReloadConfigDisplayWindows(t *testing.T) {
 	})
 }
 
-// #1224 — regime.transitions is alerting-only and documented as always
-// hot-reloadable, including while positions are open. The pre-flight compat
-// gate (regimeConfigEqualIgnoringReloadableFields) must mask this field the
-// same way it masks DisplayWindows/Timeframe, or the copy branch in
-// applyHotReloadConfig is unreachable dead code.
 func TestApplyHotReloadConfigRegimeTransitions(t *testing.T) {
 	regimeWith := func(tr *RegimeTransitionAlertsConfig) *RegimeConfig {
 		return &RegimeConfig{
@@ -1011,7 +971,6 @@ func TestApplyHotReloadConfigRegimeTransitions(t *testing.T) {
 		return c
 	}
 
-	// (a) nil on both sides must stay a no-op — existing behavior must keep working.
 	t.Run("nil to nil is a no-op", func(t *testing.T) {
 		cfg := stratWith(regimeWith(nil))
 		next := stratWith(regimeWith(nil))
@@ -1027,9 +986,6 @@ func TestApplyHotReloadConfigRegimeTransitions(t *testing.T) {
 		}
 	})
 
-	// nil -> enabled must be accepted (not rejected by the pre-flight compat
-	// gate) and copied onto cfg, even with an open position (alerting-only,
-	// never state-shifting) — and the copy must not alias next's struct.
 	t.Run("nil to enabled is accepted and copied", func(t *testing.T) {
 		cfg := stratWith(regimeWith(nil))
 		nextTransitions := &RegimeTransitionAlertsConfig{Enabled: true, DebounceCycles: 3, RetentionDays: 30, ReversalMinOpposing: 2}
@@ -1047,15 +1003,12 @@ func TestApplyHotReloadConfigRegimeTransitions(t *testing.T) {
 		if joined := strings.Join(changes, " | "); !strings.Contains(joined, "regime.transitions") {
 			t.Fatalf("expected a regime.transitions change entry, got: %v", changes)
 		}
-		nextTransitions.DebounceCycles = 99 // mutating next afterward must not leak into cfg
+		nextTransitions.DebounceCycles = 99
 		if cfg.Regime.Transitions.DebounceCycles == 99 {
 			t.Fatal("cfg.Regime.Transitions aliases next's struct")
 		}
 	})
 
-	// (b) feature already enabled; only debounce_cycles/retention_days/
-	// reversal_min_opposing differ. Must hot-reload — even with an open
-	// position — and the new tunables take effect.
 	t.Run("tunable-only change while enabled applies with open position", func(t *testing.T) {
 		cfg := stratWith(regimeWith(&RegimeTransitionAlertsConfig{Enabled: true, DebounceCycles: 1, RetentionDays: 14, ReversalMinOpposing: 0}))
 		next := stratWith(regimeWith(&RegimeTransitionAlertsConfig{Enabled: true, DebounceCycles: 3, RetentionDays: 30, ReversalMinOpposing: 2}))
@@ -1071,10 +1024,6 @@ func TestApplyHotReloadConfigRegimeTransitions(t *testing.T) {
 		}
 	})
 
-	// (c) regime.transitions changing together with a genuinely incompatible
-	// field (db_file) must still be rejected for the real reason — masking
-	// Transitions alone must not let an unrelated restart-required change
-	// silently pass.
 	t.Run("compound change with genuinely incompatible field still rejects", func(t *testing.T) {
 		cfg := stratWith(regimeWith(nil))
 		next := stratWith(regimeWith(&RegimeTransitionAlertsConfig{Enabled: true}))
@@ -1092,9 +1041,6 @@ func TestApplyHotReloadConfigRegimeTransitions(t *testing.T) {
 	})
 }
 
-// #1139 — regime.timeframe is live reloadable only while affected non-options
-// strategies are flat. It changes the regime bundle/certification key, so open
-// positions must preserve their original regime-timeframe interpretation.
 func TestApplyHotReloadConfigRegimeTimeframe(t *testing.T) {
 	regimeWith := func(tf string) *RegimeConfig {
 		return &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20, Timeframe: tf}
@@ -1175,7 +1121,6 @@ func TestApplyHotReloadConfigRegimeTimeframe(t *testing.T) {
 	})
 }
 
-// #656 — direction change is allowed when the strategy is flat.
 func TestApplyHotReloadConfigAllowsDirectionChangeWhenFlat(t *testing.T) {
 	cfg := minimalReloadConfig([]StrategyConfig{{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py", Args: []string{"a", "ETH", "1h"}, Capital: 1000, MaxDrawdownPct: 10, Leverage: 2, Direction: DirectionLong,
@@ -1247,7 +1192,7 @@ func TestValidateHotReloadCompatible(t *testing.T) {
 				Type:           "spot",
 				Platform:       "binanceus",
 				Script:         "shared_scripts/check_strategy.py",
-				Args:           []string{"ema_crossover", "BTC/USDT", "1h"}, // changed strategy name
+				Args:           []string{"ema_crossover", "BTC/USDT", "1h"},
 				Capital:        1000,
 				MaxDrawdownPct: 10,
 			}}
@@ -1267,7 +1212,7 @@ func TestValidateHotReloadCompatible(t *testing.T) {
 					Script:  "shared_scripts/check_hyperliquid.py",
 					Args:    []string{"triple_ema", "BTC", "1h", "--mode=live"},
 					Capital: 1000, MaxDrawdownPct: 10,
-					Leverage: 5, MarginMode: "isolated", // mismatched leverage
+					Leverage: 5, MarginMode: "isolated",
 				},
 			}
 		}, "leverage"},
@@ -1527,8 +1472,6 @@ func TestFormatStringMap(t *testing.T) {
 	}
 }
 
-// #696/#1135: user_defaults.manual flows through hot-reload so SIGHUP edits
-// to margin_usd / stop_loss_atr_mult / side / tp_tiers propagate without restart.
 func TestApplyHotReloadConfigPropagatesManualDefaults(t *testing.T) {
 	oldMargin := 50.0
 	newMargin := 125.0
@@ -1573,7 +1516,7 @@ func TestApplyHotReloadConfigPropagatesManualDefaults(t *testing.T) {
 	if got := len(cfg.resolveManualTPTiers()); got != 2 {
 		t.Errorf("resolveManualTPTiers length = %d, want 2", got)
 	}
-	// Mutating the next block after reload must not affect cfg (clone, not alias).
+
 	*next.UserDefaults.Manual.MarginUSD = 999
 	if got := cfg.resolveManualMarginUSD(); got != 125.0 {
 		t.Errorf("cfg margin aliased to next: got %g after next-mutation, want 125.0", got)
@@ -1831,8 +1774,6 @@ func openETHReloadState(strategyID string) *AppState {
 	}}
 }
 
-// #696/#1135: empty tp_tiers array is rejected by validation; LoadConfig surfaces
-// the misuse instead of silently falling back to defaults.
 func TestLoadConfigManualDefaultsRejectsEmptyTPTiersArray(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{
@@ -1932,9 +1873,6 @@ func TestApplyHotReloadConfigPreservesDeferredPoolTransitionManageOnlyLatch(t *t
 	}
 }
 
-// #1048: the circuit-breaker toggle is hot-reloadable always, including while a
-// position is open — it must NOT be rejected by the reload validators, and the
-// new value must actually be applied to the running config.
 func TestApplyHotReloadConfig_CircuitBreakerToggleWhileOpen(t *testing.T) {
 	falseVal, trueVal := false, true
 	base := func(cb *bool) []StrategyConfig {
@@ -1958,7 +1896,6 @@ func TestApplyHotReloadConfig_CircuitBreakerToggleWhileOpen(t *testing.T) {
 		}}
 	}
 
-	// on (nil) → off while a position is open: accepted, value applied, change logged.
 	cfg := minimalReloadConfig(base(nil))
 	next := minimalReloadConfig(base(&falseVal))
 	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
@@ -1972,7 +1909,6 @@ func TestApplyHotReloadConfig_CircuitBreakerToggleWhileOpen(t *testing.T) {
 		t.Fatalf("expected a circuit_breaker change entry, got %v", changes)
 	}
 
-	// off → on (re-arm) while a position is open: accepted, value applied.
 	cfg = minimalReloadConfig(base(&falseVal))
 	next = minimalReloadConfig(base(&trueVal))
 	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
@@ -1983,10 +1919,6 @@ func TestApplyHotReloadConfig_CircuitBreakerToggleWhileOpen(t *testing.T) {
 	}
 }
 
-// #1273: the cb_* timing/threshold overrides are hot-reloadable while a
-// position is open (they only parameterize FUTURE fires), values land on the
-// running config, change entries are logged, and clearing back to nil restores
-// the accessors' historical defaults.
 func TestApplyHotReloadConfig_CBOverridesWhileOpen(t *testing.T) {
 	intp := func(v int) *int { return &v }
 	base := func(mut func(*StrategyConfig)) []StrategyConfig {
@@ -2018,7 +1950,6 @@ func TestApplyHotReloadConfig_CBOverridesWhileOpen(t *testing.T) {
 		sc.CBLossStreakCooldownMinutes = intp(30)
 	}
 
-	// defaults → overrides while a position is open: accepted, applied, logged.
 	cfg := minimalReloadConfig(base(nil))
 	next := minimalReloadConfig(base(setOverrides))
 	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
@@ -2042,8 +1973,6 @@ func TestApplyHotReloadConfig_CBOverridesWhileOpen(t *testing.T) {
 		}
 	}
 
-	// overrides → defaults (fields removed) while open: accepted, accessors
-	// fall back to the historical values.
 	cfg = minimalReloadConfig(base(setOverrides))
 	next = minimalReloadConfig(base(nil))
 	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
@@ -2055,8 +1984,6 @@ func TestApplyHotReloadConfig_CBOverridesWhileOpen(t *testing.T) {
 	}
 }
 
-// #1273: a cb_*-override-only change must not register in the restart shape
-// (else validateHotReloadCompatible would flag it as restart-required).
 func TestStrategyRestartShape_CBOverrideOnlyChange(t *testing.T) {
 	dd, th, lc := 720, 3, 30
 	a := StrategyConfig{ID: "hl-a"}
@@ -2066,8 +1993,6 @@ func TestStrategyRestartShape_CBOverrideOnlyChange(t *testing.T) {
 	}
 }
 
-// #1048: a circuit_breaker-only change must not register in the restart shape
-// (else validateHotReloadCompatible would flag it as restart-required).
 func TestStrategyRestartShape_CircuitBreakerOnlyChange(t *testing.T) {
 	on, off := true, false
 	a := StrategyConfig{ID: "hl-a", CircuitBreaker: &on}
@@ -2081,8 +2006,6 @@ func TestStrategyRestartShape_CircuitBreakerOnlyChange(t *testing.T) {
 	}
 }
 
-// #1118: per-strategy notify_ratchet_triggers is notification-only, so a change
-// must hot-reload even while a position is open (accepted, applied, logged).
 func TestApplyHotReloadConfig_NotifyRatchetTriggersWhileOpen(t *testing.T) {
 	falseVal, trueVal := false, true
 	base := func(nrt *bool) []StrategyConfig {
@@ -2106,7 +2029,6 @@ func TestApplyHotReloadConfig_NotifyRatchetTriggersWhileOpen(t *testing.T) {
 		}}
 	}
 
-	// inherit-global (nil) → off while open: accepted, value applied, change logged.
 	cfg := minimalReloadConfig(base(nil))
 	next := minimalReloadConfig(base(&falseVal))
 	changes, err := applyHotReloadConfig(cfg, next, openState(), nil, nil)
@@ -2120,7 +2042,6 @@ func TestApplyHotReloadConfig_NotifyRatchetTriggersWhileOpen(t *testing.T) {
 		t.Fatalf("expected a notify_ratchet_triggers change entry, got %v", changes)
 	}
 
-	// off → on while open: accepted, value applied.
 	cfg = minimalReloadConfig(base(&falseVal))
 	next = minimalReloadConfig(base(&trueVal))
 	if _, err := applyHotReloadConfig(cfg, next, openState(), nil, nil); err != nil {
@@ -2131,8 +2052,6 @@ func TestApplyHotReloadConfig_NotifyRatchetTriggersWhileOpen(t *testing.T) {
 	}
 }
 
-// #1118: a notify_ratchet_triggers-only change must not register in the restart
-// shape (else validateHotReloadCompatible would flag it as restart-required).
 func TestStrategyRestartShape_NotifyRatchetTriggersOnlyChange(t *testing.T) {
 	on, off := true, false
 	a := StrategyConfig{ID: "hl-a", NotifyRatchetTriggers: &on}
@@ -2146,11 +2065,6 @@ func TestStrategyRestartShape_NotifyRatchetTriggersOnlyChange(t *testing.T) {
 	}
 }
 
-// TestValidateHotReloadStateCompatible_StopOwnerModeToggles pins the #1234
-// audit invariant class: toggling ANY Hyperliquid stop-loss owner on or off
-// (nil<->positive scalars, nil<->configured regime blocks, scalar<->regime
-// swaps) is blocked while the strategy holds an open position — the resting
-// on-chain trigger was sized for one distance regime — and allowed while flat.
 func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	mkCfg := func(mutate func(sc *StrategyConfig)) *Config {
@@ -2218,7 +2132,7 @@ func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("open position: want error containing %q, got: %v", tc.wantErr, err)
 			}
-			// Inverse: the same owner toggle while FLAT must be accepted.
+
 			if err := validateHotReloadStateCompatible(mkCfg(tc.old), mkCfg(tc.new), flatState); err != nil {
 				t.Fatalf("flat: same toggle must be accepted, got: %v", err)
 			}

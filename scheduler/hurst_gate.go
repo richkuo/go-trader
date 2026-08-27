@@ -1,76 +1,5 @@
 package main
 
-// hurst_gate.go — #1411 per-strategy Hurst entry gate and persistence-scaled
-// position sizing. DEFAULT-OFF; per-strategy opt-in only; never auto-enabled.
-//
-// CALIBRATION STATUS. The live evidence is the #1424 RESOLUTION study
-// (backtest/research/hurst_gate_calibration.md — the contract path, now owned by
-// hurst_1424_gate_resolution.py; the superseded #1422 and #1410 renders live
-// beside it at hurst_1422_gate_power.md and hurst_1410_gate_calibration.md, and
-// neither of those scripts may write the contract path any more).
-// Recommendation: INCONCLUSIVE, and the study's own VALIDITY GATE FAILED.
-//
-// #1424 attacked #1422's power shortfall three ways at once: ONE pre-registered
-// hypothesis instead of four (so the rank-1 Benjamini-Hochberg bar is alpha, not
-// alpha/4), eight added pre-2020 calendar clusters from two venues the binanceus
-// cache cannot reach (Bitstamp and Coinbase Exchange, 2013-2020H1), and a
-// bounded-variance primary target (signed efficiency over a fixed 96-hour
-// horizon). Pool: 860 legs, 26 datasets, 16 windows, ~29.0k primary-cohort rows.
-//
-// The gate is read ROW-MATCHED and DIRECTIONALLY on the CONFIRMATORY family
-// (momentum, 7,992 rows — the family the single pre-registered hypothesis
-// belongs to). Those rows resolve 0.013 efficiency units and 0.94 pp of net
-// return, and they separate by -0.005 and -0.12 pp. The sign is the finding:
-// every null and injection here is one-sided on mean(kept) - mean(suppressed),
-// so a NEGATIVE separation means the trades this gate would have SUPPRESSED did
-// BETTER, which is the direction the design cannot detect at any magnitude. The
-// run therefore carries no bound on the confirmatory family in either
-// direction. It is NOT evidence that no edge exists, and it is not the null the
-// key risk described; the pre-registered key-risk prediction is UNRESOLVED.
-// (The POOLED primary limit is 0.008 over both families' 28,998 rows. It is
-// printed in the report but the gate must never read it: a larger pool resolves
-// a smaller effect, so pairing it with one family's separation compares two
-// samples and biases the gate toward passing.)
-//
-// The pinned hypothesis (momentum/gate/W512/arm0.52/dis0.48) reached cluster
-// p=0.3557 on the primary target and p=0.3387 on net return. #1422's disclosed
-// interim look on a SUBSET of these rows read p=0.0485; it did not reproduce on
-// the superset.
-//
-// This mechanism therefore still ships with NO recommended thresholds anywhere
-// (config.example.json carries no hurst_gate block) and stays off until an
-// operator explicitly opts a strategy in. Nothing here reads a default threshold,
-// and nothing enables itself. #1424 re-answers #1412's Stage 0 gate on a larger
-// pool: NO JOINT SEPARATION on both families (cluster p=0.9696 momentum, 0.7061
-// mean_reversion, against a Bonferroni bar of 0.025), so fusing H into the
-// composite classifier is not justified and this standalone gate remains the
-// correct amount of Hurst.
-//
-// LAYERING. This is a STANDALONE gate stacked ON TOP of the allowed_regimes
-// label gate. It never touches applyRegimeGate, regimeBlocksOpen,
-// resolveRegimeGateOnFailure, map_composite_label, composite thresholds, ATR
-// method resolution (#1277), or directional certifications (#1085). With
-// hurst_gate absent, every one of those behaves byte-identically.
-//
-// WHAT IT BLOCKS. Position-INCREASING signals only, classified through
-// pausedBlocksSignal exactly as the #1150 pause, #1269 daily-loss and #1344
-// notional-cap arms do. Closes, pure-close directional exits, trailing SL, the
-// TP ratchet, protection sync, paper SL/TP simulation, hedge sync (#1159) and
-// every kill-switch path always pass through.
-//
-// WHERE H COMES FROM. metrics["hurst"] is emitted ONLY by the composite
-// classifier (shared_tools/regime.py latest_regime_composite); the default adx
-// path (latest_regime) never emits it. validateHurstGateConfigs therefore
-// REJECTS at config load any hurst_gate whose resolved window is not
-// composite-classified — otherwise H would be permanently absent and on_failure
-// would silently govern every cycle, which under "closed" is a permanent entry
-// block indistinguishable from "the feature is off".
-//
-// #1409 INVARIANT REVOKED. #1409 stamped the metric advisory-only ("never read
-// by map_composite_label, gating, or sizing"). This file revokes that for
-// gating and sizing; the shared_tools/regime.py comment is updated in the same
-// change. map_composite_label still never reads it.
-
 import (
 	"crypto/sha256"
 	"encoding/hex"
@@ -84,109 +13,67 @@ import (
 	"time"
 )
 
-// Hurst gate modes.
 const (
-	// HurstGateModeGate holds position-increasing signals while the hysteresis
-	// state machine is disarmed.
 	HurstGateModeGate = "gate"
-	// HurstGateModeSize scales the computed open size by the persistence
-	// distance |H-0.5|. Stateless; never holds on a known H.
+
 	HurstGateModeSize = "size"
 )
 
-// Hurst gate failure policy for an absent/NaN H. Mirrors #1278 exactly.
 const (
 	HurstGateOnFailureOpen   = "open"
 	HurstGateOnFailureClosed = "closed"
 )
 
-// Hysteresis states persisted per strategy.
 const (
 	hurstGateStateUnknown  = ""
 	hurstGateStateArmed    = "armed"
 	hurstGateStateDisarmed = "disarmed"
 )
 
-// hurstGateMetricKey is the RegimeSnapshot.Metrics key #1409 writes.
 const hurstGateMetricKey = "hurst"
 
-// hurstSizeSpan is the |H-0.5| distance that maps to a full-size (1.0)
-// multiplier. 0.15 puts H=0.65 (or H=0.35) at full size and H=0.5 at the floor.
 const hurstSizeSpan = 0.15
 
-// hurstDefaultSizeFloor is the multiplier applied when H sits at 0.5 (no
-// measurable persistence either way) and size_floor is omitted.
 const hurstDefaultSizeFloor = 0.25
 
-// HurstGateConfig is the per-strategy hurst_gate block (#1411). Default-off:
-// a nil block, or Enabled=false, leaves every dispatch path byte-identical.
-//
-// Read ONLY via resolveHurstGateOnFailure / resolveHurstGateWindow /
-// evaluateHurstGate — never read the raw fields at a decision site.
 type HurstGateConfig struct {
-	// Enabled opts the strategy in. false (or an absent block) is a complete
-	// no-op: no state is advanced, no size is scaled, no signal is held.
 	Enabled bool `json:"enabled"`
-	// Mode selects "gate" (hysteresis hold) or "size" (multiplier). Empty
-	// defaults to "gate".
+
 	Mode string `json:"mode,omitempty"`
-	// Min / Max bound the ARM band for mode=gate: the gate arms while
-	// H >= Min (when set) and H <= Max (when set). A momentum-style strategy
-	// sets Min; a mean-reversion-style strategy sets Max. Rejected in
-	// mode=size, where they carry no meaning.
+
 	Min *float64 `json:"min,omitempty"`
 	Max *float64 `json:"max,omitempty"`
-	// DisarmMin / DisarmMax are the hysteresis exit bounds: once armed, the
-	// gate stays armed until H crosses these looser bounds. Omitted collapses
-	// hysteresis onto the arm bound. DisarmMin requires Min and must be <= Min;
-	// DisarmMax requires Max and must be >= Max.
+
 	DisarmMin *float64 `json:"disarm_min,omitempty"`
 	DisarmMax *float64 `json:"disarm_max,omitempty"`
-	// WindowKey names the regime window whose metrics["hurst"] the gate reads.
-	// Empty falls back to the strategy's gate-window resolution. The resolved
-	// window MUST be composite-classified (validation enforces it).
+
 	WindowKey string `json:"window_key,omitempty"`
-	// OnFailure is the policy for an absent/NaN H: "open" (default) admits,
-	// "closed" holds FRESH OPENS ONLY. Empty inherits regime.hurst_gate_on_failure,
-	// then "open". Read via resolveHurstGateOnFailure, never directly.
+
 	OnFailure string `json:"on_failure,omitempty"`
-	// SizeFloor is the mode=size lower clamp, in (0, 1]. Omitted defaults to
-	// hurstDefaultSizeFloor. Rejected in mode=gate.
+
 	SizeFloor *float64 `json:"size_floor,omitempty"`
 }
 
-// HurstGateState is the persisted hysteresis state for one strategy.
-//
-// Key pins the threshold tuple the state was produced under. A config edit
-// that changes any bound produces a different Key, and the stale state is
-// DISCARDED rather than reused — a disarmed latch from old thresholds must
-// never survive into a new band.
 type HurstGateState struct {
 	Key      string    `json:"key,omitempty"`
 	State    string    `json:"state,omitempty"`
 	LastH    float64   `json:"last_h,omitempty"`
 	LastHAt  time.Time `json:"last_h_at,omitempty"`
-	Observed bool      `json:"observed,omitempty"` // true once a valid H was seen under Key
+	Observed bool      `json:"observed,omitempty"`
 }
 
-// HurstGateDecision is one cycle's gate outcome. Pure output of
-// evaluateHurstGate; the dispatch sites turn Holds into a Signal=0 hold and
-// carry SizeMult into the open sizing.
 type HurstGateDecision struct {
-	Active   bool    // enabled and configuration resolvable this cycle
-	Mode     string  // resolved mode
-	H        float64 // NaN when absent
-	HKnown   bool    // whether H was present and finite
-	State    string  // post-transition hysteresis state
-	Holds    bool    // gate: hold position-increasing signals this cycle
-	SizeMult float64 // size: [floor, 1.0]; always exactly 1.0 otherwise
-	Key      string  // threshold key the state is stored under
-	Detail   string  // operator log line
+	Active   bool
+	Mode     string
+	H        float64
+	HKnown   bool
+	State    string
+	Holds    bool
+	SizeMult float64
+	Key      string
+	Detail   string
 }
 
-// OpenSizeMult is the multiplier the executors apply to a COMPUTED open size.
-// It is 1.0 unless the gate is active in size mode with a known H, and is
-// never greater than 1.0 — the gate can only shrink an open, never grow one.
 func (d HurstGateDecision) OpenSizeMult() float64 {
 	if !d.Active || d.Mode != HurstGateModeSize {
 		return 1.0
@@ -197,7 +84,6 @@ func (d HurstGateDecision) OpenSizeMult() float64 {
 	return d.SizeMult
 }
 
-// hurstGateConfigured reports whether sc opts into the gate at all.
 func hurstGateConfigured(sc StrategyConfig) bool {
 	return sc.HurstGate != nil && sc.HurstGate.Enabled
 }
@@ -206,7 +92,6 @@ func normalizeHurstGateMode(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }
 
-// resolveHurstGateMode returns the effective mode; empty defaults to "gate".
 func resolveHurstGateMode(hg *HurstGateConfig) string {
 	if hg == nil {
 		return HurstGateModeGate
@@ -217,7 +102,6 @@ func resolveHurstGateMode(hg *HurstGateConfig) string {
 	return HurstGateModeGate
 }
 
-// parseHurstGateMode validates a mode value at config load. Empty is valid.
 func parseHurstGateMode(v string) (string, error) {
 	switch m := normalizeHurstGateMode(v); m {
 	case "", HurstGateModeGate, HurstGateModeSize:
@@ -226,8 +110,6 @@ func parseHurstGateMode(v string) (string, error) {
 	return "", fmt.Errorf("hurst_gate.mode must be %q or %q, got %q", HurstGateModeGate, HurstGateModeSize, v)
 }
 
-// parseHurstGateOnFailure validates an on_failure value at config load. Empty
-// is valid (inherit / default open). Mirrors parseRegimeGateOnFailure (#1278).
 func parseHurstGateOnFailure(v string) (string, error) {
 	switch n := normalizeRegimeGateOnFailure(v); n {
 	case "", HurstGateOnFailureOpen, HurstGateOnFailureClosed:
@@ -236,11 +118,6 @@ func parseHurstGateOnFailure(v string) (string, error) {
 	return "", fmt.Errorf("hurst_gate_on_failure must be %q or %q, got %q", HurstGateOnFailureOpen, HurstGateOnFailureClosed, v)
 }
 
-// resolveHurstGateOnFailure resolves the effective absent-H policy for a
-// strategy: per-strategy hurst_gate.on_failure wins, else the global
-// regime.hurst_gate_on_failure, else "open". This is the SINGLE accessor —
-// exact mirror of resolveRegimeGateOnFailure (#1278). Never read the raw
-// fields at a decision site.
 func resolveHurstGateOnFailure(sc StrategyConfig, rc *RegimeConfig) string {
 	if sc.HurstGate != nil {
 		if v := normalizeRegimeGateOnFailure(sc.HurstGate.OnFailure); v != "" {
@@ -255,9 +132,6 @@ func resolveHurstGateOnFailure(sc StrategyConfig, rc *RegimeConfig) string {
 	return HurstGateOnFailureOpen
 }
 
-// resolveHurstGateWindow resolves which regime window's hurst metric the gate
-// reads: an explicit window_key, else the strategy's gate-window resolution
-// (which itself falls back to the primary window).
 func resolveHurstGateWindow(sc StrategyConfig, rc *RegimeConfig) string {
 	if sc.HurstGate != nil {
 		if key := normalizeRegimeWindowKey(sc.HurstGate.WindowKey); key != "" && key != regimeWindowDefaultKey {
@@ -267,7 +141,6 @@ func resolveHurstGateWindow(sc StrategyConfig, rc *RegimeConfig) string {
 	return resolveStrategyRegimeWindow(sc, "gate", rc)
 }
 
-// resolveHurstSizeFloor returns the effective mode=size lower clamp.
 func resolveHurstSizeFloor(hg *HurstGateConfig) float64 {
 	if hg != nil && hg.SizeFloor != nil && *hg.SizeFloor > 0 && *hg.SizeFloor <= 1.0 {
 		return *hg.SizeFloor
@@ -275,12 +148,6 @@ func resolveHurstSizeFloor(hg *HurstGateConfig) float64 {
 	return hurstDefaultSizeFloor
 }
 
-// hurstGateThresholdKey hashes the tuple that DEFINES the hysteresis state
-// series: the window the metric is read from plus the four bounds. Any edit to
-// those discards persisted state (a disarmed latch from an old band must never
-// carry into a new one). mode / on_failure / size_floor are deliberately
-// excluded: they change the DECISION taken from a state, never the state
-// series itself.
 func hurstGateThresholdKey(hg *HurstGateConfig, windowKey string) string {
 	if hg == nil {
 		return ""
@@ -303,12 +170,6 @@ func formatOptionalFloatForKey(v *float64) string {
 	return strconv.FormatFloat(*v, 'g', 17, 64)
 }
 
-// hurstFromPayload extracts the gate window's hurst metric. Returns
-// (value, true) only for a present, finite reading; a missing window, missing
-// key, empty payload or non-finite value all return (NaN, false).
-//
-// regime.py rounds H to 4 decimals and OMITS the key entirely on NaN (bare NaN
-// is not valid JSON), so an absent key is the normal "unknown" signal.
 func hurstFromPayload(payload RegimePayload, windowKey string) (float64, bool) {
 	if payload.IsEmpty() || !payload.MultiMode {
 		return math.NaN(), false
@@ -324,17 +185,6 @@ func hurstFromPayload(payload RegimePayload, windowKey string) (float64, bool) {
 	return v, true
 }
 
-// RANGE NOTE (verified against the estimator, not assumed). The CONFIG bounds
-// are validated to (0, 1) exclusive because that is the only range an operator
-// can sensibly gate on. The RUNTIME metric is NOT so bounded: DFA returns H
-// well above 1 on a near-deterministic series (a perfectly smooth linear ramp
-// measures ~2.0), which is a property of the estimator, not a fault. The two
-// comparators below are therefore written to stay correct for any finite H:
-// a reading above every configured bound arms a min-only gate and disarms a
-// max-only one, and hurstSizeMultiplier clamps at 1.0. Never "simplify" these
-// on the assumption that H lies in (0, 1).
-
-// hurstInArmBand reports whether H sits inside the configured ARM band.
 func hurstInArmBand(hg *HurstGateConfig, h float64) bool {
 	if hg == nil {
 		return true
@@ -348,9 +198,6 @@ func hurstInArmBand(hg *HurstGateConfig, h float64) bool {
 	return true
 }
 
-// hurstCrossedDisarm reports whether H has crossed the (looser) hysteresis
-// exit bounds. An omitted disarm bound collapses onto the matching arm bound,
-// which makes the state machine degenerate to a plain band test.
 func hurstCrossedDisarm(hg *HurstGateConfig, h float64) bool {
 	if hg == nil {
 		return false
@@ -372,9 +219,6 @@ func hurstCrossedDisarm(hg *HurstGateConfig, h float64) bool {
 	return false
 }
 
-// advanceHurstState applies one observation to the hysteresis state machine.
-// An absent H NEVER transitions state — the #1410 study's NaN policy: NaN is
-// unknown, never 0.5, and it neither arms nor disarms.
 func advanceHurstState(hg *HurstGateConfig, prior string, h float64, hKnown bool) string {
 	if !hKnown {
 		return prior
@@ -390,7 +234,7 @@ func advanceHurstState(hg *HurstGateConfig, prior string, h float64, hKnown bool
 			return hurstGateStateArmed
 		}
 		return hurstGateStateDisarmed
-	default: // unknown — first valid reading resolves it outright
+	default:
 		if hurstInArmBand(hg, h) {
 			return hurstGateStateArmed
 		}
@@ -398,14 +242,6 @@ func advanceHurstState(hg *HurstGateConfig, prior string, h float64, hKnown bool
 	}
 }
 
-// hurstSizeMultiplier maps a known H to the open-size multiplier:
-//
-//	m = clamp(|H - 0.5| / 0.15, size_floor, 1.0)
-//
-// The result is always in [floor, 1.0]: the gate can shrink an open, never
-// grow one. This is the ISSUE's formula. The #1410 study swept a different
-// form (m = clamp(1 + gain*e, 0, 1.5), which can EXCEED 1.0); that study
-// shipped no recommendation, so the issue's formula governs here.
 func hurstSizeMultiplier(h, floor float64) float64 {
 	if math.IsNaN(h) || math.IsInf(h, 0) {
 		return 1.0
@@ -423,15 +259,6 @@ func hurstSizeMultiplier(h, floor float64) float64 {
 	return m
 }
 
-// evaluateHurstGate is the pure per-cycle decision: no locks, no I/O, no
-// mutation. prior is the persisted state; posQty scopes the fail-closed arm.
-//
-// The fail-closed arm is FLAT-ONLY, the exact #1278 regimeBlocksOpen shape
-// (scheduler/regime.go:102-110): an unknown H under on_failure="closed" holds
-// FRESH OPENS only and never touches management of an already-open position.
-// The known-disarmed arm carries no flat-only restriction because
-// pausedBlocksSignal at the dispatch site already scopes it to
-// position-increasing actions — adds and flips are held, closes pass.
 func evaluateHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfig, prior HurstGateState, posQty float64) HurstGateDecision {
 	d := HurstGateDecision{SizeMult: 1.0, H: math.NaN()}
 	if !hurstGateConfigured(sc) {
@@ -446,7 +273,6 @@ func evaluateHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfi
 	h, hKnown := hurstFromPayload(payload, windowKey)
 	d.H, d.HKnown = h, hKnown
 
-	// A threshold edit invalidates the persisted latch outright.
 	priorState := prior.State
 	if prior.Key != d.Key {
 		priorState = hurstGateStateUnknown
@@ -456,7 +282,7 @@ func evaluateHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfi
 	failClosed := resolveHurstGateOnFailure(sc, rc) == HurstGateOnFailureClosed
 
 	if d.Mode == HurstGateModeSize {
-		// Stateless: a known H always sizes, never holds.
+
 		if hKnown {
 			d.SizeMult = hurstSizeMultiplier(h, resolveHurstSizeFloor(hg))
 			d.Detail = fmt.Sprintf("hurst %.4f → size ×%.4f (window %q)", h, d.SizeMult, windowKey)
@@ -472,7 +298,6 @@ func evaluateHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfi
 		return d
 	}
 
-	// Gate mode.
 	switch {
 	case d.State == hurstGateStateDisarmed:
 		d.Holds = true
@@ -488,7 +313,6 @@ func evaluateHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfi
 	return d
 }
 
-// hurstGateBandLabel renders the configured arm band for operator log lines.
 func hurstGateBandLabel(hg *HurstGateConfig) string {
 	if hg == nil {
 		return "band"
@@ -504,7 +328,6 @@ func hurstGateBandLabel(hg *HurstGateConfig) string {
 	return "band"
 }
 
-// nextHurstGateState folds a decision back into the persisted state.
 func nextHurstGateState(prior HurstGateState, d HurstGateDecision, now time.Time) HurstGateState {
 	if !d.Active {
 		return prior
@@ -521,14 +344,10 @@ func nextHurstGateState(prior HurstGateState, d HurstGateDecision, now time.Time
 	return next
 }
 
-// IsZero reports whether the latch carries nothing worth persisting.
 func (s HurstGateState) IsZero() bool {
 	return s.Key == "" && s.State == "" && !s.Observed
 }
 
-// marshalHurstGateStateJSON renders the latch for the strategies.hurst_gate_state
-// column. An empty latch persists as "" so untouched strategies keep the
-// column's default and the row stays byte-identical to pre-#1411 saves.
 func marshalHurstGateStateJSON(st HurstGateState) string {
 	if st.IsZero() {
 		return ""
@@ -540,9 +359,6 @@ func marshalHurstGateStateJSON(st HurstGateState) string {
 	return string(b)
 }
 
-// unmarshalHurstGateStateJSON restores the latch. Blank or malformed JSON
-// yields the zero (unknown) latch, which the next valid reading resolves —
-// never a fabricated armed/disarmed state.
 func unmarshalHurstGateStateJSON(raw string) HurstGateState {
 	if strings.TrimSpace(raw) == "" {
 		return HurstGateState{}
@@ -559,11 +375,6 @@ func unmarshalHurstGateStateJSON(raw string) HurstGateState {
 	return st
 }
 
-// advanceHurstGate is the dispatch-site entry point: it reads the prior state
-// under RLock, evaluates the pure decision, then commits the post-transition
-// state under Lock. It runs UNCONDITIONALLY at each dispatch group — signal
-// independent — so hysteresis advances on every cycle, including Signal==0
-// manage cycles. Only mu is taken; strategiesMu is never involved.
 func advanceHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfig, stratState *StrategyState, mu *sync.RWMutex, posQty float64) HurstGateDecision {
 	if !hurstGateConfigured(sc) {
 		return HurstGateDecision{SizeMult: 1.0, H: math.NaN()}
@@ -592,8 +403,6 @@ func advanceHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfig
 	return d
 }
 
-// cloneHurstGateConfig deep-copies a hurst_gate block so a SIGHUP adoption
-// never aliases the freshly loaded config's pointers into the live one.
 func cloneHurstGateConfig(hg *HurstGateConfig) *HurstGateConfig {
 	if hg == nil {
 		return nil
@@ -615,7 +424,6 @@ func cloneFloatPtr(v *float64) *float64 {
 	return &c
 }
 
-// formatHurstGateForLog renders a hurst_gate block for the SIGHUP change line.
 func formatHurstGateForLog(hg *HurstGateConfig) string {
 	if hg == nil {
 		return "(unset)"
@@ -627,14 +435,6 @@ func formatHurstGateForLog(hg *HurstGateConfig) string {
 		resolveHurstGateMode(hg), hurstGateBandLabel(hg), hg.WindowKey, hg.OnFailure)
 }
 
-// stampHurstGateAtOpenIfOpened freezes the cycle's H reading and the applied
-// size multiplier onto a just-opened position, next to the other open-time
-// stamps. Diagnostics-only: nothing reads these back into a gating, sizing,
-// close or protection decision. Called under the caller's mu.Lock.
-//
-// The stamp lands only on a genuine fresh open (opened == true, matching the
-// #1085/#1277 stamp discipline), never on an add or a re-affirm, so the
-// diagnostics row describes the decision that created the position.
 func stampHurstGateAtOpenIfOpened(s *StrategyState, symbol string, opened bool, d HurstGateDecision) {
 	if s == nil || !opened || !d.Active {
 		return
@@ -651,10 +451,6 @@ func stampHurstGateAtOpenIfOpened(s *StrategyState, symbol string, opened bool, 
 	}
 }
 
-// hurstGateStatusMarkerForStrategy renders the Phase 6 status suffix from the
-// PERSISTED latch, under RLock. Display-only — it re-reads the same state the
-// dispatch sites already advanced this cycle, so it never re-evaluates the
-// gate and never mutates anything.
 func hurstGateStatusMarkerForStrategy(sc StrategyConfig, stratState *StrategyState, rc *RegimeConfig, mu *sync.RWMutex) string {
 	if !hurstGateConfigured(sc) || stratState == nil {
 		return ""
@@ -683,8 +479,6 @@ func hurstGateStatusMarkerForStrategy(sc StrategyConfig, stratState *StrategySta
 	return hurstGateStatusMarker(d)
 }
 
-// hurstGateStatusMarker renders the display-only status suffix for Phase 6.
-// Display-only: the authoritative decision lives at the dispatch sites.
 func hurstGateStatusMarker(d HurstGateDecision) string {
 	if !d.Active {
 		return ""
@@ -704,19 +498,6 @@ func hurstGateStatusMarker(d HurstGateDecision) string {
 	return fmt.Sprintf("hurst=%.4f (gate armed)", d.H)
 }
 
-// ---------------------------------------------------------------------------
-// Config validation
-// ---------------------------------------------------------------------------
-
-// validateHurstGateConfigs fails the config load loudly on any unusable
-// hurst_gate block. Shape checks run even when enabled=false so a typo'd block
-// an operator later flips on fails at EDIT time, not at open time — the
-// validateHedgeConfigs discipline (config.go:1727).
-//
-// The composite-classifier check is load-bearing: metrics["hurst"] exists only
-// in composite window payloads, so a gate pointed at an adx window would never
-// see H and on_failure would govern every cycle — under "closed" a permanent,
-// silent entry block. Reject instead of running permanently-on-failure.
 func validateHurstGateConfigs(cfg *Config) []string {
 	if cfg == nil {
 		return nil
@@ -748,9 +529,6 @@ func validateHurstGateConfigs(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("%s: hurst_gate.on_failure: %v", prefix, err))
 		}
 
-		// Type scoping: only the six signal-dispatch arms are wired. Options
-		// dispatch through a separate action list and manual has no open
-		// signal to suppress, so a block there would silently do nothing.
 		switch sc.Type {
 		case "options", "manual":
 			errs = append(errs, fmt.Sprintf("%s: hurst_gate is not supported for type=%q — the gate wires into the spot/perps/futures signal dispatch only (#1411)", prefix, sc.Type))
@@ -763,8 +541,6 @@ func validateHurstGateConfigs(cfg *Config) []string {
 	return errs
 }
 
-// validateHurstGateBounds enforces range, ordering, and mode scoping on the
-// numeric fields. Every rule fires regardless of enabled.
 func validateHurstGateBounds(hg *HurstGateConfig, mode, prefix string) []string {
 	var errs []string
 	inUnitInterval := func(name string, v *float64) bool {
@@ -783,9 +559,7 @@ func validateHurstGateBounds(hg *HurstGateConfig, mode, prefix string) []string 
 	dMaxOK := inUnitInterval("disarm_max", hg.DisarmMax)
 
 	if mode == HurstGateModeSize {
-		// The bounds define an arm band, which mode=size never consults.
-		// Accepting them would silently ignore an operator's stated intent —
-		// the #704 misdiagnosis class. Reject instead.
+
 		for name, v := range map[string]*float64{"min": hg.Min, "max": hg.Max, "disarm_min": hg.DisarmMin, "disarm_max": hg.DisarmMax} {
 			if v != nil {
 				errs = append(errs, fmt.Sprintf("%s: hurst_gate.%s has no meaning with mode=%q (the band gates entries; size scales them) — remove it or switch to mode=%q", prefix, name, HurstGateModeSize, HurstGateModeGate))
@@ -825,10 +599,6 @@ func validateHurstGateBounds(hg *HurstGateConfig, mode, prefix string) []string 
 	return errs
 }
 
-// validateHurstGateWindow rejects any configuration where the gate could never
-// read a hurst value: regime detection off, multi-window mode off, the window
-// missing, or the window classified by anything other than the composite
-// classifier (the only producer of metrics["hurst"]).
 func validateHurstGateWindow(sc StrategyConfig, hg *HurstGateConfig, rc *RegimeConfig, prefix string) []string {
 	var errs []string
 	explicit := normalizeRegimeWindowKey(hg.WindowKey)

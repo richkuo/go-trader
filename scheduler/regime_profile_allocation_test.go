@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-// twoProfileAlloc builds a resolved allocation with two profiles for the
-// composite vocabulary used by most tests.
 func twoProfileAlloc(confirm int) *RegimeProfileAllocation {
 	return &RegimeProfileAllocation{
 		Window: "profile_long",
@@ -30,8 +28,7 @@ func twoProfileAlloc(confirm int) *RegimeProfileAllocation {
 
 func TestResolveRegimeProfile_ColdStartNoInstantSwitch(t *testing.T) {
 	alloc := twoProfileAlloc(3)
-	// Cold start (prev=nil), flat, regime says "trend" — must NOT switch this
-	// bar; active stays at initial fade and the counter starts at 1.
+
 	active, next := resolveRegimeProfile(alloc, "trending_up_clean", "t0", nil, 0, "")
 	if active != "fade" {
 		t.Fatalf("cold start active=%q, want fade", active)
@@ -52,7 +49,7 @@ func TestResolveRegimeProfile_FlatSwitchAfterConfirmBars(t *testing.T) {
 			t.Fatalf("bar %d active=%q, want fade (not yet confirmed)", i, active)
 		}
 	}
-	// Third confirming bar commits the switch.
+
 	if active != "trend" {
 		t.Fatalf("after 3 confirm bars active=%q, want trend", active)
 	}
@@ -64,7 +61,7 @@ func TestResolveRegimeProfile_FlatSwitchAfterConfirmBars(t *testing.T) {
 func TestResolveRegimeProfile_BarNotAdvancedDoesNotCount(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade"}
-	// Same barTime across three scheduler cycles: counter must not advance.
+
 	for i := 0; i < 3; i++ {
 		_, *state = resolveRegimeProfile(alloc, "trending_up_clean", "t1", state, 0, "")
 	}
@@ -76,9 +73,7 @@ func TestResolveRegimeProfile_BarNotAdvancedDoesNotCount(t *testing.T) {
 func TestResolveRegimeProfile_OpenPositionFreezesAndDefers(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade"}
-	// Position open the whole time; regime is trend for many bars. The active
-	// profile must stay frozen to the position's open profile (fade), but the
-	// counter accrues so the first flat bar commits immediately.
+
 	for i, bt := range []string{"t1", "t2", "t3", "t4"} {
 		active, ns := resolveRegimeProfile(alloc, "trending_up_clean", bt, state, 1, "fade")
 		*state = ns
@@ -92,7 +87,7 @@ func TestResolveRegimeProfile_OpenPositionFreezesAndDefers(t *testing.T) {
 	if state.PendingBarsSeen < 3 {
 		t.Fatalf("counter did not accrue while open: seen=%d", state.PendingBarsSeen)
 	}
-	// Now flat on the next bar: switch commits immediately.
+
 	active, ns := resolveRegimeProfile(alloc, "trending_up_clean", "t5", state, 0, "")
 	*state = ns
 	if active != "trend" || state.ActiveProfile != "trend" {
@@ -103,7 +98,7 @@ func TestResolveRegimeProfile_OpenPositionFreezesAndDefers(t *testing.T) {
 func TestResolveRegimeProfile_EmptyLabelFreezes(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade", PendingProfile: "trend", PendingBarsSeen: 2}
-	// Bundle failure → empty label → freeze; counter and active unchanged.
+
 	active, next := resolveRegimeProfile(alloc, "", "t9", state, 0, "")
 	if active != "fade" {
 		t.Fatalf("empty-label active=%q, want fade", active)
@@ -116,7 +111,7 @@ func TestResolveRegimeProfile_EmptyLabelFreezes(t *testing.T) {
 func TestResolveRegimeProfile_DesiredEqualsActiveResetsPending(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade", PendingProfile: "trend", PendingBarsSeen: 2}
-	// Regime flips back to the active profile's regime → clear pending switch.
+
 	_, next := resolveRegimeProfile(alloc, "ranging_quiet", "t2", state, 0, "")
 	if next.PendingProfile != "" || next.PendingBarsSeen != 0 {
 		t.Fatalf("desired==active did not reset pending: %+v", next)
@@ -134,7 +129,7 @@ func TestApplyRegimeProfileParams_MergesAndDoesNotMutateBase(t *testing.T) {
 	if got := sc.OpenStrategy.Params["shared"]; got != 1 {
 		t.Fatalf("base param lost: shared=%v", got)
 	}
-	// The shared base map must be untouched (loop-local sc aliases cfg's map).
+
 	if base["trend_entry"] != "default_value" {
 		t.Fatalf("base map mutated: trend_entry=%v", base["trend_entry"])
 	}
@@ -150,8 +145,6 @@ func TestApplyRegimeProfileParams_MissingProfileNoOp(t *testing.T) {
 	}
 }
 
-// resolveRawFromJSON unmarshals a regime_profile_allocation block and resolves
-// it against the given classifier labels, returning the errors.
 func resolveRawFromJSON(t *testing.T, raw string, labels []string) (*RegimeProfileAllocation, []string) {
 	t.Helper()
 	var a RegimeProfileAllocation
@@ -320,8 +313,6 @@ func TestValidateStrategyRegimeVocabulary_AcceptsGoodProfileAllocation(t *testin
 	}
 }
 
-// DB round-trip: open_profile on a position and active_profile on a strategy
-// survive a save+load cycle.
 func TestProfileAllocation_DBRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	sdb, err := OpenStateDB(dir + "/state.db")
@@ -350,7 +341,7 @@ func TestProfileAllocation_DBRoundTrip(t *testing.T) {
 	if s == nil || s.RegimeProfile == nil || s.RegimeProfile.ActiveProfile != "trend" {
 		t.Fatalf("active_profile not restored: %+v", s)
 	}
-	// The pending counter is intentionally NOT persisted (re-arms on restart).
+
 	if s.RegimeProfile.PendingBarsSeen != 0 {
 		t.Fatalf("pending counter should not persist, got %d", s.RegimeProfile.PendingBarsSeen)
 	}
@@ -359,8 +350,6 @@ func TestProfileAllocation_DBRoundTrip(t *testing.T) {
 	}
 }
 
-// fullProfileAllocConfig builds a complete HL-perps + regime config with a
-// valid regime_profile_allocation for validateConfig integration tests.
 func fullProfileAllocConfig(t *testing.T, palJSON string) Config {
 	t.Helper()
 	var a RegimeProfileAllocation
@@ -442,8 +431,6 @@ func indexOfErr(err error, sub string) bool {
 	return err != nil && indexOf(err.Error(), sub) >= 0
 }
 
-// TestLoadConfig_ProfileAllocation_FromFile exercises the full JSON path:
-// UnmarshalJSON capture, the StrategyConfig unknown-key guard, and validation.
 func TestLoadConfig_ProfileAllocation_FromFile(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `{

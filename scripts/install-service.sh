@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-# Install a go-trader systemd unit, reload systemd, and enable it so the
-# service survives reboots. Optionally start it immediately.
-#
-# Without arguments, installs the canonical go-trader.service from the repo root.
-# Pass a path to install an ad hoc named variant (e.g. go-trader-paper-testing.service)
-# or the templated unit (systemd/go-trader@.service).
-#
-# Usage:
-#   scripts/install-service.sh                                  # installs go-trader.service and starts it
-#   scripts/install-service.sh path/to/go-trader-foo.service    # installs + enables + starts go-trader-foo
-#   scripts/install-service.sh systemd/go-trader@.service live  # installs template, enables+starts go-trader@live
-#   NO_START=1 scripts/install-service.sh ...                   # enable only, do not start
-#
-# The script is idempotent: re-running it will refresh the unit file and
-# re-enable the service without error.
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
@@ -30,8 +15,6 @@ if [[ ! -f "$SRC" ]]; then
   exit 1
 fi
 
-# systemd template instance names flow into the unit name and `systemctl enable`;
-# reject anything outside [A-Za-z0-9_.-] to avoid confusing systemd errors.
 if [[ -n "$INSTANCE" && "$INSTANCE" =~ [^a-zA-Z0-9_.-] ]]; then
   echo "error: instance name must contain only alphanumerics, dash, dot, or underscore (got: $INSTANCE)" >&2
   exit 1
@@ -59,8 +42,6 @@ read_unit_field() {
   resolve_unit_value "$raw"
 }
 
-# For a template unit (go-trader@.service), the instance name is what gets
-# enabled/started (e.g. go-trader@live). For a plain unit, ignore $INSTANCE.
 if [[ "$UNIT_FILENAME" == *@.service ]]; then
   if [[ -z "$INSTANCE" ]]; then
     echo "error: template unit $UNIT_FILENAME requires an instance name as arg 2" >&2

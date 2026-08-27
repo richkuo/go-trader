@@ -12,7 +12,6 @@ const (
 	regimeClassifierComposite = "composite"
 )
 
-// Default composite thresholds (#795); operators may override per window.
 var defaultCompositeThresholds = RegimeCompositeThresholds{
 	ReturnEff:  0.05,
 	RangeEff:   0.03,
@@ -20,9 +19,6 @@ var defaultCompositeThresholds = RegimeCompositeThresholds{
 	Efficiency: 0.5,
 }
 
-// RegimeCompositeThresholds tunes the composite metric mapper. ReturnEff/RangeEff
-// gate the ATR-efficiency net-move/range; Efficiency is the Kaufman efficiency
-// ratio (∈ (0,1]) that splits clean vs choppy trends; ADX corroborates.
 type RegimeCompositeThresholds struct {
 	ReturnEff  float64 `json:"return_eff"`
 	RangeEff   float64 `json:"range_eff"`
@@ -101,8 +97,6 @@ func (t RegimeCompositeThresholds) withDefaults() RegimeCompositeThresholds {
 	return out
 }
 
-// RegimeWindowSpec describes one named regime window (#792/#795).
-// Bare-int JSON in regime.windows parses as {classifier:"adx", period:N}.
 type RegimeWindowSpec struct {
 	Classifier   string                     `json:"classifier,omitempty"`
 	Period       int                        `json:"period"`
@@ -150,7 +144,6 @@ func (s RegimeWindowSpec) resolvedForEmit(rc *RegimeConfig) RegimeWindowSpec {
 	return out
 }
 
-// RegimeWindowsMap is regime.windows: name -> spec. Accepts bare ints for ADX back-compat.
 type RegimeWindowsMap map[string]RegimeWindowSpec
 
 func (m *RegimeWindowsMap) UnmarshalJSON(data []byte) error {
@@ -190,18 +183,7 @@ func regimeLabelsForClassifier(classifier string) []string {
 			"ranging_quiet",
 			"ranging_volatile",
 			"ranging_directional",
-			// #1124: directional-drift ranging substates. Adding them to the
-			// classifier vocabulary makes them valid keys for allowed_regimes
-			// gating, regime_directional_policy and *_atr_regime blocks. Under
-			// the #1124 family rule, a present bare ranging_directional covers
-			// its _up/_down subs across every exhaustiveness validator, so a
-			// pre-#1124 explicit (non-use_defaults) trend_regime block that has
-			// the bare label but omits the subs still loads fine (no config
-			// changes required). Exhaustiveness stays fail-closed: a label
-			// errors at load with "missing required regime labels" only when
-			// neither it nor its bare family parent is present — e.g. an
-			// explicit block listing _up/_down but omitting bare is rejected
-			// (the family rule is one-directional: bare→subs, never subs→bare).
+
 			"ranging_directional_up",
 			"ranging_directional_down",
 		}
@@ -350,15 +332,11 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 			polErrs := sc.RegimeDirectionalPolicy.ResolveRawWithLabels(prefix+".regime_directional_policy", dirLabels)
 			errs = append(errs, polErrs...)
 		}
-		// #907: regime_window_divergence shape validation (window names, on_divergence)
-		// AND window-existence. Both run here (not in validateRegimeWindowsConfig)
-		// because ResolveRaw populates ShortWindow/MediumWindow — and that function
-		// runs BEFORE this one in validateConfig, so the typed fields are empty there
-		// and an existence guard keyed on them would silently skip (PR #916 review).
+
 		if sc.RegimeWindowDivergence.IsConfigured() {
 			divErrs := sc.RegimeWindowDivergence.ResolveRaw(prefix + ".regime_window_divergence")
 			errs = append(errs, divErrs...)
-			// Existence check only when shape resolved cleanly and regime windows exist.
+
 			if len(divErrs) == 0 && rc != nil && rc.Enabled {
 				for _, pair := range []struct {
 					field string
@@ -379,12 +357,7 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 						errs = append(errs, fmt.Sprintf("%s: regime_window_divergence.%s=%q not found in regime.windows (valid: %s)", prefix, pair.field, pair.value, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
 					}
 				}
-				// #907/PR#916: louder stand-aside foot-gun warning. A mutating mode
-				// (trust_short/trust_medium) on a non-"both" base direction can only
-				// gate the base side's entries — it can never synthesize the opposite
-				// entry (the signal script already ran with the pre-override direction;
-				// see applyRegimeDivergenceOverride doc). Skip when a directional policy
-				// is configured, since that resolves direction per-regime (may be "both").
+
 				mode := sc.RegimeWindowDivergence.OnDivergence
 				if (mode == onDivergenceTrustShort || mode == onDivergenceTrustMedium) &&
 					EffectiveDirection(sc) != DirectionBoth &&
@@ -394,13 +367,7 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 				}
 			}
 		}
-		// #998: regime_profile_allocation shape validation (param_sets count,
-		// label coverage, profile references) AND window existence. Check window
-		// existence FIRST: a typo'd window otherwise resolves to the ADX-default
-		// classifier and surfaces a confusing label-coverage error instead of the
-		// real "window not found" cause. When the window is bad we still run
-		// ResolveRaw with nil labels so param_sets/initial_profile shape errors
-		// are not masked.
+
 		if sc.RegimeProfileAllocation.IsConfigured() {
 			windowRaw := regimeProfileAllocationWindow(sc)
 			windowKey := normalizeRegimeWindowKey(windowRaw)
@@ -420,11 +387,7 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 			}
 			errs = append(errs, sc.RegimeProfileAllocation.ResolveRaw(prefix+".regime_profile_allocation", labels)...)
 		}
-		// stop_loss_atr_regime / trailing_stop_atr_regime vocabulary is resolved
-		// authoritatively in validateRegimeATRConfig (which also populates the
-		// typed runtime fields and runs the mutex checks) using the same
-		// window-classifier labels — see #802. Re-resolving here would just
-		// double-report the same label errors.
+
 	}
 	return errs
 }
@@ -440,10 +403,6 @@ func formatRegimeWindowSpecInspect(name string, spec RegimeWindowSpec, rc *Regim
 	return fmt.Sprintf("%s: classifier=%s period=%d adx_threshold=%g", name, cls, resolved.Period, resolved.ADXThreshold)
 }
 
-// regimeDisplayWindowAllowSet returns the normalized set of window names the
-// operator opted to show in the summary (#1062), or nil when DisplayWindows is
-// unset/blank — nil means "render every window" (legacy behavior). Blank
-// entries are ignored so a stray "" can't collapse the set to show-nothing.
 func regimeDisplayWindowAllowSet(rc *RegimeConfig) map[string]bool {
 	if rc == nil || len(rc.DisplayWindows) == 0 {
 		return nil

@@ -364,7 +364,6 @@ func TestOKXInstType(t *testing.T) {
 	}
 }
 
-// helper to build a trade for testing sendTradeAlerts
 func testTrade() Trade {
 	return Trade{
 		Timestamp:  time.Now(),
@@ -416,7 +415,7 @@ func TestSendTradeAlerts_DMAndChannel(t *testing.T) {
 }
 
 func TestSendTradeAlerts_DMOnly(t *testing.T) {
-	// DM enabled but no channel configured for platform — only DM sent.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -433,7 +432,7 @@ func TestSendTradeAlerts_DMOnly(t *testing.T) {
 			{
 				notifier:   mock,
 				ownerID:    "owner123",
-				channels:   map[string]string{}, // no channels configured
+				channels:   map[string]string{},
 				dmChannels: map[string]string{"binanceus-paper": "owner123"},
 			},
 		},
@@ -450,7 +449,7 @@ func TestSendTradeAlerts_DMOnly(t *testing.T) {
 }
 
 func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
-	// Channel configured but DM disabled — only channel message sent.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -483,7 +482,7 @@ func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
 }
 
 func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
-	// No DM enabled, no channel configured — nothing sent.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -500,7 +499,7 @@ func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
 			{
 				notifier: mock,
 				ownerID:  "owner123",
-				channels: map[string]string{}, // no channels configured
+				channels: map[string]string{},
 			},
 		},
 	}
@@ -516,7 +515,7 @@ func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
 }
 
 func TestSendTradeAlerts_NoChannelForPlatform(t *testing.T) {
-	// Channel map has "spot" but not "hyperliquid" or "perps" — no messages.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-perps-sma",
@@ -549,7 +548,7 @@ func TestSendTradeAlerts_NoChannelForPlatform(t *testing.T) {
 }
 
 func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
-	// Live trades should post to both the primary channel and the <platform>-live channel.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -574,7 +573,6 @@ func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
 
 	sendTradeAlerts(sc, state, 1, &mu, notifier)
 
-	// Should get 1 DM + 2 channel messages (primary + live)
 	if len(mock.dms) != 1 {
 		t.Errorf("expected 1 DM, got %d", len(mock.dms))
 	}
@@ -594,7 +592,7 @@ func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
 }
 
 func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
-	// When <platform>-live resolves to the same channel as <platform>, no double-post.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -611,7 +609,7 @@ func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
 			{
 				notifier: mock,
 				ownerID:  "",
-				channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl"}, // same channel
+				channels: map[string]string{"hyperliquid": "ch-hl", "hyperliquid-live": "ch-hl"},
 			},
 		},
 	}
@@ -624,8 +622,7 @@ func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
 }
 
 func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
-	// Paper trades should NOT post to the <platform>-live channel; they use
-	// <platform>-paper (or fall back to base platform channel).
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -658,7 +655,7 @@ func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
 }
 
 func TestSendTradeAlerts_PaperChannelRouting(t *testing.T) {
-	// Paper trades should route to <platform>-paper channel when configured.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -694,7 +691,7 @@ func TestSendTradeAlerts_PaperChannelRouting(t *testing.T) {
 }
 
 func TestSendTradeAlerts_PaperFallbackToBase(t *testing.T) {
-	// Paper trades fall back to base platform channel when no <platform>-paper key exists.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -775,7 +772,7 @@ func TestSendTradeAlerts_DMChannelLive(t *testing.T) {
 }
 
 func TestSendTradeAlerts_DMMissingKey(t *testing.T) {
-	// Paper trade but only live key in dm_channels — no DM, no channel.
+
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -889,7 +886,6 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// Paper mode: execResult is nil
 	trades, _ := executeHyperliquidResult(sc, s, result, nil, "BUY", 50000, nil, nil, HurstGateDecision{}, logger)
 	if trades != 1 {
 		t.Fatalf("trades = %d, want 1", trades)
@@ -899,8 +895,7 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 	if tr.ExchangeOrderID != "" {
 		t.Errorf("ExchangeOrderID should be empty in paper mode, got %q", tr.ExchangeOrderID)
 	}
-	// #954 gross convention: paper opens stamp the MODELED fee that was
-	// deducted from cash (fee_source distinguishes it from a real fill fee).
+
 	wantFee := CalculatePlatformSpotFee("hyperliquid", tr.Value)
 	if math.Abs(tr.ExchangeFee-wantFee) > 1e-9 || tr.FeeSource != FeeSourceModeled {
 		t.Errorf("paper open fee = %g (src %q), want modeled %g", tr.ExchangeFee, tr.FeeSource, wantFee)
@@ -1201,10 +1196,6 @@ func TestExecuteTopStepResult_StampsExchangeData(t *testing.T) {
 	}
 }
 
-// TestShouldCloseFullPosition verifies the sole-peer guard for the #592/#619
-// market_close(sz=None) optimisation: only fire on the final tier
-// (closeFraction=1.0) AND only when no other HL live strategy shares the coin
-// (otherwise we'd flatten the peer's exposure too).
 func TestShouldCloseFullPosition(t *testing.T) {
 	liveArgs := []string{"hold", "ETH", "1h", "--mode=live"}
 	btcLiveArgs := []string{"hold", "BTC", "1h", "--mode=live"}
@@ -1342,10 +1333,6 @@ func TestKnownSubcommandsMatchDispatch(t *testing.T) {
 	}
 }
 
-// #1456 review round 17 (Optional 1): one strategy booking two audit closes in
-// the same pass must produce two DISTINCT trade DMs. sendTradeAlerts emits the
-// LAST n rows per call, so the grouping helper hands it the per-strategy count;
-// calling it once per detail re-emitted only the newest row.
 func TestSendAuditCloseAlertsGroupsPerStrategy(t *testing.T) {
 	mock := &mockNotifier{}
 	sc := StrategyConfig{

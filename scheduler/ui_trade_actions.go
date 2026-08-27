@@ -1,24 +1,5 @@
 package main
 
-// #1257 (Phase 4 of #1229): dashboard trade-affecting mutations. Each
-// endpoint runs the SAME core as the corresponding manual CLI command
-// (manual_core.go) — zero guard bypass — behind the Phase-3 preamble
-// (POST-only, requireMutatingAPIAuth, JSON content type, requireSameOrigin)
-// plus the #1257 confirm-nonce check (ui_confirm.go).
-//
-// Endpoints (all POST, body {"nonce": "...", "params": {...}}):
-//
-//	/api/strategies/{id}/open        — manual market open (type=manual)
-//	/api/strategies/{id}/add         — manual scale-in (#873)
-//	/api/strategies/{id}/close       — manual close, full or partial (params.qty)
-//	/api/strategies/{id}/force-close — live HL perps only, reduce-only (#1140)
-//	/api/strategies/{id}/update-sl   — cancel-then-queue SL move (#1050)
-//	/api/strategies/{id}/cancel-sl   — SL removal (#1050)
-//
-// The handler snapshots daemon state under ss.mu.RLock and releases it before
-// the core spawns any subprocess (6-phase lock pattern); results report what
-// was submitted/queued for the scheduler drain, never an optimistic apply.
-
 import (
 	"encoding/json"
 	"fmt"
@@ -28,10 +9,6 @@ import (
 	"time"
 )
 
-// pendingManualActionExists reports whether any action of the given kinds
-// for strategyID+symbol is still queued in pending_manual_actions (submitted
-// on-chain but not yet drained/adopted by the scheduler). Mirrors
-// pendingSLActionExists (#1050) for the trade-action classes.
 func pendingManualActionExists(stateDB *StateDB, strategyID, symbol string, kinds ...string) (bool, error) {
 	actions, err := stateDB.LoadPendingManualActions()
 	if err != nil {
@@ -50,9 +27,6 @@ func pendingManualActionExists(stateDB *StateDB, strategyID, symbol string, kind
 	return false, nil
 }
 
-// uiTradeActionGuards is the shared preamble for /api/confirm and every trade
-// action endpoint: not draining, POST-only, mutating auth, JSON content type,
-// same-origin.
 func (ss *StatusServer) uiTradeActionGuards(w http.ResponseWriter, r *http.Request) bool {
 	if ss.rejectIfDraining(w) {
 		return false
@@ -73,17 +47,12 @@ func (ss *StatusServer) uiTradeActionGuards(w http.ResponseWriter, r *http.Reque
 	return true
 }
 
-// uiTradeConfig returns the live *Config snapshot (refreshed on SIGHUP via
-// SetConfigContext).
 func (ss *StatusServer) uiTradeConfig() *Config {
 	ss.strategiesMu.RLock()
 	defer ss.strategiesMu.RUnlock()
 	return ss.uiCfg
 }
 
-// SetNotifier wires the daemon's notifier into the UI trade-action cores so
-// their warning paths (naked-position alerts, cleanup failures) reach the
-// operator exactly like the CLI's do.
 func (ss *StatusServer) SetNotifier(notifier *MultiNotifier) {
 	if ss == nil {
 		return
@@ -93,11 +62,6 @@ func (ss *StatusServer) SetNotifier(notifier *MultiNotifier) {
 	ss.strategiesMu.Unlock()
 }
 
-// daemonManualCoreDeps builds core deps for in-daemon execution: state comes
-// from the live in-memory AppState (snapshot under ss.mu.RLock, released
-// before subprocess work), the queue insert goes to the daemon's own stateDB
-// handle, and on-chain side effects ride the existing RunHyperliquid*
-// helpers (runPythonSideEffect lane).
 func (ss *StatusServer) daemonManualCoreDeps(cfg *Config) manualCoreDeps {
 	ss.strategiesMu.RLock()
 	notifier := ss.uiNotifier
@@ -122,9 +86,6 @@ type uiTradeActionResponse struct {
 	Message string `json:"message"`
 }
 
-// uiTradeActionHTTPStatus maps a core failure to an HTTP status: usage-class
-// errors are the client's bad input (400), everything else is a guard refusal
-// or venue failure (409).
 func uiTradeActionHTTPStatus(err error) int {
 	if ce, ok := err.(*manualCoreError); ok && ce.usage {
 		return http.StatusBadRequest
@@ -132,9 +93,6 @@ func uiTradeActionHTTPStatus(err error) int {
 	return http.StatusConflict
 }
 
-// uiTradeParams accumulates typed extraction of optional params, keeping the
-// first error (numbers must be non-negative and finite — a negative size
-// would otherwise fall through countSizingFlags into the default-margin path).
 type uiTradeParams struct {
 	obj map[string]json.RawMessage
 	err error
@@ -170,9 +128,6 @@ func (p *uiTradeParams) str(key string) string {
 	return v
 }
 
-// handleAPIStrategyTradeAction dispatches one confirmed trade action for a
-// strategy. The nonce is consumed (single-use) BEFORE any validation deeper
-// than the binding itself, so a failed attempt always needs a fresh confirm.
 func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *http.Request, id, action string) {
 	if !ss.uiTradeActionGuards(w, r) {
 		return
@@ -235,47 +190,14 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 		return
 	}
 
-	// Serialize trade-action submits: the double-fire guard below is a
-	// check-then-submit, so without this two concurrent requests could both
-	// observe no-pending/Flat and both fire on-chain. Held across the guard
-	// AND the core (which inserts the pending row), making check+insert
-	// atomic; /api/confirm and read paths never take it.
 	ss.tradeActionMu.Lock()
 	defer ss.tradeActionMu.Unlock()
 
-	// Double-fire guard. The shared cores repeat this refusal
-	// (refuseIfPositionActionQueued in manual_core.go) so the CLI and any future
-	// core caller are covered too, and the cores additionally take a
-	// cross-process file lock (acquireManualActionFileLock) that makes
-	// check+submit atomic even against a separate CLI process. Running it HERE
-	// gives concurrent HTTP requests to THIS daemon a fast in-process guard
-	// (tradeActionMu) without every request contending on the file lock, and
-	// lets the open branch add the UI-only "already holds the symbol" refusal
-	// below (the CLI open deliberately allows --record-only re-register onto an
-	// existing position).
-	// Between an action submitting on-chain and the scheduler draining its
-	// queued row, the dashboard still shows the pre-action state, inviting a
-	// retry that would double the position (open/add) or — since a sized manual
-	// close is a regular non-reduce-only order — close the remainder AND flip
-	// into an opposite position (close). Refuse an open while this strategy
-	// already holds the symbol or an open/add is queued; refuse an add while one
-	// is queued; refuse a close/force-close while a close is queued. A peer
-	// strategy's position on the same coin does not block (the view is scoped to
-	// this strategy's own positions), and once the drain applies + deletes the
-	// row a legitimate retry passes again.
-	// The guard must key on the SAME symbol the core writes into the queued
-	// row: perps configs leave the symbol config field empty (the coin lives
-	// in args[1]) and forceCloseCore queues under the args-derived sym, so
-	// sc.Symbol would never match a queued force-close row.
 	guardSym := sc.Symbol
 	if action == "force-close" {
 		guardSym = sym
 	}
-	// All four position-changing actions share ONE in-flight class: an add
-	// fired while a close is queued (or vice versa) would pass a class-scoped
-	// guard, fire a real order, and orphan it on drain (the close applies
-	// first, deletes the position, then the add row fails every cycle). At
-	// most one un-drained open/add/close per strategy+symbol.
+
 	if action == "open" || action == "add" || action == "close" || action == "force-close" {
 		if pending, perr := pendingManualActionExists(ss.stateDB, id, guardSym, "open", "add", "close"); perr != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("could not check pending actions: %v", perr))

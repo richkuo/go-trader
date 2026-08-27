@@ -104,7 +104,7 @@ func TestDynamicProtectionForceReplace(t *testing.T) {
 		Side:            "long",
 		AvgCost:         100,
 		EntryATR:        10,
-		StopLossATRMult: 0.8, // ranging block after regime flip
+		StopLossATRMult: 0.8,
 		Tiers: []hlProtectionTier{
 			{Multiple: 1.0, Fraction: 0.5},
 			{Multiple: 2.0, Fraction: 1.0},
@@ -120,7 +120,7 @@ func TestDynamicProtectionForceReplace(t *testing.T) {
 	})
 
 	t.Run("sl_moves_past_debounce", func(t *testing.T) {
-		pos := &Position{StopLossOID: 99, StopLossTriggerPx: 85} // armed at trending_up 1.5×
+		pos := &Position{StopLossOID: 99, StopLossTriggerPx: 85}
 		forceSL, _ := dynamicProtectionForceReplace(sc, pos, plan, "trending_up", true)
 		if !forceSL {
 			t.Fatal("expected SL force-replace when regime SL mult changes beyond debounce")

@@ -11,7 +11,6 @@ import (
 
 const deribitAPIBase = "https://www.deribit.com/api/v2"
 
-// DeribitTickerResponse from /public/ticker endpoint
 type DeribitTickerResponse struct {
 	Result struct {
 		InstrumentName  string  `json:"instrument_name"`
@@ -28,10 +27,9 @@ type DeribitTickerResponse struct {
 	} `json:"result"`
 }
 
-// DeribitPricer fetches live option prices from Deribit
 type DeribitPricer struct {
 	client  *http.Client
-	baseURL string // override for testing; defaults to deribitAPIBase
+	baseURL string
 }
 
 func NewDeribitPricer() *DeribitPricer {
@@ -47,21 +45,17 @@ func (d *DeribitPricer) apiBase() string {
 	return deribitAPIBase
 }
 
-// GetOptionPrice fetches live mark price for an option
-// Falls back to nearest expiry if exact doesn't exist
 func (d *DeribitPricer) GetOptionPrice(underlying, optionType string, strike float64, expiry string) (float64, float64, error) {
 	instrument := d.formatInstrument(underlying, optionType, strike, expiry)
 	if instrument == "" {
 		return 0, 0, fmt.Errorf("invalid instrument format")
 	}
 
-	// Try exact match first
 	markPrice, spotPrice, err := d.fetchTicker(instrument)
 	if err == nil {
 		return markPrice, spotPrice, nil
 	}
 
-	// If exact doesn't exist, try to find nearest expiry with same strike
 	nearestInstrument, findErr := d.findNearestExpiry(underlying, optionType, strike, expiry)
 	if findErr != nil {
 		return 0, 0, fmt.Errorf("exact match failed: %w, nearest search failed: %w", err, findErr)
@@ -75,7 +69,6 @@ func (d *DeribitPricer) GetOptionPrice(underlying, optionType string, strike flo
 	return markPrice, spotPrice, nil
 }
 
-// fetchTickerFull retrieves full ticker data including Greeks.
 func (d *DeribitPricer) fetchTickerFull(instrument string) (*DeribitTickerResponse, error) {
 	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", d.apiBase(), instrument)
 	resp, err := d.client.Get(url)
@@ -97,10 +90,8 @@ func (d *DeribitPricer) fetchTickerFull(instrument string) (*DeribitTickerRespon
 	return &ticker, nil
 }
 
-// Name satisfies OptionPricer.
 func (d *DeribitPricer) Name() string { return "deribit" }
 
-// FetchSpotPrice fetches the current spot price for an underlying via its perpetual instrument.
 func (d *DeribitPricer) FetchSpotPrice(underlying string) (float64, error) {
 	ticker, err := d.fetchTickerFull(strings.ToUpper(underlying) + "-PERPETUAL")
 	if err != nil {
@@ -109,7 +100,6 @@ func (d *DeribitPricer) FetchSpotPrice(underlying string) (float64, error) {
 	return ticker.Result.UnderlyingPrice, nil
 }
 
-// GetOptionPriceFull fetches live mark price, spot price, and Greeks for an option.
 func (d *DeribitPricer) GetOptionPriceFull(underlying, optionType string, strike float64, expiry string) (float64, float64, OptGreeks, error) {
 	instrument := d.formatInstrument(underlying, optionType, strike, expiry)
 	if instrument == "" {
@@ -146,7 +136,6 @@ func (d *DeribitPricer) GetOptionPriceFull(underlying, optionType string, strike
 	return ticker.Result.MarkPrice, ticker.Result.UnderlyingPrice, g, nil
 }
 
-// fetchTicker retrieves ticker data for a specific instrument
 func (d *DeribitPricer) fetchTicker(instrument string) (float64, float64, error) {
 	url := fmt.Sprintf("%s/public/ticker?instrument_name=%s", d.apiBase(), instrument)
 	resp, err := d.client.Get(url)
@@ -168,14 +157,12 @@ func (d *DeribitPricer) fetchTicker(instrument string) (float64, float64, error)
 	return ticker.Result.MarkPrice, ticker.Result.UnderlyingPrice, nil
 }
 
-// findNearestExpiry searches for the nearest available expiry with the same strike
 func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike float64, targetExpiry string) (string, error) {
 	targetTime, err := time.Parse("2006-01-02", targetExpiry)
 	if err != nil {
 		return "", fmt.Errorf("invalid target expiry: %w", err)
 	}
 
-	// Fetch available instruments
 	url := fmt.Sprintf("%s/public/get_instruments?currency=%s&kind=option&expired=false", d.apiBase(), underlying)
 	resp, err := d.client.Get(url)
 	if err != nil {
@@ -195,7 +182,6 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 		return "", fmt.Errorf("decode instruments error: %w", err)
 	}
 
-	// Find closest expiry with matching strike and option type
 	optType := "C"
 	if strings.ToLower(optionType) == "put" {
 		optType = "P"
@@ -205,7 +191,7 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 	var minDiff int64 = 1<<63 - 1
 
 	for _, inst := range result.Result {
-		// Check if strike and type match
+
 		if inst.Strike != strike {
 			continue
 		}
@@ -213,7 +199,6 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 			continue
 		}
 
-		// Calculate time difference
 		expTime := time.Unix(inst.ExpirationTS/1000, 0)
 		diff := expTime.Sub(targetTime)
 		if diff < 0 {
@@ -240,10 +225,8 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 	return bestInstrument, nil
 }
 
-// formatInstrument converts position data to Deribit instrument name
-// Example: BTC, call, 75000, 2026-03-13 -> BTC-13MAR26-75000-C
 func (d *DeribitPricer) formatInstrument(underlying, optionType string, strike float64, expiry string) string {
-	// Parse expiry: 2026-03-13 -> 13MAR26
+
 	t, err := time.Parse("2006-01-02", expiry)
 	if err != nil {
 		return ""
@@ -258,7 +241,6 @@ func (d *DeribitPricer) formatInstrument(underlying, optionType string, strike f
 		optType = "P"
 	}
 
-	// Deribit format: BTC-13MAR26-75000-C
 	instrument := fmt.Sprintf("%s-%s%s%s-%.0f-%s",
 		strings.ToUpper(underlying),
 		day,
@@ -271,8 +253,6 @@ func (d *DeribitPricer) formatInstrument(underlying, optionType string, strike f
 	return instrument
 }
 
-// markRequest holds the data needed to fetch a live mark price for one position.
-// Populated under RLock; no mutation.
 type markRequest struct {
 	ID         string
 	Underlying string
@@ -285,25 +265,22 @@ type markRequest struct {
 	Expired    bool
 }
 
-// markResult holds the fetched data to be applied back to a position.
-// Produced without any lock; applied under Lock.
 type markResult struct {
 	ID              string
 	DTE             float64
 	CurrentValueUSD float64
 	Greeks          OptGreeks
-	Expired         bool // position should be deleted after applying
-	Fetched         bool // price was successfully retrieved
-	// Assignment fields — set when a sold option expires ITM.
+	Expired         bool
+	Fetched         bool
+
 	Assigned         bool
 	AssignUnderlying string
-	AssignOptionType string // "put" or "call"
+	AssignOptionType string
 	AssignStrike     float64
 	AssignSpotPrice  float64
 	AssignQuantity   float64
 }
 
-// collectMarkRequests reads position data and computes DTE. Call under RLock.
 func collectMarkRequests(s *StrategyState) []markRequest {
 	var reqs []markRequest
 	for id, pos := range s.OptionPositions {
@@ -327,7 +304,6 @@ func collectMarkRequests(s *StrategyState) []markRequest {
 	return reqs
 }
 
-// fetchMarkPrices fetches live prices for each request using the provided pricer. No lock held.
 func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *StrategyLogger) []markResult {
 	var results []markResult
 	for _, req := range requests {
@@ -354,7 +330,7 @@ func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *Strate
 				CurrentValueUSD: currentValue,
 				Expired:         true,
 			}
-			// Sold options that expire ITM trigger assignment / call-away.
+
 			if req.Action == "sell" && itm {
 				res.Assigned = true
 				res.AssignUnderlying = req.Underlying
@@ -394,7 +370,6 @@ func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *Strate
 	return results
 }
 
-// applyMarkResults writes prices/Greeks back and deletes expired positions. Call under Lock.
 func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLogger) {
 	now := time.Now().UTC()
 	for _, r := range results {
@@ -405,9 +380,7 @@ func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLo
 		pos.DTE = r.DTE
 		if r.Expired {
 			pos.CurrentValueUSD = r.CurrentValueUSD
-			// Realized PnL at expiry: for bought options, value - entry; for
-			// sold options the stored CurrentValueUSD is the (negative) remaining
-			// liability, so realized PnL = entry - intrinsic.
+
 			var pnl, closePriceUSD float64
 			intrinsic := r.CurrentValueUSD
 			if pos.Action == "sell" {
@@ -439,18 +412,17 @@ func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLo
 	}
 }
 
-// applyAssignment models option assignment for expired sold ITM options. Call under Lock.
 func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 	symbol := strings.ToUpper(r.AssignUnderlying)
 	switch r.AssignOptionType {
 	case "put":
-		// Sold put ITM: we are obligated to buy the underlying at strike.
+
 		cost := r.AssignStrike * r.AssignQuantity
 		s.Cash -= cost
 		now := time.Now().UTC()
 		var positionID string
 		if existing, ok := s.Positions[symbol]; ok && existing.Side == "long" {
-			// Weighted average cost with existing long position.
+
 			totalQty := existing.Quantity + r.AssignQuantity
 			existing.AvgCost = (existing.AvgCost*existing.Quantity + r.AssignStrike*r.AssignQuantity) / totalQty
 			existing.Quantity = totalQty
@@ -485,7 +457,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, cost)
 
 	case "call":
-		// Sold call ITM (call-away): we must sell the underlying at strike.
+
 		now := time.Now().UTC()
 		proceeds := r.AssignStrike * r.AssignQuantity
 		s.Cash += proceeds
@@ -520,7 +492,7 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 				r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, pnl),
 			IsClose:           true,
 			RealizedPnL:       pnl,
-			PnLGross:          true, // no fee modeled on assignment: gross == net
+			PnLGross:          true,
 			Regime:            s.Regime,
 			EntryATR:          posEntryATR,
 			StopLossTriggerPx: posStopLossTriggerPx,

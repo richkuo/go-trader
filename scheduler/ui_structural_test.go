@@ -31,7 +31,6 @@ func mustReadFile(t *testing.T, path string) []byte {
 	return b
 }
 
-// waitForRestarts polls for the async fire-and-forget restart goroutine.
 func waitForRestarts(t *testing.T, restarts *atomic.Int32, want int32) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -44,9 +43,6 @@ func waitForRestarts(t *testing.T, restarts *atomic.Int32, want int32) {
 	t.Fatalf("restarts = %d, want %d", restarts.Load(), want)
 }
 
-// newStructuralTestServer builds a StatusServer wired to a real temp config
-// file (the shared minimalConfigJSON fixture: one binanceus spot + one paper
-// HL perps strategy) with the restart trigger stubbed to a counter.
 func newStructuralTestServer(t *testing.T) (*StatusServer, string, *atomic.Int32) {
 	t.Helper()
 	dir := t.TempDir()
@@ -68,8 +64,6 @@ func newStructuralTestServer(t *testing.T) (*StatusServer, string, *atomic.Int32
 	return ss, path, restarts
 }
 
-// structuralConfirm runs POST /api/confirm for a structural action and
-// returns the decoded response. Fails the test on a non-200 unless wantErr.
 func structuralConfirm(t *testing.T, ss *StatusServer, action, strategyID, params string) uiConfirmResponse {
 	t.Helper()
 	body := fmt.Sprintf(`{"action":%q,"strategy_id":%q,"params":%s}`, action, strategyID, params)
@@ -113,24 +107,24 @@ func TestUIStructuralEndpointsRejectCrossOriginAndNonPOST(t *testing.T) {
 		},
 	}
 	for url, h := range endpoints {
-		// Cross-origin POST refused.
+
 		w := mutationPost(ss, h, url, `{"nonce":"x","params":{}}`, map[string]string{"Origin": "http://evil.example"})
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s cross-origin status = %d, want 403", url, w.Code)
 		}
-		// GET refused.
+
 		req := newTestGetRequest(url)
 		rec := newTestRecorder()
 		h(rec, req)
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s GET status = %d, want 405", url, rec.Code)
 		}
-		// Missing nonce refused before any config touch.
+
 		w = mutationPost(ss, h, url, `{"params":{}}`, nil)
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "nonce is required") {
 			t.Errorf("%s no-nonce status = %d body %s, want 400 nonce-required", url, w.Code, w.Body.String())
 		}
-		// Bogus nonce refused.
+
 		w = mutationPost(ss, h, url, `{"nonce":"deadbeef","params":{}}`, nil)
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s bogus-nonce status = %d, want 403", url, w.Code)
@@ -161,20 +155,19 @@ func TestUIAddStrategyEndToEnd(t *testing.T) {
 	if len(ids) != 3 || ids[2] != confirm.ConfirmPhrase {
 		t.Fatalf("config strategies after add = %v, want 3rd = %s", ids, confirm.ConfirmPhrase)
 	}
-	// New entry is paper mode.
+
 	if !strings.Contains(string(mustReadFile(t, path)), "--mode=paper") {
 		t.Error("new strategy must be created in paper mode")
 	}
-	// restart not requested → not fired.
+
 	if restarts.Load() != 0 {
 		t.Fatalf("restarts = %d, want 0 (restart not requested)", restarts.Load())
 	}
-	// The written config must still pass the real validator.
+
 	if _, err := LoadConfigForProbe(path); err != nil {
 		t.Fatalf("config after add-strategy fails validation: %v", err)
 	}
 
-	// Nonce is single-use: replay refused, config unchanged.
 	w = mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("nonce replay status = %d, want 403", w.Code)
@@ -196,12 +189,10 @@ func TestUIAddStrategyRestartParamFiresRestart(t *testing.T) {
 	waitForRestarts(t, restarts, 1)
 }
 
-// The nonce binding covers the exact params: a nonce confirmed for one param
-// set must not authorize an execute with different params.
 func TestUIStructuralNonceBindingCoversParams(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
 	confirm := structuralConfirm(t, ss, "add-strategy", "", `{"name":"momentum","platform":"hyperliquid","asset":"SOL"}`)
-	// Execute with a DIFFERENT asset.
+
 	body := fmt.Sprintf(`{"nonce":%q,"params":{"name":"momentum","platform":"hyperliquid","asset":"DOGE"}}`, confirm.Nonce)
 	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
 	if w.Code != http.StatusForbidden {
@@ -236,9 +227,6 @@ func TestUIRemoveStrategyEndToEnd(t *testing.T) {
 		t.Fatalf("config after remove fails validation: %v", err)
 	}
 
-	// Removing the last remaining strategy is now refused at CONFIRM (the
-	// only-strategy refusal is front-loaded) — no nonce is minted, so the
-	// operator never types the confirm phrase for a removal that would 409.
 	ss.UpdateStrategies([]StrategyConfig{{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=paper"}}})
 	cbody := `{"action":"remove-strategy","strategy_id":"hl-momentum-eth","params":{}}`
 	w = mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", cbody, nil)
@@ -250,16 +238,11 @@ func TestUIRemoveStrategyEndToEnd(t *testing.T) {
 	}
 }
 
-// Even with the only-strategy refusal front-loaded at confirm, the execute
-// check stays authoritative: a config that shrinks to one strategy between
-// confirm and execute (the sibling removed concurrently) must still be refused
-// at execute (Must-survive case for the confirm-time pre-check).
 func TestUIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
-	// Confirm removal of hl-momentum-eth while sma-btc still exists (2 on disk
-	// → confirm passes, nonce minted).
+
 	confirm := structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
-	// Concurrent edit removes the sibling → only hl-momentum-eth left on disk.
+
 	if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
 		return removeStrategyFromRoot(root, "sma-btc")
 	}); err != nil {
@@ -278,8 +261,6 @@ func TestUIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune(t *testi
 	}
 }
 
-// The remove-strategy confirm dialog must warn when the target holds an open
-// position (management stops after restart).
 func TestUIRemoveStrategyConfirmWarnsOnOpenPosition(t *testing.T) {
 	ss, _, _ := newStructuralTestServer(t)
 	ss.state.Strategies["sma-btc"] = &StrategyState{
@@ -313,8 +294,6 @@ func TestUIPaperToLiveEndToEnd(t *testing.T) {
 		t.Fatalf("config after paper-to-live fails validation: %v", err)
 	}
 
-	// A second confirm on the now-live strategy fails early: the on-disk args
-	// flipped, but the in-memory snapshot only refreshes on reload — mimic it.
 	ss.UpdateStrategies([]StrategyConfig{
 		{ID: "sma-btc", Type: "spot", Platform: "binanceus", Args: []string{"sma_crossover", "BTC/USDT", "1h"}},
 		{ID: "hl-momentum-eth", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "ETH", "1h", "--mode=live"}},
@@ -326,18 +305,10 @@ func TestUIPaperToLiveEndToEnd(t *testing.T) {
 	}
 }
 
-// paper-to-live is a real-funds flip: it must refuse while the target holds an
-// open position. A simulated paper position has no on-chain backing, so carried
-// into live it becomes a phantom the account reconcile flags as a gap. Refused
-// at confirm, and re-checked at execute even when the confirm succeeded (a
-// position can open between confirm and execute). The check is type-agnostic
-// (strategyHasOpenPosition ignores type), so it also covers a futures paper
-// strategy — perps is the representative case here.
 func TestUIPaperToLiveFlatChecks(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
 	openPos := &StrategyState{Positions: map[string]*Position{"ETH": {Quantity: 1, AvgCost: 2000}}}
 
-	// Open at confirm time → confirm refused.
 	ss.state.Strategies["hl-momentum-eth"] = openPos
 	body := `{"action":"paper-to-live","strategy_id":"hl-momentum-eth","params":{}}`
 	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
@@ -345,7 +316,6 @@ func TestUIPaperToLiveFlatChecks(t *testing.T) {
 		t.Fatalf("confirm-while-open status = %d body %s, want 400 open-position", w.Code, w.Body.String())
 	}
 
-	// Flat at confirm, opens before execute → execute refused, args untouched.
 	delete(ss.state.Strategies, "hl-momentum-eth")
 	confirm := structuralConfirm(t, ss, "paper-to-live", "hl-momentum-eth", `{}`)
 	ss.state.Strategies["hl-momentum-eth"] = openPos
@@ -357,13 +327,12 @@ func TestUIPaperToLiveFlatChecks(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "opened a position") {
 		t.Fatalf("execute-while-open status = %d body %s, want 409 opened-a-position", w.Code, w.Body.String())
 	}
-	// The refused execute must not have flipped the args.
+
 	if raw := string(mustReadFile(t, path)); !strings.Contains(raw, "--mode=paper") || strings.Contains(raw, "--mode=live") {
 		t.Fatalf("refused execute must not flip args:\n%s", raw)
 	}
 }
 
-// Confirming a spot strategy for paper-to-live fails early: no --mode arg.
 func TestUIPaperToLiveRejectsModelessStrategy(t *testing.T) {
 	ss, _, _ := newStructuralTestServer(t)
 	body := `{"action":"paper-to-live","strategy_id":"sma-btc","params":{}}`
@@ -405,14 +374,10 @@ func TestUIApplyRegimeGateEndToEnd(t *testing.T) {
 	}
 }
 
-// The confirm must fail while the target holds an open position, and the
-// execute must re-check flat even when the confirm succeeded (a position can
-// open between confirm and execute).
 func TestUIApplyRegimeGateFlatChecks(t *testing.T) {
 	ss, _, _ := newStructuralTestServer(t)
 	openPos := &StrategyState{Positions: map[string]*Position{"ETH": {Quantity: 1, AvgCost: 2000}}}
 
-	// Open at confirm time → confirm refused.
 	ss.state.Strategies["hl-momentum-eth"] = openPos
 	body := `{"action":"apply-regime-gate","strategy_id":"hl-momentum-eth","params":{}}`
 	w := mutationPost(ss, ss.handleAPIConfirm, "/api/confirm", body, nil)
@@ -420,7 +385,6 @@ func TestUIApplyRegimeGateFlatChecks(t *testing.T) {
 		t.Fatalf("confirm-while-open status = %d body %s, want 400 open-position", w.Code, w.Body.String())
 	}
 
-	// Flat at confirm, opens before execute → execute refused.
 	delete(ss.state.Strategies, "hl-momentum-eth")
 	confirm := structuralConfirm(t, ss, "apply-regime-gate", "hl-momentum-eth", `{}`)
 	ss.state.Strategies["hl-momentum-eth"] = openPos
@@ -434,15 +398,10 @@ func TestUIApplyRegimeGateFlatChecks(t *testing.T) {
 	}
 }
 
-// A concurrent config edit between confirm and execute that GROWS the
-// regime.enabled blast radius (another strategy's dormant allowed_regimes
-// would newly activate) must refuse the write; shrinkage must not.
 func TestUIApplyRegimeGateBlastRadiusGrowthRefused(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
 	confirm := structuralConfirm(t, ss, "apply-regime-gate", "hl-momentum-eth", `{}`)
 
-	// Concurrent edit: give sma-btc a dormant allowed_regimes gate the
-	// operator was never shown.
 	root := readConfigRoot(t, path)
 	list, err := configStrategies(root)
 	if err != nil {
@@ -478,7 +437,7 @@ func TestUIApplyRegimeGateBlastRadiusGrowthRefused(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "blast radius") {
 		t.Fatalf("blast-radius-growth status = %d body %s, want 409 refusal", w.Code, w.Body.String())
 	}
-	// The gate must NOT have been written.
+
 	cfg, err := LoadConfigForProbe(path)
 	if err != nil {
 		t.Fatalf("config invalid after refusal: %v", err)
@@ -488,7 +447,6 @@ func TestUIApplyRegimeGateBlastRadiusGrowthRefused(t *testing.T) {
 	}
 }
 
-// Ineligible strategy type refused at confirm.
 func TestUIApplyRegimeGateRejectsIneligibleType(t *testing.T) {
 	ss, _, _ := newStructuralTestServer(t)
 	body := `{"action":"apply-regime-gate","strategy_id":"sma-btc","params":{}}`
@@ -498,8 +456,6 @@ func TestUIApplyRegimeGateRejectsIneligibleType(t *testing.T) {
 	}
 }
 
-// Structural writes and a concurrent Discord-style config set both serialize
-// on configWriteMu without clobbering each other's fields.
 func TestUIStructuralInterleavedWrites(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
 	var wg sync.WaitGroup

@@ -12,8 +12,6 @@ const (
 	dynamicCloseParamConfirmCycles = "regime_confirm_cycles"
 )
 
-// strategyUsesDynamicRegimeClose reports whether the strategy's close ref is
-// tiered_tp_atr_live_regime_dynamic with the unified per-regime block (#843).
 func strategyUsesDynamicRegimeClose(sc StrategyConfig) bool {
 	for _, ref := range sc.closeRefs() {
 		if strings.ToLower(strings.TrimSpace(ref.Name)) == dynamicCloseStrategyName {
@@ -23,8 +21,6 @@ func strategyUsesDynamicRegimeClose(sc StrategyConfig) bool {
 	return false
 }
 
-// dynamicCloseConfirmCycles returns regime_confirm_cycles from the close ref
-// (default 2). Values < 1 are treated as 1.
 func dynamicCloseConfirmCycles(sc StrategyConfig) int {
 	for _, ref := range sc.closeRefs() {
 		if strings.ToLower(strings.TrimSpace(ref.Name)) != dynamicCloseStrategyName {
@@ -46,8 +42,6 @@ func dynamicCloseConfirmCycles(sc StrategyConfig) int {
 	return defaultRegimeConfirmCycles
 }
 
-// strategyCurrentATRRegime returns the live ATR-window regime label from the
-// strategy's most recent check output, mirroring strategyCurrentDirectionalRegime.
 func strategyCurrentATRRegime(stratState *StrategyState, sc StrategyConfig) string {
 	if stratState == nil {
 		return ""
@@ -61,9 +55,6 @@ func strategyCurrentATRRegime(stratState *StrategyState, sc StrategyConfig) stri
 	return strings.TrimSpace(stratState.Regime)
 }
 
-// dynamicCloseATRRegimeLabel returns the ATR regime label used to resolve SL,
-// TP tiers, and sl_after for dynamic close strategies. While a pending label
-// is counting toward confirm cycles, the last applied label stays in effect.
 func dynamicCloseATRRegimeLabel(pos *Position, sc StrategyConfig) string {
 	if pos == nil {
 		return ""
@@ -74,9 +65,6 @@ func dynamicCloseATRRegimeLabel(pos *Position, sc StrategyConfig) string {
 	return positionATRRegimeLabel(pos, sc)
 }
 
-// advanceDynamicCloseRegime updates confirm-cycle state on pos and reports
-// whether the applied ATR regime label changed this cycle. Call under the
-// state lock while a position is open.
 func advanceDynamicCloseRegime(pos *Position, stratState *StrategyState, sc StrategyConfig) (regimeChanged bool) {
 	if pos == nil || stratState == nil || !strategyUsesDynamicRegimeClose(sc) {
 		return false
@@ -113,9 +101,6 @@ func advanceDynamicCloseRegime(pos *Position, stratState *StrategyState, sc Stra
 	return old != current
 }
 
-// protectionATRRegimeLabel selects the ATR regime for on-chain protection and
-// post-TP SL resolution: dynamic close uses the applied label; everything else
-// uses the stamped position label.
 func protectionATRRegimeLabel(pos *Position, sc StrategyConfig) string {
 	if strategyUsesDynamicRegimeClose(sc) {
 		return dynamicCloseATRRegimeLabel(pos, sc)
@@ -123,7 +108,6 @@ func protectionATRRegimeLabel(pos *Position, sc StrategyConfig) string {
 	return positionATRRegimeLabel(pos, sc)
 }
 
-// atrTierTriggerPx computes the reduce-only TP trigger for one tier.
 func atrTierTriggerPx(side string, avgCost, entryATR, atrMult float64) float64 {
 	if avgCost <= 0 || entryATR <= 0 || atrMult <= 0 {
 		return 0
@@ -139,7 +123,6 @@ func atrTierTriggerPx(side string, avgCost, entryATR, atrMult float64) float64 {
 	}
 }
 
-// atrStopLossTriggerPx computes the fixed ATR stop trigger for one side.
 func atrStopLossTriggerPx(side string, avgCost, entryATR, slMult float64) float64 {
 	if avgCost <= 0 || entryATR <= 0 || slMult <= 0 {
 		return 0
@@ -154,8 +137,6 @@ func atrStopLossTriggerPx(side string, avgCost, entryATR, slMult float64) float6
 	}
 }
 
-// triggerPxMoveExceedsMinPct reports whether replacing oldPx with newPx clears
-// the trailing-stop min-move debounce (same 0.5% default as HL trailing SL).
 func triggerPxMoveExceedsMinPct(oldPx, newPx, minMovePct float64) bool {
 	if newPx <= 0 {
 		return false
@@ -170,8 +151,6 @@ func triggerPxMoveExceedsMinPct(oldPx, newPx, minMovePct float64) bool {
 	return movePct >= minMovePct
 }
 
-// dynamicProtectionSurplusTPOIDs returns resting TP OIDs at indices >= newTierCount
-// that must be canceled when a regime flip shrinks the per-regime ladder (#843).
 func dynamicProtectionSurplusTPOIDs(tpOIDs []int64, newTierCount int) []int64 {
 	if newTierCount >= len(tpOIDs) {
 		return nil
@@ -185,8 +164,6 @@ func dynamicProtectionSurplusTPOIDs(tpOIDs []int64, newTierCount int) []int64 {
 	return out
 }
 
-// dynamicProtectionForceReplace computes per-tier TP and SL force-replace flags
-// after the applied regime changes. Filled tiers (armed with OID 0) are skipped.
 func dynamicProtectionForceReplace(
 	sc StrategyConfig,
 	pos *Position,
@@ -222,7 +199,7 @@ func dynamicProtectionForceReplace(
 			continue
 		}
 		if i < len(pos.TPOIDs) && pos.TPOIDs[i] == 0 && (i >= len(pos.TPArmedTiers) || !pos.TPArmedTiers[i]) {
-			// Never armed — sync will place fresh.
+
 			continue
 		}
 		oldMult := 0.0
@@ -238,7 +215,6 @@ func dynamicProtectionForceReplace(
 	return forceSL, forceTP
 }
 
-// validateDynamicRegimeClose validates tiered_tp_atr_live_regime_dynamic params.
 func validateDynamicRegimeClose(params map[string]interface{}, labels []string, ctxLabel string) []string {
 	var errs []string
 	if params == nil {

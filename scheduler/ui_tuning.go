@@ -97,11 +97,8 @@ type tuningRunManager struct {
 
 	mu              sync.RWMutex
 	runs            map[string]tuningRunRecord
-	maxRetainedRuns int // #1382; 0 = keep-all
+	maxRetainedRuns int
 
-	// journalMu guards promotions.json and applyInflight. It is intentionally
-	// separate from mu so subprocess lifecycle never holds the journal lock
-	// (#1341). config writes still serialize on StatusServer.configWriteMu.
 	journalMu     sync.Mutex
 	applyInflight map[string]chan struct{}
 }
@@ -178,9 +175,7 @@ func ensureTuningCacheWritable(path string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect tuning OHLCV cache path %s: %w", path, err)
 	}
-	// SQLite WAL mode needs to create -wal/-shm siblings. Probe the directory,
-	// not only the DB inode, so a writable existing DB in a read-only directory
-	// cannot pass startup and then fail on the first cache write.
+
 	probe, err := os.CreateTemp(filepath.Dir(path), ".ohlcv-cache-write-*")
 	if err != nil {
 		return fmt.Errorf("tuning OHLCV cache directory %s is not writable: %w", filepath.Dir(path), err)
@@ -215,8 +210,7 @@ func (m *tuningRunManager) loadPersistedRuns() error {
 		path := filepath.Join(m.rootDir, entry.Name(), tuningRunRecordFile)
 		var rec tuningRunRecord
 		if err := readTuningJSON(path, &rec); err != nil {
-			// Spec-only orphans (crash between Mkdir and run.json) and corrupt
-			// records must not disable recovery of every other valid run.
+
 			log.Printf("[tuning] skipping run directory %s: %v", entry.Name(), err)
 			continue
 		}
@@ -236,8 +230,7 @@ func (m *tuningRunManager) loadPersistedRuns() error {
 			rec.CompletedAt = &now
 			rec.Error = "scheduler restarted before the tuning run completed"
 			if err := writeTuningJSON(path, rec); err != nil {
-				// Keep the in-memory interrupted view so the API still serves
-				// this run; the next restart will retry the persist.
+
 				log.Printf("[tuning] mark run %s interrupted on disk failed: %v", rec.ID, err)
 			}
 		}
@@ -360,8 +353,6 @@ func tuningRunStatusIsTerminal(status tuningRunStatus) bool {
 	}
 }
 
-// setMaxRetainedRuns adopts a new #1382 retention cap (0 = keep-all) and
-// immediately prunes. Safe for SIGHUP from applyHotReloadConfig.
 func (m *tuningRunManager) setMaxRetainedRuns(n int) {
 	if m == nil {
 		return
@@ -375,13 +366,6 @@ func (m *tuningRunManager) setMaxRetainedRuns(n int) {
 	m.pruneRetainedRuns()
 }
 
-// pruneRetainedRuns deletes the least-valuable terminal run directories beyond
-// maxRetainedRuns. In-flight (queued/running) runs are never candidates.
-// Eviction order (least valuable first): result-less before result-bearing,
-// then older terminal time (CompletedAt, else CreatedAt), then ID.
-// RemoveAll failures are fail-open per directory (log + continue); the map
-// entry is dropped only after a successful delete. Corrupt/skipped dirs that
-// never entered m.runs are left alone.
 func (m *tuningRunManager) pruneRetainedRuns() {
 	if m == nil {
 		return
@@ -405,8 +389,6 @@ func (m *tuningRunManager) pruneRetainedRuns() {
 	rootDir := m.rootDir
 	m.mu.Unlock()
 
-	// Disk IO (results.json presence) stays outside mu so API list/detail
-	// readers are not blocked by prune ranking.
 	type pruneCandidate struct {
 		rec        tuningRunRecord
 		hasResults bool
@@ -422,7 +404,7 @@ func (m *tuningRunManager) pruneRetainedRuns() {
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].hasResults != cands[j].hasResults {
-			// Result-less first (evicted preferentially).
+
 			return !cands[i].hasResults && cands[j].hasResults
 		}
 		if !cands[i].retainedAt.Equal(cands[j].retainedAt) {
@@ -444,8 +426,6 @@ func (m *tuningRunManager) pruneRetainedRuns() {
 	}
 }
 
-// tuningRunRetentionTime is the timestamp used for age-based retention
-// ranking: CompletedAt when set (reject/interrupt/finish), else CreatedAt.
 func tuningRunRetentionTime(rec tuningRunRecord) time.Time {
 	if rec.CompletedAt != nil {
 		return rec.CompletedAt.UTC()
@@ -453,10 +433,6 @@ func tuningRunRetentionTime(rec tuningRunRecord) time.Time {
 	return rec.CreatedAt.UTC()
 }
 
-// tuningRunDirHasResults reports whether a run directory holds a real
-// results.json artifact. Empty/missing files count as result-less so
-// queue-full rejects and restart interrupts lose retention contests to
-// completed (or failed-with-artifact) runs.
 func tuningRunDirHasResults(runDir string) bool {
 	info, err := os.Stat(filepath.Join(runDir, tuningRunResultsFile))
 	return err == nil && info.Mode().IsRegular() && info.Size() > 0
@@ -869,7 +845,7 @@ func (ss *StatusServer) handleAPITuningRun(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Transient overlay only — never persisted into results.json (#1341).
+
 	overlayTuningApplyEligibility(&detail, ss.configPath, ss.tuning)
 	writeJSON(w, detail)
 }

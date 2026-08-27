@@ -59,7 +59,7 @@ func TestValidateStrategyRegimeVocabulary_CompositeGate(t *testing.T) {
 		Strategies: []StrategyConfig{{
 			ID:               "hl-test",
 			RegimeGateWindow: "macro",
-			AllowedRegimes:   []string{"trending_up"}, // ADX label on composite window
+			AllowedRegimes:   []string{"trending_up"},
 		}},
 	}
 	errs := validateStrategyRegimeVocabulary(cfg)
@@ -136,9 +136,6 @@ func policyPtr(p RegimeDirectionalPolicy) *RegimeDirectionalPolicy {
 	return &p
 }
 
-// regimeDisplayTestConfig returns a multi-window-enabled regime config carrying
-// both scalar (adx) and composite windows, plus a matching label map — the
-// verbose six-window state #1062 narrows.
 func regimeDisplayTestConfig() (*RegimeConfig, *StrategyState) {
 	rc := &RegimeConfig{
 		Enabled: true,
@@ -173,14 +170,13 @@ func TestFormatStrategyRegimeDisplay_DefaultShowsAllWindows(t *testing.T) {
 			t.Fatalf("unset DisplayWindows should render %q; got: %s", name, got)
 		}
 	}
-	// #1114: the redundant [classifier] suffix must not appear — the window
-	// naming convention and disjoint label vocabularies already encode it.
+
 	for _, suffix := range []string{"[adx]", "[composite]", "["} {
 		if strings.Contains(got, suffix) {
 			t.Fatalf("regime display should not carry a classifier suffix %q; got: %s", suffix, got)
 		}
 	}
-	// Spot-check the exact rendering of one window.
+
 	if !strings.Contains(got, "composite_long=ranging_directional") {
 		t.Fatalf("expected bare name=label rendering; got: %s", got)
 	}
@@ -195,8 +191,7 @@ func TestFormatStrategyRegimeDisplay_CompositeOnly(t *testing.T) {
 			t.Fatalf("composite window %q should render; got: %s", name, got)
 		}
 	}
-	// Scalar windows must be suppressed. Match "long=" etc. with a leading
-	// delimiter/start so "composite_long=" doesn't false-positive on "long=".
+
 	for _, scalar := range []string{"long", "medium", "short"} {
 		if regimeDisplayHasBareWindow(got, scalar) {
 			t.Fatalf("scalar window %q should be hidden; got: %s", scalar, got)
@@ -217,9 +212,7 @@ func TestFormatStrategyRegimeDisplay_CaseInsensitiveMatch(t *testing.T) {
 }
 
 func TestFormatStrategyRegimeDisplay_SelectedWindowsUnpopulatedFallsBackToPrimary(t *testing.T) {
-	// Config validation rejects display_windows that name no configured window,
-	// so the render-time fallback is reached when the *selected* (valid) windows
-	// simply have no label this cycle. Drop the composite labels to simulate that.
+
 	rc, ss := regimeDisplayTestConfig()
 	rc.DisplayWindows = []string{"composite_long", "composite_medium", "composite_short"}
 	delete(ss.RegimeWindows, "composite_long")
@@ -249,7 +242,7 @@ func TestValidateRegimeWindowsConfig_DisplayWindows(t *testing.T) {
 
 	t.Run("valid names pass", func(t *testing.T) {
 		cfg := &Config{Regime: &RegimeConfig{Enabled: true, Windows: baseWindows(),
-			DisplayWindows: []string{"composite_long", "LONG"}}} // case-insensitive
+			DisplayWindows: []string{"composite_long", "LONG"}}}
 		if errs := validateRegimeWindowsConfig(cfg); len(errs) != 0 {
 			t.Fatalf("valid display_windows should pass; got: %v", errs)
 		}
@@ -286,7 +279,7 @@ func TestValidateRegimeWindowsConfig_DisplayWindows(t *testing.T) {
 
 	t.Run("requires windows configured", func(t *testing.T) {
 		cfg := &Config{Regime: &RegimeConfig{Enabled: true,
-			DisplayWindows: []string{"composite_long"}}} // no Windows
+			DisplayWindows: []string{"composite_long"}}}
 		errs := validateRegimeWindowsConfig(cfg)
 		if !hasErrContaining(errs, "regime.display_windows requires regime.windows") {
 			t.Fatalf("display_windows without windows should error; got: %v", errs)
@@ -298,8 +291,7 @@ func TestFormatStrategyRegimeDisplay_BlankEntriesTreatedAsUnset(t *testing.T) {
 	rc, ss := regimeDisplayTestConfig()
 	rc.DisplayWindows = []string{"", "   "}
 	got := formatStrategyRegimeDisplay(ss, rc)
-	// A stray blank list must not collapse the summary to "show nothing" — it
-	// behaves like unset and renders every window.
+
 	for _, name := range []string{"long", "composite_long"} {
 		if !strings.Contains(got, name+"=") {
 			t.Fatalf("blank DisplayWindows should render all windows; missing %q in: %s", name, got)
@@ -307,9 +299,6 @@ func TestFormatStrategyRegimeDisplay_BlankEntriesTreatedAsUnset(t *testing.T) {
 	}
 }
 
-// regimeDisplayHasBareWindow reports whether out contains a `name=` token that
-// is the actual window key, not a suffix of a longer key (e.g. "long" must not
-// match inside "composite_long=").
 func regimeDisplayHasBareWindow(out, name string) bool {
 	needle := name + "="
 	for _, part := range strings.Split(out, "; ") {

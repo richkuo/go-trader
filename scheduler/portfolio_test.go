@@ -56,7 +56,7 @@ func TestExecuteSpotResultSetsInitialQuantityAndEntryATR(t *testing.T) {
 	result := &SpotResult{
 		Symbol:     "BTC/USDT",
 		Signal:     1,
-		Indicators: map[string]interface{}{"atr": 3.5}, // ~3.5% of entry price; passes plausibility guard
+		Indicators: map[string]interface{}{"atr": 3.5},
 	}
 	trades, _ := executeSpotResult(
 		StrategyConfig{ID: "spot-test"},
@@ -147,7 +147,7 @@ func TestPortfolioValueWithPositions(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 60000}
 
 	got := PortfolioValue(s, prices)
-	// Cash (500) + position value (0.01 * 60000 = 600) = 1100
+
 	if math.Abs(got-1100) > 0.01 {
 		t.Errorf("PortfolioValue = %g, want 1100", got)
 	}
@@ -161,9 +161,9 @@ func TestPortfolioValueFallbackPrice(t *testing.T) {
 		},
 		OptionPositions: make(map[string]*OptionPosition),
 	}
-	// No price provided — falls back to AvgCost
+
 	got := PortfolioValue(s, map[string]float64{})
-	if math.Abs(got-1000) > 0.01 { // 500 + 0.01 * 50000 = 1000
+	if math.Abs(got-1000) > 0.01 {
 		t.Errorf("PortfolioValue with fallback = %g, want 1000", got)
 	}
 }
@@ -179,7 +179,7 @@ func TestPortfolioValueFutures(t *testing.T) {
 	prices := map[string]float64{"ES": 5100}
 
 	got := PortfolioValue(s, prices)
-	// Cash (10000) + PnL (2 * 50 * (5100 - 5000)) = 10000 + 10000 = 20000
+
 	if math.Abs(got-20000) > 0.01 {
 		t.Errorf("PortfolioValue futures = %g, want 20000", got)
 	}
@@ -196,65 +196,45 @@ func TestPortfolioValueShort(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 55000}
 
 	got := PortfolioValue(s, prices)
-	// Cash (1000) + short profit: 0.01 * (2*60000 - 55000) = 0.01 * 65000 = 650
+
 	if math.Abs(got-1650) > 0.01 {
 		t.Errorf("PortfolioValue short = %g, want 1650", got)
 	}
 }
 
-// TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis is the regression
-// test required by issue #263 acceptance criteria: PortfolioValue for a
-// perps short must use the exchange-native mark, NOT a BinanceUS spot quote.
-// The test drives prices["ETH"] with the HL mark (3200.10) and asserts the
-// result is NOT equal to what BinanceUS spot (3199.85) would produce — a
-// 25-cent (~0.78 bp) basis delta that should not appear as phantom PnL.
-//
-// Scenario from the issue:
-//
-//	HL mark: ETH-PERP = 3200.10
-//	BinanceUS spot: ETH/USDT = 3199.85  (25-cent basis)
-//	Short position: 0.01 ETH @ 3000 AvgCost (Multiplier=1 → PnL branch)
 func TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis(t *testing.T) {
 	s := &StrategyState{
 		Cash: 1000,
 		Positions: map[string]*Position{
-			// Perps short — Multiplier=1 routes through the PnL branch.
+
 			"ETH": {Symbol: "ETH", Quantity: 0.01, AvgCost: 3000.0, Side: "short", Multiplier: 1},
 		},
 		OptionPositions: make(map[string]*OptionPosition),
 	}
 
-	// Correct oracle: HL exchange mark.
 	hlMark := 3200.10
-	// Wrong oracle: BinanceUS spot (~25-cent basis vs the HL mark).
+
 	spotPrice := 3199.85
 
-	// Pass the HL mark as prices["ETH"] — exactly what fetchHyperliquidMids
-	// delivers after the #263 fix.
 	gotHL := PortfolioValue(s, map[string]float64{"ETH": hlMark})
-	// PnL branch: cash + qty * multiplier * (avgCost - price)
-	// = 1000 + 0.01 * 1 * (3000 - 3200.10) = 1000 + 0.01 * (-200.10) = 998.00
+
 	expectedHL := 1000.0 + 0.01*(3000.0-hlMark)
 	if math.Abs(gotHL-expectedHL) > 1e-6 {
 		t.Errorf("PortfolioValue with HL mark = %.6f, want %.6f", gotHL, expectedHL)
 	}
 
-	// Demonstrate the basis error: spot oracle produces a different value.
 	gotSpot := PortfolioValue(s, map[string]float64{"ETH": spotPrice})
 	expectedSpot := 1000.0 + 0.01*(3000.0-spotPrice)
 	if math.Abs(gotSpot-expectedSpot) > 1e-6 {
 		t.Errorf("PortfolioValue with spot price = %.6f, want %.6f", gotSpot, expectedSpot)
 	}
 
-	// Assert the HL mark wins: the two values must differ by the basis delta.
 	basisDelta := math.Abs(gotHL - gotSpot)
-	expectedBasisDelta := 0.01 * math.Abs(hlMark-spotPrice) // ~0.002500
+	expectedBasisDelta := 0.01 * math.Abs(hlMark-spotPrice)
 	if math.Abs(basisDelta-expectedBasisDelta) > 1e-6 {
 		t.Errorf("basis delta = %.6f, want %.6f (0.01 * |hlMark - spotPrice|)", basisDelta, expectedBasisDelta)
 	}
 
-	// Guard: if prices map carries the HL mark, the result must NOT equal
-	// the spot-basis value — pinning the fix as the issue requires.
 	if math.Abs(gotHL-gotSpot) < 1e-9 {
 		t.Errorf("PortfolioValue with HL mark equals spot-basis value — basis not applied")
 	}
@@ -266,12 +246,12 @@ func TestPortfolioValueWithOptions(t *testing.T) {
 		Positions: make(map[string]*Position),
 		OptionPositions: map[string]*OptionPosition{
 			"opt1": {CurrentValueUSD: 200},
-			"opt2": {CurrentValueUSD: -100}, // sold option liability
+			"opt2": {CurrentValueUSD: -100},
 		},
 	}
 
 	got := PortfolioValue(s, nil)
-	// 1000 + 200 + (-100) = 1100
+
 	if math.Abs(got-1100) > 0.01 {
 		t.Errorf("PortfolioValue with options = %g, want 1100", got)
 	}
@@ -333,9 +313,6 @@ func TestExecuteSpotWithFillFeeBuy(t *testing.T) {
 		t.Error("quantity should be positive")
 	}
 
-	// Verify exact post-trade cash: budget = 1000 (full deploy, #518),
-	// tradeCost = qty * execPrice = budget = 1000 (cancels out),
-	// fee = 1000 * 0.001 = 1.00, cash = 1000 - 1000 - 1.00 = -1.00
 	expectedCash := 1000.0 - 1000.0 - CalculatePlatformSpotFee("binanceus", 1000.0)
 	if math.Abs(s.Cash-expectedCash) > 0.01 {
 		t.Errorf("cash = %.4f, want %.4f (initial - budget - fee)", s.Cash, expectedCash)
@@ -370,9 +347,6 @@ func TestExecuteSpotWithFillFeeSell(t *testing.T) {
 		t.Error("position should be closed after sell")
 	}
 
-	// Verify exact post-trade cash using recorded execution price.
-	// saleValue = qty * execPrice, fee = saleValue * 0.001,
-	// netProceeds = saleValue - fee, cash = 100 + netProceeds
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("expected 1 trade in history, got %d", len(s.TradeHistory))
 	}
@@ -425,7 +399,7 @@ func TestExecuteSpotWithFillFeeSellNoPosition(t *testing.T) {
 
 func TestExecuteSpotWithFillFeeInsufficientCash(t *testing.T) {
 	s := &StrategyState{
-		Cash:            0.5, // too little
+		Cash:            0.5,
 		Positions:       make(map[string]*Position),
 		OptionPositions: make(map[string]*OptionPosition),
 		TradeHistory:    []Trade{},
@@ -457,10 +431,7 @@ func TestExecuteSpotWithFillFeeOKXPerpsFee(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Verify fee used OKX perps rate (0.05%), not spot rate (0.10%)
-	// Budget is 95% of 1000 = 950
-	// qty = 950 / slipped_price, fee = qty * slipped_price * 0.0005
-	// Cash should reflect the perps fee rate
+
 	if len(s.Positions) == 0 {
 		t.Fatal("expected a position to be opened")
 	}
@@ -469,7 +440,7 @@ func TestExecuteSpotWithFillFeeOKXPerpsFee(t *testing.T) {
 	expectedFee := tradeCost * OKXPerpsTakerFeePct
 	actualCash := s.Cash
 	expectedCash := 1000.0 - tradeCost - expectedFee
-	// Allow small floating point tolerance
+
 	diff := actualCash - expectedCash
 	if diff < -0.01 || diff > 0.01 {
 		t.Errorf("cash mismatch: got %.6f, want %.6f (diff %.6f) -- wrong fee rate may have been used", actualCash, expectedCash, diff)
@@ -634,7 +605,6 @@ func TestExecuteSpotWithFillFeeLiveFill(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// Live fill: exchange filled 0.015 BTC at exact price 50000
 	fillQty := 0.015
 	fillPrice := 50000.0
 	trades, err := ExecuteSpotSignalWithFillFee(s, 1, "BTC", fillPrice, fillQty, 0, "", 0, logger)
@@ -649,11 +619,11 @@ func TestExecuteSpotWithFillFeeLiveFill(t *testing.T) {
 	if pos == nil {
 		t.Fatal("should have BTC position")
 	}
-	// Quantity must be exactly the fill qty — no slippage distortion
+
 	if math.Abs(pos.Quantity-fillQty) > 1e-9 {
 		t.Errorf("Quantity = %.9f, want %.9f (exact fill qty)", pos.Quantity, fillQty)
 	}
-	// AvgCost must be exactly the fill price — no slippage
+
 	if math.Abs(pos.AvgCost-fillPrice) > 1e-6 {
 		t.Errorf("AvgCost = %.6f, want %.6f (exact fill price)", pos.AvgCost, fillPrice)
 	}
@@ -768,10 +738,6 @@ func TestExecuteSpotWithFillFeeLiveFillUsesExchangeOrderID(t *testing.T) {
 	})
 }
 
-// #254: ExecutePerpsSignalWithLeverage — margin-based accounting. Paper buy should NOT
-// deplete cash by the full notional (unlike spot). Only the fee leaves cash,
-// and the opened position is stamped with Multiplier=1 so PortfolioValue
-// routes through the PnL branch.
 func TestExecutePerpsWithLeveragePaperBuyNoNotionalDeduction(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
@@ -808,13 +774,11 @@ func TestExecutePerpsWithLeveragePaperBuyNoNotionalDeduction(t *testing.T) {
 	if pos.Leverage != 5 {
 		t.Errorf("leverage = %v, want 5", pos.Leverage)
 	}
-	// With leverage=5 and #518 (no 0.95 buffer), budget = 1000 * 5 = 5000 notional
-	// qty ≈ 5000 / 2000 = 2.5 (modulo slippage on execPrice)
+
 	if pos.Quantity < 2.2 || pos.Quantity > 2.8 {
 		t.Errorf("quantity = %v, want ~2.5 (5x leverage)", pos.Quantity)
 	}
-	// Cash must be untouched except for fee. fee ≈ notional * 0.00035
-	// (hyperliquid fee), so cash should remain > 990.
+
 	if s.Cash < 990 {
 		t.Errorf("cash = %v, want ~1000 (only fee deducted, not notional)", s.Cash)
 	}
@@ -852,8 +816,7 @@ func TestExecutePerpsWithLeverageDecouplesSizingAndExchangeLeverage(t *testing.T
 	if pos.Leverage != 20 {
 		t.Errorf("position leverage = %g, want exchange leverage 20", pos.Leverage)
 	}
-	// Sizing should use 2x, not the 20x exchange leverage. With #518 the
-	// 0.95 buffer is removed, so qty ≈ 1000 * 2 / 2000 = 1.0 (modulo slippage).
+
 	if pos.Quantity < 0.85 || pos.Quantity > 1.15 {
 		t.Errorf("quantity = %g, want ~1.0 from sizing_leverage=2", pos.Quantity)
 	}
@@ -894,9 +857,6 @@ func TestExecutePerpsWithLeverageLiveOpenUsesExchangeFee(t *testing.T) {
 	}
 }
 
-// #254: verify PortfolioValue handles the perps position correctly using the
-// futures branch (qty * multiplier * (price - avgCost)). Cash is preserved,
-// and a favorable price move shows up as PnL on top of cash.
 func TestExecutePerpsWithLeveragePortfolioValueAfterMove(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
@@ -912,24 +872,23 @@ func TestExecutePerpsWithLeveragePortfolioValueAfterMove(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// Open at exactly 2000 via live fill (no slippage).
 	_, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cashAfterOpen := s.Cash
 	valueAtEntry := PortfolioValue(s, map[string]float64{"ETH": 2000})
-	// At entry, PnL=0, value = cashAfterOpen.
+
 	if math.Abs(valueAtEntry-cashAfterOpen) > 1e-6 {
 		t.Errorf("at entry value = %v, cash = %v, want equal (PnL=0)", valueAtEntry, cashAfterOpen)
 	}
-	// Price moves +$10: PnL = 0.5 * (2010 - 2000) = $5.
+
 	valueAfterMove := PortfolioValue(s, map[string]float64{"ETH": 2010})
 	expected := cashAfterOpen + 5.0
 	if math.Abs(valueAfterMove-expected) > 1e-6 {
 		t.Errorf("value after +$10 move = %v, want %v (cash + PnL)", valueAfterMove, expected)
 	}
-	// Price moves -$10: PnL = -$5.
+
 	valueAfterDrop := PortfolioValue(s, map[string]float64{"ETH": 1990})
 	expectedDrop := cashAfterOpen - 5.0
 	if math.Abs(valueAfterDrop-expectedDrop) > 1e-6 {
@@ -937,11 +896,6 @@ func TestExecutePerpsWithLeveragePortfolioValueAfterMove(t *testing.T) {
 	}
 }
 
-// #254: regression — before the fix, perps positions stored with
-// Multiplier=0 hit the spot branch (qty * price) which inflated portfolio
-// value by the full notional. After the fix, ExecutePerpsSignalWithLeverage stamps
-// Multiplier=1 so valuation uses the PnL branch. This test pins the wrong
-// "spot-like" valuation vs the correct "perps" valuation to prevent drift.
 func TestExecutePerpsWithLeverageNotInflatedByNotional(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-rmc-eth-live",
@@ -957,15 +911,12 @@ func TestExecutePerpsWithLeverageNotInflatedByNotional(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// Live fill 0.279 ETH @ 2210.71 (matching the issue example).
 	_, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2210.71, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.279, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	value := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
-	// At $2201.10 vs entry $2210.71: PnL = 0.279 * (2201.10 - 2210.71) ≈ -$2.68
-	// Expected value ≈ 644 - fee - 2.68 ≈ ~641.3 — NOT inflated.
-	// The buggy spot-branch valuation would be cash (~644) + 0.279*2201 ≈ 1258.
+
 	if value > 700 {
 		t.Errorf("value = %v, leaking into spot-branch (>$700 means notional not stripped)", value)
 	}
@@ -974,7 +925,6 @@ func TestExecutePerpsWithLeverageNotInflatedByNotional(t *testing.T) {
 	}
 }
 
-// #254: closing a perps long realizes PnL directly (not notional swing).
 func TestExecutePerpsWithLeverageCloseLong(t *testing.T) {
 	s := &StrategyState{
 		ID:       "hl-test-eth",
@@ -1000,7 +950,6 @@ func TestExecutePerpsWithLeverageCloseLong(t *testing.T) {
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// Close at 2100 — PnL = 0.5 * (2100 - 2000) = $50 gross.
 	_, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.5, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -1008,19 +957,12 @@ func TestExecutePerpsWithLeverageCloseLong(t *testing.T) {
 	if _, ok := s.Positions["ETH"]; ok {
 		t.Error("position should be closed")
 	}
-	// Expected: 990 + 50 - fee(0.5*2100=1050). HL fee ≈ 1050 * 0.00035 ≈ 0.37.
+
 	if s.Cash < 1039 || s.Cash > 1040.5 {
 		t.Errorf("cash = %v, want ~1039.6 (990 + 50 - fee)", s.Cash)
 	}
 }
 
-// #298 regression — PerpsOrderSkipReason must mirror every skip branch of
-// ExecutePerpsSignalWithLeverage. Live execution paths consult this guard BEFORE placing
-// on-chain orders; a missed case re-introduces the "trade fills but isn't
-// recorded" gap that lost 0.716 ETH on Hyperliquid.
-//
-// #656 — direction enum replaces the allow_shorts boolean; cases cover all
-// three direction values plus the empty/legacy default.
 func TestPerpsOrderSkipReason(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1029,7 +971,7 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 		direction string
 		wantSet   bool
 	}{
-		// direction="long" (legacy AllowShorts=false) — long-only execution
+
 		{"buy_flat_allowed_long", 1, "", DirectionLong, false},
 		{"buy_short_allowed_flip_long", 1, "short", DirectionLong, false},
 		{"buy_long_skipped_long", 1, "long", DirectionLong, true},
@@ -1038,22 +980,22 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 		{"sell_short_skipped_long", -1, "short", DirectionLong, true},
 		{"signal_zero_flat", 0, "", DirectionLong, false},
 		{"signal_zero_long", 0, "long", DirectionLong, false},
-		// Empty defaults to "long" semantics (back-compat with pre-#656 callers).
+
 		{"empty_dir_buy_long_skipped", 1, "long", "", true},
 		{"empty_dir_sell_flat_skipped", -1, "", "", true},
-		// direction="both" (legacy AllowShorts=true) — bidirectional
+
 		{"sell_flat_allowed_both", -1, "", DirectionBoth, false},
 		{"sell_short_deduped_both", -1, "short", DirectionBoth, true},
 		{"sell_long_allowed_both", -1, "long", DirectionBoth, false},
 		{"buy_long_skipped_both", 1, "long", DirectionBoth, true},
 		{"buy_short_flip_both", 1, "short", DirectionBoth, false},
-		// #656 direction="short" — short-only
-		{"sell_flat_allowed_short", -1, "", DirectionShort, false}, // open short from flat
+
+		{"sell_flat_allowed_short", -1, "", DirectionShort, false},
 		{"sell_short_skipped_short", -1, "short", DirectionShort, true},
-		{"sell_long_skipped_short", -1, "long", DirectionShort, true}, // orphan long must skip (#298 class)
+		{"sell_long_skipped_short", -1, "long", DirectionShort, true},
 		{"buy_short_allowed_short", 1, "short", DirectionShort, false},
 		{"buy_flat_skipped_short", 1, "", DirectionShort, true},
-		{"buy_long_skipped_short", 1, "long", DirectionShort, true}, // no short to cover
+		{"buy_long_skipped_short", 1, "long", DirectionShort, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1066,10 +1008,6 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 	}
 }
 
-// #300 regression — SpotOrderSkipReason must mirror every side-based skip
-// branch of ExecuteSpotSignalWithFillFee. Live helpers (Robinhood, OKX spot) consult
-// this guard BEFORE placing live orders; a missed case re-introduces the
-// #298 "fill lands but no Trade" class of bug on those platforms.
 func TestSpotOrderSkipReason(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1096,12 +1034,6 @@ func TestSpotOrderSkipReason(t *testing.T) {
 	}
 }
 
-// #300 regression — FuturesOrderSkipReason mirrors the close-long-only
-// semantics of the current TopStep live helper. The critical case that was
-// previously unprotected is `sell_short`: Position.Quantity is always
-// positive, so the existing posQty<=0 check could not distinguish a flat
-// account from a short one, allowing a live sell to fire while
-// ExecuteFuturesSignalWithFillFee would treat it as a no-op (same #298-class drift).
 func TestFuturesOrderSkipReason(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1128,13 +1060,6 @@ func TestFuturesOrderSkipReason(t *testing.T) {
 	}
 }
 
-// #298 — demonstrates the in-memory contract the guard protects: when
-// ExecutePerpsSignalWithLeverage is called while already long with signal=1, it returns
-// trades=0 and no Trade is recorded. If a live fill has already happened
-// at this point, it's lost. The guard in runHyperliquidExecuteOrder prevents
-// the live fill from firing in this state; this test pins the behavior that
-// ExecutePerpsSignalWithLeverage itself performs no side-effects in the skip case, so
-// the guard is sufficient (no cleanup needed after a skipped live call).
 func TestExecutePerpsWithLeverageAlreadyLongIsInertNoOp(t *testing.T) {
 	s := &StrategyState{
 		ID:       "hl-test-eth",
@@ -1203,11 +1128,11 @@ func TestExecuteFuturesWithFillFeeLiveFill(t *testing.T) {
 	if pos == nil {
 		t.Fatal("should have ES position")
 	}
-	// Contract count must be exactly the fill contracts — no slippage distortion
+
 	if int(pos.Quantity) != fillContracts {
 		t.Errorf("Quantity = %g, want %d (exact fill contracts)", pos.Quantity, fillContracts)
 	}
-	// AvgCost must be exactly the fill price — no slippage
+
 	if math.Abs(pos.AvgCost-fillPrice) > 1e-6 {
 		t.Errorf("AvgCost = %.6f, want %.6f (exact fill price)", pos.AvgCost, fillPrice)
 	}
@@ -1303,8 +1228,6 @@ func TestExecuteFuturesWithFillFeeLiveFillUsesExchangeOrderID(t *testing.T) {
 	})
 }
 
-// #328 — AllowShorts=true lets signal=-1 from flat open a short perp position.
-// Without AllowShorts the same call returns 0 trades (legacy close-long-only).
 func TestExecutePerpsWithLeverageOpenShortFromFlat(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1347,7 +1270,7 @@ func TestExecutePerpsWithLeverageOpenShortFromFlat(t *testing.T) {
 	if pos.OwnerStrategyID != s.ID {
 		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, s.ID)
 	}
-	// Margin-based accounting: cash should drop by fee only, not full notional.
+
 	feeOnly := 1000.0 - s.Cash
 	notional := pos.Quantity * pos.AvgCost
 	if feeOnly >= notional*0.1 {
@@ -1361,9 +1284,6 @@ func TestExecutePerpsWithLeverageOpenShortFromFlat(t *testing.T) {
 	}
 }
 
-// #328 — legacy behavior regression: without AllowShorts, signal=-1 on flat
-// must not open a short (otherwise triple_ema / rsi_macd_combo et al. would
-// silently start trading shorts they never intended).
 func TestExecutePerpsWithLeverageLegacyFlatNoShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1397,10 +1317,6 @@ func TestExecutePerpsWithLeverageLegacyFlatNoShort(t *testing.T) {
 	}
 }
 
-// #656 — direction="short" opens short from flat on signal=-1, mirroring
-// direction="both" but rejecting any signal=1 from flat. This is the headline
-// new feature: existing bidirectional strategies can run as bear-only
-// instruments without writing dedicated short strategies.
 func TestExecutePerpsWithLeverage_DirectionShort_OpenShortFromFlat(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1432,9 +1348,6 @@ func TestExecutePerpsWithLeverage_DirectionShort_OpenShortFromFlat(t *testing.T)
 	}
 }
 
-// #656 — direction="short" with signal=1 from flat must be a no-op (no short
-// to close, and longs are forbidden). Mirror of TestExecutePerpsWithLeverageLegacyFlatNoShort
-// for the new short-only mode.
 func TestExecutePerpsWithLeverage_DirectionShort_BuyFromFlatSkipped(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1465,8 +1378,6 @@ func TestExecutePerpsWithLeverage_DirectionShort_BuyFromFlatSkipped(t *testing.T
 	}
 }
 
-// #656 — direction="short" with signal=1 on an existing short closes the
-// short cleanly. Reduce-only behavior; no flip into long.
 func TestExecutePerpsWithLeverage_DirectionShort_BuyClosesShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1502,8 +1413,6 @@ func TestExecutePerpsWithLeverage_DirectionShort_BuyClosesShort(t *testing.T) {
 	}
 }
 
-// #656 — direction="short" must NOT auto-close an orphan long (state-config
-// gap). The validator surfaces it; the executor leaves it visible.
 func TestExecutePerpsWithLeverage_DirectionShort_OrphanLongNotAutoClosed(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1515,8 +1424,7 @@ func TestExecutePerpsWithLeverage_DirectionShort_OrphanLongNotAutoClosed(t *test
 		Platform: "hyperliquid",
 		Type:     "perps",
 		Positions: map[string]*Position{
-			// Orphan long under short-only direction (e.g. operator flipped direction
-			// without first closing the position).
+
 			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 1, OwnerStrategyID: "hl-bear-eth"},
 		},
 		OptionPositions: make(map[string]*OptionPosition),
@@ -1539,8 +1447,6 @@ func TestExecutePerpsWithLeverage_DirectionShort_OrphanLongNotAutoClosed(t *test
 	}
 }
 
-// #656 — direction="short" must NOT flip on signal=-1 with an existing short;
-// it dedupes (mirrors the "Already long ... skipping buy" branch).
 func TestExecutePerpsWithLeverage_DirectionShort_AlreadyShortDedupes(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1571,8 +1477,6 @@ func TestExecutePerpsWithLeverage_DirectionShort_AlreadyShortDedupes(t *testing.
 	}
 }
 
-// #656 — EffectiveDirection / PerpsAllowsLong / PerpsAllowsShort cover the
-// cross-product of {Direction set, AllowShorts legacy} for non-perps and perps.
 func TestEffectiveDirection_PrecedenceAndFallback(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1588,8 +1492,7 @@ func TestEffectiveDirection_PrecedenceAndFallback(t *testing.T) {
 		{"perps_legacy_allowshorts_false", StrategyConfig{Type: "perps", AllowShorts: false}, DirectionLong, true, false},
 		{"perps_unknown_falls_back", StrategyConfig{Type: "perps", Direction: "weird", AllowShorts: true}, DirectionBoth, true, true},
 		{"non_perps_always_long", StrategyConfig{Type: "spot", Direction: DirectionShort}, DirectionLong, true, false},
-		// #656 review: manual strategies trade HL perps via manual-open and
-		// must honor Direction/AllowShorts the same way perps do.
+
 		{"manual_explicit_short", StrategyConfig{Type: "manual", Direction: DirectionShort}, DirectionShort, false, true},
 		{"manual_explicit_both", StrategyConfig{Type: "manual", Direction: DirectionBoth}, DirectionBoth, true, true},
 		{"manual_legacy_allowshorts_true", StrategyConfig{Type: "manual", AllowShorts: true}, DirectionBoth, true, true},
@@ -1640,8 +1543,7 @@ func TestExecutePerpsWithLeverageLegacyCloseShortThenOpenLongUsesOpenFillFee(t *
 	}
 
 	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
-	// #954 gross convention: the modeled fee deducted from cash is ALWAYS
-	// stamped (fee_source says it's modeled); the leg still carries no OID.
+
 	modeledCloseFee := CalculatePlatformSpotFee("hyperliquid", 0.5*2000)
 	if closeLeg.ExchangeOrderID != "" || math.Abs(closeLeg.ExchangeFee-modeledCloseFee) > 1e-9 || closeLeg.FeeSource != FeeSourceModeled {
 		t.Errorf("legacy close leg = oid %q fee %g src %q, want no-OID modeled fee %g",
@@ -1662,11 +1564,6 @@ func TestExecutePerpsWithLeverageLegacyCloseShortThenOpenLongUsesOpenFillFee(t *
 	}
 }
 
-// #328 — long + signal=-1 + AllowShorts closes the long AND opens a short.
-// Mirrors the existing signal=1+short close-and-flip branch. Produces exactly
-// two Trade rows sharing the flip OID; the single real fill fee apportions
-// across them by quantity share so it is neither double-counted nor padded
-// with a modeled open fee (#451, reworked by #954 for ledger accuracy).
 func TestExecutePerpsWithLeverageFlipLongToShort(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1685,9 +1582,6 @@ func TestExecutePerpsWithLeverageFlipLongToShort(t *testing.T) {
 		RiskState:       RiskState{},
 	}
 
-	// Live flip: exchange executes a single net-flip sell of size
-	// (closeLongQty + newShortQty) = 0.5 + 0.5 = 1.0. ExecutePerpsSignalWithLeverage
-	// subtracts the close leg when sizing the new short side.
 	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 1.0, "live-flip-oid", 0.5, DirectionBoth, 0, logger)
 	if err != nil {
 		t.Fatalf("ExecutePerpsSignalWithLeverage: %v", err)
@@ -1706,7 +1600,7 @@ func TestExecutePerpsWithLeverageFlipLongToShort(t *testing.T) {
 		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
 	}
 	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
-	// Fee apportioned by qty share of the 1.0 net fill: 0.5/1.0 each.
+
 	if closeLeg.ExchangeOrderID != "live-flip-oid" || math.Abs(closeLeg.ExchangeFee-0.25) > 1e-9 {
 		t.Errorf("close leg exchange metadata = oid %q fee %g, want oid live-flip-oid fee 0.25",
 			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee)
@@ -1715,17 +1609,13 @@ func TestExecutePerpsWithLeverageFlipLongToShort(t *testing.T) {
 		t.Errorf("open leg exchange metadata = oid %q fee %g, want shared OID with fee 0.25",
 			openLeg.ExchangeOrderID, openLeg.ExchangeFee)
 	}
-	// One real $0.50 fee for the whole flip order: close PnL +$50 − $0.25
-	// share, open leg deducts its $0.25 share — cash moves by exactly the
-	// real fee, never real + modeled (#954).
+
 	wantCash := 1000.0 + 50 - 0.5
 	if math.Abs(s.Cash-wantCash) > 1e-9 {
 		t.Errorf("cash = %.9f, want %.9f (single real fee apportioned across flip legs)", s.Cash, wantCash)
 	}
 }
 
-// #328 — symmetric dedupe: already-short + signal=-1 + AllowShorts is a no-op,
-// just like already-long + signal=1.
 func TestExecutePerpsWithLeverageAlreadyShortIsInertNoOp(t *testing.T) {
 	lm, _ := NewLogManager("")
 	logger, _ := lm.GetStrategyLogger("test")
@@ -1759,14 +1649,8 @@ func TestExecutePerpsWithLeverageAlreadyShortIsInertNoOp(t *testing.T) {
 	}
 }
 
-// #330 (follow-up review) — regression: the live perps order size MUST include
-// the close-leg quantity when AllowShorts + opposite-side position, so a
-// single exchange order net-flips the position. Without this, the scheduler's
-// virtual close+open lands against an exchange fill that only closed,
-// leaving virtual state ahead of the exchange (same class of desync as #298).
 func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
-	// cash=1000, sizing_leverage=1, price=2000, avgCost=2000 (no PnL on close) →
-	// after #518 (no 0.95 buffer): newSize = 1000/2000 = 0.5
+
 	cases := []struct {
 		name      string
 		signal    int
@@ -1777,20 +1661,19 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 		wantSize  float64
 		wantOK    bool
 	}{
-		// Fresh opens — avgCost is 0 (no position)
+
 		{"long_from_flat", 1, 0, 0, "", DirectionLong, 0.5, true},
 		{"short_from_flat_allowed_both", -1, 0, 0, "", DirectionBoth, 0.5, true},
-		// #656: short-only — open short from flat
+
 		{"short_from_flat_short_only", -1, 0, 0, "", DirectionShort, 0.5, true},
-		// Close-only (legacy long-direction)
+
 		{"close_long_legacy", -1, 0.3, 2000, "long", DirectionLong, 0.3, true},
-		// #656: short-direction close-short on signal=1
+
 		{"close_short_short_only", 1, 0.4, 2000, "short", DirectionShort, 0.4, true},
-		// Flat-PnL flips (direction="both" only): avgCost == price so effectiveCash == cash.
-		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", DirectionBoth, 1.0, true}, // 0.5 + 0.5
-		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", DirectionBoth, 1.0, true}, // 0.5 + 0.5
-		// Legacy buy against migrated short is NOT a flip (direction="long"):
-		// sizing stays at newSize — the legacy behavior pre-dating #328.
+
+		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", DirectionBoth, 1.0, true},
+		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", DirectionBoth, 1.0, true},
+
 		{"buy_vs_short_legacy_not_flip", 1, 0.5, 2000, "short", DirectionLong, 0.5, true},
 	}
 	for _, tc := range cases {
@@ -1806,9 +1689,6 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 	}
 }
 
-// #330 (follow-up) — pin the sizing contract at the boundary where it
-// matters: a long-to-short flip must size to posQty + newSize, NOT posQty
-// (the old close-only behavior that silently broke bidirectional execution).
 func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 	posQty := 0.5
 	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, posQty, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
@@ -1820,17 +1700,8 @@ func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 	}
 }
 
-// #335 — a losing long→short flip must size against post-close margin, not
-// pre-close cash. Without the expectedClosePnL adjustment, the new-side
-// budget overstates available margin and a leveraged flip can exceed what
-// the exchange will fill, yielding a partial-fill / rejection and the same
-// class of virtual-vs-exchange desync as #298.
 func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
-	// long 0.5 ETH @ 2000, price drops to 1900, 5x sizing leverage, cash=1000.
-	// Close leg realizes: 0.5 * (1900 - 2000) = -50 → post-close cash = 950.
-	// After #518 (no 0.95 buffer): new-side budget = 950 * 5 / 1900 = 2.5 →
-	// flip size = 0.5 + 2.5 = 3.0. Pre-close sizing (bug) would yield:
-	// 1000 * 5 / 1900 = 2.6316 → 3.1316, over-sized.
+
 	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, PerpsSizing{SizingLeverage: 5.0, ExchangeLeverage: 5.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
@@ -1839,7 +1710,7 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	if diff := size - wantSize; diff > 1e-9 || diff < -1e-9 {
 		t.Errorf("size = %g, want %g (post-close margin sizing)", size, wantSize)
 	}
-	// Regression guard: must be strictly LESS than the buggy pre-close sizing.
+
 	preCloseSize := 0.5 + float64(1000)*5/1900
 	if size >= preCloseSize {
 		t.Errorf("size = %g must be < pre-close-sized %g to avoid over-sizing on a losing flip", size, preCloseSize)
@@ -1859,8 +1730,7 @@ func TestPerpsLiveOrderSize_SharedWalletPoolUsesReleasedMargin(t *testing.T) {
 	if !ok || reason != "" {
 		t.Fatalf("pooled flip rejected: ok=%v reason=%q", ok, reason)
 	}
-	// $200 released, capped to $100, then 5x = $500 = 0.25 ETH;
-	// the market order also carries the 0.5 ETH close leg.
+
 	if math.Abs(size-0.75) > 1e-9 {
 		t.Fatalf("pooled flip size=%v, want 0.75", size)
 	}
@@ -1871,7 +1741,6 @@ func TestPerpsLiveOrderSize_SharedWalletPoolUnknownBalanceFlipClosesOnly(t *test
 		ExchangeLeverage:  5,
 		MarginPerTradeUSD: 100,
 		SharedWalletPool:  true,
-		// ReleasableMarginUSD remains zero when the account balance is unknown.
 	}
 	size, ok, reason := perpsLiveOrderSize(
 		-1, 2000, 0, 0.5, 2200, sizing, "long", DirectionBoth, 0,
@@ -1905,15 +1774,8 @@ func TestWithSharedWalletPoolSizingReleasesMarginOnlyWithKnownBalance(t *testing
 	}
 }
 
-// #330 (final review) — a catastrophically-losing flip must still close the
-// position even when post-close margin can't fund the new side. Without
-// this fallback, a deep-underwater bidirectional strategy would be worse
-// at exiting than a legacy long-only one: both the close AND open legs
-// would be dropped.
 func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
-	// long 1.0 ETH @ 2000, price crashes to 500, 1x leverage, cash=100.
-	// closePnL = 1.0 * (500 - 2000) = -1500 → effectiveCash = 100 - 1500 = -1400.
-	// PerpsOpenNotional returns 0 for non-positive cash → fallback to close-only.
+
 	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatalf("expected ok (should degrade to close-only, not abort); reason=%q", reason)
@@ -1923,14 +1785,8 @@ func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
 	}
 }
 
-// #335 — profitable flips should size LARGER than pre-close sizing: the
-// close leg adds realized gains to available margin, letting the new side
-// take a proportionally bigger position. Mirror of the losing-flip case.
 func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
-	// short 0.5 ETH @ 2000, price drops to 1900 (profit on short), 5x leverage.
-	// Close leg realizes: 0.5 * (2000 - 1900) = +50 → post-close cash = 1050.
-	// After #518 (no 0.95 buffer): new-side budget = 1050 * 5 / 1900 = 2.7632 →
-	// flip size = 0.5 + 2.7632 = 3.2632.
+
 	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, PerpsSizing{SizingLeverage: 5.0, ExchangeLeverage: 5.0}, "short", DirectionBoth, 0)
 	if !ok {
 		t.Fatal("expected ok")
@@ -1945,11 +1801,6 @@ func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
 	}
 }
 
-// #518 — PerpsOpenNotional: margin-based sizing kicks in when
-// marginPerTradeUSD is positive and overrides the legacy sizing_leverage
-// formula. The pain point in the issue (sizing_leverage=0.1 + leverage=20
-// yielding a tiny notional) is fixed by setting margin_per_trade_usd: the
-// operator gets the intended position size regardless of exchange leverage.
 func TestPerpsOpenNotional(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -1959,25 +1810,21 @@ func TestPerpsOpenNotional(t *testing.T) {
 		marginPerTradeUSD float64
 		want              float64
 	}{
-		// Legacy formula: cash × sizing_leverage. Mirrors the pre-#518 sizing
-		// minus the 0.95 buffer.
+
 		{"legacy_1x", 1000, 1, 1, 0, 1000},
 		{"legacy_5x", 1000, 5, 5, 0, 5000},
-		// Issue #518 pain case: low sizing_leverage + high exchange leverage
-		// produces a tiny notional under the legacy formula. Operator wants
-		// margin-space sizing instead.
+
 		{"issue_518_legacy_pain", 560, 0.1, 20, 0, 56},
-		// Same case with margin_per_trade_usd set: notional = $56 margin × 20x = $1120.
+
 		{"issue_518_fixed", 560, 0.1, 20, 56, 1120},
-		// margin_per_trade_usd > cash clamps to cash (can't post more margin
-		// than you have).
+
 		{"margin_clamps_to_cash", 100, 1, 5, 200, 500},
-		// margin_per_trade_usd ignores sizing_leverage entirely.
+
 		{"margin_overrides_sizing_leverage", 1000, 0.5, 10, 100, 1000},
-		// Non-positive cash returns 0 — caller must guard.
+
 		{"negative_cash_returns_zero", -100, 1, 1, 0, 0},
 		{"zero_cash_returns_zero", 0, 5, 5, 50, 0},
-		// Zero exchange leverage falls back to 1× under margin-based sizing.
+
 		{"margin_zero_exchange_leverage_fallback", 1000, 1, 0, 100, 100},
 	}
 	for _, tc := range cases {
@@ -1991,9 +1838,6 @@ func TestPerpsOpenNotional(t *testing.T) {
 	}
 }
 
-// #518 — ExecutePerpsSignalWithLeverage: paper opens with margin_per_trade_usd
-// set should produce the margin-space notional, not the legacy sizing_leverage
-// notional. This exercises the fix end-to-end inside the executor.
 func TestExecutePerpsWithLeverageMarginPerTradeUSDOverridesSizingLeverage(t *testing.T) {
 	s := &StrategyState{
 		ID:              "hl-test-eth",
@@ -2009,9 +1853,6 @@ func TestExecutePerpsWithLeverageMarginPerTradeUSDOverridesSizingLeverage(t *tes
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// Mirrors issue #518: sizing_leverage=0.1, exchange leverage=20, price=2257.
-	// Without margin_per_trade_usd: notional = 560 * 0.1 = 56 → qty ≈ 0.025 ETH.
-	// With margin_per_trade_usd=56: notional = 56 * 20 = 1120 → qty ≈ 0.50 ETH.
 	trades, err := ExecutePerpsSignalWithLeverage(s, 1, "ETH", 2257, PerpsSizing{SizingLeverage: 0.1, ExchangeLeverage: 20, MarginPerTradeUSD: 56}, 0, "", 0, DirectionLong, 0, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -2023,17 +1864,14 @@ func TestExecutePerpsWithLeverageMarginPerTradeUSDOverridesSizingLeverage(t *tes
 	if pos == nil {
 		t.Fatal("should have ETH position")
 	}
-	// Allow a small slippage margin around 0.50 ETH.
+
 	if pos.Quantity < 0.45 || pos.Quantity > 0.55 {
 		t.Errorf("quantity = %g, want ~0.50 (margin_per_trade_usd=$56 × 20x leverage at $2257)", pos.Quantity)
 	}
 }
 
-// #519 — perpsLiveOrderSize must scale the close-only return by closeFraction
-// when 0 < frac < 1 so a tiered_tp_atr / tiered_tp_pct decision sizes the
-// live order to match the residual it intends to leave behind.
 func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
-	// long 0.4 ETH @ 2000, signal=-1 (close), fraction=0.5 → size 0.2.
+
 	size, ok, reason := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionLong, 0.5)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
@@ -2043,8 +1881,6 @@ func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
 	}
 }
 
-// #519 — closeFraction = 1.0 (or 0) keeps full-close behavior. Regression
-// pin: don't accidentally re-scale the close leg on a complete tier hit.
 func TestPerpsLiveOrderSize_FullCloseFractionIsFullPosQty(t *testing.T) {
 	for _, frac := range []float64{0, 1.0} {
 		size, ok, _ := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionLong, frac)
@@ -2054,10 +1890,6 @@ func TestPerpsLiveOrderSize_FullCloseFractionIsFullPosQty(t *testing.T) {
 	}
 }
 
-// #519 — paper partial close on a long perps position must keep the
-// position open with the residual quantity, share the original PositionID
-// across legs (so round-trip grouping holds), preserve InitialQuantity, and
-// realize PnL only on the closed slice.
 func TestExecutePerpsWithLeverage_PartialCloseLongPaperPreservesRemainder(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
@@ -2084,7 +1916,6 @@ func TestExecutePerpsWithLeverage_PartialCloseLongPaperPreservesRemainder(t *tes
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// Close 0.5 of 0.4 ETH @ 2100 (+5% from cost). closeFraction=0.5.
 	trades, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0, "", 0, DirectionLong, 0.5, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -2118,10 +1949,7 @@ func TestExecutePerpsWithLeverage_PartialCloseLongPaperPreservesRemainder(t *tes
 	if tr.PositionID != "etrip-1" {
 		t.Errorf("trade.PositionID = %q, want %q (round-trip grouping)", tr.PositionID, "etrip-1")
 	}
-	// Paper mode applies ApplySlippage to the requested price; recompute
-	// expected PnL using the actual recorded price so the assertion is
-	// slippage-tolerant. #954: RealizedPnL stores the PRE-FEE slice PnL
-	// (PnLGross), with the modeled fee stamped; net comes via tradeNetPnL.
+
 	wantGross := 0.2 * (tr.Price - 2000)
 	wantFee := CalculatePlatformSpotFee("hyperliquid", 0.2*tr.Price)
 	if !tr.PnLGross || math.Abs(tr.RealizedPnL-wantGross) > 1e-6 {
@@ -2132,10 +1960,6 @@ func TestExecutePerpsWithLeverage_PartialCloseLongPaperPreservesRemainder(t *tes
 	}
 }
 
-// #519 — partial close composed by the open/close registry must not flip
-// into a fresh short even when AllowShorts=true. compose_signal never emits
-// a close+open in the same cycle, so closeFraction>0 + AllowShorts=true is
-// close-only.
 func TestExecutePerpsWithLeverage_PartialCloseDoesNotFlipShortWithAllowShorts(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
@@ -2181,10 +2005,6 @@ func TestExecutePerpsWithLeverage_PartialCloseDoesNotFlipShortWithAllowShorts(t 
 	}
 }
 
-// #519 — full close (closeFraction = 1.0) from the open/close registry must
-// also skip the bidirectional open-leg path. Pre-fix, signal=-1 with
-// AllowShorts=true would close the long AND open a fresh short in the same
-// cycle, but compose_signal never composes that pair.
 func TestExecutePerpsWithLeverage_FullCloseFromRegistryDoesNotFlip(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
@@ -2223,9 +2043,6 @@ func TestExecutePerpsWithLeverage_FullCloseFromRegistryDoesNotFlip(t *testing.T)
 	}
 }
 
-// #519 — live partial close on perps uses fillQty (the actual exchange
-// fill) for the close leg, not pos.Quantity * closeFraction; the live
-// helper sized the order to the fraction so fillQty is already partial.
 func TestExecutePerpsWithLeverage_PartialCloseLongLiveUsesFillQty(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ETH",
@@ -2252,9 +2069,6 @@ func TestExecutePerpsWithLeverage_PartialCloseLongLiveUsesFillQty(t *testing.T) 
 	logger, _ := lm.GetStrategyLogger("test")
 	defer logger.Close()
 
-	// fillQty=0.18 (slightly below the 0.2 the order requested due to
-	// exchange rounding). closeFraction signals "partial" but the actual
-	// closed qty must come from fillQty.
 	_, err := ExecutePerpsSignalWithLeverage(s, -1, "ETH", 2100, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 0.18, "live-oid", 0.05, DirectionLong, 0.5, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -2274,13 +2088,6 @@ func TestExecutePerpsWithLeverage_PartialCloseLongLiveUsesFillQty(t *testing.T) 
 	}
 }
 
-// #1009 — a close action (closeFraction > 0) under direction="both" must NOT
-// flip-size the live order. perpsLiveOrderSize's flip branch ignored
-// closeFraction, so a fractional/full close on a "both" strategy sized the
-// order as (posQty + newSize) — a full reversal — while the executor treated
-// the same signal as close-only. The flip-sized fill then drove the close
-// leg's qty negative. The sizer must mirror closeOnlyAction: any closeFraction
-// > 0 is close-only, never a flip.
 func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -2289,11 +2096,11 @@ func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
 		frac     float64
 		wantSize float64
 	}{
-		// long 0.4 @ 2000, sell partial 0.5 under "both" → 0.2, not a flip.
+
 		{"partial close long", -1, "long", 0.5, 0.2},
-		// short 0.4 @ 2000, buy partial 0.5 under "both" → 0.2, not a flip.
+
 		{"partial close short", 1, "short", 0.5, 0.2},
-		// final-tier full close (frac=1.0) under "both" → full posQty 0.4.
+
 		{"full close long", -1, "long", 1.0, 0.4},
 		{"full close short", 1, "short", 1.0, 0.4},
 	}
@@ -2310,11 +2117,8 @@ func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
 	}
 }
 
-// #1009 — a genuine flip (closeFraction == 0) under direction="both" must still
-// flip-size (posQty + newSize). Guards against the fix over-reaching and
-// breaking legitimate same-cycle reversals.
 func TestPerpsLiveOrderSize_GenuineFlipStillFlipSizes(t *testing.T) {
-	// long 0.4 @ 2000, sell reversal (frac=0) → posQty + newSize > posQty.
+
 	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatal("expected ok")
@@ -2324,11 +2128,6 @@ func TestPerpsLiveOrderSize_GenuineFlipStillFlipSizes(t *testing.T) {
 	}
 }
 
-// #1009 — backstop: even if a flip-sized fill (fillQty > pos.Quantity) reaches
-// the partial-close executor, closeQty must be capped at pos.Quantity so the
-// residual never goes negative and the close-leg PnL is not overstated.
-// Without the cap, pos.Quantity -= fillQty stored a negative-quantity position
-// and booked realized_pnl against the full (over-large) fill qty.
 func TestExecutePerpsWithLeverage_PartialCloseCapsCloseQtyAtPosQuantity(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2364,10 +2163,6 @@ func TestExecutePerpsWithLeverage_PartialCloseCapsCloseQtyAtPosQuantity(t *testi
 			logger, _ := lm.GetStrategyLogger("test")
 			defer logger.Close()
 
-			// fillQty 1.192 simulates a flip-sized fill landing on the
-			// partial-close path (the pre-fix corruption scenario). Close at
-			// avgCost so the closed-leg PnL is ~0 — a capped close leg books
-			// ~0, an uncapped one would book against 1.192 qty.
 			_, err := ExecutePerpsSignalWithLeverage(s, tc.signal, "ETH", 2000, PerpsSizing{SizingLeverage: 1, ExchangeLeverage: 1}, 1.192, "oid", 0, DirectionBoth, 0.5, logger)
 			if err != nil {
 				t.Fatal(err)
@@ -2392,11 +2187,6 @@ func TestExecutePerpsWithLeverage_PartialCloseCapsCloseQtyAtPosQuantity(t *testi
 	}
 }
 
-// #1009 (PR #1010 review) — a full close-action (closeFraction == 1.0) under
-// direction="both" must suppress the NEW stop-loss; before this the corrected
-// flip predicate (flipping requires frac==0) flipped prev_pos_qty to 0 and a
-// fresh reduce-only stop leaked onto the just-closed position. Covers the
-// reviewer's must-survive cases on the pure SL-suppression decision.
 func TestPerpsCloseActionSuppressesNewSL(t *testing.T) {
 	cases := []struct {
 		name                    string
@@ -2406,21 +2196,18 @@ func TestPerpsCloseActionSuppressesNewSL(t *testing.T) {
 		frac                    float64
 		want                    bool
 	}{
-		// The reported regression: full close-action under "both" → suppress.
+
 		{"full close long under both", -1, "long", true, true, 1.0, true},
 		{"full close short under both", 1, "short", true, true, 1.0, true},
-		// Must survive (a): a genuine reversal flip (frac==0) opens a new side
-		// and MUST arm its SL → not suppressed.
+
 		{"flip long-to-short under both", -1, "long", true, true, 0, false},
 		{"flip short-to-long under both", 1, "short", true, true, 0, false},
-		// Must survive (c): a partial close is handled by the caller's separate
-		// partialClose guard, so the pure-close helper does NOT suppress here.
+
 		{"partial close under both not pureClose", -1, "long", true, true, 0.5, false},
-		// Legacy directional-gate close-only exits still suppress.
+
 		{"long-only sell on long", -1, "long", true, false, 0, true},
 		{"short-only buy on short", 1, "short", false, true, 0, true},
-		// A long-only fresh sell-from-flat shape (no short pos) is not a
-		// close-only here and should not suppress on its own.
+
 		{"both-direction long open arms SL", 1, "", true, true, 0, false},
 	}
 	for _, tc := range cases {
@@ -2433,8 +2220,6 @@ func TestPerpsCloseActionSuppressesNewSL(t *testing.T) {
 	}
 }
 
-// #519 — paper partial close on a spot long must keep the position with
-// the residual quantity and realize PnL only on the closed slice.
 func TestExecuteSpotWithFillFee_PartialCloseLongPaperPreservesRemainder(t *testing.T) {
 	pos := &Position{
 		Symbol:          "BTC/USDT",
@@ -2483,9 +2268,6 @@ func TestExecuteSpotWithFillFee_PartialCloseLongPaperPreservesRemainder(t *testi
 	}
 }
 
-// #519 — futures partial close rounds DOWN to whole contracts so the
-// residual position has at least one contract remaining. Tier returning a
-// fraction smaller than one contract is a no-op rather than a full close.
 func TestExecuteFuturesWithFillFee_PartialCloseRoundsDownContracts(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ES",
@@ -2511,7 +2293,7 @@ func TestExecuteFuturesWithFillFee_PartialCloseRoundsDownContracts(t *testing.T)
 	defer logger.Close()
 
 	spec := ContractSpec{Multiplier: 50, Margin: 1000}
-	// closeFraction=0.5 of 4 contracts → 2 contracts.
+
 	trades, err := ExecuteFuturesSignalWithFillFee(s, -1, "ES", 5050, spec, 2.5, 5, 0, 0, "", 0.5, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -2531,8 +2313,6 @@ func TestExecuteFuturesWithFillFee_PartialCloseRoundsDownContracts(t *testing.T)
 	}
 }
 
-// #519 — when closeFraction rounds to <1 contract the futures executor
-// must no-op rather than full-close the position.
 func TestExecuteFuturesWithFillFee_PartialCloseFractionTooSmallNoOps(t *testing.T) {
 	pos := &Position{
 		Symbol:          "ES",
@@ -2558,7 +2338,7 @@ func TestExecuteFuturesWithFillFee_PartialCloseFractionTooSmallNoOps(t *testing.
 	defer logger.Close()
 
 	spec := ContractSpec{Multiplier: 50, Margin: 1000}
-	// 2 contracts * 0.25 = 0.5 → int = 0 → no-op (NOT full close).
+
 	trades, _ := ExecuteFuturesSignalWithFillFee(s, -1, "ES", 5050, spec, 2.5, 5, 0, 0, "", 0.25, logger)
 	if trades != 0 {
 		t.Errorf("trades = %d, want 0 (sub-contract fraction must no-op)", trades)
@@ -2569,16 +2349,12 @@ func TestExecuteFuturesWithFillFee_PartialCloseFractionTooSmallNoOps(t *testing.
 	}
 }
 
-// #716 item 4 — stopLossCloseDetailsPrefix maps internal reason codes to
-// Trade.Details prefixes so the trade-alert classifier
-// (tradeAlertCloseSource) can label each SL flavor distinctly. Without
-// this mapping, paper-mode trailing closes would render as "exchange SL".
 func TestStopLossCloseDetailsPrefix(t *testing.T) {
 	cases := map[string]string{
 		"trailing_stop_loss_paper":     "Paper trailing SL close",
 		"trailing_stop_loss_immediate": "Trailing SL close",
 		"stop_loss_atr_paper":          "Paper SL close",
-		"stop_loss_atr_immediate":      "Stop loss close", // exchange-fired immediately on placement
+		"stop_loss_atr_immediate":      "Stop loss close",
 		"stop_loss_immediate":          "Stop loss close",
 		"stop_loss":                    "Stop loss close",
 		"hl_sync_stop_loss":            "Stop loss close",

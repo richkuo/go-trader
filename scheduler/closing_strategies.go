@@ -8,14 +8,6 @@ import (
 	"sync"
 )
 
-// closing_strategies.go implements the #1203 /closing-strategies Discord
-// command: a read-only catalog of every registered close evaluator (name,
-// description, platforms, config params) sourced from the Python close
-// registry (shared_strategies/close/registry.py) via
-// shared_tools/close_registry_loader.py --list-json.
-
-// closeRegistryEntry mirrors one row of the Python close registry's
-// `--list-json` dump.
 type closeRegistryEntry struct {
 	Name          string                 `json:"name"`
 	Description   string                 `json:"description"`
@@ -25,14 +17,9 @@ type closeRegistryEntry struct {
 
 var (
 	closeRegistryCatalogMu sync.Mutex
-	closeRegistryCatalog   []closeRegistryEntry // nil until first successful fetch
+	closeRegistryCatalog   []closeRegistryEntry
 )
 
-// fetchCloseRegistryCatalog returns the cached close-evaluator catalog,
-// populating it on first call. The registry is static per deploy (a new
-// evaluator only ships with a rebuild+restart), so the read-only subprocess
-// runs at most once per process lifetime; a failed fetch is never cached, so
-// the next command invocation retries.
 func fetchCloseRegistryCatalog() ([]closeRegistryEntry, error) {
 	closeRegistryCatalogMu.Lock()
 	defer closeRegistryCatalogMu.Unlock()
@@ -51,15 +38,8 @@ func fetchCloseRegistryCatalog() ([]closeRegistryEntry, error) {
 	return entries, nil
 }
 
-// closingStrategiesHeaderBudget reserves room for the per-page header line
-// formatClosingStrategiesResponse prepends after packing, so a page's final
-// length (header + body) never exceeds discordCharLimit.
 const closingStrategiesHeaderBudget = 80
 
-// formatClosingStrategiesResponse renders the close-evaluator catalog as one
-// or more Discord messages, chunked to stay under discordCharLimit (same
-// splitting approach as writeCatTableChunks/FormatCategorySummary). Pure
-// helper — no Python subprocess — so it's fully unit-testable.
 func formatClosingStrategiesResponse(cfg *Config, entries []closeRegistryEntry) []string {
 	sorted := make([]closeRegistryEntry, len(entries))
 	copy(sorted, entries)
@@ -85,11 +65,6 @@ func formatClosingStrategiesResponse(cfg *Config, entries []closeRegistryEntry) 
 	return pages
 }
 
-// formatCloseRegistryEntry renders one evaluator's name, description,
-// platforms, and default params (one `key=value` per line, sorted). When
-// user_defaults.close (#866/#1135) overrides a param for this evaluator, the
-// effective value is shown in place of the registry default and marked as an
-// override, since the registry default is not what actually runs.
 func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "**%s** — %s\n", e.Name, e.Description)
@@ -103,13 +78,7 @@ func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) 
 		keys = append(keys, k)
 	}
 	userEntry, hasUserEntry := closeDefaultsEntry(userClose, e.Name)
-	// overrideKeys are the user_defaults.close keys whose configured value, if
-	// present, is the effective value shown here (marked as an override). Every
-	// override-eligible evaluator honors tp_tiers; trailing_tp_ratchet_regime
-	// additionally honors the coupled trailing_stop_atr_regime SL owner (the
-	// only evaluator for which close_defaults.go allows that key — see
-	// validateUserCloseDefaults). Both ship absent from the registry
-	// default_params, so surface them even though the registry never lists them.
+
 	overrideKeys := []string{"tp_tiers"}
 	if strings.ToLower(strings.TrimSpace(e.Name)) == trailingTPRatchetRegimeCloseName {
 		overrideKeys = append(overrideKeys, userCloseDefaultTrailingStopATRRegimeKey)
@@ -125,7 +94,7 @@ func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) 
 	if hasUserEntry {
 		for _, ok := range overrideKeys {
 			if _, registryHas := e.DefaultParams[ok]; registryHas {
-				continue // already iterated from the registry default_params
+				continue
 			}
 			if v, present := userEntry[ok]; present && v != nil {
 				keys = append(keys, ok)
@@ -149,8 +118,6 @@ func formatCloseRegistryEntry(e closeRegistryEntry, userClose CloseDefaultsMap) 
 	return sb.String()
 }
 
-// jsonInline compact-encodes a param value for display; falls back to Go's
-// default formatting if the value somehow isn't JSON-marshalable.
 func jsonInline(v interface{}) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -159,9 +126,6 @@ func jsonInline(v interface{}) string {
 	return string(b)
 }
 
-// packTextBlocks greedily packs blocks into pages, each page's body capped at
-// limit bytes. A single block longer than limit becomes its own oversized
-// page rather than being split mid-block.
 func packTextBlocks(blocks []string, limit int) []string {
 	var pages []string
 	var cur strings.Builder

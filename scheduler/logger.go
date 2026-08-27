@@ -8,14 +8,12 @@ import (
 	"time"
 )
 
-// StrategyLogger handles per-strategy logging to stdout and optionally a file.
 type StrategyLogger struct {
 	stratID string
 	writer  io.Writer
 	file    *os.File
 }
 
-// LogManager creates and manages loggers.
 type LogManager struct {
 	logDir string
 }
@@ -76,7 +74,6 @@ func (sl *StrategyLogger) Warn(format string, args ...interface{}) {
 	sl.log("WARN", format, args...)
 }
 
-// LogSummary writes a cycle summary to stdout.
 func (lm *LogManager) LogSummary(cycle int, elapsed time.Duration, stratCount int, trades int, totalValue float64) {
 	now := time.Now().UTC().Format("2006-01-02 15:04 UTC")
 	fmt.Printf("[%s] Cycle %d complete (%.1fs) | %d strategies checked | %d trades | Total value: $%.2f\n",

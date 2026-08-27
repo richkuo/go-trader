@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// minimalConfigJSON is a current-version config that LoadConfigForProbe accepts,
-// used by the round-trip tests. One BinanceUS spot strategy keeps it credential-free.
 const minimalConfigJSON = `{
   "config_version": 15,
   "interval_seconds": 300,
@@ -44,14 +42,14 @@ func TestRedactConfigForDisplay(t *testing.T) {
 	if strings.Count(out, configSecretReplacement) != 2 {
 		t.Errorf("expected 2 redactions, got: %s", out)
 	}
-	// Non-secret fields preserved.
+
 	if !strings.Contains(out, "\"interval_seconds\": 300") {
 		t.Errorf("non-secret field not preserved: %s", out)
 	}
 }
 
 func TestRedactConfigForDisplayEmptyTokenUntouched(t *testing.T) {
-	// An empty token must not be turned into a redaction placeholder.
+
 	out, err := redactConfigForDisplay([]byte(`{"discord":{"enabled":false,"token":"","channels":{}}}`))
 	if err != nil {
 		t.Fatalf("redact: %v", err)
@@ -144,7 +142,7 @@ func TestAddStrategyToRoot(t *testing.T) {
 	if len(list) != 3 {
 		t.Errorf("expected 3 strategies after add, got %d", len(list))
 	}
-	// Duplicate add is rejected.
+
 	if _, err := addStrategyToRoot(root, "rsi", "hyperliquid", "sol"); err == nil {
 		t.Error("expected duplicate-id error on second add")
 	}
@@ -162,7 +160,7 @@ func TestRemoveStrategyFromRoot(t *testing.T) {
 	if err := removeStrategyFromRoot(root, "does-not-exist"); err == nil {
 		t.Error("expected not-found error")
 	}
-	// Removing the last remaining strategy is refused.
+
 	if err := removeStrategyFromRoot(root, "hl-momentum-eth"); err == nil {
 		t.Error("expected refusal to remove the only strategy")
 	}
@@ -180,7 +178,7 @@ func TestFlipStrategyToLive(t *testing.T) {
 	if !strings.Contains(strings.Join(after, " "), "--mode=live") || strings.Contains(strings.Join(after, " "), "--mode=paper") {
 		t.Errorf("expected live (not paper) in after: %v", after)
 	}
-	// Persisted in root.
+
 	list, _ := configStrategies(root)
 	var found bool
 	for _, raw := range list {
@@ -193,15 +191,15 @@ func TestFlipStrategyToLive(t *testing.T) {
 	if !found {
 		t.Error("flip not persisted into root")
 	}
-	// Second flip errors: already live.
+
 	if _, _, err := flipStrategyToLive(root, "hl-momentum-eth"); err == nil {
 		t.Error("expected already-live error")
 	}
-	// Spot strategy has no --mode arg → error.
+
 	if _, _, err := flipStrategyToLive(root, "sma-btc"); err == nil {
 		t.Error("expected no-mode error for spot strategy")
 	}
-	// Missing strategy → error.
+
 	if _, _, err := flipStrategyToLive(root, "ghost"); err == nil {
 		t.Error("expected not-found error")
 	}
@@ -226,22 +224,22 @@ func TestClassifyConfigSetKey(t *testing.T) {
 }
 
 func TestBuildTunerOverride(t *testing.T) {
-	// interval_seconds → integer.
+
 	ov, err := buildTunerOverride("interval_seconds", "300")
 	if err != nil || string(ov["interval_seconds"]) != "300" {
 		t.Errorf("interval_seconds override = %v, err %v", ov, err)
 	}
-	// direction → JSON string, lowercased.
+
 	ov, err = buildTunerOverride("direction", "Long")
 	if err != nil || string(ov["direction"]) != `"long"` {
 		t.Errorf("direction override = %v, err %v", ov, err)
 	}
-	// invert_signal → bool.
+
 	ov, _ = buildTunerOverride("invert_signal", "true")
 	if string(ov["invert_signal"]) != "true" {
 		t.Errorf("invert_signal override = %v", ov)
 	}
-	// stop_loss_pct null clears.
+
 	ov, _ = buildTunerOverride("stop_loss_pct", "null")
 	if string(ov["stop_loss_pct"]) != "null" {
 		t.Errorf("stop_loss_pct null override = %v", ov)
@@ -250,7 +248,7 @@ func TestBuildTunerOverride(t *testing.T) {
 	if string(ov["stop_loss_atr_mult"]) != "1.5" {
 		t.Errorf("stop_loss_atr_mult override = %v", ov)
 	}
-	// Rejections.
+
 	for _, bad := range []struct{ field, value string }{
 		{"direction", "sideways"},
 		{"leverage", "0"},
@@ -327,7 +325,7 @@ func TestPlatformSetupGuide(t *testing.T) {
 	if !strings.Contains(guide, "/opt/go-trader/.env") || !strings.Contains(guide, "/go-trader-add-strategy") {
 		t.Errorf("hyperliquid guide missing setup steps: %s", guide)
 	}
-	// Non-addable platform still produces a guide but points to the wizard.
+
 	guide, err = platformSetupGuide("deribit")
 	if err != nil {
 		t.Fatalf("guide: %v", err)
@@ -367,8 +365,7 @@ func TestWriteValidatedConfigRootRoundTrip(t *testing.T) {
 }
 
 func TestAddStrategyRoundTripValidates(t *testing.T) {
-	// A generated /add-strategy entry must pass the real config validator
-	// (LoadConfigForProbe), not just the pure JSON shaping.
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(minimalConfigJSON), 0o600); err != nil {
@@ -411,32 +408,27 @@ func TestWriteValidatedConfigRootRejectsInvalid(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	var root map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &root)
-	// Corrupt: interval_seconds must be an integer; a string breaks LoadConfig parse.
+
 	root["interval_seconds"] = json.RawMessage(`"not-an-int"`)
 	if err := writeValidatedConfigRoot(path, root); err == nil {
 		t.Fatal("expected writeValidatedConfigRoot to reject an invalid config")
 	}
-	// Original file must be untouched (atomic rename never happened).
+
 	after, _ := os.ReadFile(path)
 	if string(after) != minimalConfigJSON {
 		t.Errorf("original config was modified despite validation failure:\n%s", after)
 	}
 }
 
-// paperToLiveFlatChecks exercises the shared StatusServer seam the Discord
-// /paper-to-live handler delegates to (paperToLiveBlockedReason +
-// executePaperToLive) without a live discordgo session.
 func TestPaperToLiveFlatChecks(t *testing.T) {
 	openPos := &StrategyState{Positions: map[string]*Position{"ETH": {Quantity: 1, AvgCost: 2000}}}
 
-	// Open at pre-confirm → blocked before any write.
 	ss, path, _ := newStructuralTestServer(t)
 	ss.state.Strategies["hl-momentum-eth"] = openPos
 	if reason := ss.paperToLiveBlockedReason("hl-momentum-eth", false); reason == "" || !strings.Contains(reason, "OPEN position") {
 		t.Fatalf("pre-confirm blocked reason = %q, want OPEN-position refusal", reason)
 	}
 
-	// Flat → flips to live.
 	delete(ss.state.Strategies, "hl-momentum-eth")
 	msg, err := ss.executePaperToLive("hl-momentum-eth")
 	if err != nil {
@@ -449,7 +441,6 @@ func TestPaperToLiveFlatChecks(t *testing.T) {
 		t.Fatalf("config not flipped:\n%s", raw)
 	}
 
-	// Flat at execute start, opens before write → refused, args untouched.
 	ssOpen, pathOpen, _ := newStructuralTestServer(t)
 	ssOpen.state.Strategies["hl-momentum-eth"] = openPos
 	_, err = ssOpen.executePaperToLive("hl-momentum-eth")

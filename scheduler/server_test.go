@@ -13,7 +13,7 @@ import (
 
 func TestHandleHealth(t *testing.T) {
 	state := NewAppState()
-	state.LastCycle = time.Now() // recent cycle
+	state.LastCycle = time.Now()
 	var mu sync.RWMutex
 
 	ss := NewStatusServer(state, &mu, "", nil, nil)
@@ -26,9 +26,6 @@ func TestHandleHealth(t *testing.T) {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
 	}
 
-	// Capture the raw body before decoding drains the buffer — update.sh
-	// matches the literal `"version":"<ver>"` substring, so assert the added
-	// #849 pid field didn't disturb it.
 	body := w.Body.String()
 	if !strings.Contains(body, "\"version\":\""+Version+"\"") {
 		t.Errorf("body %q missing literal version substring update.sh greps for", body)
@@ -39,13 +36,11 @@ func TestHandleHealth(t *testing.T) {
 	if resp["status"] != "ok" {
 		t.Errorf("status = %q, want %q", resp["status"], "ok")
 	}
-	// #682: /health must report the build version so update.sh can verify
-	// the post-restart process matches the just-built binary.
+
 	if resp["version"] != Version {
 		t.Errorf("version = %q, want %q", resp["version"], Version)
 	}
-	// #849: pid lets external monitoring detect a duplicate (health.pid !=
-	// systemd MainPID). JSON numbers decode to float64 into map[string]any.
+
 	if pid, ok := resp["pid"].(float64); !ok || int(pid) != os.Getpid() {
 		t.Errorf("pid = %v, want %d", resp["pid"], os.Getpid())
 	}
@@ -53,7 +48,7 @@ func TestHandleHealth(t *testing.T) {
 
 func TestHandleHealthStale(t *testing.T) {
 	state := NewAppState()
-	state.LastCycle = time.Now().Add(-60 * time.Minute) // stale
+	state.LastCycle = time.Now().Add(-60 * time.Minute)
 	var mu sync.RWMutex
 
 	ss := NewStatusServer(state, &mu, "", nil, nil)
@@ -65,9 +60,7 @@ func TestHandleHealthStale(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
 	}
-	// Even when stale, the version field should be present so a rolling
-	// update can still distinguish old from new during the brief window
-	// between restart and the first completed cycle.
+
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["version"] != Version {
@@ -77,7 +70,7 @@ func TestHandleHealthStale(t *testing.T) {
 
 func TestHandleHealthZeroTime(t *testing.T) {
 	state := NewAppState()
-	// LastCycle is zero (never run) — should be healthy
+
 	var mu sync.RWMutex
 
 	ss := NewStatusServer(state, &mu, "", nil, nil)
@@ -242,11 +235,8 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	strategies := []StrategyConfig{
 		{Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
 		{Type: "spot", Args: []string{"rsi", "ETH/USDT", "1h"}},
-		{Type: "options", Args: []string{"vol", "BTC"}}, // options skipped
-		// #263: HL perps must populate hlPerpsCoins (venue-native mark),
-		// NOT priceSymbols (BinanceUS spot). The old #245 "/USDT" normalisation
-		// and priceMirror path have been removed — perps are now sourced from
-		// the exchange they live on.
+		{Type: "options", Args: []string{"vol", "BTC"}},
+
 		{Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "SOL", "1h"}},
 		{Type: "perps", Platform: "okx", Args: []string{"ema", "BTC", "1h"}},
 	}
@@ -255,7 +245,6 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 
 	ss := NewStatusServer(state, &mu, "", strategies, nil)
 
-	// Spot symbols must be in priceSymbols.
 	symbolSet := make(map[string]bool)
 	for _, s := range ss.priceSymbols {
 		symbolSet[s] = true
@@ -266,7 +255,7 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	if !symbolSet["ETH/USDT"] {
 		t.Error("ETH/USDT should be in priceSymbols")
 	}
-	// Perps must NOT be in priceSymbols — they live in hlPerpsCoins/okxPerpsCoins.
+
 	if symbolSet["SOL/USDT"] {
 		t.Error("SOL/USDT must not be in priceSymbols (HL perps now venue-native — #263)")
 	}
@@ -274,7 +263,6 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 		t.Errorf("priceSymbols len = %d, want 2 (spot only)", len(ss.priceSymbols))
 	}
 
-	// HL perps coin must appear in hlPerpsCoins.
 	hlSet := make(map[string]bool)
 	for _, c := range ss.hlPerpsCoins {
 		hlSet[c] = true
@@ -283,7 +271,6 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 		t.Errorf("hlPerpsCoins missing SOL; got %v", ss.hlPerpsCoins)
 	}
 
-	// OKX perps coin must appear in okxPerpsCoins.
 	okxSet := make(map[string]bool)
 	for _, c := range ss.okxPerpsCoins {
 		okxSet[c] = true
@@ -366,7 +353,6 @@ func TestHandleHistory_QueryParams(t *testing.T) {
 	var mu sync.RWMutex
 	ss := NewStatusServer(NewAppState(), &mu, "", nil, db)
 
-	// Filter by strategy.
 	req := httptest.NewRequest("GET", "/history?strategy=hl-momentum-btc&limit=1", nil)
 	w := httptest.NewRecorder()
 	ss.handleHistory(w, req)
@@ -394,9 +380,6 @@ func TestHandleHistory_QueryParams(t *testing.T) {
 	}
 }
 
-// #1230: paused (#1150), regime-profile (#998) and directional-cert (#1157)
-// state must ride the dashboard API endpoints so the UI can render badges and
-// the risk/detail panels without new endpoints.
 func TestUIPausedAndDirectionalSerialization(t *testing.T) {
 	state := NewAppState()
 	state.Strategies["okx-eth"] = &StrategyState{
@@ -414,7 +397,6 @@ func TestUIPausedAndDirectionalSerialization(t *testing.T) {
 	}
 	ss := NewStatusServer(state, &mu, "", strategies, nil)
 
-	// Sidebar list carries paused.
 	req := httptest.NewRequest("GET", "/api/strategies", nil)
 	w := httptest.NewRecorder()
 	ss.handleAPIStrategies(w, req)
@@ -431,7 +413,6 @@ func TestUIPausedAndDirectionalSerialization(t *testing.T) {
 		t.Errorf("strategies paused = %+v, want paused true", listResp.Strategies)
 	}
 
-	// Overview table carries paused.
 	req = httptest.NewRequest("GET", "/api/strategies/overview", nil)
 	w = httptest.NewRecorder()
 	ss.handleAPIStrategiesOverview(w, req)
@@ -448,8 +429,6 @@ func TestUIPausedAndDirectionalSerialization(t *testing.T) {
 		t.Errorf("overview paused = %+v, want paused true", ovResp.Strategies)
 	}
 
-	// Detail status carries paused + regime profile; directional fields stay
-	// at base values when no policy is configured.
 	req = httptest.NewRequest("GET", "/api/strategies/okx-eth/status", nil)
 	w = httptest.NewRecorder()
 	ss.handleAPIStrategy(w, req)
@@ -781,12 +760,6 @@ func TestHandleAPIReturnsDraining(t *testing.T) {
 	}
 }
 
-// Regression: SIGHUP holds the global state mu.Lock() across the reload (see
-// reloadConfig in main.go), and applyHotReloadConfig calls
-// server.UpdateStrategies while still holding it. A previous version of
-// UpdateStrategies took the same non-reentrant mutex and deadlocked the
-// daemon on every reload. Exercise the path with a real *sync.RWMutex held
-// by the caller — a deadlocked implementation hangs here until the timeout.
 func TestUpdateStrategiesDoesNotDeadlockUnderStateLock(t *testing.T) {
 	state := NewAppState()
 	var mu sync.RWMutex

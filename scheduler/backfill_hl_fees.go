@@ -14,30 +14,18 @@ import (
 	"time"
 )
 
-// HLFillSummary is a per-OID aggregate from fetch_hl_user_fills.py.
-// A single market order can fragment into multiple partial fills sharing the
-// same OID; the script sums fee + closedPnl across legs before emitting.
-//
-// ClosedPnLGross is Hyperliquid's `closedPnl` summed across legs. It is
-// gross of fees — do not use it for realized-PnL bookkeeping (#698). The
-// backfill recomputes realized PnL locally from the stored pre-fee PnL
-// and the real exchange fee (see planTradeRewrites in this file).
 type HLFillSummary struct {
-	// Coin / time metadata lets no-OID repair paths fail closed unless a
-	// userFills row can be matched by identity, size, and timing (#1091).
 	Coin           string  `json:"coin"`
 	FirstTimeMS    int64   `json:"first_time_ms"`
 	LastTimeMS     int64   `json:"last_time_ms"`
 	Fee            float64 `json:"fee"`
 	ClosedPnLGross float64 `json:"closed_pnl"`
 	Count          int     `json:"count"`
-	// Qty / Px (#954): total filled size and size-weighted average fill price
-	// across the OID's partial fills. Older script versions omit them (0).
+
 	Qty float64 `json:"qty"`
 	Px  float64 `json:"px"`
 }
 
-// HLUserFillsResult is the stdout envelope from fetch_hl_user_fills.py.
 type HLUserFillsResult struct {
 	ByOID          map[string]HLFillSummary `json:"by_oid"`
 	FillCount      int                      `json:"fill_count"`
@@ -46,10 +34,6 @@ type HLUserFillsResult struct {
 	Error          string                   `json:"error"`
 }
 
-// backfillHLUserFillsLookback widens the userFills query before the first DB
-// trade timestamp. Trade rows are recorded after the Python order call returns,
-// while HL's fill timestamp is earlier, so an exact lower bound can miss the
-// first order in a targeted backfill (#597).
 const backfillHLUserFillsLookback = 10 * time.Minute
 
 func backfillUserFillsStartTime(earliestTrade time.Time) time.Time {
@@ -64,8 +48,6 @@ func backfillUserFillsStartTime(earliestTrade time.Time) time.Time {
 	return queryStart
 }
 
-// TradeBackfillRow is the subset of a `trades` row needed by planBackfillForStrategy.
-// Pulled into its own type so the planner is pure (no DB dep).
 type TradeBackfillRow struct {
 	RowID           int64
 	Timestamp       time.Time
@@ -85,7 +67,6 @@ type TradeBackfillRow struct {
 	FeeSource       string
 }
 
-// TradeChange describes one trade-row update produced by planBackfillForStrategy.
 type TradeChange struct {
 	RowID          int64
 	Timestamp      time.Time
@@ -98,27 +79,22 @@ type TradeChange struct {
 	IsClose        bool
 }
 
-// SkippedTrade explains why a trade row was not updated.
 type SkippedTrade struct {
 	RowID     int64
 	Timestamp time.Time
 	Symbol    string
 	OID       string
-	Reason    string // "missing_oid", "no_fill_match", "already_real_fee", "gross_convention_row", "reconcile_adjustment"
+	Reason    string
 }
 
-// ClosedPositionRecompute carries the new aggregate PnL for a single
-// closed_positions row. Pinned by row id (closed_positions has no
-// position_id column yet, so we identify the target row directly).
 type ClosedPositionRecompute struct {
 	RowID      int64
 	Symbol     string
-	PositionID string // resolved from the matched close-leg trade
+	PositionID string
 	OldPnL     float64
 	NewPnL     float64
 }
 
-// BackfillPlan is the full set of changes for one strategy.
 type BackfillPlan struct {
 	StrategyID            string
 	TradeChanges          []TradeChange
@@ -126,27 +102,16 @@ type BackfillPlan struct {
 	ClosedPositions       []ClosedPositionRecompute
 	OldCash               float64
 	NewCash               float64
-	TotalFeeDeltaUSD      float64 // sum of (oldFee - newFee) across rows; positive = strategy "got back" fees
-	TotalPnLDeltaUSD      float64 // sum of (newPnL - oldPnL) across close legs
+	TotalFeeDeltaUSD      float64
+	TotalPnLDeltaUSD      float64
 	MatchedTradeCount     int
 	UnmatchedOIDCount     int
 	MissingOIDCount       int
-	AlreadyRealFeeCount   int     // post-#587 rows skipped because exchange_fee was already non-zero
-	ReplayedCash          float64 // pre-correction cash replay (initial_capital + old fees + old pnl) — diverges from OldCash when SIGHUP capital top-ups landed
-	CashBaselineDivergent bool    // ReplayedCash differs from OldCash by more than $1 → likely SIGHUP capital top-up; --apply must be gated
+	AlreadyRealFeeCount   int
+	ReplayedCash          float64
+	CashBaselineDivergent bool
 }
 
-// planBackfillForStrategy is the pure planner used by the backfill command.
-// It does no IO — given a trade history, an OID→fill map, and the strategy's
-// initial capital + current cash, it returns the change list and the
-// recomputed cash baseline.
-//
-// Cash recompute model (perps): cash starts at initial_capital; each open leg
-// debits the *real* fee (or the modeled fee if no OID match was available);
-// each close leg credits the *new* realized_pnl (already net of the real fee
-// in the corrected value). This mirrors the live model
-// (`ExecutePerpsSignalWithLeverage` / `applyManualAction`) where notional
-// stays virtual and only fees + realized pnl move cash.
 func planBackfillForStrategy(
 	strategyID string,
 	trades []TradeBackfillRow,
@@ -158,28 +123,16 @@ func planBackfillForStrategy(
 		OldCash:    oldCash,
 	}
 
-	// Sort trades chronologically so the cash replay matches the on-chain
-	// sequence — close-leg credits depend on the open leg landing first when
-	// realized_pnl is recomputed via the corrected fee.
 	sortedTrades := make([]TradeBackfillRow, len(trades))
 	copy(sortedTrades, trades)
 	sort.SliceStable(sortedTrades, func(i, j int) bool {
 		return sortedTrades[i].Timestamp.Before(sortedTrades[j].Timestamp)
 	})
 
-	// Pre-correction replay: walk the trades using the values *currently*
-	// stored on disk (modeled fee fallback when exchange_fee=0 — that's what
-	// was actually deducted at execution time). If the result diverges from
-	// `oldCash` by more than $1, the strategy almost certainly had its
-	// `capital` raised mid-run via SIGHUP (config_reload.go applies
-	// `Cash += new - old` directly with no trade row), so a forward replay
-	// from initial_capital would silently roll cash back to a wrong baseline
-	// on --apply. Surface it as a divergence flag so the report and
-	// runBackfillHLFees can refuse --apply unless the operator opts in.
 	preReplayCash := initialCapital
 	for _, t := range sortedTrades {
 		if t.TradeType == TradeTypeFunding {
-			continue // funding rows never touch the modeled cash book (#954)
+			continue
 		}
 		preFee := t.ExchangeFee
 		if preFee == 0 && !t.PnLGross {
@@ -199,15 +152,12 @@ func planBackfillForStrategy(
 	cash := initialCapital
 	for _, t := range sortedTrades {
 		if t.TradeType == TradeTypeFunding {
-			continue // funding rows never touch the modeled cash book (#954)
+			continue
 		}
 		newFee := t.ExchangeFee
 		newPnL := t.RealizedPnL
 		modeledFee := math.Abs(t.Value) * HyperliquidTakerFeePct
 
-		// #954 gross-convention rows are owned by `backfill trade-ledger` —
-		// this legacy fee backfill must not reinterpret their net/gross
-		// semantics. Replay them as-is and skip the rewrite.
 		if t.PnLGross {
 			plan.AlreadyRealFeeCount++
 			plan.Skipped = append(plan.Skipped, SkippedTrade{
@@ -253,8 +203,7 @@ func planBackfillForStrategy(
 			if matched {
 				realFee := summary.Fee
 				if t.ExchangeFee != 0 {
-					// Already-real-fee guard: never overwrite a non-zero
-					// stored fee (post-#587 rows). Keep the stored values.
+
 					plan.AlreadyRealFeeCount++
 					plan.Skipped = append(plan.Skipped, SkippedTrade{
 						RowID:     t.RowID,
@@ -266,8 +215,7 @@ func planBackfillForStrategy(
 				} else {
 					newFee = realFee
 					if t.IsClose {
-						// realized_pnl was originally `pnl_pre_fee - modeledFee`.
-						// We want `pnl_pre_fee - realFee` → adjust by (modeledFee - realFee).
+
 						newPnL = t.RealizedPnL + (modeledFee - realFee)
 					}
 					if newFee != t.ExchangeFee || newPnL != t.RealizedPnL {
@@ -290,15 +238,11 @@ func planBackfillForStrategy(
 			}
 		}
 
-		// Cash replay: open leg debits effective fee, close leg credits newPnL.
-		// For an unmatched open leg we fall back to the modeled fee since
-		// that's what was originally deducted from cash at execution time
-		// (and remains a closer estimate than zero).
 		effectiveFee := newFee
 		if !matched && matchAttempted {
 			effectiveFee = modeledFee
 		} else if !matched && !matchAttempted {
-			// missing_oid: pre-OID-stamping legacy row — also uses modeled fee
+
 			effectiveFee = modeledFee
 		}
 		if t.IsClose {
@@ -313,20 +257,11 @@ func planBackfillForStrategy(
 	return plan
 }
 
-// planClosedPositionRecomputes matches each closed_positions row to a
-// corrected close-leg trade by (symbol, closed_at == trade.timestamp), then
-// emits a recompute when the per-position aggregate (sum of close-leg
-// realized_pnl sharing that position_id) differs from the stored value.
-//
-// closed_positions has no position_id column yet, so we recover the grouping
-// via the matching close-leg trade. Rows whose match has empty position_id
-// (legacy pre-#471 entries, or non-perps closes) are skipped — there's no
-// reliable way to aggregate them.
 func planClosedPositionRecomputes(
 	corrected []TradeBackfillRow,
 	closedRows []ClosedPositionRow,
 ) []ClosedPositionRecompute {
-	// Sum corrected close-leg PnL by position_id.
+
 	sumsByPID := make(map[string]float64)
 	pidToSymbol := make(map[string]string)
 	for _, t := range corrected {
@@ -337,11 +272,6 @@ func planClosedPositionRecomputes(
 		pidToSymbol[t.PositionID] = t.Symbol
 	}
 
-	// Build a lookup: (symbol, ms-truncated timestamp) → position_id from
-	// the corrected close-leg trades. The closed_at column on
-	// closed_positions is RFC 3339 with nanosecond precision matching the
-	// trade row written in the same SaveState pass, so an exact-key lookup
-	// works in practice; use a tolerance-based fallback for legacy rows.
 	type tradeKey struct {
 		Symbol string
 		UnixNs int64
@@ -366,23 +296,7 @@ func planClosedPositionRecomputes(
 	for _, cp := range closedRows {
 		pid := exact[tradeKey{Symbol: cp.Symbol, UnixNs: cp.ClosedAt.UnixNano()}]
 		if pid == "" {
-			// Tolerance match: nearest close-leg trade on same symbol within
-			// 5s, but require BOTH (a) directional ordering — the trade leg
-			// must land at or after the closed_positions row — AND (b)
-			// uniqueness: no other candidate within the same window. This
-			// rules out rapid back-to-back partial-then-final closes on the
-			// same symbol silently mapping to the wrong position_id.
-			//
-			// Timestamp invariant (post-#471): both trades.timestamp and
-			// closed_positions.closed_at are written from pos.ClosedAt in the
-			// same SaveState pass, so they are the same value and the exact-ns
-			// path above handles all modern rows without reaching here.
-			// Legacy rows (pre-#471) may violate the ordering assumption
-			// because trades.timestamp was the HL exchange fill time (a few
-			// ms–s before the scheduler runs SaveState) while closed_at is the
-			// scheduler processing time — meaning leg.Ts could be slightly
-			// before cp.ClosedAt, causing this guard to produce no match
-			// rather than a wrong match. That is the safe failure mode.
+
 			var candidate string
 			candidates := 0
 			for _, leg := range closeLegs {
@@ -412,8 +326,7 @@ func planClosedPositionRecomputes(
 		if !ok {
 			continue
 		}
-		// Tolerance: skip when the delta is below 0.001 USD to avoid
-		// floating-point noise rewriting the row for nothing.
+
 		if math.Abs(newPnL-cp.RealizedPnL) < 1e-3 {
 			continue
 		}
@@ -429,7 +342,6 @@ func planClosedPositionRecomputes(
 	return out
 }
 
-// runBackfill is the dispatcher for `go-trader backfill <subcommand>`.
 func runBackfill(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Usage: go-trader backfill <hl-fees|trade-ledger> [--config scheduler/config.json] (--all | --strategy <id>) [--apply]")
@@ -446,19 +358,6 @@ func runBackfill(args []string) int {
 	}
 }
 
-// runBackfillHLFees implements `go-trader backfill hl-fees`.
-//
-// Backfills `trades.exchange_fee` (and `realized_pnl` on close legs) for live
-// HL strategies whose rows pre-date #587 — when modeled fees were written
-// directly because HL's order-placement response did not surface the real fee.
-//
-// Default mode is dry-run. Pass --apply to commit. --apply refuses to run
-// when another go-trader process is alive (a concurrent SaveState would
-// overwrite the recomputed cash on its next cycle), and refuses per-strategy
-// when the pre-correction cash replay diverges from the stored cash by more
-// than $1 (likely a SIGHUP capital top-up via config_reload.go that a
-// forward-from-initial-capital replay cannot reproduce). Pass --reset-cash to
-// override the divergence guard.
 func runBackfillHLFees(args []string) int {
 	fs := flag.NewFlagSet("backfill hl-fees", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
@@ -529,10 +428,7 @@ func runBackfillHLFees(args []string) int {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				continue
 			}
-			// Paper-mode HL perps trades have synthetic OIDs that won't match
-			// any userFills row; skip them with a one-line note rather than
-			// burying the operator in noisy `missing_oid` skip lines.
-			// `manual` strategies are always live (no paper mode).
+
 			if sc.Type == "perps" && !hyperliquidIsLive(sc.Args) {
 				fmt.Printf("[%s] skipped: paper-mode (no real OIDs)\n", sc.ID)
 				continue
@@ -546,9 +442,6 @@ func runBackfillHLFees(args []string) int {
 		return 1
 	}
 
-	// Fetch userFills once across all targets (same wallet). Start slightly
-	// before the earliest trade timestamp because DB rows are stamped after
-	// the order returns, while HL userFills are stamped at exchange fill time.
 	earliest, err := stateDB.EarliestTradeTimestamp(strategyIDsOf(targets))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read earliest trade timestamp: %v\n", err)
@@ -665,7 +558,6 @@ func strategyIDsOf(strategies []StrategyConfig) []string {
 	return ids
 }
 
-// printBackfillReport renders a per-strategy summary block to stdout.
 func printBackfillReport(plan BackfillPlan) {
 	fmt.Printf("\n--- %s ---\n", plan.StrategyID)
 	fmt.Printf("  rows updated:        %d\n", len(plan.TradeChanges))
@@ -686,20 +578,10 @@ func printBackfillReport(plan BackfillPlan) {
 	}
 }
 
-// refuseIfSchedulerRunning aborts when another `go-trader` process is alive.
-//
-// The backfill rewrites `strategies.cash` directly. SQLite's WAL journal lets
-// the running scheduler keep its own write connection open in parallel, so the
-// next SaveState in that scheduler will overwrite the recomputed cash with
-// whatever value its in-memory `AppState` holds — silently undoing the
-// backfill. Detect a peer process via `pgrep` and refuse with an actionable
-// error before the operator commits.
 func refuseIfSchedulerRunning() error {
 	out, err := exec.Command("pgrep", "-x", "go-trader").Output()
 	if err != nil {
-		// pgrep exits 1 when no match — that's the success path here. Any
-		// other error means pgrep itself failed (missing binary, etc.); skip
-		// the check rather than blocking apply on operator tooling.
+
 		return nil
 	}
 	self := os.Getpid()
@@ -724,12 +606,8 @@ func refuseIfSchedulerRunning() error {
 	return fmt.Errorf("another go-trader process is running (pid %v); stop it before running --apply (concurrent SaveState would overwrite the recomputed strategies.cash)", others)
 }
 
-// hlUserFillsFetchTimeout bounds fetch_hl_user_fills.py — paging through years
-// of history can exceed the standard scriptTimeout used by per-cycle scripts.
 const hlUserFillsFetchTimeout = 5 * time.Minute
 
-// runFetchHLUserFills spawns shared_scripts/fetch_hl_user_fills.py with
-// hlUserFillsFetchTimeout via the shared Python runner (semaphore + .venv).
 func runFetchHLUserFills(since time.Time) (*HLUserFillsResult, error) {
 	return runFetchHLUserFillsWithTimeout(since, hlUserFillsFetchTimeout)
 }

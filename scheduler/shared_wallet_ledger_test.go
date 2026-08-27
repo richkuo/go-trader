@@ -8,12 +8,6 @@ import (
 	"time"
 )
 
-// #954 trade-ledger display path: gross PnL convention helpers, ledger-derived
-// shared-wallet member values, funding/transfer ingestion, OID dedup, and the
-// `backfill trade-ledger` planner.
-
-// --- Gross/net convention helpers ---
-
 func TestTradeNetPnLAndLedgerDelta(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -78,17 +72,15 @@ func newLedgerTestDB(t *testing.T) *StateDB {
 	return db
 }
 
-// The SQL ledger sum must mirror tradeLedgerDelta row-for-row across both
-// conventions plus funding rows, grouped per strategy.
 func TestLedgerNetByStrategy_ConventionAware(t *testing.T) {
 	db := newLedgerTestDB(t)
 	now := time.Now().UTC()
 	rows := []Trade{
-		// hl-a: gross open (fee 0.5) + gross close (100 gross, fee 0.7) + funding -1.25.
+
 		{Timestamp: now, StrategyID: "hl-a", Symbol: "BTC", Side: "buy", TradeType: "perps", ExchangeFee: 0.5, PnLGross: true, FeeSource: FeeSourceUserFills},
 		{Timestamp: now, StrategyID: "hl-a", Symbol: "BTC", Side: "sell", TradeType: "perps", IsClose: true, RealizedPnL: 100, ExchangeFee: 0.7, PnLGross: true, FeeSource: ""},
 		{Timestamp: now, StrategyID: "hl-a", Symbol: "BTC", Side: "funding", TradeType: TradeTypeFunding, RealizedPnL: -1.25, PnLGross: true},
-		// hl-b: legacy open with stamped fee + legacy close (net).
+
 		{Timestamp: now, StrategyID: "hl-b", Symbol: "ETH", Side: "buy", TradeType: "perps", ExchangeFee: 0.4},
 		{Timestamp: now, StrategyID: "hl-b", Symbol: "ETH", Side: "sell", TradeType: "perps", IsClose: true, RealizedPnL: 19.6},
 	}
@@ -112,8 +104,6 @@ func TestLedgerNetByStrategy_ConventionAware(t *testing.T) {
 	}
 }
 
-// --- Ledger-derived member values (pure math) ---
-
 func TestLedgerSharedWalletMemberValues_Math(t *testing.T) {
 	in := ledgerWalletInputs{
 		Members:     []string{"hl-btc", "hl-eth"},
@@ -122,14 +112,13 @@ func TestLedgerSharedWalletMemberValues_Math(t *testing.T) {
 		Positions: []SharedWalletPosition{
 			{Coin: "BTC", UnrealizedPnL: 50},
 			{Coin: "ETH", UnrealizedPnL: -20},
-			{Coin: "DOGE", UnrealizedPnL: 7}, // orphan: no virtual owner
+			{Coin: "DOGE", UnrealizedPnL: 7},
 		},
 		VirtualQty: map[string]map[string]float64{
 			"BTC": {"hl-btc": 0.1},
 			"ETH": {"hl-eth": 2},
 		},
-		// Ledger-derived sum = (600+25+50) + (400-10-20) = 675 + 370 = 1045.
-		// Balance includes a $100 deposit (NonTradeFlows) and the orphan's +7.
+
 		AccountBalance: 1045 + 100 + 7,
 		NonTradeFlows:  100,
 		BaselineOffset: 0,
@@ -142,7 +131,7 @@ func TestLedgerSharedWalletMemberValues_Math(t *testing.T) {
 	if math.Abs(res.Values["hl-eth"]-370) > 0.001 {
 		t.Errorf("hl-eth = %v, want 370", res.Values["hl-eth"])
 	}
-	// rawDrift = balance − Σvalues − flows = 1152 − 1045 − 100 = 7 (the orphan).
+
 	if math.Abs(rawDrift-7) > 0.001 {
 		t.Errorf("rawDrift = %v, want 7 (orphan uPnL)", rawDrift)
 	}
@@ -154,14 +143,12 @@ func TestLedgerSharedWalletMemberValues_Math(t *testing.T) {
 	}
 }
 
-// Member values come from the ledger, NOT a balance split: an idle member's
-// value must be exactly initial+0+0 regardless of how wrong the balance is.
 func TestLedgerSharedWalletMemberValues_IdleMemberIndependentOfBalance(t *testing.T) {
 	in := ledgerWalletInputs{
 		Members:        []string{"hl-idle", "hl-active"},
 		InitialByID:    map[string]float64{"hl-idle": 500, "hl-active": 500},
 		LedgerByID:     map[string]float64{"hl-active": -123.45},
-		AccountBalance: 700, // badly drifted balance
+		AccountBalance: 700,
 		BaselineSet:    true,
 	}
 	res, _ := ledgerSharedWalletMemberValues(in)
@@ -177,9 +164,9 @@ func TestLedgerSharedWalletMemberValues_BaselineAnchorsDrift(t *testing.T) {
 	in := ledgerWalletInputs{
 		Members:        []string{"hl-a"},
 		InitialByID:    map[string]float64{"hl-a": 1000},
-		AccountBalance: 950, // $50 of pre-adoption history not in the ledger
+		AccountBalance: 950,
 	}
-	// First cycle (BaselineSet=false): drift reads 0, rawDrift returned for storage.
+
 	res, rawDrift := ledgerSharedWalletMemberValues(in)
 	if res.Drift != 0 {
 		t.Errorf("first-cycle drift = %v, want 0", res.Drift)
@@ -187,28 +174,25 @@ func TestLedgerSharedWalletMemberValues_BaselineAnchorsDrift(t *testing.T) {
 	if math.Abs(rawDrift-(-50)) > 0.001 {
 		t.Fatalf("rawDrift = %v, want -50", rawDrift)
 	}
-	// Later cycles measure NEW divergence vs the stored baseline.
+
 	in.BaselineSet = true
 	in.BaselineOffset = rawDrift
 	res, _ = ledgerSharedWalletMemberValues(in)
 	if math.Abs(res.Drift) > 0.001 {
 		t.Errorf("steady-state drift = %v, want 0 (anchored)", res.Drift)
 	}
-	in.AccountBalance = 950 - 3 // a fill the ledger missed
+	in.AccountBalance = 950 - 3
 	res, _ = ledgerSharedWalletMemberValues(in)
 	if math.Abs(res.Drift-(-3)) > 0.001 {
 		t.Errorf("new-divergence drift = %v, want -3", res.Drift)
 	}
 }
 
-// --- Full reconcile cycle through the DB-backed HL ledger path ---
-
 func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	db := newLedgerTestDB(t)
 	now := time.Now().UTC()
-	// hl-btc has a gross close (+40 gross, fee 1) and an open fee (0.5):
-	// ledger = +38.5. hl-eth has no rows: ledger = 0.
+
 	for _, tr := range []Trade{
 		{Timestamp: now, StrategyID: "hl-btc", Symbol: "BTC", Side: "buy", TradeType: "perps", ExchangeFee: 0.5, PnLGross: true},
 		{Timestamp: now, StrategyID: "hl-btc", Symbol: "BTC", Side: "sell", TradeType: "perps", IsClose: true, RealizedPnL: 40, ExchangeFee: 1, PnLGross: true},
@@ -220,9 +204,7 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	if err := db.InsertWalletTransfer("hyperliquid", "0xtest", now.UnixMilli(), "deposit", 100, "dep1"); err != nil {
 		t.Fatalf("InsertWalletTransfer: %v", err)
 	}
-	// fetchWalletLedgerEvents owns first-contact init of the watermark row;
-	// seed it here as that cycle would (reconcile never originates the row —
-	// see TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack).
+
 	if err := db.UpsertWalletLedgerState("hyperliquid", "0xtest", WalletLedgerState{
 		FundingSinceMs: now.UnixMilli(), TransfersSinceMs: now.UnixMilli(),
 	}); err != nil {
@@ -242,11 +224,9 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	sharedWallets := detectSharedWallets(strategies)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
 	hlPositions := []HLPosition{{Coin: "BTC", Size: 0.1, UnrealizedPnL: 12}}
-	// Expected: btc = 600 + 38.5 + 12 = 650.5; eth = 400.
-	// Clean balance = Σvalues + flows = 1050.5 + 100 = 1150.5; start drifted +$5.
+
 	walletBalances := map[SharedWalletKey]float64{key: 1155.5}
 
-	// Cycle 1: baseline anchors at rawDrift=+5, reported drift 0.
 	results := reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, hlPositions, nil, false)
 	if len(results) != 1 || math.Abs(results[0].Drift) > 0.001 {
 		t.Fatalf("cycle 1: want drift 0 (baseline anchor), got %+v", results)
@@ -268,18 +248,16 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 		t.Fatalf("baseline upsert clobbered watermarks: %+v", st)
 	}
 
-	// Cycle 2: balance loses $3 the ledger didn't book → drift -3.
 	walletBalances[key] = 1152.5
 	results = reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, hlPositions, nil, false)
 	if len(results) != 1 || math.Abs(results[0].Drift-(-3)) > 0.001 {
 		t.Fatalf("cycle 2: want drift -3 vs baseline, got %+v", results)
 	}
-	// Member values are ledger-derived → unchanged by the balance move.
+
 	if got := state.Strategies["hl-btc"].SharedWalletValue; math.Abs(got-650.5) > 0.001 {
 		t.Errorf("hl-btc display moved with balance: %v, want 650.5", got)
 	}
 
-	// Baseline reset (backfill --apply) → next cycle re-anchors, drift 0 again.
 	if err := db.ResetWalletLedgerBaseline("hyperliquid", "0xtest"); err != nil {
 		t.Fatalf("ResetWalletLedgerBaseline: %v", err)
 	}
@@ -289,7 +267,6 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	}
 }
 
-// A nil StateDB must fall back to the #918 split (rows stay populated).
 func TestReconcileSharedWalletDisplayValues_HLNilDBFallsBackToSplit(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	strategies := []StrategyConfig{
@@ -308,7 +285,7 @@ func TestReconcileSharedWalletDisplayValues_HLNilDBFallsBackToSplit(t *testing.T
 	if len(results) != 1 {
 		t.Fatalf("want 1 result via split fallback, got %d", len(results))
 	}
-	// Split semantics: capital-weight share of the balance.
+
 	if got := state.Strategies["hl-a"].SharedWalletValue; math.Abs(got-600) > 0.001 {
 		t.Errorf("fallback hl-a = %v, want 600 (0.6 × 1000)", got)
 	}
@@ -317,12 +294,6 @@ func TestReconcileSharedWalletDisplayValues_HLNilDBFallsBackToSplit(t *testing.T
 	}
 }
 
-// Reconcile must never originate the watermark row (#969 review): if
-// fetchWalletLedgerEvents' first-contact init failed this cycle, the row is
-// absent here and upserting a baseline would persist watermarks of 0 — the
-// next fetch would then replay the wallet's entire funding history past a
-// baseline that never accounted for it. Absent row → split fallback, no row
-// written; once fetch re-inits the row, the ledger path anchors normally.
 func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	db := newLedgerTestDB(t)
@@ -337,12 +308,9 @@ func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *tes
 	}}
 	sharedWallets := detectSharedWallets(strategies)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
-	// Balance $100 above Σinitial distinguishes the paths: the split spreads
-	// it capital-weight (hl-a 660); the ledger path keeps values at initial
-	// (hl-a 600) and would anchor the +100 into the baseline.
+
 	walletBalances := map[SharedWalletKey]float64{key: 1100}
 
-	// Cycle 1: no watermark row → split fallback, and no row may be created.
 	results := reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, nil, nil, false)
 	if len(results) != 1 {
 		t.Fatalf("want 1 result via split fallback, got %d", len(results))
@@ -354,8 +322,6 @@ func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *tes
 		t.Fatalf("reconcile originated the watermark row: found=%v err=%v", found, err)
 	}
 
-	// Cycle 2: fetch init succeeded (row anchored at now) → ledger path
-	// baselines the +100 and reports drift 0 with ledger-derived values.
 	if err := db.UpsertWalletLedgerState("hyperliquid", "0xtest", WalletLedgerState{
 		FundingSinceMs: now.UnixMilli(), TransfersSinceMs: now.UnixMilli(),
 	}); err != nil {
@@ -377,8 +343,6 @@ func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *tes
 	}
 }
 
-// --- signedPerpFlowUSD ---
-
 func TestSignedPerpFlowUSD(t *testing.T) {
 	acct := "0xME"
 	cases := []struct {
@@ -395,8 +359,7 @@ func TestSignedPerpFlowUSD(t *testing.T) {
 		{"internal transfer outbound", hlLedgerEventDelta{Type: "internalTransfer", USDC: "10", Destination: "0xother"}, -10, true},
 		{"subaccount inbound", hlLedgerEventDelta{Type: "subAccountTransfer", USDC: "7", Destination: "0xME"}, 7, true},
 		{"vault deposit", hlLedgerEventDelta{Type: "vaultDeposit", USDC: "30"}, -30, true},
-		// vaultWithdraw carries NO usdc field — the net amount is credited
-		// (real shape: requestedUsd/commission/closingCost/netWithdrawnUsd).
+
 		{"vault withdraw nets after commission", hlLedgerEventDelta{Type: "vaultWithdraw", NetWithdrawnUSD: "688.5"}, 688.5, true},
 		{"vault create includes fee", hlLedgerEventDelta{Type: "vaultCreate", USDC: "100", Fee: "0.5"}, -100.5, true},
 		{"spot transfer no perp effect", hlLedgerEventDelta{Type: "spotTransfer", USDC: "99"}, 0, true},
@@ -419,8 +382,6 @@ func TestSignedPerpFlowUSD(t *testing.T) {
 		}
 	}
 }
-
-// --- Funding ingestion ---
 
 func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 	db := newLedgerTestDB(t)
@@ -447,7 +408,7 @@ func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 	if len(a.TradeHistory) != 1 || len(b.TradeHistory) != 1 {
 		t.Fatalf("want 1 funding row each, got %d/%d", len(a.TradeHistory), len(b.TradeHistory))
 	}
-	// −4.0 split 0.3:0.1 → −3.0 / −1.0, gross convention, funding type.
+
 	if tr := a.TradeHistory[0]; math.Abs(tr.RealizedPnL-(-3)) > 1e-9 || tr.TradeType != TradeTypeFunding || !tr.PnLGross {
 		t.Errorf("hl-a funding row = %+v, want RealizedPnL -3 gross funding", tr)
 	}
@@ -455,14 +416,13 @@ func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 		t.Errorf("hl-b funding share = %v, want -1", tr.RealizedPnL)
 	}
 
-	// Re-ingest the same event (watermark-overlap re-read) → no new rows.
 	if ok := ingestFundingEvent(db, state, key, ev, virtualQty); !ok {
 		t.Fatal("re-ingest returned false")
 	}
 	if len(a.TradeHistory) != 1 || len(b.TradeHistory) != 1 {
 		t.Fatalf("dedup failed: got %d/%d rows", len(a.TradeHistory), len(b.TradeHistory))
 	}
-	// And the ledger sums see the shares.
+
 	sums, err := db.LedgerNetByStrategy([]string{"hl-a", "hl-b"})
 	if err != nil {
 		t.Fatalf("LedgerNetByStrategy: %v", err)
@@ -472,10 +432,6 @@ func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 	}
 }
 
-// A funding row whose eager DB insert fails must HOLD the watermark — a
-// crash before the SaveState flush would otherwise lose the row behind an
-// advanced watermark (permanent ledger shortfall, drift alarm forever).
-// Already-persisted co-owners must not double-book on the retry.
 func TestIngestFundingEvent_PersistFailureHoldsWatermark(t *testing.T) {
 	db := newLedgerTestDB(t)
 	prev := tradeRecorder
@@ -493,7 +449,6 @@ func TestIngestFundingEvent_PersistFailureHoldsWatermark(t *testing.T) {
 	virtualQty := map[string]map[string]float64{"BTC": {"hl-a": 0.3, "hl-b": 0.1}}
 	ev := hlLedgerEvent{Time: 1700000000000, Hash: "0xfail", Delta: hlLedgerEventDelta{Type: "funding", Coin: "BTC", USDC: "-4.0"}}
 
-	// hl-a persists, hl-b's eager insert fails (owners iterate sorted).
 	tradeRecorder = func(strategyID string, trade Trade) error {
 		if strategyID == "hl-b" {
 			return errInjectedPersist
@@ -507,14 +462,11 @@ func TestIngestFundingEvent_PersistFailureHoldsWatermark(t *testing.T) {
 		t.Fatalf("hl-a rows = %d, want 1 (persisted before the failure)", got)
 	}
 
-	// Same cycle retry: hl-b's row is in TradeHistory but NOT on disk —
-	// still held (the watermark may only advance once it is durable).
 	tradeRecorder = db.InsertTrade
 	if ok := ingestFundingEvent(db, state, key, ev, virtualQty); ok {
 		t.Fatal("unpersisted in-memory row must keep holding the watermark")
 	}
 
-	// SaveState-equivalent flush lands the row → retry succeeds, advances.
 	bss := state.Strategies["hl-b"]
 	if n := len(bss.TradeHistory); n != 1 {
 		t.Fatalf("hl-b rows = %d, want 1 (booked in memory despite failed persist)", n)
@@ -526,7 +478,7 @@ func TestIngestFundingEvent_PersistFailureHoldsWatermark(t *testing.T) {
 	if ok := ingestFundingEvent(db, state, key, ev, virtualQty); !ok {
 		t.Fatal("fully persisted split must release the watermark")
 	}
-	// No double-booking anywhere.
+
 	if len(state.Strategies["hl-a"].TradeHistory) != 1 || len(bss.TradeHistory) != 1 {
 		t.Fatalf("retry double-booked: %d/%d rows", len(state.Strategies["hl-a"].TradeHistory), len(bss.TradeHistory))
 	}
@@ -536,8 +488,6 @@ func TestIngestFundingEvent_PersistFailureHoldsWatermark(t *testing.T) {
 	}
 }
 
-// End-to-end through ingestWalletLedgerEvents: the funding watermark must not
-// advance while a row's persist fails, and must advance after recovery.
 func TestIngestWalletLedgerEvents_FundingWatermarkHeldOnPersistFailure(t *testing.T) {
 	db := newLedgerTestDB(t)
 	prev := tradeRecorder
@@ -568,7 +518,6 @@ func TestIngestWalletLedgerEvents_FundingWatermarkHeldOnPersistFailure(t *testin
 		t.Fatalf("funding watermark = %d (err %v), want 1000 (held on persist failure)", got.FundingSinceMs, err)
 	}
 
-	// Recovery: flush the stranded row, then the next cycle advances.
 	ass := state.Strategies["hl-a"]
 	if err := db.InsertTrade("hl-a", ass.TradeHistory[0]); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -585,9 +534,6 @@ func TestIngestWalletLedgerEvents_FundingWatermarkHeldOnPersistFailure(t *testin
 	}
 }
 
-// With no eager persistence configured (tradeRecorder=nil, batch SaveState
-// flush), a successful split must still advance — persisted=false is the
-// legitimate steady state there, not a failure signal.
 func TestIngestFundingEvent_NoEagerPersistStillAdvances(t *testing.T) {
 	db := newLedgerTestDB(t)
 	prev := tradeRecorder
@@ -618,7 +564,7 @@ func TestIngestFundingEvent_OrphanCoinGoesToWalletTransfers(t *testing.T) {
 	if err != nil || math.Abs(sum-2.5) > 1e-9 {
 		t.Fatalf("orphan funding flow = %v (err %v), want 2.5 in wallet_transfers", sum, err)
 	}
-	// Idempotent on re-read (UNIQUE dedup_id).
+
 	if ok := ingestFundingEvent(db, state, key, ev, nil); !ok {
 		t.Fatal("orphan re-ingest returned false")
 	}
@@ -639,7 +585,7 @@ func TestIngestWalletLedgerEvents_TransfersAndWatermarks(t *testing.T) {
 	res := walletLedgerFetchResult{
 		Key: key, State: st, StateFound: true,
 		Transfers: []hlLedgerEvent{
-			{Time: 500, Hash: "0xold", Delta: hlLedgerEventDelta{Type: "deposit", USDC: "999"}}, // pre-watermark: skipped
+			{Time: 500, Hash: "0xold", Delta: hlLedgerEventDelta{Type: "deposit", USDC: "999"}},
 			{Time: 2000, Hash: "0xd1", Delta: hlLedgerEventDelta{Type: "deposit", USDC: "100"}},
 			{Time: 3000, Hash: "0xw1", Delta: hlLedgerEventDelta{Type: "withdraw", USDC: "40", Fee: "1"}},
 		},
@@ -662,15 +608,12 @@ func TestIngestWalletLedgerEvents_TransfersAndWatermarks(t *testing.T) {
 		t.Errorf("funding watermark moved without a funding fetch: %d, want 1000", got.FundingSinceMs)
 	}
 
-	// Replaying the same fetch result inserts nothing new (dedup_id UNIQUE).
 	ingestWalletLedgerEvents(db, state, res, nil)
 	sum, _ = db.SumWalletTransfers(key.Platform, key.Account)
 	if math.Abs(sum-59) > 1e-9 {
 		t.Fatalf("replay duplicated transfers: sum = %v, want 59", sum)
 	}
 }
-
-// --- Booking convention + OID dedup at the perps close site ---
 
 func TestBookPerpsClose_GrossConventionAndOIDDedup(t *testing.T) {
 	s := &StrategyState{
@@ -679,7 +622,7 @@ func TestBookPerpsClose_GrossConventionAndOIDDedup(t *testing.T) {
 			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.1, AvgCost: 60000},
 		},
 	}
-	// Real fill: closePx 61000, fee $2.10 from userFills.
+
 	if ok := bookPerpsCloseWithFillFee(s, "BTC", 61000, 2.10, true, "12345", "test_close", "test", "test", nil); !ok {
 		t.Fatal("bookPerpsCloseWithFillFee returned false")
 	}
@@ -687,14 +630,14 @@ func TestBookPerpsClose_GrossConventionAndOIDDedup(t *testing.T) {
 		t.Fatalf("want 1 trade, got %d", len(s.TradeHistory))
 	}
 	tr := s.TradeHistory[0]
-	// Gross convention: RealizedPnL is PRE-FEE (0.1×1000 = 100); fee stamped.
+
 	if !tr.PnLGross || math.Abs(tr.RealizedPnL-100) > 1e-9 || math.Abs(tr.ExchangeFee-2.10) > 1e-9 {
 		t.Errorf("trade = pnl %v fee %v gross %v, want 100 / 2.10 / true", tr.RealizedPnL, tr.ExchangeFee, tr.PnLGross)
 	}
 	if tr.FeeSource != FeeSourceUserFills {
 		t.Errorf("FeeSource = %q, want %q", tr.FeeSource, FeeSourceUserFills)
 	}
-	// Cash moves by NET (100 − 2.10).
+
 	if math.Abs(s.Cash-1097.90) > 1e-9 {
 		t.Errorf("cash = %v, want 1097.90 (net)", s.Cash)
 	}
@@ -702,8 +645,6 @@ func TestBookPerpsClose_GrossConventionAndOIDDedup(t *testing.T) {
 		t.Errorf("tradeNetPnL = %v, want 97.90", tradeNetPnL(tr))
 	}
 
-	// Same OID arrives again via a racing path with a re-materialized position:
-	// must clear the position WITHOUT a second Trade or cash change.
 	s.Positions["BTC"] = &Position{Symbol: "BTC", Side: "long", Quantity: 0.1, AvgCost: 60000}
 	cashBefore := s.Cash
 	if ok := bookPerpsCloseWithFillFee(s, "BTC", 61000, 2.10, true, "12345", "test_close", "test", "test", nil); !ok {
@@ -728,7 +669,7 @@ func TestBookPerpsClose_ModeledFeeStampsGrossRow(t *testing.T) {
 		},
 	}
 	if ok := bookPerpsCloseWithFillFee(s, "2900", 2900, 0, false, "", "test_close", "t", "t", nil); ok {
-		t.Fatal("bad symbol must not book") // guard the helper wiring below
+		t.Fatal("bad symbol must not book")
 	}
 	if ok := bookPerpsCloseWithFillFee(s, "ETH", 2900, 0, false, "", "test_close", "t", "t", nil); !ok {
 		t.Fatal("close failed")
@@ -738,21 +679,19 @@ func TestBookPerpsClose_ModeledFeeStampsGrossRow(t *testing.T) {
 	if !tr.PnLGross || math.Abs(tr.ExchangeFee-wantFee) > 1e-9 || tr.FeeSource != FeeSourceModeled {
 		t.Errorf("modeled-fee row = fee %v src %q gross %v, want %v / modeled / true", tr.ExchangeFee, tr.FeeSource, tr.PnLGross, wantFee)
 	}
-	if math.Abs(tr.RealizedPnL-100) > 1e-9 { // short: 1×(3000−2900) gross
+	if math.Abs(tr.RealizedPnL-100) > 1e-9 {
 		t.Errorf("gross pnl = %v, want 100", tr.RealizedPnL)
 	}
 }
 
-// --- backfill trade-ledger planner ---
-
 func TestPlanTradeLedgerForStrategy_MigratesAndTruesUp(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	trades := []TradeBackfillRow{
-		// Legacy open, fee unstamped (modeled at booking): 0.1×60000×0.00035 = 2.1.
+
 		{RowID: 1, Timestamp: base, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 60000, Value: 6000, ExchangeOrderID: "100"},
-		// Legacy close, net pnl 95, fee unstamped.
+
 		{RowID: 2, Timestamp: base.Add(time.Hour), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 61000, Value: 6100, IsClose: true, RealizedPnL: 95, ExchangeOrderID: "200"},
-		// Funding row: untouched, never in cash.
+
 		{RowID: 3, Timestamp: base.Add(2 * time.Hour), Symbol: "BTC", TradeType: TradeTypeFunding, RealizedPnL: -1, PnLGross: true},
 	}
 	fills := map[string]HLFillSummary{
@@ -778,7 +717,7 @@ func TestPlanTradeLedgerForStrategy_MigratesAndTruesUp(t *testing.T) {
 	if math.Abs(close.NewPnL-99) > 1e-9 || math.Abs(close.NewFee-2.05) > 1e-9 {
 		t.Errorf("close true-up: pnl %v fee %v, want gross 99 / 2.05", close.NewPnL, close.NewFee)
 	}
-	// Cash replay: 1000 − 1.95 + (99 − 2.05) = 1095.
+
 	if math.Abs(plan.NewCash-1095) > 1e-9 {
 		t.Errorf("NewCash = %v, want 1095", plan.NewCash)
 	}
@@ -1049,7 +988,6 @@ func TestPlanTradeLedgerForStrategy_NoOIDRepairSkipsFillOwnedBySharedPeer(t *tes
 	}
 }
 
-// Running the planner a second time over its own output must be a no-op.
 func TestPlanTradeLedgerForStrategy_Idempotent(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	trades := []TradeBackfillRow{
@@ -1062,7 +1000,6 @@ func TestPlanTradeLedgerForStrategy_Idempotent(t *testing.T) {
 	}
 	first := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, 0, nil)
 
-	// Apply the plan to the rows (what ApplyTradeLedgerPlan writes to disk).
 	byRow := map[int64]TradeLedgerChange{}
 	for _, c := range first.Changes {
 		byRow[c.RowID] = c
@@ -1092,8 +1029,6 @@ func TestPlanTradeLedgerForStrategy_Idempotent(t *testing.T) {
 	}
 }
 
-// Two partial close legs sharing one OID apportion the userFills aggregate by
-// quantity share instead of each absorbing the full fee/closedPnl.
 func TestPlanTradeLedgerForStrategy_SharedOIDApportionsByQty(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	trades := []TradeBackfillRow{
@@ -1163,9 +1098,6 @@ func TestPlanTradeLedgerForStrategy_SharedWalletOIDTotalsAcrossStrategies(t *tes
 	}
 }
 
-// A flip order's close and open legs share one OID: the fee apportions
-// across BOTH legs (the exchange charged it on the whole order) while the
-// closedPnl lands entirely on the close leg.
 func TestPlanTradeLedgerForStrategy_FlipOIDFeeAcrossLegsPnLOnClose(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	trades := []TradeBackfillRow{
@@ -1182,18 +1114,16 @@ func TestPlanTradeLedgerForStrategy_FlipOIDFeeAcrossLegsPnLOnClose(t *testing.T)
 	for _, c := range plan.Changes {
 		byRow[c.RowID] = c
 	}
-	// Close leg: fee 0.42×(0.5/0.8)=0.2625 (already right), pnl trued to the full 55.
+
 	if c, ok := byRow[1]; !ok || math.Abs(c.NewFee-0.2625) > 1e-9 || math.Abs(c.NewPnL-55) > 1e-9 {
 		t.Errorf("close leg = %+v, want fee 0.2625 pnl 55 (full closedPnl)", c)
 	}
-	// Open leg: fee 0.42×(0.3/0.8)=0.1575 — must NOT absorb the full 0.42.
+
 	if c, ok := byRow[2]; ok && math.Abs(c.NewFee-0.1575) > 1e-9 {
 		t.Errorf("open leg fee = %v, want 0.1575 (qty share of the whole order)", c.NewFee)
 	}
 }
 
-// `backfill hl-fees` must not reinterpret #954 gross rows — they are owned by
-// `backfill trade-ledger`.
 func TestPlanBackfillForStrategy_SkipsGrossConventionRows(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	trades := []TradeBackfillRow{
@@ -1214,18 +1144,16 @@ func TestPlanBackfillForStrategy_SkipsGrossConventionRows(t *testing.T) {
 	if !found {
 		t.Errorf("want gross_convention_row skip, got %+v", plan.Skipped)
 	}
-	// Replayed as net: cash = 1000 + (100−2) = 1098.
+
 	if math.Abs(plan.NewCash-1098) > 1e-9 {
 		t.Errorf("NewCash = %v, want 1098 (net replay of gross row)", plan.NewCash)
 	}
 }
 
-// --- Apply path round-trip through SQLite ---
-
 func TestApplyTradeLedgerPlan_RoundTrip(t *testing.T) {
 	db := newLedgerTestDB(t)
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	// Seed a legacy close row + the strategy cash row via SaveState-equivalent inserts.
+
 	if err := db.InsertTrade("hl-x", Trade{
 		Timestamp: now, StrategyID: "hl-x", Symbol: "BTC", Side: "sell", Quantity: 0.1,
 		Price: 61000, Value: 6100, TradeType: "perps", IsClose: true, RealizedPnL: 95, ExchangeOrderID: "200",
@@ -1264,23 +1192,20 @@ func TestApplyTradeLedgerPlan_RoundTrip(t *testing.T) {
 	if want := 1000 + 99 - 2.05; math.Abs(cash-want) > 1e-9 {
 		t.Errorf("cash = %v, want %v", cash, want)
 	}
-	// Ledger sum now reflects the corrected net.
+
 	sums, err := db.LedgerNetByStrategy([]string{"hl-x"})
 	if err != nil || math.Abs(sums["hl-x"]-(99-2.05)) > 1e-9 {
 		t.Errorf("ledger sum = %v (err %v), want 96.95", sums["hl-x"], err)
 	}
 }
 
-// errInjectedPersist simulates an eager trade-persist failure.
 var errInjectedPersist = fmt.Errorf("injected persist failure")
 
-// A matched row whose ONLY stale column is value (price already equals the
-// VWAP) must still be rewritten — value is one of the columns the repair owns.
 func TestPlanTradeLedgerForStrategy_StaleValueAloneTriggersRewrite(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	trades := []TradeBackfillRow{
 		{RowID: 1, Timestamp: base, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 60010,
-			Value:       5000, // inconsistent with qty*price (= 6001)
+			Value:       5000,
 			ExchangeFee: 1.95, PnLGross: true, FeeSource: FeeSourceUserFills, ExchangeOrderID: "100"},
 	}
 	fills := map[string]HLFillSummary{"100": {Fee: 1.95, Qty: 0.1, Px: 60010}}
@@ -1291,16 +1216,13 @@ func TestPlanTradeLedgerForStrategy_StaleValueAloneTriggersRewrite(t *testing.T)
 	if c := plan.Changes[0]; math.Abs(c.NewValue-6001) > 1e-9 {
 		t.Errorf("NewValue = %v, want 6001 (qty × VWAP)", c.NewValue)
 	}
-	// Idempotent after the repair; fully-correct rows stay untouched.
+
 	trades[0].Value = 6001
 	if second := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, plan.NewCash, nil); len(second.Changes) != 0 {
 		t.Errorf("corrected row re-flagged: %+v", second.Changes)
 	}
 }
 
-// The post-apply baseline reset must touch ONLY wallets whose members were
-// repaired — clearing an untouched wallet's baseline would fold its genuine
-// standing drift into a fresh offset and silence a real alarm.
 func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xmain")
 	db := newLedgerTestDB(t)
@@ -1310,9 +1232,7 @@ func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
 			t.Fatalf("seed %s: %v", acct, err)
 		}
 	}
-	// Two wallets via per-strategy account overrides (walletKeyRegistry reads
-	// hl_account_address from args-independent config Account fields); use
-	// the strategies' resolved accounts as detectSharedWallets sees them.
+
 	strategies := []StrategyConfig{
 		{ID: "hl-a1", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
 		{ID: "hl-a2", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}},
@@ -1327,7 +1247,7 @@ func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
 	if err != nil || !other.BaselineSet || math.Abs(other.BaselineOffset-7.5) > 1e-9 {
 		t.Errorf("untouched wallet baseline = %+v (err %v), want preserved 7.5", other, err)
 	}
-	// No applied members → nothing reset.
+
 	if err := db.UpsertWalletLedgerState("hyperliquid", "0xmain", seed); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
@@ -1338,10 +1258,6 @@ func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
 	}
 }
 
-// A failure on an event sharing a millisecond with an already-processed
-// sibling must NOT advance the watermark past that millisecond — otherwise
-// the failed event is never re-fetched (permanent ledger shortfall). HL
-// emits same-ms events routinely (two coins funding at one hourly tick).
 func TestIngestWalletLedgerEvents_SameMsFailureDoesNotSkipEvent(t *testing.T) {
 	db := newLedgerTestDB(t)
 	prev := tradeRecorder
@@ -1368,7 +1284,7 @@ func TestIngestWalletLedgerEvents_SameMsFailureDoesNotSkipEvent(t *testing.T) {
 		},
 		FundingFetched: true,
 	}
-	// hl-a (BTC) persists; hl-b (ETH) fails — both events share t=2000.
+
 	tradeRecorder = func(strategyID string, trade Trade) error {
 		if strategyID == "hl-b" {
 			return errInjectedPersist
@@ -1381,10 +1297,6 @@ func TestIngestWalletLedgerEvents_SameMsFailureDoesNotSkipEvent(t *testing.T) {
 		t.Fatalf("funding watermark = %d (err %v), must not pass 2000 (failed same-ms event)", got.FundingSinceMs, err)
 	}
 
-	// SaveState-equivalent flush lands hl-b's stranded in-memory row (the
-	// conservative hold keeps the watermark until the row is durable), then
-	// the recovery cycle re-fetches both events: BTC dedup-skips, ETH's
-	// flushed row dedup-skips too, and the watermark releases.
 	bss := state.Strategies["hl-b"]
 	if err := db.InsertTrade("hl-b", bss.TradeHistory[0]); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -1407,8 +1319,6 @@ func TestIngestWalletLedgerEvents_SameMsFailureDoesNotSkipEvent(t *testing.T) {
 	}
 }
 
-// A failure at a LATER millisecond must still advance the watermark past the
-// processed prefix (no regression to never-advancing).
 func TestIngestWalletLedgerEvents_LaterFailureStillAdvancesPastPrefix(t *testing.T) {
 	db := newLedgerTestDB(t)
 	prev := tradeRecorder
@@ -1448,14 +1358,10 @@ func TestIngestWalletLedgerEvents_LaterFailureStillAdvancesPastPrefix(t *testing
 	}
 }
 
-// The #455 boot-time Details-parse migration must never touch gross-convention
-// rows: a zero-gross close (no-mark-price AvgCost booking, exact breakeven)
-// has realized_pnl=0 with a NET "PnL: $..." token in Details — parsing it in
-// while pnl_gross=1 stays set would double-subtract the fee via tradeNetPnL.
 func TestBackfillTradeCloseFlags_SkipsGrossConventionRows(t *testing.T) {
 	db := newLedgerTestDB(t)
 	now := time.Now().UTC()
-	// Gross zero-PnL close (the #954 no-mark-price booking shape).
+
 	if err := db.InsertTrade("hl-x", Trade{
 		Timestamp: now, StrategyID: "hl-x", Symbol: "ETH", Side: "sell", Quantity: 0.5,
 		Price: 2000, Value: 1000, TradeType: "perps", IsClose: true,
@@ -1464,7 +1370,7 @@ func TestBackfillTradeCloseFlags_SkipsGrossConventionRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTrade gross: %v", err)
 	}
-	// Legacy close row that the migration SHOULD repair.
+
 	if err := db.InsertTrade("hl-x", Trade{
 		Timestamp: now, StrategyID: "hl-x", Symbol: "BTC", Side: "sell", Quantity: 0.1,
 		Price: 61000, Value: 6100, TradeType: "perps", IsClose: true,
@@ -1473,7 +1379,7 @@ func TestBackfillTradeCloseFlags_SkipsGrossConventionRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTrade legacy: %v", err)
 	}
-	// Run twice — restarts must be idempotent for the gross row.
+
 	for i := 0; i < 2; i++ {
 		if err := db.backfillTradeCloseFlags(); err != nil {
 			t.Fatalf("backfillTradeCloseFlags run %d: %v", i+1, err)

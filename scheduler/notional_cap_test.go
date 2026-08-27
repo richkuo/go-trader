@@ -9,16 +9,8 @@ import (
 	"testing"
 )
 
-// #1344: portfolio gross notional cap must hold entries without skipping the
-// strategy cycle (closes / SL/TP maintenance). Signal classification reuses
-// pausedBlocksSignal (covered by pause_test.go); these tests lock the
-// never-skip invariant, the entry-hold contract at the dispatch sites, and
-// the manual-core refusals.
-
 func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
-	// Pre-#1344 the dispatch loop `continue`d when notionalBlocked — that is
-	// the bug. The helper must stay false for both states so a reintroduced
-	// whole-strategy skip fails this regression.
+
 	if notionalCapSkipsStrategyCycle(false) {
 		t.Fatal("notionalCapSkipsStrategyCycle(false) must be false")
 	}
@@ -26,10 +18,6 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 		t.Fatal("notionalCapSkipsStrategyCycle(true) must be false — over-cap must not skip close/SL maintenance (#1344)")
 	}
 
-	// Production teeth: main.go must route any whole-strategy notional skip
-	// through the helper (so changing the return to true fails CI), and must
-	// not reintroduce a raw `if notionalBlocked { continue }` / the pre-#1344
-	// `!cbManageOnly && notionalBlocked` bypass that would skip silently.
 	src, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatalf("read main.go: %v", err)
@@ -55,7 +43,7 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 		if !astCondMentionsIdent(ifs.Cond, "notionalBlocked") {
 			return true
 		}
-		// Allowed: if notionalCapSkipsStrategyCycle(notionalBlocked) { continue }
+
 		if astCondIsNotionalCapSkipHelper(ifs.Cond) {
 			return true
 		}
@@ -67,8 +55,6 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 	})
 }
 
-// astCondMentionsIdent reports whether expr references the given identifier
-// anywhere (including nested binary/unary/call expressions).
 func astCondMentionsIdent(expr ast.Expr, name string) bool {
 	found := false
 	ast.Inspect(expr, func(n ast.Node) bool {
@@ -81,8 +67,6 @@ func astCondMentionsIdent(expr ast.Expr, name string) bool {
 	return found
 }
 
-// astCondIsNotionalCapSkipHelper reports whether expr is exactly
-// notionalCapSkipsStrategyCycle(...).
 func astCondIsNotionalCapSkipHelper(expr ast.Expr) bool {
 	call, ok := expr.(*ast.CallExpr)
 	if !ok {
@@ -92,8 +76,6 @@ func astCondIsNotionalCapSkipHelper(expr ast.Expr) bool {
 	return ok && fun.Name == "notionalCapSkipsStrategyCycle"
 }
 
-// astBlockContainsContinue reports whether body (or any nested block) has a
-// bare `continue` statement.
 func astBlockContainsContinue(body *ast.BlockStmt) bool {
 	if body == nil {
 		return false
@@ -111,9 +93,7 @@ func astBlockContainsContinue(body *ast.BlockStmt) bool {
 }
 
 func TestNotionalCapHoldPassesReduceAndManage(t *testing.T) {
-	// Acceptance: over max_notional with open long + SELL still closes/reduces;
-	// Signal==0 manage (trailing SL/TP) is never held. Fresh opens / adds hold.
-	// Mirrors the dispatch-site predicate: notionalBlocked && pausedBlocksSignal(...).
+
 	const notionalBlocked = true
 	cases := []struct {
 		name          string
@@ -149,18 +129,18 @@ func TestEvaluateNotionalCapHold(t *testing.T) {
 			"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 60000, Side: "long"},
 		}},
 	}
-	// Unconfigured / nil — never holds.
+
 	if held, _ := evaluateNotionalCapHold(nil, states, nil); held {
 		t.Fatal("nil portfolio risk must not hold")
 	}
 	if held, _ := evaluateNotionalCapHold(&PortfolioRiskConfig{MaxNotionalUSD: 0}, states, nil); held {
 		t.Fatal("disabled notional cap must not hold")
 	}
-	// Under cap (AvgCost fallback with nil prices).
+
 	if held, _ := evaluateNotionalCapHold(&PortfolioRiskConfig{MaxNotionalUSD: 100000}, states, nil); held {
 		t.Fatal("under-cap book must not hold")
 	}
-	// Over cap.
+
 	held, detail := evaluateNotionalCapHold(&PortfolioRiskConfig{MaxNotionalUSD: 50000}, states, nil)
 	if !held {
 		t.Fatal("over-cap book must hold")
@@ -189,20 +169,20 @@ func TestManualStateViewNotionalHold(t *testing.T) {
 	cfg := &Config{PortfolioRisk: &PortfolioRiskConfig{MaxNotionalUSD: 50000}}
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"m": {ID: "m", Type: "manual", Positions: map[string]*Position{
-			"ETH": {Symbol: "ETH", Quantity: 30, AvgCost: 2000, Side: "long"}, // $60k > $50k
+			"ETH": {Symbol: "ETH", Quantity: 30, AvgCost: 2000, Side: "long"},
 		}},
 	}}
 	v := manualStateViewFromState(cfg, state, "m", "ETH")
 	if !v.NotionalHold || v.NotionalNote == "" {
 		t.Fatalf("view = %+v, want NotionalHold with note", v)
 	}
-	// Under the cap: no hold.
-	state.Strategies["m"].Positions["ETH"].Quantity = 10 // $20k
+
+	state.Strategies["m"].Positions["ETH"].Quantity = 10
 	v = manualStateViewFromState(cfg, state, "m", "ETH")
 	if v.NotionalHold {
 		t.Fatalf("view = %+v, want no hold under cap", v)
 	}
-	// nil cfg must not panic or hold.
+
 	v = manualStateViewFromState(nil, state, "m", "ETH")
 	if v.NotionalHold {
 		t.Fatalf("nil cfg view = %+v, want no hold", v)

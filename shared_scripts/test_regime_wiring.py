@@ -1,350 +1,203 @@
-"""Tests for regime injection contract in check scripts.
-
-Verifies the regime injection pattern used by all 6 standard check scripts:
-  - latest_regime() is importable via shared_tools sys.path
-  - regime payload is JSON-serializable (no NaN/Inf; SafeEncoder compat)
-  - strip_unsupported_position_context drops "regime" for non-aware strategies
-  - regime payload can safely be merged into strategy_params (even when None)
-  - check_options.py computes a regime label from underlying OHLCV (#544)
-"""
-
 import json
 import sys
 import pathlib
 import importlib.util
-
 import numpy as np
 import pandas as pd
-
-# Mirror the sys.path setup that check scripts use for shared_tools
-_SHARED_TOOLS = pathlib.Path(__file__).parent.parent / "shared_tools"
+_SHARED_TOOLS = pathlib.Path(__file__).parent.parent / 'shared_tools'
 if str(_SHARED_TOOLS) not in sys.path:
     sys.path.insert(0, str(_SHARED_TOOLS))
-
 from regime import latest_regime, latest_regime_composite
-
 _SHARED_STRATEGIES_TOOLS = str(_SHARED_TOOLS)
 
-
-# ─── Fixtures ────────────────────────────────────────────────────────────────
-
-
-def _make_uptrend_df(n: int = 100) -> pd.DataFrame:
+def _make_uptrend_df(n: int=100) -> pd.DataFrame:
     close = np.linspace(100.0, 200.0, n)
-    idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
-    return pd.DataFrame(
-        {"open": close, "high": close + 0.5, "low": close - 0.5, "close": close, "volume": 1000.0},
-        index=idx,
-    )
+    idx = pd.date_range('2024-01-01', periods=n, freq='1h', tz='UTC')
+    return pd.DataFrame({'open': close, 'high': close + 0.5, 'low': close - 0.5, 'close': close, 'volume': 1000.0}, index=idx)
 
-
-def _make_flat_df(n: int = 100) -> pd.DataFrame:
+def _make_flat_df(n: int=100) -> pd.DataFrame:
     close = np.full(n, 100.0)
-    idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
-    return pd.DataFrame(
-        {"open": close, "high": close + 0.05, "low": close - 0.05, "close": close, "volume": 1000.0},
-        index=idx,
-    )
-
-
-# ─── Import path tests ────────────────────────────────────────────────────────
-
+    idx = pd.date_range('2024-01-01', periods=n, freq='1h', tz='UTC')
+    return pd.DataFrame({'open': close, 'high': close + 0.05, 'low': close - 0.05, 'close': close, 'volume': 1000.0}, index=idx)
 
 def test_latest_regime_importable_via_check_script_syspath():
-    """latest_regime must be importable via the sys.path check scripts set up."""
     assert callable(latest_regime)
 
-
-# ─── JSON-serializability tests ───────────────────────────────────────────────
-
-
 def test_latest_regime_output_json_serializable_uptrend():
-    """regime payload from an uptrend df must survive json.dumps (no NaN/Inf)."""
     df = _make_uptrend_df()
     payload = latest_regime(df)
     serialized = json.dumps(payload)
     parsed = json.loads(serialized)
-    assert parsed["regime"] in ("trending_up", "trending_down", "ranging")
-    assert isinstance(parsed["score"], float)
-    assert isinstance(parsed["metrics"], dict)
-
+    assert parsed['regime'] in ('trending_up', 'trending_down', 'ranging')
+    assert isinstance(parsed['score'], float)
+    assert isinstance(parsed['metrics'], dict)
 
 def test_latest_regime_output_json_serializable_flat():
-    """regime payload from a flat/ranging df must survive json.dumps."""
     df = _make_flat_df()
     payload = latest_regime(df)
     serialized = json.dumps(payload)
     parsed = json.loads(serialized)
-    assert parsed["regime"] == "ranging"
-
+    assert parsed['regime'] == 'ranging'
 
 def test_composite_json_never_contains_nan_token_when_hurst_omitted():
-    """#1409: Go's json.Unmarshal into map[string]float64 rejects a bare NaN token, so a
-    below-the-DFA-floor hurst estimate must be OMITTED from the metrics dict, never serialized
-    as NaN. Python's json.dumps/loads are NaN-tolerant by default and would silently mask a
-    regression here, so this asserts on the raw serialized TEXT, not a round-tripped dict."""
-    df = _make_flat_df(n=60)  # full frame well below the ~100-point DFA floor
+    df = _make_flat_df(n=60)
     payload = latest_regime_composite(df, period=20)
-    assert "hurst" not in payload["metrics"]
+    assert 'hurst' not in payload['metrics']
     serialized = json.dumps(payload)
-    assert "NaN" not in serialized
-    json.loads(serialized)  # still must be valid, permissive-parser JSON
-
+    assert 'NaN' not in serialized
+    json.loads(serialized)
 
 def test_composite_json_includes_finite_hurst_when_data_sufficient():
-    """#1409: with a full frame above the DFA floor, hurst is present, finite, and survives the
-    JSON boundary as an ordinary float (never the bare NaN token)."""
     df = _make_uptrend_df(n=300)
     payload = latest_regime_composite(df, period=20)
-    assert "hurst" in payload["metrics"]
+    assert 'hurst' in payload['metrics']
     serialized = json.dumps(payload)
-    assert "NaN" not in serialized
+    assert 'NaN' not in serialized
     parsed = json.loads(serialized)
-    assert isinstance(parsed["metrics"]["hurst"], float)
-    assert np.isfinite(parsed["metrics"]["hurst"])
-
-
-# ─── #1411 Hurst gate wiring inventory ───────────────────────────────────────
-#
-# The Go-side hurst_gate (scheduler/hurst_gate.go) reads metrics["hurst"] and
-# uses it to hold entries / scale open size. These tests pin the producer-side
-# contract that gate depends on. If any of them breaks, the gate silently loses
-# its input and hurst_gate.on_failure governs every cycle instead.
-
+    assert isinstance(parsed['metrics']['hurst'], float)
+    assert np.isfinite(parsed['metrics']['hurst'])
 
 def test_adx_classifier_never_emits_hurst_metric():
-    """#1411 (load-bearing): metrics["hurst"] is emitted ONLY by the composite
-    classifier. The default adx path must never emit it — that asymmetry is
-    exactly why validateHurstGateConfigs rejects a hurst_gate pointed at an
-    adx-classified window instead of running permanently on the failure policy.
-    Asserted on a frame LONG ENOUGH for the DFA estimator, so a present key
-    would mean the adx path started emitting it, not that data was too short."""
     df = _make_uptrend_df(n=300)
     payload = latest_regime(df, period=20)
-    assert "hurst" not in (payload.get("metrics") or {})
-    # ...and the composite path on the SAME frame does emit it.
-    assert "hurst" in latest_regime_composite(df, period=20)["metrics"]
-
+    assert 'hurst' not in (payload.get('metrics') or {})
+    assert 'hurst' in latest_regime_composite(df, period=20)['metrics']
 
 def test_composite_hurst_is_a_finite_float_but_is_NOT_bounded_to_zero_one():
-    """#1411: the emitted metric is a finite float rounded to 4 decimals — the
-    value the Go gate compares against its bounds.
-
-    It is deliberately NOT asserted to lie in (0, 1). DFA returns H well ABOVE
-    1 on a near-deterministic series (a perfectly smooth linear ramp measures
-    ~2.0 here), which is a real property of the estimator, not a bug. The
-    hurst_gate CONFIG bounds are validated to (0, 1) because that is the only
-    range an operator can sensibly gate on, but the RUNTIME metric is
-    unbounded above, so the Go state machine must stay correct for H > 1: such
-    a reading is above any configured max (disarm) and above any configured
-    min (arm), and the size multiplier clamps it to 1.0. That asymmetry is
-    pinned here so nobody "tightens" the estimator or the gate on the false
-    assumption that H is always in (0, 1)."""
     saw_above_one = False
     for df in (_make_uptrend_df(n=300), _make_flat_df(n=300)):
-        metrics = latest_regime_composite(df, period=20)["metrics"]
-        if "hurst" not in metrics:
-            continue  # degenerate series -> omitted, which is the NaN contract
-        h = metrics["hurst"]
+        metrics = latest_regime_composite(df, period=20)['metrics']
+        if 'hurst' not in metrics:
+            continue
+        h = metrics['hurst']
         assert isinstance(h, float)
         assert np.isfinite(h), h
         assert h > 0.0, h
         assert round(h, 4) == h
         saw_above_one = saw_above_one or h > 1.0
-    # The smooth ramp is the documented above-1 case; if this ever stops
-    # holding, the Go-side out-of-range handling has lost its motivating case.
     assert saw_above_one
 
-
 def test_hurst_survives_the_go_metrics_map_contract():
-    """#1411: the gate reads RegimeSnapshot.Metrics, a Go map[string]float64.
-    Every metric the composite path emits must therefore serialize as a bare
-    JSON number — a string, null, or NaN token would fail the whole
-    RegimePayload parse and blind the gate along with the label."""
     payload = latest_regime_composite(_make_uptrend_df(n=300), period=20)
     parsed = json.loads(json.dumps(payload))
-    for key, value in parsed["metrics"].items():
+    for key, value in parsed['metrics'].items():
         assert isinstance(value, (int, float)), (key, type(value))
         assert not isinstance(value, bool), key
         assert np.isfinite(value), key
 
-
 def test_1409_advisory_only_comment_was_revoked_for_gating_and_sizing():
-    """#1411 revokes the #1409 advisory-only invariant for gating and sizing.
-    The source comment that declared the metric "never read by
-    map_composite_label, gating, or sizing" must no longer make that claim,
-    because a live entry gate now reads it. The classification half of the
-    invariant is still true and must still be stated."""
-    source = (_SHARED_TOOLS / "regime.py").read_text()
-    assert "never read by\n    # map_composite_label, gating, or sizing" not in source
-    assert "gating, or sizing" not in source
-    assert "#1411" in source
-    # map_composite_label must still be documented as blind to the metric, and
-    # must still actually be blind to it.
-    assert "map_composite_label" in source
-    label_fn_start = source.index("def map_composite_label")
-    label_fn = source[label_fn_start : source.index("\ndef ", label_fn_start + 1)]
-    assert "hurst" not in label_fn
-
+    source = (_SHARED_TOOLS / 'regime.py').read_text()
+    assert 'never read by\n    # map_composite_label, gating, or sizing' not in source
+    assert 'gating, or sizing' not in source
+    assert '#1411' in source
+    assert 'map_composite_label' in source
+    label_fn_start = source.index('def map_composite_label')
+    label_fn = source[label_fn_start:source.index('\ndef ', label_fn_start + 1)]
+    assert 'hurst' not in label_fn
 
 def test_regime_label_string_is_safe_for_output_field():
-    """The regime label (just the string) is safe to embed directly in check script output."""
     df = _make_uptrend_df()
     payload = latest_regime(df)
-    label = payload["regime"]
+    label = payload['regime']
     assert isinstance(label, str)
-    assert label in ("trending_up", "trending_down", "ranging")
-    # Must be embeddable as a JSON string value
-    assert json.dumps({"regime": label})
-
-
-# ─── strategy_params merge tests ─────────────────────────────────────────────
-
+    assert label in ('trending_up', 'trending_down', 'ranging')
+    assert json.dumps({'regime': label})
 
 def test_regime_merge_into_none_params():
-    """When strategy_params is None, merging regime must not crash."""
     df = _make_uptrend_df()
     payload = latest_regime(df)
     strategy_params = None
-    strategy_params = (strategy_params or {})
-    strategy_params["regime"] = payload
-    assert "regime" in strategy_params
-    assert strategy_params["regime"]["regime"] in ("trending_up", "trending_down", "ranging")
-
+    strategy_params = strategy_params or {}
+    strategy_params['regime'] = payload
+    assert 'regime' in strategy_params
+    assert strategy_params['regime']['regime'] in ('trending_up', 'trending_down', 'ranging')
 
 def test_regime_merge_preserves_existing_params():
-    """Merging regime into existing params must not drop other keys."""
     df = _make_uptrend_df()
     payload = latest_regime(df)
-    strategy_params = {"rsi_period": 14, "threshold": 0.6}
-    strategy_params["regime"] = payload
-    assert strategy_params["rsi_period"] == 14
-    assert strategy_params["threshold"] == 0.6
-    assert "regime" in strategy_params
-
-
-# ─── strip_unsupported_position_context tests ─────────────────────────────────
-
+    strategy_params = {'rsi_period': 14, 'threshold': 0.6}
+    strategy_params['regime'] = payload
+    assert strategy_params['rsi_period'] == 14
+    assert strategy_params['threshold'] == 0.6
+    assert 'regime' in strategy_params
 
 def test_strip_unsupported_drops_regime_for_non_aware_function():
-    """strip_unsupported_position_context must drop 'regime' for a strategy that doesn't declare it."""
     from strategy_composition import strip_unsupported_position_context
 
     def dummy_strategy(df, rsi_period=14):
         return df
-
     df = _make_uptrend_df()
-    params = {"rsi_period": 14, "regime": latest_regime(df)}
+    params = {'rsi_period': 14, 'regime': latest_regime(df)}
     stripped = strip_unsupported_position_context(dummy_strategy, params)
-    assert "regime" not in stripped
-    assert stripped["rsi_period"] == 14
-
+    assert 'regime' not in stripped
+    assert stripped['rsi_period'] == 14
 
 def test_strip_unsupported_keeps_regime_for_aware_function():
-    """strip_unsupported_position_context must keep 'regime' when the strategy declares it."""
     from strategy_composition import strip_unsupported_position_context
 
     def regime_aware_strategy(df, regime=None, rsi_period=14):
         return df
-
     df = _make_uptrend_df()
-    params = {"rsi_period": 14, "regime": latest_regime(df)}
+    params = {'rsi_period': 14, 'regime': latest_regime(df)}
     stripped = strip_unsupported_position_context(regime_aware_strategy, params)
-    assert "regime" in stripped
-    assert stripped["rsi_period"] == 14
-
+    assert 'regime' in stripped
+    assert stripped['rsi_period'] == 14
 
 def test_strip_unsupported_drops_regime_for_var_keyword_wrapper():
-    """Regression for #720.
-
-    Real registered strategies wrap thin cores as ``def *_strategy(df, **params):
-    return *_core(df, **params)``. The wrapper has VAR_KEYWORD, but the core does
-    not accept ``regime`` — passing it through crashes with TypeError. The strip
-    helper must still drop position-context kwargs in this shape; only regular
-    strategy params should survive.
-    """
     from strategy_composition import strip_unsupported_position_context
 
-    def dummy_strategy_wrapper(df, **params):  # mirrors registered wrappers
+    def dummy_strategy_wrapper(df, **params):
         return df
-
     df = _make_uptrend_df()
-    params = {
-        "adx_period": 14,
-        "adx_threshold": 25,
-        "regime": latest_regime(df),
-        "side": "long",
-        "avg_cost": 100.0,
-    }
+    params = {'adx_period': 14, 'adx_threshold': 25, 'regime': latest_regime(df), 'side': 'long', 'avg_cost': 100.0}
     stripped = strip_unsupported_position_context(dummy_strategy_wrapper, params)
-    assert "regime" not in stripped
-    assert "side" not in stripped
-    assert "avg_cost" not in stripped
-    assert stripped["adx_period"] == 14
-    assert stripped["adx_threshold"] == 25
-
+    assert 'regime' not in stripped
+    assert 'side' not in stripped
+    assert 'avg_cost' not in stripped
+    assert stripped['adx_period'] == 14
+    assert stripped['adx_threshold'] == 25
 
 def test_apply_strategy_does_not_crash_on_regime_injection():
-    """End-to-end: invoke a real registered strategy whose core lacks **kwargs
-    with the framework-injected ``regime`` payload. Must not raise.
-    """
     import importlib.util
-
-    futures_path = (
-        pathlib.Path(__file__).parent.parent
-        / "shared_strategies" / "open" / "futures" / "strategies.py"
-    )
-    spec = importlib.util.spec_from_file_location("_futures_shim_720", futures_path)
+    futures_path = pathlib.Path(__file__).parent.parent / 'shared_strategies' / 'open' / 'futures' / 'strategies.py'
+    spec = importlib.util.spec_from_file_location('_futures_shim_720', futures_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-
     df = _make_uptrend_df(n=200)
-    params = {"regime": latest_regime(df)}
-    for name in ("adx_trend", "sweep_squeeze_combo", "amd_ifvg", "range_scalper"):
+    params = {'regime': latest_regime(df)}
+    for name in ('adx_trend', 'sweep_squeeze_combo', 'amd_ifvg', 'range_scalper'):
         if name not in mod.STRATEGY_REGISTRY:
-            continue  # platform filter excludes it; skip
+            continue
         result = mod.apply_strategy(name, df, params)
-        assert "signal" in result.columns, f"{name} returned no signal column"
-
-
-# ─── check_options.py regime computation (#544) ───────────────────────────────
-
+        assert 'signal' in result.columns, f'{name} returned no signal column'
 
 def _load_check_options_module():
-    """Import shared_scripts/check_options.py as a module without executing main()."""
-    src_path = pathlib.Path(__file__).parent / "check_options.py"
-    spec = importlib.util.spec_from_file_location("_check_options_under_test", src_path)
+    src_path = pathlib.Path(__file__).parent / 'check_options.py'
+    spec = importlib.util.spec_from_file_location('_check_options_under_test', src_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
-
 def test_check_options_regime_label_from_uptrend_df():
-    """_regime_label_from_df returns a valid label for a sufficient uptrend df."""
     module = _load_check_options_module()
     df = _make_uptrend_df(100)
     label = module._regime_label_from_df(df)
-    assert label in ("trending_up", "trending_down", "ranging")
-
+    assert label in ('trending_up', 'trending_down', 'ranging')
 
 def test_check_options_regime_label_from_short_df_is_none():
-    """_regime_label_from_df returns None when the df has fewer than min bars (warmup)."""
     module = _load_check_options_module()
     df = _make_uptrend_df(10)
     assert module._regime_label_from_df(df) is None
 
-
 def test_check_options_regime_label_from_none_df_is_none():
-    """_regime_label_from_df tolerates a None df (fetch failure path)."""
     module = _load_check_options_module()
     assert module._regime_label_from_df(None) is None
 
-
 def test_check_options_fetch_ohlcv_df_uses_adapter_when_available():
-    """_fetch_ohlcv_df prefers adapter.get_ohlcv when present and returns a DataFrame."""
     module = _load_check_options_module()
 
     class StubAdapter:
+
         def __init__(self, rows):
             self._rows = rows
             self.calls = []
@@ -352,81 +205,49 @@ def test_check_options_fetch_ohlcv_df_uses_adapter_when_available():
         def get_ohlcv(self, symbol, timeframe, limit):
             self.calls.append((symbol, timeframe, limit))
             return self._rows
-
-    rows = [
-        [i * 1000, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 1000.0]
-        for i in range(50)
-    ]
+    rows = [[i * 1000, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 1000.0] for i in range(50)]
     adapter = StubAdapter(rows)
-    df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=adapter)
+    df = module._fetch_ohlcv_df('BTC', '4h', 100, 30, adapter=adapter)
     assert df is not None
     assert len(df) == 50
-    assert {"high", "low", "close"}.issubset(df.columns)
-    assert adapter.calls == [("BTC", "4h", 100)]
-
+    assert {'high', 'low', 'close'}.issubset(df.columns)
+    assert adapter.calls == [('BTC', '4h', 100)]
 
 def test_check_options_fetch_ohlcv_df_short_returns_none():
-    """_fetch_ohlcv_df returns None when adapter rows are below min_len (no fallback to ccxt)."""
     module = _load_check_options_module()
 
     class StubAdapter:
+
         def get_ohlcv(self, symbol, timeframe, limit):
             return [[i * 1000, 100.0, 101.0, 99.0, 100.5, 1000.0] for i in range(5)]
-
-    # Adapter returned 5 bars; min_len is 30 → expect None (without ccxt fallback,
-    # since adapter explicitly returned data — empty/None would fall back).
-    # Current behavior: short non-empty rows do NOT trigger fallback; they short-circuit to None.
-    df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=StubAdapter())
+    df = module._fetch_ohlcv_df('BTC', '4h', 100, 30, adapter=StubAdapter())
     assert df is None
 
-
-# ─── regime_enabled flag tests (#558) ────────────────────────────────────────
-
-
 def test_latest_regime_honors_custom_period():
-    """latest_regime passes the period to compute_regime.
-
-    With a 50-bar df and period=200, adx_start = 2*200-1 = 399 > 50 so the ADX
-    loop never runs and returns the default warmup value (adx=0, regime="ranging").
-    With period=14 the same df produces a real ADX value.  Comparing the two
-    confirms the period argument is actually forwarded.
-    """
     df = _make_uptrend_df(50)
-    warmup = latest_regime(df, period=200)   # loop skipped: adx_start=399 > 50
-    real = latest_regime(df, period=14)       # loop runs normally
-    assert warmup["metrics"]["adx"] == 0.0
-    assert real["metrics"]["adx"] > 0.0
-
+    warmup = latest_regime(df, period=200)
+    real = latest_regime(df, period=14)
+    assert warmup['metrics']['adx'] == 0.0
+    assert real['metrics']['adx'] > 0.0
 
 def test_latest_regime_honors_custom_adx_threshold():
-    """latest_regime uses adx_threshold to decide trending vs. ranging.
-
-    Uptrend data produces ADX saturating at 100.  With threshold=101 the
-    condition `adx < threshold` is true → "ranging".  With threshold=50 it is
-    false and +DI > -DI → "trending_up".
-    """
     df = _make_uptrend_df(100)
-    assert latest_regime(df, adx_threshold=101.0)["regime"] == "ranging"
-    assert latest_regime(df, adx_threshold=50.0)["regime"] == "trending_up"
-
+    assert latest_regime(df, adx_threshold=101.0)['regime'] == 'ranging'
+    assert latest_regime(df, adx_threshold=50.0)['regime'] == 'trending_up'
 
 def test_regime_disabled_path_returns_empty_label():
-    """When regime_enabled=False the check script contract emits regime='' without calling latest_regime."""
-    # Simulate the disabled path directly (as each check script implements it)
     regime_enabled = False
     df = _make_uptrend_df()
     if regime_enabled:
         regime_payload = latest_regime(df)
     else:
-        regime_payload = {"regime": "", "score": 0.0, "metrics": {}}
-    assert regime_payload["regime"] == ""
-    assert regime_payload["score"] == 0.0
-    assert regime_payload["metrics"] == {}
-
+        regime_payload = {'regime': '', 'score': 0.0, 'metrics': {}}
+    assert regime_payload['regime'] == ''
+    assert regime_payload['score'] == 0.0
+    assert regime_payload['metrics'] == {}
 
 def test_regime_disabled_payload_is_json_serializable():
-    """The empty regime payload emitted when disabled must survive json.dumps."""
-    payload = {"regime": "", "score": 0.0, "metrics": {}}
+    payload = {'regime': '', 'score': 0.0, 'metrics': {}}
     serialized = json.dumps(payload)
     parsed = json.loads(serialized)
-    assert parsed["regime"] == ""
+    assert parsed['regime'] == ''

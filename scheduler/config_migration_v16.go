@@ -12,10 +12,6 @@ const (
 	legacyManualDefaultsKey    = "manual_defaults"
 )
 
-// needsV16UserDefaultsMigration reports whether the on-disk config still needs
-// the #1135 operator-defaults rewrite. Besides version<16, keep accepting the
-// deprecated top-level aliases in hand-edited v16 files so load rewrites them
-// back to the canonical tree before normal unmarshalling.
 func needsV16UserDefaultsMigration(data []byte) bool {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {

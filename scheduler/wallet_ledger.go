@@ -12,51 +12,14 @@ import (
 	"time"
 )
 
-// #954 wallet-ledger ingestion: funding payments + non-trade cash flows.
-//
-// The shared-wallet display value is derived from the local trades ledger
-// (initial_capital + Σ ledger deltas + owned uPnL). The real wallet balance
-// also moves on events that produce no fill: hourly funding payments,
-// deposits, withdrawals, and class/internal/sub-account transfers. Left
-// unbooked, those flows would read as permanent ledger-vs-balance drift and
-// the $0.01 alarm would fire forever.
-//
-//   - Funding on a coin some member owns → a trades row per owning member
-//     (trade_type='funding', RealizedPnL=share, PnLGross=true), split by
-//     virtual-quantity share exactly like unrealized PnL attribution.
-//     Ownership is read at INGESTION time, not at the funding timestamp — an
-//     acceptable approximation since ingestion runs every cycle and funding
-//     accrues only while a position is open.
-//   - Funding on a coin no member owns ("funding_orphan"), plus every
-//     deposit/withdraw/transfer → a wallet_transfers row. The drift
-//     comparison subtracts Σ wallet_transfers so these flows never read as
-//     accounting bugs; they belong to no strategy's PnL.
-//
-// Fetch (HTTP, outside mu) and ingest (state mutation, under mu.Lock) are
-// split so no network call ever runs under the state lock — same shape as
-// buildCachedHyperliquidReconcileFillResolver. Watermarks advance only past
-// processed events and only after their rows are durably inserted; the
-// overlap on retry is absorbed by per-event dedup (trades: strategy_id +
-// exchange_order_id existence; wallet_transfers: UNIQUE dedup_id).
-//
-// Scope: Hyperliquid shared wallets only. OKX shared wallets keep the #918
-// capital-weight split (see reconcileSharedWalletDisplayValues).
-
-// WalletLedgerState is one wallet's ingestion watermarks + drift baseline.
 type WalletLedgerState struct {
 	FundingSinceMs   int64
 	TransfersSinceMs int64
-	// BaselineOffset zeroes the ledger-vs-balance drift at adoption: history
-	// before #954 lives in neither the trades ledger nor wallet_transfers, so
-	// the first reconciled cycle stores (balance − Σ values − flows) here and
-	// the alarm watches NEW divergence only. Reset to unset by
-	// `backfill trade-ledger --apply` so the repaired ledger re-baselines.
+
 	BaselineOffset float64
 	BaselineSet    bool
 }
 
-// GetWalletLedgerState loads one wallet's ledger state; found=false when the
-// wallet has never been ingested.
 func (sdb *StateDB) GetWalletLedgerState(platform, account string) (WalletLedgerState, bool, error) {
 	var st WalletLedgerState
 	if sdb == nil || sdb.db == nil {
@@ -77,7 +40,6 @@ func (sdb *StateDB) GetWalletLedgerState(platform, account string) (WalletLedger
 	return st, true, nil
 }
 
-// UpsertWalletLedgerState writes one wallet's ledger state row.
 func (sdb *StateDB) UpsertWalletLedgerState(platform, account string, st WalletLedgerState) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -101,13 +63,6 @@ func (sdb *StateDB) UpsertWalletLedgerState(platform, account string, st WalletL
 	return nil
 }
 
-// ResetWalletLedgerBaseline marks ONE wallet's drift baseline unset so the
-// next reconciled cycle recomputes it. Called by `backfill trade-ledger
-// --apply` for each wallet whose members were repaired: the repaired ledger
-// changes that wallet's Σ member values, so its old offset would misread the
-// correction as drift. Deliberately scoped — clearing an untouched wallet's
-// baseline would fold its genuine standing drift into the new offset and
-// silence a real alarm.
 func (sdb *StateDB) ResetWalletLedgerBaseline(platform, account string) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -120,8 +75,6 @@ func (sdb *StateDB) ResetWalletLedgerBaseline(platform, account string) error {
 	return nil
 }
 
-// InsertWalletTransfer appends one non-trade flow row; duplicate dedup_id is
-// silently ignored (watermark-overlap re-reads).
 func (sdb *StateDB) InsertWalletTransfer(platform, account string, timeMs int64, kind string, amountUSD float64, dedupID string) error {
 	if sdb == nil || sdb.db == nil {
 		return fmt.Errorf("state db unavailable")
@@ -136,7 +89,6 @@ func (sdb *StateDB) InsertWalletTransfer(platform, account string, timeMs int64,
 	return nil
 }
 
-// SumWalletTransfers returns the signed total of one wallet's non-trade flows.
 func (sdb *StateDB) SumWalletTransfers(platform, account string) (float64, error) {
 	if sdb == nil || sdb.db == nil {
 		return 0, fmt.Errorf("state db unavailable")
@@ -151,9 +103,6 @@ func (sdb *StateDB) SumWalletTransfers(platform, account string) (float64, error
 	return sum.Float64, nil
 }
 
-// hlLedgerEventDelta is the union of the HL info-endpoint delta payloads we
-// consume from userFunding and userNonFundingLedgerUpdates. Numeric fields
-// arrive as strings (same encoding as userFills).
 type hlLedgerEventDelta struct {
 	Type        string `json:"type"`
 	Coin        string `json:"coin,omitempty"`
@@ -162,26 +111,22 @@ type hlLedgerEventDelta struct {
 	ToPerp      bool   `json:"toPerp,omitempty"`
 	User        string `json:"user,omitempty"`
 	Destination string `json:"destination,omitempty"`
-	// Token-denominated deltas (send, rewardsClaim, spot/staking kinds).
+
 	Token  string `json:"token,omitempty"`
 	Amount string `json:"amount,omitempty"`
-	// send: non-empty when routed through a builder dex (not core USDC).
+
 	SourceDex      string `json:"sourceDex,omitempty"`
 	DestinationDex string `json:"destinationDex,omitempty"`
-	// vaultWithdraw carries NO usdc field — the perps account is credited
-	// netWithdrawnUsd (= requestedUsd − commission − closingCost).
+
 	NetWithdrawnUSD string `json:"netWithdrawnUsd,omitempty"`
 }
 
-// hlLedgerEvent is one userFunding / userNonFundingLedgerUpdates entry.
 type hlLedgerEvent struct {
 	Time  int64              `json:"time"`
 	Hash  string             `json:"hash"`
 	Delta hlLedgerEventDelta `json:"delta"`
 }
 
-// fetchHyperliquidUserFunding / fetchHyperliquidLedgerUpdates are function
-// variables so tests stub the HTTP layer (mirrors fetchHyperliquidUserFillsByTime).
 var fetchHyperliquidUserFunding = func(accountAddress string, startTimeMs int64) ([]hlLedgerEvent, error) {
 	return fetchHLLedgerEndpoint("userFunding", accountAddress, startTimeMs)
 }
@@ -223,44 +168,28 @@ func fetchHLLedgerEndpoint(infoType, accountAddress string, startTimeMs int64) (
 	return events, nil
 }
 
-// signedPerpFlowUSD maps a non-funding ledger delta to its SIGNED effect on
-// the PERPS account balance (the clearinghouseState accountValue the
-// shared-wallet reconcile compares against). ok=false marks kinds we do not
-// recognize or that do not move the perps balance — the caller records a
-// zero-amount row so the event is visible (and shows up as drift, pointing
-// the operator at the unmapped kind) instead of being silently mis-signed.
 func signedPerpFlowUSD(d hlLedgerEventDelta, account string) (float64, bool) {
 	usdc := parseHLFloat(d.USDC)
 	switch d.Type {
 	case "deposit":
 		return usdc, true
 	case "withdraw":
-		// VERIFIED against mainnet userNonFundingLedgerUpdates samples
-		// (2026-06): `usdc` is the NET amount (post-fee) and `fee` is
-		// debited ON TOP — real entries read usdc=1999999.0/999.0/9.0 with
-		// fee=1.0, i.e. round requested amounts minus the $1 fee. Total
-		// account debit = usdc + fee = the requested amount.
+
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "accountClassTransfer":
-		// Spot ↔ perps transfer inside the same account.
+
 		if d.ToPerp {
 			return usdc, true
 		}
 		return -usdc, true
 	case "internalTransfer", "subAccountTransfer":
-		// Outbound legs may carry a fee (mainnet samples show fee=0.0, but
-		// mirror the withdraw convention defensively: usdc is what the peer
-		// receives, the fee is debited on top). subAccountTransfer has no
-		// fee field → parseHLFloat("") = 0.
+
 		if strings.EqualFold(d.Destination, account) {
 			return usdc, true
 		}
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "send":
-		// Unified transfer primitive. Core USDC sends (no builder dex on
-		// either side) move the perps balance exactly like internalTransfer;
-		// non-USDC tokens are spot-side. Dex-routed USDC falls through to
-		// unmapped (visible via the $0 row + drift) rather than guessing.
+
 		if !strings.EqualFold(d.Token, "USDC") {
 			return 0, true
 		}
@@ -275,32 +204,27 @@ func signedPerpFlowUSD(d hlLedgerEventDelta, account string) (float64, bool) {
 	case "vaultDeposit", "vaultCreate":
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "vaultWithdraw":
-		// No usdc field on this kind — the account is credited the net
-		// amount after vault commission and position closing costs.
+
 		return parseHLFloat(d.NetWithdrawnUSD), true
 	case "vaultDistribution":
 		return usdc, true
 	case "rewardsClaim":
-		// USDC rewards land in the perps balance; token rewards are spot-side.
+
 		if strings.EqualFold(d.Token, "USDC") {
 			return parseHLFloat(d.Amount), true
 		}
 		return 0, true
 	case "spotTransfer", "spotGenesis", "cStakingTransfer",
 		"gossipPriorityGasAuction", "deployGasAuction":
-		// Spot/staking-side token movement; perps accountValue unaffected.
+
 		return 0, true
 	case "liquidation":
-		// Informational (no USDC amount on the delta). The balance impact of
-		// a liquidation arrives through its fills, which the reconciler books
-		// as external closes — recording a flow here would double-count.
+
 		return 0, true
 	}
 	return 0, false
 }
 
-// walletLedgerFetchResult carries one wallet's raw ledger events from the
-// no-lock fetch phase to the locked ingest phase.
 type walletLedgerFetchResult struct {
 	Key              SharedWalletKey
 	State            WalletLedgerState
@@ -311,11 +235,6 @@ type walletLedgerFetchResult struct {
 	TransfersFetched bool
 }
 
-// fetchWalletLedgerEvents reads the wallet's watermarks and pulls funding +
-// non-funding ledger events since each. Runs OUTSIDE the state lock (two
-// HTTP POSTs). First contact with a wallet initializes the watermarks to now
-// and fetches nothing — history before adoption is part of the drift
-// baseline, not the ledger.
 func fetchWalletLedgerEvents(sdb *StateDB, key SharedWalletKey, now time.Time) walletLedgerFetchResult {
 	res := walletLedgerFetchResult{Key: key}
 	if sdb == nil || key.Platform != "hyperliquid" || key.Account == "" {
@@ -353,31 +272,14 @@ func fetchWalletLedgerEvents(sdb *StateDB, key SharedWalletKey, now time.Time) w
 	return res
 }
 
-// fundingDedupID is the trades.exchange_order_id stamped on funding rows —
-// per-event identity so watermark-overlap re-reads insert nothing twice.
-// The owning strategy is implicit (existence is checked per strategy_id).
 func fundingDedupID(ev hlLedgerEvent) string {
 	return fmt.Sprintf("funding:%d:%s:%s", ev.Time, ev.Hash, ev.Delta.Coin)
 }
 
-// transferDedupID keys wallet_transfers rows. Hash+type disambiguates the
-// two legs HL emits for some transfer kinds at the same timestamp.
 func transferDedupID(ev hlLedgerEvent) string {
 	return fmt.Sprintf("%s:%d:%s", ev.Delta.Type, ev.Time, ev.Hash)
 }
 
-// ingestWalletLedgerEvents books the fetched events: funding → trades rows
-// for owning members (split by virtual-quantity share) or a funding_orphan
-// transfer row when no member owns the coin; non-funding deltas →
-// wallet_transfers rows. Watermarks advance only past processed events.
-//
-// MUST run under the state write lock: it mutates StrategyState.TradeHistory
-// via RecordTrade. DB writes are immediate (RecordTrade → InsertTrade hook;
-// transfers insert directly), and EVERY insert path — funding-owner rows
-// included — halts the watermark on persist failure, so a crash before the
-// watermark write only causes a re-read that the dedup keys absorb. A
-// watermark must never advance past an event whose row is not durably
-// persisted.
 func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFetchResult, virtualQty map[string]map[string]float64) {
 	if sdb == nil || !res.StateFound {
 		return
@@ -392,13 +294,10 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 		sort.SliceStable(events, func(i, j int) bool { return events[i].Time < events[j].Time })
 		for _, ev := range events {
 			if ev.Time < st.FundingSinceMs {
-				continue // endpoint may return boundary events; dedup also covers this
+				continue
 			}
 			if ok := ingestFundingEvent(sdb, state, key, ev, virtualQty); !ok {
-				// Persist failure: stop, and remember WHERE — the watermark
-				// must not advance to or past this event's timestamp even if
-				// a same-ms sibling already succeeded (maxTime == ev.Time
-				// would otherwise skip it forever).
+
 				failedAt = ev.Time
 				break
 			}
@@ -408,7 +307,7 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 		}
 		next := maxTime + 1
 		if failedAt >= 0 && failedAt < next {
-			next = failedAt // re-fetch from the failed event; dedup absorbs same-ms re-reads
+			next = failedAt
 		}
 		if next > st.FundingSinceMs {
 			st.FundingSinceMs = next
@@ -440,7 +339,7 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 		}
 		next := maxTime + 1
 		if failedAt >= 0 && failedAt < next {
-			next = failedAt // same-ms sibling may have succeeded; never skip the failed event
+			next = failedAt
 		}
 		if next > st.TransfersSinceMs {
 			st.TransfersSinceMs = next
@@ -454,11 +353,6 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 	}
 }
 
-// ingestSharedWalletLedgers books every HL shared wallet's fetched ledger
-// events. MUST run under the state write lock, BEFORE
-// reconcileSharedWalletDisplayValues, so this cycle's funding rows are in the
-// ledger sums that back this cycle's display values (the balance being
-// reconciled already includes them).
 func ingestSharedWalletLedgers(
 	sdb *StateDB,
 	state *AppState,
@@ -483,8 +377,6 @@ func ingestSharedWalletLedgers(
 	}
 }
 
-// ingestFundingEvent books one funding payment. Returns false only on a
-// persistence error (caller halts the watermark before this event).
 func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev hlLedgerEvent, virtualQty map[string]map[string]float64) bool {
 	amount := parseHLFloat(ev.Delta.USDC)
 	coin := strings.ToUpper(strings.TrimSpace(ev.Delta.Coin))
@@ -498,9 +390,7 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 		}
 	}
 	if sumQty <= 0 {
-		// No member owns the coin at ingestion time (closed since the payment,
-		// or a genuinely foreign position) — keep the flow at the wallet level
-		// so the drift comparison stays clean.
+
 		if err := sdb.InsertWalletTransfer(key.Platform, key.Account, ev.Time, "funding_orphan", amount, "funding_orphan:"+dedupID); err != nil {
 			fmt.Printf("[WARN] wallet-ledger %s: funding_orphan insert failed: %v\n", sharedWalletKeyLabel(key), err)
 			return false
@@ -520,9 +410,7 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 		if ss == nil {
 			continue
 		}
-		// Dedup against both the DB and the in-memory history: a row whose
-		// immediate persist failed is invisible to the DB check until the next
-		// SaveState flush, but it is already in TradeHistory.
+
 		exists, err := sdb.HasTradeWithExchangeOrderID(id, dedupID)
 		if err != nil {
 			fmt.Printf("[WARN] wallet-ledger %s: funding dedup check failed for %s: %v\n", sharedWalletKeyLabel(key), id, err)
@@ -534,14 +422,7 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 					continue
 				}
 				exists = true
-				// The row exists in memory but its eager persist failed
-				// (SaveState will retry it). Don't re-book — but don't let
-				// the watermark advance past an event that is not yet on
-				// disk either: a crash before the flush would lose it
-				// behind an advanced watermark (permanent ledger shortfall,
-				// alarm forever). Only enforced under eager persistence;
-				// with tradeRecorder unset, rows are flushed in batch and
-				// persisted is legitimately false.
+
 				if tradeRecorder != nil && !ss.TradeHistory[i].persisted {
 					fmt.Printf("[WARN] wallet-ledger %s: funding row for %s still awaiting persist — holding watermark\n", sharedWalletKeyLabel(key), id)
 					return false
@@ -565,10 +446,7 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 			PnLGross:        true,
 		}
 		RecordTrade(ss, trade)
-		// RecordTrade is void: on eager-insert failure it logs, leaves the
-		// row persisted=false, and SaveState retries later. Mirror the
-		// transfer/orphan paths and hold the watermark until the row is
-		// durably on disk (already-persisted co-owners dedup-skip on retry).
+
 		if tradeRecorder != nil && len(ss.TradeHistory) > 0 && !ss.TradeHistory[len(ss.TradeHistory)-1].persisted {
 			fmt.Printf("[WARN] wallet-ledger %s: funding row persist failed for %s — holding watermark for retry\n", sharedWalletKeyLabel(key), id)
 			return false

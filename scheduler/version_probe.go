@@ -12,44 +12,21 @@ import (
 	"time"
 )
 
-// probeArgv is the sentinel argv shape passed to every configured check
-// script at startup (#645). It mirrors the runtime argv produced by
-// buildStrategyRefsArg + the per-platform check dispatchers, so an
-// argparse-strict script that doesn't accept these flags will reject the
-// probe and surface the binary/Python version mismatch before the trading
-// loop starts.
-//
-// When the binary's check-script CLI gains a new required flag, append it
-// here so a stale on-disk script fails the probe instead of crashing
-// during a real cycle.
-// The --strategy-refs payload mirrors buildStrategyRefsArg: top-level keys
-// are "open" and "closes" (plural) and "closes" carries at least one ref
-// so a stale parser that drops or rejects the close-ref shape fails the
-// probe instead of silently treating closes as empty.
 var probeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
-	// #768: new Go forwards --mark-price on every HL signal-check; probe it
-	// so a stale Python that doesn't accept the flag fails startup loudly
-	// instead of every cycle's argparse rejecting the cycle's argv.
+
 	"--mark-price=0",
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",
-	// #879: new Go injects the global-store regime payload on every check;
-	// probe it so a stale Python that rejects the flag fails startup loudly.
+
 	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0,"plus_di":20.0,"minus_di":10.0,"atr_pct":1.0}}}`,
-	// #1277: new Go forwards --atr-method on every signal check; probe it so a
-	// stale Python that rejects the flag fails startup loudly. Signal-check
-	// argv only — the execute argv never carries it, so executeProbeArgv
-	// stays a faithful mirror without it (the script-level parser is shared,
-	// so this probe covers the flag for every mode of the same script).
+
 	"--atr-method=simple",
 	"--probe-only",
 }
 
-// probeCompositeArgv exercises classifier=composite in parse_regime_windows_spec_json
-// so a stale Python missing the composite branch fails startup (#795 review).
 var probeCompositeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
@@ -62,22 +39,10 @@ var probeCompositeArgv = []string{
 	"--probe-only",
 }
 
-// fetchATRProbeArgv probes check_hyperliquid.py's --fetch-atr mode (#689) so a
-// stale Python missing run_fetch_atr fails startup loudly instead of degrading
-// silently to computeFallbackATR on every manual-open.
 var fetchATRProbeArgv = []string{
 	"--fetch-atr", "--symbol=BTC", "--timeframe=1h", "--period=14", "--atr-method=simple", "--probe-only",
 }
 
-// executeProbeArgv probes check_hyperliquid.py's --execute mode (PR #769
-// review point 1). The signal-check probe doesn't cover the execute branch,
-// so without this an asymmetric deploy (new Go binary forwarding
-// --account-leverage / --account-margin-mode to a stale Python) would only
-// fail on the first signal-fire rather than at startup. --mode=paper so the
-// probe never enters the live-credentials branch; --probe-only short-circuits
-// at the top of run_execute before any adapter or order code runs.
-// llmReviewProbeArgv probes shared_scripts/llm_review.py (#1137).
-// --probe-only short-circuits before any stdin read, env access, or network.
 var llmReviewProbeArgv = []string{"--probe-only"}
 
 var executeProbeArgv = []string{
@@ -89,11 +54,6 @@ var executeProbeArgv = []string{
 	"--probe-only",
 }
 
-// limitOpenProbeArgv / limitStatusProbeArgv / cancelOrderProbeArgv probe the
-// #883 resting-limit-order modes so an asymmetric deploy (new Go binary
-// forwarding --limit-open / --limit-status / --cancel-order to a stale Python)
-// fails at startup rather than on the first manual-open --limit-price.
-// --probe-only short-circuits before any adapter or order code runs.
 var limitOpenProbeArgv = []string{
 	"--limit-open",
 	"--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=1",
@@ -110,11 +70,6 @@ var cancelOrderProbeArgv = []string{
 	"--cancel-order", "--symbol=BTC", "--oid=1", "--probe-only",
 }
 
-// hyperliquidBatchProbeArgv probes the #1442 batched signal-check mode. The
-// scheduler dispatches it whenever two due strategies share a market-data key,
-// so a stale Python without --batch-check must fail at startup rather than
-// blinding every strategy on that coin mid-cycle. --probe-only short-circuits
-// before the stdin read, so the probe needs no envelope.
 var hyperliquidBatchProbeArgv = []string{
 	"--batch-check", "--symbol=BTC", "--timeframe=1h",
 	"--ohlcv-limit", "200", "--atr-method=simple", "--mark-price=0",
@@ -123,17 +78,10 @@ var hyperliquidBatchProbeArgv = []string{
 	"--probe-only",
 }
 
-// fetchCandlesProbeArgv probes the dashboard's on-demand OHLCV helper. The
-// helper is not a configured strategy script, so it needs its own argv shape to
-// catch stale Python deploys before the dashboard starts returning 500s.
 var fetchCandlesProbeArgv = []string{
 	"--platform=binanceus", "--type=spot", "--symbol=BTC/USDT", "--timeframe=1h", "--limit=1", "--probe-only",
 }
 
-// checkRegimeProbeArgv probes the #879 dedicated regime-bundle subprocess.
-// Probed whenever any strategy is configured (mirrors the tuner-schema
-// precedent): the scheduler spawns it per distinct regime signature each
-// cycle, so a missing/stale script must fail at startup, not mid-cycle.
 var checkRegimeProbeArgv = []string{
 	"--platform=binanceus", "--symbol=BTC/USDT", "--timeframe=1h",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
@@ -149,18 +97,6 @@ var simulateStrategyProbeArgv = []string{"--probe-only"}
 
 const probeTimeout = 15 * time.Second
 
-// probeCheckScripts invokes each unique check script configured in cfg
-// with --probe-only. Returns nil if every script accepts the probe argv;
-// returns an error describing the first failing script otherwise.
-//
-// Manual-argv scripts (check_strategy.py, check_options.py) short-circuit
-// on --probe-only without parsing, so they always pass — the probe's
-// signal value is highest for argparse-strict scripts (HL/TopStep/RH/OKX),
-// where unknown flags cause the same exit-2 the May 7 outage exhibited.
-// probeOneCheckScriptFn is the per-script probe invoker — package var so
-// tests can stub it without standing up a real .venv (Go CI doesn't have
-// one — see CLAUDE.md → Testing). The argv parameter lets a single script
-// be probed against multiple argv shapes (e.g. signal-check + --fetch-atr).
 var probeOneCheckScriptFn = probeOneCheckScript
 
 func probeCheckScripts(cfg *Config) error {
@@ -172,22 +108,16 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn(script, probeCompositeArgv); err != nil {
 			return err
 		}
-		// HL exposes --fetch-atr (#689) for manual-open ATR auto-fetch; probe
-		// it so an old Python without run_fetch_atr fails the probe rather
-		// than silently degrading every manual-open to computeFallbackATR.
+
 		if filepath.Base(script) == "check_hyperliquid.py" {
 			if err := probeOneCheckScriptFn(script, fetchATRProbeArgv); err != nil {
 				return err
 			}
-			// PR #769: also probe --execute so the new --account-leverage /
-			// --account-margin-mode flags fail loudly at startup if Python is
-			// stale, rather than on the first signal-fire.
+
 			if err := probeOneCheckScriptFn(script, executeProbeArgv); err != nil {
 				return err
 			}
-			// #883: probe the resting-limit-order modes so manual-open
-			// --limit-price / manual-cancel / the scheduler fill poll fail at
-			// startup on a stale Python rather than at first use.
+
 			if err := probeOneCheckScriptFn(script, limitOpenProbeArgv); err != nil {
 				return err
 			}
@@ -197,16 +127,13 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {
 				return err
 			}
-			// #1442: probe the batched signal-check mode so a stale Python
-			// fails at startup instead of failing every batched group.
+
 			if err := probeOneCheckScriptFn(script, hyperliquidBatchProbeArgv); err != nil {
 				return err
 			}
 		}
 	}
-	// #1137: probe the LLM entry-analysis pipeline only when a strategy opts
-	// in, so an asymmetric deploy (new Go dispatching to a missing/stale
-	// llm_review.py) fails at startup instead of on the first open.
+
 	if anyStrategyUsesLLMEntryAnalysis(cfg) {
 		if err := probeOneCheckScriptFn(llmEntryAnalysisScript, llmReviewProbeArgv); err != nil {
 			return err
@@ -287,8 +214,6 @@ func formatProbeFailure(script string, runErr error, stderr, stdout string) erro
 }
 
 func probeFailureScriptMissing(detail string) bool {
-	// Python reports a missing probe script as "can't open file '…': [Errno 2] …".
-	// Avoid broader ENOENT substrings so internal FileNotFoundError from a real
-	// script is not mislabeled as a deploy-tree gap.
+
 	return strings.Contains(detail, "can't open file")
 }

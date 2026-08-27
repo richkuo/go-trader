@@ -13,7 +13,6 @@ const (
 	trailingTPRatchetRegimeCloseName = "trailing_tp_ratchet_regime"
 )
 
-// trailingRatchetTier is one rung of a trailing_tp_ratchet* close ref.
 type trailingRatchetTier struct {
 	ATRMultiple       float64
 	CloseFraction     float64
@@ -37,22 +36,6 @@ func strategyUsesTrailingTPRatchetClose(sc StrategyConfig) bool {
 	return false
 }
 
-// defaultTrailingRatchetTiers is the canonical conservative fallback ladder
-// (#866) used when a trailing_tp_ratchet* close ref omits tp_tiers (or sets
-// use_defaults:true). Pure let-it-ride: starting from the operator's
-// trailing_stop_atr_mult, tighten to 1.5 / 1.0 / 0.5 ×ATR at 2 / 2.5 / 3 ×ATR
-// profit, never force-selling (close_fraction 0). It is the single source of
-// truth on the Go side; mirrored in
-// shared_strategies/close/trailing_tp_ratchet.py as DEFAULT_RATCHET_TIERS — keep
-// the two in sync. The regime variant broadcasts this same ladder to every
-// classifier label (per-regime group differentiation + per-regime opening trail
-// land in #870).
-//
-// Precondition: the first rung tightens to 1.5×ATR, so a strategy relying on
-// this default must set trailing_stop_atr_mult >= 1.5 — otherwise
-// validateTrailingRatchetInitialTrail rejects it at load (a looser first rung
-// would silently no-op at runtime). The reported bug is fully fixed for trails
-// >= 1.5×ATR; a tighter initial trail still needs an explicit tp_tiers.
 func defaultTrailingRatchetTiers() []trailingRatchetTier {
 	return []trailingRatchetTier{
 		{ATRMultiple: 2.0, CloseFraction: 0, TrailingMultAfter: 1.5},
@@ -61,34 +44,6 @@ func defaultTrailingRatchetTiers() []trailingRatchetTier {
 	}
 }
 
-// ratchetTierGroupDefaults is the per-group default ratchet ladder for the
-// regime variant (#870 C2). Trend groups (clean/choppy) are pure let-it-ride
-// (close_fraction 0); the ranging family scales out as ranges mean-revert.
-// #1059 split the single ranging ladder into three composite substate ladders
-// keyed by ratchetCloseDefaultGroup (NOT the shared regimeCloseDefaultGroup,
-// which still collapses ranging* → "ranging" for the B2 ATR-TP path):
-//   - ranging_quiet keeps the pre-#1059 ranging geometry and is also the target
-//     for bare ADX "ranging" (no substate signal), so ADX behavior is unchanged.
-//   - ranging_volatile widens the triggers (0.75→1.0, 1.5→2.0, 2.0→3.0) to stop
-//     scaling out on wide-range noise; close fractions are unchanged.
-//   - ranging_directional scales out lighter early (25/50/75 vs 40/80/100) and
-//     adds a 4th let-ride rung that only tightens the trail (no extra close) so
-//     the runner survives a nascent breakout instead of being fully scaled out.
-//
-// Each group's first-rung trail couples to that group's opening trail in
-// regimeATRDefaults.Trailing (#1120: clean 2.5 / choppy 2.25 / ranging_quiet 1.0
-// / ranging_volatile 1.25 / ranging_directional* 1.5), so
-// every first rung is <= 1.0 for the ranging substates.
-//
-// #1152 validated the ranging split with M6 entry-locked replay
-// (docs/research/1152-ranging-exit-geometry-m6.md): volatile candidates
-// (wider AND tighter) were non-significant in both directions — the middle
-// incumbent stands; the directional let-ride runner survived its inverse
-// check (removing rung 4 lost significantly on 3 datasets in-sample under
-// mean-reversion entries). ranging_quiet is UNEVALUABLE on the audit data
-// (label ~0.2-0.9% of bars, zero gated entries) and keeps its pre-#1059
-// geometry on that documented evidence gap. Mirrors
-// DEFAULT_RATCHET_TIERS_BY_GROUP in shared_strategies/close/trailing_tp_ratchet.py.
 var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 	"clean": {
 		{ATRMultiple: 3.0, CloseFraction: 0, TrailingMultAfter: 1.5},
@@ -118,29 +73,13 @@ var ratchetTierGroupDefaults = map[string][]trailingRatchetTier{
 	},
 }
 
-// ratchetCloseDefaultGroup resolves a classifier label to a ratchet default-
-// ladder group key (#1059). Unlike the shared regimeCloseDefaultGroup — which
-// collapses every ranging* → "ranging" for the B2 ATR-TP path — the ratchet
-// ladder differentiates the three composite ranging substates, so each gets its
-// own scale-out geometry. Bare ADX "ranging" (no substate signal) maps to the
-// quiet ladder, preserving pre-#1059 behavior. clean/choppy and ADX-trend
-// labels delegate unchanged to regimeCloseDefaultGroup. Routing the substates
-// back through the shared fn would make the B2 regimeTPTierGroupDefaults lookup
-// miss and silently emit no TP tiers (never-arm of an auto-protective exit) —
-// keep this resolver ratchet-only.
 func ratchetCloseDefaultGroup(label string) (string, bool) {
 	l := strings.TrimSpace(label)
 	switch l {
 	case "ranging_quiet", "ranging_volatile", "ranging_directional":
 		return l, true
 	case "ranging_directional_up", "ranging_directional_down":
-		// #1124: the directional-drift substates share the ranging_directional
-		// scale-out ladder (the geometry is direction-agnostic — the SL side
-		// carries direction, the TP scale-out does not). Map them to that group
-		// explicitly; otherwise they fall through to regimeCloseDefaultGroup's
-		// "ranging" key, which has NO ratchet ladder in ratchetTierGroupDefaults
-		// → defaultTrailingRatchetTiersForRegime returns nil → silent never-arm
-		// of the auto-protective ratchet exit (money path).
+
 		return "ranging_directional", true
 	case "ranging":
 		return "ranging_quiet", true
@@ -148,10 +87,6 @@ func ratchetCloseDefaultGroup(label string) (string, bool) {
 	return regimeCloseDefaultGroup(l)
 }
 
-// defaultTrailingRatchetTiersForRegime resolves the per-group default ratchet
-// ladder for a stamped regime label (#870 C2 use_defaults / omitted tp_tiers on
-// trailing_tp_ratchet_regime). Returns nil for an empty/unknown label so the
-// caller emits only the SL until the position regime is stamped.
 func defaultTrailingRatchetTiersForRegime(regime string) []trailingRatchetTier {
 	group, ok := ratchetCloseDefaultGroup(regime)
 	if !ok {
@@ -266,10 +201,7 @@ func trailingRatchetTiersForRegime(sc StrategyConfig, regime string) []trailingR
 		}
 		raw, ok := closeTierListParam(ref.Params)
 		if !ok {
-			// Omitted tp_tiers (or use_defaults:true) resolves to the system
-			// default ladder. #870: the regime variant resolves the per-group
-			// ladder for the stamped regime; the scalar variant broadcasts the
-			// single #866 default.
+
 			if name == trailingTPRatchetRegimeCloseName {
 				return defaultTrailingRatchetTiersForRegime(regime)
 			}
@@ -283,9 +215,7 @@ func trailingRatchetTiersForRegime(sc StrategyConfig, regime string) []trailingR
 			key := strings.TrimSpace(regime)
 			block, ok := table[key]
 			if !ok {
-				// #1124: sub-label stamp falls back to the bare
-				// ranging_directional tier ladder (exact key wins first, so an
-				// explicit sub key still overrides bare).
+
 				if regimeDirectionalSubs[key] {
 					block, ok = table[regimeDirectionalBare]
 				}
@@ -319,11 +249,7 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 	if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 		errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet* is HL perps/manual only", prefix))
 	}
-	// #870: the SL owner + initial trail differs by variant. The scalar
-	// trailing_tp_ratchet owns it via trailing_stop_atr_mult; the regime
-	// trailing_tp_ratchet_regime owns it via the per-regime trailing_stop_atr_regime
-	// block, so per-trade initial risk scales with the stamped regime (tight in
-	// ranges, wide in clean trends).
+
 	regimeVariant := false
 	for _, ref := range sc.closeRefs() {
 		if strings.ToLower(strings.TrimSpace(ref.Name)) == trailingTPRatchetRegimeCloseName {
@@ -362,10 +288,7 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 	if sc.StopLossATRRegime.IsConfigured() {
 		errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet* cannot combine with stop_loss_atr_regime", prefix))
 	}
-	// scalarInitialTrail couples the scalar variant's first rung to
-	// trailing_stop_atr_mult; the regime variant resolves the open per regime
-	// key from the trailing_stop_atr_regime block (populated upstream by
-	// ResolveSurfaceWithLabels).
+
 	scalarInitialTrail := 0.0
 	if !regimeVariant && sc.TrailingStopATRMult != nil {
 		scalarInitialTrail = *sc.TrailingStopATRMult
@@ -386,8 +309,7 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 		sub := fmt.Sprintf("%s.close_strategy(%s)", prefix, ref.Name)
 		name := strings.ToLower(strings.TrimSpace(ref.Name))
 		isRegime := name == trailingTPRatchetRegimeCloseName
-		// Unknown-key guard runs in every branch, including the
-		// omitted-tp_tiers / use_defaults fallback below.
+
 		for k := range ref.Params {
 			switch k {
 			case "tp_tiers", "use_defaults":
@@ -402,13 +324,7 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 		}
 		raw, hasTiers := closeTierListParam(ref.Params)
 		if !hasTiers {
-			// Omitted tp_tiers (or use_defaults:true) resolves to the system
-			// default ladder. The default is internally valid (monotonic,
-			// ascending); the only load-time check that still applies is the
-			// initial-trail coupling against the opening trail. #870: the regime
-			// variant resolves a per-group ladder per regime key and couples each
-			// against that key's opening trail; the scalar variant uses the
-			// single #866 default against trailing_stop_atr_mult.
+
 			if isRegime {
 				for _, key := range labels {
 					def := defaultTrailingRatchetTiersForRegime(key)
@@ -439,9 +355,7 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 			for _, key := range labels {
 				block, ok := table[key]
 				if !ok {
-					// #1124 family rule: bare ranging_directional covers the
-					// _up/_down sub-labels for exhaustiveness (the explicit
-					// tp_tiers resolver falls back bare→sub at runtime).
+
 					if regimeLabelFamilyCovered(key, bareDirectional) {
 						continue
 					}
@@ -478,13 +392,6 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 	return errs
 }
 
-// validateTrailingRatchetInitialTrail rejects a first ratchet rung whose trail
-// distance is looser than (greater than) the strategy-level
-// trailing_stop_atr_mult. The first rung can only tighten the initial trail —
-// a looser first rung would silently no-op at runtime (applyTrailingTPRatchet
-// never loosens), so catch the misconfiguration at load. Tiers are sorted
-// ascending by atr_multiple, so tiers[0] is the first rung and monotonicity
-// guarantees the rest are <= it.
 func validateTrailingRatchetInitialTrail(tiers []trailingRatchetTier, initialTrail float64, ctxLabel string) []string {
 	if len(tiers) == 0 || initialTrail <= 0 {
 		return nil
@@ -533,9 +440,7 @@ func effectiveTrailingRatchetMult(pos *Position, sc StrategyConfig) float64 {
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		return *sc.TrailingStopATRMult
 	}
-	// #870: the regime ratchet's initial loose trail is the per-regime opening
-	// trail from trailing_stop_atr_regime, not a scalar mult — resolve it so the
-	// first rung is correctly seen as a tightening (not a no-op against 0).
+
 	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() && pos != nil {
 		if v, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, protectionATRRegimeLabel(pos, sc)); ok {
 			return v
@@ -557,14 +462,6 @@ func findHighestMarkClearedRatchetTier(tiers []trailingRatchetTier, atrProfit fl
 	return highest, highest >= 0
 }
 
-// applyTrailingTPRatchet stamps a tighter PostTPTrailingATRMult when mark-based
-// tier thresholds are newly cleared. Reuses SLAdjustedTiersProcessed as the
-// idempotency watermark (ratchet closes do not use on-chain TP OIDs or sl_after).
-//
-// Caller-visible behavior is intentionally mark-based instead of depending on
-// the Python evaluator's close_fraction result: close_fraction=0 tiers still
-// need to ratchet, and scale-out tiers should ratchet after the state update
-// that preserves the residual position.
 func applyTrailingTPRatchet(
 	sc StrategyConfig,
 	stratState *StrategyState,
@@ -586,14 +483,6 @@ func applyTrailingTPRatchet(
 	return alert
 }
 
-// applyTrailingTPRatchetToPosition applies the same ratchet logic while the
-// caller already owns the state lock. Returns (true, *RatchetTriggerAlert) ONLY
-// when a tier newly advances the watermark AND tightens the trail — the alert
-// snapshot carries the immutable details the owner DM needs, so the caller can
-// deliver it (notifyRatchetTrigger) after releasing the lock (#1110). Every
-// non-tightening path returns (false, nil), including a watermark-only advance
-// (tier cleared but the resulting trail is not tighter), so an already-processed
-// or no-tighten tier never alerts.
 func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol string, mark float64, logger *StrategyLogger) (bool, *RatchetTriggerAlert) {
 	if !strategyUsesTrailingTPRatchetClose(sc) || pos == nil || symbol == "" || mark <= 0 {
 		return false, nil
@@ -610,9 +499,7 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 	if len(tiers) == 0 {
 		return false, nil
 	}
-	// #873: ratchet tier-clearing measures ATR profit distance from the FROZEN
-	// entry (riskAnchorPrice), not the blended AvgCost, so a scale-in keeps the
-	// TP tier offsets pinned to the first entry.
+
 	anchor := pos.riskAnchorPrice()
 	profitDistance := mark - anchor
 	if side == "short" {
@@ -642,12 +529,6 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 	return true, alert
 }
 
-// buildRatchetTriggerAlert assembles the immutable #1110 alert snapshot at the
-// instant a ratchet tier tightens the trail. All inputs are read while the
-// caller holds the state lock; the result carries no pointers into pos so it is
-// safe to hand to a post-unlock notifier. anchor / atrProfit are passed through
-// from the caller so the snapshot matches the exact values the tightening
-// decision used.
 func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, regime string, mark, anchor, atrProfit float64, tiers []trailingRatchetTier, clearedIdx int, oldMult, newMult float64) *RatchetTriggerAlert {
 	entryATR := pos.EntryATR
 	contractMult := 1.0
@@ -658,9 +539,7 @@ func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, re
 	if side == "short" {
 		profitDistance = anchor - mark
 	}
-	// Effective HWM for the intended-SL display: the best mark seen while open,
-	// floored to the current mark so a stale/unset StopLossHighWaterPx (e.g. the
-	// walker hasn't run yet this open) still yields a sensible computed trigger.
+
 	hwm := pos.StopLossHighWaterPx
 	if side == "long" {
 		if hwm <= 0 || mark > hwm {
@@ -712,27 +591,8 @@ func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, re
 	return a
 }
 
-// manualCloseEvaluatorDriftWarned dedupes the #1115 close-evaluator drift alert
-// to once per (strategy, symbol) per process — keyed "id|symbol". Never reset:
-// the operator only needs to see it once after the upgrade+restart that flipped
-// the default; pinning close_strategy and restarting re-derives the tiered close
-// (no drift, no warning).
 var manualCloseEvaluatorDriftWarned sync.Map
 
-// manualCloseEvaluatorDriftedFromTPs reports whether an open manual position was
-// opened under a tiered-TP close evaluator (it carries resting on-chain TP OIDs)
-// while the strategy's CURRENT close evaluator is the trailing ratchet, which
-// places no on-chain TPs (#1115). This is the cross-evaluator drift that occurs
-// when the manual close DEFAULT flips from tiered_tp_atr_live to
-// trailing_tp_ratchet_regime across a binary upgrade + restart for a position
-// opened pre-upgrade: SL ownership moves to the regime trail and the
-// previously-placed TP1/TP2 orders are no longer managed by the close evaluator.
-// They still rest on-chain (reduce-only) and are cancelled on a full / manual
-// close (extraCancelOIDs) — and auto-cancel when the SL flattens the position —
-// but can fire mid-life under what is now a let-it-ride config, so the operator
-// must be alerted. A ratchet-opened position never carries TP OIDs (the ratchet
-// path skips inline TP placement), so this reliably keys off the tiered-open
-// fingerprint. Pure so the detection is unit-tested.
 func manualCloseEvaluatorDriftedFromTPs(sc StrategyConfig, pos *Position) bool {
 	return pos != nil && len(pos.TPOIDs) > 0 && strategyUsesTrailingTPRatchetClose(sc)
 }

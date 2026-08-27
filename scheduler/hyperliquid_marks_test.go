@@ -15,12 +15,12 @@ func TestFetchHyperliquidMids_Basic(t *testing.T) {
 			return
 		}
 		var req map[string]string
-		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		json.NewDecoder(r.Body).Decode(&req)
 		if req["type"] != "allMids" {
 			http.Error(w, "wrong type", http.StatusBadRequest)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck
+		json.NewEncoder(w).Encode(map[string]string{
 			"BTC":  "67500.50",
 			"ETH":  "3200.10",
 			"HYPE": "12.50",
@@ -43,7 +43,7 @@ func TestFetchHyperliquidMids_Basic(t *testing.T) {
 	if math.Abs(marks["ETH"]-3200.10) > 1e-6 {
 		t.Errorf("ETH = %v, want 3200.10", marks["ETH"])
 	}
-	// SOL not requested — must be absent.
+
 	if _, ok := marks["SOL"]; ok {
 		t.Errorf("SOL should not be in returned marks (not requested)")
 	}
@@ -53,7 +53,7 @@ func TestFetchHyperliquidMids_Basic(t *testing.T) {
 }
 
 func TestFetchHyperliquidMids_EmptyCoins(t *testing.T) {
-	// No coins requested — must return empty without hitting the network.
+
 	marks, err := fetchHyperliquidMids(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -64,10 +64,9 @@ func TestFetchHyperliquidMids_EmptyCoins(t *testing.T) {
 }
 
 func TestFetchHyperliquidMids_CoinMissing(t *testing.T) {
-	// A requested coin absent from the allMids response should simply be
-	// absent from the returned map — caller falls back to pos.AvgCost.
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{"BTC": "67500.50"}) //nolint:errcheck
+		json.NewEncoder(w).Encode(map[string]string{"BTC": "67500.50"})
 	}))
 	defer srv.Close()
 
@@ -105,7 +104,7 @@ func TestFetchHyperliquidMids_HTTPError(t *testing.T) {
 
 func TestFetchHyperliquidMids_InvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not-json")) //nolint:errcheck
+		w.Write([]byte("not-json"))
 	}))
 	defer srv.Close()
 
@@ -120,10 +119,9 @@ func TestFetchHyperliquidMids_InvalidJSON(t *testing.T) {
 }
 
 func TestFetchHyperliquidMids_ZeroPriceOmitted(t *testing.T) {
-	// A coin with a zero or invalid price string must be omitted from the
-	// returned map — same skip-zero semantics as mergeFuturesMarks.
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]string{ //nolint:errcheck
+		json.NewEncoder(w).Encode(map[string]string{
 			"BTC": "67500.50",
 			"ETH": "0",
 			"SOL": "bad",

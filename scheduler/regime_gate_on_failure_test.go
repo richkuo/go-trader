@@ -1,13 +1,5 @@
 package main
 
-// #1278: configurable regime entry-gate failure policy. The allowed_regimes
-// gate historically failed OPEN when the regime store could not produce a
-// label (#879 policy b) — regime_gate_on_failure makes that policy explicit
-// and adds "closed" (hold fresh opens while the regime is unknown). These
-// tests cover the policy x label-availability x position-state x
-// gate-configured matrix, the resolution order (strategy > global > default),
-// load-time validation, hot reload, and the operator-facing surfaces.
-
 import (
 	"context"
 	"fmt"
@@ -16,8 +8,6 @@ import (
 	"testing"
 	"time"
 )
-
-// ─── regimeBlocksOpen — policy x label x position x gate matrix ──────────────
 
 func TestRegimeBlocksOpenFailurePolicyMatrix(t *testing.T) {
 	gate := []string{"trending_up"}
@@ -29,22 +19,21 @@ func TestRegimeBlocksOpenFailurePolicyMatrix(t *testing.T) {
 		failClosed bool
 		want       bool
 	}{
-		// Fail-open (legacy #879): empty label admits the entry.
+
 		{"open policy, empty label, flat, gated", gate, "", 0, false, false},
-		// Fail-closed: empty label holds the fresh open.
+
 		{"closed policy, empty label, flat, gated", gate, "", 0, true, true},
-		// Whitespace-only label is "unknown" too.
+
 		{"closed policy, whitespace label, flat, gated", gate, "  ", 0, true, true},
-		// A KNOWN label is decided by set membership under BOTH policies.
+
 		{"open policy, matching label", gate, "trending_up", 0, false, false},
 		{"closed policy, matching label", gate, "trending_up", 0, true, false},
 		{"open policy, mismatching label", gate, "ranging", 0, false, true},
 		{"closed policy, mismatching label", gate, "ranging", 0, true, true},
-		// posQty>0 (open position: closes + management) is NEVER blocked,
-		// including the compound fail-closed + empty-label + gated state.
+
 		{"closed policy, empty label, open position", gate, "", 1.5, true, false},
 		{"closed policy, mismatching label, open position", gate, "ranging", 0.5, true, false},
-		// No gate configured → fail-closed never fires.
+
 		{"closed policy, empty label, no gate", nil, "", 0, true, false},
 		{"closed policy, empty label, empty gate", []string{}, "", 0, true, false},
 	}
@@ -54,8 +43,6 @@ func TestRegimeBlocksOpenFailurePolicyMatrix(t *testing.T) {
 		}
 	}
 }
-
-// ─── resolution order: strategy > global > default ───────────────────────────
 
 func TestResolveRegimeGateOnFailure(t *testing.T) {
 	cases := []struct {
@@ -77,7 +64,7 @@ func TestResolveRegimeGateOnFailure(t *testing.T) {
 			t.Errorf("%s: resolved %q, want %q", tc.name, got, tc.want)
 		}
 	}
-	// nil RegimeConfig must not panic and must default open.
+
 	if got := resolveRegimeGateOnFailure(StrategyConfig{}, nil); got != RegimeGateOnFailureOpen {
 		t.Errorf("nil regime config: resolved %q, want open", got)
 	}
@@ -96,14 +83,10 @@ func TestParseRegimeGateOnFailure(t *testing.T) {
 	}
 }
 
-// ─── applyRegimeGate — the single funnel all 6 dispatch sites use ─────────────
-
 func TestApplyRegimeGateFailClosedOnEmptyStorePayload(t *testing.T) {
 	rc := testRegimeConfig()
 	gated := StrategyConfig{AllowedRegimes: []string{"trending_up"}, RegimeGateOnFailure: "closed"}
 
-	// Empty payload (store failure / sealed budget / missing window) + flat →
-	// blocked under "closed", admitted under "open" (and under the default).
 	if label, blocked := applyRegimeGate(gated, RegimePayload{}, rc, 0); !blocked || label != "" {
 		t.Errorf("fail-closed empty payload: (label=%q, blocked=%v), want blocked with empty label", label, blocked)
 	}
@@ -118,16 +101,15 @@ func TestApplyRegimeGateFailClosedOnEmptyStorePayload(t *testing.T) {
 		t.Error("omitted policy must preserve the legacy #879 fail-open behavior")
 	}
 
-	// Open position: the fail-closed arm must never touch management cycles.
 	if _, blocked := applyRegimeGate(gated, RegimePayload{}, rc, 2.0); blocked {
 		t.Error("fail-closed must never block while a position is open (posQty>0)")
 	}
-	// No gate configured: fail-closed never fires.
+
 	ungated := StrategyConfig{RegimeGateOnFailure: "closed"}
 	if _, blocked := applyRegimeGate(ungated, RegimePayload{}, rc, 0); blocked {
 		t.Error("fail-closed must never fire without an allowed_regimes gate")
 	}
-	// A present label still resolves by set membership under fail-closed.
+
 	if _, blocked := applyRegimeGate(gated, RegimePayload{Legacy: "trending_up"}, rc, 0); blocked {
 		t.Error("matching label must admit the entry under fail-closed")
 	}
@@ -149,8 +131,6 @@ func TestApplyRegimeGateGlobalDefaultFailClosed(t *testing.T) {
 	}
 }
 
-// End-to-end through the store: a failed bundle blocks the gated fail-closed
-// strategy while its fail-open peer on the SAME signature is admitted.
 func TestRegimeStoreFailureRespectsPerStrategyPolicy(t *testing.T) {
 	rc := testRegimeConfig()
 	closedSC := StrategyConfig{ID: "hl-closed", Type: "perps", Platform: "hyperliquid",
@@ -171,8 +151,6 @@ func TestRegimeStoreFailureRespectsPerStrategyPolicy(t *testing.T) {
 	}
 }
 
-// ─── dispatch log line ───────────────────────────────────────────────────────
-
 func TestRegimeGateBlockDetail(t *testing.T) {
 	if got := regimeGateBlockDetail(""); got != "regime unknown, fail-closed" {
 		t.Errorf("empty label detail = %q", got)
@@ -181,8 +159,6 @@ func TestRegimeGateBlockDetail(t *testing.T) {
 		t.Errorf("known label detail = %q", got)
 	}
 }
-
-// ─── config load validation ──────────────────────────────────────────────────
 
 func testGatePolicyConfig(strategyPolicy, globalPolicy string, regimeEnabled bool) *Config {
 	return &Config{
@@ -225,28 +201,24 @@ func TestValidateConfigAcceptsGateOnFailureValues(t *testing.T) {
 }
 
 func TestValidateConfigRejectsFailClosedWithRegimeDisabled(t *testing.T) {
-	// Fail-closed + allowed_regimes + regime.enabled=false is a PERMANENT
-	// entry block (the gate label is deterministically empty every cycle) —
-	// a load error, not the legacy no-op warning.
+
 	cfg := testGatePolicyConfig("closed", "", false)
 	err := validateConfig(cfg, true)
 	if err == nil || !strings.Contains(err.Error(), "could never open") {
 		t.Fatalf("fail-closed with regime disabled must be rejected, got %v", err)
 	}
-	// The same shape resolved through the GLOBAL default is equally permanent.
+
 	cfg = testGatePolicyConfig("", "closed", false)
 	err = validateConfig(cfg, true)
 	if err == nil || !strings.Contains(err.Error(), "could never open") {
 		t.Fatalf("global fail-closed with regime disabled must be rejected, got %v", err)
 	}
-	// Fail-open with regime disabled keeps loading (legacy warn-only no-op).
+
 	cfg = testGatePolicyConfig("", "", false)
 	if err := validateConfig(cfg, true); err != nil && strings.Contains(err.Error(), "gate_on_failure") {
 		t.Fatalf("fail-open with regime disabled must keep loading, got %v", err)
 	}
 }
-
-// ─── hot reload — always allowed, including while a position is open ──────────
 
 func TestHotReloadGateOnFailureWhileOpen(t *testing.T) {
 	base := func(policy, globalPolicy string) *Config {
@@ -293,7 +265,6 @@ func TestHotReloadGateOnFailureWhileOpen(t *testing.T) {
 		t.Errorf("change log must name both fields, got %q", joined)
 	}
 
-	// And back again (closed -> open) with the position still open.
 	reverted := base("open", "")
 	if _, err := applyHotReloadConfig(cfg, reverted, state, nil, server); err != nil {
 		t.Fatalf("reverting to fail-open must hot-reload while open: %v", err)
@@ -302,8 +273,6 @@ func TestHotReloadGateOnFailureWhileOpen(t *testing.T) {
 		t.Errorf("revert not applied, got %q", got)
 	}
 }
-
-// ─── operator surfaces ───────────────────────────────────────────────────────
 
 func TestRegimeGateOutagePolicyNote(t *testing.T) {
 	rc := testRegimeConfig()
@@ -321,18 +290,18 @@ func TestRegimeGateOutagePolicyNote(t *testing.T) {
 		t.Fatal("expected a regime signature for the HL perps strategy")
 	}
 	due := []StrategyConfig{
-		mk("hl-zzz", "BTC", "closed", true), // same key, closed — sorted after hl-btc
+		mk("hl-zzz", "BTC", "closed", true),
 		btc,
-		mk("hl-open", "BTC", "", true),           // same key, fail-open
-		mk("hl-ungated", "BTC", "closed", false), // no gate → excluded
-		mk("hl-eth", "ETH", "closed", true),      // different signature → excluded
+		mk("hl-open", "BTC", "", true),
+		mk("hl-ungated", "BTC", "closed", false),
+		mk("hl-eth", "ETH", "closed", true),
 	}
 	note := regimeGateOutagePolicyNote(key.Key, due, rc)
 	want := "; entry gates — fail-closed (opens held): hl-btc, hl-zzz; fail-open (entries ungated): hl-open"
 	if note != want {
 		t.Errorf("note = %q, want %q", note, want)
 	}
-	// No gated strategies on the key → empty note.
+
 	if got := regimeGateOutagePolicyNote(key.Key, []StrategyConfig{mk("hl-ungated", "BTC", "closed", false)}, rc); got != "" {
 		t.Errorf("ungated-only note = %q, want empty", got)
 	}
@@ -348,28 +317,27 @@ func TestRegimeGateFailClosedActive(t *testing.T) {
 		Args: []string{"momentum", "BTC", "1h"}, AllowedRegimes: []string{"trending_up"}, RegimeGateOnFailure: "closed"}
 	flat := &StrategyState{ID: "hl-btc"}
 
-	// Empty store (failed/missing bundle) + flat + closed policy → active.
 	if !regimeGateFailClosedActive(sc, flat, rc) {
 		t.Error("empty store + flat + fail-closed must report an active fail-closed gate")
 	}
-	// Open position → never active (management is untouched).
+
 	open := &StrategyState{ID: "hl-btc", Positions: map[string]*Position{"BTC": {Quantity: 1}}}
 	if regimeGateFailClosedActive(sc, open, rc) {
 		t.Error("an open position must clear the fail-closed marker")
 	}
-	// Fail-open policy → never active.
+
 	openPolicy := sc
 	openPolicy.RegimeGateOnFailure = ""
 	if regimeGateFailClosedActive(openPolicy, flat, rc) {
 		t.Error("default fail-open policy must never mark the gate closed")
 	}
-	// No gate → never active.
+
 	ungated := sc
 	ungated.AllowedRegimes = nil
 	if regimeGateFailClosedActive(ungated, flat, rc) {
 		t.Error("no allowed_regimes gate must never mark the gate closed")
 	}
-	// Store produces a label → not active.
+
 	req, ok := strategyRegimeBundleRequest(sc, rc)
 	if !ok {
 		t.Fatal("expected a regime signature")

@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// Sole-owner full-close sizing: single live configured RH crypto strategy on
-// the coin → drain submits a market_sell for the entire on-account balance.
 func TestRunPendingRobinhoodCircuitCloses_SoleOwnerFullClose(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -66,8 +64,6 @@ func TestRunPendingRobinhoodCircuitCloses_SoleOwnerFullClose(t *testing.T) {
 	}
 }
 
-// Stuck-CB recovery: CB active + no pending + on-account position + fetch
-// succeeds this cycle → drain reconstructs pending and closes it.
 func TestRunPendingRobinhoodCircuitCloses_RecoversStuckCB(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -113,8 +109,6 @@ func TestRunPendingRobinhoodCircuitCloses_RecoversStuckCB(t *testing.T) {
 	}
 }
 
-// Stuck-CB recovery with no on-account position (operator manually closed)
-// must be a no-op rather than submitting a zero-size sell.
 func TestRunPendingRobinhoodCircuitCloses_StuckCBNoOnAccountPositionIsNoOp(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -159,9 +153,6 @@ func TestRunPendingRobinhoodCircuitCloses_StuckCBNoOnAccountPositionIsNoOp(t *te
 	}
 }
 
-// Shared-ownership gate: two live RH crypto strategies trade the same coin on
-// the same account → drain must NOT submit a close, must DM the owner, and
-// must clear the pending so stuck-CB recovery controls the next cycle's DM.
 func TestRunPendingRobinhoodCircuitCloses_SharedOwnershipSkipsAndDMs(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -211,7 +202,7 @@ func TestRunPendingRobinhoodCircuitCloses_SharedOwnershipSkipsAndDMs(t *testing.
 	if len(dms) != 1 {
 		t.Fatalf("expected exactly one owner DM, got %d: %v", len(dms), dms)
 	}
-	// DM must name firing strategy, coin, and list both peer IDs in sorted order.
+
 	msg := dms[0]
 	if !strings.Contains(msg, "rh-sma-btc") {
 		t.Errorf("DM missing firing strategy ID: %q", msg)
@@ -227,9 +218,6 @@ func TestRunPendingRobinhoodCircuitCloses_SharedOwnershipSkipsAndDMs(t *testing.
 	}
 }
 
-// Stuck-CB recovery must apply the sole-ownership gate before enqueueing —
-// otherwise shared-coin setups would silently latch pending state that the
-// submit phase would then immediately clear, producing churn without a DM.
 func TestRunPendingRobinhoodCircuitCloses_StuckCBSharedOwnershipSkipDMs(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -281,7 +269,6 @@ func TestRunPendingRobinhoodCircuitCloses_StuckCBSharedOwnershipSkipDMs(t *testi
 	}
 }
 
-// Submit error preserves pending so the next cycle retries (parity with HL).
 func TestRunPendingRobinhoodCircuitCloses_SubmitErrorRetainsPending(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -328,8 +315,6 @@ func TestRunPendingRobinhoodCircuitCloses_SubmitErrorRetainsPending(t *testing.T
 	}
 }
 
-// AlreadyFlat response from the adapter must clear the pending without
-// erroring, mirroring the HL/OKX contract.
 func TestRunPendingRobinhoodCircuitCloses_AlreadyFlatClearsPending(t *testing.T) {
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
@@ -375,8 +360,6 @@ func TestRunPendingRobinhoodCircuitCloses_AlreadyFlatClearsPending(t *testing.T)
 	}
 }
 
-// setRobinhoodCircuitBreakerPending enqueues on fresh CB fire when assist has
-// the cycle's RH positions. Validates the sc/state preconditions.
 func TestSetRobinhoodCircuitBreakerPending_EnqueuesWhenOnAccountPositionExists(t *testing.T) {
 	sc := &StrategyConfig{
 		ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
@@ -405,9 +388,6 @@ func TestSetRobinhoodCircuitBreakerPending_EnqueuesWhenOnAccountPositionExists(t
 	}
 }
 
-// setRobinhoodCircuitBreakerPending is a no-op when assist lacks the RH
-// positions snapshot (cycle-local fetch failure). Stuck-CB recovery picks it
-// up on the next cycle.
 func TestSetRobinhoodCircuitBreakerPending_NoOpWhenAssistMissingPositions(t *testing.T) {
 	sc := &StrategyConfig{
 		ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
@@ -426,7 +406,6 @@ func TestSetRobinhoodCircuitBreakerPending_NoOpWhenAssistMissingPositions(t *tes
 	}
 }
 
-// Paper-mode and cross-platform strategies must never enqueue RH pending.
 func TestSetRobinhoodCircuitBreakerPending_IgnoresNonLiveAndNonRobinhood(t *testing.T) {
 	paper := &StrategyConfig{
 		ID: "rh-paper", Platform: "robinhood", Type: "spot",
@@ -451,7 +430,6 @@ func TestSetRobinhoodCircuitBreakerPending_IgnoresNonLiveAndNonRobinhood(t *test
 	}
 }
 
-// rhLiveStrategiesForCoin basics — used by the drain's sole-owner gate.
 func TestRhLiveStrategiesForCoin(t *testing.T) {
 	roster := []StrategyConfig{
 		{ID: "rh-sma-btc", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
@@ -470,9 +448,6 @@ func TestRhLiveStrategiesForCoin(t *testing.T) {
 	}
 }
 
-// formatRobinhoodSharedOwnerDM must emit sorted peer IDs so repeat fires
-// produce byte-identical output (same contract as the #342 HL review —
-// operator-facing text iterating over strategies must be deterministic).
 func TestFormatRobinhoodSharedOwnerDM_DeterministicPeerOrder(t *testing.T) {
 	peers := []StrategyConfig{
 		{ID: "rh-zeta-btc"},
@@ -481,9 +456,6 @@ func TestFormatRobinhoodSharedOwnerDM_DeterministicPeerOrder(t *testing.T) {
 	}
 	msg := formatRobinhoodSharedOwnerDM("rh-zeta-btc", "BTC", peers)
 
-	// The firing strategy ID also appears in the peer list, and strings.Index
-	// would find it in the "strategy X tripped" prefix first. Scope the order
-	// check to the peer-list substring between '[' and ']'.
 	listStart := strings.Index(msg, "[")
 	listEnd := strings.Index(msg, "]")
 	if listStart < 0 || listEnd < 0 || listEnd <= listStart {

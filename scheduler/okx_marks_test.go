@@ -35,11 +35,11 @@ func TestFetchOKXPerpsMids_Basic(t *testing.T) {
 			http.Error(w, "wrong instType", http.StatusBadRequest)
 			return
 		}
-		w.Write(okxTickersResponse(map[string]string{ //nolint:errcheck
+		w.Write(okxTickersResponse(map[string]string{
 			"BTC-USDT-SWAP": "67500.50",
 			"ETH-USDT-SWAP": "3200.10",
 			"SOL-USDT-SWAP": "150.00",
-			"DOGE-USDT":     "0.10", // spot, not SWAP — should be ignored even if coin matches
+			"DOGE-USDT":     "0.10",
 		}))
 	}))
 	defer srv.Close()
@@ -78,7 +78,7 @@ func TestFetchOKXPerpsMids_EmptyCoins(t *testing.T) {
 
 func TestFetchOKXPerpsMids_CoinMissing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(okxTickersResponse(map[string]string{ //nolint:errcheck
+		w.Write(okxTickersResponse(map[string]string{
 			"BTC-USDT-SWAP": "67500.50",
 		}))
 	}))
@@ -118,7 +118,7 @@ func TestFetchOKXPerpsMids_HTTPError(t *testing.T) {
 
 func TestFetchOKXPerpsMids_InvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not-json")) //nolint:errcheck
+		w.Write([]byte("not-json"))
 	}))
 	defer srv.Close()
 
@@ -133,16 +133,14 @@ func TestFetchOKXPerpsMids_InvalidJSON(t *testing.T) {
 }
 
 func TestFetchOKXPerpsMids_APIErrorCode(t *testing.T) {
-	// OKX returns HTTP 200 with non-"0" code on logical errors — must surface
-	// as an error, not a silent empty map (would look like "no coins listed"
-	// and hide auth/rate-limit issues).
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]any{
 			"code": "50011",
 			"msg":  "Rate limit exceeded",
 			"data": []any{},
 		})
-		w.Write(body) //nolint:errcheck
+		w.Write(body)
 	}))
 	defer srv.Close()
 
@@ -158,7 +156,7 @@ func TestFetchOKXPerpsMids_APIErrorCode(t *testing.T) {
 
 func TestFetchOKXPerpsMids_ZeroPriceOmitted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(okxTickersResponse(map[string]string{ //nolint:errcheck
+		w.Write(okxTickersResponse(map[string]string{
 			"BTC-USDT-SWAP": "67500.50",
 			"ETH-USDT-SWAP": "0",
 			"SOL-USDT-SWAP": "bad",

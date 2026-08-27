@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// ─── Trade.Regime field ───────────────────────────────────────────────────────
-
 func TestTradeRegimeFieldExists(t *testing.T) {
 	trade := Trade{Regime: "trending_up"}
 	if trade.Regime != "trending_up" {
@@ -21,8 +19,6 @@ func TestTradeRegimeDefaultEmpty(t *testing.T) {
 		t.Errorf("expected empty Regime by default, got %q", trade.Regime)
 	}
 }
-
-// ─── FormatTradeDM includes regime ───────────────────────────────────────────
 
 func TestFormatTradeDM_IncludesRegime(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-btc-1", Platform: "hyperliquid", Type: "perps"}
@@ -53,9 +49,7 @@ func TestFormatTradeDM_RegimeBeforeMode(t *testing.T) {
 		Regime:   "ranging",
 	}
 	msg := FormatTradeDM(sc, trade, "paper")
-	// Mode is now embedded in the header line ("TRADE EXECUTED - PAPER"), not
-	// a separate "Mode:" field. Verify Regime appears in the message and that
-	// the header line (containing the mode) precedes the extras line.
+
 	if !strings.Contains(msg, "Regime: ranging") {
 		t.Fatalf("missing Regime in DM: %s", msg)
 	}
@@ -85,8 +79,6 @@ func TestFormatTradeDM_EmptyRegimeOmitted(t *testing.T) {
 		t.Errorf("empty Regime should be omitted from DM, got:\n%s", msg)
 	}
 }
-
-// ─── FormatTradeDMPlain includes regime ──────────────────────────────────────
 
 func TestFormatTradeDMPlain_IncludesRegime(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-btc-1", Platform: "hyperliquid", Type: "perps"}
@@ -120,8 +112,6 @@ func TestFormatTradeDMPlain_EmptyRegimeOmitted(t *testing.T) {
 		t.Errorf("empty Regime should be omitted from plain DM, got:\n%s", msg)
 	}
 }
-
-// ─── InsertTrade persists Regime ─────────────────────────────────────────────
 
 func TestInsertTrade_RegimePersisted(t *testing.T) {
 	db := mustOpenTestDB(t)
@@ -183,16 +173,10 @@ func TestInsertTrade_EmptyRegimeStored(t *testing.T) {
 	}
 }
 
-// ─── LoadState / QueryTradeHistory Scan round-trip ───────────────────────────
-
-// TestRegime_LoadStateAndQueryTradeHistoryRoundTrip locks the Scan column order
-// for the regime field. A misordered Scan (e.g. regime ↔ details swap) would
-// pass the raw-SQL InsertTrade tests above but corrupt application reads here.
 func TestRegime_LoadStateAndQueryTradeHistoryRoundTrip(t *testing.T) {
 	db := mustOpenTestDB(t)
 	defer db.Close()
 
-	// Seed app_state and strategies so LoadState finds the strategy.
 	if _, err := db.db.Exec("INSERT INTO app_state (id, cycle_count) VALUES (1, 1)"); err != nil {
 		t.Fatalf("seed app_state: %v", err)
 	}
@@ -211,7 +195,6 @@ func TestRegime_LoadStateAndQueryTradeHistoryRoundTrip(t *testing.T) {
 		t.Fatalf("InsertTrade trade2: %v", err)
 	}
 
-	// LoadState path (ASC order).
 	loaded, err := db.LoadState()
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
@@ -227,7 +210,6 @@ func TestRegime_LoadStateAndQueryTradeHistoryRoundTrip(t *testing.T) {
 		t.Errorf("LoadState trades[1].Regime = %q; want empty", got)
 	}
 
-	// QueryTradeHistory path (DESC order — newest first).
 	history, total, err := db.QueryTradeHistory("s1", "", time.Time{}, time.Time{}, 50, 0)
 	if err != nil {
 		t.Fatalf("QueryTradeHistory: %v", err)
@@ -243,12 +225,6 @@ func TestRegime_LoadStateAndQueryTradeHistoryRoundTrip(t *testing.T) {
 	}
 }
 
-// ─── Regime stamped at production RecordTrade call sites ─────────────────────
-
-// TestRegime_StampedAtProductionCallSites asserts that s.Regime flows into the
-// recorded Trade at every file that contains a RecordTrade call. One
-// representative path per file is sufficient — the goal is catching a future
-// call site that forgets the stamping line, not exhaustive branch coverage.
 func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	newState := func(platform string) *StrategyState {
 		return &StrategyState{
@@ -311,7 +287,7 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 
 	t.Run("hyperliquid_balance/applyHyperliquidCircuitCloseFill_noPosition", func(t *testing.T) {
 		s := newState("hyperliquid")
-		// Empty positions — exercises the defensive no-virtual-position branch.
+
 		applyHyperliquidCircuitCloseFill(s, "BTC", 1.0, 49000, 1.5, 1.0, 0, "")
 		if got := lastRegime(s); got != want {
 			t.Errorf("Regime = %q; want %q", got, want)
@@ -331,7 +307,7 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	t.Run("options/executeOptionSell", func(t *testing.T) {
 		s := newState("ibkr")
 		result := &OptionsResult{Underlying: "BTC", SpotPrice: 60000}
-		// Sell a call (not a put — avoids collateral check: strike*qty vs cash).
+
 		action := &OptionsAction{Action: "sell", OptionType: "call", Strike: 60000, Expiry: "2026-12-26", Quantity: 1, PremiumUSD: 100}
 		executeOptionSell(s, result, action, logger)
 		if got := lastRegime(s); got != want {
@@ -342,7 +318,7 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	t.Run("options/executeOptionClose", func(t *testing.T) {
 		s := newState("ibkr")
 		result := &OptionsResult{Underlying: "BTC", SpotPrice: 60000}
-		// Pre-populate a position that executeOptionClose will match on Underlying+OptionType+Strike.
+
 		posID := "BTC-call-buy-60000-2026-12-26"
 		s.OptionPositions[posID] = &OptionPosition{
 			ID: posID, Underlying: "BTC", OptionType: "call", Strike: 60000,
@@ -356,8 +332,6 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 		}
 	})
 }
-
-// ─── helpers ─────────────────────────────────────────────────────────────────
 
 func mustOpenTestDB(t *testing.T) *StateDB {
 	t.Helper()

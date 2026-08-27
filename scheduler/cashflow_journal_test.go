@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-// #1100 exchange-sourced equity journal: settled-cash convention, the equity
-// equation, cursor discipline, dedup, baseline anchoring, and unmapped-kind
-// fail-closed latching.
-
 func newCashflowJournalTestDB(t *testing.T) *StateDB {
 	t.Helper()
 	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
@@ -23,10 +19,6 @@ func newCashflowJournalTestDB(t *testing.T) *StateDB {
 	return db
 }
 
-// A fill's settled-cash delta is realized PnL (GROSS) minus the fee actually
-// charged: opens settle -fee, closes settle closedPnl-fee, and a maker rebate
-// (negative fee) ADDS to cash. closedPnl is gross of fees (#698) so the fee is
-// subtracted exactly once — never twice, never zero times.
 func TestCashflowFillSettledDelta(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -47,7 +39,6 @@ func TestCashflowFillSettledDelta(t *testing.T) {
 	}
 }
 
-// expected = baseline_accountValue + Σ settled deltas + (current_uPnL - baseline_uPnL).
 func TestCashflowJournalExpectedEquity(t *testing.T) {
 	cases := []struct {
 		name                               string
@@ -68,9 +59,6 @@ func TestCashflowJournalExpectedEquity(t *testing.T) {
 	}
 }
 
-// The watermark advances one past the highest processed event, EXCEPT it never
-// lands at/after a failed event's timestamp — so a same-ms sibling that
-// persisted cannot strand the failed event behind the cursor.
 func TestAdvanceCashflowCursor(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -93,8 +81,6 @@ func TestAdvanceCashflowCursor(t *testing.T) {
 	}
 }
 
-// tid is the canonical per-fill key (one OID fragments into many fills); the
-// time:hash:coin form is the fallback when tid is absent or zero.
 func TestCashflowFillDedupID(t *testing.T) {
 	withTid := hlFillRecord{Coin: "BTC", Time: 1700000000000, Hash: "0xabc", Tid: json.Number("987654321")}
 	if got, want := cashflowFillDedupID(withTid), "fill:tid:987654321"; got != want {
@@ -131,8 +117,6 @@ func TestCashflowJournalStateRoundTrip(t *testing.T) {
 	}
 }
 
-// First contact anchors the baseline to the supplied snapshot, sets the cursors
-// to now, and fetches NO history — pre-adoption movement belongs to the baseline.
 func TestCashflowJournalBaselineAnchorsOnFirstContact(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
@@ -157,20 +141,15 @@ func TestCashflowJournalBaselineAnchorsOnFirstContact(t *testing.T) {
 	}
 }
 
-// End-to-end fetch -> ingest -> sum with stubbed HTTP. Reconstructed settled sum
-// must equal Σ(fill settled deltas) + funding + transfers, and the expected
-// equity must close the loop against a hand-computed accountValue.
 func TestCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 
-	// Anchor baseline at AV=1000, uPnL=0, cursors at t0.
 	t0 := time.UnixMilli(1700000000000).UTC()
 	if r := fetchCashflowJournalEvents(db, key, 1000.0, 0.0, t0); !r.StateFound {
 		t.Fatal("baseline init failed")
 	}
 
-	// Stub the three event streams for the next cycle.
 	origFills := fetchHyperliquidUserFillsByTime
 	origFunding := fetchHyperliquidUserFunding
 	origTransfers := fetchHyperliquidLedgerUpdates
@@ -181,8 +160,8 @@ func TestCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	}()
 	fetchHyperliquidUserFillsByTime = func(addr string, sinceMs int64) ([]hlFillRecord, error) {
 		return []hlFillRecord{
-			{Coin: "BTC", Time: t0.UnixMilli() + 10, Tid: json.Number("1"), ClosedPnl: "0", Fee: "0.5"},  // open: -0.5
-			{Coin: "BTC", Time: t0.UnixMilli() + 20, Tid: json.Number("2"), ClosedPnl: "20", Fee: "0.3"}, // close: +19.7
+			{Coin: "BTC", Time: t0.UnixMilli() + 10, Tid: json.Number("1"), ClosedPnl: "0", Fee: "0.5"},
+			{Coin: "BTC", Time: t0.UnixMilli() + 20, Tid: json.Number("2"), ClosedPnl: "20", Fee: "0.3"},
 		}, nil
 	}
 	fetchHyperliquidUserFunding = func(addr string, sinceMs int64) ([]hlLedgerEvent, error) {
@@ -192,8 +171,8 @@ func TestCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	}
 	fetchHyperliquidLedgerUpdates = func(addr string, sinceMs int64) ([]hlLedgerEvent, error) {
 		return []hlLedgerEvent{
-			{Time: t0.UnixMilli() + 6, Hash: "0xd1", Delta: hlLedgerEventDelta{Type: "deposit", USDC: "100"}},           // +100
-			{Time: t0.UnixMilli() + 7, Hash: "0xw1", Delta: hlLedgerEventDelta{Type: "withdraw", USDC: "50", Fee: "1"}}, // -(50+1)=-51
+			{Time: t0.UnixMilli() + 6, Hash: "0xd1", Delta: hlLedgerEventDelta{Type: "deposit", USDC: "100"}},
+			{Time: t0.UnixMilli() + 7, Hash: "0xw1", Delta: hlLedgerEventDelta{Type: "withdraw", USDC: "50", Fee: "1"}},
 		}, nil
 	}
 
@@ -211,14 +190,13 @@ func TestCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sum: %v", err)
 	}
-	const wantSettled = -0.5 + 19.7 - 1.0 + 100 - 51 // 67.2
+	const wantSettled = -0.5 + 19.7 - 1.0 + 100 - 51
 	if math.Abs(settled-wantSettled) > 1e-9 {
 		t.Fatalf("settled sum = %v, want %v", settled, wantSettled)
 	}
 
 	expected := cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
-	// baseline 1000 + 67.2 settled + (5 - 0) uPnL = 1072.2; accountValue snapshot
-	// was 1072.2 so the journal closes the loop with ~0 drift.
+
 	if math.Abs(expected-1072.2) > 1e-9 {
 		t.Errorf("expected equity = %v, want 1072.2", expected)
 	}
@@ -226,7 +204,6 @@ func TestCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 		t.Errorf("journal drift = %v, want ~0", drift)
 	}
 
-	// Cursors advanced past the latest event of each stream.
 	if st.FillsSinceMs != t0.UnixMilli()+20+1 {
 		t.Errorf("fills cursor = %d, want %d", st.FillsSinceMs, t0.UnixMilli()+21)
 	}
@@ -238,15 +215,13 @@ func TestCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	}
 }
 
-// A duplicate dedup_id (cursor-overlap re-read) is booked once, so re-ingesting
-// the same events must not double-count the settled sum.
 func TestCashflowJournalDedup(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 	if err := db.InsertCashflowJournalEntry(key.Platform, key.Account, 1700000000000, "fill", 19.7, "BTC", 20, 0.3, "fill:tid:42"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	// Same dedup_id again (e.g. a re-fetch over the cursor boundary).
+
 	if err := db.InsertCashflowJournalEntry(key.Platform, key.Account, 1700000000000, "fill", 19.7, "BTC", 20, 0.3, "fill:tid:42"); err != nil {
 		t.Fatalf("dup insert should be ignored, not error: %v", err)
 	}
@@ -259,8 +234,6 @@ func TestCashflowJournalDedup(t *testing.T) {
 	}
 }
 
-// An ingest pass that re-reads events at/below the watermark (overlap) must not
-// re-book them, AND the DB UNIQUE guard backs that up.
 func TestCashflowJournalIngestIdempotentOnReplay(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
@@ -275,7 +248,7 @@ func TestCashflowJournalIngestIdempotentOnReplay(t *testing.T) {
 		}
 	}
 	st1 := ingestCashflowJournalEvents(db, mkRes(base), cashflowCutoffAll)
-	// Re-fetch returns the same fill (overlap); cursor already advanced past it.
+
 	st2 := ingestCashflowJournalEvents(db, mkRes(st1), cashflowCutoffAll)
 	sum, err := db.SumCashflowJournal(key.Platform, key.Account)
 	if err != nil {
@@ -289,8 +262,6 @@ func TestCashflowJournalIngestIdempotentOnReplay(t *testing.T) {
 	}
 }
 
-// An unmapped ledger delta type latches Incomplete (so a future alarm switch
-// fails closed) and still records a $0-effect row so the event stays visible.
 func TestCashflowJournalUnmappedKindLatchesIncomplete(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
@@ -313,15 +284,13 @@ func TestCashflowJournalUnmappedKindLatchesIncomplete(t *testing.T) {
 	if math.Abs(sum) > 1e-9 {
 		t.Errorf("unmapped row must record $0 effect, sum = %v", sum)
 	}
-	// And it persisted the latch.
+
 	got, _, _ := db.GetCashflowJournalState(key.Platform, key.Account)
 	if !got.Incomplete {
 		t.Error("Incomplete latch not persisted")
 	}
 }
 
-// A persistence failure must HALT the cursor at the failed event so a crash
-// can never strand an un-booked event behind an advanced watermark.
 func TestCashflowJournalCursorHaltsOnPersistFailure(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
@@ -331,7 +300,7 @@ func TestCashflowJournalCursorHaltsOnPersistFailure(t *testing.T) {
 		StateFound: true, FillsFetched: true,
 		Fills: []hlFillRecord{{Coin: "BTC", Time: 200, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"}},
 	}
-	// Force every insert to fail by closing the DB first.
+
 	db.Close()
 	st := ingestCashflowJournalEvents(db, res, cashflowCutoffAll)
 	if st.FillsSinceMs != 100 {
@@ -339,13 +308,8 @@ func TestCashflowJournalCursorHaltsOnPersistFailure(t *testing.T) {
 	}
 }
 
-// cashflowCutoffAll is a far-future ingest cutoff for tests that are not
-// exercising the snapshot-boundary deferral.
 const cashflowCutoffAll = int64(1) << 62
 
-// Events settled AFTER the snapshot cutoff are NOT booked and the cursor is NOT
-// advanced past them, so they are picked up next cycle once accountValue
-// includes their impact — preventing an in-flight fill from reading as drift.
 func TestCashflowJournalIngestRespectsCutoff(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
@@ -353,8 +317,8 @@ func TestCashflowJournalIngestRespectsCutoff(t *testing.T) {
 	res := cashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, FillsFetched: true,
 		Fills: []hlFillRecord{
-			{Coin: "BTC", Time: 150, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"}, // <= cutoff: booked
-			{Coin: "BTC", Time: 250, Tid: json.Number("2"), ClosedPnl: "30", Fee: "0.5"}, // > cutoff: deferred
+			{Coin: "BTC", Time: 150, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"},
+			{Coin: "BTC", Time: 250, Tid: json.Number("2"), ClosedPnl: "30", Fee: "0.5"},
 		},
 	}
 	st := ingestCashflowJournalEvents(db, res, 200)
@@ -369,7 +333,6 @@ func TestCashflowJournalIngestRespectsCutoff(t *testing.T) {
 		t.Errorf("cursor advanced past the cutoff: %d, want 151 (one past the booked fill)", st.FillsSinceMs)
 	}
 
-	// Next cycle: same events, cutoff now includes the deferred fill -> it books.
 	res2 := res
 	res2.State = st
 	st2 := ingestCashflowJournalEvents(db, res2, 300)
@@ -382,15 +345,11 @@ func TestCashflowJournalIngestRespectsCutoff(t *testing.T) {
 	}
 }
 
-// reconcileCashflowJournal returns Usable only when the baseline is anchored,
-// all three streams fetched, and the journal is not incomplete; first contact
-// (baseline just set, no fetch) is NOT usable.
 func TestReconcileCashflowJournalUsability(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
 	t0 := time.UnixMilli(1700000000000).UTC()
 
-	// First contact: baseline anchored, returns rec but NOT usable (drives no alarm).
 	rec := reconcileCashflowJournal(db, key, 1000.0, 0.0, t0)
 	if rec == nil {
 		t.Fatal("first contact should still return a rec (baseline anchored)")
@@ -399,7 +358,6 @@ func TestReconcileCashflowJournalUsability(t *testing.T) {
 		t.Error("first contact must not be usable")
 	}
 
-	// Next cycle: stub all three streams empty -> usable, drift ~0 (no movement).
 	origFills := fetchHyperliquidUserFillsByTime
 	origFunding := fetchHyperliquidUserFunding
 	origTransfers := fetchHyperliquidLedgerUpdates
@@ -420,7 +378,6 @@ func TestReconcileCashflowJournalUsability(t *testing.T) {
 		t.Errorf("no movement should reconcile to ~0 drift, got %v", rec2.Drift)
 	}
 
-	// A funding fetch failure makes the cycle not usable (events missing).
 	fetchHyperliquidUserFunding = func(string, int64) ([]hlLedgerEvent, error) { return nil, errTestFetch }
 	rec3 := reconcileCashflowJournal(db, key, 1000.0, 0.0, t0.Add(2*time.Minute))
 	if rec3 == nil || rec3.Usable {
@@ -430,9 +387,6 @@ func TestReconcileCashflowJournalUsability(t *testing.T) {
 
 var errTestFetch = errors.New("simulated fetch failure")
 
-// applyCashflowJournalDriftBasis overrides the HL wallet's alarm drift with the
-// journal drift ONLY when enabled and usable; it leaves other wallets and the
-// fallback cases on the trade-ledger basis.
 func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 	prevPending := cashflowJournalPendingStreaks
 	cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
@@ -448,9 +402,6 @@ func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 	}
 	usable := &cashflowJournalReconcile{Key: hlKey, AccountValue: 1000, ExpectedEquity: 1000.0, Drift: 0.0, Usable: true}
 
-	// Enabled + usable -> HL switches to journal drift (0.0), OKX untouched.
-	// #1107: OrphanCoins is PRESERVED (not nil'd) so an unowned position still
-	// alarms even though the journal total reconciles.
 	res := mk()
 	applyCashflowJournalDriftBasis(res, hlKey, usable, true)
 	if res[0].Basis != driftBasisJournal || math.Abs(res[0].Drift) > 1e-9 {
@@ -466,18 +417,12 @@ func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 		t.Errorf("OKX must be untouched: %+v", res[1])
 	}
 
-	// Operator-disabled -> HL stays fully on the trade-ledger drift (not pending).
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, usable, false)
 	if res[0].Basis != "" || res[0].Drift != 0.40 || res[0].JournalPending {
 		t.Errorf("disabled: HL must keep trade-ledger drift, not pending: %+v", res[0])
 	}
 
-	// #1107: enabled but TRANSIENTLY not usable (a stream-fetch miss, NOT
-	// incomplete) -> marked JournalPending so reportSharedWalletDrift preserves
-	// the journal streak instead of resetting it off the clean ledger fallback.
-	// A short transient (within the confirmation window) stays suppressed; a
-	// PERSISTENT outage past the window must fail closed to the trade-ledger basis.
 	cashflowJournalPendingStreaks.reset(sharedWalletKeyLabel(hlKey))
 	for cycle := 1; cycle <= sharedWalletDriftAlertThreshold; cycle++ {
 		res = mk()
@@ -486,15 +431,13 @@ func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 			t.Errorf("transient miss cycle %d (within window) must be journal-pending: %+v", cycle, res[0])
 		}
 	}
-	// One cycle past the confirmation window -> the outage is now persistent; fail
-	// closed to the trade-ledger basis (drift 0.40, NOT pending) so the alarm runs.
+
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false}, true)
 	if res[0].JournalPending || res[0].Basis != "" || res[0].Drift != 0.40 {
 		t.Errorf("persistent miss must fail closed to trade-ledger (drift 0.40, not pending): %+v", res[0])
 	}
-	// A single usable cycle breaks the outage and resets the streak: a later
-	// transient miss is suppressed again from cycle 1 (no carry-over).
+
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, usable, true)
 	res = mk()
@@ -504,15 +447,12 @@ func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 	}
 	cashflowJournalPendingStreaks.reset(sharedWalletKeyLabel(hlKey))
 
-	// #1107: enabled but INCOMPLETE (latched unmapped event) -> fail closed to the
-	// trade-ledger basis so SOME alarm runs; NOT pending (the ledger governs).
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false, Incomplete: true}, true)
 	if res[0].Basis != "" || res[0].Drift != 0.40 || res[0].JournalPending {
 		t.Errorf("incomplete must fail closed to trade-ledger (not pending): %+v", res[0])
 	}
 
-	// nil rec -> no-op.
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, nil, true)
 	if res[0].Basis != "" || res[0].Drift != 0.40 || res[0].JournalPending {
@@ -530,8 +470,6 @@ func TestCashflowJournalAlarmEnabled(t *testing.T) {
 	}
 }
 
-// HL spot coins are an index ("@107") or a named pair ("PURR/USDC"); perps
-// assets never contain "/" or start with "@".
 func TestHLFillIsSpot(t *testing.T) {
 	spot := []string{"@107", "@1", "PURR/USDC", "ETH/USDC", " @5 ", "BTC/USDC"}
 	perps := []string{"BTC", "ETH", "kPEPE", "HYPE", "SOL", "", " BTC "}
@@ -547,11 +485,6 @@ func TestHLFillIsSpot(t *testing.T) {
 	}
 }
 
-// HL userFillsByTime returns SPOT fills too, but the journal reconciles the
-// PERPS marginSummary.accountValue — a spot fill settles against the separate
-// spot USDC balance and must contribute $0, exactly as signedPerpFlowUSD
-// excludes spot on the transfer stream. Mixing spot into the perps settled sum
-// injects spurious drift and can MASK a real perps drift of opposite sign.
 func TestCashflowJournalExcludesSpotFills(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xabc"}
@@ -561,28 +494,23 @@ func TestCashflowJournalExcludesSpotFills(t *testing.T) {
 		State:      CashflowJournalState{FillsSinceMs: t0, BaselineSet: true},
 		StateFound: true, FillsFetched: true,
 		Fills: []hlFillRecord{
-			{Coin: "BTC", Time: t0 + 10, Tid: json.Number("1"), ClosedPnl: "0", Fee: "0.5"},        // perps open: -0.5
-			{Coin: "@107", Time: t0 + 15, Tid: json.Number("2"), ClosedPnl: "0", Fee: "9.8"},       // SPOT: would mask the perps gain
-			{Coin: "BTC", Time: t0 + 20, Tid: json.Number("3"), ClosedPnl: "10", Fee: "0.2"},       // perps close: +9.8
-			{Coin: "PURR/USDC", Time: t0 + 25, Tid: json.Number("4"), ClosedPnl: "0", Fee: "-0.1"}, // SPOT maker rebate (negative fee)
+			{Coin: "BTC", Time: t0 + 10, Tid: json.Number("1"), ClosedPnl: "0", Fee: "0.5"},
+			{Coin: "@107", Time: t0 + 15, Tid: json.Number("2"), ClosedPnl: "0", Fee: "9.8"},
+			{Coin: "BTC", Time: t0 + 20, Tid: json.Number("3"), ClosedPnl: "10", Fee: "0.2"},
+			{Coin: "PURR/USDC", Time: t0 + 25, Tid: json.Number("4"), ClosedPnl: "0", Fee: "-0.1"},
 		},
 	}
 	st := ingestCashflowJournalEvents(db, res, cashflowCutoffAll)
 
-	// (a)+(c): the perps settled sum is byte-identical to the perps-only sum; the
-	// spot fee does NOT cancel the real perps gain (no masking), and the spot
-	// maker rebate adds nothing.
 	sum, err := db.SumCashflowJournal(key.Platform, key.Account)
 	if err != nil {
 		t.Fatalf("sum: %v", err)
 	}
-	const wantPerpsOnly = -0.5 + 9.8 // 9.3; with the bug it would be 9.3 - 9.8 + 0.1 = -0.4
+	const wantPerpsOnly = -0.5 + 9.8
 	if math.Abs(sum-wantPerpsOnly) > 1e-9 {
 		t.Fatalf("spot leaked into perps settled sum: got %v, want %v (perps-only)", sum, wantPerpsOnly)
 	}
 
-	// (b): spot rows are still booked (visible + deduped) but at $0 amount under a
-	// distinct kind, with closedPnl/fee retained as metadata only.
 	var spotRows, spotNonZero int
 	rows, err := db.db.Query(`SELECT amount_usd FROM cashflow_journal WHERE kind = 'fill_spot' AND platform = ? AND account = ?`, key.Platform, key.Account)
 	if err != nil {
@@ -606,8 +534,6 @@ func TestCashflowJournalExcludesSpotFills(t *testing.T) {
 		t.Errorf("%d spot rows carried a non-zero perps amount", spotNonZero)
 	}
 
-	// Spot fills still advance the cursor (the latest event is a spot fill), so
-	// they are booked once and not re-fetched forever.
 	if st.FillsSinceMs != t0+25+1 {
 		t.Errorf("cursor = %d, want %d (advanced past the latest spot fill)", st.FillsSinceMs, t0+26)
 	}

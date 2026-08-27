@@ -70,10 +70,6 @@ type UIApplyConfigResponse struct {
 	Message         string `json:"message"`
 }
 
-// SetConfigContext refreshes config-derived server context on startup and
-// after a SIGHUP hot reload. The #1231 ops fields (intervalSeconds,
-// userCloseDefaults) are guarded by strategiesMu — same lock discipline as
-// UpdateStrategies, since the reload path already holds the global state mu.
 func (ss *StatusServer) SetConfigContext(configPath string, cfg *Config) {
 	if ss == nil || cfg == nil {
 		return
@@ -81,7 +77,7 @@ func (ss *StatusServer) SetConfigContext(configPath string, cfg *Config) {
 	ss.configPath = configPath
 	ss.regime = cfg.Regime
 	ss.strategiesMu.Lock()
-	ss.uiCfg = cfg // #1257: live config snapshot for the trade-action cores
+	ss.uiCfg = cfg
 	ss.intervalSeconds = cfg.IntervalSeconds
 	ss.userCloseDefaults = cfg.userDefaultsClose()
 	ss.globalNotifyRatchet = cfg.NotifyRatchetTriggers
@@ -154,10 +150,7 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 
 	livePayload := simulateConfigPayload(liveCfg, ss.regime)
 	simPayload := simulateConfigPayload(simCfg, ss.regime)
-	// #1277: stamp the RESOLVED ATR smoothing method (per-strategy > global >
-	// simple) so the simulate preview's injected ATR matches the live cycle's
-	// --atr-method. Resolved Go-side because the Python payload has no view of
-	// the global config default.
+
 	uiCfg := ss.uiTradeConfig()
 	livePayload["atr_method"] = resolveATRMethod(liveCfg, uiCfg)
 	simPayload["atr_method"] = resolveATRMethod(simCfg, uiCfg)
@@ -282,11 +275,6 @@ func (ss *StatusServer) strategyHasOpenPosition(id string) bool {
 	return false
 }
 
-// requireMutatingAPIAuth guards mutating dashboard endpoints. Per the #1229
-// security model (#1256): the server binds loopback-only and the dashboard is
-// intentionally unauthenticated, so an unset status_token no longer blocks
-// mutations — token checks apply only when a token happens to be configured.
-// requireSameOrigin (CSRF defense) remains mandatory on every POST regardless.
 func (ss *StatusServer) requireMutatingAPIAuth(w http.ResponseWriter, r *http.Request) bool {
 	return ss.requireAPIAuth(w, r)
 }
@@ -317,10 +305,6 @@ type pythonErrorResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// strategy_tuner_schema.py output is registry-derived and process-static for a
-// given (type, open-strategy) pair. Cache it so repeated /api/strategies/*/config
-// polls (tuning page every 3s, dashboard refreshes) do not re-acquire
-// pythonSemaphore and contend with the live trading loop.
 type strategySchemaCacheEntry struct {
 	defaults map[string]interface{}
 	desc     string
@@ -651,8 +635,6 @@ func mergeStrategyTunerOverrides(base StrategyConfig, overrides map[string]json.
 	return out, nil
 }
 
-// decodeOptionalBool parses a JSON bool or null ("null" → nil, meaning
-// "clear the override / inherit").
 func decodeOptionalBool(raw json.RawMessage) (*bool, error) {
 	if string(raw) == "null" {
 		return nil, nil
@@ -920,10 +902,7 @@ func patchStrategyJSON(item map[string]json.RawMessage, merged StrategyConfig, o
 			deleteKey("stop_loss_pct")
 		}
 	}
-	// #1256: paused and notify_ratchet_triggers are hot-reloadable always
-	// (including while a position is open — #1150/#1118), so they never flip
-	// restartRequired. paused=false and a nil notify override delete the key
-	// (both fields are omitempty; absence is the canonical default).
+
 	if _, ok := overrides["paused"]; ok {
 		if merged.Paused {
 			if err := set("paused", true); err != nil {

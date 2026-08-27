@@ -1,21 +1,11 @@
 package main
 
-// #1233 cashflow-journal audit gaps: journal-drift override semantics, the
-// shadow-only (HL-only) guard on applyCashflowJournalDriftBasis, exact
-// watermark/cutoff boundary booking, closed_pnl_gross exclusion from the sum,
-// and zero-amount event booking. Reuses fixtures from cashflow_journal_test.go
-// (newCashflowJournalTestDB, cashflowCutoffAll), okx_cashflow_journal_test.go
-// (newOKXJournalKey), topstep_cashflow_journal_test.go (newTopStepJournalKey).
-
 import (
 	"encoding/json"
 	"math"
 	"testing"
 )
 
-// A usable journal reading with NON-ZERO drift must override the ledger drift
-// (and the mirror: a zero journal drift overrides a non-zero ledger drift),
-// carrying ExpectedEquity and resetting the pending streak.
 func TestApplyCashflowJournalDriftBasis_UsableNonZeroJournalDriftOverridesLedger(t *testing.T) {
 	prevPending := cashflowJournalPendingStreaks
 	cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
@@ -24,7 +14,6 @@ func TestApplyCashflowJournalDriftBasis_UsableNonZeroJournalDriftOverridesLedger
 	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: "0xaudit"}
 	label := sharedWalletKeyLabel(hlKey)
 
-	// Seed a non-zero pending streak so the usable cycle must reset it.
 	cashflowJournalPendingStreaks.mark(label)
 	cashflowJournalPendingStreaks.mark(label)
 
@@ -44,13 +33,12 @@ func TestApplyCashflowJournalDriftBasis_UsableNonZeroJournalDriftOverridesLedger
 	if res[0].JournalPending {
 		t.Errorf("usable cycle must not be journal-pending: %+v", res[0])
 	}
-	// A usable cycle resets the streak: the next mark must count from 1.
+
 	if got := cashflowJournalPendingStreaks.mark(label); got != 1 {
 		t.Errorf("pending streak not reset by usable cycle: next mark = %d, want 1", got)
 	}
 	cashflowJournalPendingStreaks.reset(label)
 
-	// Mirror: non-zero ledger drift, zero journal drift -> journal (0.0) governs.
 	res = []sharedWalletDriftResult{{Key: hlKey, Drift: 0.40, Balance: 1000, MemberSum: 999.6}}
 	rec = &cashflowJournalReconcile{Key: hlKey, Usable: true, Drift: 0.0, ExpectedEquity: 1000, AccountValue: 1000}
 	applyCashflowJournalDriftBasis(res, hlKey, rec, true)
@@ -62,9 +50,6 @@ func TestApplyCashflowJournalDriftBasis_UsableNonZeroJournalDriftOverridesLedger
 	}
 }
 
-// #1233 shadow-only enforcement: applyCashflowJournalDriftBasis refuses a
-// non-Hyperliquid key entirely — no basis switch, no drift mutation — even when
-// handed a usable journal rec for that key.
 func TestApplyCashflowJournalDriftBasis_RefusesNonHLKey(t *testing.T) {
 	prevPending := cashflowJournalPendingStreaks
 	cashflowJournalPendingStreaks = &cashflowJournalPendingTracker{}
@@ -78,16 +63,12 @@ func TestApplyCashflowJournalDriftBasis_RefusesNonHLKey(t *testing.T) {
 	if res[0].Basis != "" || res[0].Drift != 1.23 || res[0].JournalPending {
 		t.Errorf("non-HL key must be refused (entry unchanged): %+v", res[0])
 	}
-	// The guard must also not have touched the pending-streak tracker.
+
 	if got := cashflowJournalPendingStreaks.mark(sharedWalletKeyLabel(okxKey)); got != 1 {
 		t.Errorf("guard must not mutate the pending tracker: next mark = %d, want 1", got)
 	}
 }
 
-// An event settled EXACTLY at the watermark (Time == FillsSinceMs) is booked —
-// the skip is strict `<` at cashflow_journal.go:348 — and the cursor advances
-// one past it. Covered for HL, OKX, and TopStep (all three share the strict-<
-// boundary via advanceCashflowCursor).
 func TestCashflowJournalIngestBooksEventAtWatermark(t *testing.T) {
 	t.Run("hyperliquid", func(t *testing.T) {
 		db := newCashflowJournalTestDB(t)
@@ -96,7 +77,7 @@ func TestCashflowJournalIngestBooksEventAtWatermark(t *testing.T) {
 		res := cashflowJournalFetchResult{
 			Key: key, State: base, StateFound: true, FillsFetched: true,
 			Fills: []hlFillRecord{
-				{Coin: "BTC", Time: 150, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"}, // == watermark: booked
+				{Coin: "BTC", Time: 150, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"},
 			},
 		}
 		st := ingestCashflowJournalEvents(db, res, cashflowCutoffAll)
@@ -119,7 +100,7 @@ func TestCashflowJournalIngestBooksEventAtWatermark(t *testing.T) {
 		res := okxCashflowJournalFetchResult{
 			Key: key, State: base, StateFound: true, BillsFetched: true,
 			Bills: []okxBillRecord{
-				{BillID: "wm", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 9.8}, // == watermark: booked
+				{BillID: "wm", TimeMs: 150, Ccy: "USDT", Type: "2", BalChg: 9.8},
 			},
 		}
 		st := ingestOKXCashflowJournalEvents(db, res, cashflowCutoffAll)
@@ -142,7 +123,7 @@ func TestCashflowJournalIngestBooksEventAtWatermark(t *testing.T) {
 		res := topstepCashflowJournalFetchResult{
 			Key: key, State: base, StateFound: true, FillsFetched: true,
 			Fills: []topstepFillRecord{
-				{FillID: "wm", TimeMs: 150, Symbol: "ES", Kind: "trade", RealizedPnL: 10, Fee: 0.2}, // == watermark: booked
+				{FillID: "wm", TimeMs: 150, Symbol: "ES", Kind: "trade", RealizedPnL: 10, Fee: 0.2},
 			},
 		}
 		st := ingestTopStepCashflowJournalEvents(db, res, cashflowCutoffAll)
@@ -159,9 +140,6 @@ func TestCashflowJournalIngestBooksEventAtWatermark(t *testing.T) {
 	})
 }
 
-// An event settled EXACTLY at the cutoff (Time == cutoffMs) is booked — the
-// defer is strict `>` at cashflow_journal.go:351 — while the next-ms event is
-// deferred, cursor stopping one past the booked fill.
 func TestCashflowJournalIngestBooksEventAtCutoff(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xcut"}
@@ -169,8 +147,8 @@ func TestCashflowJournalIngestBooksEventAtCutoff(t *testing.T) {
 	res := cashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, FillsFetched: true,
 		Fills: []hlFillRecord{
-			{Coin: "BTC", Time: 200, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"}, // == cutoff: booked
-			{Coin: "BTC", Time: 201, Tid: json.Number("2"), ClosedPnl: "30", Fee: "0.5"}, // > cutoff: deferred
+			{Coin: "BTC", Time: 200, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"},
+			{Coin: "BTC", Time: 201, Tid: json.Number("2"), ClosedPnl: "30", Fee: "0.5"},
 		},
 	}
 	st := ingestCashflowJournalEvents(db, res, 200)
@@ -186,13 +164,10 @@ func TestCashflowJournalIngestBooksEventAtCutoff(t *testing.T) {
 	}
 }
 
-// SumCashflowJournal sums amount_usd ONLY — closed_pnl_gross is attribution
-// metadata and must never leak into the settled-cash total.
 func TestSumCashflowJournalIgnoresClosedPnlGross(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xsum"}
 
-	// Fill: net amount 19.7, gross 20 (gross must be ignored by the sum).
 	if err := db.InsertCashflowJournalEntry(key.Platform, key.Account, 100, "fill", 19.7, "BTC", 20, 0.3, "fill:1"); err != nil {
 		t.Fatalf("insert fill: %v", err)
 	}
@@ -208,9 +183,6 @@ func TestSumCashflowJournalIgnoresClosedPnlGross(t *testing.T) {
 	}
 }
 
-// A mapped fill with a zero settled delta is still booked as a row (visible +
-// deduped), the cursor advances past it, and Incomplete is NOT latched; the
-// sum reflects only the non-zero delta.
 func TestCashflowJournalBooksZeroAmountEvents(t *testing.T) {
 	db := newCashflowJournalTestDB(t)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xzero"}
@@ -218,8 +190,8 @@ func TestCashflowJournalBooksZeroAmountEvents(t *testing.T) {
 	res := cashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, FillsFetched: true,
 		Fills: []hlFillRecord{
-			{Coin: "BTC", Time: 150, Tid: json.Number("1"), ClosedPnl: "0", Fee: "0"},    // zero delta: still booked
-			{Coin: "BTC", Time: 160, Tid: json.Number("2"), ClosedPnl: "10", Fee: "0.2"}, // non-zero
+			{Coin: "BTC", Time: 150, Tid: json.Number("1"), ClosedPnl: "0", Fee: "0"},
+			{Coin: "BTC", Time: 160, Tid: json.Number("2"), ClosedPnl: "10", Fee: "0.2"},
 		},
 	}
 	st := ingestCashflowJournalEvents(db, res, cashflowCutoffAll)

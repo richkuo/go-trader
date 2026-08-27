@@ -16,19 +16,18 @@ func TestResolveChannel(t *testing.T) {
 		"options":     "ch-opts",
 	}
 
-	// platform match takes priority
 	if got := resolveChannel(channels, "hyperliquid", "perps"); got != "ch-hl" {
 		t.Errorf("expected ch-hl, got %s", got)
 	}
-	// fall through to stratType
+
 	if got := resolveChannel(channels, "binanceus", "spot"); got != "ch-spot" {
 		t.Errorf("expected ch-spot, got %s", got)
 	}
-	// options type
+
 	if got := resolveChannel(channels, "deribit", "options"); got != "ch-opts" {
 		t.Errorf("expected ch-opts for deribit options, got %s", got)
 	}
-	// unknown → empty
+
 	if got := resolveChannel(channels, "unknown", "unknown"); got != "" {
 		t.Errorf("expected empty, got %s", got)
 	}
@@ -41,27 +40,22 @@ func TestResolveTradeChannel(t *testing.T) {
 		"spot":              "ch-spot",
 	}
 
-	// Paper trade: uses <platform>-paper when present.
 	if got := resolveTradeChannel(channels, "hyperliquid", "perps", false); got != "ch-hl-paper" {
 		t.Errorf("paper with -paper key: expected ch-hl-paper, got %s", got)
 	}
 
-	// Live trade: uses base platform key (ignores -paper).
 	if got := resolveTradeChannel(channels, "hyperliquid", "perps", true); got != "ch-hl" {
 		t.Errorf("live trade: expected ch-hl, got %s", got)
 	}
 
-	// Paper trade with no -paper key: falls back to base platform.
 	if got := resolveTradeChannel(channels, "binanceus", "spot", false); got != "ch-spot" {
 		t.Errorf("paper fallback to stratType: expected ch-spot, got %s", got)
 	}
 
-	// Paper trade with no channel at all.
 	if got := resolveTradeChannel(channels, "unknown", "unknown", false); got != "" {
 		t.Errorf("paper no channel: expected empty, got %s", got)
 	}
 
-	// Live trade falls back to stratType.
 	if got := resolveTradeChannel(channels, "binanceus", "spot", true); got != "ch-spot" {
 		t.Errorf("live fallback to stratType: expected ch-spot, got %s", got)
 	}
@@ -78,7 +72,7 @@ func TestChannelKeyFromID(t *testing.T) {
 	if got := channelKeyFromID(channels, "222"); got != "hyperliquid" {
 		t.Errorf("expected hyperliquid, got %s", got)
 	}
-	// unknown channel ID falls back to itself
+
 	if got := channelKeyFromID(channels, "999"); got != "999" {
 		t.Errorf("expected 999, got %s", got)
 	}
@@ -116,17 +110,17 @@ func TestExtractAsset(t *testing.T) {
 		sc   StrategyConfig
 		want string
 	}{
-		// spot: Args[1] is "BTC/USDT" → strip suffix → "BTC"
+
 		{StrategyConfig{Type: "spot", Args: []string{"sma_crossover", "BTC/USDT"}}, "BTC"},
-		// options: Args[1] is the underlying symbol
+
 		{StrategyConfig{Type: "options", Args: []string{"wheel", "ETH", "--platform=deribit"}}, "ETH"},
-		// perps: Args[1] is coin name
+
 		{StrategyConfig{Type: "perps", Args: []string{"momentum", "SOL", "1h"}}, "SOL"},
-		// perps BNB
+
 		{StrategyConfig{Type: "perps", Args: []string{"rsi", "BNB", "1h"}}, "BNB"},
-		// empty args → ""
+
 		{StrategyConfig{Type: "spot", Args: []string{}}, ""},
-		// only one arg → ""
+
 		{StrategyConfig{Type: "perps", Args: []string{"strategy"}}, ""},
 	}
 	for _, c := range cases {
@@ -147,20 +141,18 @@ func TestGroupByAsset(t *testing.T) {
 	}
 	groups, keys := groupByAsset(strats)
 
-	// 4 distinct assets
 	if len(keys) != 4 {
 		t.Fatalf("expected 4 asset keys, got %d: %v", len(keys), keys)
 	}
-	// BTC first, ETH second, SOL third, BNB fourth
+
 	if keys[0] != "BTC" || keys[1] != "ETH" || keys[2] != "SOL" || keys[3] != "BNB" {
 		t.Errorf("unexpected key order: %v", keys)
 	}
-	// BTC group has 2 strategies
+
 	if len(groups["BTC"]) != 2 {
 		t.Errorf("expected 2 BTC strategies, got %d", len(groups["BTC"]))
 	}
 
-	// Single asset case
 	single := []StrategyConfig{
 		{ID: "hl-rsi-eth", Type: "perps", Args: []string{"rsi", "ETH", "1h"}},
 	}
@@ -181,7 +173,6 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
 
-	// With asset — title should contain " — BTC" and only BTC price shown
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil, nil)
 	msg := strings.Join(msgs, "\n")
 	if !strings.Contains(msg, "— BTC") {
@@ -191,7 +182,6 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 		t.Errorf("ETH price should be filtered out for asset=BTC, got:\n%s", msg)
 	}
 
-	// Without asset — no suffix in title
 	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "", 600, 0, nil, nil)
 	msg2 := strings.Join(msgs2, "\n")
 	if strings.Contains(msg2, "— ") {
@@ -199,10 +189,6 @@ func TestFormatCategorySummary_WithAsset(t *testing.T) {
 	}
 }
 
-// TestFormatCategorySummary_VersionSuffix guards that summary and trade titles
-// include the package-level Version so /upgrade can surface which revision is
-// running. Also covers the empty-Version edge case where the suffix should be
-// omitted entirely (no trailing "()").
 func TestFormatCategorySummary_VersionSuffix(t *testing.T) {
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
@@ -269,7 +255,7 @@ func TestFormatCategorySummary_CircuitBreakerActive(t *testing.T) {
 	if !strings.Contains(msg, "resumes in") {
 		t.Errorf("expected 'resumes in' time remaining, got:\n%s", msg)
 	}
-	// hl-sma-btc should NOT be in the circuit breaker list
+
 	if strings.Contains(msg, "hl-sma-btc") && strings.Contains(msg, "hl-sma-btc (resumes") {
 		t.Errorf("hl-sma-btc should not have circuit breaker warning, got:\n%s", msg)
 	}
@@ -279,7 +265,7 @@ func TestFormatCategorySummary_CircuitBreakerActive(t *testing.T) {
 }
 
 func TestFormatCategorySummary_StrategiesSortedByID(t *testing.T) {
-	// Issue #354: table rows should follow strategy ID order, not config order.
+
 	strats := []StrategyConfig{
 		{ID: "hl-zebra-btc", Type: "perps", Args: []string{"zebra", "BTC", "1h"}, Capital: 1000},
 		{ID: "hl-adx-btc", Type: "perps", Args: []string{"adx", "BTC", "1h"}, Capital: 1000},
@@ -326,7 +312,7 @@ func TestFormatCategorySummary_NoCircuitBreaker(t *testing.T) {
 }
 
 func TestDiscordChannels_BackwardsCompatJSON(t *testing.T) {
-	// Old config format {"spot":"x","options":"y"} should still parse into map[string]string.
+
 	raw := `{"enabled":true,"token":"","channels":{"spot":"ch1","options":"ch2"}}`
 	var dc DiscordConfig
 	if err := json.Unmarshal([]byte(raw), &dc); err != nil {
@@ -338,7 +324,7 @@ func TestDiscordChannels_BackwardsCompatJSON(t *testing.T) {
 	if dc.Channels["options"] != "ch2" {
 		t.Errorf("expected ch2, got %s", dc.Channels["options"])
 	}
-	// New key works too
+
 	raw2 := `{"enabled":true,"token":"","channels":{"spot":"ch1","options":"ch2","hyperliquid":"ch3"}}`
 	var dc2 DiscordConfig
 	if err := json.Unmarshal([]byte(raw2), &dc2); err != nil {
@@ -393,8 +379,7 @@ func TestFormatTradeDM_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "TRADE CLOSED") {
 		t.Errorf("expected 'TRADE CLOSED', got:\n%s", msg)
 	}
-	// Regression for #386: close alert must report the *position* side, not
-	// the execution side. Selling to close a long must render LONG, not SHORT.
+
 	if !strings.Contains(msg, "LONG") {
 		t.Errorf("expected LONG (position side), got:\n%s", msg)
 	}
@@ -409,7 +394,6 @@ func TestFormatTradeDM_CloseTrade(t *testing.T) {
 	}
 }
 
-// Issue #530: partial closes use lowercase "close" (e.g. "Partial-close long …").
 func TestFormatTradeDM_PartialClose(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-sma-eth", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -510,7 +494,7 @@ func TestExtractPnL(t *testing.T) {
 func TestFormatTradeDM_EmptyPlatform(t *testing.T) {
 	sc := StrategyConfig{ID: "test", Platform: "", Type: "spot"}
 	trade := Trade{Symbol: "BTC", Side: "buy", Quantity: 1, Price: 100, Value: 100, Details: "Open long"}
-	// Should not panic
+
 	msg := FormatTradeDM(sc, trade, "paper")
 	if !strings.Contains(msg, "TRADE EXECUTED") {
 		t.Errorf("expected message, got:\n%s", msg)
@@ -577,8 +561,8 @@ func TestFormatInterval(t *testing.T) {
 		{43200, "12h"},
 		{86400, "1d"},
 		{172800, "2d"},
-		{90, "90s"}, // not divisible by 60 → falls through to seconds
-		{45, "45s"}, // non-round seconds
+		{90, "90s"},
+		{45, "45s"},
 		{0, "—"},
 		{-1, "—"},
 	}
@@ -595,20 +579,20 @@ func TestExtractTimeframe(t *testing.T) {
 		sc   StrategyConfig
 		want string
 	}{
-		// Perps: args[2] is timeframe
+
 		{StrategyConfig{Type: "perps", Args: []string{"rsi", "BTC", "1h"}}, "1h"},
 		{StrategyConfig{Type: "perps", Args: []string{"sma", "ETH", "4h"}}, "4h"},
-		// Futures: args[2] is timeframe
+
 		{StrategyConfig{Type: "futures", Args: []string{"sma", "ES", "15m"}}, "15m"},
-		// OKX spot with timeframe
+
 		{StrategyConfig{Type: "spot", Args: []string{"sma", "BTC", "1h"}}, "1h"},
-		// Spot via check_strategy.py: only 2 args → no timeframe
+
 		{StrategyConfig{Type: "spot", Args: []string{"sma_crossover", "BTC/USDT"}}, "—"},
-		// Options: args[2] starts with "--"
+
 		{StrategyConfig{Type: "options", Args: []string{"wheel", "ETH", "--platform=deribit"}}, "—"},
-		// Only 1 arg
+
 		{StrategyConfig{Type: "perps", Args: []string{"rsi"}}, "—"},
-		// Empty args
+
 		{StrategyConfig{Type: "spot", Args: []string{}}, "—"},
 	}
 	for _, c := range cases {
@@ -620,7 +604,7 @@ func TestExtractTimeframe(t *testing.T) {
 }
 
 func TestFormatCategorySummary_TfIntColumn(t *testing.T) {
-	// Perps strategy with timeframe "1h" and per-strategy interval 600s.
+
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000, IntervalSeconds: 600},
 	}
@@ -634,18 +618,17 @@ func TestFormatCategorySummary_TfIntColumn(t *testing.T) {
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "BTC", 3600, 0, nil, nil)
 	msg := strings.Join(msgs, "\n")
 
-	// Separate Tf and Int column headers should be present (at end of table).
 	if !strings.Contains(msg, "Tf") || !strings.Contains(msg, "Int") {
 		t.Errorf("expected 'Tf' and 'Int' column headers, got:\n%s", msg)
 	}
-	// Row should render timeframe "1h" and interval "10m" as separate values.
+
 	if !strings.Contains(msg, "1h") || !strings.Contains(msg, "10m") {
 		t.Errorf("expected '1h' and '10m' for perps with 1h timeframe and 600s interval, got:\n%s", msg)
 	}
 }
 
 func TestFormatCategorySummary_TfIntGlobalFallback(t *testing.T) {
-	// Spot strategy — no timeframe in args, falls back to global interval.
+
 	strats := []StrategyConfig{
 		{ID: "sma-btc", Type: "spot", Args: []string{"sma_crossover", "BTC/USDT"}, Capital: 1000},
 	}
@@ -659,7 +642,6 @@ func TestFormatCategorySummary_TfIntGlobalFallback(t *testing.T) {
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "spot", "", 3600, 0, nil, nil)
 	msg := strings.Join(msgs, "\n")
 
-	// No timeframe for spot → "—"; global interval 3600s → "1h". Separate columns now.
 	if !strings.Contains(msg, "—") || !strings.Contains(msg, "1h") {
 		t.Errorf("expected '—' and '1h' for spot with global 3600s interval, got:\n%s", msg)
 	}
@@ -695,8 +677,7 @@ func TestFormatCategorySummary_StrategyLabelWidthAndTieredAliases(t *testing.T) 
 }
 
 func TestFormatCategorySummary_MaxDrawdownColumn(t *testing.T) {
-	// Issue #436: summary tables surface the effective max_drawdown_pct already
-	// resolved onto StrategyConfig by LoadConfig (strategy → platform → type).
+
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000, MaxDrawdownPct: 12.5},
 		{ID: "hl-sma-btc", Type: "perps", Args: []string{"sma", "BTC", "1h"}, Capital: 1000, MaxDrawdownPct: 50},
@@ -727,8 +708,7 @@ func TestFormatCategorySummary_MaxDrawdownColumn(t *testing.T) {
 }
 
 func TestFormatCategorySummary_MaxDrawdownColumn_SharedWallet(t *testing.T) {
-	// Shared-wallet tables have a Wallet% column, so keep DD anchored before
-	// it and keep the TOTAL wallet percentage from shifting.
+
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.5, Args: []string{"rmc", "ETH", "1h"}, MaxDrawdownPct: 25},
 		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.5, Args: []string{"tema", "ETH", "1h"}, MaxDrawdownPct: 35},
@@ -771,8 +751,7 @@ func TestFormatCategorySummary_MaxDrawdownColumn_SharedWallet(t *testing.T) {
 }
 
 func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
-	// Issue #381: strategy table should show closed-trade count per strategy.
-	// Standard variant (no shared wallet).
+
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Args: []string{"rsi", "BTC", "1h"}, Capital: 1000},
 		{ID: "hl-sma-btc", Type: "perps", Args: []string{"sma", "BTC", "1h"}, Capital: 1000},
@@ -795,30 +774,27 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 	msgs := FormatCategorySummary(1, 0, 3, 0, 3000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, lifetime, nil)
 	msg := strings.Join(msgs, "\n")
 
-	// Header should include #T column.
 	if !strings.Contains(msg, "#T") {
 		t.Errorf("expected '#T' column header, got:\n%s", msg)
 	}
-	// #T should appear AFTER Int (last column).
+
 	intIdx := strings.LastIndex(msg, "Int")
 	tIdx := strings.Index(msg, "#T")
 	if intIdx < 0 || tIdx < 0 || tIdx < intIdx {
 		t.Errorf("expected #T column to follow Int column, got Int@%d #T@%d:\n%s", intIdx, tIdx, msg)
 	}
 
-	// Each strategy row should render its DB-sourced round-trip count
-	// right-justified in 5 chars, followed by W/L (issue #434).
 	if !strings.Contains(msg, "    7     —\n") {
 		t.Errorf("expected closed-trade count '7' for hl-rsi-btc, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "   12     —\n") {
 		t.Errorf("expected closed-trade count '12' for hl-sma-btc, got:\n%s", msg)
 	}
-	// Strategy with zero trades should still render '0'.
+
 	if !strings.Contains(msg, "    0     —\n") {
 		t.Errorf("expected closed-trade count '0' for hl-mom-btc, got:\n%s", msg)
 	}
-	// TOTAL row should sum to 19 (7+12+0). W/L on TOTAL is "—" with no wins/losses.
+
 	totalIdx := strings.Index(msg, "TOTAL")
 	if totalIdx < 0 {
 		t.Fatalf("expected TOTAL row, got:\n%s", msg)
@@ -833,7 +809,7 @@ func TestFormatCategorySummary_ClosedTradesColumn(t *testing.T) {
 }
 
 func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
-	// Issue #381: shared-wallet variant must also render #T column and TOTAL.
+
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.5, Args: []string{"rmc", "ETH", "1h"}},
 		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.5, Args: []string{"tema", "ETH", "1h"}},
@@ -856,20 +832,20 @@ func TestFormatCategorySummary_ClosedTradesColumn_SharedWallet(t *testing.T) {
 	if !strings.Contains(msg, "#T") {
 		t.Errorf("expected '#T' column header in shared-wallet variant, got:\n%s", msg)
 	}
-	// #T should appear AFTER Wallet% (the shared-wallet-only column).
+
 	walletIdx := strings.Index(msg, "Wallet%")
 	tIdx := strings.Index(msg, "#T")
 	if walletIdx < 0 || tIdx < walletIdx {
 		t.Errorf("expected #T after Wallet%% in shared-wallet variant, got Wallet%%@%d #T@%d:\n%s", walletIdx, tIdx, msg)
 	}
-	// Per-strategy counts; W/L column (issue #434) renders "—" with no wins/losses set.
+
 	if !strings.Contains(msg, "    4     —\n") {
 		t.Errorf("expected closed-trade count '4' for hl-rmc-eth, got:\n%s", msg)
 	}
 	if !strings.Contains(msg, "    9     —\n") {
 		t.Errorf("expected closed-trade count '9' for hl-tema-eth, got:\n%s", msg)
 	}
-	// TOTAL row should end with sum 13 followed by W/L "—".
+
 	totalIdx := strings.Index(msg, "TOTAL")
 	if totalIdx < 0 {
 		t.Fatalf("expected TOTAL row, got:\n%s", msg)
@@ -934,14 +910,13 @@ func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
 	if !strings.Contains(msg, "W/L") {
 		t.Errorf("expected 'W/L' column header, got:\n%s", msg)
 	}
-	// W/L should follow #T in the header.
+
 	tIdx := strings.Index(msg, "#T")
 	wlIdx := strings.Index(msg, "W/L")
 	if tIdx < 0 || wlIdx < 0 || wlIdx < tIdx {
 		t.Errorf("expected W/L column to follow #T, got #T@%d W/L@%d:\n%s", tIdx, wlIdx, msg)
 	}
 
-	// Per-strategy W/L values.
 	if !strings.Contains(msg, "  2.33\n") {
 		t.Errorf("expected W/L '2.33' for hl-rsi-btc (7/3), got:\n%s", msg)
 	}
@@ -952,7 +927,6 @@ func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
 		t.Errorf("expected W/L '—' for hl-mom-btc (no trades), got:\n%s", msg)
 	}
 
-	// TOTAL row aggregates wins/losses across strategies: (7+5+0)/(3+0+0) = 4.00.
 	totalIdx := strings.Index(msg, "TOTAL")
 	if totalIdx < 0 {
 		t.Fatalf("expected TOTAL row, got:\n%s", msg)
@@ -967,9 +941,7 @@ func TestFormatCategorySummary_WinLossColumn(t *testing.T) {
 }
 
 func TestFormatCategorySummary_SharedWallet(t *testing.T) {
-	// Two strategies share a Hyperliquid wallet via capital_pct=0.5 each.
-	// Wallet balance = $1085, so each strategy's Capital = $542.50.
-	// Each strategy's cash is its proportional share (no double-scaling).
+
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 542.50, CapitalPct: 0.5, Args: []string{"rmc", "ETH", "1h"}},
 		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 542.50, CapitalPct: 0.5, Args: []string{"tema", "ETH", "1h"}},
@@ -985,44 +957,40 @@ func TestFormatCategorySummary_SharedWallet(t *testing.T) {
 	msgs := FormatCategorySummary(1, 0, 2, 0, -1, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil, nil)
 	msg := strings.Join(msgs, "\n")
 
-	// Should contain Wallet% column
 	if !strings.Contains(msg, "Wallet%") {
 		t.Errorf("expected 'Wallet%%' column header, got:\n%s", msg)
 	}
-	// Aggregate initial capital appears once in the header, not per-row in the table.
+
 	if !strings.Contains(msg, "Initial capital: $1,000") {
 		t.Errorf("expected aggregate initial capital in header, got:\n%s", msg)
 	}
 	if strings.Contains(msg, " Init ") {
 		t.Errorf("Init column should be removed from table, got:\n%s", msg)
 	}
-	// Should contain 50.0% for each strategy
+
 	if !strings.Contains(msg, "50.0%") {
 		t.Errorf("expected '50.0%%' wallet share, got:\n%s", msg)
 	}
-	// Should contain 100.0% in TOTAL row
+
 	if !strings.Contains(msg, "100.0%") {
 		t.Errorf("expected '100.0%%' total wallet share, got:\n%s", msg)
 	}
-	// TOTAL value should be ~$1,085 (sum of both strategy values)
+
 	if !strings.Contains(msg, "1,085") {
 		t.Errorf("expected total value ~1,085, got:\n%s", msg)
 	}
-	// Individual values should be ~$542
+
 	if !strings.Contains(msg, "542") {
 		t.Errorf("expected individual value ~542, got:\n%s", msg)
 	}
-	// PnL should use InitialCapital ($500), not runtime Capital ($542.50)
+
 	if !strings.Contains(msg, "+42") && !strings.Contains(msg, "+43") {
 		t.Errorf("expected positive PnL from InitialCapital baseline, got:\n%s", msg)
 	}
 }
 
 func TestFormatCategorySummary_WalletPctFromConfig(t *testing.T) {
-	// Wallet% should reflect capital_pct from config, not dynamic share.
-	// capital_pct is 0.3 and 0.7, but actual capitals are equal ($500 each).
-	// Old behavior: walletPct = 500/1000 * 100 = 50.0% each (wrong).
-	// New behavior: walletPct = 0.3*100=30.0% and 0.7*100=70.0% (correct).
+
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.3, Args: []string{"rmc", "ETH", "1h"}},
 		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, CapitalPct: 0.7, Args: []string{"tema", "ETH", "1h"}},
@@ -1047,7 +1015,7 @@ func TestFormatCategorySummary_WalletPctFromConfig(t *testing.T) {
 }
 
 func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
-	// Strategies without capital_pct should not show Wallet% column.
+
 	strats := []StrategyConfig{
 		{ID: "hl-rmc-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, Args: []string{"rmc", "ETH", "1h"}},
 		{ID: "hl-tema-eth", Type: "perps", Platform: "hyperliquid", Capital: 500, Args: []string{"tema", "ETH", "1h"}},
@@ -1075,7 +1043,7 @@ func TestFormatCategorySummary_NoSharedWallet(t *testing.T) {
 }
 
 func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
-	// Create enough positions to exceed Discord's 2000-char limit.
+
 	strats := make([]StrategyConfig, 20)
 	strategies := make(map[string]*StrategyState, 20)
 	for i := 0; i < 20; i++ {
@@ -1093,7 +1061,6 @@ func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
 
 	msgs := FormatCategorySummary(1, 0, 20, 0, 10000, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil, nil)
 
-	// Should produce multiple messages.
 	if len(msgs) < 2 {
 		totalLen := 0
 		for _, m := range msgs {
@@ -1102,8 +1069,6 @@ func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
 		t.Errorf("expected multiple messages for 20 positions, got %d (total chars: %d)", len(msgs), totalLen)
 	}
 
-	// Per #728: msg 1 carries the header + counts but NO position bullets,
-	// no truncation indicator. All bullets land in msg 2+.
 	if strings.Contains(msgs[0], "  • ") {
 		t.Errorf("first message should not contain position bullets, got:\n%s", msgs[0])
 	}
@@ -1114,14 +1079,12 @@ func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
 		t.Errorf("first message should still contain 'Positions: 20 open' summary line, got:\n%s", msgs[0])
 	}
 
-	// No message should exceed the Discord limit.
 	for i, m := range msgs {
 		if len(m) > discordCharLimit {
 			t.Errorf("msg[%d] exceeds %d chars: %d", i, discordCharLimit, len(m))
 		}
 	}
 
-	// Positions block lives in msg 2+; first such message uses "Positions:" header.
 	posStart := -1
 	for i := 1; i < len(msgs); i++ {
 		if strings.HasPrefix(msgs[i], "Positions:\n") {
@@ -1133,7 +1096,6 @@ func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
 		t.Fatalf("expected a 'Positions:' message after msg 0, got:\n%s", strings.Join(msgs, "\n---\n"))
 	}
 
-	// Every position line must appear in the positions block (no truncation).
 	posBlock := strings.Join(msgs[posStart:], "\n")
 	for i := 0; i < 20; i++ {
 		want := fmt.Sprintf("hl-strat%02d-btc", i)
@@ -1144,7 +1106,7 @@ func TestFormatCategorySummary_MessageSplitting(t *testing.T) {
 }
 
 func TestFormatCategorySummary_NoSplitWhenShort(t *testing.T) {
-	// A small number of positions should produce a single message.
+
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-btc", Type: "perps", Platform: "hyperliquid", Capital: 1000, Args: []string{"rsi", "BTC", "1h"}},
 	}
@@ -1192,7 +1154,7 @@ func TestCollectPositions_WithTimestamp(t *testing.T) {
 }
 
 func TestCollectPositions_WithoutTimestamp(t *testing.T) {
-	// Legacy positions without OpenedAt should not show a date.
+
 	ss := &StrategyState{
 		Positions: map[string]*Position{
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.5, AvgCost: 50000, Side: "long"},
@@ -1227,9 +1189,6 @@ func TestCollectPositions_OptionTimestamp(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_OptionValueFormat verifies option position lines format
-// CurrentValueUSD with thousands separators and two decimal places (matching the
-// spot/perps line format), so small values like $12.34 render precisely.
 func TestCollectPositions_OptionValueFormat(t *testing.T) {
 	ss := &StrategyState{
 		OptionPositions: map[string]*OptionPosition{
@@ -1245,9 +1204,6 @@ func TestCollectPositions_OptionValueFormat(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_EntryPrice verifies issue #259: position lines include
-// the entry price (`@ $AvgCost`) alongside PnL so users can compare entry vs
-// current price at a glance.
 func TestCollectPositions_EntryPrice(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1260,11 +1216,11 @@ func TestCollectPositions_EntryPrice(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
-	// Entry price: 2213.08 with comma/decimal formatting.
+
 	if !strings.Contains(lines[0], "@ $2,213.08") {
 		t.Errorf("expected entry price '@ $2,213.08' in line, got: %s", lines[0])
 	}
-	// PnL: 1.5 * (2214.88 - 2213.08) = 2.70
+
 	if !strings.Contains(lines[0], "(+$2.70)") {
 		t.Errorf("expected PnL '(+$2.70)' in line, got: %s", lines[0])
 	}
@@ -1273,8 +1229,6 @@ func TestCollectPositions_EntryPrice(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_ShortEntryPrice verifies entry price + PnL rendering for
-// short positions (PnL flips sign).
 func TestCollectPositions_ShortEntryPrice(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1287,11 +1241,11 @@ func TestCollectPositions_ShortEntryPrice(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
-	// Entry price formatted with comma.
+
 	if !strings.Contains(lines[0], "@ $50,000.00") {
 		t.Errorf("expected entry price '@ $50,000.00' in line, got: %s", lines[0])
 	}
-	// Short at 50k, price up to 51k → loss of 0.1 * 1000 = 100.
+
 	if !strings.Contains(lines[0], "(-$100.00)") {
 		t.Errorf("expected PnL '(-$100.00)' in line, got: %s", lines[0])
 	}
@@ -1300,8 +1254,6 @@ func TestCollectPositions_ShortEntryPrice(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_StopLossLong verifies SL price + percent rendering for
-// a long position. SL below entry → negative percent.
 func TestCollectPositions_StopLossLong(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1314,14 +1266,12 @@ func TestCollectPositions_StopLossLong(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
 	}
-	// (61595 - 63500) / 63500 = -0.03 → -3.0%
+
 	if !strings.Contains(lines[0], "| SL: $61,595.00 (-3.0%)") {
 		t.Errorf("expected SL fragment 'SL: $61,595.00 (-3.0%%)', got: %s", lines[0])
 	}
 }
 
-// TestCollectPositions_StopLossShort verifies SL percent stays negative for a
-// short whose stop sits above entry (loss if hit).
 func TestCollectPositions_StopLossShort(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1331,14 +1281,12 @@ func TestCollectPositions_StopLossShort(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 63500}
 
 	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, prices)
-	// (65405 - 63500) / 63500 = +3.0%, then sign-flipped for short → -3.0%
+
 	if !strings.Contains(lines[0], "| SL: $65,405.00 (-3.0%)") {
 		t.Errorf("expected SL fragment 'SL: $65,405.00 (-3.0%%)' for short, got: %s", lines[0])
 	}
 }
 
-// TestCollectPositions_StopLossTriggerPxWithoutOID verifies #528: SL price is
-// shown whenever StopLossTriggerPx is known, even without a resting HL OID.
 func TestCollectPositions_StopLossTriggerPxWithoutOID(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1351,8 +1299,6 @@ func TestCollectPositions_StopLossTriggerPxWithoutOID(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_StopLossOmittedWhenNoTriggerPx verifies the SL fragment
-// is omitted when StopLossTriggerPx is unset (0).
 func TestCollectPositions_StopLossOmittedWhenNoTriggerPx(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1365,10 +1311,6 @@ func TestCollectPositions_StopLossOmittedWhenNoTriggerPx(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_StopLossATRMultiplier verifies the SL line shows the
-// stamped ATR multiplier from pos.StopLossATRMult (the config value resolved
-// at trade-open), not a back-computed value derived from the rounded on-chain
-// trigger price (#687).
 func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	cases := []struct {
@@ -1382,7 +1324,7 @@ func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
 	}{
 		{name: "long_1x", side: "long", avg: 10000, sl: 9000, atr: 1000, mult: pf(1.0), wantSub: "| SL: $9,000.00 (-10.0%) (1x)"},
 		{name: "long_1.5x", side: "long", avg: 10000, sl: 9700, atr: 200, mult: pf(1.5), wantSub: "| SL: $9,700.00 (-3.0%) (1.5x)"},
-		// #687: rounded trigger px would back-compute to ~1.489x; stamped 1.5 wins.
+
 		{name: "long_1.5x_rounded_trigger", side: "long", avg: 2335.10, sl: 2323.30, atr: 7.92, mult: pf(1.5), wantSub: "| SL: $2,323.30 (-0.5%) (1.5x)"},
 		{name: "long_1.25x", side: "long", avg: 10000, sl: 9750, atr: 200, mult: pf(1.25), wantSub: "| SL: $9,750.00 (-2.5%) (1.25x)"},
 		{name: "short_1x", side: "short", avg: 10000, sl: 11000, atr: 1000, mult: pf(1.0), wantSub: "| SL: $11,000.00 (-10.0%) (1x)"},
@@ -1402,10 +1344,6 @@ func TestCollectPositions_StopLossATRMultiplier(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_StopLossNoATRMultiplierWhenMultNil verifies the SL line
-// omits the (Nx) suffix when StopLossATRMult is nil — i.e. SL was armed via
-// stop_loss_pct / stop_loss_margin_pct / trailing_stop_pct rather than ATR
-// (#687). Pre-#669 positions opened before snapshot stamping also fall here.
 func TestCollectPositions_StopLossNoATRMultiplierWhenMultNil(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1421,8 +1359,6 @@ func TestCollectPositions_StopLossNoATRMultiplierWhenMultNil(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_LeverageMargin verifies leverage + margin rendering for
-// perps with Leverage > 1.
 func TestCollectPositions_LeverageMargin(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1430,15 +1366,12 @@ func TestCollectPositions_LeverageMargin(t *testing.T) {
 		},
 	}
 	lines := collectPositions(StrategyConfig{ID: "hl-btc-sma"}, ss, map[string]float64{"BTC/USDT": 63500})
-	// margin = 0.025 * 63500 / 5 = 317.5 → rounded to 318.
+
 	if !strings.Contains(lines[0], "| 5x ($318 margin)") {
 		t.Errorf("expected '5x ($318 margin)' fragment, got: %s", lines[0])
 	}
 }
 
-// TestCollectPositions_LeverageOmittedForSpot verifies that the leverage+margin
-// fragment is omitted when Leverage is 0 (spot) or 1 (1x perps — margin equals
-// notional, so the fragment is noise).
 func TestCollectPositions_LeverageOmittedForSpot(t *testing.T) {
 	ss := &StrategyState{
 		Positions: map[string]*Position{
@@ -1454,9 +1387,6 @@ func TestCollectPositions_LeverageOmittedForSpot(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_AllFragments verifies SL and leverage+margin land
-// together on the same line in the documented order: PnL | SL | leverage |
-// date.
 func TestCollectPositions_AllFragments(t *testing.T) {
 	opened := time.Date(2026, 4, 28, 14, 32, 0, 0, time.UTC)
 	ss := &StrategyState{
@@ -1480,8 +1410,6 @@ func TestCollectPositions_AllFragments(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_TieredTPATR_Long verifies #528 TP1/TP2 hints from entry
-// ATR when close_strategies includes tiered_tp_atr.
 func TestCollectPositions_TieredTPATR_Long(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -1523,8 +1451,6 @@ func TestCollectPositions_TieredTPATR_Short(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_TieredTPATRLive_Long verifies TP1/TP2 hints also appear
-// for tiered_tp_atr_live (same default tiers as tiered_tp_atr; PR #529 review).
 func TestCollectPositions_TieredTPATRLive_Long(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-live-btc",
@@ -1591,10 +1517,6 @@ func TestCollectPositions_TrailingTPRatchetShowsRatchetState(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_ShowsCloseStrategyName verifies the summary line names the
-// configured close evaluator so operators can see how a (manual or otherwise)
-// position will be managed without checking the config (#863). The label precedes
-// the derived close params (ATR/SL/TP/ratchet).
 func TestCollectPositions_ShowsCloseStrategyName(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "manual-eth",
@@ -1612,7 +1534,7 @@ func TestCollectPositions_ShowsCloseStrategyName(t *testing.T) {
 	if !strings.Contains(lines[0], "| close: trailing_tp_ratchet") {
 		t.Errorf("expected close-strategy name fragment, got: %s", lines[0])
 	}
-	// The name must precede the derived ATR param so it reads name-then-params.
+
 	closeIdx := strings.Index(lines[0], "| close:")
 	atrIdx := strings.Index(lines[0], "| ATR:")
 	if closeIdx < 0 || atrIdx < 0 || closeIdx > atrIdx {
@@ -1620,8 +1542,6 @@ func TestCollectPositions_ShowsCloseStrategyName(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_OmitsCloseLabelWhenOpenAsClose verifies open-as-close (nil
-// CloseStrategy) adds no close label — the open strategy is implied by the ID.
 func TestCollectPositions_OmitsCloseLabelWhenOpenAsClose(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-rsi-btc"}
 	ss := &StrategyState{
@@ -1661,10 +1581,6 @@ func TestCollectPositions_TieredTPATR_OmittedWhenEntryATRZero(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_TieredTPATR_FilledTierMarked verifies #662: once a TP
-// tier has filled (TPOID zeroed AND position quantity dropped below
-// InitialQuantity), the summary marks that tier with ✓ instead of rendering it
-// as still pending. Pending tiers retain the price-and-percent format.
 func TestCollectPositions_TieredTPATR_FilledTierMarked(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -1684,7 +1600,7 @@ func TestCollectPositions_TieredTPATR_FilledTierMarked(t *testing.T) {
 		},
 	}
 	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
-	// #870: default ladder retuned to 1.5×/3×/5×.
+
 	if !strings.Contains(lines[0], "| TP1: $65,000.00 (1.5x) ✓") {
 		t.Errorf("expected TP1 marked filled, got: %s", lines[0])
 	}
@@ -1693,9 +1609,6 @@ func TestCollectPositions_TieredTPATR_FilledTierMarked(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_TieredTPATR_NoFillBeforeProtectionSync verifies #662
-// edge case: TPOIDs all-zero before the first protection-sync places tiers
-// must NOT be rendered as filled (no shrink vs InitialQuantity).
 func TestCollectPositions_TieredTPATR_NoFillBeforeProtectionSync(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -1718,14 +1631,12 @@ func TestCollectPositions_TieredTPATR_NoFillBeforeProtectionSync(t *testing.T) {
 	if strings.Contains(lines[0], "✓") {
 		t.Errorf("filled marker leaked before any TP fill, got: %s", lines[0])
 	}
-	// #870: default ladder retuned to 1.5×/3×/5×.
+
 	if !strings.Contains(lines[0], "| TP1: $65,000.00 (+2.4%) (1.5x) | TP2: $66,500.00 (+4.7%) (3x)") {
 		t.Errorf("expected both tiers pending, got: %s", lines[0])
 	}
 }
 
-// TestCollectPositions_TieredTPATRRegime_StampedRegime verifies #738: once
-// pos.Regime is stamped, tiered_tp_atr_regime resolves TP display prices.
 func TestCollectPositions_TieredTPATRRegime_StampedRegime(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-reg-btc",
@@ -1747,14 +1658,12 @@ func TestCollectPositions_TieredTPATRRegime_StampedRegime(t *testing.T) {
 		},
 	}
 	lines := collectPositions(sc, ss, map[string]float64{"BTC/USDT": 63500})
-	// #870: trending_up → choppy group (1.5×/3×/5× ATR).
+
 	if !strings.Contains(lines[0], "| TP1: $65,000.00") || !strings.Contains(lines[0], "| TP2: $66,500.00") {
 		t.Errorf("expected regime-resolved TP prices, got: %s", lines[0])
 	}
 }
 
-// TestCollectPositions_AllFragments_WithTieredTP verifies ATR → SL → TP1 → TP2 →
-// leverage → date ordering when tiered_tp_atr is configured (#528).
 func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
 	opened := time.Date(2026, 4, 28, 14, 32, 0, 0, time.UTC)
 	sc := StrategyConfig{ID: "hl-tatr-btc", CloseStrategy: &StrategyRef{Name: "tiered_tp_atr"}}
@@ -1781,7 +1690,6 @@ func TestCollectPositions_AllFragments_WithTieredTP(t *testing.T) {
 	}
 }
 
-// TestPercentFromEntry covers sign-flip behavior for shorts.
 func TestPercentFromEntry(t *testing.T) {
 	cases := []struct {
 		side   string
@@ -1791,9 +1699,9 @@ func TestPercentFromEntry(t *testing.T) {
 	}{
 		{"long", 100, 97, -3},
 		{"long", 100, 103, 3},
-		{"short", 100, 103, -3}, // SL above entry → loss for short
-		{"short", 100, 97, 3},   // TP below entry → gain for short
-		{"long", 0, 100, 0},     // guard: zero entry
+		{"short", 100, 103, -3},
+		{"short", 100, 97, 3},
+		{"long", 0, 100, 0},
 	}
 	for _, c := range cases {
 		got := percentFromEntry(c.side, c.entry, c.target)
@@ -1803,7 +1711,6 @@ func TestPercentFromEntry(t *testing.T) {
 	}
 }
 
-// TestPositionMargin verifies notional/leverage math and the leverage<=0 guard.
 func TestPositionMargin(t *testing.T) {
 	if got := positionMargin(0.025, 63500, 5); math.Abs(got-317.5) > 1e-9 {
 		t.Errorf("positionMargin(0.025, 63500, 5) = %g, want 317.5", got)
@@ -1813,9 +1720,6 @@ func TestPositionMargin(t *testing.T) {
 	}
 }
 
-// TestSplitCategorySummary_LongPositionLines verifies splitCategorySummary still
-// splits cleanly when each position line carries the new SL + leverage
-// fragments (regression for the per-message length budget).
 func TestSplitCategorySummary_LongPositionLines(t *testing.T) {
 	header := "Cycle 1 | Mode: paper"
 	var posLines []string
@@ -1833,9 +1737,6 @@ func TestSplitCategorySummary_LongPositionLines(t *testing.T) {
 	}
 }
 
-// TestFormatCategorySummary_HeaderPriceFormat verifies issue #259: the header
-// prices line uses `SYMBOL: $X,XXX.XX` format — colon separator, thousands
-// comma, two decimal places.
 func TestFormatCategorySummary_HeaderPriceFormat(t *testing.T) {
 	strats := []StrategyConfig{
 		{ID: "hl-rsi-eth", Type: "perps", Args: []string{"rsi", "ETH", "1h"}, Capital: 1000},
@@ -1852,15 +1753,12 @@ func TestFormatCategorySummary_HeaderPriceFormat(t *testing.T) {
 	if !strings.Contains(msg, "ETH: $2,240.50") {
 		t.Errorf("expected header price 'ETH: $2,240.50', got:\n%s", msg)
 	}
-	// Old format `ETH $2240` (no colon) must be gone.
+
 	if strings.Contains(msg, "ETH $2240") {
 		t.Errorf("old header format 'ETH $2240' should be removed, got:\n%s", msg)
 	}
 }
 
-// TestFormatCategorySummary_RegimePriceLine741 verifies issue #741: when
-// regime.enabled is true and state carries a label, the header price line
-// appends " | <regime>"; with regime off or empty label the line is unchanged.
 func TestFormatCategorySummary_RegimePriceLine741(t *testing.T) {
 	strats := []StrategyConfig{
 		{ID: "hl-a-eth", Type: "perps", Args: []string{"rsi", "ETH/USDT", "1h"}, Capital: 1000, Platform: "hyperliquid"},
@@ -1939,12 +1837,7 @@ func TestSplitCategorySummary_SingleMessage(t *testing.T) {
 }
 
 func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
-	// Reproduces #249: 28 perps strategies on a single asset produces a table
-	// that, prior to the fix, exceeded Discord's 2000-char limit and was silently
-	// truncated mid-code-block. The fix caps the table at catTableMaxRows rows
-	// per message and emits the rest as continuation messages, each wrapped in
-	// its own code block. (#381 reduced the cap from 20 to 15 after the row
-	// gained a #T column.)
+
 	const stratCount = 28
 	strats := make([]StrategyConfig, stratCount)
 	strategies := make(map[string]*StrategyState, stratCount)
@@ -1965,13 +1858,12 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 		if len(m) > discordCharLimit {
 			t.Errorf("msg[%d] exceeds Discord limit: %d chars", i, len(m))
 		}
-		// Every message containing table content must have a closed code block.
+
 		if strings.Count(m, "```")%2 != 0 {
 			t.Errorf("msg[%d] has unbalanced code-block fences:\n%s", i, m)
 		}
 	}
 
-	// First message holds rows 1–catTableMaxRows; the totals row stays with the LAST table chunk.
 	firstChunkLast := fmt.Sprintf("hl-strat%02d-b", catTableMaxRows-1)
 	contChunkFirst := fmt.Sprintf("hl-strat%02d-b", catTableMaxRows)
 	if !strings.Contains(msgs[0], "hl-strat00-b") {
@@ -1984,7 +1876,6 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 		t.Errorf("first message should NOT contain TOTAL row when table is split, got:\n%s", msgs[0])
 	}
 
-	// Second message is the table continuation: own code block + label + remaining rows + TOTAL.
 	if !strings.Contains(msgs[1], "cont'd") {
 		t.Errorf("second message should be the continuation table label, got:\n%s", msgs[1])
 	}
@@ -1994,7 +1885,7 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 	if !strings.Contains(msgs[1], contChunkFirst) {
 		t.Errorf("continuation should contain row %d (%s), got:\n%s", catTableMaxRows+1, contChunkFirst, msgs[1])
 	}
-	// Final row must appear in one of the continuation messages.
+
 	finalRow := fmt.Sprintf("hl-strat%02d-b", stratCount-1)
 	finalSeen := false
 	totalSeen := false
@@ -2013,7 +1904,6 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 		t.Errorf("final continuation chunk must contain the TOTAL row, got:\n%s", strings.Join(msgs[1:], "\n---\n"))
 	}
 
-	// All 28 strategy rows should appear across the messages.
 	all := strings.Join(msgs, "\n")
 	for i := 0; i < stratCount; i++ {
 		want := fmt.Sprintf("hl-strat%02d-b", i)
@@ -2024,9 +1914,7 @@ func TestFormatCategorySummary_LargeTableChunked(t *testing.T) {
 }
 
 func TestSplitCategorySummary_ContinuationTablesInserted(t *testing.T) {
-	// Continuation tables should be spliced in immediately after the first message.
-	// Per #728: when continuation tables exist, positions also get their own
-	// message after the table chunks (never interleaved with msg 1).
+
 	header := "Header line\n"
 	posLines := []string{"pos1", "pos2"}
 	conts := []string{"```\nchunk2\n```\n", "```\nchunk3\n```\n"}
@@ -2055,16 +1943,11 @@ func TestSplitCategorySummary_ContinuationTablesInserted(t *testing.T) {
 	}
 }
 
-// TestSplitCategorySummary_PeelTradesWhenMsg1Overflows covers the
-// belt-and-suspenders guard: when the header is already near the threshold and
-// the trades section would push msg 1 over the 2000-char Discord hard limit,
-// trades are peeled into their own message between msg 1 and the positions
-// block. (Bot review on #729 flagged this as a widened edge case post-refactor.)
 func TestSplitCategorySummary_PeelTradesWhenMsg1Overflows(t *testing.T) {
-	// Header sits just under the 1980 split threshold but well under 2000 alone.
+
 	header := strings.Repeat("h", 1950) + "\n"
 	posLines := []string{"alpha", "beta"}
-	// Big enough trades block that header+trades exceeds discordSplitThreshold.
+
 	var tradeLines []string
 	for i := 0; i < 5; i++ {
 		tradeLines = append(tradeLines, fmt.Sprintf("  • TRADE %d EXECUTED LONG BTC/USDT x0.025 @ $63,500.00", i))
@@ -2079,18 +1962,18 @@ func TestSplitCategorySummary_PeelTradesWhenMsg1Overflows(t *testing.T) {
 			t.Errorf("msg[%d] exceeds Discord hard limit %d: %d", i, discordCharLimit, len(m))
 		}
 	}
-	// msg[0]: header + count, no trades, no bullets.
+
 	if strings.Contains(msgs[0], "**Trades:**") {
 		t.Errorf("msg[0] should NOT contain trades section when peeled, got tail:\n%s", msgs[0][len(msgs[0])-200:])
 	}
 	if strings.Contains(msgs[0], "  • ") {
 		t.Errorf("msg[0] should NOT contain bullets, got tail:\n%s", msgs[0][len(msgs[0])-200:])
 	}
-	// msg[1]: trades only.
+
 	if !strings.Contains(msgs[1], "**Trades:**") {
 		t.Errorf("msg[1] should be the trades section, got:\n%s", msgs[1])
 	}
-	// Last msg: positions block with all bullets.
+
 	last := msgs[len(msgs)-1]
 	if !strings.HasPrefix(last, "Positions:\n") {
 		t.Errorf("final message should be positions block, got:\n%s", last)
@@ -2102,12 +1985,8 @@ func TestSplitCategorySummary_PeelTradesWhenMsg1Overflows(t *testing.T) {
 	}
 }
 
-// TestSplitCategorySummary_PositionsAlwaysInSeparateMessage_Issue728 is the
-// canonical regression for #728. When the summary needs to split, every
-// position bullet must live in msg 2+; msg 1 carries the header, the
-// "Positions: N open" count, trades, and nothing else position-related.
 func TestSplitCategorySummary_PositionsAlwaysInSeparateMessage_Issue728(t *testing.T) {
-	// Big enough header that positions cannot fit alongside it (threshold 1980).
+
 	header := strings.Repeat("h", 1900) + "\n"
 	posLines := []string{"alpha", "beta", "gamma"}
 	tradeLines := []string{"  • TRADE EXECUTED LONG BTC"}
@@ -2117,7 +1996,6 @@ func TestSplitCategorySummary_PositionsAlwaysInSeparateMessage_Issue728(t *testi
 		t.Fatalf("expected split, got %d msgs", len(msgs))
 	}
 
-	// msg[0]: header + "Positions: N open" + trades, no bullets, no truncation marker.
 	if !strings.Contains(msgs[0], "Positions: 3 open") {
 		t.Errorf("msg[0] should contain position count line, got tail:\n%s", msgs[0][len(msgs[0])-200:])
 	}
@@ -2131,7 +2009,6 @@ func TestSplitCategorySummary_PositionsAlwaysInSeparateMessage_Issue728(t *testi
 		t.Errorf("msg[0] should NOT contain '... and N more' truncation marker, got tail:\n%s", msgs[0][len(msgs[0])-200:])
 	}
 
-	// msg[1]: positions block, all bullets present, "Positions:" header.
 	if !strings.HasPrefix(msgs[1], "Positions:\n") {
 		t.Errorf("msg[1] should begin with 'Positions:' header, got:\n%s", msgs[1])
 	}
@@ -2169,7 +2046,7 @@ func TestFormatTradeDMPlain_OpenTrade(t *testing.T) {
 	if strings.Contains(msg, "PnL") {
 		t.Errorf("open trade should not contain PnL, got:\n%s", msg)
 	}
-	// Plain format: no Discord bold markdown (**).
+
 	if strings.Contains(msg, "**") {
 		t.Errorf("plain format should not contain Discord markdown '**', got:\n%s", msg)
 	}
@@ -2190,7 +2067,7 @@ func TestFormatTradeDMPlain_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "TRADE CLOSED") {
 		t.Errorf("expected 'TRADE CLOSED', got:\n%s", msg)
 	}
-	// Regression for #386: close alert must report the *position* side.
+
 	if !strings.Contains(msg, "LONG") {
 		t.Errorf("expected LONG (position side), got:\n%s", msg)
 	}
@@ -2203,14 +2080,12 @@ func TestFormatTradeDMPlain_CloseTrade(t *testing.T) {
 	if !strings.Contains(msg, "TRADE CLOSED - LIVE") {
 		t.Errorf("expected 'TRADE CLOSED - LIVE' in header, got:\n%s", msg)
 	}
-	// Plain format: no Discord bold markdown (**).
+
 	if strings.Contains(msg, "**") {
 		t.Errorf("plain format should not contain Discord markdown '**', got:\n%s", msg)
 	}
 }
 
-// TestFormatTradeDMPlain_OpenWithCustomTiers mirrors the Discord test for #659:
-// telegram plain DM must read tier multiples from config, not hardcode 1×/2×.
 func TestFormatTradeDMPlain_OpenWithCustomTiers(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-tema-eth-live",
@@ -2240,7 +2115,6 @@ func TestFormatTradeDMPlain_OpenWithCustomTiers(t *testing.T) {
 	}
 }
 
-// Issue #530: telegram plain DM must treat partial-close like full close.
 func TestFormatTradeDMPlain_PartialClose(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-sma-eth", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -2261,7 +2135,7 @@ func TestFormatTradeDMPlain_PartialClose(t *testing.T) {
 }
 
 func TestSplitCategorySummary_MultiMessage(t *testing.T) {
-	// Create a header that uses ~1900 chars, leaving very little room for positions.
+
 	header := strings.Repeat("x", 1900) + "\n"
 	posLines := []string{"position-line-1-aaaa", "position-line-2-bbbb", "position-line-3-cccc"}
 
@@ -2269,29 +2143,26 @@ func TestSplitCategorySummary_MultiMessage(t *testing.T) {
 	if len(msgs) < 2 {
 		t.Fatalf("expected multiple messages with large header, got %d", len(msgs))
 	}
-	// Per #728: msg 1 has the header + count line, no position bullets,
-	// no "... and N more" truncation.
+
 	if strings.Contains(msgs[0], "  • ") {
 		t.Errorf("first message should not contain position bullets, got tail:\n%s", msgs[0][len(msgs[0])-200:])
 	}
 	if strings.Contains(msgs[0], "... and") {
 		t.Errorf("first message should not contain '... and N more' under #728 layout, got tail:\n%s", msgs[0][len(msgs[0])-200:])
 	}
-	// All positions should appear in the positions block (msg 2+).
+
 	posBlock := strings.Join(msgs[1:], "\n")
 	for _, pl := range posLines {
 		if !strings.Contains(posBlock, pl) {
 			t.Errorf("position %q missing from positions block:\n%s", pl, posBlock)
 		}
 	}
-	// Positions block starts with "Positions:" header.
+
 	if !strings.HasPrefix(msgs[1], "Positions:\n") {
 		t.Errorf("msg[1] should start with 'Positions:' header, got:\n%s", msgs[1])
 	}
 }
 
-// TestFormatCategorySummary_LifetimeStatsOverride verifies that
-// FormatCategorySummary renders lifetime stats from the trades table (#455).
 func TestFormatCategorySummary_LifetimeStatsOverride(t *testing.T) {
 	prices := map[string]float64{"ETH/USDT": 2000.0}
 	strats := []StrategyConfig{
@@ -2312,18 +2183,16 @@ func TestFormatCategorySummary_LifetimeStatsOverride(t *testing.T) {
 		t.Fatal("expected at least one message")
 	}
 	msg := msgs[0]
-	// Lifetime #T should appear (17).
+
 	if !strings.Contains(msg, " 17 ") {
 		t.Errorf("expected lifetime #T=17 in summary, got:\n%s", msg)
 	}
-	// W/L renders as wins/losses ratio (10/7 ≈ 1.43).
+
 	if !strings.Contains(msg, "1.43") {
 		t.Errorf("expected lifetime W/L ratio (10/7=1.43) in summary, got:\n%s", msg)
 	}
 }
 
-// TestFormatCategorySummary_LifetimeStatsNoFallback verifies that missing DB
-// lifetime stats render as zero instead of using stale in-memory counters.
 func TestFormatCategorySummary_LifetimeStatsNoFallback(t *testing.T) {
 	prices := map[string]float64{"ETH/USDT": 2000.0}
 	strats := []StrategyConfig{
@@ -2336,21 +2205,18 @@ func TestFormatCategorySummary_LifetimeStatsNoFallback(t *testing.T) {
 			},
 		},
 	}
-	// Nil map, such as a DB query failure, renders zero lifetime stats.
+
 	msgs := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, nil, nil)
 	if !strings.Contains(msgs[0], " 0     —") {
 		t.Errorf("expected zero #T/W-L without lifetime stats, got:\n%s", msgs[0])
 	}
-	// Empty map (DB returned no rows for this strategy) also renders zero.
+
 	msgs2 := FormatCategorySummary(1, 0, 1, 0, 1000, prices, nil, strats, state, "hyperliquid", "ETH", 600, 0, map[string]LifetimeTradeStats{}, nil)
 	if !strings.Contains(msgs2[0], " 0     —") {
 		t.Errorf("expected zero #T/W-L from empty lifetime stats map, got:\n%s", msgs2[0])
 	}
 }
 
-// TestFormatTradeDM_OpenWithATRAndTP verifies that when a strategy uses
-// tiered_tp_atr close and the trade has EntryATR set, the DM includes ATR,
-// TP1, and TP2 on the extras line (#561).
 func TestFormatTradeDM_OpenWithATRAndTP(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -2379,9 +2245,6 @@ func TestFormatTradeDM_OpenWithATRAndTP(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_OpenWithCustomTiers verifies that the trade DM reads tier
-// multiples from sc.CloseStrategy.Params["tiers"] rather than hardcoded
-// 1×/2× (#659). Reproduces the original issue where 2×/3× config showed 1×/2×.
 func TestFormatTradeDM_OpenWithCustomTiers(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-tema-eth-live",
@@ -2407,7 +2270,7 @@ func TestFormatTradeDM_OpenWithCustomTiers(t *testing.T) {
 		Details:  "Open long 0.100000 @ $2316.90",
 	}
 	msg := FormatTradeDM(sc, trade, "live")
-	// 2316.90 + 2*12.01 = 2340.92, 2316.90 + 3*12.01 = 2352.93
+
 	if !strings.Contains(msg, "TP1: $2,340.92") {
 		t.Errorf("expected 'TP1: $2,340.92' (2× ATR) in DM, got:\n%s", msg)
 	}
@@ -2416,8 +2279,6 @@ func TestFormatTradeDM_OpenWithCustomTiers(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_OpenWithThreeTiers verifies the DM renders TP1/TP2/TP3
-// when three tiers are configured (#659 — N-tier display).
 func TestFormatTradeDM_OpenWithThreeTiers(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-tatr-btc",
@@ -2447,8 +2308,6 @@ func TestFormatTradeDM_OpenWithThreeTiers(t *testing.T) {
 	}
 }
 
-// TestCollectPositions_TieredTPATR_CustomTiers verifies position-extras read
-// tier multiples from config (#659).
 func TestCollectPositions_TieredTPATR_CustomTiers(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-tema-eth-live",
@@ -2479,8 +2338,6 @@ func TestCollectPositions_TieredTPATR_CustomTiers(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_OpenWithSL verifies that a trade with StopLossTriggerPx
-// set shows the SL price and a negative percent on an open trade (#561).
 func TestFormatTradeDM_OpenWithSL(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -2496,15 +2353,12 @@ func TestFormatTradeDM_OpenWithSL(t *testing.T) {
 	if !strings.Contains(msg, "SL: $62,000.00") {
 		t.Errorf("expected 'SL: $62,000.00' in DM, got:\n%s", msg)
 	}
-	// SL is below entry for a long — should be a negative percent.
+
 	if !strings.Contains(msg, "(-") {
 		t.Errorf("expected negative SL percent for long trade, got:\n%s", msg)
 	}
 }
 
-// TestFormatTradeDM_IncludesOID verifies that when a live-fill Trade has a
-// non-empty ExchangeOrderID it is rendered on the symbol/value line as
-// `| OID: <id>` (#665).
 func TestFormatTradeDM_IncludesOID(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-eth-perps", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -2522,9 +2376,6 @@ func TestFormatTradeDM_IncludesOID(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_PaperOmitsOID verifies that paper trades (empty
-// ExchangeOrderID) render no `| OID: …` segment so paper output is unchanged
-// from pre-#665 (#665 implementation note).
 func TestFormatTradeDM_PaperOmitsOID(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-eth-perps", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -2541,9 +2392,6 @@ func TestFormatTradeDM_PaperOmitsOID(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_SLATRMultiplier verifies the SL line renders the stamped
-// trade.StopLossATRMult instead of a back-computed value derived from the
-// rounded on-chain trigger price (#687). Pre-#687 this used (avg-sl)/atr.
 func TestFormatTradeDM_SLATRMultiplier(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
@@ -2564,10 +2412,6 @@ func TestFormatTradeDM_SLATRMultiplier(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_SLATRMultiplierFromConfigNotBackComputed is the regression
-// guard for #687: the rendered multiplier matches the stamped config value
-// (1.5x) even when (avg-sl)/atr back-computes to a slightly different number
-// because the on-chain trigger price was rounded by the exchange.
 func TestFormatTradeDM_SLATRMultiplierFromConfigNotBackComputed(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{ID: "hl-eth-perps", Platform: "hyperliquid", Type: "perps"}
@@ -2586,16 +2430,12 @@ func TestFormatTradeDM_SLATRMultiplierFromConfigNotBackComputed(t *testing.T) {
 	if !strings.Contains(msg, "(1.5x)") {
 		t.Errorf("expected stamped (1.5x), got:\n%s", msg)
 	}
-	// Back-computed (2335.10-2323.30)/7.92 = 1.489…x — must not appear.
+
 	if strings.Contains(msg, "1.489") {
 		t.Errorf("back-computed multiplier leaked into output:\n%s", msg)
 	}
 }
 
-// TestFormatTradeDM_SLNoATRMultiplier verifies the SL line drops the `(Nx)`
-// suffix when trade.StopLossATRMult is nil (pct/margin/trailing-pct arming, or
-// pre-#669 positions without the snapshot) — rendering a fallback would lie
-// about how SL was armed (#687).
 func TestFormatTradeDM_SLNoATRMultiplier(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-sma-btc", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -2618,8 +2458,6 @@ func TestFormatTradeDM_SLNoATRMultiplier(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_TPATRMultipliers verifies that each TP tier renders its
-// own ATR multiplier (#665). Default tiers are 1×/2×.
 func TestFormatTradeDM_TPATRMultipliers(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -2645,9 +2483,6 @@ func TestFormatTradeDM_TPATRMultipliers(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_TPATRMultipliersFractional verifies %g preserves
-// fractional tier multiples without rounding artifacts (#665 review). %.2g
-// would render 1.25→1.3 and 12.5→12.
 func TestFormatTradeDM_TPATRMultipliersFractional(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-tatr-btc",
@@ -2677,8 +2512,6 @@ func TestFormatTradeDM_TPATRMultipliersFractional(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_TieredTPATRRegime verifies #738: trade-alert extras resolve TP
-// tier multiples from trade.Regime for regime-aware close evaluators.
 func TestFormatTradeDM_TieredTPATRRegime(t *testing.T) {
 	sc := StrategyConfig{
 		ID:       "hl-reg-btc",
@@ -2700,14 +2533,12 @@ func TestFormatTradeDM_TieredTPATRRegime(t *testing.T) {
 		Details:  "Open long 0.010000 @ $63500.00",
 	}
 	msg := FormatTradeDM(sc, trade, "live")
-	// #870: trending_up → choppy group (1.5×/3×/5× ATR).
+
 	if !strings.Contains(msg, "TP1: $65,000.00") || !strings.Contains(msg, "TP2: $66,500.00") {
 		t.Errorf("expected regime-resolved TP lines in DM, got:\n%s", msg)
 	}
 }
 
-// TestFormatTradeDM_ExtrasOrder verifies the new ordering: ATR → SL → TP1 → TP2
-// (#665). SL was previously appended after the TP tiers.
 func TestFormatTradeDM_ExtrasOrder(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -2739,9 +2570,6 @@ func TestFormatTradeDM_ExtrasOrder(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDMPlain_IncludesOID is the Telegram parity test for #665 —
-// OID, SL ordering, and ATR mults must apply to both Discord and Telegram
-// since they share `tradeAlertExtras`.
 func TestFormatTradeDMPlain_IncludesOID(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{
@@ -2774,8 +2602,6 @@ func TestFormatTradeDMPlain_IncludesOID(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_CloseNoATR verifies that ATR/TP hints are NOT injected on
-// close legs even when EntryATR is set and the strategy uses tiered_tp_atr (#561).
 func TestFormatTradeDM_CloseNoATR(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -2805,10 +2631,8 @@ func TestFormatTradeDM_CloseNoATR(t *testing.T) {
 	}
 }
 
-// TestStampOpenTradeFromPosition verifies the backfill helper for EntryATR and
-// StopLossTriggerPx on the most-recent open trade for a symbol (#561).
 func TestStampOpenTradeFromPosition(t *testing.T) {
-	// (a) updates the most recent open trade for symbol.
+
 	s := &StrategyState{ID: "s1", TradeHistory: []Trade{
 		{Symbol: "ETH", IsClose: false, EntryATR: 0, StopLossTriggerPx: 0, Timestamp: time.Now().UTC()},
 	}}
@@ -2821,7 +2645,6 @@ func TestStampOpenTradeFromPosition(t *testing.T) {
 		t.Error("StopLossTriggerPx not stamped")
 	}
 
-	// (b) idempotent: won't overwrite non-zero values.
 	stampOpenTradeFromPosition(s, nil, "ETH", &Position{EntryATR: 999.0, StopLossTriggerPx: 99.0})
 	if s.TradeHistory[0].EntryATR != 500.0 {
 		t.Error("EntryATR overwritten on second call")
@@ -2830,17 +2653,15 @@ func TestStampOpenTradeFromPosition(t *testing.T) {
 		t.Error("StopLossTriggerPx overwritten on second call")
 	}
 
-	// (c) skips when most recent matching trade is a close.
 	s2 := &StrategyState{ID: "s2", TradeHistory: []Trade{
 		{Symbol: "ETH", IsClose: false},
-		{Symbol: "ETH", IsClose: true}, // most recent is a close
+		{Symbol: "ETH", IsClose: true},
 	}}
 	stampOpenTradeFromPosition(s2, nil, "ETH", &Position{EntryATR: 500.0})
 	if s2.TradeHistory[0].EntryATR != 0 {
 		t.Error("should not backfill when most recent trade for symbol is a close")
 	}
 
-	// (d) nil pos returns immediately.
 	s3 := &StrategyState{ID: "s3", TradeHistory: []Trade{
 		{Symbol: "ETH", IsClose: false},
 	}}
@@ -2849,7 +2670,6 @@ func TestStampOpenTradeFromPosition(t *testing.T) {
 		t.Error("nil pos should be a no-op")
 	}
 
-	// (e) updates the persisted SQLite row for the already-inserted open trade.
 	db, err := OpenStateDB(":memory:")
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -2876,12 +2696,8 @@ func TestStampOpenTradeFromPosition(t *testing.T) {
 	}
 }
 
-// TestFormatCategorySummary_AdjustedTotalOverridesNaiveSum verifies #915: when
-// a shared-wallet-adjusted totalValue is passed, the TOTAL row reflects it
-// rather than the naive per-strategy sum. Per-strategy rows are unaffected.
 func TestFormatCategorySummary_AdjustedTotalOverridesNaiveSum(t *testing.T) {
-	// Two strategies each with $5k virtual cash → naive sum = $10k.
-	// Real wallet balance = $8k (after fees/losses).
+
 	strats := []StrategyConfig{
 		{ID: "hl-btc", Type: "perps", Platform: "hyperliquid", Capital: 5000, CapitalPct: 0.5, Args: []string{"sma", "BTC", "1h"}},
 		{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Capital: 5000, CapitalPct: 0.5, Args: []string{"rsi", "ETH", "1h"}},
@@ -2894,12 +2710,11 @@ func TestFormatCategorySummary_AdjustedTotalOverridesNaiveSum(t *testing.T) {
 	}
 	prices := map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}
 
-	adjustedTotal := 8000.0 // real wallet balance < naive sum
+	adjustedTotal := 8000.0
 
 	msgs := FormatCategorySummary(1, 0, 2, 0, adjustedTotal, prices, nil, strats, state, "hyperliquid", "BTC", 600, 0, nil, nil)
 	msg := strings.Join(msgs, "\n")
 
-	// Find the TOTAL row.
 	var totalLine string
 	for _, line := range strings.Split(msg, "\n") {
 		if strings.HasPrefix(line, "TOTAL") {
@@ -2911,18 +2726,14 @@ func TestFormatCategorySummary_AdjustedTotalOverridesNaiveSum(t *testing.T) {
 		t.Fatalf("no TOTAL row found in:\n%s", msg)
 	}
 
-	// TOTAL row value column must show $8,000 (adjusted). Aggregate initial
-	// capital ($10,000) lives in the header; distinguish adjusted total via
-	// PnL% which is -20.0% only when value=8000 is used.
 	if !strings.Contains(totalLine, "8,000") {
 		t.Errorf("TOTAL row should show adjusted $8,000; got: %q\nfull msg:\n%s", totalLine, msg)
 	}
-	// PnL% = (8000-10000)/10000 = -20.0%; naive (10000) would give 0.0%.
+
 	if !strings.Contains(totalLine, "-20.0%") {
 		t.Errorf("TOTAL row PnL%% should be -20.0%% (value=8000 vs init=10000); got: %q", totalLine)
 	}
 
-	// Per-strategy rows should still show their individual virtual PV ($5,000 each).
 	perStratRows := 0
 	for _, line := range strings.Split(msg, "\n") {
 		if (strings.HasPrefix(line, "hl-btc") || strings.HasPrefix(line, "hl-eth")) && strings.Contains(line, "5,000") {
@@ -2934,11 +2745,6 @@ func TestFormatCategorySummary_AdjustedTotalOverridesNaiveSum(t *testing.T) {
 	}
 }
 
-// TestFormatCategorySummary_NegativeAdjustedTotalFallsBackToNaiveSum verifies
-// that the negative "no adjustment available" sentinel preserves the original
-// naive-sum behavior (non-shared-wallet callers), while a real adjusted value
-// of $0 (drained shared wallet) is shown as-is rather than triggering the
-// fallback (#917 review item 3).
 func TestFormatCategorySummary_NegativeAdjustedTotalFallsBackToNaiveSum(t *testing.T) {
 	strats := []StrategyConfig{
 		{ID: "spot-btc", Type: "spot", Capital: 3000, Args: []string{"sma", "BTC", "1h"}},
@@ -2961,7 +2767,6 @@ func TestFormatCategorySummary_NegativeAdjustedTotalFallsBackToNaiveSum(t *testi
 		return ""
 	}
 
-	// Negative sentinel → fall back to filteredValue (3000+2000=5000).
 	fallbackLine := totalLineOf(FormatCategorySummary(1, 0, 2, 0, -1, prices, nil, strats, state, "spot", "", 600, 0, nil, nil))
 	if fallbackLine == "" {
 		t.Fatal("no TOTAL row found for negative-sentinel case")
@@ -2970,9 +2775,6 @@ func TestFormatCategorySummary_NegativeAdjustedTotalFallsBackToNaiveSum(t *testi
 		t.Errorf("TOTAL row should fall back to naive sum $5,000 when totalValue<0; got: %q", fallbackLine)
 	}
 
-	// Explicit $0 adjustment (drained shared wallet) → TOTAL Value column shows
-	// $0, NOT the inflated naive sum. Header shows aggregate initial capital
-	// $5,000; PnL% -100.0% distinguishes drained value=0 from naive fallback 0.0%.
 	drainedLine := totalLineOf(FormatCategorySummary(1, 0, 2, 0, 0, prices, nil, strats, state, "spot", "", 600, 0, nil, nil))
 	if drainedLine == "" {
 		t.Fatal("no TOTAL row found for $0-adjustment case")

@@ -15,8 +15,6 @@ var errLiqAuditStub = errors.New("simulated stop-loss subprocess failure")
 
 func approxEqLiq(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 
-// --- pure geometry ---------------------------------------------------------
-
 func TestStopPastLiquidationDirections(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -25,15 +23,14 @@ func TestStopPastLiquidationDirections(t *testing.T) {
 		liqPx     float64
 		want      bool
 	}{
-		// The motivating example: ETH long, entry 2400, liquidation 2340,
-		// stop_loss_atr_mult 2.5 x ATR 30 -> trigger 2325, $15 past liquidation.
+
 		{"long past", "long", 2325, 2340.5, true},
 		{"long exactly at liquidation", "long", 2340.5, 2340.5, true},
 		{"long safely inside", "long", 2360, 2340.5, false},
 		{"short past", "short", 2460, 2440, true},
 		{"short exactly at liquidation", "short", 2440, 2440, true},
 		{"short safely inside", "short", 2420, 2440, false},
-		// 0 means "unknown" on BOTH inputs and must never drive a clamp.
+
 		{"unknown liquidation", "long", 2325, 0, false},
 		{"no stop armed", "long", 0, 2340.5, false},
 		{"negative liquidation", "long", 2325, -1, false},
@@ -49,7 +46,6 @@ func TestStopPastLiquidationDirections(t *testing.T) {
 func TestClampStopInsideLiquidationTightensOnly(t *testing.T) {
 	buf := hlLiquidationStopBufferPct / 100.0
 
-	// Long: the clamp moves the stop UP, i.e. tighter, and strictly inside.
 	got, ok := clampStopInsideLiquidation("long", 2325, 2340.5)
 	if !ok {
 		t.Fatal("long past-liquidation trigger must clamp")
@@ -64,7 +60,6 @@ func TestClampStopInsideLiquidationTightensOnly(t *testing.T) {
 		t.Errorf("long clamp %g must be TIGHTER than the original 2325 (one-way tighten)", got)
 	}
 
-	// Short: the clamp moves the stop DOWN, i.e. tighter.
 	got, ok = clampStopInsideLiquidation("short", 2460, 2440)
 	if !ok {
 		t.Fatal("short past-liquidation trigger must clamp")
@@ -103,8 +98,6 @@ func TestClampStopInsideLiquidationPassthroughAndNeverZero(t *testing.T) {
 		}
 	}
 
-	// The load-bearing safety property: a positive input trigger can never come
-	// back as 0. Placing 0 would remove exchange-side protection outright.
 	for _, side := range []string{"long", "short"} {
 		for _, liq := range []float64{1e-6, 0.35, 42000, 1e9} {
 			for _, trig := range []float64{1e-6, 0.30, 41000, 1e9} {
@@ -118,9 +111,7 @@ func TestClampStopInsideLiquidationPassthroughAndNeverZero(t *testing.T) {
 }
 
 func TestHLClampProtectionSLMultRewritesMultiple(t *testing.T) {
-	// Long: anchor 2400, ATR 30, mult 2.5 -> trigger 2325, past liquidation
-	// 2340.5. The rewritten multiple must reproduce the clamped trigger through
-	// the unchanged Python derivation anchor - mult*ATR.
+
 	anchor, atr, liq := 2400.0, 30.0, 2340.5
 	newMult, ok := hlClampProtectionSLMult("long", anchor, atr, 2.5, liq)
 	if !ok {
@@ -134,7 +125,6 @@ func TestHLClampProtectionSLMultRewritesMultiple(t *testing.T) {
 		t.Errorf("clamped multiple %g must be SMALLER than 2.5 (tighter stop)", newMult)
 	}
 
-	// Short: anchor 2400, ATR 30, mult 2.5 -> trigger 2475, past liquidation 2460.
 	liq = 2460.0
 	newMult, ok = hlClampProtectionSLMult("short", anchor, atr, 2.5, liq)
 	if !ok {
@@ -170,9 +160,6 @@ func TestHLClampProtectionSLMultLeavesReachableGeometryAlone(t *testing.T) {
 		}
 	}
 
-	// A derived long trigger at or below zero is past liquidation by
-	// construction. It must be rewritten, and never to a non-positive multiple
-	// (0 would tell Python to place no stop at all).
 	newMult, ok := hlClampProtectionSLMult("long", 100, 60, 2.0, 90)
 	if !ok {
 		t.Fatal("a derived trigger at or below zero must be clamped")
@@ -185,12 +172,9 @@ func TestHLClampProtectionSLMultLeavesReachableGeometryAlone(t *testing.T) {
 	}
 }
 
-// --- throttle --------------------------------------------------------------
-
 func TestHLLiquidationShouldNotifyThrottle(t *testing.T) {
 	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 
-	// First observation always fires.
 	send, st := hlLiquidationShouldNotify(hlLiquidationAlertState{}, hlLiquidationActionClamped, base)
 	if !send {
 		t.Fatal("first observation must notify")
@@ -199,7 +183,6 @@ func TestHLLiquidationShouldNotifyThrottle(t *testing.T) {
 		t.Fatal("state must record the notification")
 	}
 
-	// A repeat inside the interval is suppressed and leaves state untouched.
 	send2, st2 := hlLiquidationShouldNotify(st, hlLiquidationActionClamped, base.Add(time.Minute))
 	if send2 {
 		t.Error("repeat inside the throttle interval must be suppressed")
@@ -208,14 +191,11 @@ func TestHLLiquidationShouldNotifyThrottle(t *testing.T) {
 		t.Error("a suppressed cycle must carry the previous state forward unchanged")
 	}
 
-	// Past the interval floor it re-fires.
 	send3, _ := hlLiquidationShouldNotify(st, hlLiquidationActionClamped, base.Add(effectiveAlertThrottleInterval()+time.Second))
 	if !send3 {
 		t.Error("the alert_throttle_interval floor must re-fire the reminder")
 	}
 
-	// Escape hatch: the clamp stopped landing — escalate immediately, even
-	// inside the interval.
 	send4, st4 := hlLiquidationShouldNotify(st, hlLiquidationActionReplaceDeferred, base.Add(time.Minute))
 	if !send4 {
 		t.Error("a newly-deferred replace must notify immediately")
@@ -223,14 +203,12 @@ func TestHLLiquidationShouldNotifyThrottle(t *testing.T) {
 	if st4.LastAction != hlLiquidationActionReplaceDeferred {
 		t.Error("state must record the deferred replace")
 	}
-	// ...but a SUSTAINED failure does not re-fire every cycle.
+
 	send5, _ := hlLiquidationShouldNotify(st4, hlLiquidationActionReplaceDeferred, base.Add(2*time.Minute))
 	if send5 {
 		t.Error("a sustained deferred replace must not re-fire every cycle")
 	}
 
-	// Deferred -> protection lost is an ESCALATION between two failure states.
-	// A boolean "did it fail" could not see it; the action change must.
 	send6, st6 := hlLiquidationShouldNotify(st4, hlLiquidationActionProtectionLost, base.Add(3*time.Minute))
 	if !send6 {
 		t.Fatal("deferred -> protection lost must notify immediately: the position went from protected to naked")
@@ -238,7 +216,7 @@ func TestHLLiquidationShouldNotifyThrottle(t *testing.T) {
 	if st6.LastAction != hlLiquidationActionProtectionLost {
 		t.Error("state must record the protection-lost action")
 	}
-	// And the recovery back to a landed clamp is reported too.
+
 	if send7, _ := hlLiquidationShouldNotify(st6, hlLiquidationActionClamped, base.Add(4*time.Minute)); !send7 {
 		t.Error("protection lost -> clamped must notify: the operator was last told the position was naked")
 	}
@@ -254,7 +232,7 @@ func TestHLLiquidationAlertDueAndClear(t *testing.T) {
 	if hlLiquidationAlertDue("hl-eth", "ETH", hlLiquidationActionClamped, now.Add(time.Minute)) {
 		t.Fatal("second observation inside the interval must be suppressed")
 	}
-	// Clearing (condition healed, or the position closed) re-arms the first-fire.
+
 	clearHLLiquidationAlert("hl-eth", "ETH")
 	if !hlLiquidationAlertDue("hl-eth", "ETH", hlLiquidationActionClamped, now.Add(2*time.Minute)) {
 		t.Fatal("a cleared key must notify again on its first observation")
@@ -276,7 +254,6 @@ func TestClearHLPerpsPositionAlertThrottlesClearsBoth(t *testing.T) {
 		t.Error("position close must still clear the missing-EntryATR throttle")
 	}
 
-	// Non-HL state is a no-op, so shared spot/futures close paths stay clean.
 	hlLiquidationAlerts.Store(hlLiquidationAlertKey("spot-eth", "ETH"), hlLiquidationAlertState{Notified: true})
 	clearHLPerpsPositionAlertThrottles(&StrategyState{ID: "spot-eth", Platform: "binanceus", Type: "spot"}, "ETH")
 	if _, ok := hlLiquidationAlerts.Load(hlLiquidationAlertKey("spot-eth", "ETH")); !ok {
@@ -285,30 +262,26 @@ func TestClearHLPerpsPositionAlertThrottlesClearsBoth(t *testing.T) {
 	hlLiquidationAlerts.Delete(hlLiquidationAlertKey("spot-eth", "ETH"))
 }
 
-// --- audit decision --------------------------------------------------------
-
 func TestPlanHyperliquidLiquidationAuditClassification(t *testing.T) {
 	cands := []hlLiquidationAuditCandidate{
-		// scalar owner past liquidation -> tighten job
+
 		{StrategyID: "b-scalar", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 11, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: true},
-		// trailing owner past liquidation -> ALSO a tighten job. The walker only
-		// runs for a due strategy whose signal check returned Signal == 0, so
-		// deferring to it can leave the stop unreachable for a whole interval.
+
 		{StrategyID: "a-trailing", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 12, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: false, BookConsistent: true},
-		// reachable geometry -> no action
+
 		{StrategyID: "c-ok", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 13, StopLossTriggerPx: 2360, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: true},
-		// liquidation unknown -> no action
+
 		{StrategyID: "d-unknown", Symbol: "BTC", Side: "long", Qty: 1, StopLossOID: 14, StopLossTriggerPx: 100, LiquidationPx: 0, StaticScalarOwner: true, BookConsistent: true},
-		// nothing armed, non-scalar owner -> no action (its own path re-arms)
+
 		{StrategyID: "e-nostop", Symbol: "BTC", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 39000, LiquidationPx: 40000, StaticScalarOwner: false, BookConsistent: true},
-		// zero size -> no action
+
 		{StrategyID: "f-noqty", Symbol: "BTC", Side: "long", Qty: 0, StopLossOID: 15, StopLossTriggerPx: 39000, LiquidationPx: 40000, StaticScalarOwner: true, BookConsistent: true},
 	}
 	actions := planHyperliquidLiquidationAudit(cands)
 	if len(actions) != 2 {
 		t.Fatalf("actions = %d, want 2 (only the two past-liquidation candidates)", len(actions))
 	}
-	// Deterministic order by strategy id.
+
 	if actions[0].Candidate.StrategyID != "a-trailing" || actions[1].Candidate.StrategyID != "b-scalar" {
 		t.Fatalf("actions not sorted deterministically: %s, %s", actions[0].Candidate.StrategyID, actions[1].Candidate.StrategyID)
 	}
@@ -323,11 +296,6 @@ func TestPlanHyperliquidLiquidationAuditClassification(t *testing.T) {
 	}
 }
 
-// #1450 review (3): a static scalar owner with NO resting stop is re-armed by
-// the audit. Nothing else re-arms it — the walker needs a trailing distance,
-// the fixed-ATR arm needs stop_loss_atr_mult, and the protection plan resolves
-// to nothing for a scalar owner — so without this the position stays naked
-// until it closes.
 func TestPlanHyperliquidLiquidationAuditRearmsUnprotectedScalarOwner(t *testing.T) {
 	cands := []hlLiquidationAuditCandidate{
 		{StrategyID: "hl-eth", Symbol: "ETH", Side: "long", Qty: 1, Unprotected: true, RearmTriggerPx: 2325, LiquidationPx: 2300, StaticScalarOwner: true, BookConsistent: true},
@@ -341,10 +309,6 @@ func TestPlanHyperliquidLiquidationAuditRearmsUnprotectedScalarOwner(t *testing.
 	}
 }
 
-// #1450 review (optional 1): a coin whose recorded size across live strategies
-// exceeds the on-chain snapshot carries a phantom position. Moving a
-// reduce-only trigger there could close a PEER strategy's real size, so the
-// audit refuses and reports instead.
 func TestPlanHyperliquidLiquidationAuditRefusesUnreconciledCoin(t *testing.T) {
 	cands := []hlLiquidationAuditCandidate{
 		{StrategyID: "hl-eth", Symbol: "ETH", Side: "long", Qty: 1, StopLossOID: 11, StopLossTriggerPx: 2325, LiquidationPx: 2340.5, StaticScalarOwner: true, BookConsistent: false},
@@ -372,33 +336,26 @@ func TestHLLiquidationCoinBookConsistent(t *testing.T) {
 	if got["SOL"] {
 		t.Error("SOL: absent from the snapshot — nothing on-chain backs the recorded size")
 	}
-	// #1456 review round 8: SIGNED comparison. A documented legal long+short
-	// book nets to the reported figure; only a same-side excess is drift.
+
 	if !got["MIX"] {
 		t.Error("MIX: signed net -0.6 vs on-chain 0.6 across two owners — consistent")
 	}
 	if got["PHANTOM"] {
 		t.Error("PHANTOM: signed net 1.1 exceeds on-chain 0.6 — real drift")
 	}
-	// #1450 review round 2 (optional 1): a SOLE owner whose recorded size drifted
-	// above the on-chain size (e.g. a manual partial TP) has no peer to harm.
-	// hlSLEffectiveQty caps the placement to the confirmed on-chain quantity, so
-	// the audit must still heal it rather than alert forever.
+
 	if !got["AVAX"] {
 		t.Error("AVAX: sole owner with virtual > on-chain — must stay actionable, sized to on-chain")
 	}
-	// A sole owner is not a licence to act on a coin with no on-chain backing:
-	// there is no confirmed quantity to size a replacement from.
+
 	if got["DOGE"] {
 		t.Error("DOGE: sole owner but absent from the snapshot — must still refuse")
 	}
 }
 
-// #1450 review round 2 (optional 1): the sole-owner route must reach the audit
-// decision end-to-end, and a shared coin with a phantom must still refuse.
 func TestCollectHLLiquidationAuditCandidatesHealsSoleOwnerDrift(t *testing.T) {
 	strategies, state := liqAuditFixture(t, true, 3.0)
-	// Manual partial TP: the book still records 1.0, the exchange shows 0.6.
+
 	cands := collectHLLiquidationAuditCandidates(
 		strategies, state,
 		map[string]float64{"ETH": 2340.5},
@@ -415,8 +372,7 @@ func TestCollectHLLiquidationAuditCandidatesHealsSoleOwnerDrift(t *testing.T) {
 	if math.Abs(cands[0].Qty-0.6) > 1e-9 {
 		t.Errorf("Qty = %v, want the on-chain cap 0.6 (#621)", cands[0].Qty)
 	}
-	// #1456 review round 13 (optional 3): the cap must be visible so the
-	// execution site can log it like every sibling hlSLEffectiveQty caller.
+
 	if !cands[0].QtyCapped || math.Abs(cands[0].VirtualQty-1.0) > 1e-9 {
 		t.Errorf("QtyCapped/VirtualQty = %v/%v, want true/1.0", cands[0].QtyCapped, cands[0].VirtualQty)
 	}
@@ -425,8 +381,6 @@ func TestCollectHLLiquidationAuditCandidatesHealsSoleOwnerDrift(t *testing.T) {
 		t.Fatalf("actions = %+v, want one tighten", acts)
 	}
 
-	// Add a SECOND live owner on the same coin: now the drift could move a
-	// reduce-only trigger against a peer, so the refusal comes back.
 	peer := strategies[0]
 	peer.ID = "hl-eth-peer"
 	state.Strategies["hl-eth-peer"] = &StrategyState{
@@ -451,13 +405,9 @@ func TestCollectHLLiquidationAuditCandidatesHealsSoleOwnerDrift(t *testing.T) {
 	}
 }
 
-// #1450 review round 2 (optional 2): a failed clearinghouseState fetch hands the
-// audit empty maps. That is "no snapshot this cycle", never "every position is a
-// phantom" — it must produce no action and no alert.
 func TestRunHyperliquidLiquidationAuditSkipsWithoutSnapshot(t *testing.T) {
 	strategies, state := liqAuditFixture(t, true, 3.0)
-	// An unprotected static-scalar position: the shape that used to emit a
-	// CRITICAL phantom alert with $0.0000 prices.
+
 	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
 	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
 	calls := 0
@@ -481,9 +431,6 @@ func TestRunHyperliquidLiquidationAuditSkipsWithoutSnapshot(t *testing.T) {
 	}
 }
 
-// #1450 review round 2 (optional 2): an audit refusal on a position that carries
-// NO stop must say so, never quote a $0.0000 trigger past a $0.0000 liquidation
-// price.
 func TestHLLiquidationAlertMessageOmitsUnknownGeometry(t *testing.T) {
 	headline, detail, unprotected := hlLiquidationAlertMessage(0, 0, 0, hlLiquidationActionUnreconciled, "")
 	if strings.Contains(detail, "$0.0000") {
@@ -498,7 +445,7 @@ func TestHLLiquidationAlertMessageOmitsUnknownGeometry(t *testing.T) {
 	if !unprotected {
 		t.Error("a refused candidate with no stop is unprotected — must log CRITICAL")
 	}
-	// A real geometry still prints both prices.
+
 	_, armedDetail, armedUnprotected := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionUnreconciled, "")
 	if !strings.Contains(armedDetail, "$2325.0000") || !strings.Contains(armedDetail, "$2340.5000") {
 		t.Errorf("detail = %q, want the real trigger and liquidation prices", armedDetail)
@@ -532,14 +479,12 @@ func liqAuditFixture(t *testing.T, live bool, stopPct float64) ([]StrategyConfig
 	return []StrategyConfig{sc}, state
 }
 
-// (a) A scalar stop past liquidation is cancelled and re-placed at the clamped
-// trigger, and the position ends the cycle with the NEW oid.
 func TestRunHyperliquidLiquidationAuditReplacesScalarStop(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
 	clearHLLiquidationAlert("hl-eth", "ETH")
 
-	strategies, state := liqAuditFixture(t, true, 3.125) // 2400 * (1-0.03125) = 2325
+	strategies, state := liqAuditFixture(t, true, 3.125)
 	var mu sync.RWMutex
 
 	var gotTrigger float64
@@ -573,8 +518,6 @@ func TestRunHyperliquidLiquidationAuditReplacesScalarStop(t *testing.T) {
 	}
 }
 
-// (b) THE acceptance test: when the replace fails BEFORE the cancel lands, the
-// position must still end the cycle with its ORIGINAL armed exchange-side stop.
 func TestRunHyperliquidLiquidationAuditKeepsOriginalStopOnFailure(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -589,8 +532,7 @@ func TestRunHyperliquidLiquidationAuditKeepsOriginalStopOnFailure(t *testing.T) 
 		{CancelStopLossError: "cancel rejected"},
 		{OpenOrderCheckError: "open order lookup failed"},
 		{StopLossFilledExternally: true},
-		// The cancel never ran (no cancel_stop_loss_succeeded), so the old
-		// trigger is untouched even though the placement was rejected.
+
 		{StopLossError: "open order cap"},
 	} {
 		f := failure
@@ -610,17 +552,10 @@ func TestRunHyperliquidLiquidationAuditKeepsOriginalStopOnFailure(t *testing.T) 
 	}
 }
 
-// hlNetSideByCoinAllLong marks every coin's on-chain NET side as "long" — the
-// common fixture shape (long ETH positions whose liquidation price is quoted
-// below the mark).
 func hlNetSideByCoinAllLong() map[string]string {
 	return map[string]string{"ETH": "long"}
 }
 
-// #1450 review (1a): a cancel that LANDS followed by a placement that does NOT
-// rest leaves the position naked. It must never read as a successful clamp, the
-// state must stop pointing at the dead OID, and the very next audit must
-// re-place a stop rather than skipping the position forever.
 func TestRunHyperliquidLiquidationAuditCancelledThenRejectedRearms(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -631,7 +566,6 @@ func TestRunHyperliquidLiquidationAuditCancelledThenRejectedRearms(t *testing.T)
 	liq := map[string]float64{"ETH": 2340.5}
 	onChain := map[string]float64{"ETH": 1.0}
 
-	// Cycle 1: cancel lands, the open-order cap rejects the replacement.
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		return &HyperliquidStopLossUpdateResult{
 			CancelStopLossSucceeded: true,
@@ -646,8 +580,6 @@ func TestRunHyperliquidLiquidationAuditCancelledThenRejectedRearms(t *testing.T)
 		t.Fatalf("state must record that the stop is GONE, got oid=%d trigger=%g", pos.StopLossOID, pos.StopLossTriggerPx)
 	}
 
-	// Cycle 2: the position is now an unprotected static scalar owner, so the
-	// audit re-arms it at the configured distance, clamped inside liquidation.
 	var gotTrigger float64
 	var gotCancelOID int64
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
@@ -668,8 +600,6 @@ func TestRunHyperliquidLiquidationAuditCancelledThenRejectedRearms(t *testing.T)
 	}
 }
 
-// #1450 review (1b): cancel + successful placement is a normal clamp and must
-// NOT report protection lost.
 func TestRunHyperliquidLiquidationAuditCancelThenPlaceIsANormalClamp(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -691,8 +621,6 @@ func TestRunHyperliquidLiquidationAuditCancelThenPlaceIsANormalClamp(t *testing.
 	clearHLLiquidationAlert("hl-eth", "ETH")
 }
 
-// #1456 review (2a): an audit clamp that FILLS at submit reports the position
-// as EXITED — never "tightened to $X" for a position that ended the cycle flat.
 func TestRunHyperliquidLiquidationAuditFillAtSubmitReportsExited(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -718,8 +646,6 @@ func TestRunHyperliquidLiquidationAuditFillAtSubmitReportsExited(t *testing.T) {
 	}
 }
 
-// #1456 review (4): the close the audit books names the AUDIT mechanism, so the
-// persisted CloseReason matches the LIQUIDATION-CLAMP operator DM.
 func TestRunHyperliquidLiquidationAuditImmediateCloseReasonsTheAudit(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -756,8 +682,6 @@ func TestRunHyperliquidLiquidationAuditImmediateCloseReasonsTheAudit(t *testing.
 	}
 }
 
-// #1456 review (2c): an audit replace whose OLD stop already fired on-chain is
-// reported as SL filled — never as "replace deferred; original still resting".
 func TestRunHyperliquidLiquidationAuditFilledExternallyReportsFilled(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -779,9 +703,6 @@ func TestRunHyperliquidLiquidationAuditFilledExternallyReportsFilled(t *testing.
 	}
 }
 
-// #1450 review (1c): a live perps static scalar owner cannot scale in at all
-// (config.go rejects allow_scale_in for a non-resizable SL owner), so the
-// re-arm can never race an add and double-arm.
 func TestStaticScalarOwnerCannotScaleIn(t *testing.T) {
 	sc := StrategyConfig{
 		ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",
@@ -800,8 +721,6 @@ func TestStaticScalarOwnerCannotScaleIn(t *testing.T) {
 	}
 }
 
-// (c) A paper strategy sharing the coin must never match a live liquidation
-// price — paper has no account and no liquidation.
 func TestRunHyperliquidLiquidationAuditSkipsPaper(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -823,10 +742,6 @@ func TestRunHyperliquidLiquidationAuditSkipsPaper(t *testing.T) {
 	}
 }
 
-// #1450 review (3): the trailing walker runs only inside the dispatch over DUE
-// strategies and only when that cycle's signal check returned Signal == 0, so
-// the audit must heal a trailing owner itself instead of announcing a repair
-// that will not happen for up to a full strategy interval.
 func TestRunHyperliquidLiquidationAuditHealsTrailingOwner(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -852,8 +767,7 @@ func TestRunHyperliquidLiquidationAuditHealsTrailingOwner(t *testing.T) {
 	if pos.StopLossOID != 9100 || !approxEqLiq(pos.StopLossTriggerPx, wantTrigger) {
 		t.Errorf("position must carry the tightened stop, got oid=%d trigger=%g", pos.StopLossOID, pos.StopLossTriggerPx)
 	}
-	// Idempotent: the tightened trigger is no longer past liquidation, so a
-	// second audit in the same conditions places nothing.
+
 	calls := 0
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		calls++
@@ -865,11 +779,6 @@ func TestRunHyperliquidLiquidationAuditHealsTrailingOwner(t *testing.T) {
 	}
 }
 
-// #1450 review (3b/3c): the audit never depends on a signal result, so a
-// strategy whose signal check errored or that executed no trade is healed on
-// exactly the same cycle. The audit runs pre-dispatch over cfg.Strategies, so
-// this is structural — the test pins the trailing owner being healed with no
-// dispatch involvement at all.
 func TestRunHyperliquidLiquidationAuditIsIndependentOfSignalResults(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -878,7 +787,7 @@ func TestRunHyperliquidLiquidationAuditIsIndependentOfSignalResults(t *testing.T
 	strategies, state := liqAuditFixture(t, true, 0)
 	strategies[0].StopLossPct = nil
 	strategies[0].TrailingStopATRMult = floatPtr(2.5)
-	// A 4h strategy that is not due this cycle still reaches the audit.
+
 	strategies[0].Args = []string{"x.py", "ETH", "4h", "--mode=live"}
 	var mu sync.RWMutex
 	placed := false
@@ -892,9 +801,6 @@ func TestRunHyperliquidLiquidationAuditIsIndependentOfSignalResults(t *testing.T
 	}
 }
 
-// #1450 review (optional 1a): a phantom position on a shared coin must never
-// drive a cancel+replace — the reduce-only trigger it rests could close the
-// PEER strategy's real size.
 func TestRunHyperliquidLiquidationAuditRefusesPhantomOnSharedCoin(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -902,8 +808,7 @@ func TestRunHyperliquidLiquidationAuditRefusesPhantomOnSharedCoin(t *testing.T) 
 	clearHLLiquidationAlert("hl-eth-b", "ETH")
 
 	strategies, state := liqAuditFixture(t, true, 3.125)
-	// A peer on the same coin, so the recorded total is 2.0 against 1.0
-	// on-chain: one of the two positions no longer exists.
+
 	scB := strategies[0]
 	scB.ID = "hl-eth-b"
 	strategies = append(strategies, scB)
@@ -925,9 +830,6 @@ func TestRunHyperliquidLiquidationAuditRefusesPhantomOnSharedCoin(t *testing.T) 
 	}
 }
 
-// #1450 review (optional 1b): a non-due strategy with a genuinely open,
-// consistent position is still healed — the refusal is about book drift, not
-// about due-ness.
 func TestRunHyperliquidLiquidationAuditHealsConsistentNonDuePosition(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -947,8 +849,6 @@ func TestRunHyperliquidLiquidationAuditHealsConsistentNonDuePosition(t *testing.
 	}
 }
 
-// #1450 review (optional 1c): a coin with no on-chain position at all is a
-// no-op — nothing backs the recorded size.
 func TestRunHyperliquidLiquidationAuditNoOpsWithoutOnChainPosition(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -967,9 +867,6 @@ func TestRunHyperliquidLiquidationAuditNoOpsWithoutOnChainPosition(t *testing.T)
 	}
 }
 
-// #1450 review (optional 2): a position that exits on an audit-placed clamped
-// stop yields an operator-facing close line, so the main loop can raise the
-// same trade notification every other close path produces.
 func TestRunHyperliquidLiquidationAuditReportsBookedCloses(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -996,7 +893,6 @@ func TestRunHyperliquidLiquidationAuditReportsBookedCloses(t *testing.T) {
 	}
 }
 
-// A clamp that rests normally must NOT emit a close notification.
 func TestRunHyperliquidLiquidationAuditRestingClampEmitsNoClose(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1023,8 +919,6 @@ func TestCollectHLLiquidationAuditCandidatesSkipsHedgeLegs(t *testing.T) {
 	}
 }
 
-// --- boot-time validation --------------------------------------------------
-
 func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 	live := []string{"x.py", "ETH", "1h", "--mode=live"}
 	paper := []string{"x.py", "ETH", "1h", "--mode=paper"}
@@ -1032,7 +926,6 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		return StrategyConfig{ID: "hl-eth", Type: "perps", Platform: "hyperliquid", Args: live, Leverage: 20}
 	}
 
-	// Impossible: 10% stop at 20x — bankruptcy sits at 5%.
 	sc := base()
 	sc.StopLossPct = floatPtr(10)
 	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 1 {
@@ -1041,14 +934,12 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("message must name the field, got %q", errs[0])
 	}
 
-	// Aggressive but valid: 4.9% at 20x.
 	sc = base()
 	sc.StopLossPct = floatPtr(4.9)
 	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 0 {
 		t.Errorf("stop_loss_pct 4.9 @ 20x is valid, got %v", errs)
 	}
 
-	// Acceptance criterion: a valid low-leverage configuration must pass.
 	sc = base()
 	sc.Leverage = 2
 	sc.StopLossPct = floatPtr(45)
@@ -1056,7 +947,6 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("stop_loss_pct 45 @ 2x is valid, got %v", errs)
 	}
 
-	// Leverage 1 puts the bound at 100%, above the existing 50% caps.
 	sc = base()
 	sc.Leverage = 1
 	sc.StopLossPct = floatPtr(50)
@@ -1064,32 +954,25 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("stop_loss_pct 50 @ 1x is valid, got %v", errs)
 	}
 
-	// #1456 review: trailing_stop_pct is EXCLUDED — its anchor ratchets with
-	// the mark, so the entry-anchored bound is not exact for it and the
-	// runtime clamp handles the pre-move window. It must load.
 	sc = base()
 	sc.TrailingStopPct = floatPtr(10)
 	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 0 {
 		t.Errorf("trailing_stop_pct 10 @ 20x must NOT be rejected (anchor ratchets), got %v", errs)
 	}
 
-	// #1456 review: the MaxDrawdownPct fallback is entry-anchored and IS
-	// covered when it owns the stop.
 	sc = base()
 	sc.MaxDrawdownPct = 15
 	errs := validateHLStopWithinBankruptcyBound(sc)
 	if len(errs) != 1 || !strings.Contains(errs[0], "max_drawdown_pct") {
 		t.Errorf("max_drawdown_pct fallback 15 @ 20x must be rejected, got %v", errs)
 	}
-	// EffectiveStopLossPct caps the fallback at MaxAutoStopLossPct (50); the
-	// check compares the RESOLVED value, so 90 @ 20x rejects via its cap.
+
 	sc = base()
 	sc.MaxDrawdownPct = 90
 	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 1 {
 		t.Errorf("max_drawdown_pct 90 @ 20x resolves through its 50%% cap to a rejection, got %v", errs)
 	}
 
-	// The fallback check does not fire when an explicit owner wins instead.
 	sc = base()
 	sc.StopLossPct = floatPtr(4.9)
 	sc.MaxDrawdownPct = 15
@@ -1097,7 +980,6 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("explicit stop_loss_pct owns the stop; max_drawdown_pct must not be checked, got %v", errs)
 	}
 
-	// stop_loss_margin_pct is read through its leverage derivation.
 	sc = base()
 	sc.StopLossMarginPct = floatPtr(100)
 	if errs := validateHLStopWithinBankruptcyBound(sc); len(errs) != 1 {
@@ -1109,7 +991,6 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("stop_loss_margin_pct 80 (derived 4%% @ 20x) is valid, got %v", errs)
 	}
 
-	// Out of scope: paper, cross margin, non-HL, non-perps.
 	sc = base()
 	sc.StopLossPct = floatPtr(10)
 	sc.Args = paper
@@ -1130,7 +1011,6 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("non-HL-perps must skip, got %v", errs)
 	}
 
-	// Empty margin_mode reads as isolated, matching the runtime default.
 	sc = base()
 	sc.StopLossPct = floatPtr(10)
 	sc.MarginMode = ""
@@ -1138,8 +1018,6 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("empty margin_mode must be treated as isolated, got %v", errs)
 	}
 }
-
-// --- #1456 review round 5: the liquidation price is a NET per-coin figure ----
 
 func TestHLLiquidationPxForSideGatesOnNetSide(t *testing.T) {
 	liq := map[string]float64{"ETH": 2340.5}
@@ -1164,11 +1042,8 @@ func TestHLLiquidationPxForSideGatesOnNetSide(t *testing.T) {
 	}
 }
 
-// Must-survive (a): a shared coin holding a long and a short peer — the net is
-// long, so the reported liquidation price describes A's leg only. B's clamp is
-// skipped; A's still applies.
 func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *testing.T) {
-	strategies, state := liqAuditFixture(t, true, 3.125) // long 1.0, trigger 2325 (past liq 2340.5)
+	strategies, state := liqAuditFixture(t, true, 3.125)
 	shortPeer := strategies[0]
 	shortPeer.ID = "hl-eth-short"
 	state.Strategies["hl-eth-short"] = &StrategyState{
@@ -1179,14 +1054,11 @@ func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *test
 			StopLossOID: 88, StopLossTriggerPx: 2460,
 		}},
 	}
-	// On-chain net is long 0.6 (1.6 recorded long legs? no: 1.0 long - 0.4
-	// short) — the REALISTIC figure main.go computes from |net signed size|.
-	// Round 8: this used to pass the summed 1.4, which let the magnitude-summing
-	// book check refuse the coin and mask the whole scenario.
+
 	cands := collectHLLiquidationAuditCandidates(
 		append(strategies, shortPeer), state,
 		map[string]float64{"ETH": 2340.5},
-		map[string]string{"ETH": "long"}, // on-chain NET is long (+1.0 - 0.4)
+		map[string]string{"ETH": "long"},
 		map[string]float64{"ETH": 0.6},
 		&sync.RWMutex{},
 	)
@@ -1213,9 +1085,6 @@ func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *test
 		t.Errorf("actions ran for %v, want only the net-matching long owner [hl-eth]", actedFor)
 	}
 
-	// Must-survive (b): a genuinely phantom SAME-side third peer (a stale long
-	// 0.5 that is actually closed) pushes the signed net past the reported size
-	// — the refusal must come back for the whole coin.
 	stalePeer := strategies[0]
 	stalePeer.ID = "hl-eth-stale"
 	state.Strategies["hl-eth-stale"] = &StrategyState{
@@ -1230,7 +1099,7 @@ func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *test
 		append(append(strategies, shortPeer), stalePeer), state,
 		map[string]float64{"ETH": 2340.5},
 		map[string]string{"ETH": "long"},
-		map[string]float64{"ETH": 0.6}, // signed net now 1.1 > 0.6: real drift
+		map[string]float64{"ETH": 0.6},
 		&sync.RWMutex{},
 	)
 	for _, c := range phantom {
@@ -1240,9 +1109,6 @@ func TestCollectHLLiquidationAuditCandidatesSideMismatchSkipsOppositeLeg(t *test
 	}
 }
 
-// Must-survive (b): a sole owner whose recorded side is stale OPPOSITE the
-// on-chain net gets no cancel, no placement, no alert — the same treatment as
-// an unknown liquidation price.
 func TestRunHyperliquidLiquidationAuditStaleSideSoleOwnerDoesNothing(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1258,7 +1124,7 @@ func TestRunHyperliquidLiquidationAuditStaleSideSoleOwnerDoesNothing(t *testing.
 
 	res := runHyperliquidLiquidationAudit(strategies, state,
 		map[string]float64{"ETH": 2340.5},
-		map[string]string{"ETH": "short"}, // stale/opposite net side
+		map[string]string{"ETH": "short"},
 		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if calls != 0 {
 		t.Errorf("placement calls = %d, want 0 — a side mismatch must never touch the resting order", calls)
@@ -1275,9 +1141,6 @@ func TestRunHyperliquidLiquidationAuditStaleSideSoleOwnerDoesNothing(t *testing.
 	}
 }
 
-// The protection sync inherits the same gate: a position whose side disagrees
-// with the on-chain net keeps pre-#1450 plan behavior (no clamp rewrite, no
-// force-replace from past-liquidation geometry); the matching side still heals.
 func TestProtectionSyncSideMismatchNeverForcesPastLiquidationReplace(t *testing.T) {
 	mult := 2.0
 	sc := StrategyConfig{
@@ -1294,7 +1157,7 @@ func TestProtectionSyncSideMismatchNeverForcesPastLiquidationReplace(t *testing.
 			},
 		}
 	}
-	liq := map[string]float64{"ETH": 2800} // derived trigger 2800 sits AT liquidation
+	liq := map[string]float64{"ETH": 2800}
 	var mu sync.RWMutex
 
 	for _, tc := range []struct {
@@ -1327,22 +1190,13 @@ func TestProtectionSyncSideMismatchNeverForcesPastLiquidationReplace(t *testing.
 	}
 }
 
-// --- #1456 review round 6 ----------------------------------------------------
-
-// Optional 1: the boot bound must not score pct fields that resolve as NOTHING
-// (EffectiveStopLossPct returns 0 under a unified regime close). Scope
-// correction over the finding: validateUnifiedCloseSoleOwner ALREADY rejects
-// stop_loss_pct / stop_loss_margin_pct alongside a unified close
-// (regime_unified.go), so the combination can never boot — the gate here fixes
-// the MISLEADING ERROR LINE, not a boot regression. Must-survive (c): without
-// a unified close both fields are still scored.
 func TestHLStopBankruptcyBoundSkipsInertPctFieldsUnderUnifiedClose(t *testing.T) {
 	base := func(unified bool) StrategyConfig {
 		sc := StrategyConfig{
 			ID: "hl-eth", Type: "perps", Platform: "hyperliquid",
 			Script: "x.py", Args: []string{"x.py", "ETH", "1h", "--mode=live"},
 			StopLossPct:       floatPtr(10),
-			StopLossMarginPct: floatPtr(200), // 200/20 = 10% >= the 5% bound at 20x
+			StopLossMarginPct: floatPtr(200),
 			Leverage:          20,
 			MarginMode:        "isolated",
 		}
@@ -1364,10 +1218,6 @@ func TestHLStopBankruptcyBoundSkipsInertPctFieldsUnderUnifiedClose(t *testing.T)
 	}
 }
 
-// Optional 2 (a): an UNPROTECTED static-scalar owner whose recorded side is
-// stale opposite the on-chain net gets no placement and no per-cycle CRITICAL —
-// the re-arm needs this cycle's snapshot to confirm the net is on the recorded
-// side.
 func TestAuditRearmSkipsStaleSideSoleOwner(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1375,7 +1225,7 @@ func TestAuditRearmSkipsStaleSideSoleOwner(t *testing.T) {
 
 	strategies, state := liqAuditFixture(t, true, 3.125)
 	state.Strategies["hl-eth"].Positions["ETH"].StopLossOID = 0
-	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0 // unprotected
+	state.Strategies["hl-eth"].Positions["ETH"].StopLossTriggerPx = 0
 	var mu sync.RWMutex
 	calls := 0
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
@@ -1384,7 +1234,7 @@ func TestAuditRearmSkipsStaleSideSoleOwner(t *testing.T) {
 	}
 	runHyperliquidLiquidationAudit(strategies, state,
 		map[string]float64{"ETH": 2340.5},
-		map[string]string{"ETH": "short"}, // net OPPOSITE the recorded long
+		map[string]string{"ETH": "short"},
 		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
 	if calls != 0 {
 		t.Errorf("re-arm placements = %d, want 0 against an unconfirmed side", calls)
@@ -1394,9 +1244,6 @@ func TestAuditRearmSkipsStaleSideSoleOwner(t *testing.T) {
 	}
 }
 
-// Optional 2 (b): a MATCHING side with no liquidation price reported must STILL
-// re-arm — the re-arm places at the configured distance and does not depend on
-// liquidation geometry.
 func TestAuditRearmProceedsWithMatchingSideAndUnknownGeometry(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1411,21 +1258,17 @@ func TestAuditRearmProceedsWithMatchingSideAndUnknownGeometry(t *testing.T) {
 		gotTrigger = triggerPx
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 9001, StopLossTriggerPx: triggerPx}, "", nil
 	}
-	// Price map EMPTY (no liquidation price reported); the net side is still
-	// known from the snapshot's size sign.
+
 	runHyperliquidLiquidationAudit(strategies, state,
 		map[string]float64{},
 		map[string]string{"ETH": "long"},
 		map[string]float64{"ETH": 1.0}, true, &mu, nil, time.Now().UTC())
-	want := 2400 * (1 - 0.03125) // configured scalar distance off the frozen anchor
+	want := 2400 * (1 - 0.03125)
 	if !approxEqLiq(gotTrigger, want) {
 		t.Errorf("re-arm trigger = %g, want the unclamped configured distance %g", gotTrigger, want)
 	}
 }
 
-// liqTrailingAuditFixture is liqAuditFixture with a TRAILING stop owner instead
-// of a static scalar — the owner class whose recovery used to wait for its own
-// next due cycle after an audit cancel stripped the stop.
 func liqTrailingAuditFixture(t *testing.T) ([]StrategyConfig, *AppState) {
 	t.Helper()
 	trail := 3.0
@@ -1446,12 +1289,6 @@ func liqTrailingAuditFixture(t *testing.T) ([]StrategyConfig, *AppState) {
 	return []StrategyConfig{sc}, state
 }
 
-// Optional 3: when an audit tighten CANCELS a trailing owner's stop and the
-// replacement does not rest, the audit retries the placement once in the SAME
-// cycle (fresh, nothing to cancel) — it may not hand a window it created to a
-// path running on the strategy's slower cadence. A retry that rests updates
-// state and reports a clamp; a retry that also fails reports protection lost
-// once; a first-try rest stays a single call.
 func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -1481,7 +1318,7 @@ func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
 				callN++
 				calls = append(calls, call{cancelOID: cancelOID, trigger: triggerPx})
 				if callN == 1 {
-					// Cancel lands, the open-order cap rejects the replacement.
+
 					return &HyperliquidStopLossUpdateResult{
 						CancelStopLossSucceeded: true,
 						StopLossError:           "Order would exceed the open order limit",
@@ -1517,7 +1354,6 @@ func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
 		})
 	}
 
-	// (c) A normal clamp that rests FIRST time: no retry, single call.
 	t.Run("first-try rest takes no retry", func(t *testing.T) {
 		old := runHyperliquidUpdateStopLossFunc
 		defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1540,9 +1376,6 @@ func TestAuditRetriesPlacementItStrippedSameCycle(t *testing.T) {
 	})
 }
 
-// #1456 review round 13 (optional 4): the off-cycle audit's cadence comes from
-// the fastest LIVE HL perps interval — never from an unrelated platform's or
-// paper strategy's slower/faster clock, and 0 with no such strategy.
 func TestLiquidationAuditIntervalSeconds(t *testing.T) {
 	mk := func(id string, platform, typ string, live bool) StrategyConfig {
 		args := []string{"--mode", "paper"}
@@ -1558,10 +1391,7 @@ func TestLiquidationAuditIntervalSeconds(t *testing.T) {
 		mk("hl-live-spot", "hyperliquid", "spot", true),
 	}
 	intervals := map[string]int{"hl-live-a": 300, "hl-paper-b": 60, "okx-live-c": 120, "hl-live-spot": 30}
-	// #1456 review round 14 (Optional 1): HALF the minimum, not the minimum.
-	// Returning 300 made the audit deadline elapse at the same instant
-	// hl-live-a became due, so the off-cycle pass could never fire earlier
-	// than the dispatch-path audit it exists to pre-empt.
+
 	if got := liquidationAuditIntervalSeconds(strategies, intervals); got != 150 {
 		t.Errorf("interval = %d, want 150 (half of hl-live-a's 300)", got)
 	}
@@ -1570,17 +1400,11 @@ func TestLiquidationAuditIntervalSeconds(t *testing.T) {
 	}
 }
 
-// #1456 review round 14 (Optional 1): the cadence must be strictly shorter
-// than the interval bounding the healing window, must never fall below the
-// endpoint-protection floor, and must cover live HL `manual` — which
-// collectHLLiquidationAuditCandidates audits but the original population
-// filter excluded, leaving a manual-only fleet with no off-cycle pass at all.
 func TestLiquidationAuditIntervalStrictlyShorterAndCoversManual(t *testing.T) {
 	live := func(id, typ string) StrategyConfig {
 		return StrategyConfig{ID: id, Platform: "hyperliquid", Type: typ, Args: []string{"--mode", "live"}}
 	}
 
-	// (a) one live HL perps strategy at 4h — audited materially sooner than 4h.
 	perps4h := []StrategyConfig{live("hl-4h", "perps")}
 	iv4h := map[string]int{"hl-4h": 14400}
 	got := liquidationAuditIntervalSeconds(perps4h, iv4h)
@@ -1591,29 +1415,21 @@ func TestLiquidationAuditIntervalStrictlyShorterAndCoversManual(t *testing.T) {
 		t.Errorf("cadence %d is not strictly shorter than the 14400s interval it bounds", got)
 	}
 
-	// (b) live HL manual-only fleet — still gets an off-cycle pass.
 	manualOnly := []StrategyConfig{live("hl-manual", "manual")}
 	if got := liquidationAuditIntervalSeconds(manualOnly, map[string]int{"hl-manual": 3600}); got != 1800 {
 		t.Errorf("manual-only cadence = %d, want 1800 (manual is an audit candidate)", got)
 	}
 
-	// (c) a fast fleet floors at liquidationAuditMinIntervalSeconds so halving
-	// can never turn the pass into a hot poll against Hyperliquid.
 	if got := liquidationAuditIntervalSeconds(perps4h, map[string]int{"hl-4h": 30}); got != liquidationAuditMinIntervalSeconds {
 		t.Errorf("fast-fleet cadence = %d, want floor %d", got, liquidationAuditMinIntervalSeconds)
 	}
 
-	// (d) a PAPER manual strategy is still excluded — the audit only acts on
-	// live positions.
 	paperManual := []StrategyConfig{{ID: "hl-pm", Platform: "hyperliquid", Type: "manual", Args: []string{"--mode", "paper"}}}
 	if got := liquidationAuditIntervalSeconds(paperManual, map[string]int{"hl-pm": 3600}); got != 0 {
 		t.Errorf("paper manual cadence = %d, want 0", got)
 	}
 }
 
-// #1456 review round 13: the extracted map builder must reproduce the
-// dispatch-path semantics — dust omitted entirely (no side stamp, no cap
-// entry), positive-only liquidation prices, net side from Size sign.
 func TestBuildHLLiquidationMaps(t *testing.T) {
 	onChain, liqPx, netSide := buildHLLiquidationMaps([]HLPosition{
 		{Coin: "ETH", Size: -2.5, LiquidationPx: 1800.25},
@@ -1640,12 +1456,6 @@ func TestBuildHLLiquidationMaps(t *testing.T) {
 	}
 }
 
-// #1456 review round 14 (Needs Fixing 1): the off-cycle audit branch continues
-// past the loop's only end-of-cycle save, so a close it books must be flushed
-// inline. Pins the three states the reviewer named: a booked close survives the
-// restart, a pass that books nothing writes nothing, and a save failure is
-// reported through the same saveFailures counter as the end-of-cycle failure
-// (and retried on the next quiet wake rather than being swallowed).
 func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	newState := func() *AppState {
 		return &AppState{
@@ -1720,7 +1530,7 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	t.Run("save failure counts and latches for retry", func(t *testing.T) {
 		db := openTestDB(t)
 		state := newState()
-		db.Close() // force SaveStateWithDB to fail
+		db.Close()
 		dirty, failures := flushOffCycleLiquidationAuditState(state, cfg, db, &mu, 1, false, 0, false)
 		if !dirty {
 			t.Errorf("dirty = false after a failed save, want true (close still only in memory)")
@@ -1747,11 +1557,6 @@ func TestFlushOffCycleLiquidationAuditState(t *testing.T) {
 	})
 }
 
-// #1456 review round 15 (Needs Fixing 1): the audit's NORMAL outcome is a
-// resting replacement, not a fill. applyAuditStopUpdate must count every write
-// to persisted protection state so the off-cycle flush fires for a clamp or
-// re-arm that closed nothing — and must count nothing when the call changed
-// nothing, so a quiet pass still writes nothing.
 func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 	newSS := func(oid int64, trigger float64) *StrategyState {
 		return &StrategyState{
@@ -1816,15 +1621,14 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 		var res hlLiquidationAuditResult
 		ss := newSS(111, 1850)
 
-		// nil update — the helper returns before touching anything.
 		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 111, 1.0, nil, logger); res.StateMutations != 0 {
 			t.Errorf("StateMutations = %d after a nil update, want 0", res.StateMutations)
 		}
-		// side mismatch — re-validated away inside applyTrailingStopUpdateResult.
+
 		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "short", 111, 1.0, &HyperliquidStopLossUpdateResult{StopLossOID: 999, StopLossTriggerPx: 1900}, logger); res.StateMutations != 0 {
 			t.Errorf("StateMutations = %d after a side mismatch, want 0", res.StateMutations)
 		}
-		// a cancel whose prevSLOID no longer matches — no branch applies.
+
 		if _, _ = applyAuditStopUpdate(&res, ss, "ETH", "long", 42, 1.0, &HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true}, logger); res.StateMutations != 0 {
 			t.Errorf("StateMutations = %d after a stale-OID cancel, want 0", res.StateMutations)
 		}
@@ -1834,10 +1638,6 @@ func TestApplyAuditStopUpdateCountsStateMutations(t *testing.T) {
 	})
 }
 
-// #1456 review round 16 (Needs Fixing 1): the outcome-unknown shape must never
-// be reported as "protection lost". That message asserts the position has NO
-// exchange-side stop and its recovery sentence promises a re-place — both
-// wrong when the replacement may be resting untracked.
 func TestOutcomeUnknownIsNotProtectionLost(t *testing.T) {
 	if hlLiquidationActionUnprotected(hlLiquidationActionOutcomeUnknown) {
 		t.Errorf("outcome-unknown counted as unprotected — the operator is told a fact nobody measured")
@@ -1862,7 +1662,6 @@ func TestOutcomeUnknownIsNotProtectionLost(t *testing.T) {
 		t.Errorf("detail asserts the position is unprotected: %q", detail)
 	}
 
-	// The retry gate is unchanged: only a positively rejected placement retries.
 	if hlLiquidationMayRetryReplace(&HyperliquidStopLossUpdateResult{StopLossOutcomeUnknown: true}) {
 		t.Errorf("outcome-unknown must not license an in-cycle retry")
 	}
@@ -1871,10 +1670,6 @@ func TestOutcomeUnknownIsNotProtectionLost(t *testing.T) {
 	}
 }
 
-// #1456 review round 17 (Needs Fixing 1): a placement must be classified by
-// what actually RESTS, never by accompanying error text. Python resolves an
-// unreadable submission by open-order book diff and emits stop_loss_error
-// TOGETHER with a resolved stop_loss_oid or stop_loss_outcome_unknown.
 func TestPlaceFreshClassifiesByWhatRests(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1920,10 +1715,6 @@ func TestPlaceFreshClassifiesByWhatRests(t *testing.T) {
 	})
 }
 
-// #1456 review round 17 (Needs Fixing 1) must-survive (a): a clamp retry whose
-// response was unreadable but whose open-order diff resolved one fresh oid is
-// adopted as a normal clamp — OID recorded, no protection-lost alert, so the
-// next cycle cannot re-arm a second full-size reduce-only stop.
 func TestAuditRetryAdoptsBookDiffResolvedOID(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -1935,14 +1726,13 @@ func TestAuditRetryAdoptsBookDiffResolvedOID(t *testing.T) {
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		callN++
 		if callN == 1 {
-			// Cancel lands, the open-order cap rejects the replacement.
+
 			return &HyperliquidStopLossUpdateResult{
 				CancelStopLossSucceeded: true,
 				StopLossError:           "Order would exceed the open order limit",
 			}, "", nil
 		}
-		// The retry's submission was unreadable but the book diff resolved it:
-		// error text AND a resting oid travel together.
+
 		return &HyperliquidStopLossUpdateResult{
 			StopLossError:     "place_stop_loss returned no usable status: {...}",
 			StopLossOID:       9002,
@@ -1970,10 +1760,6 @@ func TestAuditRetryAdoptsBookDiffResolvedOID(t *testing.T) {
 	}
 }
 
-// #1456 review round 17 (Needs Fixing 1) must-survive (b): a retry whose
-// outcome is genuinely unresolvable reports outcome-unknown and KEEPS recorded
-// stop state — the position must not become an Unprotected re-arm candidate on
-// the next cycle while an untracked reduce-only order may be resting.
 func TestAuditRetryOutcomeUnknownKeepsStateAndReportsUnknown(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -2011,9 +1797,6 @@ func TestAuditRetryOutcomeUnknownKeepsStateAndReportsUnknown(t *testing.T) {
 	}
 }
 
-// #1456 review round 17 (Needs Fixing 1) must-survive (c): a retry positively
-// rejected by the open-order cap produces exactly one honest protection-lost
-// report and clears the dead OID — unchanged from the pre-round-17 behavior.
 func TestAuditRetryCapRejectedStillProtectionLost(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -2047,10 +1830,6 @@ func TestAuditRetryCapRejectedStillProtectionLost(t *testing.T) {
 	}
 }
 
-// #1456 review round 17 (Needs Fixing 2): force=true makes the flush attempt a
-// save even with nothing mutated and nothing dirty — the halt path's recovery
-// probe, without which a fleet that never comes due could never clear the
-// latch after SQLite recovers.
 func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{{ID: "hl-live", Platform: "hyperliquid", Type: "perps"}}}
 	newState := func() *AppState {
@@ -2085,10 +1864,6 @@ func TestFlushOffCycleLiquidationAuditStateForceProbe(t *testing.T) {
 	})
 }
 
-// #1456 review round 18 (Needs Fixing 1) must-survive (a): a fresh re-arm
-// (cancelOID == 0) whose outcome cannot be read reports outcome-unknown and
-// records the REQUESTED trigger — so the following cycle submits no second
-// placement and raises no "NO exchange-side stop" CRITICAL.
 func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -2119,7 +1894,7 @@ func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 		t.Fatalf("first-pass placement calls = %d, want 1", calls)
 	}
 	pos := state.Strategies["hl-eth"].Positions["ETH"]
-	wantTrigger := 2340.5 * 1.005 // configured distance clamped just INSIDE liquidation
+	wantTrigger := 2340.5 * 1.005
 	if pos.StopLossTriggerPx != wantTrigger || pos.StopLossOID != 0 {
 		t.Fatalf("state = oid=%d trigger=%.4f, want oid=0 trigger=%.4f (requested trigger recorded)", pos.StopLossOID, pos.StopLossTriggerPx, wantTrigger)
 	}
@@ -2127,7 +1902,6 @@ func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 		t.Fatalf("alert action = %q, want %q (fresh re-arm cancelled nothing)", last, hlLiquidationActionPlacementUnknown)
 	}
 
-	// The following cycle: still exactly ONE lifetime placement.
 	runHyperliquidLiquidationAudit(strategies, state,
 		map[string]float64{"ETH": 2340.5},
 		hlNetSideByCoinAllLong(),
@@ -2140,9 +1914,6 @@ func TestAuditRearmOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 	}
 }
 
-// #1456 review round 18 (Needs Fixing 1) must-survive (b): a re-arm
-// POSITIVELY rejected by the open-order cap is still re-arm failed and still
-// retried next cycle — unchanged from before this round.
 func TestAuditRearmCapRejectedStillRetriedNextCycle(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -2173,9 +1944,6 @@ func TestAuditRearmCapRejectedStillRetriedNextCycle(t *testing.T) {
 	}
 }
 
-// #1456 review round 18 (Needs Fixing 1) must-survive (c): a re-arm whose
-// unreadable response the book diff resolved to one fresh oid is adopted as a
-// normal re-arm with that OID recorded.
 func TestAuditRearmAdoptsBookDiffResolvedOID(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
@@ -2205,10 +1973,6 @@ func TestAuditRearmAdoptsBookDiffResolvedOID(t *testing.T) {
 	}
 }
 
-// #1456 review round 18 (Needs Fixing 1), round 19 (Optional 3): the one-shot
-// fixed-ATR arm reports PLACEMENT unknown instead of re-arm failed for an
-// unreadable placement — the arm cancels nothing, so the cancel-claiming
-// wording would be false.
 func TestHLLiquidationArmClampActionOutcomeUnknown(t *testing.T) {
 	if got := hlLiquidationArmClampAction(&HyperliquidStopLossUpdateResult{
 		StopLossError:          "boom",
@@ -2224,16 +1988,12 @@ func TestHLLiquidationArmClampActionOutcomeUnknown(t *testing.T) {
 	}
 }
 
-// #1456 review round 19 (Needs Fixing 1) must-survive (a): a TIGHTEN whose
-// cancel lands and whose placement outcome is unreadable must leave state
-// pointing at neither the cancelled OID nor the old past-liquidation trigger,
-// and the next cycle must submit NO second order — only the alert repeats.
 func TestAuditTightenOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
 	clearHLLiquidationAlert("hl-eth", "ETH")
 
-	strategies, state := liqAuditFixture(t, true, 3.125) // oid=4242 trigger=2325 < liq 2340.5
+	strategies, state := liqAuditFixture(t, true, 3.125)
 	var mu sync.RWMutex
 	calls := 0
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
@@ -2261,9 +2021,6 @@ func TestAuditTightenOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 		t.Fatalf("state = oid=%d trigger=%.4f, want oid=0 trigger=%.4f (requested trigger, dead OID unrecorded)", pos.StopLossOID, pos.StopLossTriggerPx, wantTrigger)
 	}
 
-	// Second unreadable cycle: no placement at all — the residue is
-	// report-only — and the alert keeps firing under its placement-unknown
-	// wording.
 	runHyperliquidLiquidationAudit(strategies, state,
 		map[string]float64{"ETH": 2340.5},
 		hlNetSideByCoinAllLong(),
@@ -2276,9 +2033,6 @@ func TestAuditTightenOutcomeUnknownRecordsTriggerAndStops(t *testing.T) {
 	}
 }
 
-// #1456 review round 19 (Needs Fixing 1) must-survive (b): from the
-// outcome-unknown residue ({oid 0, reachable trigger}), a later READABLE
-// placement records exactly one tracked stop.
 func TestResidueStateConvergesOnReadableReplace(t *testing.T) {
 	ss := &StrategyState{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
 		"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2400,
@@ -2297,9 +2051,6 @@ func TestResidueStateConvergesOnReadableReplace(t *testing.T) {
 	}
 }
 
-// #1456 review round 19 (Optional 2): a submit fill sized by the #621 on-chain
-// cap books the FILLED quantity, leaves the residue in the book with cleared
-// protection fields, and never over-books the stale virtual quantity.
 func TestApplyAuditStopUpdateBooksPartialFillQty(t *testing.T) {
 	ss := &StrategyState{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
 		"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2000},
@@ -2323,7 +2074,6 @@ func TestApplyAuditStopUpdateBooksPartialFillQty(t *testing.T) {
 		t.Errorf("booked trades = %+v, want one close of 0.6", ss.TradeHistory)
 	}
 
-	// Full-cap fill: unchanged legacy behavior — the whole position closes.
 	ss2 := &StrategyState{ID: "hl-eth", Platform: "hyperliquid", Type: "perps", Positions: map[string]*Position{
 		"ETH": {Symbol: "ETH", Side: "long", Quantity: 1.0, AvgCost: 2000},
 	}}
@@ -2337,8 +2087,6 @@ func TestApplyAuditStopUpdateBooksPartialFillQty(t *testing.T) {
 	}
 }
 
-// #1456 review round 19 (Optional 3): the two unknown-outcome actions carry
-// different cancel claims, and every other action's wording is untouched.
 func TestLiquidationAlertPlacementUnknownWording(t *testing.T) {
 	_, detailTighten, unprotectedTighten := hlLiquidationAlertMessage(2325, 2352.2025, 2340.5, hlLiquidationActionOutcomeUnknown, "rec")
 	if !strings.Contains(detailTighten, "CANCELLED") {

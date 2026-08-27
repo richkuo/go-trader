@@ -65,25 +65,23 @@ func TestCollectMarkRequests(t *testing.T) {
 				Underlying: "ETH",
 				OptionType: "put",
 				Strike:     3000,
-				Expiry:     "2020-01-01", // expired
+				Expiry:     "2020-01-01",
 				Action:     "sell",
 				Quantity:   2,
 			},
 			"BAD-expiry": {
 				ID:     "BAD-expiry",
-				Expiry: "not-a-date", // invalid, should be skipped
+				Expiry: "not-a-date",
 			},
 		},
 	}
 
 	reqs := collectMarkRequests(s)
 
-	// Should have 2 valid requests (BAD-expiry skipped)
 	if len(reqs) != 2 {
 		t.Fatalf("len(reqs) = %d, want 2", len(reqs))
 	}
 
-	// Find the expired one
 	found := false
 	for _, r := range reqs {
 		if r.ID == "ETH-put-sell-3000-2020-01-01" {
@@ -136,7 +134,6 @@ func TestApplyMarkResults(t *testing.T) {
 
 	applyMarkResults(s, results, logger)
 
-	// pos1 should be updated
 	if pos, ok := s.OptionPositions["pos1"]; ok {
 		if pos.CurrentValueUSD != 150 {
 			t.Errorf("pos1 CurrentValueUSD = %g, want 150", pos.CurrentValueUSD)
@@ -151,7 +148,6 @@ func TestApplyMarkResults(t *testing.T) {
 		t.Error("pos1 should still exist")
 	}
 
-	// pos2 should be removed (expired, no assignment)
 	if _, ok := s.OptionPositions["pos2"]; ok {
 		t.Error("pos2 should be removed (expired OTM)")
 	}
@@ -182,13 +178,11 @@ func TestApplyAssignmentPut(t *testing.T) {
 
 	applyAssignment(s, r, logger)
 
-	// Cash should decrease by strike * quantity
 	expectedCash := 10000 - 50000*0.1
 	if s.Cash != expectedCash {
 		t.Errorf("Cash = %g, want %g", s.Cash, expectedCash)
 	}
 
-	// Should have a long position
 	pos := s.Positions["BTC"]
 	if pos == nil {
 		t.Fatal("should have BTC long position")
@@ -203,7 +197,6 @@ func TestApplyAssignmentPut(t *testing.T) {
 		t.Errorf("AvgCost = %g, want 50000", pos.AvgCost)
 	}
 
-	// Should have trade history
 	if len(s.TradeHistory) != 1 {
 		t.Fatalf("TradeHistory len = %d, want 1", len(s.TradeHistory))
 	}
@@ -239,13 +232,11 @@ func TestApplyAssignmentCall(t *testing.T) {
 
 	applyAssignment(s, r, logger)
 
-	// Cash should increase by strike * quantity
 	expectedCash := 5000 + 55000*0.1
 	if s.Cash != expectedCash {
 		t.Errorf("Cash = %g, want %g", s.Cash, expectedCash)
 	}
 
-	// Position quantity should decrease
 	pos := s.Positions["BTC"]
 	if pos == nil {
 		t.Fatal("BTC position should still exist")
@@ -308,7 +299,7 @@ func TestApplyAssignmentCallFullCloseUsesSingleTimestamp(t *testing.T) {
 }
 
 func TestFetchMarkPricesExpiredOTM(t *testing.T) {
-	// Mock pricer that returns spot price
+
 	prices := map[string]float64{"BTC/USDT": 60000}
 	pricer := NewIBKRPricer(prices)
 
@@ -321,7 +312,7 @@ func TestFetchMarkPricesExpiredOTM(t *testing.T) {
 			ID:         "expired-otm-put",
 			Underlying: "BTC",
 			OptionType: "put",
-			Strike:     50000, // OTM: strike < spot
+			Strike:     50000,
 			Action:     "sell",
 			Quantity:   1,
 			DTE:        -1,
@@ -359,7 +350,7 @@ func TestFetchMarkPricesExpiredITMPut(t *testing.T) {
 			ID:         "expired-itm-put",
 			Underlying: "BTC",
 			OptionType: "put",
-			Strike:     50000, // ITM: strike > spot for put
+			Strike:     50000,
 			Action:     "sell",
 			Quantity:   1,
 			DTE:        -1,
@@ -376,14 +367,13 @@ func TestFetchMarkPricesExpiredITMPut(t *testing.T) {
 	if r.AssignOptionType != "put" {
 		t.Error("should be put assignment")
 	}
-	// Intrinsic = (strike - spot) * qty = 5000
-	expectedValue := -5000.0 // negative for sold option
+
+	expectedValue := -5000.0
 	if r.CurrentValueUSD != expectedValue {
 		t.Errorf("CurrentValueUSD = %g, want %g", r.CurrentValueUSD, expectedValue)
 	}
 }
 
-// Verify DeribitPricer implements OptionPricer at compile time.
 var _ OptionPricer = (*DeribitPricer)(nil)
 
 func TestDeribitFetchTickerMocked(t *testing.T) {

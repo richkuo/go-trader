@@ -1,47 +1,7 @@
 #!/usr/bin/env bash
-# check-live-paper-config-drift.sh — READ-ONLY fleet audit of live/paper
-# per-strategy cadence + sizing drift (#1430).
-#
-# When one strategy id runs in both a live and a paper deployment, the two
-# per-strategy config blocks can drift in cadence (interval_seconds) and
-# sizing (leverage, sizing_leverage, margin_per_trade_usd, capital,
-# capital_pct, initial_capital), making the two books incomparable. This
-# script finds every live/paper pair across the fleet and prints the drift.
-#
-# A pair is a sync CANDIDATE only when its differences are limited to
-# cadence, sizing, and the --mode arg; any OTHER differing field (script,
-# args beyond --mode, close_strategy, …) flags the pair SKIP — leave it
-# alone, it has a documented reason to differ or needs human review.
-#
-# Usage:
-#   bash scripts/check-live-paper-config-drift.sh                    # auto-discover active systemd deployments (#1055)
-#   bash scripts/check-live-paper-config-drift.sh /opt/go-trader ... # audit explicit deployment dirs instead
-#
-# Discovery mirrors update.sh --all: active go-trader systemd units, reading
-# each unit's ExecStart --config path (the #1056 out-of-tree location) and
-# falling back to <WorkingDirectory>/scheduler/config.json (the transition
-# symlink, or the legacy in-tree file).
-#
-# The script never writes anything — no config rewrite, no daemon
-# interaction. Mode classification mirrors the daemon: a strategy is live
-# when its args carry --mode=live (or "--mode live"), paper when they carry
-# --mode=paper; anything else is "unset" — and since the daemon runs a
-# no-mode strategy as paper (!isLiveArgs), an unset block whose id has a
-# live twin pairs as the paper twin when no explicit --mode=paper block
-# exists, or is flagged UNPAIRED (never silently dropped, never
-# double-reported) when one does.
-#
-# Exit codes:
-#   0 — every live/paper pair in sync on cadence/sizing (a SKIP flag on
-#       other-field differences alone does not gate: those pairs are
-#       deliberately left alone)
-#   1 — cadence/sizing drift found on any pair (CANDIDATE or SKIP), or a
-#       deployment unreadable/missing
-#   2 — nothing to audit (an empty audit is NOT a verified fleet)
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=update_helpers.sh
 source "${SCRIPT_DIR}/update_helpers.sh"
 
 rows_file=$(mktemp)
@@ -82,8 +42,6 @@ else
         if [[ -z "$cfg_path" ]]; then
             wd=$(systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null || true)
             if [[ -z "$wd" ]]; then
-                # Record an unreadable row so the audit fails loudly instead of
-                # silently skipping a deployment.
                 add_row "$unit" "-"
                 continue
             fi
@@ -102,7 +60,6 @@ python3 - "$rows_file" <<'PY'
 import json
 import sys
 
-# Cadence + sizing fields the #1430 sync runbook is allowed to touch.
 WATCHED = [
     "interval_seconds",
     "leverage",
@@ -114,11 +71,7 @@ WATCHED = [
 ]
 MISSING = object()
 
-
 def classify(args):
-    # Mirrors scheduler/state_presence.go isLiveArgs: --mode=live or
-    # "--mode live" wins; then explicit paper; anything else is unset and
-    # never forms a pair.
     for i, a in enumerate(args):
         if a == "--mode=live":
             return "live"
@@ -131,10 +84,7 @@ def classify(args):
             return "paper"
     return "unset"
 
-
 def strip_mode(args):
-    # Remove the --mode token(s) so a pair whose args differ ONLY by
-    # --mode=live vs --mode=paper is not flagged as other-drift.
     out = []
     skip = False
     for a in args:
@@ -149,12 +99,10 @@ def strip_mode(args):
         out.append(a)
     return out
 
-
 def fmt(v):
     if v is MISSING:
         return "-"
     return json.dumps(v)
-
 
 rows = []
 with open(sys.argv[1]) as f:
@@ -209,14 +157,9 @@ for sid in sorted(by_id):
     if not lives:
         continue
     if not papers and unsets:
-        # The daemon runs a no-mode strategy as paper (!isLiveArgs,
-        # scheduler/config.go:517), so with no explicit --mode=paper twin the
-        # unset blocks ARE the paper twins — pair them, never drop them.
         papers = unsets
         unsets = []
     for u in unsets:
-        # An explicit --mode=paper twin already pairs this id; a second pair
-        # per unset block would double-report, so flag it instead.
         print()
         print("UNPAIRED (unset mode) %s at %s — no --mode token; the daemon runs it as paper but an explicit --mode=paper twin exists. Add --mode=paper to audit it directly."
               % (sid, u[1]))
@@ -257,8 +200,6 @@ for sid in sorted(by_id):
             for k, lv, pv in other_diffs:
                 print("  OTHER  %-22s live=%-14s paper=%s" % (k, fmt(lv), fmt(pv)))
             if watched_diffs and other_diffs:
-                # SKIP label (leave the pair alone), but the cadence/sizing
-                # drift still gates: any watched difference fails the audit.
                 skip_pairs += 1
                 drift_pairs += 1
                 print("  VERDICT: SKIP — cadence/sizing drift present, but other fields differ; leave this pair alone")

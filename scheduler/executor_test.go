@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// These tests verify JSON deserialization of executor result structs, not subprocess
-// execution behavior (timeouts, concurrency limits, etc.).
-
 func TestSpotResultJSON(t *testing.T) {
 	raw := `{
 		"strategy": "sma_crossover",
@@ -139,7 +136,7 @@ func TestHyperliquidExecuteResultJSON_WithOID(t *testing.T) {
 }
 
 func TestHyperliquidExecuteResultJSON_NoOID(t *testing.T) {
-	// Backwards compatibility: fill without oid/fee should still parse
+
 	raw := `{
 		"execution": {
 			"action": "sell",
@@ -332,27 +329,6 @@ func TestContractSpecJSON(t *testing.T) {
 	}
 }
 
-// --- RunHyperliquidClose contract tests (#341) ---
-//
-// RunHyperliquidClose has FIVE distinct return paths and the kill-switch
-// correctness depends on each one returning the right (result, err) shape:
-//
-//   1. exit 0 + valid JSON + Error == ""   → (result, nil) — clean success
-//   2. exit 0 + valid JSON + Error != ""   → (result, err) — anomalous; envelope wins
-//   3. exit !=0 + valid JSON + Error != "" → (result, err) — expected failure path
-//   4. exit !=0 + valid JSON + Error == "" → (result, err) — defensive; never silently OK
-//   5. malformed JSON                       → (nil, err)   — always failure
-//
-// Without these tests, a future "simplification" of the parse logic could
-// collapse case (4) into success, reintroducing the #341-class bug at the
-// JSON-parse boundary. Test-side: writes a temporary Python script that
-// behaves like close_hyperliquid_position.py but with controllable output.
-
-// These tests exercise parseHyperliquidCloseOutput directly (the pure decision
-// helper extracted from RunHyperliquidClose) so they don't depend on
-// spawning Python in the Go CI job.
-
-// Case 1: clean success — exit 0, valid JSON, no error field.
 func TestParseHyperliquidCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`)
 	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
@@ -373,8 +349,6 @@ func TestParseHyperliquidCloseOutput_CleanSuccess(t *testing.T) {
 	}
 }
 
-// Case 2: exit 0 with populated error field — should NOT be silently treated
-// as success (the JSON envelope is authoritative).
 func TestParseHyperliquidCloseOutput_Exit0WithError(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"sdk timeout"}`)
 	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
@@ -389,7 +363,6 @@ func TestParseHyperliquidCloseOutput_Exit0WithError(t *testing.T) {
 	}
 }
 
-// Case 3: exit 1 with valid JSON error — the expected failure path.
 func TestParseHyperliquidCloseOutput_Exit1WithError(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x","error":"hl rate limited"}`)
 	runErr := fmt.Errorf("exit status 1")
@@ -405,11 +378,6 @@ func TestParseHyperliquidCloseOutput_Exit1WithError(t *testing.T) {
 	}
 }
 
-// Case 4: exit non-zero with valid JSON but no error field. Tightened
-// contract (item #2 from review): never silently report success on a
-// non-zero exit. Without this test, a regression that drops the exit-code
-// check would let the kill switch clear virtual state on a script crash
-// that happened to print parseable JSON before dying.
 func TestParseHyperliquidCloseOutput_Exit1WithoutErrorField(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ETH","fill":{}},"platform":"hyperliquid","timestamp":"x"}`)
 	runErr := fmt.Errorf("exit status 1")
@@ -422,8 +390,6 @@ func TestParseHyperliquidCloseOutput_Exit1WithoutErrorField(t *testing.T) {
 	}
 }
 
-// Case 5: malformed JSON. Always a failure regardless of exit code, because
-// the kill switch cannot infer outcome from garbage.
 func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
 	result, _, err := parseHyperliquidCloseOutput([]byte("this is not json"), "", nil)
 	if err == nil {
@@ -434,10 +400,6 @@ func TestParseHyperliquidCloseOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
-// already_flat field round-trips through the parser so the Go-side
-// AlreadyFlat routing has the signal it needs (#350). Without this, a
-// silent struct-tag regression would make every adapter-side already-flat
-// case fall back to ClosedCoins.
 func TestParseHyperliquidCloseOutput_AlreadyFlatFieldParsed(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ETH","fill":{},"already_flat":true},"platform":"hyperliquid","timestamp":"x"}`)
 	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
@@ -467,12 +429,6 @@ func TestBuildHyperliquidCloseArgs_CancelAfterClose(t *testing.T) {
 		t.Fatalf("close args = %v, want %v", got, want)
 	}
 }
-
-// ── OKX close parser tests (#345) ──────────────────────────────────────
-// Same 5-case matrix as parseHyperliquidCloseOutput — mirrors the HL tests
-// one-to-one because the two parsers implement the same contract. Any
-// relaxation of the contract on one side must fail a test on that side so
-// kill-switch correctness parity is mechanically enforced.
 
 func TestParseOKXCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc123","fee":0.02}},"platform":"okx","timestamp":"2026-04-19T00:00:00Z"}`)
@@ -553,8 +509,6 @@ func TestParseOKXCloseOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
-// ── OKX positions fetcher parser tests (#345) ───────────────────────────
-
 func TestParseOKXPositionsOutput_Success(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"entry_price":42000,"side":"long"},{"coin":"ETH","size":-0.5,"entry_price":3000,"side":"short"}],"platform":"okx","timestamp":"x"}`)
 	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
@@ -567,8 +521,7 @@ func TestParseOKXPositionsOutput_Success(t *testing.T) {
 	if result.Positions[0].Coin != "BTC" || result.Positions[0].Size != 0.01 {
 		t.Errorf("position[0] = %+v", result.Positions[0])
 	}
-	// Short size must be negative — load-bearing for on-chain direction
-	// classification in forceCloseOKXLive.
+
 	if result.Positions[1].Size != -0.5 {
 		t.Errorf("short size must be signed negative, got %g", result.Positions[1].Size)
 	}
@@ -604,10 +557,6 @@ func TestParseOKXPositionsOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
-// ── buildHyperliquidExecuteArgs (#592) ─────────────────────────────────────
-// These tests assert the argv contract between Go and check_hyperliquid.py
-// without invoking the subprocess.
-
 func argsContains(args []string, want string) bool {
 	for _, a := range args {
 		if a == want {
@@ -626,9 +575,6 @@ func argsHasPrefix(args []string, prefix string) bool {
 	return false
 }
 
-// closeFullPosition=true must emit --close-full-position and OMIT --size, so
-// the Python script calls adapter.market_close(sz=None) instead of
-// market_open(size). This is the load-bearing #592 contract.
 func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
 	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{})
 
@@ -646,9 +592,6 @@ func TestBuildHyperliquidExecuteArgs_CloseFullPosition(t *testing.T) {
 	}
 }
 
-// Sized close (closeFullPosition=false) must emit --size=N and OMIT
-// --close-full-position. This is the path used for shared-coin peers and for
-// partial closes.
 func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
 	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.42, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
 
@@ -663,9 +606,6 @@ func TestBuildHyperliquidExecuteArgs_SizedClose(t *testing.T) {
 	}
 }
 
-// Full close with extraCancelOIDs must forward all TP OIDs as
-// --cancel-stop-loss-oid flags (mirrors the posQty>0 && !partialClose gate in
-// main.go that cancels every tier TP OID on a full or flip close).
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
 	args := buildHyperliquidExecuteArgs("ETH", "sell", 0, 0, 0, 0, "", 0, true, hlExecuteSnapshot{}, 111, 222, 333)
 
@@ -676,11 +616,8 @@ func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
 	}
 }
 
-// Partial close: extraCancelOIDs is omitted at the call site (mirrors the
-// partialClose=true gate in main.go), so TP OIDs must NOT appear in argv.
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
-	// No extraCancelOIDs passed — matches what runHyperliquidExecuteOrder does on
-	// a partial close.
+
 	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
 
 	for _, notWant := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
@@ -690,7 +627,6 @@ func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
 	}
 }
 
-// Optional flags should be conditionally present.
 func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 	t.Run("no optional flags", func(t *testing.T) {
 		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
@@ -709,8 +645,7 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 		}
 	})
 	t.Run("margin mode without leverage", func(t *testing.T) {
-		// leverage=0 with non-empty margin_mode: --leverage must not appear (would
-		// confuse the Python validator) but --margin-mode is still emitted.
+
 		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, false, hlExecuteSnapshot{})
 		if !argsContains(args, "--margin-mode=cross") {
 			t.Errorf("expected --margin-mode=cross, got %v", args)
@@ -721,9 +656,6 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 	})
 }
 
-// #768 fix #4: --account-leverage / --account-margin-mode must appear in argv
-// ONLY when both fields are present AND --margin-mode is being enforced. The
-// Python side only consults them inside the `if margin_mode:` branch.
 func TestBuildHyperliquidExecuteArgs_AccountSnapshotForwarded(t *testing.T) {
 	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
 	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "isolated", 10, false, snap)
@@ -756,9 +688,7 @@ func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWhenIncomplete(t *tes
 }
 
 func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWithoutMarginMode(t *testing.T) {
-	// Python only consults --account-leverage inside the `if margin_mode:`
-	// branch; forwarding it when margin_mode is empty would be wasted argv
-	// noise. Verify the omission so we don't drift from that contract.
+
 	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
 	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, snap)
 	for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
@@ -772,7 +702,7 @@ func TestHLExecuteSnapshotForCoin(t *testing.T) {
 	positions := []HLPosition{
 		{Coin: "BTC", Size: 0.1, EntryPrice: 60000, Leverage: 10, MarginMode: "isolated"},
 		{Coin: "ETH", Size: -2, EntryPrice: 3000, Leverage: 5, MarginMode: "cross"},
-		{Coin: "SOL", Size: 100, EntryPrice: 150, Leverage: 0, MarginMode: ""}, // bogus row — skip
+		{Coin: "SOL", Size: 100, EntryPrice: 150, Leverage: 0, MarginMode: ""},
 	}
 	if got := hlExecuteSnapshotForCoin(positions, "BTC"); got.AccountLeverage != 10 || got.AccountMarginMode != "isolated" {
 		t.Errorf("BTC snapshot = %+v, want lev=10 mode=isolated", got)
@@ -780,15 +710,15 @@ func TestHLExecuteSnapshotForCoin(t *testing.T) {
 	if got := hlExecuteSnapshotForCoin(positions, "ETH"); got.AccountLeverage != 5 || got.AccountMarginMode != "cross" {
 		t.Errorf("ETH snapshot = %+v, want lev=5 mode=cross", got)
 	}
-	// Bogus rows (missing margin mode) must yield zero — Python falls back.
+
 	if got := hlExecuteSnapshotForCoin(positions, "SOL"); got != (hlExecuteSnapshot{}) {
 		t.Errorf("SOL with bogus row should yield zero, got %+v", got)
 	}
-	// Unknown coin yields zero.
+
 	if got := hlExecuteSnapshotForCoin(positions, "XRP"); got != (hlExecuteSnapshot{}) {
 		t.Errorf("unknown coin should yield zero, got %+v", got)
 	}
-	// Empty coin string yields zero.
+
 	if got := hlExecuteSnapshotForCoin(positions, ""); got != (hlExecuteSnapshot{}) {
 		t.Errorf("empty coin should yield zero, got %+v", got)
 	}
@@ -811,7 +741,7 @@ func TestBuildHyperliquidSyncProtectionArgv_TPArmedTiersJSON(t *testing.T) {
 	if got := strings.TrimPrefix(armedArg, prefix); got != `[true,true]` {
 		t.Errorf("armed tiers JSON = %q, want [true,true]", got)
 	}
-	// Shorter slice pads false (#749 / hyperliquid_protection.go).
+
 	argv = buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, tiers, 0, nil, []bool{true}, false, nil, nil, nil)
 	for _, a := range argv {
 		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {

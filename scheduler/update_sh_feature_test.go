@@ -66,17 +66,11 @@ func TestUpdateShellRejectsMissingRsyncFromDir790(t *testing.T) {
 	}
 }
 
-// #1055: --all must not silently no-op. When every discovered dir is skipped
-// (none has scheduler/config.json), each skip is reported with a reason and the
-// run fails loudly rather than printing "all instances OK" having updated nothing.
-// GO_TRADER_UPDATE_ALL_ROOT pins the glob path, so this is deterministic on any
-// host regardless of whether systemctl is present.
 func TestUpdateShellAllReportsSkippedAndFailsOnZeroUpdate1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
 	root := t.TempDir()
-	// Two glob-matching dirs, neither a real deployment (no scheduler/config.json),
-	// plus one dir that the glob ignores entirely.
+
 	for _, d := range []string{"go-trader-live", "go-trader-paper", "unrelated"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
@@ -90,27 +84,21 @@ func TestUpdateShellAllReportsSkippedAndFailsOnZeroUpdate1055(t *testing.T) {
 	}
 	text := string(out)
 	for _, want := range []string{
-		"2 deployment dir(s) via glob discovery", // count reflects glob matches
-		"skipping",                               // each skipped dir reported
-		"no scheduler/config.json",               // with a reason
-		"updated 0 deployments",                  // loud zero-update failure
+		"2 deployment dir(s) via glob discovery",
+		"skipping",
+		"no scheduler/config.json",
+		"updated 0 deployments",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("--all output missing %q\n%s", want, text)
 		}
 	}
-	// The glob must not have pulled in the unrelated dir.
+
 	if strings.Contains(text, "unrelated") {
 		t.Errorf("--all glob should not match 'unrelated'\n%s", text)
 	}
 }
 
-// #1055: the --all coordinator must reach discovery/dispatch on a host that has
-// only what fan-out needs (git + coreutils), WITHOUT uv/go — those gate the
-// per-deployment children's build, not the parent. Regression for the CI go-job
-// (no uv) that the first cut of this feature broke by running the uv/go preflight
-// before the --all dispatcher. Deterministic on any host: we build a curated PATH
-// that deliberately omits uv and go.
 func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
@@ -119,9 +107,6 @@ func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Curated bin with only the externals the --all glob path invokes; uv and go
-	// are intentionally absent. (bash itself is resolved from the parent PATH by
-	// exec.Command, not from cmd.Env, so it need not be symlinked here.)
 	binDir := t.TempDir()
 	for _, tool := range []string{"git", "sort", "tr", "dirname", "basename"} {
 		src, err := exec.LookPath(tool)
@@ -133,8 +118,6 @@ func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 		}
 	}
 
-	// PATH is exactly binDir (no uv/go), so a pass proves the dispatcher ran before
-	// the uv/go preflight rather than the toolchain merely happening to be present.
 	cmd := exec.Command("bash", script, "--all", "--restart")
 	cmd.Env = []string{
 		"PATH=" + binDir,
@@ -143,13 +126,11 @@ func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 	}
 	out, err := cmd.CombinedOutput()
 	text := string(out)
-	// Coordinator must NOT abort in the build-toolchain preflight.
+
 	if strings.Contains(text, "uv not on PATH") || strings.Contains(text, "go not on PATH") {
 		t.Fatalf("--all aborted in build-toolchain preflight without uv/go (must dispatch first)\n%s", text)
 	}
-	// It must reach discovery; the lone dir has no config.json, so it skips it and
-	// fails with the zero-update error (non-zero exit) — that proves it got past
-	// preflight all the way to the dispatch/skip logic.
+
 	if err == nil {
 		t.Fatalf("expected non-zero exit (zero deployments updated)\n%s", text)
 	}
@@ -160,13 +141,6 @@ func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 	}
 }
 
-// allUnionTestEnv builds a controllable --all environment for the union/suppress
-// tests (#1055 review): a real temp git repo (so `git rev-parse --show-toplevel`
-// resolves), a sibling glob-root deployment dir, a scattered deployment dir, and a
-// fake `systemctl` on PATH that reports the scattered unit as ACTIVE. Neither
-// deployment carries scheduler/config.json, so the run skips both and fails with
-// the zero-update error — but each skip line names its dir, which is what lets the
-// tests prove which source(s) the dir came from. Returns (repoDir, scatteredDir, env).
 func allUnionTestEnv(t *testing.T) (string, string, []string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -180,11 +154,11 @@ func allUnionTestEnv(t *testing.T) (string, string, []string) {
 	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-	// Sibling of the repo under the default scan_root (= parent): glob-only source.
+
 	if err := os.MkdirAll(filepath.Join(parent, "go-trader-globonly"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Scattered deployment outside the glob root: systemd-only source.
+
 	scattered := filepath.Join(t.TempDir(), "go-trader-scattered")
 	if err := os.MkdirAll(scattered, 0o755); err != nil {
 		t.Fatal(err)
@@ -194,7 +168,7 @@ func allUnionTestEnv(t *testing.T) (string, string, []string) {
 	fake := "#!/usr/bin/env bash\n" +
 		"case \"$1\" in\n" +
 		"  list-units) printf '%s\\n' \"go-trader-scattered.service loaded active running scattered\" ;;\n" +
-		"  show) printf '%s\\n' \"${GO_TRADER_TEST_SCATTERED:-}\" ;;\n" + // show <unit> -p WorkingDirectory --value
+		"  show) printf '%s\\n' \"${GO_TRADER_TEST_SCATTERED:-}\" ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
@@ -206,24 +180,21 @@ func allUnionTestEnv(t *testing.T) (string, string, []string) {
 	return repo, scattered, env
 }
 
-// #1055 review (finding 1): the --all batch must be the UNION of active systemd
-// units and the glob root, so neither a scattered systemd deployment nor a
-// glob-root-only (signal-mode / unloaded) deployment silently leaves the batch.
 func TestUpdateShellAllUnionsSystemdAndGlob1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
 	repo, _, env := allUnionTestEnv(t)
 
 	cmd := exec.Command("bash", script, "--all", "--restart")
-	cmd.Dir = repo // so scan_root defaults to parent (non-explicit -> systemd enabled)
+	cmd.Dir = repo
 	cmd.Env = env
 	out, _ := cmd.CombinedOutput()
 	text := string(out)
 
 	for _, want := range []string{
-		"2 deployment dir(s) via systemd+glob discovery", // both sources contributed
-		"go-trader-scattered",                            // systemd-only dir present
-		"go-trader-globonly",                             // glob-only dir present
+		"2 deployment dir(s) via systemd+glob discovery",
+		"go-trader-scattered",
+		"go-trader-globonly",
 		"updated 0 deployments",
 	} {
 		if !strings.Contains(text, want) {
@@ -232,9 +203,6 @@ func TestUpdateShellAllUnionsSystemdAndGlob1055(t *testing.T) {
 	}
 }
 
-// #1055 (AC): an explicit --update-all-root pins the glob root and SUPPRESSES
-// systemd discovery, so the scattered active unit must NOT be pulled into the
-// batch — keeping the documented --update-all-root flow unchanged.
 func TestUpdateShellAllExplicitRootSuppressesSystemd1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
@@ -251,7 +219,7 @@ func TestUpdateShellAllExplicitRootSuppressesSystemd1055(t *testing.T) {
 		t.Errorf("explicit --update-all-root must suppress systemd discovery, but scattered unit appeared\n%s", text)
 	}
 	for _, want := range []string{
-		"1 deployment dir(s) via glob discovery", // glob root only
+		"1 deployment dir(s) via glob discovery",
 		"go-trader-globonly",
 		"updated 0 deployments",
 	} {
@@ -261,12 +229,6 @@ func TestUpdateShellAllExplicitRootSuppressesSystemd1055(t *testing.T) {
 	}
 }
 
-// #1055 review (dedup canonicalization): when a systemd WorkingDirectory is a
-// symlink that resolves to a directory ALSO matched by the glob, the two spellings
-// must collapse to a single batch entry — otherwise the one live deployment is
-// updated and restarted twice. Here the glob hit (parent/go-trader-aliased) and the
-// systemd WorkingDirectory (a symlink pointing at it) are the same physical dir, so
-// the batch count must be 1, not 2.
 func TestUpdateShellAllDedupesCanonicalAliases1055(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -281,12 +243,12 @@ func TestUpdateShellAllDedupesCanonicalAliases1055(t *testing.T) {
 	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-	// The real deployment dir (a glob hit under the default scan_root = parent).
+
 	aliased := filepath.Join(parent, "go-trader-aliased")
 	if err := os.MkdirAll(aliased, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A symlink elsewhere that systemd reports as the unit's WorkingDirectory.
+
 	link := filepath.Join(t.TempDir(), "go-trader-link")
 	if err := os.Symlink(aliased, link); err != nil {
 		t.Fatal(err)
@@ -306,7 +268,7 @@ func TestUpdateShellAllDedupesCanonicalAliases1055(t *testing.T) {
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"GO_TRADER_TEST_SCATTERED="+link, // systemd WorkingDirectory = symlink to the glob dir
+		"GO_TRADER_TEST_SCATTERED="+link,
 	)
 	out, _ := cmd.CombinedOutput()
 	text := string(out)

@@ -8,23 +8,20 @@ import (
 	"time"
 )
 
-// StrategyExposure represents a single strategy's directional exposure to an asset.
 type StrategyExposure struct {
 	StrategyID string  `json:"strategy_id"`
-	DeltaUSD   float64 `json:"delta_usd"` // signed: +long, -short
-	Type       string  `json:"type"`      // spot/options/perps
+	DeltaUSD   float64 `json:"delta_usd"`
+	Type       string  `json:"type"`
 }
 
-// AssetExposure aggregates all strategies' exposure to a single asset.
 type AssetExposure struct {
 	Asset            string             `json:"asset"`
 	NetDeltaUSD      float64            `json:"net_delta_usd"`
 	GrossDeltaUSD    float64            `json:"gross_delta_usd"`
 	Strategies       []StrategyExposure `json:"strategies"`
-	ConcentrationPct float64            `json:"concentration_pct"` // |net|/portfolio_gross * 100
+	ConcentrationPct float64            `json:"concentration_pct"`
 }
 
-// CorrelationSnapshot captures portfolio-level directional exposure at a point in time.
 type CorrelationSnapshot struct {
 	Timestamp         time.Time                 `json:"timestamp"`
 	Assets            map[string]*AssetExposure `json:"assets"`
@@ -32,25 +29,6 @@ type CorrelationSnapshot struct {
 	Warnings          []string                  `json:"warnings,omitempty"`
 }
 
-// computeAssetDeltas computes signed per-asset delta-USD exposure across all
-// strategies. Shared by ComputeCorrelation (advisory snapshot / warnings) and
-// evaluateExposureCap (#1270 blocking gate) so there is exactly one exposure
-// model. Semantics:
-//
-//   - spot, perps, AND manual positions contribute quantity x multiplier x
-//     price, signed by Side ("short" is negative; anything else — including
-//     long-only spot legs with an empty Side — counts long).
-//   - options contribute delta-weighted underlying exposure (emitted greeks
-//     when marked, coarse +-1 call/put fallback otherwise), signed by action.
-//   - positions with no live price fall back to AvgCost (mirrors
-//     PortfolioNotional); a position with neither a usable price nor a
-//     positive AvgCost — and any non-positive quantity — is EXCLUDED from the
-//     sums and recorded in skipped (fail-safe: a corrupt or unpriceable leg
-//     must never zero or inflate a blocking gate, #1270).
-//
-// Strategy IDs are iterated in sorted order so float summation and the
-// per-asset Strategies slices are deterministic. Pure read; safe under
-// mu.RLock. prices may be nil (AvgCost-only valuation).
 func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64) (map[string]*AssetExposure, []string) {
 	cfgMap := make(map[string]StrategyConfig)
 	for _, sc := range cfgStrategies {
@@ -85,7 +63,7 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 
 		switch sc.Type {
 		case "spot", "perps", "manual":
-			// Deterministic position iteration (map order is randomized).
+
 			syms := make([]string, 0, len(ss.Positions))
 			for sym := range ss.Positions {
 				syms = append(syms, sym)
@@ -147,7 +125,7 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 				if opt.Greeks.Delta != 0 {
 					deltaUSD += sign * opt.Greeks.Delta * opt.Quantity * spotPrice
 				} else {
-					// Coarse estimate when greeks not yet marked.
+
 					coarseDelta := 1.0
 					if opt.OptionType == "put" {
 						coarseDelta = -1.0
@@ -179,24 +157,20 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 	return assets, skipped
 }
 
-// ComputeCorrelation computes per-asset directional exposure across all strategies.
 func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []StrategyConfig, prices map[string]float64, corrCfg *CorrelationConfig) *CorrelationSnapshot {
 	snap := &CorrelationSnapshot{
 		Timestamp: time.Now().UTC(),
 	}
 	snap.Assets, _ = computeAssetDeltas(strategies, cfgStrategies, prices)
 
-	// Compute portfolio gross.
 	for _, ae := range snap.Assets {
 		snap.PortfolioGrossUSD += ae.GrossDeltaUSD
 	}
 
-	// Compute concentration percentages and generate warnings.
 	if snap.PortfolioGrossUSD > 0 {
 		for _, ae := range snap.Assets {
 			ae.ConcentrationPct = math.Abs(ae.NetDeltaUSD) / snap.PortfolioGrossUSD * 100
 
-			// Concentration warning.
 			if corrCfg != nil && ae.ConcentrationPct > corrCfg.MaxConcentrationPct {
 				direction := "long"
 				if ae.NetDeltaUSD < 0 {
@@ -209,7 +183,6 @@ func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []St
 		}
 	}
 
-	// Same-direction warning: check if too many strategies share a direction per asset.
 	if corrCfg != nil {
 		for _, ae := range snap.Assets {
 			if len(ae.Strategies) < 2 {
@@ -241,16 +214,15 @@ func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []St
 	return snap
 }
 
-// findSpotPrice finds a price for the given asset (e.g. "BTC") from the prices map.
 func findSpotPrice(asset string, prices map[string]float64) float64 {
-	// Try common symbol formats.
+
 	if p, ok := prices[asset+"/USDT"]; ok {
 		return p
 	}
 	if p, ok := prices[asset]; ok {
 		return p
 	}
-	// Fallback: scan for any symbol starting with asset.
+
 	for sym, p := range prices {
 		base := strings.ToUpper(strings.SplitN(sym, "/", 2)[0])
 		if base == asset {

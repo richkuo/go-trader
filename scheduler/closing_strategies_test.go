@@ -62,9 +62,7 @@ func TestFormatClosingStrategiesResponseNoParams(t *testing.T) {
 }
 
 func TestFormatClosingStrategiesResponseOverrideSurfacesWhenRegistryDefaultIsEmpty(t *testing.T) {
-	// trailing_tp_ratchet_regime (and any override-eligible evaluator with
-	// empty registry default_params) must still show the operator's
-	// configured tp_tiers — that's the only value that ever runs for it.
+
 	cfg := &Config{
 		UserDefaults: &UserDefaultsConfig{
 			Close: CloseDefaultsMap{
@@ -87,18 +85,11 @@ func TestFormatClosingStrategiesResponseOverrideSurfacesWhenRegistryDefaultIsEmp
 }
 
 func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
-	// trailing_tp_ratchet_regime is the one evaluator whose user_defaults.close
-	// entry may carry a coupled trailing_stop_atr_regime SL owner in addition to
-	// tp_tiers (close_defaults.go validateUserCloseDefaults / applyUserClose
-	// DefaultRatchetRegimeTrail). Both effective override keys must be surfaced
-	// and each marked as an override — the catalog exists so an operator can see
-	// what actually runs without reading source.
+
 	entries := []closeRegistryEntry{
 		{Name: "trailing_tp_ratchet_regime", Description: "Regime ratchet", DefaultParams: map[string]interface{}{}, Platforms: []string{"spot"}},
 	}
 
-	// Case 1: both tp_tiers and trailing_stop_atr_regime configured — both shown,
-	// both marked as overrides.
 	cfgBoth := &Config{
 		UserDefaults: &UserDefaultsConfig{
 			Close: CloseDefaultsMap{
@@ -124,7 +115,6 @@ func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
 		t.Fatalf("configured overrides must not be hidden behind the (none) marker, got: %s", body)
 	}
 
-	// Case 2: tp_tiers only — no spurious trailing_stop_atr_regime line.
 	cfgTPOnly := &Config{
 		UserDefaults: &UserDefaultsConfig{
 			Close: CloseDefaultsMap{
@@ -144,7 +134,6 @@ func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
 		t.Fatalf("expected tp_tiers override surfaced, got: %s", body)
 	}
 
-	// Case 3: no user_defaults.close entry at all — no override note anywhere.
 	body = formatClosingStrategiesResponse(&Config{}, entries)[0]
 	if strings.Contains(body, "override") || strings.Contains(body, "trailing_stop_atr_regime") {
 		t.Fatalf("no user_defaults.close entry exists — must not claim any override, got: %s", body)
@@ -182,8 +171,7 @@ func TestFormatClosingStrategiesResponseUserDefaultsOverride(t *testing.T) {
 	if !strings.Contains(body, "atr_multiple\":1") {
 		t.Fatalf("expected the overriding tp_tiers value to be shown, got: %s", body)
 	}
-	// atr_source has no user_defaults.close story (only tp_tiers can be
-	// overridden) so it must still show the plain registry default.
+
 	if strings.Contains(body, "atr_source=\"live\" (user_defaults.close override)") {
 		t.Fatalf("atr_source must not be marked as an override, got: %s", body)
 	}
@@ -212,9 +200,7 @@ func TestFormatClosingStrategiesResponseEmptyCatalog(t *testing.T) {
 }
 
 func TestFormatClosingStrategiesResponseChunksAcrossMessages(t *testing.T) {
-	// Build enough synthetic evaluators with long descriptions to force the
-	// output past discordCharLimit and confirm it splits into multiple pages,
-	// each individually under the limit.
+
 	var entries []closeRegistryEntry
 	longDesc := strings.Repeat("x", 300)
 	for i := 0; i < 20; i++ {

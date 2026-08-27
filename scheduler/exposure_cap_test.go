@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// --- test fixtures -----------------------------------------------------------
-
 func exposureTestStates() map[string]*StrategyState {
 	return map[string]*StrategyState{
 		"hl-a-btc": {
@@ -50,13 +48,9 @@ func exposureTestPrices() map[string]float64 {
 	return map[string]float64{"BTC": 50000, "ETH": 3000, "SOL": 150}
 }
 
-// --- aggregation -------------------------------------------------------------
-
-// Acceptance: a long BTC + long ETH + long SOL book over the cap blocks the
-// next long open; a short entry on the same cycle is not blocked.
 func TestEvaluateExposureCap_AllLongBookBlocksLongsOnly(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
-	// Long: 0.2*50000 + 2*3000 + 20*150 = 10000 + 6000 + 3000 = 19000
+
 	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
 
 	if !st.Configured {
@@ -75,7 +69,6 @@ func TestEvaluateExposureCap_AllLongBookBlocksLongsOnly(t *testing.T) {
 		t.Error("expected ShortBlocked=false")
 	}
 
-	// Fresh long open from flat is blocked with an explicit reason...
 	blocked, why := exposureCapBlocksSignal(st, "BTC", 1, 0, 0, "", true, true)
 	if !blocked {
 		t.Fatal("expected fresh long open blocked")
@@ -83,14 +76,12 @@ func TestEvaluateExposureCap_AllLongBookBlocksLongsOnly(t *testing.T) {
 	if !strings.Contains(why, "new long opens blocked") || !strings.Contains(why, "$19000.00") || !strings.Contains(why, "$15000.00") {
 		t.Errorf("unexpected reason: %q", why)
 	}
-	// ...while a short entry on the same cycle passes.
+
 	if blocked, _ := exposureCapBlocksSignal(st, "BTC", -1, 0, 0, "", true, true); blocked {
 		t.Error("short entry must not be blocked when only the long bucket is capped")
 	}
 }
 
-// Acceptance: netting is honored — long $10k BTC + short $10k ETH contributes
-// $10k long / $10k short and neither bucket blocks under a $15k cap.
 func TestEvaluateExposureCap_NettingPerAsset(t *testing.T) {
 	states := map[string]*StrategyState{
 		"hl-a-btc": {
@@ -127,8 +118,6 @@ func TestEvaluateExposureCap_NettingPerAsset(t *testing.T) {
 	}
 }
 
-// Same-asset netting: a long and a short on the SAME asset net before
-// bucketing — they must not double-count into both buckets.
 func TestEvaluateExposureCap_SameAssetNetsBeforeBucketing(t *testing.T) {
 	states := map[string]*StrategyState{
 		"hl-a-btc": {
@@ -154,7 +143,7 @@ func TestEvaluateExposureCap_SameAssetNetsBeforeBucketing(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
 
 	st := evaluateExposureCap(pr, states, cfgs, prices, 20000)
-	// Net BTC: 0.3*50000 - 0.1*50000 = 10000 long; short bucket stays empty.
+
 	if st.LongUSD != 10000 {
 		t.Errorf("LongUSD = %f, want 10000", st.LongUSD)
 	}
@@ -163,7 +152,6 @@ func TestEvaluateExposureCap_SameAssetNetsBeforeBucketing(t *testing.T) {
 	}
 }
 
-// Acceptance: disabled by default — zero-valued fields gate nothing.
 func TestEvaluateExposureCap_DisabledByDefault(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25}
 	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
@@ -176,15 +164,13 @@ func TestEvaluateExposureCap_DisabledByDefault(t *testing.T) {
 	if st.LongBlocked || st.ShortBlocked {
 		t.Error("disabled cap must not mark buckets blocked")
 	}
-	// nil config too.
+
 	st = evaluateExposureCap(nil, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
 	if st.Configured {
 		t.Error("expected Configured=false with nil config")
 	}
 }
 
-// Acceptance: corrupt / unpriceable positions fail safe — excluded from the
-// sums and recorded, never blocking everything or nothing.
 func TestEvaluateExposureCap_FailSafeExclusions(t *testing.T) {
 	states := map[string]*StrategyState{
 		"hl-a-btc": {
@@ -194,14 +180,14 @@ func TestEvaluateExposureCap_FailSafeExclusions(t *testing.T) {
 			},
 			OptionPositions: make(map[string]*OptionPosition),
 		},
-		"hl-b-xyz": { // no live price AND zero AvgCost → excluded
+		"hl-b-xyz": {
 			ID: "hl-b-xyz", Type: "perps",
 			Positions: map[string]*Position{
 				"XYZ": {Symbol: "XYZ", Quantity: 5, Side: "long", AvgCost: 0},
 			},
 			OptionPositions: make(map[string]*OptionPosition),
 		},
-		"hl-c-eth": { // corrupt: non-positive quantity → excluded
+		"hl-c-eth": {
 			ID: "hl-c-eth", Type: "perps",
 			Positions: map[string]*Position{
 				"ETH": {Symbol: "ETH", Quantity: -1, Side: "long", AvgCost: 3000},
@@ -239,10 +225,9 @@ func TestEvaluateExposureCap_FailSafeExclusions(t *testing.T) {
 	}
 }
 
-// nil prices (manual CLI path) value positions at AvgCost.
 func TestEvaluateExposureCap_AvgCostFallback(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
-	// AvgCost book: 0.2*48000 + 2*2900 + 20*140 = 9600 + 5800 + 2800 = 18200
+
 	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), nil, 0)
 	if st.LongUSD != 18200 {
 		t.Errorf("LongUSD = %f, want 18200 (AvgCost valuation)", st.LongUSD)
@@ -255,7 +240,6 @@ func TestEvaluateExposureCap_AvgCostFallback(t *testing.T) {
 	}
 }
 
-// Manual-type strategies contribute to the bucket like perps.
 func TestEvaluateExposureCap_ManualPositionsCounted(t *testing.T) {
 	states := map[string]*StrategyState{
 		"hl-manual": {
@@ -279,11 +263,9 @@ func TestEvaluateExposureCap_ManualPositionsCounted(t *testing.T) {
 	}
 }
 
-// --- concentration arm ---------------------------------------------------------
-
 func TestEvaluateExposureCap_Concentration(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxAssetConcentrationPct: 40}
-	// PV 20000: BTC net long 10000 = 50% (over), ETH 6000 = 30%, SOL 3000 = 15%.
+
 	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
 
 	if st.LongBlocked || st.ShortBlocked {
@@ -300,7 +282,6 @@ func TestEvaluateExposureCap_Concentration(t *testing.T) {
 		t.Error("ETH must not be over-concentrated at 30%")
 	}
 
-	// BTC long entries blocked; BTC shorts (reduce concentration) and ETH longs pass.
 	if blocked, why := exposureCapBlocksSignal(st, "BTC", 1, 0, 0, "", true, true); !blocked {
 		t.Error("expected BTC long open blocked by concentration")
 	} else if !strings.Contains(why, "BTC") || !strings.Contains(why, "50.0%") {
@@ -328,27 +309,24 @@ func TestEvaluateExposureCap_PVBasisMiss(t *testing.T) {
 	}
 }
 
-// --- gate decision -------------------------------------------------------------
-
 func TestExposureCapBlocksSignal_ManageAndReducePassThrough(t *testing.T) {
 	st := ExposureCapStatus{
 		Configured: true, CapUSD: 100, LongUSD: 500, ShortUSD: 500,
 		LongBlocked: true, ShortBlocked: true,
 	}
-	// signal==0 manage cycle (also the cbManageOnly carve-out shape: the CB
-	// forces Signal=0 before this gate runs) — never blocked.
+
 	if blocked, _ := exposureCapBlocksSignal(st, "BTC", 0, 0, 1, "long", true, true); blocked {
 		t.Error("signal==0 must pass (manage-only path keeps running)")
 	}
-	// Close action from the open/close registry — passes even fully capped.
+
 	if blocked, _ := exposureCapBlocksSignal(st, "BTC", -1, 1.0, 1, "long", true, true); blocked {
 		t.Error("close action must pass")
 	}
-	// Pure-close directional exit: sell on a long with shorts disallowed.
+
 	if blocked, _ := exposureCapBlocksSignal(st, "BTC", -1, 0, 1, "long", true, false); blocked {
 		t.Error("pure-close sell on a long must pass")
 	}
-	// Pure-close buy on a short with longs disallowed.
+
 	if blocked, _ := exposureCapBlocksSignal(st, "BTC", 1, 0, 1, "short", false, true); blocked {
 		t.Error("pure-close buy on a short must pass")
 	}
@@ -358,19 +336,18 @@ func TestExposureCapBlocksSignal_DirectionalIncreases(t *testing.T) {
 	longCapped := ExposureCapStatus{Configured: true, CapUSD: 100, LongUSD: 500, LongBlocked: true}
 	shortCapped := ExposureCapStatus{Configured: true, CapUSD: 100, ShortUSD: 500, ShortBlocked: true}
 
-	// Same-side add on a long is blocked when the long bucket is capped.
 	if blocked, _ := exposureCapBlocksSignal(longCapped, "BTC", 1, 0, 1, "long", true, true); !blocked {
 		t.Error("scale-in add on a long must be blocked while longs are capped")
 	}
-	// Flip long→short opens SHORT exposure: passes when only longs are capped...
+
 	if blocked, _ := exposureCapBlocksSignal(longCapped, "BTC", -1, 0, 1, "long", true, true); blocked {
 		t.Error("long→short flip must pass while only the long bucket is capped")
 	}
-	// ...and is held when shorts are capped (the new exposure is short).
+
 	if blocked, _ := exposureCapBlocksSignal(shortCapped, "BTC", -1, 0, 1, "long", true, true); !blocked {
 		t.Error("long→short flip must be held while the short bucket is capped")
 	}
-	// Inverse scenario: fresh short open blocked only under the short cap.
+
 	if blocked, _ := exposureCapBlocksSignal(shortCapped, "BTC", -1, 0, 0, "", true, true); !blocked {
 		t.Error("fresh short open must be blocked while shorts are capped")
 	}
@@ -379,19 +356,17 @@ func TestExposureCapBlocksSignal_DirectionalIncreases(t *testing.T) {
 	}
 }
 
-// --- options filter --------------------------------------------------------------
-
 func TestExposureCapOptionsActions(t *testing.T) {
 	st := ExposureCapStatus{
 		Configured: true, CapUSD: 100, LongUSD: 500, LongBlocked: true,
 	}
 	actions := []OptionsAction{
-		{Action: "buy", OptionType: "call"},                               // long delta → dropped
-		{Action: "buy", OptionType: "put"},                                // short delta → kept
-		{Action: "sell", OptionType: "call"},                              // short delta → kept
-		{Action: "sell", OptionType: "put"},                               // long delta → dropped
-		{Action: "close", OptionType: "call"},                             // close → kept
-		{Action: "buy", OptionType: "put", Greeks: OptGreeks{Delta: 0.4}}, // marked greeks override coarse: buy +0.4 = long → dropped
+		{Action: "buy", OptionType: "call"},
+		{Action: "buy", OptionType: "put"},
+		{Action: "sell", OptionType: "call"},
+		{Action: "sell", OptionType: "put"},
+		{Action: "close", OptionType: "call"},
+		{Action: "buy", OptionType: "put", Greeks: OptGreeks{Delta: 0.4}},
 	}
 	kept, dropped, reason := exposureCapOptionsActions(st, "BTC", actions)
 	if dropped != 3 {
@@ -403,7 +378,7 @@ func TestExposureCapOptionsActions(t *testing.T) {
 	if !strings.Contains(reason, "long-delta option opens blocked") {
 		t.Errorf("unexpected reason: %q", reason)
 	}
-	// Unconfigured: everything passes untouched.
+
 	kept, dropped, _ = exposureCapOptionsActions(ExposureCapStatus{}, "BTC", actions)
 	if dropped != 0 || len(kept) != len(actions) {
 		t.Error("unconfigured cap must not drop option actions")
@@ -430,30 +405,28 @@ func TestExposureCapOptionsActions_ConcentrationScopedToAsset(t *testing.T) {
 	}
 }
 
-// --- operator surfaces ------------------------------------------------------------
-
 func TestExposureCapAlertMessage_EdgeTriggered(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	blocked := ExposureCapStatus{
 		Configured: true, CapUSD: 15000, LongUSD: 19000, LongBlocked: true,
 	}
-	// First cycle blocked → DM.
+
 	msg, alertState := exposureCapAlertMessage(blocked, exposureCapAlertState{}, now)
 	if msg == "" || !strings.Contains(msg, "new long opens blocked") {
 		t.Fatalf("expected first-block DM, got %q", msg)
 	}
-	// Second cycle still blocked → no repeat DM.
+
 	msg, alertState = exposureCapAlertMessage(blocked, alertState, now)
 	if msg != "" {
 		t.Fatalf("expected no repeat DM while still blocked, got %q", msg)
 	}
-	// Clears → no DM, state re-arms.
+
 	clear := ExposureCapStatus{Configured: true, CapUSD: 15000, LongUSD: 9000}
 	msg, alertState = exposureCapAlertMessage(clear, alertState, now)
 	if msg != "" {
 		t.Fatalf("expected no DM on clear, got %q", msg)
 	}
-	// Re-blocks → DM fires again.
+
 	msg, _ = exposureCapAlertMessage(blocked, alertState, now)
 	if msg == "" {
 		t.Fatal("expected DM on re-block after clearing")
@@ -501,16 +474,16 @@ func TestExposureCapStartupSummaryLine(t *testing.T) {
 func TestExposureCapStatusNote(t *testing.T) {
 	state := &AppState{Strategies: exposureTestStates()}
 	prices := exposureTestPrices()
-	// Disabled → empty.
+
 	if note := exposureCapStatusNote(&PortfolioRiskConfig{MaxDrawdownPct: 25}, state, exposureTestConfigs(), prices); note != "" {
 		t.Errorf("expected empty note when disabled, got %q", note)
 	}
-	// Armed under the cap.
+
 	armed := exposureCapStatusNote(&PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 50000}, state, exposureTestConfigs(), prices)
 	if !strings.Contains(armed, "🟢 exposure cap armed") || !strings.Contains(armed, "long $19000.00") {
 		t.Errorf("unexpected armed note: %q", armed)
 	}
-	// Blocking.
+
 	hot := exposureCapStatusNote(&PortfolioRiskConfig{MaxSameDirectionNotionalUSD: 15000}, state, exposureTestConfigs(), prices)
 	if !strings.Contains(hot, "🛑 exposure cap") || !strings.Contains(hot, "new long opens blocked") {
 		t.Errorf("unexpected blocking note: %q", hot)
@@ -528,10 +501,6 @@ func TestExposureCapHoldDetail(t *testing.T) {
 	}
 }
 
-// --- config plumbing ---------------------------------------------------------------
-
-// Threshold changes must be SIGHUP hot-reloadable (deliberately unlike
-// max_notional_usd, whose restart-required behavior is pinned elsewhere).
 func TestExposureCapFieldsHotReloadable(t *testing.T) {
 	mkCfg := func(pr *PortfolioRiskConfig) *Config {
 		return &Config{
@@ -576,11 +545,6 @@ func TestValidateConfig_ExposureCapBounds(t *testing.T) {
 	}
 }
 
-// --- manual path (#1301 review): both arms enforced on manual entries ---------
-
-// manualExposureTestConfig builds a config whose concentration arm alone is
-// set (bucket arm = 0) plus a manual strategy on BTC, so these tests prove the
-// concentration arm protects the manual path with no bucket arm configured.
 func manualExposureTestConfig() *Config {
 	return &Config{
 		PortfolioRisk: &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxAssetConcentrationPct: 40},
@@ -589,9 +553,6 @@ func manualExposureTestConfig() *Config {
 	}
 }
 
-// Acceptance: with ONLY max_asset_concentration_pct set, the manual path
-// derives an AvgCost portfolio-value basis and enforces the concentration arm
-// (it is not silently inert), in the asset's net direction only.
 func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
 	cfg := manualExposureTestConfig()
 	state := &AppState{Strategies: exposureTestStates()}
@@ -600,14 +561,14 @@ func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
 	if !st.Configured {
 		t.Fatal("expected Configured=true")
 	}
-	// AvgCost basis: 0.2*48000 + 2*2900 + 20*140 = 9600 + 5800 + 2800 = 18200.
+
 	if st.PortfolioValue != 18200 {
 		t.Errorf("PortfolioValue = %f, want 18200 (AvgCost basis)", st.PortfolioValue)
 	}
 	if st.PVBasisMiss {
 		t.Error("expected PVBasisMiss=false — the manual path must derive a basis")
 	}
-	// BTC 9600/18200 = 52.7% > 40%; ETH 31.9% and SOL 15.4% under.
+
 	stat, ok := st.OverConcentrated["BTC"]
 	if !ok || stat.Direction != "long" {
 		t.Fatalf("expected BTC over-concentrated long, got %+v", st.OverConcentrated)
@@ -616,7 +577,6 @@ func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
 		t.Error("ETH (31.9%) must not be over a 40% cap")
 	}
 
-	// manual-open long BTC refuses with the concentration reason...
 	blocked, why := exposureCapManualEntryBlock(st, "BTC", "long")
 	if !blocked {
 		t.Fatal("expected manual long BTC entry blocked by the concentration arm")
@@ -624,7 +584,7 @@ func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
 	if !strings.Contains(why, "BTC net long") || !strings.Contains(why, "cap 40.0%") {
 		t.Errorf("unexpected reason: %q", why)
 	}
-	// ...while the opposite direction and other assets pass.
+
 	if blocked, _ := exposureCapManualEntryBlock(st, "BTC", "short"); blocked {
 		t.Error("short BTC entry must pass — concentration blocks the net direction only")
 	}
@@ -633,8 +593,6 @@ func TestManualExposureCapStatus_ConcentrationOnlyEnforced(t *testing.T) {
 	}
 }
 
-// Acceptance: the bucket arm still refuses through the same helper, in the
-// blocked direction only (parity with the pre-#1301 manual guard).
 func TestExposureCapManualEntryBlock_BucketArm(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
 	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
@@ -646,9 +604,6 @@ func TestExposureCapManualEntryBlock_BucketArm(t *testing.T) {
 	}
 }
 
-// Acceptance: manualStateViewFromState carries the full status + asset key, so
-// a manual-add on an over-concentrated asset refuses in the position's
-// direction (integration of the view plumbing).
 func TestManualStateView_CarriesConcentrationArm(t *testing.T) {
 	cfg := manualExposureTestConfig()
 	states := exposureTestStates()
@@ -674,8 +629,6 @@ func TestManualStateView_CarriesConcentrationArm(t *testing.T) {
 	}
 }
 
-// Acceptance: an empty book (no strategies, basis 0) surfaces PVBasisMiss on
-// the manual path instead of silently enforcing nothing — and blocks nothing.
 func TestManualExposureCapStatus_PVBasisMissSurfaced(t *testing.T) {
 	cfg := manualExposureTestConfig()
 	st := manualExposureCapStatus(cfg, &AppState{Strategies: map[string]*StrategyState{}})
@@ -687,14 +640,6 @@ func TestManualExposureCapStatus_PVBasisMissSurfaced(t *testing.T) {
 	}
 }
 
-// --- end-to-end guard wiring (#1301 review round 2): the refusals must fire
-// through the actual manualOpenCore/manualAddCore call sites (mirrors the
-// #1269 TestManual{Open,Add}CoreRefusesDailyLossHold pair), and the inverse
-// direction must reach execute — the gate must not over-block. ----------------
-
-// exposureCapE2EDeps builds bare-core deps whose loadState injects the given
-// view and whose execute records the call, returning a sentinel error so the
-// core stops right after the guards pass.
 func exposureCapE2EDeps(t *testing.T, view manualStateView, executed *bool) manualCoreDeps {
 	t.Helper()
 	return manualCoreDeps{
@@ -714,8 +659,6 @@ func exposureCapE2EDeps(t *testing.T, view manualStateView, executed *bool) manu
 
 var errSentinelStopAfterGuards = errors.New("sentinel: guards passed, stop before state update")
 
-// (1) manualOpenCore refuses a long entry while the long bucket is capped;
-// (3a) the inverse short entry passes the gate and reaches execute.
 func TestManualOpenCoreRefusesExposureCap(t *testing.T) {
 	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3, Direction: "both"}
 	view := manualStateView{HasStrategy: true, ExposureCapAsset: "ETH",
@@ -731,7 +674,6 @@ func TestManualOpenCoreRefusesExposureCap(t *testing.T) {
 		t.Fatal("execute must not be called while the long bucket is capped")
 	}
 
-	// Inverse direction: a short entry must pass the gate and reach execute.
 	executed = false
 	deps = exposureCapE2EDeps(t, view, &executed)
 	_, err = manualOpenCore(deps, sc, manualOpenInputs{StrategyID: "m", Side: "short", Margin: 50})
@@ -740,8 +682,6 @@ func TestManualOpenCoreRefusesExposureCap(t *testing.T) {
 	}
 }
 
-// (2) manualAddCore on an existing long refuses under a concentration-only
-// config (bucket arm off); (3b) a short position's add reaches execute.
 func TestManualAddCoreRefusesConcentrationOnly(t *testing.T) {
 	sc := StrategyConfig{ID: "m", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", Leverage: 3}
 	concStatus := ExposureCapStatus{Configured: true, ConcentrationPct: 40, PortfolioValue: 18200,
@@ -762,8 +702,6 @@ func TestManualAddCoreRefusesConcentrationOnly(t *testing.T) {
 		t.Fatal("execute must not be called on an over-concentrated add")
 	}
 
-	// Inverse direction: a short position's add is the asset's non-net
-	// direction — it must pass the gate and reach execute.
 	shortPos := &Position{Symbol: "ETH", Quantity: 1, AvgCost: 2000, Side: "short"}
 	view.Pos = shortPos
 	executed = false
