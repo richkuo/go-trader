@@ -1229,7 +1229,7 @@ def resolve_primary_config_ids(json_path: str) -> tuple:
     return tuple(sorted((v[1] for v in best.values())))
 
 def main(argv: Optional[Sequence[str]]=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    p = argparse.ArgumentParser()
     p.add_argument('--jobs', type=int, default=4, help='worker threads')
     p.add_argument('--out-dir', default=None, help='optional dir for the rolling-Hurst npz cache')
     p.add_argument('--only', default=None, help=f"comma-separated families to run ({', '.join(FAMILIES)})")

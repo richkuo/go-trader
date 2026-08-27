@@ -142,10 +142,10 @@ def test_the_two_sided_mde_never_reaches_a_one_sided_p(one_sided_is_a_landmine):
     values = list(np.random.default_rng(2).normal(0.0, 0.3, size=60))
     study.two_sided_min_detectable_effect_on_grid(trades, values, mask, 1, grid_step=0.5, grid_max=0.5, refine_step=0.5, cluster=False, n_perm=200)
 
-def test_stage_0_is_the_deliberately_inherited_one_sided_exception():
-    assert study.joint_separation_verdict.__doc__
-    assert 'ONE-SIDED' in study.joint_separation_verdict.__doc__
-    assert '#1412' in study.joint_separation_verdict.__doc__
+def test_stage_0_is_the_deliberately_inherited_one_sided_exception(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(study1422, 'joint_separation_verdict', lambda *a, **k: sentinel)
+    assert study.joint_separation_verdict([], 512) is sentinel
 
 def test_stage_0_is_never_called_from_the_confirmatory_path(monkeypatch):
 

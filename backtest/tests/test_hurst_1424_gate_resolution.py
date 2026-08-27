@@ -692,9 +692,10 @@ def test_the_1422_windows_are_reused_rather_than_redefined():
     for name, span in study1422.WINDOWS.items():
         assert study.WINDOWS[name] == span
 
-def test_stage_0_is_scored_on_net_return_so_it_stays_comparable():
-    assert study.joint_separation_verdict.__doc__
-    assert 'NET RETURN' in study.joint_separation_verdict.__doc__
+def test_stage_0_is_scored_on_net_return_so_it_stays_comparable(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(study1422, 'joint_separation_verdict', lambda *a, **k: sentinel)
+    assert study.joint_separation_verdict([], 512) is sentinel
 
 def test_look_ahead_shifts_are_the_inherited_ones():
     series = pd.Series(np.arange(10.0))

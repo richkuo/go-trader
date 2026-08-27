@@ -641,7 +641,7 @@ def _serializable(entry: dict) -> dict:
     return out
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser()
     p.add_argument('--spec', required=True, help='Path to a suggest.json spec')
     p.add_argument('--jobs', type=int, default=4)
     p.add_argument('--out-dir', default=None, help='Per-run harness JSON dir (default: <spec_dir>/<study>_runs)')

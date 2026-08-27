@@ -55,7 +55,7 @@ def collect(window_names: List[str]) -> List[dict]:
     return samples
 
 def main(argv: Optional[List[str]]=None) -> int:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser()
     p.add_argument('--windows', default=','.join(DEFAULT_WINDOWS))
     p.add_argument('--json', default=None, dest='json_out')
     args = p.parse_args(argv)

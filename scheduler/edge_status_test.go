@@ -24,7 +24,7 @@ func parsePythonFrozensetLiteral(t *testing.T, name string) map[string]struct{} 
 	if end < 0 {
 		t.Fatalf("%s block not terminated", name)
 	}
-	block := rest[len(name+" = frozenset(") : end]
+	block := rest[len(name+" = frozenset("):end]
 	names := map[string]struct{}{}
 	for _, m := range regexp.MustCompile(`['"]([a-z0-9_]+)['"]`).FindAllStringSubmatch(block, -1) {
 		names[m[1]] = struct{}{}

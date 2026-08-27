@@ -417,7 +417,7 @@ def tune_strategy(config_path: str, strategy_id: str, symbol: str, timeframe: st
     return result
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser()
     p.add_argument('--config', required=True, help='Path to a live go-trader config.json')
     p.add_argument('--strategy', action='append', default=None, help='Strategy id to tune; repeat for a subset (default: every strategy in the config)')
     p.add_argument('--registry', choices=['auto', 'spot', 'futures'], default='auto', help='Registry selection (default: auto from each strategy type); spot/futures overrides the whole run')

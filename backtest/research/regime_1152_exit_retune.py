@@ -81,7 +81,7 @@ def _verdict(rollup: dict) -> str:
     return 'incumbent_stands'
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser()
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--out-dir', default=os.path.join(_THIS_DIR, 'regime_1152_runs'))
     ap.add_argument('--only', default=None, help='comma list of run keys')
