@@ -196,7 +196,6 @@ func TestCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	}
 
 	expected := cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
-
 	if math.Abs(expected-1072.2) > 1e-9 {
 		t.Errorf("expected equity = %v, want 1072.2", expected)
 	}
@@ -221,7 +220,6 @@ func TestCashflowJournalDedup(t *testing.T) {
 	if err := db.InsertCashflowJournalEntry(key.Platform, key.Account, 1700000000000, "fill", 19.7, "BTC", 20, 0.3, "fill:tid:42"); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-
 	if err := db.InsertCashflowJournalEntry(key.Platform, key.Account, 1700000000000, "fill", 19.7, "BTC", 20, 0.3, "fill:tid:42"); err != nil {
 		t.Fatalf("dup insert should be ignored, not error: %v", err)
 	}
@@ -248,7 +246,6 @@ func TestCashflowJournalIngestIdempotentOnReplay(t *testing.T) {
 		}
 	}
 	st1 := ingestCashflowJournalEvents(db, mkRes(base), cashflowCutoffAll)
-
 	st2 := ingestCashflowJournalEvents(db, mkRes(st1), cashflowCutoffAll)
 	sum, err := db.SumCashflowJournal(key.Platform, key.Account)
 	if err != nil {
@@ -284,7 +281,6 @@ func TestCashflowJournalUnmappedKindLatchesIncomplete(t *testing.T) {
 	if math.Abs(sum) > 1e-9 {
 		t.Errorf("unmapped row must record $0 effect, sum = %v", sum)
 	}
-
 	got, _, _ := db.GetCashflowJournalState(key.Platform, key.Account)
 	if !got.Incomplete {
 		t.Error("Incomplete latch not persisted")
@@ -300,7 +296,6 @@ func TestCashflowJournalCursorHaltsOnPersistFailure(t *testing.T) {
 		StateFound: true, FillsFetched: true,
 		Fills: []hlFillRecord{{Coin: "BTC", Time: 200, Tid: json.Number("1"), ClosedPnl: "10", Fee: "0.2"}},
 	}
-
 	db.Close()
 	st := ingestCashflowJournalEvents(db, res, cashflowCutoffAll)
 	if st.FillsSinceMs != 100 {
@@ -431,13 +426,11 @@ func TestApplyCashflowJournalDriftBasis(t *testing.T) {
 			t.Errorf("transient miss cycle %d (within window) must be journal-pending: %+v", cycle, res[0])
 		}
 	}
-
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, &cashflowJournalReconcile{Key: hlKey, Usable: false}, true)
 	if res[0].JournalPending || res[0].Basis != "" || res[0].Drift != 0.40 {
 		t.Errorf("persistent miss must fail closed to trade-ledger (drift 0.40, not pending): %+v", res[0])
 	}
-
 	res = mk()
 	applyCashflowJournalDriftBasis(res, hlKey, usable, true)
 	res = mk()

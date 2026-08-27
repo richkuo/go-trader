@@ -104,7 +104,6 @@ func fetchTopStepCashflowJournalEvents(sdb *StateDB, key SharedWalletKey, accoun
 	}
 	if !found {
 		nowMs := now.UnixMilli()
-
 		st = CashflowJournalState{
 			FillsSinceMs:         nowMs,
 			BaselineAccountValue: accountValue,
@@ -155,7 +154,6 @@ func ingestTopStepCashflowJournalEvents(sdb *StateDB, res topstepCashflowJournal
 		}
 		delta, kind, known := topstepFillSettledDelta(f)
 		if !known {
-
 			st.Incomplete = true
 			fmt.Printf("[WARN] topstep-cashflow-journal %s: unclassified fill kind=%q (fillId %s) — recorded kind %q, journal marked incomplete\n",
 				sharedWalletKeyLabel(key), f.Kind, f.FillID, kind)
@@ -170,7 +168,6 @@ func ingestTopStepCashflowJournalEvents(sdb *StateDB, res topstepCashflowJournal
 			maxTime = f.TimeMs
 		}
 	}
-
 	advanceMax := maxTime
 	if res.Capped {
 		advanceMax = maxTime - 1
@@ -207,7 +204,6 @@ func reconcileTopStepCashflowJournal(sdb *StateDB, key SharedWalletKey, accountV
 	rec.DeltaUPnL = res.CurrentUPnL - st.BaselineUPnL
 	rec.ExpectedEquity = cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
 	rec.Drift = res.AccountValue - rec.ExpectedEquity
-
 	rec.Usable = res.FillsFetched && !res.Capped && !st.Incomplete
 	return rec
 }

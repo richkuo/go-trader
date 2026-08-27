@@ -12,8 +12,7 @@ import (
 )
 
 const (
-	llmEntryAnalysisScript = "shared_scripts/llm_review.py"
-
+	llmEntryAnalysisScript    = "shared_scripts/llm_review.py"
 	llmEntryAnalysisAPIKeyEnv = "ANTHROPIC_API_KEY"
 
 	llmEntryAnalysisDefaultModel    = "claude-sonnet-5"
@@ -29,17 +28,12 @@ const (
 )
 
 type LLMEntryAnalysisConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
-
-	Model string `json:"model,omitempty"`
-
-	MaxDebateRounds *int `json:"max_debate_rounds,omitempty"`
-
-	TimeoutS int `json:"timeout_s,omitempty"`
-
-	NotifyDM *bool `json:"notify_dm,omitempty"`
-
-	NotifyChannel *bool `json:"notify_channel,omitempty"`
+	Enabled         bool   `json:"enabled,omitempty"`
+	Model           string `json:"model,omitempty"`
+	MaxDebateRounds *int   `json:"max_debate_rounds,omitempty"`
+	TimeoutS        int    `json:"timeout_s,omitempty"`
+	NotifyDM        *bool  `json:"notify_dm,omitempty"`
+	NotifyChannel   *bool  `json:"notify_channel,omitempty"`
 }
 
 func (sc *StrategyConfig) llmNotifyDM() bool {
@@ -64,9 +58,8 @@ type llmEntryAnalysisParams struct {
 	Model           string
 	MaxDebateRounds int
 	Timeout         time.Duration
-
-	NotifyDM      bool
-	NotifyChannel bool
+	NotifyDM        bool
+	NotifyChannel   bool
 }
 
 func resolveLLMEntryAnalysisParams(sc StrategyConfig) llmEntryAnalysisParams {
@@ -294,7 +287,6 @@ func runLLMEntryAnalysisScript(ctx context.Context, job llmEntryAnalysisJob) (*L
 		return nil, fmt.Errorf("marshal input: %w", err)
 	}
 	stdout, stderr, runErr := spawnPythonProcess(ctx, llmEntryAnalysisScript, nil, stdin, job.Params.Timeout)
-
 	res, parseErr := parseLLMEntryAnalysisOutput(stdout)
 	if parseErr != nil {
 		if runErr != nil {
@@ -371,7 +363,6 @@ func (w *llmEntryAnalysisWorker) run(ctx context.Context) {
 func (w *llmEntryAnalysisWorker) process(ctx context.Context, job llmEntryAnalysisJob) {
 	res, err := w.runner(ctx, job)
 	if err != nil || res == nil {
-
 		log.Printf("[llm-analysis] %s %s: analysis failed: %v", job.StrategyID, job.Symbol, err)
 		return
 	}

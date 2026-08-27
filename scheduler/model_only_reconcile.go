@@ -84,7 +84,6 @@ func modelOnlyCloseBasisFor(s *StrategyState, symbol string, ts time.Time, close
 			return basis
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-
 			msg := fmt.Sprintf("model-only close basis lookup FAILED for %s %s (%s): %v — correction degraded to the defensive branch; verify the state database", s.ID, symbol, closeReason, err)
 			fmt.Printf("[state] WARN: %s\n", msg)
 			if tradePersistWarn != nil {
@@ -99,9 +98,7 @@ type modelOnlyReconcileOutcome int
 
 const (
 	modelOnlyReconcileNone modelOnlyReconcileOutcome = iota
-
 	modelOnlyReconcileApplied
-
 	modelOnlyReconcilePersistFailed
 )
 
@@ -118,12 +115,10 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 	}
 	basis := modelOnlyCloseBasisFor(s, symbol, t.Timestamp, closeReason)
 	if basis == nil || basis.Quantity <= 0 || basis.AvgCost <= 0 || basis.Multiplier <= 0 {
-
 		return modelOnlyReconcileNone
 	}
 
 	touched := strings.Contains(t.Details, modelOnlyFillReconciledMarker)
-
 	preStreak := modelOnlyPreStreak(t.Details)
 	filledBefore, cumGrossBefore, cumFeeBefore, notionalBefore := 0.0, 0.0, 0.0, 0.0
 	if touched {
@@ -138,7 +133,6 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 		qty = remaining
 	}
 	if qty <= 1e-9 {
-
 		return modelOnlyReconcileNone
 	}
 	feeShare := fillFee
@@ -164,12 +158,10 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 	complete := filledAfter >= basis.Quantity-max(1e-9, basis.Quantity*1e-6)
 
 	label := hyperliquidOnChainCloseTradeLabel(closeReason)
-
 	var detailsSuffix string
 	if preStreak >= 0 {
 		detailsSuffix = fmt.Sprintf(", pre-streak=%d", preStreak)
 	}
-
 	curOID := strconv.FormatInt(fillOID, 10)
 	sliceOIDs := curOID
 	if touched {
@@ -192,7 +184,6 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 	detailsBody := modelOnlyDetailMarker + detailsSuffix
 	if complete {
 		oidStr = curOID
-
 		details = fmt.Sprintf("%s [fill-reconciled oids=%s], PnL: $%.2f gross (fee $%.4f) (%s)", label, sliceOIDs, cumGross, cumFee, detailsBody)
 	} else {
 		details = fmt.Sprintf("%s [fill-reconciled partial %.6f/%.6f oids=%s], PnL so far: $%.2f gross (fee $%.4f) (%s)", label, filledAfter, basis.Quantity, sliceOIDs, cumGross, cumFee, detailsBody)
@@ -226,22 +217,18 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 		t.FeeSource = FeeSourceUserFills
 	}
 	s.Cash += deltaNet
-
 	fireDay := t.Timestamp.UTC().Format("2006-01-02")
 	if fireDay == time.Now().UTC().Format("2006-01-02") {
 		rolloverDailyPnL(&s.RiskState)
 		s.RiskState.DailyPnL += deltaNet
 	}
-
 	if complete && t.TradeType != hedgeTradeType {
 		estGross := basis.Quantity * unit * (estPx - basis.AvgCost)
 		cumNet := cumGross - cumFee
 		switch {
 		case estGross < 0 && cumNet >= 0:
-
 			s.RiskState.ConsecutiveLosses = 0
 		case estGross >= 0 && cumNet < 0:
-
 			if pre := preStreak; pre >= 0 {
 				s.RiskState.ConsecutiveLosses = pre + 1
 			} else if s.RiskState.ConsecutiveLosses == 0 {
@@ -286,7 +273,6 @@ func reconcileModelOnlyCloseWithFill(s *StrategyState, symbol string, fillSz, fi
 			if tradePersistWarn != nil {
 				tradePersistWarn(msg)
 			}
-
 			return modelOnlyReconcilePersistFailed
 		}
 	}
@@ -360,12 +346,10 @@ func warnAbandonedPartialModelClose(s *StrategyState, symbol string, now time.Ti
 	key := s.ID + "|" + symbol
 	t := findModelOnlyCloseTrade(s, symbol)
 	if t == nil || t.ExchangeOrderID != "" || !strings.Contains(t.Details, modelOnlyFillReconciledMarker) {
-
 		modelOnlyAbandonedAlerts.Delete(key)
 		return ""
 	}
 	if strings.Contains(t.Details, modelOnlyAbandonedMarker) {
-
 		modelOnlyAbandonedAlerts.Delete(key)
 		return ""
 	}

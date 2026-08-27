@@ -240,7 +240,6 @@ func TestPatchStrategyJSONSkipsUntouched(t *testing.T) {
 }
 
 func TestRequireMutatingAPIAuth(t *testing.T) {
-
 	ss := NewStatusServer(NewAppState(), nil, "", nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/strategies/x/config", nil)
 	w := httptest.NewRecorder()

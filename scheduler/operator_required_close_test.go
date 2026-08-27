@@ -32,7 +32,6 @@ func TestSetOperatorRequiredCircuitBreakerPending_OKXSpot(t *testing.T) {
 	if len(p.Symbols) != 1 || p.Symbols[0].Symbol != "BTC-USDT" || p.Symbols[0].Size != 0.0125 {
 		t.Errorf("unexpected pending symbols: %+v", p.Symbols)
 	}
-
 	if s.RiskState.getPendingCircuitClose("okx") != nil {
 		t.Error("enqueue leaked into the auto-close okx key — portfolio-kill drain would auto-close this")
 	}
@@ -64,7 +63,6 @@ func TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions(t *testing.T)
 	if len(p.Symbols) != 2 {
 		t.Fatalf("expected 2 option legs, got %d: %+v", len(p.Symbols), p.Symbols)
 	}
-
 	if p.Symbols[0].Symbol != "SPY-2026-05-15-450-C" || p.Symbols[1].Symbol != "SPY-2026-06-19-460-C" {
 		t.Errorf("legs not sorted alphabetically: %+v", p.Symbols)
 	}
@@ -96,7 +94,6 @@ func TestSetOperatorRequiredCircuitBreakerPending_RobinhoodOptions_NoOpenLegs(t 
 }
 
 func TestSetOperatorRequiredCircuitBreakerPending_PaperMode_NoEnqueue(t *testing.T) {
-
 	sc := &StrategyConfig{
 		ID: "okx-paper", Platform: "okx", Type: "spot",
 		Args: []string{"sma_crossover", "BTC-USDT", "1h", "--mode=paper"},
@@ -159,7 +156,6 @@ func TestCheckRisk_LiveOKXSpot_SetsOperatorRequiredPending(t *testing.T) {
 		},
 		OptionPositions: map[string]*OptionPosition{},
 	}
-
 	prices := map[string]float64{"BTC-USDT": 50000}
 
 	allowed, reason := CheckRisk(&sc, s, PortfolioValue(s, prices), prices, nil, nil)
@@ -255,11 +251,9 @@ func TestPlanOperatorRequiredWarning_FormatsOKXAndRH(t *testing.T) {
 	if !plan.HasEntries() || len(plan.Entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d: %+v", len(plan.Entries), plan.Entries)
 	}
-
 	if plan.Entries[0].StrategyID != "okx-sma-btc" || plan.Entries[1].StrategyID != "rh-ccall-spy" {
 		t.Errorf("entries not sorted by StrategyID: got %s, %s", plan.Entries[0].StrategyID, plan.Entries[1].StrategyID)
 	}
-
 	rhLegs := plan.Entries[1].Symbols
 	if rhLegs[0].Symbol != "SPY-2026-05-15-450-C" || rhLegs[1].Symbol != "SPY-2026-06-19-460-C" {
 		t.Errorf("RH legs not sorted: %+v", rhLegs)

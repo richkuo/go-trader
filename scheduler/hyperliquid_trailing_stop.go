@@ -65,14 +65,12 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 	switch sc.Type {
 	case "perps":
 	case "manual":
-
 		if !strategyUsesTrailingTPRatchetClose(sc) {
 			return 0
 		}
 	default:
 		return 0
 	}
-
 	if pos != nil && pos.PostTPTrailingATRMult != nil && *pos.PostTPTrailingATRMult > 0 {
 		if pos.EntryATR <= 0 || pos.AvgCost <= 0 {
 			return 0
@@ -99,7 +97,6 @@ func effectiveTrailingStopPct(sc StrategyConfig, pos *Position) float64 {
 		}
 		return pct
 	}
-
 	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
 		if pos == nil || pos.EntryATR <= 0 || pos.AvgCost <= 0 || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
@@ -123,7 +120,6 @@ func atrMultMissingEntryATR(sc StrategyConfig, pos *Position) bool {
 	}
 	wantsTrailing := sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0
 	wantsFixed := sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0
-
 	wantsRegimeFixed := sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero()
 	wantsRegimeTrailing := sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero()
 	if !wantsTrailing && !wantsFixed && !wantsRegimeFixed && !wantsRegimeTrailing {
@@ -144,12 +140,10 @@ func effectiveFixedStopLossATRPct(sc StrategyConfig, pos *Position) float64 {
 	}
 	mult := 0.0
 	if v, ok := unifiedCloseStopLossATR(sc, positionATRRegimeLabel(pos, sc)); ok {
-
 		mult = v
 	} else if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		mult = *sc.StopLossATRMult
 	} else if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-
 		if pos == nil || positionATRRegimeLabel(pos, sc) == "" {
 			return 0
 		}
@@ -177,7 +171,6 @@ func fixedStopLossATRTriggerPx(sc StrategyConfig, side string, pos *Position) fl
 	if pct <= 0 || pos == nil || pos.AvgCost <= 0 {
 		return 0
 	}
-
 	anchor := pos.riskAnchorPrice()
 	switch side {
 	case "long":
@@ -401,7 +394,6 @@ func computeTrailingStopUpdateInternal(side string, mark, highWater, trailingPct
 		}
 		return candidateHighWater, 0, false
 	}
-
 	if bypassMinMove && math.Abs(candidateTrigger-currentTrigger) > 1e-9 {
 		return candidateHighWater, candidateTrigger, true
 	}
@@ -435,7 +427,6 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	}
 	avgCost := 0.0
 	if pos != nil {
-
 		avgCost = pos.riskAnchorPrice()
 	}
 	if highWater <= 0 {
@@ -473,7 +464,6 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 	case slUpdate.StopLossFilledImmediately && slUpdate.StopLossTriggerPx > 0:
 		pos.RatchetFallbackNormalizePending = false
 		if recordPerpsStopLossCloseQty(s, symbol, placedQty, slUpdate.StopLossTriggerPx, closeReason, logger) {
-
 			if residue, ok := s.Positions[symbol]; ok && residue != nil && residue.Quantity > 0 {
 				residue.StopLossOID = 0
 				residue.StopLossTriggerPx = 0
@@ -489,7 +479,6 @@ func applyTrailingStopUpdateResult(s *StrategyState, symbol, expectedSide string
 			logger.Info("Trailing SL trigger updated oid=%d @ $%.4f", slUpdate.StopLossOID, slUpdate.StopLossTriggerPx)
 		}
 	case slUpdate.StopLossOutcomeUnknown:
-
 		if pos.StopLossOID == prevSLOID {
 			pos.StopLossOID = 0
 		}
@@ -519,7 +508,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	avgCost := 0.0
 	if pos != nil {
-
 		avgCost = pos.riskAnchorPrice()
 	}
 	if highWater <= 0 {
@@ -528,19 +516,15 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	allowOneShotWiden := pos != nil && pos.RatchetFallbackNormalizePending
 	newHighWater, newTrigger, replace := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, policy.ratchetTightened)
 	if policy.forceResize && !replace {
-
 		replace = true
 		if currentTrigger > 0 {
 			newTrigger = currentTrigger
-
 			if _, tighter, ok := computeTrailingStopUpdateInternal(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, allowOneShotWiden, true); ok && tighter > 0 {
 				newTrigger = tighter
 			}
 		}
 	}
-
 	clampOutcome := hlLiquidationActionReplaceDeferred
-
 	clampTriggered := false
 	if policy.liquidationPx > 0 {
 		offending := newTrigger
@@ -551,7 +535,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			newTrigger = clamped
 			replace = true
 			clampTriggered = true
-
 			defer func() {
 				notifyHLStopPastLiquidation(sc, symbol, side, offending, clamped, policy.liquidationPx, clampOutcome, notifier, logger, time.Now().UTC())
 			}()
@@ -583,7 +566,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 		return highWater, result, false
 	}
 	if result.Error != "" {
-
 		logger.Error("Trailing SL update returned error AFTER the old trigger was cancelled (%s) — treating as cancel-landed", result.Error)
 	}
 	if result.OpenOrderCheckError != "" {
@@ -598,7 +580,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	}
 	if result.StopLossFilledExternally {
 		logger.Warn("Trailing SL OID=%d already filled on-chain for %s — reconciler will book the close", currentOID, symbol)
-
 		clampOutcome = hlLiquidationActionFilledOnChain
 		return highWater, result, false
 	}
@@ -629,17 +610,13 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if result.StopLossFilledImmediately {
 		logger.Warn("Trailing SL trigger filled at submit for %s — position is flat on-chain", symbol)
 	}
-
 	restingConfirmed := (result.StopLossOID > 0) ||
 		(result.StopLossFilledImmediately && result.StopLossTriggerPx > 0)
-
 	filledAtSubmit := result.StopLossFilledImmediately && result.StopLossTriggerPx > 0
-
 	updateConfirmed := restingConfirmed || result.CancelStopLossSucceeded
 	if !updateConfirmed {
 		return highWater, result, false
 	}
-
 	retryOutcomeUnknown := false
 	if result.CancelStopLossSucceeded && !restingConfirmed && clampTriggered && !result.StopLossOutcomeUnknown {
 		retryResult, retryOutcome := hlLiquidationPlaceFresh(sc.Script, symbol, side, qty, newTrigger, logger)
@@ -649,7 +626,6 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 			filledAtSubmit = result.StopLossFilledImmediately && result.StopLossTriggerPx > 0
 			restingConfirmed = !filledAtSubmit && result.StopLossOID > 0
 		case hlReplaceOutcomeUnknown:
-
 			result = retryResult
 			retryOutcomeUnknown = true
 		}
@@ -660,10 +636,8 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	case restingConfirmed:
 		clampOutcome = hlLiquidationActionClamped
 	case retryOutcomeUnknown:
-
 		clampOutcome = hlLiquidationActionPlacementUnknown
 	case result.CancelStopLossSucceeded && result.StopLossOutcomeUnknown:
-
 		clampOutcome = hlLiquidationActionOutcomeUnknown
 	case result.CancelStopLossSucceeded:
 		clampOutcome = hlLiquidationActionProtectionLost

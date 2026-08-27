@@ -33,7 +33,6 @@ func TestApplyCashflowJournalDriftBasis_UsableNonZeroJournalDriftOverridesLedger
 	if res[0].JournalPending {
 		t.Errorf("usable cycle must not be journal-pending: %+v", res[0])
 	}
-
 	if got := cashflowJournalPendingStreaks.mark(label); got != 1 {
 		t.Errorf("pending streak not reset by usable cycle: next mark = %d, want 1", got)
 	}
@@ -63,7 +62,6 @@ func TestApplyCashflowJournalDriftBasis_RefusesNonHLKey(t *testing.T) {
 	if res[0].Basis != "" || res[0].Drift != 1.23 || res[0].JournalPending {
 		t.Errorf("non-HL key must be refused (entry unchanged): %+v", res[0])
 	}
-
 	if got := cashflowJournalPendingStreaks.mark(sharedWalletKeyLabel(okxKey)); got != 1 {
 		t.Errorf("guard must not mutate the pending tracker: next mark = %d, want 1", got)
 	}

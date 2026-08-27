@@ -90,7 +90,6 @@ func TestPrompterChoice(t *testing.T) {
 }
 
 func TestPrompterChoiceInvalidThenValid(t *testing.T) {
-
 	p, _ := newTestPrompter("99\n2\n")
 	got := p.Choice("Pick:", []string{"A", "B", "C"}, 0)
 	if got != 1 {

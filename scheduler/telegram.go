@@ -100,7 +100,6 @@ func (t *TelegramNotifier) apiCall(method string, payload interface{}) (*telegra
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-
 		safeMsg := strings.ReplaceAll(err.Error(), t.botToken, "[REDACTED]")
 		return nil, fmt.Errorf("telegram %s: %s", method, safeMsg)
 	}
@@ -164,7 +163,6 @@ func (t *TelegramNotifier) AskDM(userID, question string, timeout time.Duration)
 
 		updates, err := t.getUpdates(pollTimeout)
 		if err != nil {
-
 			time.Sleep(1 * time.Second)
 			continue
 		}

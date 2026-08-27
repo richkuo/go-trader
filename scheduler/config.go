@@ -52,15 +52,13 @@ type TelegramConfig struct {
 }
 
 type PortfolioRiskConfig struct {
-	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`
-	MaxNotionalUSD   float64 `json:"max_notional_usd"`
-	WarnThresholdPct float64 `json:"warn_threshold_pct,omitempty"`
-	DailyMaxLossUSD  float64 `json:"daily_max_loss_usd,omitempty"`
-	DailyMaxLossPct  float64 `json:"daily_max_loss_pct,omitempty"`
-
+	MaxDrawdownPct              float64 `json:"max_drawdown_pct"`
+	MaxNotionalUSD              float64 `json:"max_notional_usd"`
+	WarnThresholdPct            float64 `json:"warn_threshold_pct,omitempty"`
+	DailyMaxLossUSD             float64 `json:"daily_max_loss_usd,omitempty"`
+	DailyMaxLossPct             float64 `json:"daily_max_loss_pct,omitempty"`
 	MaxSameDirectionNotionalUSD float64 `json:"max_same_direction_notional_usd,omitempty"`
-
-	MaxAssetConcentrationPct float64 `json:"max_asset_concentration_pct,omitempty"`
+	MaxAssetConcentrationPct    float64 `json:"max_asset_concentration_pct,omitempty"`
 }
 
 type PlatformConfig struct {
@@ -68,19 +66,15 @@ type PlatformConfig struct {
 }
 
 type RegimeConfig struct {
-	Enabled      bool             `json:"enabled"`
-	Period       int              `json:"period"`
-	ADXThreshold float64          `json:"adx_threshold"`
-	Timeframe    string           `json:"timeframe,omitempty"`
-	Windows      RegimeWindowsMap `json:"windows,omitempty"`
-
-	DisplayWindows []string `json:"display_windows,omitempty"`
-
-	Transitions *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
-
-	GateOnFailure string `json:"gate_on_failure,omitempty"`
-
-	HurstGateOnFailure string `json:"hurst_gate_on_failure,omitempty"`
+	Enabled            bool                          `json:"enabled"`
+	Period             int                           `json:"period"`
+	ADXThreshold       float64                       `json:"adx_threshold"`
+	Timeframe          string                        `json:"timeframe,omitempty"`
+	Windows            RegimeWindowsMap              `json:"windows,omitempty"`
+	DisplayWindows     []string                      `json:"display_windows,omitempty"`
+	Transitions        *RegimeTransitionAlertsConfig `json:"transitions,omitempty"`
+	GateOnFailure      string                        `json:"gate_on_failure,omitempty"`
+	HurstGateOnFailure string                        `json:"hurst_gate_on_failure,omitempty"`
 }
 
 var regimeTimeframeAllowSet = map[string]bool{
@@ -278,7 +272,6 @@ func (c *Config) resolveManualRatchetRegimeTrailBlock(sc StrategyConfig) (*Regim
 	if c == nil || c.Regime == nil || !c.Regime.Enabled {
 		return nil, false
 	}
-
 	if sc.StopLossATRMult != nil || sc.StopLossPct != nil || sc.StopLossMarginPct != nil ||
 		sc.TrailingStopPct != nil || sc.TrailingStopATRMult != nil ||
 		sc.StopLossATRRegime.IsConfigured() || sc.TrailingStopATRRegime.IsConfigured() {
@@ -288,17 +281,14 @@ func (c *Config) resolveManualRatchetRegimeTrailBlock(sc StrategyConfig) (*Regim
 	if len(labels) == 0 {
 		return nil, false
 	}
-
 	if md := c.userDefaultsManual(); md != nil && md.TrailingStopATRRegime.IsConfigured() {
 		if block := cloneRegimeATRBlock(md.TrailingStopATRRegime); block != nil {
 			return block, true
 		}
 	}
-
 	if block, ok := userCloseDefaultTrailingStopATRRegime(c.userDefaultsClose()); ok {
 		return block, true
 	}
-
 	for _, label := range labels {
 		if _, ok := mapRegimeToBaselineFamily(regimeATRDefaults.Trailing, label); !ok {
 			return nil, false
@@ -526,21 +516,14 @@ type StrategyConfig struct {
 }
 
 type HedgeConfig struct {
-	Enabled bool `json:"enabled"`
-
-	Symbol string `json:"symbol"`
-
-	Side string `json:"side,omitempty"`
-
-	Ratio float64 `json:"ratio,omitempty"`
-
-	Platform string `json:"platform,omitempty"`
-
-	Type string `json:"type,omitempty"`
-
-	MarginMode string `json:"margin_mode,omitempty"`
-
-	Leverage float64 `json:"leverage,omitempty"`
+	Enabled    bool    `json:"enabled"`
+	Symbol     string  `json:"symbol"`
+	Side       string  `json:"side,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+	Platform   string  `json:"platform,omitempty"`
+	Type       string  `json:"type,omitempty"`
+	MarginMode string  `json:"margin_mode,omitempty"`
+	Leverage   float64 `json:"leverage,omitempty"`
 }
 
 func HedgeEnabled(sc StrategyConfig) bool {
@@ -559,7 +542,6 @@ func normalizeHedgeCoin(raw string) string {
 	if s == "" {
 		return ""
 	}
-
 	if idx := strings.IndexAny(s, "/:"); idx > 0 {
 		s = s[:idx]
 	}
@@ -599,13 +581,10 @@ func HedgeSideForPrimary(primarySide string) string {
 }
 
 type ScaleInConfig struct {
-	MaxAdds int `json:"max_adds,omitempty"`
-
+	MaxAdds             int     `json:"max_adds,omitempty"`
 	MaxAddedNotionalUSD float64 `json:"max_added_notional_usd,omitempty"`
-
-	AddSpacingATR float64 `json:"add_spacing_atr,omitempty"`
-
-	AddNotionalUSD float64 `json:"add_notional_usd,omitempty"`
+	AddSpacingATR       float64 `json:"add_spacing_atr,omitempty"`
+	AddNotionalUSD      float64 `json:"add_notional_usd,omitempty"`
 }
 
 func (sc *StrategyConfig) UnmarshalJSON(data []byte) error {
@@ -741,23 +720,18 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 		return 0
 	}
 	if strategyUsesUnifiedRegimeClose(sc) {
-
 		return 0
 	}
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
-
 		return 0
 	}
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
-
 		return 0
 	}
 	if sc.StopLossATRRegime != nil && !sc.StopLossATRRegime.IsZero() {
-
 		return 0
 	}
 	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() {
-
 		return 0
 	}
 	if sc.TrailingStopPct != nil {
@@ -767,7 +741,6 @@ func EffectiveStopLossPct(sc StrategyConfig) float64 {
 		return 0
 	}
 	if sc.StopLossPct != nil {
-
 		if *sc.StopLossPct > 0 {
 			return *sc.StopLossPct
 		}
@@ -815,11 +788,9 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-
 	if err := checkRawConfigVersionSupported(data); err != nil {
 		return nil, err
 	}
-
 	if needsV13SchemaMigration(data) {
 		if err := MigrateConfig(path, nil, nil); err != nil {
 			return nil, fmt.Errorf("v13 schema migration: %w", err)
@@ -829,7 +800,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			return nil, fmt.Errorf("read config after v13 migration: %w", err)
 		}
 	}
-
 	if needsV15CloseMigration(data) {
 		if err := MigrateConfig(path, nil, nil); err != nil {
 			return nil, fmt.Errorf("v15 close-key migration: %w", err)
@@ -839,7 +809,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			return nil, fmt.Errorf("read config after v15 migration: %w", err)
 		}
 	}
-
 	if needsV16UserDefaultsMigration(data) {
 		if err := MigrateConfig(path, nil, nil); err != nil {
 			return nil, fmt.Errorf("v16 user-defaults migration: %w", err)
@@ -853,7 +822,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-
 	unknownErrs := validateStrategyJSONKeys(data)
 	unknownErrs = append(unknownErrs, validateUserDefaultsJSONKeys(data)...)
 	if len(unknownErrs) > 0 {
@@ -889,7 +857,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 		if md.Side != "" && md.Side != "long" && md.Side != "short" {
 			return nil, fmt.Errorf("user_defaults.manual.side must be lowercase \"long\" or \"short\", got %q", md.Side)
 		}
-
 		if md.TPTiers != nil && len(md.TPTiers) == 0 {
 			return nil, fmt.Errorf("user_defaults.manual.tp_tiers must have at least one tier (omit the field to use defaults)")
 		}
@@ -937,7 +904,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	} else if configHasTelegramToken {
 		fmt.Println("[WARN] Telegram bot token found in config file. Prefer setting TELEGRAM_BOT_TOKEN env var instead.")
 	}
-
 	if telegramOwner := os.Getenv("TELEGRAM_OWNER_CHAT_ID"); telegramOwner != "" {
 		cfg.Telegram.OwnerChatID = telegramOwner
 	}
@@ -950,7 +916,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 
 	for i := range cfg.Strategies {
 		normalizeDeprecatedCloseRef(cfg.Strategies[i].CloseStrategy)
-
 		if cfg.Strategies[i].Platform == "" {
 			switch {
 			case strings.HasPrefix(cfg.Strategies[i].ID, "ibkr-"):
@@ -1020,7 +985,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				continue
 			}
-
 			if sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && sc.StopLossATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailingStopATRRegime.IsConfigured() && !strategyUsesUnifiedRegimeClose(*sc) {
 				defaultMult := defaultStopLossATRMult
 				sc.StopLossATRMult = &defaultMult
@@ -1048,7 +1012,6 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 			sc.MarginMode = "isolated"
 		}
 		if sc.CloseStrategy == nil {
-
 			if block, ok := cfg.resolveManualRatchetRegimeTrailBlock(*sc); ok {
 				sc.CloseStrategy = &StrategyRef{Name: trailingTPRatchetRegimeCloseName}
 				sc.TrailingStopATRRegime = block
@@ -1062,18 +1025,15 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 				}
 			}
 		}
-
 		if defaultStopLossATRMult > 0 && sc.StopLossATRMult == nil && sc.StopLossPct == nil && sc.StopLossMarginPct == nil && sc.TrailingStopPct == nil && sc.TrailingStopATRMult == nil && !sc.StopLossATRRegime.IsConfigured() && !sc.TrailingStopATRRegime.IsConfigured() {
 			defaultMult := cfg.resolveManualStopLossATRMult()
 			if defaultMult > 0 {
 				sc.StopLossATRMult = &defaultMult
 			}
 		}
-
 		if cs := sc.CloseStrategy; cs != nil && isTieredTPATRCloseName(cs.Name) &&
 			cs.Name != "tiered_tp_atr_regime" && cs.Name != "tiered_tp_atr_live_regime" &&
 			cs.Name != dynamicCloseStrategyName {
-
 			if cs.Params == nil {
 				cs.Params = map[string]interface{}{}
 			}
@@ -1161,7 +1121,6 @@ func hyperliquidPeerStrategyErrors(strategies []StrategyConfig) []string {
 		if len(peers) < 2 {
 			continue
 		}
-
 		sort.Slice(peers, func(i, j int) bool { return peers[i].ID < peers[j].ID })
 		ids := make([]string, len(peers))
 		for i, p := range peers {
@@ -1247,7 +1206,6 @@ func validateHedgeConfigs(cfg *Config) []string {
 		}
 
 		if !sc.Hedge.Enabled {
-
 			continue
 		}
 
@@ -1257,7 +1215,6 @@ func validateHedgeConfigs(cfg *Config) []string {
 		if sc.Platform != "hyperliquid" {
 			errs = append(errs, fmt.Sprintf("%s: hedge is only supported on hyperliquid in phase 1 (got platform %q, #1159)", prefix, sc.Platform))
 		}
-
 		if EffectiveDirection(sc) == DirectionBoth {
 			errs = append(errs, fmt.Sprintf("%s: hedge is not supported with direction=%q in phase 1 — a bidirectional flip changes the hedge side mid-position and the catastrophic-flip close-only path cannot be mirrored deterministically (#1159); use direction=%q or %q", prefix, DirectionBoth, DirectionLong, DirectionShort))
 		}
@@ -1273,7 +1230,6 @@ func validateHedgeConfigs(cfg *Config) []string {
 		if owners := primaryCoinOwners[coin]; len(owners) > 0 {
 			ids := append([]string(nil), owners...)
 			sort.Strings(ids)
-
 			filtered := ids[:0]
 			for _, id := range ids {
 				if id != sc.ID {
@@ -1420,15 +1376,12 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		if sc.Type != "spot" && sc.Type != "options" && sc.Type != "perps" && sc.Type != "futures" && sc.Type != "manual" {
 			errs = append(errs, fmt.Sprintf("%s: type must be \"spot\", \"options\", \"perps\", \"futures\", or \"manual\", got %q", prefix, sc.Type))
 		}
-
 		errs = append(errs, validateLLMEntryAnalysis(prefix, sc)...)
-
 		if !validATRMethodValue(sc.ATRMethod) {
 			errs = append(errs, fmt.Sprintf("%s: atr_method must be %q or %q, got %q", prefix, ATRMethodSimple, ATRMethodWilder, sc.ATRMethod))
 		} else if sc.Type == "options" && normalizeATRMethod(sc.ATRMethod) != "" {
 			errs = append(errs, fmt.Sprintf("%s: atr_method is not supported on options strategies (no ATR surface); remove it", prefix))
 		}
-
 		if len(sc.closeStrategiesLegacy) > 1 {
 			names := make([]string, 0, len(sc.closeStrategiesLegacy))
 			for _, ref := range sc.closeStrategiesLegacy {
@@ -1436,7 +1389,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			}
 			errs = append(errs, fmt.Sprintf("%s: close_strategies has %d entries %v — the array model was collapsed to a single close_strategy (#842); keep one profit-taking close and move risk backstops (hard caps, time stops) to the strategy level", prefix, len(names), names))
 		}
-
 		if sc.CloseStrategy != nil && sc.Type == "options" {
 			errs = append(errs, fmt.Sprintf("%s: close_strategy is supported for spot, perps, and futures strategies only", prefix))
 		}
@@ -1486,7 +1438,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		}
 
 		if !skipLiveCredentialChecks {
-
 			if sc.Type == "futures" {
 				for _, arg := range sc.Args {
 					if arg == "--mode=live" {
@@ -1552,7 +1503,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if sc.Capital > 0 {
 				fmt.Printf("[WARN] %s: both capital ($%.0f) and capital_pct (%.0f%%) set — capital_pct takes priority\n", sc.ID, sc.Capital, sc.CapitalPct*100)
 			}
-
 			if !skipLiveCredentialChecks && sc.CapitalPct > 0 && sc.Platform == "hyperliquid" {
 				if os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") == "" {
 					errs = append(errs, fmt.Sprintf("%s: capital_pct requires HYPERLIQUID_ACCOUNT_ADDRESS env var", prefix))
@@ -1611,7 +1561,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				errs = append(errs, fmt.Sprintf("%s: leverage must be in [1, 100], got %g", prefix, sc.Leverage))
 			}
 		}
-
 		if sc.SizingLeverage != 0 {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				errs = append(errs, fmt.Sprintf("%s: sizing_leverage is only supported for perps strategies (got type %q)", prefix, sc.Type))
@@ -1639,7 +1588,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: allow_scale_in is only supported on hyperliquid (got platform %q)", prefix, sc.Platform))
 			}
-
 			if sc.Type == "perps" && sc.Platform == "hyperliquid" && hyperliquidIsLive(sc.Args) && !scaleInLiveProtectionResizable(sc) {
 				errs = append(errs, fmt.Sprintf("%s: allow_scale_in on live perps requires an ATR/regime or trailing stop-loss that can be re-sized after an add — stop_loss_pct/stop_loss_margin_pct and the max_drawdown fallback cannot (set stop_loss_atr_mult, stop_loss_atr_regime, or a trailing stop)", prefix))
 			}
@@ -1668,7 +1616,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				errs = append(errs, fmt.Sprintf("%s: direction is only supported for perps/manual strategies (got type %q)", prefix, sc.Type))
 			}
-
 			if sc.AllowShorts && sc.Direction == DirectionLong {
 				errs = append(errs, fmt.Sprintf("%s: direction=%q conflicts with legacy allow_shorts=true (remove allow_shorts; v14 migration normally handles this)", prefix, sc.Direction))
 			}
@@ -1687,7 +1634,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if cfg.Regime == nil || !cfg.Regime.Enabled {
 				errs = append(errs, fmt.Sprintf("%s: regime_directional_policy requires top-level regime.enabled=true", prefix))
 			}
-
 		}
 
 		if sc.RegimeWindowDivergence.IsConfigured() {
@@ -1741,7 +1687,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if sc.Type != "perps" || sc.Platform != "hyperliquid" {
 				errs = append(errs, fmt.Sprintf("%s: stop_loss_margin_pct is only supported for HL perps strategies (got platform=%q type=%q)", prefix, sc.Platform, sc.Type))
 			}
-
 			if marginPct > 0 {
 				lev := sc.Leverage
 				if lev < 1 {
@@ -1777,7 +1722,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		for _, msg := range validateHLStopWithinBankruptcyBound(sc) {
 			errs = append(errs, fmt.Sprintf("%s: %s", prefix, msg))
 		}
-
 		if sc.TrailingStopATRMult != nil {
 			mult := *sc.TrailingStopATRMult
 			if mult < 0 {
@@ -1805,7 +1749,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				}
 			}
 		}
-
 		if sc.StopLossATRMult != nil {
 			mult := *sc.StopLossATRMult
 			if mult < 0 {
@@ -1836,7 +1779,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 				}
 			}
 		}
-
 		slAfterLabels := canonicalTrendRegimeLabels
 		if cfg.Regime != nil && cfg.Regime.Enabled {
 			slAfterLabels = regimeLabelsForStrategyWindow(sc, cfg.Regime, "atr")
@@ -1862,7 +1804,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			if sc.TrailingStopATRMult != nil {
 				atrMult = *sc.TrailingStopATRMult
 			}
-
 			regimeTrail := sc.TrailingStopATRRegime.IsConfigured()
 			if fixedTrailingPct <= 0 && atrMult <= 0 && !regimeTrail {
 				errs = append(errs, fmt.Sprintf("%s: trailing_stop_min_move_pct requires trailing_stop_pct > 0, trailing_stop_atr_mult > 0, or trailing_stop_atr_regime", prefix))
@@ -1899,14 +1840,12 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 		if cfg.PortfolioRisk.WarnThresholdPct <= 0 || cfg.PortfolioRisk.WarnThresholdPct > 100 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.warn_threshold_pct must be in (0, 100], got %g", cfg.PortfolioRisk.WarnThresholdPct))
 		}
-
 		if cfg.PortfolioRisk.DailyMaxLossUSD < 0 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_usd must be >= 0 (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossUSD))
 		}
 		if cfg.PortfolioRisk.DailyMaxLossPct < 0 || cfg.PortfolioRisk.DailyMaxLossPct > 100 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.daily_max_loss_pct must be in [0, 100] (0 = disabled), got %g", cfg.PortfolioRisk.DailyMaxLossPct))
 		}
-
 		if cfg.PortfolioRisk.MaxSameDirectionNotionalUSD < 0 {
 			errs = append(errs, fmt.Sprintf("portfolio_risk.max_same_direction_notional_usd must be >= 0 (0 = disabled), got %g", cfg.PortfolioRisk.MaxSameDirectionNotionalUSD))
 		}
@@ -1967,7 +1906,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 			errs = append(errs, fmt.Sprintf("regime.timeframe must be one of %s, got %q", strings.Join(validRegimeTimeframes(), ", "), cfg.Regime.Timeframe))
 		}
 	}
-
 	if cfg.Regime != nil {
 		if _, err := parseRegimeGateOnFailure(cfg.Regime.GateOnFailure); err != nil {
 			errs = append(errs, fmt.Sprintf("regime.gate_on_failure: %v", err))
@@ -1976,7 +1914,6 @@ func validateConfig(cfg *Config, skipLiveCredentialChecks bool) error {
 	errs = append(errs, validateRegimeWindowsConfig(cfg)...)
 	errs = append(errs, validateStrategyRegimeVocabulary(cfg)...)
 	errs = append(errs, validateRegimeTransitionsConfig(cfg)...)
-
 	errs = append(errs, validateHurstGateConfigs(cfg)...)
 
 	if cfg.Regime == nil || !cfg.Regime.Enabled {

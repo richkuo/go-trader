@@ -98,7 +98,6 @@ func TestRegimeDirectionalPolicyResolveRaw(t *testing.T) {
 		if !found {
 			t.Fatalf("expected invalid-direction error, got: %v", errs)
 		}
-
 		for _, e := range errs {
 			if strings.Contains(e, "missing required regime labels") {
 				t.Fatalf("invalid-direction must not double-report as missing: %v", errs)
@@ -181,7 +180,6 @@ func TestEffectiveDirectionForPositionGated(t *testing.T) {
 		"ranging":       {Direction: DirectionLong},
 	}}
 	sc := StrategyConfig{Direction: DirectionLong, RegimeDirectionalPolicy: policy}
-
 	certAll := map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}
 
 	if got := EffectiveDirectionForPositionGated(sc, "trending_up", "trending_down", 1, certAll); got != DirectionShort {
@@ -193,7 +191,6 @@ func TestEffectiveDirectionForPositionGated(t *testing.T) {
 	if got := EffectiveDirectionForPositionGated(sc, "", "", 1, certAll); got != DirectionLong {
 		t.Errorf("unstamped open falls back to current (empty): got %q want base long", got)
 	}
-
 	if got := EffectiveDirectionForPositionGated(sc, "trending_up", "trending_down", 1, nil); got != DirectionLong {
 		t.Errorf("uncertified open falls to base: got %q want long", got)
 	}
@@ -244,7 +241,6 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 			"ranging":       {Direction: "long", InvertSignal: false},
 		}}
 	}
-
 	certAll := map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong}
 
 	t.Run("flat uses current regime", func(t *testing.T) {
@@ -266,7 +262,6 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("open position uses pos.Regime (hold)", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-
 		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0.001, certAll)
 		if !applied {
 			t.Fatalf("expected applied")
@@ -274,7 +269,6 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 		if legacy {
 			t.Fatalf("posRegime set; should not flag legacy fallback")
 		}
-
 		if entry.Direction != "short" || !entry.InvertSignal {
 			t.Fatalf("expected hold under prior policy, got: %+v", entry)
 		}
@@ -285,7 +279,6 @@ func TestApplyRegimeDirectionalPolicy(t *testing.T) {
 
 	t.Run("flat after pos closed picks new regime", func(t *testing.T) {
 		sc := StrategyConfig{Direction: "long", InvertSignal: false, RegimeDirectionalPolicy: makePolicy()}
-
 		entry, applied, legacy := applyRegimeDirectionalPolicy(&sc, "trending_up", "trending_down", 0, certAll)
 		if !applied {
 			t.Fatalf("expected applied")

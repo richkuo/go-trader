@@ -35,7 +35,6 @@ func TestHurstGateWiredAtEveryRegimeGatedDispatchSite(t *testing.T) {
 }
 
 func TestHurstGateArmImmediatelyFollowsTheLabelGate(t *testing.T) {
-
 	src := readMainSource(t)
 	gateRe := regexp.MustCompile(`applyRegimeGate\(sc, storeRegime, cfg\.Regime, ([A-Za-z.]+)\)`)
 	hurstRe := regexp.MustCompile(`advanceHurstGate\(sc, storeRegime, cfg\.Regime, stratState, &mu, ([A-Za-z.]+)\)`)
@@ -60,7 +59,6 @@ func TestHurstGateArmImmediatelyFollowsTheLabelGate(t *testing.T) {
 }
 
 func TestHurstGateNeverGatesManagementPaths(t *testing.T) {
-
 	src := readMainSource(t)
 	forbidden := []string{
 		"hurstDecision.Holds && hyperliquidIsLive",
@@ -74,7 +72,6 @@ func TestHurstGateNeverGatesManagementPaths(t *testing.T) {
 			t.Fatalf("the Hurst gate must never gate a management path; found %q (#1411)", f)
 		}
 	}
-
 	for _, line := range strings.Split(src, "\n") {
 		if strings.Contains(line, "hurstDecision.Holds") && !strings.Contains(line, "pausedBlocksSignal(") {
 			t.Fatalf("unclassified use of hurstDecision.Holds: %q", strings.TrimSpace(line))
@@ -83,23 +80,19 @@ func TestHurstGateNeverGatesManagementPaths(t *testing.T) {
 }
 
 func TestHurstGateSizesTheScaleInAddQuantity(t *testing.T) {
-
 	src := readMainSource(t)
 	if !strings.Contains(src, "scaleInAddQty = q * hurstDecision.OpenSizeMult()") {
 		t.Fatal("the scale-in add quantity must be scaled by the Hurst multiplier — without it a mode=size gate shrinks fresh opens but leaves adds full-size (#1411)")
 	}
-
 	if regexp.MustCompile(`defOpenNotional\s*:?=[^\n]*OpenSizeMult`).MatchString(src) {
 		t.Fatal("the Hurst multiplier must scale the decided add quantity, not defOpenNotional — scaling the default would leave an explicit scale_in.add_notional_usd ungated and would move the caps off the unscaled intent (#1411)")
 	}
-
 	if !strings.Contains(src, `if result.Signal != 0 && sc.Type == "perps" && sc.AllowScaleIn {`) {
 		t.Fatal("the scale-in block must stay gated on result.Signal != 0 — that is what makes the Hurst hold reach a scale-in add (#1411)")
 	}
 }
 
 func TestLabelGateSemanticsUntouchedByHurstGate(t *testing.T) {
-
 	sc := StrategyConfig{ID: "s", AllowedRegimes: []string{"trending_up"}}
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
 	payload := hurstPayload("medium", 0.20, true)
@@ -135,7 +128,6 @@ func TestValidateHurstGateAcceptsAWellFormedBlock(t *testing.T) {
 }
 
 func TestValidateHurstGateRejectsNonCompositeWindow(t *testing.T) {
-
 	cfg := hurstValidationConfig(hurstTestRegimeConfig(regimeClassifierADX),
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)}))
 	assertHurstErrContains(t, validateHurstGateConfigs(cfg), "emitted ONLY by the \"composite\" classifier")
@@ -158,19 +150,14 @@ func TestValidateHurstGateRejectsNonCompositeWindow(t *testing.T) {
 
 func TestValidateHurstGateRejectsMissingRegimeSurface(t *testing.T) {
 	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.55)}
-
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(nil, hurstStrategy(hg))), "requires regime.enabled=true")
-
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(&RegimeConfig{Enabled: false}, hurstStrategy(hg))), "requires regime.enabled=true")
-
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(&RegimeConfig{Enabled: true, Period: 14}, hurstStrategy(hg))), "requires regime.windows")
-
 	missing := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), WindowKey: "nope"})
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(hurstTestRegimeConfig(regimeClassifierComposite), missing)), "not found in regime.windows")
 }
 
 func TestValidateHurstGateRunsEvenWhenDisabled(t *testing.T) {
-
 	cfg := hurstValidationConfig(hurstTestRegimeConfig(regimeClassifierComposite),
 		hurstStrategy(&HurstGateConfig{Enabled: false, Mode: "bogus", Min: hfp(1.4)}))
 	errs := validateHurstGateConfigs(cfg)
@@ -180,7 +167,6 @@ func TestValidateHurstGateRunsEvenWhenDisabled(t *testing.T) {
 
 func TestValidateHurstGateVocabulary(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
-
 	for _, mode := range []string{"", "gate", "size", " GATE ", "Size"} {
 		hg := &HurstGateConfig{Enabled: true, Mode: mode}
 		if normalizeHurstGateMode(mode) == HurstGateModeSize {
@@ -194,7 +180,6 @@ func TestValidateHurstGateVocabulary(t *testing.T) {
 	}
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), OnFailure: "halt"}))), "hurst_gate.on_failure")
-
 	badGlobal := &RegimeConfig{Enabled: true, HurstGateOnFailure: "maybe",
 		Windows: RegimeWindowsMap{"medium": RegimeWindowSpec{Classifier: regimeClassifierComposite, Period: 20}}}
 	assertHurstErrContains(t, validateHurstGateConfigs(&Config{Regime: badGlobal}), "regime.hurst_gate_on_failure")
@@ -210,10 +195,8 @@ func TestValidateHurstGateBoundOrdering(t *testing.T) {
 	check(&HurstGateConfig{Enabled: true, Min: hfp(0.7), Max: hfp(0.3)}, "must be < hurst_gate.max")
 	check(&HurstGateConfig{Enabled: true, DisarmMin: hfp(0.4)}, "disarm_min requires hurst_gate.min")
 	check(&HurstGateConfig{Enabled: true, DisarmMax: hfp(0.6)}, "disarm_max requires hurst_gate.max")
-
 	check(&HurstGateConfig{Enabled: true, Min: hfp(0.5), DisarmMin: hfp(0.6)}, "must be <= hurst_gate.min")
 	check(&HurstGateConfig{Enabled: true, Max: hfp(0.5), DisarmMax: hfp(0.4)}, "must be >= hurst_gate.max")
-
 	for _, hg := range []*HurstGateConfig{
 		{Enabled: true, Min: hfp(0)}, {Enabled: true, Min: hfp(1)},
 		{Enabled: true, Max: hfp(0)}, {Enabled: true, Max: hfp(1)},
@@ -224,7 +207,6 @@ func TestValidateHurstGateBoundOrdering(t *testing.T) {
 			t.Fatalf("expected a range rejection for %+v", hg)
 		}
 	}
-
 	if errs := validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.55)}))); len(errs) != 0 {
 		t.Fatalf("disarm_min == min should be legal, got %v", errs)
@@ -233,17 +215,14 @@ func TestValidateHurstGateBoundOrdering(t *testing.T) {
 
 func TestValidateHurstGateModeScoping(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
-
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55), SizeFloor: hfp(0.5)}))), "size_floor only applies with mode=\"size\"")
 	for _, v := range []float64{0, -0.2, 1.5} {
 		assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 			hurstStrategy(&HurstGateConfig{Enabled: true, Mode: HurstGateModeSize, SizeFloor: hfp(v)}))), "size_floor must be in (0, 1]")
 	}
-
 	assertHurstErrContains(t, validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Mode: HurstGateModeSize, Min: hfp(0.55)}))), "has no meaning with mode=\"size\"")
-
 	if errs := validateHurstGateConfigs(hurstValidationConfig(rc,
 		hurstStrategy(&HurstGateConfig{Enabled: true, Mode: HurstGateModeSize}))); len(errs) != 0 {
 		t.Fatalf("bare mode=size should be valid, got %v", errs)
@@ -276,11 +255,9 @@ func TestHurstGateNestedUnknownKeysRejected(t *testing.T) {
 	if !found {
 		t.Fatalf("a typo inside hurst_gate must fail loudly, got %v", errs)
 	}
-
 	if !knownStrategyConfigKeys()["hurst_gate"] {
 		t.Fatal("hurst_gate must be in the reflective strategy key inventory")
 	}
-
 	known := knownHurstGateKeys()
 	typ := reflect.TypeOf(HurstGateConfig{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -292,7 +269,6 @@ func TestHurstGateNestedUnknownKeysRejected(t *testing.T) {
 			t.Fatalf("declared field %q missing from knownHurstGateKeys()", tag)
 		}
 	}
-
 	ok := []byte(`{"strategies":[{"id":"s1","hurst_gate":{"enabled":false,"mode":"size","size_floor":0.3,"window_key":"medium","on_failure":"open","min":null,"max":null,"disarm_min":null,"disarm_max":null}}]}`)
 	if errs := validateStrategyJSONKeys(ok); len(errs) != 0 {
 		t.Fatalf("a fully-populated block must pass the key guard, got %v", errs)
@@ -314,7 +290,6 @@ func TestHurstGateJSONRoundTripsThroughStrategyConfig(t *testing.T) {
 }
 
 func TestConfigExampleShipsNoHurstThresholds(t *testing.T) {
-
 	b, err := os.ReadFile("config.example.json")
 	if err != nil {
 		t.Fatalf("read config.example.json: %v", err)
@@ -325,19 +300,16 @@ func TestConfigExampleShipsNoHurstThresholds(t *testing.T) {
 }
 
 func TestHurstGateIsHotReloadableIncludingWhileOpen(t *testing.T) {
-
 	base := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.55)})
 	edited := hurstStrategy(&HurstGateConfig{Enabled: true, Min: hfp(0.60)})
 	if !reflect.DeepEqual(strategyRestartShape(base), strategyRestartShape(edited)) {
 		t.Fatal("a hurst_gate edit must not be flagged restart-required")
 	}
-
 	a := &RegimeConfig{Enabled: true, HurstGateOnFailure: "open"}
 	b := &RegimeConfig{Enabled: true, HurstGateOnFailure: "closed"}
 	if !regimeConfigEqualIgnoringReloadableFields(a, b) {
 		t.Fatal("regime.hurst_gate_on_failure must be hot-reloadable")
 	}
-
 	cfg := &Config{DBFile: "x.db", Regime: a, Strategies: []StrategyConfig{base}}
 	next := &Config{DBFile: "x.db", Regime: b, Strategies: []StrategyConfig{edited}}
 	if err := validateHotReloadCompatible(cfg, next); err != nil {
@@ -377,7 +349,6 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		c.Regime.HurstGateOnFailure = globalOnFailure
 		return c
 	}
-
 	openState := func(latch HurstGateState) *AppState {
 		return &AppState{Strategies: map[string]*StrategyState{
 			"s1": {
@@ -410,7 +381,6 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		if !strings.Contains(joined, "hurst_gate:") || !strings.Contains(joined, "regime.hurst_gate_on_failure") {
 			t.Fatalf("both edits must be reported to the operator, got: %v", changes)
 		}
-
 		*next.Strategies[0].HurstGate.Min = 0.99
 		if *cfg.Strategies[0].HurstGate.Min != 0.60 {
 			t.Fatal("the adopted block must not alias the freshly loaded config's pointers")
@@ -433,7 +403,6 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		if after != before {
 			t.Fatalf("on_failure must NOT be part of the threshold key: %q -> %q", before, after)
 		}
-
 		d := advanceHurstGate(adopted, hurstPayload("medium", 0.50, true), cfg.Regime, state.Strategies["s1"], nil, 0.5)
 		if d.State != hurstGateStateArmed || d.Holds {
 			t.Fatalf("the latch must survive an on_failure-only edit, got state=%q holds=%v", d.State, d.Holds)
@@ -450,7 +419,6 @@ func TestApplyHotReloadConfigAdoptsHurstGateWhileOpen(t *testing.T) {
 		}
 		adopted := cfg.Strategies[0]
 		ss := state.Strategies["s1"]
-
 		d := advanceHurstGate(adopted, hurstPayload("medium", 0.55, true), cfg.Regime, ss, nil, 0.5)
 		if d.State != hurstGateStateDisarmed || !d.Holds {
 			t.Fatalf("a threshold edit must discard the stale ARMED latch, got state=%q holds=%v", d.State, d.Holds)

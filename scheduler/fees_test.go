@@ -26,7 +26,6 @@ func TestCalculateFuturesFee(t *testing.T) {
 }
 
 func TestHyperliquidFeeConstants(t *testing.T) {
-
 	if HyperliquidTakerFeePct != 0.00045 {
 		t.Errorf("HyperliquidTakerFeePct = %v, want 0.00045", HyperliquidTakerFeePct)
 	}
@@ -36,14 +35,12 @@ func TestHyperliquidFeeConstants(t *testing.T) {
 	if HyperliquidMakerFeePct >= HyperliquidTakerFeePct {
 		t.Errorf("maker rate %v must be below taker rate %v", HyperliquidMakerFeePct, HyperliquidTakerFeePct)
 	}
-
 	if got := CalculateHyperliquidFee(1000.0); got != 1000.0*HyperliquidTakerFeePct {
 		t.Errorf("CalculateHyperliquidFee(1000) = %v, want %v", got, 1000.0*HyperliquidTakerFeePct)
 	}
 }
 
 func TestCalculatePlatformSpotFeeOKX(t *testing.T) {
-
 	fee := CalculatePlatformSpotFee("okx", 1000.0)
 	expected := 1000.0 * OKXSpotTakerFeePct
 	if fee != expected {
@@ -52,7 +49,6 @@ func TestCalculatePlatformSpotFeeOKX(t *testing.T) {
 }
 
 func TestCalculatePlatformSpotFeeOKXPerps(t *testing.T) {
-
 	fee := CalculatePlatformSpotFee("okx-perps", 1000.0)
 	expected := 1000.0 * OKXPerpsTakerFeePct
 	if fee != expected {
@@ -61,7 +57,6 @@ func TestCalculatePlatformSpotFeeOKXPerps(t *testing.T) {
 }
 
 func TestCalculatePlatformFuturesFee(t *testing.T) {
-
 	sc := StrategyConfig{
 		FuturesConfig: &FuturesConfig{FeePerContract: 1.50},
 	}

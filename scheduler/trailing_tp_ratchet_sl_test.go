@@ -68,7 +68,6 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_LiveReplacesWiderTrigger(t *te
 }
 
 func TestRunTrailingStopUpdateAfterRatchetTighten_PaperUpdatesVirtualTrigger(t *testing.T) {
-
 	old := runHyperliquidUpdateStopLossFunc
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
 	var called bool
@@ -189,7 +188,6 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_UsesResidualNotPreCloseOnChain
 		gotSize = size
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 8, StopLossTriggerPx: triggerPx}, "", nil
 	}
-
 	runTrailingStopUpdateAfterRatchetTighten(sc, st, "ETH", 102, map[string]float64{"ETH": 1.0}, nil, nil, &mu, nil, newTestLogger(t))
 	if !approxEq(gotSize, 0.2) {
 		t.Fatalf("SL size = %v, want residual 0.2 (not stale on-chain 1.0)", gotSize)
@@ -278,7 +276,6 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_LandsUnderDefaultMinMove(t *te
 			if !approxEq(gotTrigger, wantTrigger) {
 				t.Fatalf("trigger = %v, want %v (2.0xATR from high-water %v)", gotTrigger, wantTrigger, c.highWater)
 			}
-
 			if c.side == "long" && gotTrigger <= oldTrigger {
 				t.Errorf("long tighten must raise the trigger: got %v, old %v", gotTrigger, oldTrigger)
 			}
@@ -304,7 +301,6 @@ func TestTrailingWalker_NoRatchetTighten_StaysDebounced(t *testing.T) {
 	sc := ratchetMinMoveStrategy(true)
 	highWater := 1900.0
 	pos := ratchetMinMovePosition("long", 2.0, highWater).Positions["ETH"]
-
 	pos.StopLossTriggerPx = trailingTriggerFor("long", highWater, 2.0)
 	drifted := highWater * 1.001
 
@@ -322,7 +318,6 @@ func TestTrailingWalker_RatchetBypassNeverWidens(t *testing.T) {
 			if side == "short" {
 				highWater = 1840.0
 			}
-
 			currentTrigger := trailingTriggerFor(side, highWater, 1.0)
 			trailingPct := 2.0 * ratchetTestEntryATR / ratchetTestAnchor * 100.0
 
@@ -349,7 +344,6 @@ func TestRunTrailingStopUpdateAfterRatchetTighten_TwoTiersOneCycleReplacesOnce(t
 			},
 		},
 	}
-
 	mark := ratchetTestAnchor + 2.5*ratchetTestEntryATR
 	st := &StrategyState{ID: sc.ID, Positions: map[string]*Position{
 		"ETH": {

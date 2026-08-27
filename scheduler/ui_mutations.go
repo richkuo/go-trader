@@ -200,7 +200,6 @@ func (ss *StatusServer) handleAPIConfigNotifications(w http.ResponseWriter, r *h
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
 	ss.strategiesMu.Lock()
 	ss.globalNotifyRatchet = v
 	ss.strategiesMu.Unlock()

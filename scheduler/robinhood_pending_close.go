@@ -106,7 +106,6 @@ func runPendingRobinhoodCircuitCloses(
 			}
 			peers := rhLiveStrategiesForCoin(coin, rhLiveAll)
 			if len(peers) > 1 {
-
 				msg := formatRobinhoodSharedOwnerDM(sc.ID, coin, peers)
 				fmt.Printf("[CRITICAL] rh-circuit-close: %s\n", msg)
 				if sendOwnerDM != nil {
@@ -154,7 +153,6 @@ func runPendingRobinhoodCircuitCloses(
 		}
 		sc := lookupStrategyConfig(strategies, j.stratID)
 		if sc == nil || sc.Platform != "robinhood" || sc.Type != "spot" || !robinhoodIsLive(sc.Args) {
-
 			mu.Lock()
 			if ss := state.Strategies[j.stratID]; ss != nil {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseRobinhood)
@@ -168,7 +166,6 @@ func runPendingRobinhoodCircuitCloses(
 		var failedSize float64
 		var failedErr error
 		for _, c := range j.pending.Symbols {
-
 			onAccount := robinhoodOnAccountSize(c.Symbol, positions)
 			if onAccount <= 0 {
 				continue
@@ -181,7 +178,6 @@ func runPendingRobinhoodCircuitCloses(
 				if sendOwnerDM != nil {
 					sendOwnerDM(msg)
 				}
-
 				allOK = false
 				continue
 			}

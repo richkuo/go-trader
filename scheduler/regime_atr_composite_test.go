@@ -53,7 +53,6 @@ func TestValidateRegimeATRConfig_CompositeStopLossExplicit(t *testing.T) {
 	if got := len(block.TrendRegime); got != 9 {
 		t.Fatalf("block must be populated with all 9 composite labels, got %d: %v", got, block.TrendRegime)
 	}
-
 	if v, ok := resolveRegimeATR(*block, "trending_up_clean"); !ok || v != 2.0 {
 		t.Fatalf("resolveRegimeATR(trending_up_clean) = (%g, %v), want (2.0, true)", v, ok)
 	}
@@ -199,7 +198,6 @@ func TestValidateRegimeATRConfig_CompositeSubLabelsWithoutBareRejected(t *testin
 }
 
 func TestRegimeATRBlock_ResolveSubLabelFallsBackToBareAndExplicitWins(t *testing.T) {
-
 	raw := composite7StateATR(1.5)
 	tr := raw["trend_regime"].(map[string]interface{})
 	delete(tr, "ranging_directional_up")
@@ -276,7 +274,6 @@ func TestResolveRegimeTPTiers_CompositeRuntime(t *testing.T) {
 	if tiers[0].Multiple != 2.0 || tiers[1].Multiple != 4.0 {
 		t.Fatalf("tier multiples mismatch: %v", tiers)
 	}
-
 	if got := resolveRegimeTPTiers(raw, "not_a_label"); got != nil {
 		t.Fatalf("unknown runtime regime should resolve to nil, got %v", got)
 	}
@@ -292,7 +289,6 @@ func TestStrategyTPTiersForRegime_CompositeUseDefaults(t *testing.T) {
 	if len(tiers) != 4 {
 		t.Fatalf("use_defaults composite clean must resolve 4 tiers, got %d: %v", len(tiers), tiers)
 	}
-
 	if tiers[0].Multiple != 2.5 || tiers[3].Multiple != 7.0 {
 		t.Fatalf("composite use_defaults clean baseline mismatch: %v", tiers)
 	}
@@ -311,7 +307,6 @@ func TestMapRegimeToBaselineFamily(t *testing.T) {
 		{"trending_down_choppy", 2.0, true},
 		{"ranging_quiet", 1.5, true},
 		{"ranging_directional", 1.5, true},
-
 		{"ranging_directional_up", 1.5, true},
 		{"ranging_directional_down", 1.5, true},
 		{"garbage", 0, false},
@@ -338,7 +333,6 @@ func TestRegimeLabelsFromTierRaw(t *testing.T) {
 	if len(got) != 9 {
 		t.Fatalf("expected 9 inferred labels, got %d: %v", len(got), got)
 	}
-
 	if got := regimeLabelsFromTierRaw(nil); len(got) != 3 {
 		t.Fatalf("nil raw should fall back to canonical ADX (3), got %v", got)
 	}

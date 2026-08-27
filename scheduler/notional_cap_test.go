@@ -10,7 +10,6 @@ import (
 )
 
 func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
-
 	if notionalCapSkipsStrategyCycle(false) {
 		t.Fatal("notionalCapSkipsStrategyCycle(false) must be false")
 	}
@@ -43,7 +42,6 @@ func TestNotionalCapNeverSkipsStrategyCycle(t *testing.T) {
 		if !astCondMentionsIdent(ifs.Cond, "notionalBlocked") {
 			return true
 		}
-
 		if astCondIsNotionalCapSkipHelper(ifs.Cond) {
 			return true
 		}
@@ -93,7 +91,6 @@ func astBlockContainsContinue(body *ast.BlockStmt) bool {
 }
 
 func TestNotionalCapHoldPassesReduceAndManage(t *testing.T) {
-
 	const notionalBlocked = true
 	cases := []struct {
 		name          string
@@ -129,18 +126,15 @@ func TestEvaluateNotionalCapHold(t *testing.T) {
 			"BTC": {Symbol: "BTC", Quantity: 1, AvgCost: 60000, Side: "long"},
 		}},
 	}
-
 	if held, _ := evaluateNotionalCapHold(nil, states, nil); held {
 		t.Fatal("nil portfolio risk must not hold")
 	}
 	if held, _ := evaluateNotionalCapHold(&PortfolioRiskConfig{MaxNotionalUSD: 0}, states, nil); held {
 		t.Fatal("disabled notional cap must not hold")
 	}
-
 	if held, _ := evaluateNotionalCapHold(&PortfolioRiskConfig{MaxNotionalUSD: 100000}, states, nil); held {
 		t.Fatal("under-cap book must not hold")
 	}
-
 	held, detail := evaluateNotionalCapHold(&PortfolioRiskConfig{MaxNotionalUSD: 50000}, states, nil)
 	if !held {
 		t.Fatal("over-cap book must hold")
@@ -176,13 +170,11 @@ func TestManualStateViewNotionalHold(t *testing.T) {
 	if !v.NotionalHold || v.NotionalNote == "" {
 		t.Fatalf("view = %+v, want NotionalHold with note", v)
 	}
-
 	state.Strategies["m"].Positions["ETH"].Quantity = 10
 	v = manualStateViewFromState(cfg, state, "m", "ETH")
 	if v.NotionalHold {
 		t.Fatalf("view = %+v, want no hold under cap", v)
 	}
-
 	v = manualStateViewFromState(nil, state, "m", "ETH")
 	if v.NotionalHold {
 		t.Fatalf("nil cfg view = %+v, want no hold", v)

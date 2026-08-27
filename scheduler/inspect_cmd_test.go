@@ -191,7 +191,6 @@ func TestFormatStrategyInspectionShowsResolvedTPSource(t *testing.T) {
 			t.Errorf("output missing %q.\nfull:\n%s", want, out)
 		}
 	}
-
 	if strings.Contains(out, "platform:            hyperliquid (default)") {
 		t.Errorf("platform was explicit but rendered as default")
 	}
@@ -212,7 +211,6 @@ func TestFormatStrategyInspectionMarksDefaultedFields(t *testing.T) {
 		MaxDrawdownPct:  50,
 		StopLossATRMult: &mult,
 	}
-
 	explicit := map[string]bool{"id": true, "type": true, "platform": true, "script": true, "args": true, "open_strategy": true}
 	out := formatStrategyInspection(sc, explicit, &Config{IntervalSeconds: 600}, nil)
 
@@ -379,7 +377,6 @@ func TestFormatStrategySummaryLineRegimeTPTierCount(t *testing.T) {
 		StopLossATRMult: &mult,
 	}
 	line := formatStrategySummaryLine(sc, nil, nil)
-
 	if !strings.Contains(line, "tp=tiered_tp_atr_regime[4-tier]") {
 		t.Errorf("expected 4-tier regime TP summary, got: %s", line)
 	}

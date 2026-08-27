@@ -107,7 +107,6 @@ func validateUserCloseDefaults(defaults CloseDefaultsMap) []string {
 			errs = append(errs, fmt.Sprintf("user_defaults.close[%q]: missing tp_tiers", name))
 			continue
 		}
-
 		errs = append(errs, validateUserCloseDefaultTiers(name, tp)...)
 		if normName == trailingTPRatchetRegimeCloseName {
 			if raw, ok := entry[userCloseDefaultTrailingStopATRRegimeKey]; ok {

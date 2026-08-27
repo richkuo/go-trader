@@ -501,12 +501,9 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	defer func() { tradeRecorder = origRecorder }()
 
 	now := time.Now().UTC()
-
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: otherID, Action: "close", Symbol: "DOGE", Side: "long", Quantity: 1, FillPrice: 0.1, IsFullClose: true, CreatedAt: now})
-
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: openID, Action: "open", Symbol: "ETH", Side: "long", Quantity: 0.5, FillPrice: 2000, FillFee: 0.7, EntryATR: 50, CreatedAt: now})
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: openID, Action: "close", Symbol: "ETH", Side: "long", Quantity: 0.5, FillPrice: 2100, FillFee: 0.7, RealizedPnL: 49.3, IsFullClose: true, CreatedAt: now})
-
 	_ = db.InsertPendingManualAction(PendingManualAction{StrategyID: otherID, Action: "open", Symbol: "BTC", Side: "short", Quantity: 0.01, FillPrice: 60000, FillFee: 0.3, EntryATR: 500, CreatedAt: now})
 
 	alerts := drainPendingManualActions(state, cfg, db)
@@ -524,7 +521,6 @@ func TestDrainPendingManualActionsAlerts(t *testing.T) {
 	if got := byID[otherID].trades; got != 1 {
 		t.Errorf("%s alert trades = %d, want 1 (failed DOGE close excluded)", otherID, got)
 	}
-
 	for _, a := range alerts {
 		if a.trades > len(a.ss.TradeHistory) {
 			t.Errorf("%s alert trades=%d exceeds TradeHistory len=%d", a.sc.ID, a.trades, len(a.ss.TradeHistory))
@@ -1131,11 +1127,9 @@ func TestManualCoresGuardPositionDoubleFire(t *testing.T) {
 			{ID: "hl-manual-eth", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
-
 			{ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid", Symbol: "ETH",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
-
 			{ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2},
@@ -1958,7 +1952,6 @@ func TestResolveManualOpenOrderSize(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-
 		if fmt.Sprintf("%.6f", qty) != "0.250000" || mark != 2000 {
 			t.Errorf("got qty=%g mark=%g; want qty=0.25 mark=2000", qty, mark)
 		}

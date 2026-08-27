@@ -10,7 +10,6 @@ import (
 
 func knownStrategyConfigKeys() map[string]bool {
 	known := knownJSONKeys(reflect.TypeOf(StrategyConfig{}))
-
 	known["close_strategies"] = true
 	return known
 }
@@ -57,7 +56,6 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 		Strategies []map[string]json.RawMessage `json:"strategies"`
 	}
 	if err := json.Unmarshal(rawData, &envelope); err != nil {
-
 		return nil
 	}
 	known := knownStrategyConfigKeys()
@@ -84,9 +82,7 @@ func validateStrategyJSONKeys(rawData []byte) []string {
 			}
 			errs = append(errs, msg)
 		}
-
 		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hedge", knownHedgeConfigKeys(), prefix)...)
-
 		errs = append(errs, nestedObjectUnknownKeyErrors(s, "hurst_gate", knownHurstGateKeys(), prefix)...)
 	}
 	return errs

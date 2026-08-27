@@ -45,7 +45,6 @@ func regimeAllowsEntry(allowed []string, current string) bool {
 			return true
 		}
 	}
-
 	if regimeDirectionalSubs[cur] {
 		for _, label := range allowed {
 			if label == regimeDirectionalBare {

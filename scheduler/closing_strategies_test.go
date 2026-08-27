@@ -62,7 +62,6 @@ func TestFormatClosingStrategiesResponseNoParams(t *testing.T) {
 }
 
 func TestFormatClosingStrategiesResponseOverrideSurfacesWhenRegistryDefaultIsEmpty(t *testing.T) {
-
 	cfg := &Config{
 		UserDefaults: &UserDefaultsConfig{
 			Close: CloseDefaultsMap{
@@ -85,7 +84,6 @@ func TestFormatClosingStrategiesResponseOverrideSurfacesWhenRegistryDefaultIsEmp
 }
 
 func TestFormatClosingStrategiesResponseRatchetRegimeSLOverride(t *testing.T) {
-
 	entries := []closeRegistryEntry{
 		{Name: "trailing_tp_ratchet_regime", Description: "Regime ratchet", DefaultParams: map[string]interface{}{}, Platforms: []string{"spot"}},
 	}
@@ -171,7 +169,6 @@ func TestFormatClosingStrategiesResponseUserDefaultsOverride(t *testing.T) {
 	if !strings.Contains(body, "atr_multiple\":1") {
 		t.Fatalf("expected the overriding tp_tiers value to be shown, got: %s", body)
 	}
-
 	if strings.Contains(body, "atr_source=\"live\" (user_defaults.close override)") {
 		t.Fatalf("atr_source must not be marked as an override, got: %s", body)
 	}
@@ -200,7 +197,6 @@ func TestFormatClosingStrategiesResponseEmptyCatalog(t *testing.T) {
 }
 
 func TestFormatClosingStrategiesResponseChunksAcrossMessages(t *testing.T) {
-
 	var entries []closeRegistryEntry
 	longDesc := strings.Repeat("x", 300)
 	for i := 0; i < 20; i++ {

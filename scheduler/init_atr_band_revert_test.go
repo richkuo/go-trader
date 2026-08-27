@@ -31,7 +31,6 @@ func TestGenerateConfig_ATRBandRevert_DefaultsToCompositeRangingGate(t *testing.
 			t.Fatalf("allowed_regimes[%d] = %q, want %q", i, sc.AllowedRegimes[i], l)
 		}
 	}
-
 	if sc.RegimeGateOnFailure != RegimeGateOnFailureClosed {
 		t.Fatalf("regime_gate_on_failure = %q, want %q", sc.RegimeGateOnFailure, RegimeGateOnFailureClosed)
 	}
@@ -56,7 +55,6 @@ func TestGenerateConfig_ATRBandRevert_DefaultsToCompositeRangingGate(t *testing.
 }
 
 func TestGenerateConfig_WithoutATRBandRevert_NoForcedRegime(t *testing.T) {
-
 	opts := baseOpts()
 	opts.Assets = []string{"BTC"}
 	opts.SpotStrategies = []string{"momentum"}

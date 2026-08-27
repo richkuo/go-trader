@@ -56,53 +56,42 @@ type ReconciliationGap struct {
 }
 
 type AppState struct {
-	CycleCount          int                       `json:"cycle_count"`
-	LastCycle           time.Time                 `json:"last_cycle"`
-	Strategies          map[string]*StrategyState `json:"strategies"`
-	PortfolioRisk       PortfolioRiskState        `json:"portfolio_risk"`
-	CorrelationSnapshot *CorrelationSnapshot      `json:"correlation_snapshot,omitempty"`
-
-	LatestSharedWalletBalances map[SharedWalletKey]float64  `json:"-"`
-	LatestSharedWalletMembers  map[SharedWalletKey][]string `json:"-"`
-
-	ReconciliationGaps      map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
-	LastLeaderboardPostDate string                        `json:"last_leaderboard_post_date,omitempty"`
-
-	LastLeaderboardSummaries map[string]time.Time `json:"last_leaderboard_summaries,omitempty"`
-
-	LastSummaryPost map[string]time.Time `json:"last_summary_post,omitempty"`
+	CycleCount                 int                           `json:"cycle_count"`
+	LastCycle                  time.Time                     `json:"last_cycle"`
+	Strategies                 map[string]*StrategyState     `json:"strategies"`
+	PortfolioRisk              PortfolioRiskState            `json:"portfolio_risk"`
+	CorrelationSnapshot        *CorrelationSnapshot          `json:"correlation_snapshot,omitempty"`
+	LatestSharedWalletBalances map[SharedWalletKey]float64   `json:"-"`
+	LatestSharedWalletMembers  map[SharedWalletKey][]string  `json:"-"`
+	ReconciliationGaps         map[string]*ReconciliationGap `json:"reconciliation_gaps,omitempty"`
+	LastLeaderboardPostDate    string                        `json:"last_leaderboard_post_date,omitempty"`
+	LastLeaderboardSummaries   map[string]time.Time          `json:"last_leaderboard_summaries,omitempty"`
+	LastSummaryPost            map[string]time.Time          `json:"last_summary_post,omitempty"`
 }
 
 type StrategyState struct {
-	ID               string                     `json:"id"`
-	Type             string                     `json:"type"`
-	Platform         string                     `json:"platform,omitempty"`
-	Cash             float64                    `json:"cash"`
-	InitialCapital   float64                    `json:"initial_capital"`
-	Positions        map[string]*Position       `json:"positions"`
-	OptionPositions  map[string]*OptionPosition `json:"option_positions"`
-	TradeHistory     []Trade                    `json:"trade_history"`
-	RiskState        RiskState                  `json:"risk_state"`
-	Regime           string                     `json:"regime,omitempty"`
-	RegimeWindows    map[string]string          `json:"regime_windows,omitempty"`
-	RegimeDivergence *RegimeDivergenceState     `json:"-"`
-	RegimeProfile    *RegimeProfileState        `json:"regime_profile,omitempty"`
+	ID                      string                     `json:"id"`
+	Type                    string                     `json:"type"`
+	Platform                string                     `json:"platform,omitempty"`
+	Cash                    float64                    `json:"cash"`
+	InitialCapital          float64                    `json:"initial_capital"`
+	Positions               map[string]*Position       `json:"positions"`
+	OptionPositions         map[string]*OptionPosition `json:"option_positions"`
+	TradeHistory            []Trade                    `json:"trade_history"`
+	RiskState               RiskState                  `json:"risk_state"`
+	Regime                  string                     `json:"regime,omitempty"`
+	RegimeWindows           map[string]string          `json:"regime_windows,omitempty"`
+	RegimeDivergence        *RegimeDivergenceState     `json:"-"`
+	RegimeProfile           *RegimeProfileState        `json:"regime_profile,omitempty"`
+	HurstGate               HurstGateState             `json:"hurst_gate_state,omitempty"`
+	ClosedPositions         []ClosedPosition           `json:"-"`
+	ClosedOptionPositions   []ClosedOptionPosition     `json:"-"`
+	pendingTradeDiagnostics []TradeDiagnosticsRow      `json:"-"`
 
-	HurstGate HurstGateState `json:"hurst_gate_state,omitempty"`
-
-	ClosedPositions []ClosedPosition `json:"-"`
-
-	ClosedOptionPositions []ClosedOptionPosition `json:"-"`
-
-	pendingTradeDiagnostics []TradeDiagnosticsRow `json:"-"`
-
-	SharedWalletValue float64 `json:"-"`
-
-	SharedWalletValueSet bool `json:"-"`
-
-	SharedWalletPerformanceOnly bool `json:"-"`
-
-	SharedWalletPoolBudget bool `json:"shared_wallet_pool_budget,omitempty"`
+	SharedWalletValue           float64 `json:"-"`
+	SharedWalletValueSet        bool    `json:"-"`
+	SharedWalletPerformanceOnly bool    `json:"-"`
+	SharedWalletPoolBudget      bool    `json:"shared_wallet_pool_budget,omitempty"`
 
 	CashReconcileRequired bool `json:"cash_reconcile_required,omitempty"`
 
@@ -155,7 +144,6 @@ func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (shared
 		return sharedWalletPoolStateUnchanged, nil
 	}
 	if strategyHasOpenPositions(s) {
-
 		s.SharedWalletPerformanceOnly = s.SharedWalletPoolBudget
 		return sharedWalletPoolStateUnchanged, fmt.Errorf(
 			"strategy[%s]: cannot transition shared-wallet pool budgeting while positions are open",
@@ -177,7 +165,6 @@ func applySharedWalletPoolStateMode(sc StrategyConfig, s *StrategyState) (shared
 		baseline = sc.Capital
 	}
 	if baseline <= 0 {
-
 		s.SharedWalletPerformanceOnly = true
 		return sharedWalletPoolStateUnchanged, fmt.Errorf(
 			"strategy[%s]: cannot leave shared-wallet pool mode without a positive resolved capital or initial_capital",
@@ -266,7 +253,6 @@ func ValidateState(state *AppState, strategies []StrategyConfig) {
 		if s.Cash < 0 && !s.SharedWalletPoolBudget && !configuredPoolIDs[id] {
 			fmt.Printf("[WARN] state: strategy %s has negative cash=%g, clamping to 0\n", id, s.Cash)
 			s.Cash = 0
-
 		}
 		maybeClearCashReconcileRequired(s)
 		for sym, pos := range s.Positions {
@@ -275,7 +261,6 @@ func ValidateState(state *AppState, strategies []StrategyConfig) {
 				delete(s.Positions, sym)
 				continue
 			}
-
 			if pos.OwnerStrategyID == "" {
 				pos.OwnerStrategyID = id
 			}
@@ -352,17 +337,14 @@ func ValidatePerpsDirectionConfig(state *AppState, cfg *Config) []string {
 			if pos == nil || pos.Quantity <= 0 {
 				continue
 			}
-
 			if pos.isHedgeLeg() {
 				continue
 			}
 			posRegime := positionDirectionalRegimeLabel(pos, *sc)
-
 			effectiveDir := EffectiveDirectionForPositionGated(*sc, "", posRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen)
 			if !perpsPositionConflictsDirection(pos.Side, effectiveDir) {
 				continue
 			}
-
 			if policyConfigured && pos.DirectionCertifiedAtOpen && posRegime == "" && policyAllowsPositionSideGated(*sc, pos.Side, pos.DirectionCertifiedStatesAtOpen) {
 				continue
 			}

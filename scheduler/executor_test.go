@@ -136,7 +136,6 @@ func TestHyperliquidExecuteResultJSON_WithOID(t *testing.T) {
 }
 
 func TestHyperliquidExecuteResultJSON_NoOID(t *testing.T) {
-
 	raw := `{
 		"execution": {
 			"action": "sell",
@@ -521,7 +520,6 @@ func TestParseOKXPositionsOutput_Success(t *testing.T) {
 	if result.Positions[0].Coin != "BTC" || result.Positions[0].Size != 0.01 {
 		t.Errorf("position[0] = %+v", result.Positions[0])
 	}
-
 	if result.Positions[1].Size != -0.5 {
 		t.Errorf("short size must be signed negative, got %g", result.Positions[1].Size)
 	}
@@ -617,7 +615,6 @@ func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsFullClose(t *testing.T) {
 }
 
 func TestBuildHyperliquidExecuteArgs_ExtraCancelOIDsPartialClose(t *testing.T) {
-
 	args := buildHyperliquidExecuteArgs("ETH", "sell", 0.5, 0, 0, 0, "", 0, false, hlExecuteSnapshot{})
 
 	for _, notWant := range []string{"--cancel-stop-loss-oid=111", "--cancel-stop-loss-oid=222"} {
@@ -645,7 +642,6 @@ func TestBuildHyperliquidExecuteArgs_OptionalFlags(t *testing.T) {
 		}
 	})
 	t.Run("margin mode without leverage", func(t *testing.T) {
-
 		args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "cross", 0, false, hlExecuteSnapshot{})
 		if !argsContains(args, "--margin-mode=cross") {
 			t.Errorf("expected --margin-mode=cross, got %v", args)
@@ -688,7 +684,6 @@ func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWhenIncomplete(t *tes
 }
 
 func TestBuildHyperliquidExecuteArgs_AccountSnapshotOmittedWithoutMarginMode(t *testing.T) {
-
 	snap := hlExecuteSnapshot{AccountLeverage: 10, AccountMarginMode: "isolated"}
 	args := buildHyperliquidExecuteArgs("BTC", "buy", 0.001, 0, 0, 0, "", 0, false, snap)
 	for _, prefix := range []string{"--account-leverage=", "--account-margin-mode="} {
@@ -710,15 +705,12 @@ func TestHLExecuteSnapshotForCoin(t *testing.T) {
 	if got := hlExecuteSnapshotForCoin(positions, "ETH"); got.AccountLeverage != 5 || got.AccountMarginMode != "cross" {
 		t.Errorf("ETH snapshot = %+v, want lev=5 mode=cross", got)
 	}
-
 	if got := hlExecuteSnapshotForCoin(positions, "SOL"); got != (hlExecuteSnapshot{}) {
 		t.Errorf("SOL with bogus row should yield zero, got %+v", got)
 	}
-
 	if got := hlExecuteSnapshotForCoin(positions, "XRP"); got != (hlExecuteSnapshot{}) {
 		t.Errorf("unknown coin should yield zero, got %+v", got)
 	}
-
 	if got := hlExecuteSnapshotForCoin(positions, ""); got != (hlExecuteSnapshot{}) {
 		t.Errorf("empty coin should yield zero, got %+v", got)
 	}
@@ -741,7 +733,6 @@ func TestBuildHyperliquidSyncProtectionArgv_TPArmedTiersJSON(t *testing.T) {
 	if got := strings.TrimPrefix(armedArg, prefix); got != `[true,true]` {
 		t.Errorf("armed tiers JSON = %q, want [true,true]", got)
 	}
-
 	argv = buildHyperliquidSyncProtectionArgv("ETH", "long", 0.22, 3000, 100, 1.5, tiers, 0, nil, []bool{true}, false, nil, nil, nil)
 	for _, a := range argv {
 		if strings.HasPrefix(a, "--tp-armed-tiers-json=") {

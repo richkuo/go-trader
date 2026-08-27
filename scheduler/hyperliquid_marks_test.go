@@ -43,7 +43,6 @@ func TestFetchHyperliquidMids_Basic(t *testing.T) {
 	if math.Abs(marks["ETH"]-3200.10) > 1e-6 {
 		t.Errorf("ETH = %v, want 3200.10", marks["ETH"])
 	}
-
 	if _, ok := marks["SOL"]; ok {
 		t.Errorf("SOL should not be in returned marks (not requested)")
 	}
@@ -53,7 +52,6 @@ func TestFetchHyperliquidMids_Basic(t *testing.T) {
 }
 
 func TestFetchHyperliquidMids_EmptyCoins(t *testing.T) {
-
 	marks, err := fetchHyperliquidMids(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -64,7 +62,6 @@ func TestFetchHyperliquidMids_EmptyCoins(t *testing.T) {
 }
 
 func TestFetchHyperliquidMids_CoinMissing(t *testing.T) {
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"BTC": "67500.50"})
 	}))
@@ -119,7 +116,6 @@ func TestFetchHyperliquidMids_InvalidJSON(t *testing.T) {
 }
 
 func TestFetchHyperliquidMids_ZeroPriceOmitted(t *testing.T) {
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{
 			"BTC": "67500.50",

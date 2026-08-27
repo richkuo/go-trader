@@ -319,7 +319,6 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatRecoversRecentUserFill_LowerKCoin
 	if recoverCalls != 1 {
 		t.Fatalf("recoverCalls = %d, want 1", recoverCalls)
 	}
-
 	fill, ok := plan.CloseReport.Fills["kPEPE"]
 	if !ok {
 		t.Fatalf("missing recovered fill under raw 'kPEPE' key: %+v", plan.CloseReport.Fills)
@@ -366,7 +365,6 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatSharedLowKCoinRecoversAndSplits(t
 		{ID: "hl-zero", Platform: "hyperliquid", Type: "perps", Leverage: 5,
 			Args: []string{"sma", "kPEPE", "1h", "--mode=live"}},
 	}
-
 	positions := []HLPosition{{Coin: "kPEPE", Size: 1.5, EntryPrice: 0.00012}}
 	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		return &HyperliquidCloseResult{
@@ -503,7 +501,6 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatSharedLowKCoinAmbiguousFallsBack(
 	in.HLNoFillRecoverer = func(since time.Time) (*HLUserFillsResult, error) {
 		return &HLUserFillsResult{
 			ByOID: map[string]HLFillSummary{
-
 				"111": {Coin: "kPEPE", Fee: 0.1, Qty: 2.0, Px: 0.00010, ClosedPnLGross: -0.5, LastTimeMS: time.Now().UnixMilli()},
 				"222": {Coin: "kPEPE", Fee: 0.2, Qty: 2.0, Px: 0.00009, ClosedPnLGross: -0.6, LastTimeMS: time.Now().UnixMilli()},
 			},
@@ -542,7 +539,6 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatSharedLowKCoinAmbiguousFallsBack(
 			if tr.ExchangeOrderID == "111" || tr.ExchangeOrderID == "222" {
 				t.Fatalf("peer booked against ambiguous OID %s (should have fallen back)", tr.ExchangeOrderID)
 			}
-
 			if tr.Price == 0.00010 || tr.Price == 0.00009 {
 				t.Fatalf("peer booked at an ambiguous fill px %.6f instead of mark", tr.Price)
 			}
@@ -1241,7 +1237,6 @@ func TestPlanKillSwitchClose_OKXUnconfiguredBlocksReset(t *testing.T) {
 	if len(plan.OKXUnconfigured) != 1 || plan.OKXUnconfigured[0].Coin != "SOL" {
 		t.Errorf("expected OKXUnconfigured=[SOL], got %v", plan.OKXUnconfigured)
 	}
-
 	if len(*calls) != 1 || (*calls)[0] != "BTC" {
 		t.Errorf("closer calls = %v, want [BTC]", *calls)
 	}
@@ -1420,7 +1415,6 @@ func TestPlanKillSwitchClose_RobinhoodUnconfiguredBlocksReset(t *testing.T) {
 	if len(plan.RHUnconfigured) != 1 || plan.RHUnconfigured[0].Coin != "DOGE" {
 		t.Errorf("expected RHUnconfigured=[DOGE], got %v", plan.RHUnconfigured)
 	}
-
 	if len(*calls) != 1 || (*calls)[0] != "BTC" {
 		t.Errorf("closer calls = %v, want [BTC]", *calls)
 	}
@@ -1926,7 +1920,6 @@ func TestKillSwitchInstanceLabel_UsesConfigDirBasename(t *testing.T) {
 }
 
 func TestKillSwitchInstanceLabel_FallsBackWhenPathGivesNothingUseful(t *testing.T) {
-
 	got := killSwitchInstanceLabel("config.json")
 	if got == "." {
 		t.Errorf("killSwitchInstanceLabel(%q) = %q, want a real fallback, not \".\"", "config.json", got)

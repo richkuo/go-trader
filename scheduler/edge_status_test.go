@@ -15,18 +15,18 @@ func parsePythonFrozensetLiteral(t *testing.T, name string) map[string]struct{} 
 	if err != nil {
 		t.Fatalf("read registry.py: %v", err)
 	}
-	start := strings.Index(string(src), name+" = frozenset(")
+	start := strings.Index(string(src), name+" = frozenset({")
 	if start < 0 {
 		t.Fatalf("%s block not found in registry.py", name)
 	}
 	rest := string(src)[start:]
-	end := strings.Index(rest, ")")
+	end := strings.Index(rest, "})")
 	if end < 0 {
 		t.Fatalf("%s block not terminated", name)
 	}
-	block := rest[len(name+" = frozenset("):end]
+	block := rest[:end]
 	names := map[string]struct{}{}
-	for _, m := range regexp.MustCompile(`['"]([a-z0-9_]+)['"]`).FindAllStringSubmatch(block, -1) {
+	for _, m := range regexp.MustCompile(`"([a-z0-9_]+)"`).FindAllStringSubmatch(block, -1) {
 		names[m[1]] = struct{}{}
 	}
 	return names
@@ -104,9 +104,7 @@ func TestStrategyEdgeDeprecatedResolution(t *testing.T) {
 func TestDeprecatedEdgeStartupWarnings(t *testing.T) {
 	trueVal := true
 	strategies := []StrategyConfig{
-
 		{ID: "s-macd", Type: "spot", OpenStrategy: StrategyRef{Name: "macd"}, Args: []string{"macd", "BTC", "1h", "--mode=live"}},
-
 		{ID: "s-ack", Type: "perps", OpenStrategy: StrategyRef{Name: "rsi"}, Args: []string{"rsi", "ETH", "1h", "--mode=live"}, AllowDeprecated: &trueVal},
 		{ID: "s-clean", Type: "spot", OpenStrategy: StrategyRef{Name: "chart_pattern"}, Args: []string{"chart_pattern", "BTC", "1h", "--mode=live"}},
 	}
@@ -209,7 +207,6 @@ func TestDeprecatedEdgePaperSuppression(t *testing.T) {
 	})
 
 	t.Run("mixed-paper-live-config", func(t *testing.T) {
-
 		got := deprecatedEdgeStartupWarnings([]StrategyConfig{paperDep, liveDep})
 		if len(got) != 1 || !strings.Contains(got[0], liveDep.ID) {
 			t.Fatalf("mixed config should warn only live peer, got %v", got)
@@ -217,7 +214,6 @@ func TestDeprecatedEdgePaperSuppression(t *testing.T) {
 	})
 
 	t.Run("paper-no-mode-flag-is-paper", func(t *testing.T) {
-
 		sc := StrategyConfig{
 			ID: "s-spot-paper", Type: "spot",
 			OpenStrategy: StrategyRef{Name: "macd"},
@@ -249,7 +245,6 @@ func TestEdgeStatusSummaryTagNeverHiddenByAck(t *testing.T) {
 	if got := edgeStatusSummaryTag(clean); got != "" {
 		t.Errorf("clean strategy tag = %q, want empty", got)
 	}
-
 	line := formatStrategySummaryLine(dep, nil, nil)
 	if !strings.Contains(line, "edge=deprecated_m5(ack)") {
 		t.Errorf("summary line missing edge tag: %s", line)
@@ -352,7 +347,6 @@ func TestNewlyDeprecatedEdgeWarnings(t *testing.T) {
 		{"ack flipped off re-warns", []StrategyConfig{live("s1", "macd", &trueVal)}, []StrategyConfig{live("s1", "macd", &falseVal)}, 1},
 		{"ack flipped on silences", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "macd", &trueVal)}, 0},
 		{"deprecated-to-different-deprecated re-warns", []StrategyConfig{live("s1", "macd", nil)}, []StrategyConfig{live("s1", "rsi", nil)}, 1},
-
 		{"paper unchanged no respam", []StrategyConfig{paper("s1", "macd", nil)}, []StrategyConfig{paper("s1", "macd", nil)}, 0},
 		{"paper switch onto deprecated still silent", []StrategyConfig{paper("s1", "chart_pattern", nil)}, []StrategyConfig{paper("s1", "macd", nil)}, 0},
 		{"paper unset to explicit false re-warns", []StrategyConfig{paper("s1", "macd", nil)}, []StrategyConfig{paper("s1", "macd", &falseVal)}, 1},

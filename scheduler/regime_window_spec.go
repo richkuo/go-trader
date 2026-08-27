@@ -183,7 +183,6 @@ func regimeLabelsForClassifier(classifier string) []string {
 			"ranging_quiet",
 			"ranging_volatile",
 			"ranging_directional",
-
 			"ranging_directional_up",
 			"ranging_directional_down",
 		}
@@ -332,11 +331,9 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 			polErrs := sc.RegimeDirectionalPolicy.ResolveRawWithLabels(prefix+".regime_directional_policy", dirLabels)
 			errs = append(errs, polErrs...)
 		}
-
 		if sc.RegimeWindowDivergence.IsConfigured() {
 			divErrs := sc.RegimeWindowDivergence.ResolveRaw(prefix + ".regime_window_divergence")
 			errs = append(errs, divErrs...)
-
 			if len(divErrs) == 0 && rc != nil && rc.Enabled {
 				for _, pair := range []struct {
 					field string
@@ -357,7 +354,6 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 						errs = append(errs, fmt.Sprintf("%s: regime_window_divergence.%s=%q not found in regime.windows (valid: %s)", prefix, pair.field, pair.value, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
 					}
 				}
-
 				mode := sc.RegimeWindowDivergence.OnDivergence
 				if (mode == onDivergenceTrustShort || mode == onDivergenceTrustMedium) &&
 					EffectiveDirection(sc) != DirectionBoth &&
@@ -367,7 +363,6 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 				}
 			}
 		}
-
 		if sc.RegimeProfileAllocation.IsConfigured() {
 			windowRaw := regimeProfileAllocationWindow(sc)
 			windowKey := normalizeRegimeWindowKey(windowRaw)
@@ -387,7 +382,6 @@ func validateStrategyRegimeVocabulary(cfg *Config) []string {
 			}
 			errs = append(errs, sc.RegimeProfileAllocation.ResolveRaw(prefix+".regime_profile_allocation", labels)...)
 		}
-
 	}
 	return errs
 }

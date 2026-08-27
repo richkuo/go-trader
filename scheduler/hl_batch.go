@@ -204,7 +204,6 @@ func buildHyperliquidBatchSlot(sc StrategyConfig, posCtx PositionCtx, regime *Re
 	if len(refsArgs) == 2 {
 		slot.StrategyRefs = json.RawMessage(refsArgs[1])
 	}
-
 	if usesOpenCloseConfig(scForCheck) {
 		ctx := map[string]any{}
 		if side := strings.TrimSpace(posCtx.Side); side != "" {
@@ -304,14 +303,10 @@ func hyperliquidBatchDisplayPrice(markPrice float64) float64 {
 }
 
 type hlBatchMemberOutcome struct {
-	Result *HyperliquidResult
-
-	Err string
-
-	Mode scriptFailureMode
-
-	Stderr string
-
+	Result      *HyperliquidResult
+	Err         string
+	Mode        scriptFailureMode
+	Stderr      string
 	Fingerprint string
 }
 
@@ -442,7 +437,6 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 	for _, in := range inputs {
 		payloadJSON, hasPayload, uniform := hlBatchGroupRegimePayload(in.Members, rc)
 		if !uniform {
-
 			logf("[WARN] hl-batch %s: members disagree on the injected regime payload; falling back to per-strategy checks", in.Key)
 			continue
 		}
@@ -492,11 +486,9 @@ func runHyperliquidBatchGroups(inputs []hlBatchGroupInput, cfg *Config, notifier
 		}
 		drift := hlBatchApplySlots(results, in, fingerprints, out, stderr, logf)
 		if stderr != "" {
-
 			logf("[INFO] hl-batch %s: stderr: %s", in.Key, stderr)
 		}
 		if drift > 0 {
-
 			msg := fmt.Sprintf("batch response accounted for %d of %d strategies; the rest ran their own checks",
 				len(in.Members)-drift, len(in.Members))
 			notifyBatchSharedStateFailure(notifier, hlBatchAlertConfig(in.Key), msg, in.MemberIDsOrdered())
@@ -564,7 +556,6 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 			logf("[ERROR] hl-batch %s: response is missing the slot for %s; that strategy runs its own check this cycle", in.Key, sc.ID)
 			drift++
 		case res.Error != "":
-
 			results.put(sc.ID, hlBatchMemberOutcome{
 				Err:         res.Error,
 				Mode:        scriptFailureError,
@@ -572,7 +563,6 @@ func hlBatchApplySlots(results *hlBatchCycleResults, in hlBatchGroupInput, finge
 				Fingerprint: fingerprints[sc.ID],
 			})
 		default:
-
 			results.put(sc.ID, hlBatchMemberOutcome{Result: res, Fingerprint: fingerprints[sc.ID]})
 		}
 	}
@@ -604,7 +594,6 @@ func snapshotHyperliquidBatchGroups(groups []hlBatchGroup, state *AppState, mu *
 		for _, sc := range group.Members {
 			stratState := state.Strategies[sc.ID]
 			if stratState == nil {
-
 				continue
 			}
 			snap := memberSnapshot{sc: sc}

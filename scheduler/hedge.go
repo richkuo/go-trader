@@ -19,13 +19,9 @@ type hedgeActionKind int
 
 const (
 	hedgeActionNone hedgeActionKind = iota
-
 	hedgeActionOpen
-
 	hedgeActionAdd
-
 	hedgeActionReduce
-
 	hedgeActionCloseFull
 )
 
@@ -57,26 +53,18 @@ type hedgeSnapshot struct {
 	HedgeSymbol string
 	HedgeQty    float64
 	HedgeSide   string
-
-	HedgeBasis float64
-
-	HedgeHeld bool
+	HedgeBasis  float64
+	HedgeHeld   bool
 }
 
 type hedgeAction struct {
-	Kind hedgeActionKind
-
-	Qty float64
-
-	Side string
-
+	Kind      hedgeActionKind
+	Qty       float64
+	Side      string
 	HedgeSide string
-
-	NewBasis float64
-
-	Reason string
-
-	Blocked bool
+	NewBasis  float64
+	Reason    string
+	Blocked   bool
 }
 
 func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedgePx float64) hedgeAction {
@@ -101,7 +89,6 @@ func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedge
 
 	wantSide := HedgeSideForPrimary(snap.PrimarySide)
 	if wantSide == "" {
-
 		return hedgeAction{
 			Kind:    hedgeActionNone,
 			Blocked: true,
@@ -142,7 +129,6 @@ func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedge
 		if qty <= hedgeQtyEpsilon {
 			return hedgeAction{Kind: hedgeActionNone, Reason: "computed hedge size is zero"}
 		}
-
 		if qty*hedgePx < hedgeMinOrderNotionalUSD {
 			return hedgeAction{
 				Kind:   hedgeActionNone,
@@ -170,7 +156,6 @@ func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedge
 	delta := snap.PrimaryQty - snap.HedgeBasis
 
 	if delta > hedgeQtyEpsilon {
-
 		addQty := delta * primaryPx * ratio / hedgePx
 		if addQty*hedgePx < hedgeMinOrderNotionalUSD {
 			return hedgeAction{
@@ -189,7 +174,6 @@ func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedge
 	}
 
 	if delta < -hedgeQtyEpsilon {
-
 		fraction := (snap.HedgeBasis - snap.PrimaryQty) / snap.HedgeBasis
 		if fraction > 1 {
 			fraction = 1
@@ -201,7 +185,6 @@ func hedgeTargetDecision(sc StrategyConfig, snap hedgeSnapshot, primaryPx, hedge
 		if reduceQty <= hedgeQtyEpsilon {
 			return hedgeAction{Kind: hedgeActionNone, Reason: "computed hedge reduction is zero"}
 		}
-
 		if snap.HedgeQty-reduceQty <= hedgeQtyEpsilon || (snap.HedgeQty-reduceQty)*hedgePx < hedgeMinOrderNotionalUSD {
 			return hedgeAction{
 				Kind:     hedgeActionCloseFull,
@@ -296,7 +279,6 @@ func hedgeSnapshotFromState(sc StrategyConfig, s *StrategyState) hedgeSnapshot {
 	}
 	if snap.HedgeSymbol != "" {
 		if pos, ok := s.Positions[snap.HedgeSymbol]; ok && pos != nil {
-
 			if pos.HedgeFor == snap.PrimarySymbol {
 				snap.HedgeHeld = true
 				snap.HedgeQty = pos.Quantity
@@ -309,10 +291,8 @@ func hedgeSnapshotFromState(sc StrategyConfig, s *StrategyState) hedgeSnapshot {
 }
 
 type hedgeExecutor struct {
-	Open func(sc StrategyConfig, coin, side string, qty float64, setMargin bool) (*HyperliquidExecuteResult, error)
-
-	Reduce func(sc StrategyConfig, coin string, qty *float64) (*HyperliquidCloseResult, error)
-
+	Open          func(sc StrategyConfig, coin, side string, qty float64, setMargin bool) (*HyperliquidExecuteResult, error)
+	Reduce        func(sc StrategyConfig, coin string, qty *float64) (*HyperliquidCloseResult, error)
 	UnwindPrimary func(sc StrategyConfig, coin string, qty float64, cancelOIDs []int64) (*HyperliquidCloseResult, error)
 }
 
@@ -322,11 +302,9 @@ func defaultHedgeExecutor() hedgeExecutor {
 			marginMode := ""
 			leverage := 0.0
 			if setMargin {
-
 				marginMode = hedgeMarginMode(sc)
 				leverage = hedgeLeverage(sc)
 			}
-
 			res, stderr, err := RunHyperliquidExecute(sc.Script, coin, side, qty, 0, 0, 0, marginMode, leverage, false, hlExecuteSnapshot{})
 			if stderr != "" {
 				fmt.Printf("[hedge] %s execute stderr: %s\n", coin, stderr)
@@ -341,7 +319,6 @@ func defaultHedgeExecutor() hedgeExecutor {
 			return res, err
 		},
 		UnwindPrimary: func(sc StrategyConfig, coin string, qty float64, cancelOIDs []int64) (*HyperliquidCloseResult, error) {
-
 			sz := qty
 			res, stderr, err := RunHyperliquidClose(hyperliquidLiveCloseScript, coin, &sz, cancelOIDs)
 			if stderr != "" {
@@ -353,14 +330,11 @@ func defaultHedgeExecutor() hedgeExecutor {
 }
 
 type hedgeSyncInputs struct {
-	PrimaryPx float64
-	HedgePx   float64
-
-	FreshExposureQty float64
-
+	PrimaryPx         float64
+	HedgePx           float64
+	FreshExposureQty  float64
 	PrimaryCancelOIDs []int64
-
-	Live bool
+	Live              bool
 }
 
 func runHedgeSync(
@@ -386,7 +360,6 @@ func runHedgeSync(
 
 	action := hedgeTargetDecision(sc, snap, in.PrimaryPx, in.HedgePx)
 	if action.Blocked {
-
 		logger.Warn("hedge: %s", action.Reason)
 		if in.FreshExposureQty > hedgeQtyEpsilon {
 			unwindPrimaryAfterHedgeOpenFailure(sc, s, mu, exec, snap, action.Reason, in, notifier, logger)
@@ -422,7 +395,6 @@ func runHedgeSync(
 	logger.Info("hedge: %s", action.Reason)
 
 	if !in.Live {
-
 		mu.Lock()
 		applyHedgeFill(sc, s, snap.PrimarySymbol, action, action.Qty, in.HedgePx, 0, false, "", logger)
 		mu.Unlock()
@@ -431,7 +403,6 @@ func runHedgeSync(
 
 	switch action.Kind {
 	case hedgeActionOpen, hedgeActionAdd:
-
 		res, err := exec.Open(sc, snap.HedgeSymbol, action.Side, action.Qty, action.Kind == hedgeActionOpen)
 		if ok, why := hedgeExecuteConfirmed(res, err); !ok {
 			logger.Error("hedge %s failed on %s: %s", action.Kind, snap.HedgeSymbol, why)
@@ -447,13 +418,11 @@ func runHedgeSync(
 		clearLiveExecThrottle(sc, directionOpen, snap.HedgeSymbol)
 		fill := res.Execution.Fill
 		mu.Lock()
-
 		applyHedgeFill(sc, s, snap.PrimarySymbol, action, fill.TotalSz, fill.AvgPx, fill.Fee, true, formatHedgeOID(fill.OID), logger)
 		mu.Unlock()
 		return action.Kind
 
 	case hedgeActionReduce, hedgeActionCloseFull:
-
 		sz := action.Qty
 		res, err := exec.Reduce(sc, snap.HedgeSymbol, &sz)
 		if ok, why := hedgeCloseConfirmed(res, err); !ok {
@@ -465,7 +434,6 @@ func runHedgeSync(
 		}
 		clearLiveExecThrottle(sc, directionClose, snap.HedgeSymbol)
 		if res.Close != nil && res.Close.AlreadyFlat {
-
 			mu.Lock()
 			clearHedgeLegAfterExternalFlat(s, snap.HedgeSymbol, in.HedgePx, logger)
 			mu.Unlock()
@@ -473,7 +441,6 @@ func runHedgeSync(
 		}
 		fill := res.Close.Fill
 		mu.Lock()
-
 		applyHedgeFill(sc, s, snap.PrimarySymbol, action, fill.TotalSz, fill.AvgPx, fill.Fee, true, formatHedgeOID(fill.OID), logger)
 		mu.Unlock()
 		return action.Kind
@@ -589,7 +556,6 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 	if coin == "" {
 		return
 	}
-
 	if action.Qty > 0 && filledQty > action.Qty {
 		filledQty = action.Qty
 	}
@@ -602,14 +568,12 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 			fee = CalculatePlatformSpotFee(s.Platform, filledQty*fillPx)
 		}
 		pos, exists := s.Positions[coin]
-
 		basis := action.NewBasis
 		if action.Kind == hedgeActionAdd && action.Qty > 0 && exists && pos != nil && pos.HedgePrimaryQtyBasis > 0 {
 			deltaBasis := action.NewBasis - pos.HedgePrimaryQtyBasis
 			basis = pos.HedgePrimaryQtyBasis + deltaBasis*(filledQty/action.Qty)
 		}
 		if !exists || pos == nil {
-
 			if action.Qty > 0 && filledQty < action.Qty {
 				basis = action.NewBasis * (filledQty / action.Qty)
 			}
@@ -628,7 +592,6 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 			}
 			s.Positions[coin] = pos
 		} else {
-
 			totalQty := pos.Quantity + filledQty
 			if totalQty > 0 {
 				pos.AvgCost = (pos.AvgCost*pos.Quantity + fillPx*filledQty) / totalQty
@@ -637,7 +600,6 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 			pos.HedgePrimaryQtyBasis = basis
 			pos.HedgeFor = primarySymbol
 		}
-
 		s.Cash -= fee
 		positionID := ensurePositionTradeID(s.ID, coin, pos)
 		trade := Trade{
@@ -653,9 +615,8 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 			Details:         fmt.Sprintf("%s %s %s %.8f @ $%.4f (fee $%.4f)", detailsPrefix, action.Kind, coin, filledQty, fillPx, fee),
 			ExchangeOrderID: oid,
 			Regime:          s.Regime,
-
-			ExchangeFee: fee,
-			FeeSource:   executionFeeSource(fillFee, useFillFee),
+			ExchangeFee:     fee,
+			FeeSource:       executionFeeSource(fillFee, useFillFee),
 		}
 		RecordTrade(s, trade)
 		if logger != nil {
@@ -667,10 +628,8 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 		if pre == nil {
 			return
 		}
-
 		reduceBasis := hedgeReducedBasis(pre.HedgePrimaryQtyBasis, action.NewBasis, filledQty, action.Qty)
 		if bookPerpsPartialCloseWithFillFee(s, coin, filledQty, fillPx, fillFee, useFillFee, oid, hedgeReduceCloseReason, detailsPrefix+" reduce", "hedge", logger) {
-
 			if p, ok := s.Positions[coin]; ok && p != nil {
 				p.HedgePrimaryQtyBasis = reduceBasis
 			}
@@ -681,12 +640,10 @@ func applyHedgeFill(sc StrategyConfig, s *StrategyState, primarySymbol string, a
 		if pos == nil {
 			return
 		}
-
 		if filledQty+hedgeQtyEpsilon < pos.Quantity {
 			if logger != nil {
 				logger.Warn("hedge: %s close filled only %.8f of %.8f — booking a partial close; the remainder is re-closed next cycle", coin, filledQty, pos.Quantity)
 			}
-
 			closeBasis := hedgeReducedBasis(pos.HedgePrimaryQtyBasis, action.NewBasis, filledQty, action.Qty)
 			if bookPerpsPartialCloseWithFillFee(s, coin, filledQty, fillPx, fillFee, useFillFee, oid, hedgeReduceCloseReason, detailsPrefix+" close (partial fill)", "hedge", logger) {
 				if p, ok := s.Positions[coin]; ok && p != nil {
@@ -744,7 +701,6 @@ func unwindPrimaryAfterHedgeOpenFailure(
 	if unwindQty > snap.PrimaryQty {
 		unwindQty = snap.PrimaryQty
 	}
-
 	fullUnwind := snap.PrimaryQty-unwindQty <= hedgeQtyEpsilon
 
 	scope := fmt.Sprintf("the %.8f increment opened this cycle", unwindQty)
@@ -803,7 +759,6 @@ func unwindPrimaryAfterHedgeOpenFailure(
 		if res.Close.Fill.AvgPx > 0 {
 			px = res.Close.Fill.AvgPx
 		}
-
 		if res.Close.Fill.TotalSz > 0 && res.Close.Fill.TotalSz < unwindQty {
 			unwindQty = res.Close.Fill.TotalSz
 			fullUnwind = snap.PrimaryQty-unwindQty <= hedgeQtyEpsilon
@@ -837,7 +792,6 @@ func reconcileHyperliquidHedgeLeg(
 
 	before, hadLeg := ss.Positions[coin]
 	if hadLeg && before != nil && !before.isHedgeLeg() {
-
 		if pendingHedgeAlerts != nil {
 			*pendingHedgeAlerts = append(*pendingHedgeAlerts, fmt.Sprintf(
 				"⚠️ **Hedge coin conflict** — `%s`\nThe virtual position on %s is not stamped as a hedge leg (hedge_for is empty), so hedge sync will not manage it. Resolve it manually before relying on the hedge.",
@@ -857,7 +811,6 @@ func reconcileHyperliquidHedgeLeg(
 	after, stillHeld := ss.Positions[coin]
 	switch {
 	case hadLeg && !stillHeld:
-
 		if pendingHedgeAlerts != nil {
 			*pendingHedgeAlerts = append(*pendingHedgeAlerts, fmt.Sprintf(
 				"⚠️ **Hedge leg closed externally** — `%s` / %s\nThe %s hedge leg (%.8f, hedging %s) is gone from the exchange and has been booked as an external close. Because the primary is still open, hedge sync will RE-OPEN the hedge on the next cycle. Disable the hedge block if that is not what you want.",
@@ -867,7 +820,6 @@ func reconcileHyperliquidHedgeLeg(
 		if after.HedgePrimaryQtyBasis == 0 && hadBasis > 0 {
 			after.HedgePrimaryQtyBasis = hadBasis
 		}
-
 		if after.Quantity+1e-9 < hadQty {
 			after.HedgePrimaryQtyBasis = hedgeBasisAfterPartialReduce(after.HedgePrimaryQtyBasis, hadQty, after.Quantity)
 		}
@@ -881,7 +833,6 @@ func reconcileHyperliquidHedgeLeg(
 				sc.ID, coin, hadQty, after.Quantity, detail))
 		}
 	case !hadLeg:
-
 		for i := range positions {
 			if positions[i].Coin == coin && positions[i].Size != 0 {
 				if pendingHedgeAlerts != nil {

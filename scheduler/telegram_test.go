@@ -51,7 +51,6 @@ func TestTelegramNotifier_SendMessage(t *testing.T) {
 }
 
 func TestTelegramNotifier_ImplementsNotifier(t *testing.T) {
-
 	var _ Notifier = (*TelegramNotifier)(nil)
 }
 
@@ -70,7 +69,6 @@ func TestTelegramNotifier_Close(t *testing.T) {
 }
 
 func TestTelegramNotifier_SendDM_IsSendMessage(t *testing.T) {
-
 	var sentChatID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
@@ -170,11 +168,9 @@ func TestAskDMRejectsStaleMessages(t *testing.T) {
 	if staleDate >= sentAt-2 {
 		t.Errorf("expected stale message (date=%d) to fail guard (sentAt-2=%d)", staleDate, sentAt-2)
 	}
-
 	if freshDate < sentAt-2 {
 		t.Errorf("expected fresh message (date=%d) to pass guard (sentAt-2=%d)", freshDate, sentAt-2)
 	}
-
 	if graceDate < sentAt-2 {
 		t.Errorf("expected grace-window message (date=%d) to pass guard (sentAt-2=%d)", graceDate, sentAt-2)
 	}
@@ -186,7 +182,6 @@ func TestApiCallDoesNotLeakToken(t *testing.T) {
 		client:   &http.Client{Timeout: 50 * time.Millisecond},
 		baseURL:  telegramAPIBase,
 	}
-
 	_, err := tn.apiCall("getMe", nil)
 	if err == nil {
 		t.Fatal("expected error from unreachable server")
@@ -194,13 +189,11 @@ func TestApiCallDoesNotLeakToken(t *testing.T) {
 	if strings.Contains(err.Error(), "secret-test-token-12345") {
 		t.Errorf("bot token leaked in error message: %v", err)
 	}
-
 	if !strings.Contains(err.Error(), "getMe") {
 		t.Errorf("error should mention the API method, got: %v", err)
 	}
 }
 
 func TestDiscordNotifier_ImplementsNotifier(t *testing.T) {
-
 	var _ Notifier = (*DiscordNotifier)(nil)
 }

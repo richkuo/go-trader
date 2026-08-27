@@ -131,7 +131,6 @@ func newTuningApplyServer(t *testing.T, configPath string) (*StatusServer, *tuni
 	ss := NewStatusServer(nil, nil, "", []StrategyConfig{{ID: "spot-a"}, {ID: "spot-b"}}, nil)
 	ss.configPath = configPath
 	ss.tuning = mgr
-
 	ss.reloadConfig = func() error { return nil }
 	return ss, mgr
 }
@@ -174,7 +173,6 @@ func defaultApplyArtifacts(openA map[string]any) map[string]any {
 			}),
 		},
 	}
-
 	ranked := stratB["ranked"].([]any)
 	row := ranked[0].(map[string]any)
 	patch := row["patch"].(map[string]any)
@@ -462,7 +460,6 @@ func TestTuningApplyIdempotentAndCrashRecovery(t *testing.T) {
 		t.Fatalf("finalize pending status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	after, _ := os.ReadFile(configPath2)
-
 	rootAfter, _ := readConfigRootMap(configPath2)
 	live, present, err := extractLiveOpenStrategy(rootAfter, "spot-a")
 	if err != nil || !present || !canonicalJSONEqual(live, patch) {
@@ -493,7 +490,6 @@ func TestTuningApplyJournalSurvivesPrune(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("apply status=%d body=%s", rr.Code, rr.Body.String())
 	}
-
 	newer := "20260720T130000000000000Z-appynew"
 	seedCompletedTuningRun(t, mgr, newer, defaultApplyArtifacts(nil))
 	mgr.pruneRetainedRuns()
@@ -583,7 +579,6 @@ func TestTuningApplySerializesWithConfigWriteMu(t *testing.T) {
 		t.Fatal(err)
 	}
 	rr := <-done
-
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), tuningReasonBaselineDrift) {
 		t.Fatalf("loser should see drift, got %d %s", rr.Code, rr.Body.String())
 	}
@@ -626,7 +621,6 @@ func TestTuningEligibilityOverlayLoadsJournalOnce(t *testing.T) {
 	ss.statusToken = "secret"
 	runID := "20260720T120000000000000Z-appyonce"
 	seedCompletedTuningRun(t, mgr, runID, defaultApplyArtifacts(nil))
-
 	if err := mgr.upsertPromotion(tuningPromotionRecord{
 		RunID: runID, StrategyID: "spot-a", SuggestionKey: "cand_1",
 		State: tuningPromoApplied, PatchHash: "abc", CreatedAt: mgr.now(),
@@ -660,7 +654,6 @@ func TestTuningEligibilityOverlayLoadsJournalOnce(t *testing.T) {
 	if cand1["apply_eligibility"] != tuningEligAlreadyApplied {
 		t.Fatalf("cand_1 eligibility = %#v, want already_applied", cand1["apply_eligibility"])
 	}
-
 	loads.Store(0)
 	if err := os.Remove(mgr.promotionsPath()); err != nil {
 		t.Fatal(err)
@@ -853,7 +846,6 @@ func TestTuningEligibilityOverlayCachesLiveBaselinePerStrategy(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", w.Code, w.Body.String())
 	}
-
 	if got := extracts.Load(); got != 2 {
 		t.Fatalf("live baseline extracts = %d, want 2 (one per strategy)", got)
 	}

@@ -15,7 +15,6 @@ func limitTestBoolPtr(b bool) *bool { return &b }
 func errInjected() error { return errors.New("injected subprocess error") }
 
 func TestBuildHyperliquidLimitOpenArgs(t *testing.T) {
-
 	got := buildHyperliquidLimitOpenArgs("BTC", "buy", 0.01, 58000, "Alo", "", 0, hlExecuteSnapshot{})
 	joined := strings.Join(got, " ")
 	for _, want := range []string{"--limit-open", "--symbol=BTC", "--side=buy", "--size=0.01", "--limit-price=58000", "--tif=Alo", "--mode=live"} {
@@ -66,7 +65,6 @@ func TestParseHyperliquidLimitOpenOutput(t *testing.T) {
 }
 
 func TestParseHyperliquidLimitStatusOutput(t *testing.T) {
-
 	out := []byte(`{"platform":"hyperliquid","timestamp":"t","orders":[{"oid":1,"resting":true,"filled_size":0.4,"avg_px":2000,"fee":0.2,"count":1}]}`)
 	res, _, err := parseHyperliquidLimitStatusOutput(out, "", nil)
 	if err != nil {
@@ -102,7 +100,6 @@ func TestParseHyperliquidCancelOrderOutput(t *testing.T) {
 	if err != nil || !res.Cancelled || res.OID != 7 {
 		t.Fatalf("got res=%+v err=%v", res, err)
 	}
-
 	out = []byte(`{"platform":"hyperliquid","timestamp":"t","oid":7,"cancelled":false,"cancel_error":"order not found"}`)
 	res, _, err = parseHyperliquidCancelOrderOutput(out, "", nil)
 	if err != nil {
@@ -114,11 +111,9 @@ func TestParseHyperliquidCancelOrderOutput(t *testing.T) {
 }
 
 func TestLimitStatusSinceMs(t *testing.T) {
-
 	if got := limitStatusSinceMs(time.Time{}); got != 0 {
 		t.Errorf("zero time should map to 0, got %d", got)
 	}
-
 	created := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	want := created.Add(-60 * time.Second).UnixMilli()
 	if got := limitStatusSinceMs(created); got != want {
@@ -131,7 +126,6 @@ func TestReconcilePendingLimitOrdersAnchorsLookbackToPlacement(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
-
 	placed := time.Now().UTC().Add(-30 * 24 * time.Hour)
 	db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
@@ -156,7 +150,6 @@ func TestReconcilePendingLimitOrdersAnchorsLookbackToPlacement(t *testing.T) {
 	if gotSinceMs != want {
 		t.Errorf("status poll sinceMs = %d, want %d (anchored to 30-day-old placement, not a 7-day window)", gotSinceMs, want)
 	}
-
 	sevenDaysAgo := time.Now().UTC().Add(-7 * 24 * time.Hour).UnixMilli()
 	if gotSinceMs >= sevenDaysAgo {
 		t.Errorf("sinceMs %d should be older than 7 days ago %d", gotSinceMs, sevenDaysAgo)
@@ -243,7 +236,6 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 	if _, err := applyLimitFillProgress(state, sc, o, 0.4, 2000, 0.2, 50, ATRMethodSimple, now); err != nil {
 		t.Fatalf("first fill: %v", err)
 	}
-
 	o.FilledSize, o.AvgFillPrice, o.FillFee = 0.4, 2000, 0.2
 
 	n, err := applyLimitFillProgress(state, sc, o, 1.0, 2010, 0.5, 50, ATRMethodSimple, now)
@@ -263,7 +255,6 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 	if pos.InitialQuantity != 1.0 {
 		t.Errorf("pos.InitialQuantity = %g, want 1.0", pos.InitialQuantity)
 	}
-
 	if got := state.Strategies[sc.ID].Cash; got != 10000-0.5 {
 		t.Errorf("cash = %g, want %g", got, 10000-0.5)
 	}
@@ -278,7 +269,6 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 	if hist[1].TradeType != scaleInTradeType {
 		t.Errorf("growth leg should be tagged %q (excluded from open-count), got %q", scaleInTradeType, hist[1].TradeType)
 	}
-
 	if hist[0].PositionID == "" || hist[0].PositionID != hist[1].PositionID {
 		t.Errorf("legs must share position_id: %q vs %q", hist[0].PositionID, hist[1].PositionID)
 	}
@@ -286,7 +276,6 @@ func TestApplyLimitFillProgressGrow(t *testing.T) {
 
 func TestApplyLimitFillProgressOwnerGuard(t *testing.T) {
 	sc, state := newLimitTestStrategy()
-
 	state.Strategies[sc.ID].Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 3, OwnerStrategyID: "someone-else"}
 	o := PendingLimitOrder{ID: 1, StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001, LimitPrice: 2000, OrderSize: 0.5, FilledSize: 0}
 	if _, err := applyLimitFillProgress(state, sc, o, 0.5, 2000, 0.7, 50, ATRMethodSimple, time.Now().UTC()); err == nil {
@@ -542,7 +531,6 @@ func TestManualCloseCancelsPartialLimitRemainderBeforeFlatten(t *testing.T) {
 
 func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T) {
 	cfg, sc, db := newPartialLimitPositionHarness(t)
-
 	peer := StrategyConfig{
 		ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid",
 		Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Leverage: 10,
@@ -593,7 +581,6 @@ func TestManualCloseReconcilesStaleSnapshotAgainstAdoptedLimitFill(t *testing.T)
 	if actions[0].Quantity != 0.7 {
 		t.Fatalf("queued close quantity = %g, want 0.7 (true size)", actions[0].Quantity)
 	}
-
 	if got := actions[0].RealizedPnL; got < 3.09 || got > 3.11 {
 		t.Fatalf("queued RealizedPnL = %g, want ~3.10 (0.7*(2010-2005)-0.4)", got)
 	}
@@ -689,7 +676,6 @@ func TestManualCloseRejectsQtyExceedingReconciledSize(t *testing.T) {
 func staleReadRowGoneCloseHarness(t *testing.T) (StrategyConfig, manualCoreDeps, *StateDB) {
 	t.Helper()
 	cfg, sc, db := newPartialLimitPositionHarness(t)
-
 	orders, _ := db.LoadPendingLimitOrders()
 	if len(orders) != 1 {
 		t.Fatalf("want one resting row, got %d", len(orders))
@@ -706,7 +692,6 @@ func staleReadRowGoneCloseHarness(t *testing.T) (StrategyConfig, manualCoreDeps,
 	if err := db.SaveState(st); err != nil {
 		t.Fatalf("save grown position: %v", err)
 	}
-
 	cfg.Strategies = append(cfg.Strategies, StrategyConfig{
 		ID: "hl-manual-eth-peer", Type: "manual", Platform: "hyperliquid",
 		Symbol: "ETH", Script: "shared_scripts/check_hyperliquid.py", Leverage: 10,
@@ -983,7 +968,6 @@ func TestReconcilePendingLimitOrdersFullFill(t *testing.T) {
 	if pos == nil || pos.Quantity != 0.5 || pos.AvgCost != 2000 {
 		t.Fatalf("position = %+v", pos)
 	}
-
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Errorf("expected row deleted, got %d (id=%d)", len(orders), id)
 	}
@@ -997,7 +981,6 @@ func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *te
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-
 	if err := db.SaveState(state); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
@@ -1026,7 +1009,6 @@ func TestReconcilePendingLimitOrdersFullFillFlushesPositionBeforeRowDelete(t *te
 	if orders, _ := db.LoadPendingLimitOrders(); len(orders) != 0 {
 		t.Fatalf("terminal row not deleted: %+v", orders)
 	}
-
 	fresh, err := LoadStateWithDB(cfg, db)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
@@ -1144,7 +1126,6 @@ func TestReconcilePendingLimitOrdersExpiry(t *testing.T) {
 	cfg := &Config{Strategies: []StrategyConfig{sc}}
 	db := newLimitTestStateDB(t)
 	var mu sync.RWMutex
-
 	db.InsertPendingLimitOrder(PendingLimitOrder{
 		StrategyID: sc.ID, Symbol: "ETH", Side: "long", OrderOID: 9001,
 		LimitPrice: 2000, OrderSize: 0.5, TIF: "Alo", EntryATR: 50,

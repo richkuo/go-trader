@@ -191,7 +191,6 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 	var minDiff int64 = 1<<63 - 1
 
 	for _, inst := range result.Result {
-
 		if inst.Strike != strike {
 			continue
 		}
@@ -226,7 +225,6 @@ func (d *DeribitPricer) findNearestExpiry(underlying, optionType string, strike 
 }
 
 func (d *DeribitPricer) formatInstrument(underlying, optionType string, strike float64, expiry string) string {
-
 	t, err := time.Parse("2006-01-02", expiry)
 	if err != nil {
 		return ""
@@ -266,13 +264,12 @@ type markRequest struct {
 }
 
 type markResult struct {
-	ID              string
-	DTE             float64
-	CurrentValueUSD float64
-	Greeks          OptGreeks
-	Expired         bool
-	Fetched         bool
-
+	ID               string
+	DTE              float64
+	CurrentValueUSD  float64
+	Greeks           OptGreeks
+	Expired          bool
+	Fetched          bool
 	Assigned         bool
 	AssignUnderlying string
 	AssignOptionType string
@@ -330,7 +327,6 @@ func fetchMarkPrices(requests []markRequest, pricer OptionPricer, logger *Strate
 				CurrentValueUSD: currentValue,
 				Expired:         true,
 			}
-
 			if req.Action == "sell" && itm {
 				res.Assigned = true
 				res.AssignUnderlying = req.Underlying
@@ -380,7 +376,6 @@ func applyMarkResults(s *StrategyState, results []markResult, logger *StrategyLo
 		pos.DTE = r.DTE
 		if r.Expired {
 			pos.CurrentValueUSD = r.CurrentValueUSD
-
 			var pnl, closePriceUSD float64
 			intrinsic := r.CurrentValueUSD
 			if pos.Action == "sell" {
@@ -416,13 +411,11 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 	symbol := strings.ToUpper(r.AssignUnderlying)
 	switch r.AssignOptionType {
 	case "put":
-
 		cost := r.AssignStrike * r.AssignQuantity
 		s.Cash -= cost
 		now := time.Now().UTC()
 		var positionID string
 		if existing, ok := s.Positions[symbol]; ok && existing.Side == "long" {
-
 			totalQty := existing.Quantity + r.AssignQuantity
 			existing.AvgCost = (existing.AvgCost*existing.Quantity + r.AssignStrike*r.AssignQuantity) / totalQty
 			existing.Quantity = totalQty
@@ -457,7 +450,6 @@ func applyAssignment(s *StrategyState, r markResult, logger *StrategyLogger) {
 			r.AssignUnderlying, r.AssignStrike, r.AssignSpotPrice, r.AssignQuantity, symbol, r.AssignStrike, cost)
 
 	case "call":
-
 		now := time.Now().UTC()
 		proceeds := r.AssignStrike * r.AssignQuantity
 		s.Cash += proceeds

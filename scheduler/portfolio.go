@@ -11,60 +11,47 @@ import (
 )
 
 type Position struct {
-	Symbol              string    `json:"symbol"`
-	TradePositionID     string    `json:"position_id,omitempty"`
-	Quantity            float64   `json:"quantity"`
-	InitialQuantity     float64   `json:"initial_quantity,omitempty"`
-	AvgCost             float64   `json:"avg_cost"`
-	EntryATR            float64   `json:"entry_atr,omitempty"`
-	Side                string    `json:"side"`
-	Multiplier          float64   `json:"multiplier,omitempty"`
-	Leverage            float64   `json:"leverage,omitempty"`
-	OwnerStrategyID     string    `json:"owner_strategy_id,omitempty"`
-	OpenedAt            time.Time `json:"opened_at,omitempty"`
-	StopLossOID         int64     `json:"stop_loss_oid,omitempty"`
-	StopLossTriggerPx   float64   `json:"stop_loss_trigger_px,omitempty"`
-	StopLossHighWaterPx float64   `json:"stop_loss_high_water_px,omitempty"`
-	TPOIDs              []int64   `json:"tp_oids,omitempty"`
-
-	TPArmedTiers    []bool            `json:"tp_armed_tiers,omitempty"`
-	StopLossATRMult *float64          `json:"stop_loss_atr_mult,omitempty"`
-	TPTiersJSON     string            `json:"tp_tiers_json,omitempty"`
-	Regime          string            `json:"regime,omitempty"`
-	RegimeWindows   map[string]string `json:"regime_windows,omitempty"`
-	OpenProfile     string            `json:"open_profile,omitempty"`
-
-	DirectionCertifiedAtOpen bool `json:"direction_certified_at_open,omitempty"`
-
-	DirectionCertifiedStatesAtOpen map[string]string `json:"direction_certified_states_at_open,omitempty"`
-
-	RegimePendingLabel string `json:"regime_pending_label,omitempty"`
-	RegimePendingCount int    `json:"regime_pending_count,omitempty"`
-	RegimeAppliedLabel string `json:"regime_applied_label,omitempty"`
-
-	SLAdjustedTiersProcessed int `json:"sl_adjusted_tiers_processed,omitempty"`
-
-	PostTPTrailingATRMult *float64 `json:"post_tp_trailing_atr_mult,omitempty"`
-
-	ScaleInCount     int     `json:"scale_in_count,omitempty"`
-	LastAddPrice     float64 `json:"last_add_price,omitempty"`
-	AddedNotionalUSD float64 `json:"added_notional_usd,omitempty"`
-
-	RiskAnchorPrice      float64 `json:"risk_anchor_price,omitempty"`
-	ScaleInResizePending bool    `json:"-"`
-
-	RatchetFallbackNormalizePending bool `json:"-"`
-
-	LLMAnalysisRequested bool   `json:"llm_analysis_requested,omitempty"`
-	LLMVerdict           string `json:"llm_verdict,omitempty"`
-
-	ATRMethodAtOpen string `json:"atr_method_at_open,omitempty"`
-
-	HurstAtOpen   float64 `json:"hurst_at_open,omitempty"`
-	HurstSizeMult float64 `json:"hurst_size_mult,omitempty"`
-
-	HedgeFor             string  `json:"hedge_for,omitempty"`
-	HedgePrimaryQtyBasis float64 `json:"hedge_primary_qty_basis,omitempty"`
+	Symbol                          string            `json:"symbol"`
+	TradePositionID                 string            `json:"position_id,omitempty"`
+	Quantity                        float64           `json:"quantity"`
+	InitialQuantity                 float64           `json:"initial_quantity,omitempty"`
+	AvgCost                         float64           `json:"avg_cost"`
+	EntryATR                        float64           `json:"entry_atr,omitempty"`
+	Side                            string            `json:"side"`
+	Multiplier                      float64           `json:"multiplier,omitempty"`
+	Leverage                        float64           `json:"leverage,omitempty"`
+	OwnerStrategyID                 string            `json:"owner_strategy_id,omitempty"`
+	OpenedAt                        time.Time         `json:"opened_at,omitempty"`
+	StopLossOID                     int64             `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx               float64           `json:"stop_loss_trigger_px,omitempty"`
+	StopLossHighWaterPx             float64           `json:"stop_loss_high_water_px,omitempty"`
+	TPOIDs                          []int64           `json:"tp_oids,omitempty"`
+	TPArmedTiers                    []bool            `json:"tp_armed_tiers,omitempty"`
+	StopLossATRMult                 *float64          `json:"stop_loss_atr_mult,omitempty"`
+	TPTiersJSON                     string            `json:"tp_tiers_json,omitempty"`
+	Regime                          string            `json:"regime,omitempty"`
+	RegimeWindows                   map[string]string `json:"regime_windows,omitempty"`
+	OpenProfile                     string            `json:"open_profile,omitempty"`
+	DirectionCertifiedAtOpen        bool              `json:"direction_certified_at_open,omitempty"`
+	DirectionCertifiedStatesAtOpen  map[string]string `json:"direction_certified_states_at_open,omitempty"`
+	RegimePendingLabel              string            `json:"regime_pending_label,omitempty"`
+	RegimePendingCount              int               `json:"regime_pending_count,omitempty"`
+	RegimeAppliedLabel              string            `json:"regime_applied_label,omitempty"`
+	SLAdjustedTiersProcessed        int               `json:"sl_adjusted_tiers_processed,omitempty"`
+	PostTPTrailingATRMult           *float64          `json:"post_tp_trailing_atr_mult,omitempty"`
+	ScaleInCount                    int               `json:"scale_in_count,omitempty"`
+	LastAddPrice                    float64           `json:"last_add_price,omitempty"`
+	AddedNotionalUSD                float64           `json:"added_notional_usd,omitempty"`
+	RiskAnchorPrice                 float64           `json:"risk_anchor_price,omitempty"`
+	ScaleInResizePending            bool              `json:"-"`
+	RatchetFallbackNormalizePending bool              `json:"-"`
+	LLMAnalysisRequested            bool              `json:"llm_analysis_requested,omitempty"`
+	LLMVerdict                      string            `json:"llm_verdict,omitempty"`
+	ATRMethodAtOpen                 string            `json:"atr_method_at_open,omitempty"`
+	HurstAtOpen                     float64           `json:"hurst_at_open,omitempty"`
+	HurstSizeMult                   float64           `json:"hurst_size_mult,omitempty"`
+	HedgeFor                        string            `json:"hedge_for,omitempty"`
+	HedgePrimaryQtyBasis            float64           `json:"hedge_primary_qty_basis,omitempty"`
 }
 
 func (p *Position) isHedgeLeg() bool {
@@ -130,9 +117,7 @@ func recordClosedPosition(s *StrategyState, pos *Position, closePrice, realizedP
 		CloseReason:     reason,
 		DurationSeconds: duration,
 	})
-
 	captureTradeDiagnostics(s, pos, closePrice, realizedPnL, reason, closedAt)
-
 	if pos.Quantity > 0 && !pos.isHedgeLeg() {
 		recordReplayDecision(s, ReplayDecisionFullClose, pos.Symbol, pos.Side, pos.Quantity, closePrice, reason, closedAt, 0, "")
 	}
@@ -161,7 +146,6 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	if !ok || pos == nil {
 		return false
 	}
-
 	if closePositionIsCorrupt(pos) {
 		now := time.Now().UTC()
 		if logger != nil {
@@ -187,14 +171,12 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 		}
 		trade.Regime = s.Regime
 		RecordTrade(s, trade)
-
 		recordPositionTradeResult(s, pos, 0)
 		recordClosedPosition(s, pos, closePx, 0, reason+"_corrupt", now)
 		delete(s.Positions, symbol)
 		clearHLPerpsPositionAlertThrottles(s, symbol)
 		return true
 	}
-
 	if useFillFee && exchangeOrderID != "" && strategyHasCloseTradeForOID(s, exchangeOrderID) {
 		if logger != nil {
 			logger.Warn("%s: close for OID %s already booked — clearing virtual position without a duplicate Trade (#954)", logPrefix, exchangeOrderID)
@@ -219,7 +201,6 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {
@@ -255,7 +236,6 @@ func bookPerpsCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-
 	recordPositionTradeResult(s, pos, pnl)
 	recordClosedPosition(s, pos, closePx, pnl, reason, now)
 	delete(s.Positions, symbol)
@@ -297,7 +277,6 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	if s.Platform == "okx" && s.Type == "perps" {
 		feePlatform = "okx-perps"
 	}
-
 	fee := CalculatePlatformSpotFee(feePlatform, qty*closePx)
 	feeSource := FeeSourceModeled
 	if useFillFee {
@@ -333,7 +312,6 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 	trade.StopLossATRMult = pos.StopLossATRMult
 	trade.TPTiersJSON = pos.TPTiersJSON
 	RecordTrade(s, trade)
-
 	recordPositionTradeResult(s, pos, pnl)
 
 	remaining := pos.Quantity - qty
@@ -343,7 +321,6 @@ func bookPerpsPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty,
 		clearHLPerpsPositionAlertThrottles(s, symbol)
 	} else {
 		pos.Quantity = remaining
-
 		if !pos.isHedgeLeg() {
 			recordReplayDecision(s, ReplayDecisionPartialClose, symbol, side, qty, closePx, reason, now, 0, "")
 		}
@@ -365,12 +342,10 @@ func stopLossCloseDetailsPrefix(reason string) string {
 	case "trailing_stop_loss_immediate":
 		return "Trailing SL close"
 	case "liquidation_clamp_sl_immediate":
-
 		return "Liquidation-clamp SL close"
 	case "stop_loss_atr_paper":
 		return "Paper SL close"
 	case "replay_live_mirror":
-
 		return "Live mirror replay close"
 	}
 	return "Stop loss close"
@@ -440,15 +415,12 @@ type Trade struct {
 	IsClose     bool    `json:"is_close,omitempty"`
 	RealizedPnL float64 `json:"realized_pnl,omitempty"`
 
-	PnLGross bool `json:"pnl_gross,omitempty"`
-
+	PnLGross  bool   `json:"pnl_gross,omitempty"`
 	FeeSource string `json:"fee_source,omitempty"`
 
-	Regime string `json:"regime,omitempty"`
-
+	Regime               string `json:"regime,omitempty"`
 	RegimeDivergenceNote string `json:"-"`
-
-	RegimeProfileNote string `json:"-"`
+	RegimeProfileNote    string `json:"-"`
 
 	EntryATR          float64 `json:"entry_atr,omitempty"`
 	StopLossOID       int64   `json:"stop_loss_oid,omitempty"`
@@ -463,9 +435,8 @@ type Trade struct {
 }
 
 type SignalExecutionResult struct {
-	TradesExecuted int
-	OpenTrade      *Trade
-
+	TradesExecuted        int
+	OpenTrade             *Trade
 	CashReconcileRequired bool
 	CashOverBudgetAlert   string
 }
@@ -555,7 +526,6 @@ func strategyHasCloseTradeForOID(s *StrategyState, exchangeOrderID string) bool 
 		if !t.IsClose {
 			continue
 		}
-
 		if t.ExchangeOrderID == exchangeOrderID || tradeHasModelOnlySliceOID(t, exchangeOrderID) {
 			return true
 		}
@@ -579,7 +549,6 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 			price = pos.AvgCost
 		}
 		if pos.Multiplier > 0 {
-
 			if pos.Side == "long" {
 				total += pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
 			} else {
@@ -588,11 +557,9 @@ func PortfolioValue(s *StrategyState, prices map[string]float64) float64 {
 		} else if pos.Side == "long" {
 			total += pos.Quantity * price
 		} else {
-
 			total += pos.Quantity * (2*pos.AvgCost - price)
 		}
 	}
-
 	for _, opt := range s.OptionPositions {
 		total += opt.CurrentValueUSD
 	}
@@ -622,7 +589,6 @@ func PerpsOrderSkipReason(signal int, posSide, direction string) string {
 			if posSide == "short" {
 				return "already short, skipping sell"
 			}
-
 			if posSide == "long" {
 				return "orphan long under direction=\"short\", skipping (state-config gap)"
 			}
@@ -646,9 +612,7 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing
 	isBuy := signal == 1
 	allowsLong := direction == DirectionLong || direction == DirectionBoth || direction == ""
 	allowsShort := direction == DirectionShort || direction == DirectionBoth
-
 	flipping := direction == DirectionBoth && posQty > 0 && closeFraction == 0 && ((isBuy && posSide == "short") || (!isBuy && posSide == "long"))
-
 	openingFresh := false
 	if isBuy && allowsLong && (posQty <= 0 || (posSide == "short" && direction == DirectionLong)) {
 		openingFresh = true
@@ -658,17 +622,14 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing
 	}
 
 	if openingFresh || flipping {
-
 		if openingFresh && sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
 			return 0, false, fmt.Sprintf("risk_per_trade_pct sizing: %s — refusing open (fail-closed)", sizing.riskUnresolvedLabel())
 		}
 		effectiveCash := cash
 		if flipping {
 			if sizing.SharedWalletPool {
-
 				effectiveCash += sizing.ReleasableMarginUSD
 			} else {
-
 				var closePnL float64
 				if isBuy {
 					closePnL = posQty * (avgCost - price)
@@ -680,7 +641,6 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing
 		}
 		budget := PerpsOpenNotionalSized(effectiveCash, price, sizing)
 		if budget < 1 || price <= 0 {
-
 			if flipping {
 				return posQty, true, ""
 			}
@@ -696,12 +656,10 @@ func perpsLiveOrderSize(signal int, price, cash, posQty, avgCost float64, sizing
 		}
 		return newSize, true, ""
 	}
-
 	if posQty <= 0 {
 		return 0, false, "no position to close"
 	}
 	if closeFraction > 0 && closeFraction < 1 {
-
 		return posQty * closeFraction, true, ""
 	}
 	return posQty, true, ""
@@ -812,7 +770,6 @@ func (t *spotCashReconcileReminderTracker) ShouldNotify(sig string, now time.Tim
 			t.lastSig = sig
 			return true
 		}
-
 		t.lastSig = sig
 		return false
 	case now.Sub(t.lastNotifiedAt) >= effectiveAlertThrottleInterval():
@@ -930,7 +887,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 	exchangeLeverage := sizing.ExchangeLeverage
 	tradesExecuted := 0
 	leverageLabel := perpsSizingLabel(sizing)
-
 	partialClose := closeFraction > 0 && closeFraction < 1
 	closeOnlyAction := closeFraction > 0
 
@@ -943,7 +899,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 
 	if signal == 1 {
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
-
 			if !allowsLong {
 				logger.Warn("Orphan long %s under direction=%q (qty=%.6f); skipping buy — close manually if intentional", symbol, direction, pos.Quantity)
 			} else {
@@ -951,7 +906,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			}
 			return 0, nil
 		}
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
 			closeQty := pos.Quantity
 			if partialClose {
@@ -960,12 +914,10 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				} else {
 					closeQty = pos.Quantity * closeFraction
 				}
-
 				if closeQty > pos.Quantity {
 					closeQty = pos.Quantity
 				}
 			}
-
 			if bidirectional {
 				flipCloseQty = closeQty
 			}
@@ -976,12 +928,10 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				execPrice = ApplySlippage(price)
 			}
 			pnl := closeQty * (pos.AvgCost - execPrice)
-
 			terminalClose := closeOnlyAction || !allowsLong
 			useFillFee := flipCloseQty > 0 || terminalClose
 			legFillFee := fillFee
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
-
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
 			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
@@ -1025,7 +975,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
 				pos.Quantity -= closeQty
-
 				if !pos.isHedgeLeg() {
 					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now, 0, "")
 				}
@@ -1038,18 +987,15 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			}
 			tradesExecuted++
 		}
-
 		if closeOnlyAction {
 			return tradesExecuted, nil
 		}
-
 		if !allowsLong {
 			if tradesExecuted == 0 {
 				logger.Info("No short position in %s to buy-cover, skipping (direction=%q)", symbol, direction)
 			}
 			return tradesExecuted, nil
 		}
-
 		if s.Cash < 1 && fillQty <= 0 {
 			logger.Info("Insufficient cash ($%.2f) to open long %s perp", s.Cash, symbol)
 			return tradesExecuted, nil
@@ -1059,7 +1005,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			execPrice = price
 			qty = fillQty - flipCloseQty
 			if qty <= 0 {
-
 				logger.Warn("Flip fill qty (%.6f) did not cover new long after closing short (%.6f); leaving flat", fillQty, flipCloseQty)
 				return tradesExecuted, nil
 			}
@@ -1068,7 +1013,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-
 			if sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
 				logger.Info("Risk-per-trade sizing: %s — refusing open long %s (fail-closed)", sizing.riskUnresolvedLabel(), symbol)
 				return tradesExecuted, nil
@@ -1080,7 +1024,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		useFillFee := flipCloseQty == 0
 		legFillFee := fillFee
 		if flipCloseQty > 0 && fillQty > 0 && fillFee > 0 {
-
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
@@ -1128,14 +1071,11 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		tradesExecuted++
 
 	} else if signal == -1 {
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" && allowsShort {
 			logger.Info("Already short %s (qty=%.6f), skipping sell", symbol, pos.Quantity)
 			return 0, nil
 		}
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
-
 			if !allowsLong {
 				logger.Warn("Orphan long %s under direction=%q (qty=%.6f); leaving in place — close manually if intentional", symbol, direction, pos.Quantity)
 				return tradesExecuted, nil
@@ -1147,7 +1087,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				} else {
 					closeQty = pos.Quantity * closeFraction
 				}
-
 				if closeQty > pos.Quantity {
 					closeQty = pos.Quantity
 				}
@@ -1162,12 +1101,10 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 				execPrice = ApplySlippage(price)
 			}
 			pnl := closeQty * (execPrice - pos.AvgCost)
-
 			terminalClose := closeOnlyAction || !allowsShort
 			useFillFee := flipCloseQty > 0 || terminalClose
 			legFillFee := fillFee
 			if flipCloseQty > 0 && !terminalClose && fillQty > 0 {
-
 				legFillFee = flipFeeShare(fillFee, closeQty, fillQty)
 			}
 			fee := executionFee(CalculatePlatformSpotFee(feePlatform, closeQty*execPrice), legFillFee, useFillFee)
@@ -1211,7 +1148,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			RecordTradeResult(&s.RiskState, pnl)
 			if partialClose {
 				pos.Quantity -= closeQty
-
 				if !pos.isHedgeLeg() {
 					recordReplayDecision(s, ReplayDecisionPartialClose, symbol, pos.Side, closeQty, execPrice, "", now, 0, "")
 				}
@@ -1224,18 +1160,15 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			}
 			tradesExecuted++
 		}
-
 		if closeOnlyAction {
 			return tradesExecuted, nil
 		}
-
 		if !allowsShort {
 			if tradesExecuted == 0 {
 				logger.Info("No long position in %s to sell, skipping", symbol)
 			}
 			return tradesExecuted, nil
 		}
-
 		if s.Cash < 1 && fillQty <= 0 {
 			logger.Info("Insufficient cash ($%.2f) to open short %s perp", s.Cash, symbol)
 			return tradesExecuted, nil
@@ -1253,7 +1186,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 			if execPrice <= 0 {
 				return tradesExecuted, nil
 			}
-
 			if sizing.RiskPerTradePct > 0 && sizing.RiskStopDistance <= 0 {
 				logger.Info("Risk-per-trade sizing: %s — refusing open short %s (fail-closed)", sizing.riskUnresolvedLabel(), symbol)
 				return tradesExecuted, nil
@@ -1265,7 +1197,6 @@ func executePerpsSignalWithLeverage(s *StrategyState, signal int, symbol string,
 		useFillFee := flipCloseQty == 0
 		legFillFee := fillFee
 		if flipCloseQty > 0 && fillQty > 0 && fillFee > 0 {
-
 			useFillFee = true
 			legFillFee = flipFeeShare(fillFee, qty, fillQty)
 		}
@@ -1379,12 +1310,10 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 	partialClose := closeFraction > 0 && closeFraction < 1
 
 	if signal == 1 {
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
 			logger.Info("Already long %s (qty=%.6f), skipping buy", symbol, pos.Quantity)
 			return spotSignalExecOutcome{}, nil
 		}
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
 			closeQty := pos.Quantity
 			if partialClose {
@@ -1452,15 +1381,12 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 			}
 			tradesExecuted++
 		}
-
 		if closeFraction > 0 {
 			out.TradesExecuted = tradesExecuted
 			return out, nil
 		}
-
 		budget := s.Cash
 		liveBuy := fillQty > 0
-
 		if !liveBuy {
 			budget *= normalizeOpenSizeMult(openSizeMult)
 		}
@@ -1535,7 +1461,6 @@ func executeSpotSignalWithFillFee(s *StrategyState, signal int, symbol string, p
 		tradesExecuted++
 
 	} else if signal == -1 {
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
 			closeQty := pos.Quantity
 			if partialClose {
@@ -1644,7 +1569,6 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			logger.Info("Already long %s (%d contracts), skipping buy", symbol, int(pos.Quantity))
 			return 0, nil
 		}
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "short" {
 			contracts := int(pos.Quantity)
 			if partialClose {
@@ -1658,7 +1582,6 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 					return tradesExecuted, nil
 				}
 				if contracts >= int(pos.Quantity) {
-
 					partialClose = false
 					contracts = int(pos.Quantity)
 				}
@@ -1719,11 +1642,9 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			}
 			tradesExecuted++
 		}
-
 		if closeFraction > 0 {
 			return tradesExecuted, nil
 		}
-
 		budget := s.Cash
 		if budget < 1 || price <= 0 || multiplier <= 0 {
 			logger.Info("Insufficient cash ($%.2f) to buy %s futures", s.Cash, symbol)
@@ -1743,7 +1664,6 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			if marginPerContract <= 0 {
 				marginPerContract = execPrice * multiplier
 			}
-
 			contracts = int(budget * normalizeOpenSizeMult(openSizeMult) / marginPerContract)
 			if maxContracts > 0 && contracts > maxContracts {
 				contracts = maxContracts
@@ -1794,7 +1714,6 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 		tradesExecuted++
 
 	} else if signal == -1 {
-
 		if pos, exists := s.Positions[symbol]; exists && pos.Side == "long" {
 			contracts := int(pos.Quantity)
 			if partialClose {
@@ -1868,11 +1787,9 @@ func executeFuturesSignalWithFillFee(s *StrategyState, signal int, symbol string
 			}
 			tradesExecuted++
 		}
-
 		if closeFraction > 0 {
 			return tradesExecuted, nil
 		}
-
 		if _, exists := s.Positions[symbol]; !exists {
 			budget := s.Cash
 			if budget < 1 || price <= 0 || multiplier <= 0 {

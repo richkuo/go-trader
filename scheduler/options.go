@@ -306,7 +306,6 @@ func EncodePositionsJSON(positions map[string]*OptionPosition) string {
 }
 
 func EncodeAllPositionsJSON(optPos map[string]*OptionPosition, spotPos map[string]*Position) string {
-
 	type optEntry struct {
 		OptionType string  `json:"option_type"`
 		Strike     float64 `json:"strike"`
@@ -373,7 +372,6 @@ func CheckThetaHarvest(s *StrategyState, cfg *ThetaHarvestConfig, logger *Strate
 	var toClose []closeAction
 
 	for id, pos := range s.OptionPositions {
-
 		if pos.Action != "sell" {
 			continue
 		}

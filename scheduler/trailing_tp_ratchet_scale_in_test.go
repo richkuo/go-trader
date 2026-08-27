@@ -54,7 +54,6 @@ func TestScaleInResizeTrailingSLNow_AddPlusTightenIsOneReplace(t *testing.T) {
 			oldTrigger := trailingTriggerFor(c.side, c.highWater, 2.5)
 			wantTrigger := trailingTriggerFor(c.side, c.highWater, 2.0)
 			sc := scaleInRatchetStrategy()
-
 			st := scaleInRatchetState(c.side, 0.3, c.highWater, oldTrigger, 2.0)
 			var mu sync.RWMutex
 
@@ -100,7 +99,6 @@ func TestScaleInResizeTrailingSLNow_AddWithoutTightenIsUnchanged(t *testing.T) {
 	defer func() { runHyperliquidUpdateStopLossFunc = old }()
 
 	highWater := 1900.0
-
 	trigger := trailingTriggerFor("long", highWater, 2.0)
 	sc := scaleInRatchetStrategy()
 	st := scaleInRatchetState("long", 0.3, highWater, trigger, 2.0)
@@ -211,7 +209,6 @@ func TestExecuteHyperliquidScaleInDeferredOpen_LeavesHighWaterUntouched(t *testi
 				StopLossHighWaterPx: establishedHighWater, SLAdjustedTiersProcessed: 1,
 			},
 		}}
-
 	addPrice := ratchetTestAnchor + 1.5*ratchetTestEntryATR
 	if addPrice >= establishedHighWater {
 		t.Fatalf("fixture invalid: add price %v must be below the high-water %v", addPrice, establishedHighWater)
@@ -233,7 +230,6 @@ func TestExecuteHyperliquidScaleInDeferredOpen_LeavesHighWaterUntouched(t *testi
 	pos := st.Positions["ETH"]
 	pos.StopLossHighWaterPx = 0
 	live := scaleInRatchetStrategy()
-
 	runHyperliquidTrailingStopUpdate(live, "ETH", "long", pos.Quantity, pos, ratchetTestAnchor-20,
 		0, 0, 0, trailingReplacePolicy{}, nil, newTestLogger(t))
 	if want := trailingTriggerFor("long", ratchetTestAnchor, 2.5); !approxEq(gotTrigger, want) {

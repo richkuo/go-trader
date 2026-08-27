@@ -56,7 +56,6 @@ func (b *RegimeATRBlock) UnmarshalJSON(data []byte) error {
 
 func (b RegimeATRBlock) MarshalJSON() ([]byte, error) {
 	if b.UseDefaults && len(b.TrendRegime) > 0 {
-
 		return json.Marshal(map[string]bool{"use_defaults": true})
 	}
 	if len(b.TrendRegime) == 0 {
@@ -149,7 +148,6 @@ func (b RegimeATRBlock) Resolve(regime string) (RegimeATREntry, bool) {
 	if entry, ok := b.TrendRegime[r]; ok {
 		return entry, true
 	}
-
 	if regimeDirectionalSubs[r] {
 		if entry, ok := b.TrendRegime[regimeDirectionalBare]; ok {
 			return entry, true
@@ -167,19 +165,17 @@ var regimeATRDefaults = struct {
 		"trending_down": {ATR: 2.0},
 		"ranging":       {ATR: 1.5},
 	},
-
 	Trailing: map[string]RegimeATREntry{
-		"trending_up":          {ATR: 2.5},
-		"trending_down":        {ATR: 2.5},
-		"ranging":              {ATR: 2.0},
-		"trending_up_clean":    {ATR: 2.5},
-		"trending_down_clean":  {ATR: 2.5},
-		"trending_up_choppy":   {ATR: 2.25},
-		"trending_down_choppy": {ATR: 2.25},
-		"ranging_quiet":        {ATR: 1.0},
-		"ranging_volatile":     {ATR: 1.25},
-		"ranging_directional":  {ATR: 1.5},
-
+		"trending_up":              {ATR: 2.5},
+		"trending_down":            {ATR: 2.5},
+		"ranging":                  {ATR: 2.0},
+		"trending_up_clean":        {ATR: 2.5},
+		"trending_down_clean":      {ATR: 2.5},
+		"trending_up_choppy":       {ATR: 2.25},
+		"trending_down_choppy":     {ATR: 2.25},
+		"ranging_quiet":            {ATR: 1.0},
+		"ranging_volatile":         {ATR: 1.25},
+		"ranging_directional":      {ATR: 1.5},
 		"ranging_directional_up":   {ATR: 1.5},
 		"ranging_directional_down": {ATR: 1.5},
 	},
@@ -255,7 +251,6 @@ func mapRegimeToBaselineFamily(baseline map[string]RegimeATREntry, label string)
 }
 
 func expandRegimeATRDefaultsForLabels(baseline map[string]RegimeATREntry, labels []string) map[string]RegimeATREntry {
-
 	out := make(map[string]RegimeATREntry, len(labels))
 	for _, label := range labels {
 		if e, ok := mapRegimeToBaselineFamily(baseline, label); ok {
@@ -341,7 +336,6 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 	}
 
 	missingLabels := []string{}
-
 	bareDirectional := trendMap[regimeDirectionalBare] != nil
 	for _, l := range labels {
 		if _, ok := trendMap[l]; ok {
@@ -402,7 +396,6 @@ func parseRegimeATRBlock(raw map[string]interface{}, ctxLabel string, surface re
 			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr_multiple: %v", ctxLabel, regimeClassifierKey, label, err))
 			continue
 		}
-
 		if surface != regimeSurfaceSLAfter && atr <= 0 {
 			errs = append(errs, fmt.Sprintf("%s.%s.%s.atr_multiple: must be > 0, got %g", ctxLabel, regimeClassifierKey, label, atr))
 			continue
@@ -476,7 +469,6 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string, labels []string) ([]re
 			errs = append(errs, fmt.Sprintf("%s.tiers[%d]: must be an object, got %T", ctxLabel, idx, item))
 			continue
 		}
-
 		perRegimeHasFrac := false
 		if trendRaw, ok := m[regimeClassifierKey].(map[string]interface{}); ok {
 			for _, v := range trendRaw {
@@ -501,7 +493,6 @@ func parseRegimeTPTiers(raw interface{}, ctxLabel string, labels []string) ([]re
 		if perRegimeHasFrac {
 			surface = regimeSurfaceTPTierWithFrac
 		}
-
 		subset := make(map[string]interface{}, len(m))
 		for k, v := range m {
 			if k == "close_fraction" || k == "sl_after" {
@@ -562,7 +553,6 @@ func regimeLabelsFromTierRaw(raw interface{}) []string {
 }
 
 func resolveRegimeTPTiers(raw interface{}, regime string) []hlProtectionTier {
-
 	specs, errs := parseRegimeTPTiers(raw, "tiered_tp_atr_regime", regimeLabelsFromTierRaw(raw))
 	if len(errs) > 0 || len(specs) == 0 || regime == "" {
 		return nil
@@ -624,7 +614,6 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			}
 			if len(sub) == 0 && !sc.StopLossATRRegime.IsZero() {
 				usesRegime = true
-
 				if sc.StopLossATRMult != nil {
 					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with stop_loss_atr_mult", prefix))
 				}
@@ -640,7 +629,6 @@ func validateRegimeATRConfig(cfg *Config) []string {
 				if sc.TrailingStopATRMult != nil {
 					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_mult", prefix))
 				}
-
 				if sc.TrailingStopATRRegime.IsConfigured() {
 					errs = append(errs, fmt.Sprintf("%s: stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_regime", prefix))
 				}
@@ -671,7 +659,6 @@ func validateRegimeATRConfig(cfg *Config) []string {
 				if sc.StopLossATRMult != nil {
 					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is mutually exclusive with stop_loss_atr_mult", prefix))
 				}
-
 				manualRatchet := sc.Type == "manual" && strategyUsesTrailingTPRatchetClose(*sc)
 				if sc.Platform != "hyperliquid" || (sc.Type != "perps" && !manualRatchet) {
 					errs = append(errs, fmt.Sprintf("%s: trailing_stop_atr_regime is HL perps only (or HL manual trailing_tp_ratchet_regime)", prefix))
@@ -699,7 +686,6 @@ func validateRegimeATRConfig(cfg *Config) []string {
 			}
 			usesRegime = true
 			subPrefix := fmt.Sprintf("%s.close_strategy(%s)", prefix, ref.Name)
-
 			if closeParamsAreUnifiedRegime(ref.Params) {
 				errs = append(errs, validateUnifiedRegimeClose(ref.Params, atrLabels, subPrefix)...)
 				continue
@@ -717,11 +703,9 @@ func validateRegimeATRConfig(cfg *Config) []string {
 				errs = append(errs, fmt.Sprintf("%s: missing tiers (either set use_defaults:true or supply a tiers list)", subPrefix))
 				continue
 			}
-
 			for k := range ref.Params {
 				switch k {
 				case "use_defaults", "tp_tiers", "tiers", "atr_source", "sl_after":
-
 				default:
 					errs = append(errs, fmt.Sprintf("%s: unknown param %q (allowed: use_defaults, tp_tiers, atr_source, sl_after)", subPrefix, k))
 				}
@@ -749,7 +733,6 @@ func defaultRegimeTPTiersForRegime(regime string) []hlProtectionTier {
 	if regime == "" {
 		return nil
 	}
-
 	group, ok := regimeCloseDefaultGroup(regime)
 	if !ok {
 		return nil

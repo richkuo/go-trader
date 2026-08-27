@@ -37,7 +37,6 @@ func runProbeWithCwd(t *testing.T, cfg *Config) error {
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {
 		t.Fatalf("mkdir venv: %v", err)
 	}
-
 	shim := `#!/usr/bin/env bash
 exec /usr/bin/env python3 "$@"
 `
@@ -192,17 +191,14 @@ func TestProbeRunsExtraArgvForHL(t *testing.T) {
 }
 
 func TestFormatProbeFailureFallsBackThroughChannels(t *testing.T) {
-
 	err := formatProbeFailure("check.py", os.ErrInvalid, " stderr-msg\n", "stdout-msg")
 	if !strings.Contains(err.Error(), "stderr-msg") {
 		t.Errorf("should prefer stderr; got %q", err.Error())
 	}
-
 	err = formatProbeFailure("check.py", os.ErrInvalid, "  ", "stdout-msg")
 	if !strings.Contains(err.Error(), "stdout-msg") {
 		t.Errorf("should fall back to stdout when stderr empty; got %q", err.Error())
 	}
-
 	err = formatProbeFailure("check.py", os.ErrInvalid, "", "")
 	if !strings.Contains(err.Error(), os.ErrInvalid.Error()) {
 		t.Errorf("should fall back to runErr; got %q", err.Error())

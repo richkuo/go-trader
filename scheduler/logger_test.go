@@ -28,7 +28,6 @@ func TestNewLogManagerEmptyDir(t *testing.T) {
 		t.Fatalf("NewLogManager('') failed: %v", err)
 	}
 	defer lm.Close()
-
 }
 
 func TestGetStrategyLogger(t *testing.T) {

@@ -15,9 +15,8 @@ import (
 type WalletLedgerState struct {
 	FundingSinceMs   int64
 	TransfersSinceMs int64
-
-	BaselineOffset float64
-	BaselineSet    bool
+	BaselineOffset   float64
+	BaselineSet      bool
 }
 
 func (sdb *StateDB) GetWalletLedgerState(platform, account string) (WalletLedgerState, bool, error) {
@@ -104,20 +103,17 @@ func (sdb *StateDB) SumWalletTransfers(platform, account string) (float64, error
 }
 
 type hlLedgerEventDelta struct {
-	Type        string `json:"type"`
-	Coin        string `json:"coin,omitempty"`
-	USDC        string `json:"usdc,omitempty"`
-	Fee         string `json:"fee,omitempty"`
-	ToPerp      bool   `json:"toPerp,omitempty"`
-	User        string `json:"user,omitempty"`
-	Destination string `json:"destination,omitempty"`
-
-	Token  string `json:"token,omitempty"`
-	Amount string `json:"amount,omitempty"`
-
-	SourceDex      string `json:"sourceDex,omitempty"`
-	DestinationDex string `json:"destinationDex,omitempty"`
-
+	Type            string `json:"type"`
+	Coin            string `json:"coin,omitempty"`
+	USDC            string `json:"usdc,omitempty"`
+	Fee             string `json:"fee,omitempty"`
+	ToPerp          bool   `json:"toPerp,omitempty"`
+	User            string `json:"user,omitempty"`
+	Destination     string `json:"destination,omitempty"`
+	Token           string `json:"token,omitempty"`
+	Amount          string `json:"amount,omitempty"`
+	SourceDex       string `json:"sourceDex,omitempty"`
+	DestinationDex  string `json:"destinationDex,omitempty"`
 	NetWithdrawnUSD string `json:"netWithdrawnUsd,omitempty"`
 }
 
@@ -174,22 +170,18 @@ func signedPerpFlowUSD(d hlLedgerEventDelta, account string) (float64, bool) {
 	case "deposit":
 		return usdc, true
 	case "withdraw":
-
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "accountClassTransfer":
-
 		if d.ToPerp {
 			return usdc, true
 		}
 		return -usdc, true
 	case "internalTransfer", "subAccountTransfer":
-
 		if strings.EqualFold(d.Destination, account) {
 			return usdc, true
 		}
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "send":
-
 		if !strings.EqualFold(d.Token, "USDC") {
 			return 0, true
 		}
@@ -204,22 +196,18 @@ func signedPerpFlowUSD(d hlLedgerEventDelta, account string) (float64, bool) {
 	case "vaultDeposit", "vaultCreate":
 		return -(usdc + parseHLFloat(d.Fee)), true
 	case "vaultWithdraw":
-
 		return parseHLFloat(d.NetWithdrawnUSD), true
 	case "vaultDistribution":
 		return usdc, true
 	case "rewardsClaim":
-
 		if strings.EqualFold(d.Token, "USDC") {
 			return parseHLFloat(d.Amount), true
 		}
 		return 0, true
 	case "spotTransfer", "spotGenesis", "cStakingTransfer",
 		"gossipPriorityGasAuction", "deployGasAuction":
-
 		return 0, true
 	case "liquidation":
-
 		return 0, true
 	}
 	return 0, false
@@ -297,7 +285,6 @@ func ingestWalletLedgerEvents(sdb *StateDB, state *AppState, res walletLedgerFet
 				continue
 			}
 			if ok := ingestFundingEvent(sdb, state, key, ev, virtualQty); !ok {
-
 				failedAt = ev.Time
 				break
 			}
@@ -390,7 +377,6 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 		}
 	}
 	if sumQty <= 0 {
-
 		if err := sdb.InsertWalletTransfer(key.Platform, key.Account, ev.Time, "funding_orphan", amount, "funding_orphan:"+dedupID); err != nil {
 			fmt.Printf("[WARN] wallet-ledger %s: funding_orphan insert failed: %v\n", sharedWalletKeyLabel(key), err)
 			return false
@@ -410,7 +396,6 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 		if ss == nil {
 			continue
 		}
-
 		exists, err := sdb.HasTradeWithExchangeOrderID(id, dedupID)
 		if err != nil {
 			fmt.Printf("[WARN] wallet-ledger %s: funding dedup check failed for %s: %v\n", sharedWalletKeyLabel(key), id, err)
@@ -422,7 +407,6 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 					continue
 				}
 				exists = true
-
 				if tradeRecorder != nil && !ss.TradeHistory[i].persisted {
 					fmt.Printf("[WARN] wallet-ledger %s: funding row for %s still awaiting persist — holding watermark\n", sharedWalletKeyLabel(key), id)
 					return false
@@ -446,7 +430,6 @@ func ingestFundingEvent(sdb *StateDB, state *AppState, key SharedWalletKey, ev h
 			PnLGross:        true,
 		}
 		RecordTrade(ss, trade)
-
 		if tradeRecorder != nil && len(ss.TradeHistory) > 0 && !ss.TradeHistory[len(ss.TradeHistory)-1].persisted {
 			fmt.Printf("[WARN] wallet-ledger %s: funding row persist failed for %s — holding watermark for retry\n", sharedWalletKeyLabel(key), id)
 			return false

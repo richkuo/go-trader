@@ -366,7 +366,6 @@ func TestValidateTrailingTPRatchetClose_RejectsFirstRungLooserThanInitial(t *tes
 			Name: "trailing_tp_ratchet",
 			Params: map[string]interface{}{
 				"tp_tiers": []interface{}{
-
 					map[string]interface{}{
 						"atr_multiple": 1.0, "close_fraction": 0.0, "trailing_mult_after": 2.0,
 					},
@@ -501,7 +500,6 @@ func TestDefaultTrailingRatchetTiers_InternallyValid(t *testing.T) {
 	if errs := validateTrailingRatchetTierMonotonicity(def, "default"); len(errs) > 0 {
 		t.Fatalf("default ladder must be monotonic, got: %v", errs)
 	}
-
 	if errs := validateTrailingRatchetInitialTrail(def, 2.0, "default"); len(errs) > 0 {
 		t.Fatalf("default vs initial 2.0 must validate, got: %v", errs)
 	}
@@ -533,7 +531,6 @@ func TestValidateTrailingTPRatchetClose_OmittedTiersUsesDefault(t *testing.T) {
 }
 
 func TestValidateTrailingTPRatchetClose_DefaultRespectsInitialTrail(t *testing.T) {
-
 	trail := 1.0
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
@@ -546,7 +543,6 @@ func TestValidateTrailingTPRatchetClose_DefaultRespectsInitialTrail(t *testing.T
 }
 
 func TestValidateTrailingTPRatchetClose_RegimeOmittedTiersUsesDefault(t *testing.T) {
-
 	sc := StrategyConfig{
 		ID: "s1", Type: "perps", Platform: "hyperliquid",
 		TrailingStopATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
@@ -556,11 +552,9 @@ func TestValidateTrailingTPRatchetClose_RegimeOmittedTiersUsesDefault(t *testing
 		}},
 		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
 	}
-
 	if errs := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, true); len(errs) > 0 {
 		t.Fatalf("regime ratchet use_defaults should validate via per-group default, got: %v", errs)
 	}
-
 	if errs := validateTrailingTPRatchetClose(sc, canonicalTrendRegimeLabels, false); !errListContains(errs, "requires top-level regime.enabled=true") {
 		t.Fatalf("regime ratchet must still require regime.enabled even with defaults, got: %v", errs)
 	}
@@ -573,7 +567,6 @@ func TestTrailingRatchetTiersForRegime_OmittedReturnsDefault(t *testing.T) {
 		want                    []trailingRatchetTier
 	}{
 		{"scalar", "trailing_tp_ratchet", "", defaultTrailingRatchetTiers()},
-
 		{"regime-clean", "trailing_tp_ratchet_regime", "trending_up_clean", []trailingRatchetTier{
 			{ATRMultiple: 3.0, TrailingMultAfter: 1.5}, {ATRMultiple: 4.5, TrailingMultAfter: 1.0}, {ATRMultiple: 6.0, TrailingMultAfter: 0.8},
 		}},
@@ -583,14 +576,12 @@ func TestTrailingRatchetTiersForRegime_OmittedReturnsDefault(t *testing.T) {
 		{"regime-ranging", "trailing_tp_ratchet_regime", "ranging_quiet", []trailingRatchetTier{
 			{ATRMultiple: 0.75, CloseFraction: 0.4, TrailingMultAfter: 1.0}, {ATRMultiple: 1.5, CloseFraction: 0.8, TrailingMultAfter: 0.75}, {ATRMultiple: 2.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
 		}},
-
 		{"regime-ranging-volatile", "trailing_tp_ratchet_regime", "ranging_volatile", []trailingRatchetTier{
 			{ATRMultiple: 1.0, CloseFraction: 0.4, TrailingMultAfter: 1.0}, {ATRMultiple: 2.0, CloseFraction: 0.8, TrailingMultAfter: 0.75}, {ATRMultiple: 3.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
 		}},
 		{"regime-ranging-directional", "trailing_tp_ratchet_regime", "ranging_directional", []trailingRatchetTier{
 			{ATRMultiple: 1.0, CloseFraction: 0.25, TrailingMultAfter: 1.0}, {ATRMultiple: 2.0, CloseFraction: 0.50, TrailingMultAfter: 1.0}, {ATRMultiple: 3.0, CloseFraction: 0.75, TrailingMultAfter: 0.8}, {ATRMultiple: 4.5, CloseFraction: 0.75, TrailingMultAfter: 0.6},
 		}},
-
 		{"regime-ranging-adx", "trailing_tp_ratchet_regime", "ranging", []trailingRatchetTier{
 			{ATRMultiple: 0.75, CloseFraction: 0.4, TrailingMultAfter: 1.0}, {ATRMultiple: 1.5, CloseFraction: 0.8, TrailingMultAfter: 0.75}, {ATRMultiple: 2.0, CloseFraction: 1.0, TrailingMultAfter: 0.75},
 		}},
@@ -700,7 +691,6 @@ func TestDefaultTrailingRatchetTiersForRegime(t *testing.T) {
 	if len(clean) != 3 || clean[0].ATRMultiple != 3.0 || clean[0].TrailingMultAfter != 1.5 || clean[2].ATRMultiple != 6.0 {
 		t.Fatalf("clean group mismatch: %+v", clean)
 	}
-
 	quiet := defaultTrailingRatchetTiersForRegime("ranging_quiet")
 	if len(quiet) != 3 || quiet[0].ATRMultiple != 0.75 || quiet[0].CloseFraction != 0.4 || quiet[2].CloseFraction != 1.0 {
 		t.Fatalf("ranging_quiet mismatch: %+v", quiet)
@@ -709,14 +699,12 @@ func TestDefaultTrailingRatchetTiersForRegime(t *testing.T) {
 	if len(adx) != 3 || adx[0].ATRMultiple != 0.75 || adx[2].CloseFraction != 1.0 {
 		t.Fatalf("bare ADX ranging must map to the quiet ladder: %+v", adx)
 	}
-
 	volatile := defaultTrailingRatchetTiersForRegime("ranging_volatile")
 	if len(volatile) != 3 ||
 		volatile[0].ATRMultiple != 1.0 || volatile[2].ATRMultiple != 3.0 ||
 		volatile[0].CloseFraction != 0.4 || volatile[2].CloseFraction != 1.0 {
 		t.Fatalf("ranging_volatile mismatch: %+v", volatile)
 	}
-
 	dir := defaultTrailingRatchetTiersForRegime("ranging_directional")
 	if len(dir) != 4 {
 		t.Fatalf("ranging_directional want 4 tiers, got %+v", dir)
@@ -731,7 +719,6 @@ func TestDefaultTrailingRatchetTiersForRegime(t *testing.T) {
 	if defaultTrailingRatchetTiersForRegime("") != nil {
 		t.Error("empty regime must resolve to nil")
 	}
-
 	for _, label := range []string{"ranging_directional_up", "ranging_directional_down"} {
 		got := defaultTrailingRatchetTiersForRegime(label)
 		if len(got) != len(dir) {
@@ -753,7 +740,6 @@ func TestRatchetCloseDefaultGroup(t *testing.T) {
 		{"ranging_quiet", "ranging_quiet", true},
 		{"ranging_volatile", "ranging_volatile", true},
 		{"ranging_directional", "ranging_directional", true},
-
 		{"ranging_directional_up", "ranging_directional", true},
 		{"ranging_directional_down", "ranging_directional", true},
 		{"ranging", "ranging_quiet", true},

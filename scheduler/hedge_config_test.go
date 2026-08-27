@@ -202,7 +202,6 @@ func TestHedgeAccessorDefaults(t *testing.T) {
 	if got := hedgeMarginMode(sc); got != "isolated" {
 		t.Fatalf("hedgeMarginMode default = %q, want isolated", got)
 	}
-
 	sc.Hedge.Enabled = false
 	if got := hedgeCoin(sc); got != "" {
 		t.Fatalf("hedgeCoin on disabled block = %q, want empty", got)
@@ -223,7 +222,6 @@ func TestHedgeSideForPrimary(t *testing.T) {
 	if got := HedgeSideForPrimary("short"); got != "long" {
 		t.Fatalf("short → %q, want long", got)
 	}
-
 	if got := HedgeSideForPrimary(""); got != "" {
 		t.Fatalf("unknown side → %q, want empty (fail closed)", got)
 	}

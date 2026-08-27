@@ -82,7 +82,6 @@ func TestDecisionLogDBRoundTrip(t *testing.T) {
 	if len(pending) != 4 {
 		t.Fatalf("pending for s1 = %d, want 4", len(pending))
 	}
-
 	wantTypes := []string{ReplayDecisionOpen, ReplayDecisionScaleIn, ReplayDecisionPartialClose, ReplayDecisionFullClose}
 	for i, wt := range wantTypes {
 		if pending[i].DecisionType != wt {
@@ -165,7 +164,6 @@ func TestRecordReplayDecisionFailureAlerting(t *testing.T) {
 	if len(warns) != 0 {
 		t.Fatalf("warns after %d failures = %d, want 0", decisionLogAlertThreshold-1, len(warns))
 	}
-
 	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	if len(warns) != 1 {
@@ -174,7 +172,6 @@ func TestRecordReplayDecisionFailureAlerting(t *testing.T) {
 	if !strings.Contains(warns[0], "consecutive failures") {
 		t.Errorf("warn message missing streak note: %q", warns[0])
 	}
-
 	fail = false
 	recordReplayDecision(s, ReplayDecisionOpen, "ETH", "long", 1, 100, "", now, 0, "")
 	fail = true
@@ -227,7 +224,6 @@ func TestRecordPositionOpenWritesOpenAndScaleIn(t *testing.T) {
 	if !recordPositionOpen(s, sc, openTrade, pos) {
 		t.Fatal("recordPositionOpen returned false")
 	}
-
 	pos.Quantity = 0.75
 	addTrade := &Trade{Timestamp: now.Add(time.Minute), StrategyID: s.ID, Symbol: "ETH", Side: "buy", Quantity: 0.25, Price: 1895.0}
 	recordPositionOpen(s, sc, addTrade, pos)
@@ -329,7 +325,6 @@ func TestReplayLogPathHotReloadRestartRequired(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "replay_log_path changed") {
 		t.Fatalf("replay_log_path change not flagged restart-required: %v", err)
 	}
-
 	next.ReplayLogPath = cfg.ReplayLogPath
 	if err := validateHotReloadCompatible(cfg, next); err != nil && strings.Contains(err.Error(), "replay_log_path") {
 		t.Fatalf("unchanged replay_log_path rejected: %v", err)
@@ -349,12 +344,10 @@ func TestReplaySharingHotReloadFlatOnly(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "replay_sharing changed with open positions") {
 		t.Fatalf("toggle while open not refused: %v", err)
 	}
-
 	ss.Positions = map[string]*Position{}
 	if err := validateHotReloadStateCompatible(mk("none"), mk("live_mirror"), state); err != nil {
 		t.Fatalf("toggle while flat refused: %v", err)
 	}
-
 	ss.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 	if err := validateHotReloadStateCompatible(mk(""), mk("none"), state); err != nil {
 		t.Fatalf("unset->none alias refused: %v", err)
@@ -362,7 +355,6 @@ func TestReplaySharingHotReloadFlatOnly(t *testing.T) {
 }
 
 func TestReplaySharingMaskedFromRestartShape(t *testing.T) {
-
 	cfg := &Config{Strategies: []StrategyConfig{{ID: "s1", Type: "perps", Platform: "hyperliquid", ReplaySharing: "none"}}}
 	next := &Config{Strategies: []StrategyConfig{{ID: "s1", Type: "perps", Platform: "hyperliquid", ReplaySharing: "live_mirror"}}}
 	if err := validateHotReloadCompatible(cfg, next); err != nil {
@@ -371,7 +363,6 @@ func TestReplaySharingMaskedFromRestartShape(t *testing.T) {
 }
 
 func TestReplaySharingUnknownKeyGuardAcceptsField(t *testing.T) {
-
 	raw := []byte(`{"strategies":[{"id":"s1","type":"perps","platform":"hyperliquid","replay_sharing":"live_mirror"}]}`)
 	for _, e := range validateStrategyJSONKeys(raw) {
 		if strings.Contains(e, "replay_sharing") {
@@ -411,7 +402,6 @@ func TestReplaySourceAndMirrorPredicates(t *testing.T) {
 }
 
 func TestDecisionLogEntryATRRegimeRoundTrip(t *testing.T) {
-
 	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatalf("OpenDecisionLogDB: %v", err)
@@ -439,7 +429,6 @@ func TestDecisionLogEntryATRRegimeRoundTrip(t *testing.T) {
 }
 
 func TestDecisionLogMigratesLegacySchema(t *testing.T) {
-
 	path := filepath.Join(t.TempDir(), "replay.db")
 	legacy, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -482,7 +471,6 @@ func TestDecisionLogMigratesLegacySchema(t *testing.T) {
 }
 
 func TestDecisionLogPendingIndexExists(t *testing.T) {
-
 	db, err := OpenDecisionLogDB(filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
 		t.Fatalf("OpenDecisionLogDB: %v", err)
@@ -496,7 +484,6 @@ func TestDecisionLogPendingIndexExists(t *testing.T) {
 }
 
 func TestReplayMirrorWatermarkStateRoundTrip(t *testing.T) {
-
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -540,7 +527,6 @@ func TestRecordPositionOpenBeforeSameCycleCloseJournalsOpenThenClose(t *testing.
 	if !recordPositionOpen(state, sc, trade, pos) {
 		t.Fatal("recordPositionOpen must succeed")
 	}
-
 	if !recordPerpsStopLossClose(state, "ETH", 2318.5, "protection_sync_sl_immediate", nil) {
 		t.Fatal("close booking must succeed")
 	}

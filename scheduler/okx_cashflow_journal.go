@@ -57,13 +57,11 @@ var okxBillKindByType = map[string]string{
 func okxBillSettledDelta(b okxBillRecord) (delta float64, kind string, known bool) {
 	ccy := strings.ToUpper(strings.TrimSpace(b.Ccy))
 	if ccy != "" && ccy != okxJournalSettlementCcy {
-
 		return 0, "nonsettle_" + strings.ToLower(ccy), false
 	}
 	if mapped, ok := okxBillKindByType[strings.TrimSpace(b.Type)]; ok {
 		return b.BalChg, mapped, true
 	}
-
 	return b.BalChg, "type_" + strings.TrimSpace(b.Type), false
 }
 
@@ -101,7 +99,6 @@ func fetchOKXCashflowJournalEvents(sdb *StateDB, key SharedWalletKey, accountVal
 	}
 	if !found {
 		nowMs := now.UnixMilli()
-
 		st = CashflowJournalState{
 			FillsSinceMs:         nowMs,
 			BaselineAccountValue: accountValue,
@@ -152,7 +149,6 @@ func ingestOKXCashflowJournalEvents(sdb *StateDB, res okxCashflowJournalFetchRes
 		}
 		delta, kind, known := okxBillSettledDelta(b)
 		if !known {
-
 			st.Incomplete = true
 			fmt.Printf("[WARN] okx-cashflow-journal %s: unclassified bill type=%q subType=%q ccy=%q (billId %s) — recorded kind %q, journal marked incomplete\n",
 				sharedWalletKeyLabel(key), b.Type, b.SubType, b.Ccy, b.BillID, kind)
@@ -167,7 +163,6 @@ func ingestOKXCashflowJournalEvents(sdb *StateDB, res okxCashflowJournalFetchRes
 			maxTime = b.TimeMs
 		}
 	}
-
 	advanceMax := maxTime
 	if res.Capped {
 		advanceMax = maxTime - 1
@@ -204,7 +199,6 @@ func reconcileOKXCashflowJournal(sdb *StateDB, key SharedWalletKey, accountValue
 	rec.DeltaUPnL = res.CurrentUPnL - st.BaselineUPnL
 	rec.ExpectedEquity = cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
 	rec.Drift = res.AccountValue - rec.ExpectedEquity
-
 	rec.Usable = res.BillsFetched && !res.Capped && !st.Incomplete
 	return rec
 }

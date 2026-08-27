@@ -52,7 +52,6 @@ func acquireStateDBLock(dbPath string) (*stateDBLock, error) {
 		return nil, fmt.Errorf("open lock file %s: %w", lockPath, err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-
 		pid := readLockPID(f)
 		f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
@@ -60,7 +59,6 @@ func acquireStateDBLock(dbPath string) (*stateDBLock, error) {
 		}
 		return nil, fmt.Errorf("flock %s: %w", lockPath, err)
 	}
-
 	if err := writeLockPID(f, os.Getpid()); err != nil {
 		fmt.Fprintf(os.Stderr, "[singleton] WARN: could not write pid to %s: %v\n", lockPath, err)
 	}

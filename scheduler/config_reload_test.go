@@ -1516,7 +1516,6 @@ func TestApplyHotReloadConfigPropagatesManualDefaults(t *testing.T) {
 	if got := len(cfg.resolveManualTPTiers()); got != 2 {
 		t.Errorf("resolveManualTPTiers length = %d, want 2", got)
 	}
-
 	*next.UserDefaults.Manual.MarginUSD = 999
 	if got := cfg.resolveManualMarginUSD(); got != 125.0 {
 		t.Errorf("cfg margin aliased to next: got %g after next-mutation, want 125.0", got)
@@ -2132,7 +2131,6 @@ func TestValidateHotReloadStateCompatible_StopOwnerModeToggles(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("open position: want error containing %q, got: %v", tc.wantErr, err)
 			}
-
 			if err := validateHotReloadStateCompatible(mkCfg(tc.old), mkCfg(tc.new), flatState); err != nil {
 				t.Fatalf("flat: same toggle must be accepted, got: %v", err)
 			}

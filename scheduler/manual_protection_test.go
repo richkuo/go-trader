@@ -81,7 +81,6 @@ func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 }
 
 func TestWarnNotifier_NilNotifier(t *testing.T) {
-
 	warnNotifier(nil, "test warning")
 }
 

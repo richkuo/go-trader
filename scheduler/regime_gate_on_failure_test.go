@@ -19,21 +19,15 @@ func TestRegimeBlocksOpenFailurePolicyMatrix(t *testing.T) {
 		failClosed bool
 		want       bool
 	}{
-
 		{"open policy, empty label, flat, gated", gate, "", 0, false, false},
-
 		{"closed policy, empty label, flat, gated", gate, "", 0, true, true},
-
 		{"closed policy, whitespace label, flat, gated", gate, "  ", 0, true, true},
-
 		{"open policy, matching label", gate, "trending_up", 0, false, false},
 		{"closed policy, matching label", gate, "trending_up", 0, true, false},
 		{"open policy, mismatching label", gate, "ranging", 0, false, true},
 		{"closed policy, mismatching label", gate, "ranging", 0, true, true},
-
 		{"closed policy, empty label, open position", gate, "", 1.5, true, false},
 		{"closed policy, mismatching label, open position", gate, "ranging", 0.5, true, false},
-
 		{"closed policy, empty label, no gate", nil, "", 0, true, false},
 		{"closed policy, empty label, empty gate", []string{}, "", 0, true, false},
 	}
@@ -64,7 +58,6 @@ func TestResolveRegimeGateOnFailure(t *testing.T) {
 			t.Errorf("%s: resolved %q, want %q", tc.name, got, tc.want)
 		}
 	}
-
 	if got := resolveRegimeGateOnFailure(StrategyConfig{}, nil); got != RegimeGateOnFailureOpen {
 		t.Errorf("nil regime config: resolved %q, want open", got)
 	}
@@ -104,12 +97,10 @@ func TestApplyRegimeGateFailClosedOnEmptyStorePayload(t *testing.T) {
 	if _, blocked := applyRegimeGate(gated, RegimePayload{}, rc, 2.0); blocked {
 		t.Error("fail-closed must never block while a position is open (posQty>0)")
 	}
-
 	ungated := StrategyConfig{RegimeGateOnFailure: "closed"}
 	if _, blocked := applyRegimeGate(ungated, RegimePayload{}, rc, 0); blocked {
 		t.Error("fail-closed must never fire without an allowed_regimes gate")
 	}
-
 	if _, blocked := applyRegimeGate(gated, RegimePayload{Legacy: "trending_up"}, rc, 0); blocked {
 		t.Error("matching label must admit the entry under fail-closed")
 	}
@@ -201,19 +192,16 @@ func TestValidateConfigAcceptsGateOnFailureValues(t *testing.T) {
 }
 
 func TestValidateConfigRejectsFailClosedWithRegimeDisabled(t *testing.T) {
-
 	cfg := testGatePolicyConfig("closed", "", false)
 	err := validateConfig(cfg, true)
 	if err == nil || !strings.Contains(err.Error(), "could never open") {
 		t.Fatalf("fail-closed with regime disabled must be rejected, got %v", err)
 	}
-
 	cfg = testGatePolicyConfig("", "closed", false)
 	err = validateConfig(cfg, true)
 	if err == nil || !strings.Contains(err.Error(), "could never open") {
 		t.Fatalf("global fail-closed with regime disabled must be rejected, got %v", err)
 	}
-
 	cfg = testGatePolicyConfig("", "", false)
 	if err := validateConfig(cfg, true); err != nil && strings.Contains(err.Error(), "gate_on_failure") {
 		t.Fatalf("fail-open with regime disabled must keep loading, got %v", err)
@@ -301,7 +289,6 @@ func TestRegimeGateOutagePolicyNote(t *testing.T) {
 	if note != want {
 		t.Errorf("note = %q, want %q", note, want)
 	}
-
 	if got := regimeGateOutagePolicyNote(key.Key, []StrategyConfig{mk("hl-ungated", "BTC", "closed", false)}, rc); got != "" {
 		t.Errorf("ungated-only note = %q, want empty", got)
 	}
@@ -320,24 +307,20 @@ func TestRegimeGateFailClosedActive(t *testing.T) {
 	if !regimeGateFailClosedActive(sc, flat, rc) {
 		t.Error("empty store + flat + fail-closed must report an active fail-closed gate")
 	}
-
 	open := &StrategyState{ID: "hl-btc", Positions: map[string]*Position{"BTC": {Quantity: 1}}}
 	if regimeGateFailClosedActive(sc, open, rc) {
 		t.Error("an open position must clear the fail-closed marker")
 	}
-
 	openPolicy := sc
 	openPolicy.RegimeGateOnFailure = ""
 	if regimeGateFailClosedActive(openPolicy, flat, rc) {
 		t.Error("default fail-open policy must never mark the gate closed")
 	}
-
 	ungated := sc
 	ungated.AllowedRegimes = nil
 	if regimeGateFailClosedActive(ungated, flat, rc) {
 		t.Error("no allowed_regimes gate must never mark the gate closed")
 	}
-
 	req, ok := strategyRegimeBundleRequest(sc, rc)
 	if !ok {
 		t.Fatal("expected a regime signature")

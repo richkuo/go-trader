@@ -202,7 +202,6 @@ func TestValidateStrategyJSONKeysReportsByIDDeterministically(t *testing.T) {
 		]
 	}`)
 	errs := validateStrategyJSONKeys(raw)
-
 	want := []string{
 		`strategy[b-strat]: unknown field "aaa"`,
 		`strategy[b-strat]: unknown field "zzz"`,

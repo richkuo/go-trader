@@ -144,14 +144,12 @@ func TestRegimeAllowsEntry_ExplicitSubLabelDoesNotCoverBareOrSibling(t *testing.
 	if regimeAllowsEntry(allowed, "ranging_directional_down") {
 		t.Error("explicit _up should NOT cover ranging_directional_down")
 	}
-
 	if !regimeAllowsEntry(allowed, "ranging_directional_up") {
 		t.Error("explicit _up should match itself")
 	}
 }
 
 func TestRegimeAllowsEntry_EmptyCurrentAllowsWhenListNonEmpty(t *testing.T) {
-
 	allowed := []string{"trending_up"}
 	if !regimeAllowsEntry(allowed, "") {
 		t.Error("empty regime string (script did not compute regime) should not block entry")
@@ -173,7 +171,6 @@ func TestRegimeBlocksOpen_AllowsOpenWhenRegimeMatches(t *testing.T) {
 }
 
 func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
-
 	allowed := []string{"trending_up"}
 	if regimeBlocksOpen(allowed, "ranging", 1.0, false) {
 		t.Error("close leg (posQty>0) must never be blocked by regime gate")
@@ -182,7 +179,6 @@ func TestRegimeBlocksOpen_NeverBlocksWhenPositionExists(t *testing.T) {
 		t.Error("close leg (posQty>0) must never be blocked even on opposite regime")
 	}
 	if regimeBlocksOpen(allowed, "", 1.0, false) {
-
 		t.Error("close leg (posQty>0) must never be blocked when regime is empty")
 	}
 }
@@ -298,7 +294,6 @@ func TestHotReload_AllowedRegimesChangeIsAccepted(t *testing.T) {
 	cfg := minimalSpotConfig()
 	next := minimalSpotConfig()
 	next.Strategies[0].AllowedRegimes = []string{"trending_up"}
-
 	if err := validateHotReloadCompatible(&cfg, &next); err != nil {
 		t.Fatalf("AllowedRegimes change should be compatible with hot-reload, got: %v", err)
 	}

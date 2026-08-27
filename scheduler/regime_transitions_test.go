@@ -181,7 +181,6 @@ func TestRegimeWindowHistoryRoundTrip(t *testing.T) {
 	if len(got) != 3 || got[0] != "b" || got[2] != "a" {
 		t.Errorf("trailing = %v, want [b b a]", got)
 	}
-
 	other := key
 	other.Platform = "binanceus"
 	if rows, _ := db.RegimeWindowTrailingLabels(other, "7d", 10); len(rows) != 0 {
@@ -303,13 +302,11 @@ func TestProcessRegimeTransitions_DebouncedSingleDM(t *testing.T) {
 	flippedNoReversal := map[string]RegimeSnapshot{"1d": down, "3d": up, "30d": up}
 
 	now := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-
 	runTransitionsCycle(db, rc, steadyUp, now)
 	runTransitionsCycle(db, rc, steadyUp, now.Add(time.Minute))
 	if len(dms) != 0 {
 		t.Fatalf("boot/steady cycles must not DM, got %v", dms)
 	}
-
 	runTransitionsCycle(db, rc, flippedNoReversal, now.Add(2*time.Minute))
 	if len(dms) != 0 {
 		t.Fatalf("first flip cycle must not DM yet (debounce 2), got %v", dms)
@@ -318,7 +315,6 @@ func TestProcessRegimeTransitions_DebouncedSingleDM(t *testing.T) {
 	if len(dms) != 1 || !strings.Contains(dms[0], "1d: trending_up → trending_down") {
 		t.Fatalf("confirmed flip must DM exactly once, got %v", dms)
 	}
-
 	runTransitionsCycle(db, rc, flippedNoReversal, now.Add(4*time.Minute))
 	if len(dms) != 1 {
 		t.Fatalf("steady post-flip cycle re-DM'd: %v", dms)
@@ -381,7 +377,6 @@ func TestProcessRegimeTransitions_FlapBackNoDM(t *testing.T) {
 	if len(dms) != 0 {
 		t.Fatalf("sub-debounce flap must never DM, got %v", dms)
 	}
-
 	key := regimeBundleKey{Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", SpecJSON: regimeWindowsSpecJSON(rc)}
 	pending, _ := db.UnalertedRegimeWindowTransitions(key, "1d")
 	if len(pending) != 0 {
@@ -395,11 +390,9 @@ func TestProcessRegimeTransitions_SubBarFlapNoSpuriousDM(t *testing.T) {
 	regimeAlertSendFn = func(_ *MultiNotifier, msg string) { dms = append(dms, msg) }
 	db := newTransitionsTestDB(t)
 	rc := transitionsTestRegimeConfig()
-
 	up := map[string]RegimeSnapshot{"1d": {Regime: "trending_up"}}
 	down := map[string]RegimeSnapshot{"1d": {Regime: "trending_down"}}
 	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-
 	bars := []struct {
 		hour    int
 		windows map[string]RegimeSnapshot
@@ -415,12 +408,10 @@ func TestProcessRegimeTransitions_SubBarFlapNoSpuriousDM(t *testing.T) {
 	if len(dms) != 0 {
 		t.Fatalf("sub-bar single-bar flap must never DM, got %v", dms)
 	}
-
 	key := regimeBundleKey{Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", SpecJSON: regimeWindowsSpecJSON(rc)}
 	if rows, _ := db.RegimeWindowTrailingLabels(key, "1d", 100); len(rows) != 4 {
 		t.Errorf("history must hold one row per bar (4), got %d: %v", len(rows), rows)
 	}
-
 	if pending, _ := db.UnalertedRegimeWindowTransitions(key, "1d"); len(pending) != 0 {
 		t.Errorf("flap transitions must be marked alerted, still pending: %v", pending)
 	}
@@ -447,7 +438,6 @@ func TestProcessRegimeTransitions_SkippedBarsSingleNetDM(t *testing.T) {
 	if len(dms) != 1 || !strings.Contains(dms[0], "1d: trending_up → trending_down") {
 		t.Fatalf("resumed sustained change must DM exactly once, got %v", dms)
 	}
-
 	if rows, _ := db.RecentRegimeWindowTransitions(100); len(rows) != 1 {
 		t.Errorf("skipped bars must not fabricate transitions, got %d: %v", len(rows), rows)
 	}
@@ -481,7 +471,6 @@ func TestProcessRegimeReversal_SubBarDebounce(t *testing.T) {
 	if reversalCount() != 0 {
 		t.Fatalf("reversal must not confirm within a single bar, got %v", dms)
 	}
-
 	runTransitionsCycleAtBar(db, rc, reversal, base.Add(time.Hour),
 		time.Date(2026, 7, 1, 1, 0, 0, 0, time.UTC).Format(time.RFC3339))
 	if reversalCount() != 1 {
@@ -520,7 +509,6 @@ func TestProcessRegimeTransitions_ReversalAlertOnceAndClears(t *testing.T) {
 		!strings.Contains(reversalDMs[0], "1d=trending_up, 3d=trending_up") {
 		t.Errorf("reversal DM must name windows and labels: %s", reversalDMs[0])
 	}
-
 	runTransitionsCycle(db, rc, reversal, now.Add(4*time.Minute))
 	count := 0
 	for _, m := range dms {
@@ -531,7 +519,6 @@ func TestProcessRegimeTransitions_ReversalAlertOnceAndClears(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("identical active pattern re-DM'd: %v", dms)
 	}
-
 	allUp := map[string]RegimeSnapshot{"1d": up, "3d": up, "30d": up}
 	runTransitionsCycle(db, rc, allUp, now.Add(5*time.Minute))
 	runTransitionsCycle(db, rc, allUp, now.Add(6*time.Minute))

@@ -28,7 +28,6 @@ func twoProfileAlloc(confirm int) *RegimeProfileAllocation {
 
 func TestResolveRegimeProfile_ColdStartNoInstantSwitch(t *testing.T) {
 	alloc := twoProfileAlloc(3)
-
 	active, next := resolveRegimeProfile(alloc, "trending_up_clean", "t0", nil, 0, "")
 	if active != "fade" {
 		t.Fatalf("cold start active=%q, want fade", active)
@@ -49,7 +48,6 @@ func TestResolveRegimeProfile_FlatSwitchAfterConfirmBars(t *testing.T) {
 			t.Fatalf("bar %d active=%q, want fade (not yet confirmed)", i, active)
 		}
 	}
-
 	if active != "trend" {
 		t.Fatalf("after 3 confirm bars active=%q, want trend", active)
 	}
@@ -61,7 +59,6 @@ func TestResolveRegimeProfile_FlatSwitchAfterConfirmBars(t *testing.T) {
 func TestResolveRegimeProfile_BarNotAdvancedDoesNotCount(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade"}
-
 	for i := 0; i < 3; i++ {
 		_, *state = resolveRegimeProfile(alloc, "trending_up_clean", "t1", state, 0, "")
 	}
@@ -73,7 +70,6 @@ func TestResolveRegimeProfile_BarNotAdvancedDoesNotCount(t *testing.T) {
 func TestResolveRegimeProfile_OpenPositionFreezesAndDefers(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade"}
-
 	for i, bt := range []string{"t1", "t2", "t3", "t4"} {
 		active, ns := resolveRegimeProfile(alloc, "trending_up_clean", bt, state, 1, "fade")
 		*state = ns
@@ -87,7 +83,6 @@ func TestResolveRegimeProfile_OpenPositionFreezesAndDefers(t *testing.T) {
 	if state.PendingBarsSeen < 3 {
 		t.Fatalf("counter did not accrue while open: seen=%d", state.PendingBarsSeen)
 	}
-
 	active, ns := resolveRegimeProfile(alloc, "trending_up_clean", "t5", state, 0, "")
 	*state = ns
 	if active != "trend" || state.ActiveProfile != "trend" {
@@ -98,7 +93,6 @@ func TestResolveRegimeProfile_OpenPositionFreezesAndDefers(t *testing.T) {
 func TestResolveRegimeProfile_EmptyLabelFreezes(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade", PendingProfile: "trend", PendingBarsSeen: 2}
-
 	active, next := resolveRegimeProfile(alloc, "", "t9", state, 0, "")
 	if active != "fade" {
 		t.Fatalf("empty-label active=%q, want fade", active)
@@ -111,7 +105,6 @@ func TestResolveRegimeProfile_EmptyLabelFreezes(t *testing.T) {
 func TestResolveRegimeProfile_DesiredEqualsActiveResetsPending(t *testing.T) {
 	alloc := twoProfileAlloc(3)
 	state := &RegimeProfileState{ActiveProfile: "fade", PendingProfile: "trend", PendingBarsSeen: 2}
-
 	_, next := resolveRegimeProfile(alloc, "ranging_quiet", "t2", state, 0, "")
 	if next.PendingProfile != "" || next.PendingBarsSeen != 0 {
 		t.Fatalf("desired==active did not reset pending: %+v", next)
@@ -129,7 +122,6 @@ func TestApplyRegimeProfileParams_MergesAndDoesNotMutateBase(t *testing.T) {
 	if got := sc.OpenStrategy.Params["shared"]; got != 1 {
 		t.Fatalf("base param lost: shared=%v", got)
 	}
-
 	if base["trend_entry"] != "default_value" {
 		t.Fatalf("base map mutated: trend_entry=%v", base["trend_entry"])
 	}
@@ -341,7 +333,6 @@ func TestProfileAllocation_DBRoundTrip(t *testing.T) {
 	if s == nil || s.RegimeProfile == nil || s.RegimeProfile.ActiveProfile != "trend" {
 		t.Fatalf("active_profile not restored: %+v", s)
 	}
-
 	if s.RegimeProfile.PendingBarsSeen != 0 {
 		t.Fatalf("pending counter should not persist, got %d", s.RegimeProfile.PendingBarsSeen)
 	}

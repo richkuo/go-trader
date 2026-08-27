@@ -261,7 +261,6 @@ func circuitBreakerTriggerLine(reason string) string {
 	if m := cbMaxDrawdownReasonRE.FindStringSubmatch(reason); len(m) == 7 {
 		return fmt.Sprintf("%s - %s%% > %s%% (denom: %s=$%s)", RiskReasonMaxDrawdownExceeded, m[1], m[2], m[5], m[6])
 	}
-
 	return reason
 }
 

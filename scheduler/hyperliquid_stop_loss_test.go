@@ -59,7 +59,6 @@ func TestParseHyperliquidExecuteOutput_StopLossFields(t *testing.T) {
 }
 
 func TestParseHyperliquidExecuteOutput_NonFatalSLErrors(t *testing.T) {
-
 	stdout := []byte(`{
 		"execution": {
 			"action": "sell",
@@ -89,7 +88,6 @@ func TestParseHyperliquidExecuteOutput_NonFatalSLErrors(t *testing.T) {
 }
 
 func TestParseHyperliquidExecuteOutput_ErrorJSONPreserved(t *testing.T) {
-
 	stdout := []byte(`{"execution": null, "platform": "hyperliquid", "timestamp": "2026-04-23T12:00:00+00:00", "error": "--execute requires --mode=live"}`)
 	runErr := errors.New("exit status 1")
 	result, _, err := parseHyperliquidExecuteOutput(stdout, "", runErr)
@@ -120,12 +118,10 @@ func TestStrategyConfig_StopLossPctJSON(t *testing.T) {
 	if round.StopLossPct == nil || *round.StopLossPct != 3.5 {
 		t.Errorf("round-trip StopLossPct: got %v, want 3.5", round.StopLossPct)
 	}
-
 	b2, _ := json.Marshal(StrategyConfig{ID: "x", Platform: "hyperliquid", Type: "perps"})
 	if containsKey(b2, "stop_loss_pct") {
 		t.Errorf("nil StopLossPct should be omitted; got %s", b2)
 	}
-
 	zero := 0.0
 	scZero := StrategyConfig{ID: "x", Platform: "hyperliquid", Type: "perps", StopLossPct: &zero}
 	b3, _ := json.Marshal(scZero)
@@ -160,7 +156,6 @@ func TestPosition_StopLossOIDJSON(t *testing.T) {
 	if round.StopLossHighWaterPx != 3100 {
 		t.Errorf("round-trip StopLossHighWaterPx: got %v", round.StopLossHighWaterPx)
 	}
-
 	b2, _ := json.Marshal(Position{Symbol: "ETH", Quantity: 1, AvgCost: 3000, Side: "long"})
 	if containsKey(b2, "stop_loss_oid") {
 		t.Errorf("zero StopLossOID should be omitted; got %s", b2)
@@ -192,7 +187,6 @@ func TestComputeTrailingStopUpdate(t *testing.T) {
 		{"short ratchets down", "short", 90, 100, 3, 0.5, 103, 90, 92.7, true},
 		{"short never raises trigger", "short", 101, 100, 3, 0.5, 103, 100, 0, false},
 		{"missing current trigger places one", "long", 100, 100, 3, 0.5, 0, 100, 97, true},
-
 		{"long replaces at exact min-move boundary", "long", 101, 100, 50, 1.0, 50, 101, 50.5, true},
 		{"short replaces at exact min-move boundary", "short", 33, 100, 50, 1.0, 50, 33, 49.5, true},
 		{"long holds just under min-move boundary", "long", 100.8, 100, 50, 1.0, 50, 100.8, 0, false},
@@ -376,7 +370,6 @@ func containsKey(b []byte, key string) bool {
 }
 
 func TestParseHyperliquidExecuteOutput_StopLossFilledImmediately(t *testing.T) {
-
 	stdout := []byte(`{
 		"execution": {"action": "buy", "symbol": "ETH", "size": 0.1, "fill": {"avg_px": 3200, "total_sz": 0.1, "oid": 1}},
 		"platform": "hyperliquid",
@@ -396,7 +389,6 @@ func TestParseHyperliquidExecuteOutput_StopLossFilledImmediately(t *testing.T) {
 }
 
 func TestParseHyperliquidExecuteOutput_CancelSucceededOnFailure(t *testing.T) {
-
 	stdout := []byte(`{
 		"execution": null,
 		"platform": "hyperliquid",
@@ -442,7 +434,6 @@ func TestIsHLOpenOrderCapRejection(t *testing.T) {
 }
 
 func TestConfigValidation_StopLossPctBounds(t *testing.T) {
-
 	cases := []struct {
 		name      string
 		pct       float64
@@ -527,11 +518,9 @@ func TestExecuteHyperliquidResult_StopLossFilledImmediately_ReconcilesState(t *t
 	if trades != 2 {
 		t.Errorf("trades=%d, want 2 (open + synthetic close)", trades)
 	}
-
 	if _, exists := state.Positions["ETH"]; exists {
 		t.Errorf("Position should have been deleted; got %+v", state.Positions["ETH"])
 	}
-
 	if len(state.ClosedPositions) != 1 {
 		t.Fatalf("ClosedPositions=%d, want 1", len(state.ClosedPositions))
 	}
@@ -718,7 +707,6 @@ func TestRunPendingHyperliquidCircuitCloses_CancelsStopLossOID(t *testing.T) {
 	if seenCancelOID != 99887766 {
 		t.Errorf("closer received cancelStopLossOID=%d, want 99887766", seenCancelOID)
 	}
-
 	if _, ok := state.Strategies["hl-a"].Positions["ETH"]; ok {
 		t.Errorf("ETH position should be removed after full-fill CB close, but it's still present")
 	}
@@ -817,13 +805,11 @@ func TestEffectiveStopLossPct(t *testing.T) {
 		{"explicit-zero margin disables (no fallback)", hlPerps(StrategyConfig{StopLossMarginPct: pf(0), MaxDrawdownPct: 7, Leverage: 5}), 0},
 		{"explicit wins over margin", hlPerps(StrategyConfig{StopLossPct: pf(3), StopLossMarginPct: pf(20), Leverage: 10}), 3},
 		{"trailing wins over explicit before validation", hlPerps(StrategyConfig{TrailingStopPct: pf(4), StopLossPct: pf(3), Leverage: 10}), 4},
-
 		{"drawdown fallback when both nil", hlPerps(StrategyConfig{MaxDrawdownPct: 5, Leverage: 5}), 5},
 		{"drawdown fallback capped at 50", hlPerps(StrategyConfig{MaxDrawdownPct: 60, Leverage: 5}), 50},
 		{"drawdown fallback at cap boundary", hlPerps(StrategyConfig{MaxDrawdownPct: 50, Leverage: 5}), 50},
 		{"drawdown fallback ignored when explicit set", hlPerps(StrategyConfig{StopLossPct: pf(2), MaxDrawdownPct: 10}), 2},
 		{"margin fallthrough beats drawdown", hlPerps(StrategyConfig{StopLossMarginPct: pf(20), MaxDrawdownPct: 5, Leverage: 20}), 1.0},
-
 		{"stop_loss_atr_regime defers, no drawdown fallback",
 			hlPerps(StrategyConfig{StopLossATRRegime: &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{"trending": {ATR: 2}}}, MaxDrawdownPct: 5, Leverage: 5}), 0},
 		{"trailing_stop_atr_regime defers, no drawdown fallback",
@@ -859,11 +845,8 @@ func TestConfigValidation_StopLossMarginPctBounds(t *testing.T) {
 		{"non-HL platform", 20, true, 0, false, 10, "okx", "perps", true},
 		{"non-perps type", 20, true, 0, false, 10, "hyperliquid", "spot", true},
 		{"mutually exclusive", 20, true, 1, true, 10, "hyperliquid", "perps", true},
-
 		{"both explicit zero is benign", 0, true, 0, true, 10, "hyperliquid", "perps", false},
-
 		{"derived price stop exceeds 50% cap", 80, true, 0, false, 1, "hyperliquid", "perps", true},
-
 		{"derived price stop at 50% cap", 50, true, 0, false, 1, "hyperliquid", "perps", false},
 	}
 	for _, c := range cases {
@@ -1113,7 +1096,6 @@ func TestEffectiveTrailingStopPct_ATRMult(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := effectiveTrailingStopPct(c.sc, c.pos)
-
 			if d := got - c.want; d > 1e-9 || d < -1e-9 {
 				t.Errorf("effectiveTrailingStopPct = %g, want %g", got, c.want)
 			}
@@ -1477,7 +1459,6 @@ func TestClearATRMultMissingEntryATRWarningsForStrategy(t *testing.T) {
 }
 
 func TestTieredTPATRMissingEntryATR(t *testing.T) {
-
 	withCS := func(name string) StrategyConfig {
 		sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
 		if name != "" {
@@ -2225,7 +2206,6 @@ func TestRunHyperliquidFixedATRStopLossPaper(t *testing.T) {
 		StopLossATRMult: pf(1.5),
 	}
 	pos := &Position{AvgCost: 2000, EntryATR: 40}
-
 	wantTrigger := 1940.0
 
 	newTrigger, breach, breachPx := runHyperliquidFixedATRStopLossPaper(sc, "long", pos, 2010, 0)
@@ -2429,7 +2409,6 @@ func TestHLSLEffectiveQty_NoCapWhenSymbolNotInMap(t *testing.T) {
 }
 
 func TestHLSLEffectiveQty_NoCapWhenOnChainZero(t *testing.T) {
-
 	onChain := map[string]float64{"ETH": 0}
 	got, capped := hlSLEffectiveQty("ETH", 0.422, onChain)
 	if capped {

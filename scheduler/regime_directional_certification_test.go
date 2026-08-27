@@ -51,7 +51,6 @@ func TestCertifiedActiveAndExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse active: %v", err)
 	}
-
 	states, ok := set.Certified("BTC", "1h", "composite", now)
 	if !ok {
 		t.Fatal("expected active certification for BTC/1h/composite")
@@ -62,7 +61,6 @@ func TestCertifiedActiveAndExpired(t *testing.T) {
 	if st := set.Status("btc", "1h", "composite", now); st != CertActive {
 		t.Fatalf("status = %v, want CertActive", st)
 	}
-
 	if _, ok := set.Certified("BTC", "1h", "adx", now); ok {
 		t.Fatal("classifier mismatch must not certify")
 	}
@@ -149,7 +147,6 @@ func TestParseToleratesNestedCriteriaProvenance(t *testing.T) {
 }
 
 func TestParseRejectsProvenanceAtTopLevel(t *testing.T) {
-
 	for _, key := range []string{"screened_family_size", "data_sources", "universe", "n_perm"} {
 		art := []byte(`{"schema_version":1,"` + key + `":{},"certified":[]}`)
 		if _, err := parseDirectionalCertSet(art); err == nil {
@@ -159,7 +156,6 @@ func TestParseRejectsProvenanceAtTopLevel(t *testing.T) {
 }
 
 func TestLoadFailClosedOnMissingAndMalformed(t *testing.T) {
-
 	set, err := LoadDirectionalCertSet("/nonexistent/regime_directional_certifications.json")
 	if err != nil {
 		t.Fatalf("missing file should not error, got %v", err)
@@ -223,7 +219,6 @@ func TestApplyRegimeDirectionalPolicyDefaultOffWhenUncertified(t *testing.T) {
 			"trending_up":   {Direction: DirectionLong},
 			"ranging":       {Direction: DirectionLong},
 		}}}
-
 	_, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, nil)
 	if applied {
 		t.Fatal("uncertified policy must not apply (default-off)")
@@ -231,7 +226,6 @@ func TestApplyRegimeDirectionalPolicyDefaultOffWhenUncertified(t *testing.T) {
 	if sc.Direction != DirectionLong || sc.InvertSignal {
 		t.Fatalf("sc must stay at base, got dir=%q invert=%t", sc.Direction, sc.InvertSignal)
 	}
-
 	entry, applied, _ := applyRegimeDirectionalPolicy(&sc, "trending_down", "", 0, map[string]string{"trending_down": DirectionShort, "trending_up": DirectionLong, "ranging": DirectionLong})
 	if !applied || entry.Direction != DirectionShort || sc.Direction != DirectionShort {
 		t.Fatalf("certified policy must apply short, got applied=%t entry=%+v dir=%q", applied, entry, sc.Direction)
@@ -500,20 +494,17 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 		}
 		return s
 	}
-
 	if _, _, cls, ok := directionalCertIdentity(sc, rcMW); !ok || cls != "composite" {
 		t.Fatalf("(d) expected composite directional classifier, got %q ok=%v", cls, ok)
 	}
 	setDirectionalCertStore(emptyDirectionalCertSet())
 	ssD := newState()
 	stampDirectionCertifiedAtOpenIfOpened(ssD, "BTC", true, sc, rcMW)
-
 	warmup := RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{"short": {Regime: ""}}}
 	stampPositionRegimeIfOpened(ssD, "BTC", warmup, sc, rcMW)
 	if ssD.Positions["BTC"].Regime != "" {
 		t.Fatalf("(d) warmup must not record a regime label, got %q", ssD.Positions["BTC"].Regime)
 	}
-
 	setDirectionalCertStore(certifiedMW())
 	filled := RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{"medium": {Regime: "trending_down_clean"}}}
 	stampPositionRegimeIfOpened(ssD, "BTC", filled, sc, rcMW)

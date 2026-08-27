@@ -1,41 +1,63 @@
 import sys
 import pathlib
 import json
+
 import numpy as np
 import pandas as pd
 import pytest
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / 'shared_tools'))
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent / "shared_tools"))
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+
 import run_backtest
 from backtester import Backtester
-from regime import ensure_regime_columns, VALID_LABELS_COMPOSITE, VALID_LABELS_ADX, _DEFAULT_COMPOSITE_THRESHOLDS
-COMPOSITE_SPEC = {'medium': {'classifier': 'composite', 'period': 20}}
+from regime import (
+    ensure_regime_columns,
+    VALID_LABELS_COMPOSITE,
+    VALID_LABELS_ADX,
+    _DEFAULT_COMPOSITE_THRESHOLDS,
+)
 
-def _mixed_regime_ohlcv(n: int=160, seed: int=1) -> pd.DataFrame:
-    idx = pd.date_range('2024-01-01', periods=n, freq='D')
+COMPOSITE_SPEC = {"medium": {"classifier": "composite", "period": 20}}
+
+
+def _mixed_regime_ohlcv(n: int = 160, seed: int = 1) -> pd.DataFrame:
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
     rng = np.random.default_rng(seed)
     close = np.empty(n)
     half = n // 2
     close[:half] = 100.0 + np.cumsum(rng.normal(0.0, 0.5, half))
     close[half:] = close[half - 1] + np.cumsum(np.abs(rng.normal(1.0, 0.15, n - half)))
-    return pd.DataFrame({'open': close, 'high': close + 0.6, 'low': close - 0.6, 'close': close, 'volume': 1000.0}, index=idx)
+    return pd.DataFrame(
+        {"open": close, "high": close + 0.6, "low": close - 0.6,
+         "close": close, "volume": 1000.0},
+        index=idx,
+    )
+
 
 def _ground_truth_labels(df: pd.DataFrame, spec=COMPOSITE_SPEC) -> pd.Series:
     truth = df.copy()
     ensure_regime_columns(truth, windows_spec=spec)
-    return truth['regime']
+    return truth["regime"]
+
 
 def _buy_at(df: pd.DataFrame, bar: int) -> pd.DataFrame:
     out = df.copy()
-    out['signal'] = 0
-    out.iloc[bar, out.columns.get_loc('signal')] = 1
+    out["signal"] = 0
+    out.iloc[bar, out.columns.get_loc("signal")] = 1
     return out
+
+
+
 
 def test_windows_spec_computes_composite_substates_from_ohlcv():
     labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique())
     assert labels <= VALID_LABELS_COMPOSITE
     assert labels & VALID_LABELS_ADX == set()
-    assert labels, 'expected non-empty composite labels'
+    assert labels, "expected non-empty composite labels"
+
+
+
 
 def test_position_regime_is_composite_substate():
     df = _mixed_regime_ohlcv()
@@ -43,18 +65,28 @@ def test_position_regime_is_composite_substate():
     entry = 130
     expected = truth.iloc[entry]
     assert expected in VALID_LABELS_COMPOSITE
-    bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0, regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC,
+    )
     result = bt.run(_buy_at(df, entry), save=False)
-    assert result['total_trades'] == 1
+    assert result["total_trades"] == 1
     assert bt._run_position_regime == expected
     assert bt._run_position_regime in VALID_LABELS_COMPOSITE
 
+
 def test_default_path_stays_adx_without_windows_spec():
     df = _mixed_regime_ohlcv()
-    bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0, regime_enabled=True)
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True,
+    )
     bt.run(_buy_at(df, 130), save=False)
     assert bt._run_position_regime in VALID_LABELS_ADX
     assert bt._run_position_regime not in VALID_LABELS_COMPOSITE
+
+
+
 
 def test_composite_gate_allows_matching_blocks_mismatching():
     df = _mixed_regime_ohlcv()
@@ -62,380 +94,735 @@ def test_composite_gate_allows_matching_blocks_mismatching():
     entry = 130
     label = truth.iloc[entry]
     assert label in VALID_LABELS_COMPOSITE
-    other = next((l for l in sorted(VALID_LABELS_COMPOSITE) if l != label))
-    bt_ok = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0, regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC, allowed_regimes=[label])
-    assert bt_ok.run(_buy_at(df, entry), save=False)['total_trades'] == 1
-    bt_no = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0, regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC, allowed_regimes=[other])
-    assert bt_no.run(_buy_at(df, entry), save=False)['total_trades'] == 0
+    other = next(l for l in sorted(VALID_LABELS_COMPOSITE) if l != label)
+
+    bt_ok = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC,
+        allowed_regimes=[label],
+    )
+    assert bt_ok.run(_buy_at(df, entry), save=False)["total_trades"] == 1
+
+    bt_no = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC,
+        allowed_regimes=[other],
+    )
+    assert bt_no.run(_buy_at(df, entry), save=False)["total_trades"] == 0
+
+
+
 
 def test_composite_label_respects_lookahead_shift():
     df = _mixed_regime_ohlcv()
     truth = _ground_truth_labels(df)
-    entry = next((i for i in range(60, len(df) - 2) if truth.iloc[i] != truth.iloc[i + 1] and truth.iloc[i] in VALID_LABELS_COMPOSITE))
+    entry = next(
+        i for i in range(60, len(df) - 2)
+        if truth.iloc[i] != truth.iloc[i + 1]
+        and truth.iloc[i] in VALID_LABELS_COMPOSITE
+    )
     decision_label = truth.iloc[entry]
     fill_label = truth.iloc[entry + 1]
     assert decision_label != fill_label
-    bt = Backtester(initial_capital=1000, commission_pct=0, slippage_pct=0, regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC)
+
+    bt = Backtester(
+        initial_capital=1000, commission_pct=0, slippage_pct=0,
+        regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC,
+    )
     bt.run(_buy_at(df, entry), save=False)
     assert bt._run_position_regime == decision_label
     assert bt._run_position_regime != fill_label
 
+
+
+
 def test_resolve_windows_spec_none_when_disabled_or_no_windows():
     assert run_backtest._resolve_regime_windows_spec(None) is None
     assert run_backtest._resolve_regime_windows_spec({}) is None
-    assert run_backtest._resolve_regime_windows_spec({'enabled': False, 'windows': {'medium': 20}}) is None
-    assert run_backtest._resolve_regime_windows_spec({'enabled': True, 'period': 14}) is None
+    assert run_backtest._resolve_regime_windows_spec({"enabled": False, "windows": {"medium": 20}}) is None
+    assert run_backtest._resolve_regime_windows_spec({"enabled": True, "period": 14}) is None
+
 
 def test_resolve_windows_spec_composite_medium():
-    spec = run_backtest._resolve_regime_windows_spec({'enabled': True, 'windows': {'medium': {'classifier': 'composite', 'period': 30}}})
+    spec = run_backtest._resolve_regime_windows_spec({
+        "enabled": True,
+        "windows": {"medium": {"classifier": "composite", "period": 30}},
+    })
     assert spec is not None
-    assert spec['medium']['classifier'] == 'composite'
-    assert spec['medium']['period'] == 30
-    assert spec['medium']['thresholds'] == _DEFAULT_COMPOSITE_THRESHOLDS
+    assert spec["medium"]["classifier"] == "composite"
+    assert spec["medium"]["period"] == 30
+    assert spec["medium"]["thresholds"] == _DEFAULT_COMPOSITE_THRESHOLDS
+
 
 def test_resolve_windows_spec_adx_inherits_top_level_threshold_and_period():
-    spec = run_backtest._resolve_regime_windows_spec({'enabled': True, 'period': 21, 'adx_threshold': 28.0, 'windows': {'medium': {'classifier': 'adx'}}})
-    assert spec['medium']['classifier'] == 'adx'
-    assert spec['medium']['period'] == 21
-    assert spec['medium']['adx_threshold'] == 28.0
+    spec = run_backtest._resolve_regime_windows_spec({
+        "enabled": True,
+        "period": 21,
+        "adx_threshold": 28.0,
+        "windows": {"medium": {"classifier": "adx"}},
+    })
+    assert spec["medium"]["classifier"] == "adx"
+    assert spec["medium"]["period"] == 21
+    assert spec["medium"]["adx_threshold"] == 28.0
+
 
 def test_resolve_windows_spec_keeps_explicit_window_values():
-    spec = run_backtest._resolve_regime_windows_spec({'enabled': True, 'period': 14, 'adx_threshold': 20.0, 'windows': {'short': {'classifier': 'adx', 'period': 7, 'adx_threshold': 30.0}}})
-    assert spec['short']['period'] == 7
-    assert spec['short']['adx_threshold'] == 30.0
+    spec = run_backtest._resolve_regime_windows_spec({
+        "enabled": True,
+        "period": 14,
+        "adx_threshold": 20.0,
+        "windows": {"short": {"classifier": "adx", "period": 7, "adx_threshold": 30.0}},
+    })
+    assert spec["short"]["period"] == 7
+    assert spec["short"]["adx_threshold"] == 30.0
+
+
+
 
 def _write_config(tmp_path, cfg):
-    p = tmp_path / 'config.json'
+    p = tmp_path / "config.json"
     p.write_text(json.dumps(cfg, indent=2))
     return str(p)
 
+
 def _composite_config(tmp_path):
-    return _write_config(tmp_path, {'config_version': 15, 'regime': {'enabled': True, 'timeframe': ' 1D ', 'period': 14, 'adx_threshold': 20.0, 'windows': {'medium': {'classifier': 'composite', 'period': 30}}}, 'strategies': [{'id': 'hl-temacb-btc', 'type': 'perps', 'platform': 'hyperliquid', 'open_strategy': {'name': 'tema_cross_bd'}, 'close_strategy': {'name': 'tiered_tp_atr', 'params': {'tp_tiers': [{'atr_multiple': 2.0, 'close_fraction': 0.5}, {'atr_multiple': 3.0, 'close_fraction': 1.0}]}}}]})
+    return _write_config(tmp_path, {
+        "config_version": 15,
+        "regime": {
+            "enabled": True,
+            "timeframe": " 1D ",
+            "period": 14,
+            "adx_threshold": 20.0,
+            "windows": {"medium": {"classifier": "composite", "period": 30}},
+        },
+        "strategies": [{
+            "id": "hl-temacb-btc",
+            "type": "perps",
+            "platform": "hyperliquid",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+                {"atr_multiple": 2.0, "close_fraction": 0.5},
+                {"atr_multiple": 3.0, "close_fraction": 1.0},
+            ]}},
+        }],
+    })
+
 
 def test_load_strategy_config_includes_composite_windows_spec(tmp_path):
-    kwargs = run_backtest.load_strategy_config(_composite_config(tmp_path), 'hl-temacb-btc')
-    spec = kwargs['regime_windows_spec']
+    kwargs = run_backtest.load_strategy_config(_composite_config(tmp_path), "hl-temacb-btc")
+    spec = kwargs["regime_windows_spec"]
     assert spec is not None
-    assert spec['medium']['classifier'] == 'composite'
-    assert spec['medium']['period'] == 30
-    assert kwargs['regime_timeframe'] == '1d'
+    assert spec["medium"]["classifier"] == "composite"
+    assert spec["medium"]["period"] == 30
+    assert kwargs["regime_timeframe"] == "1d"
+
 
 def test_load_strategy_config_no_windows_yields_none(tmp_path):
-    path = _write_config(tmp_path, {'config_version': 15, 'regime': {'enabled': True, 'period': 14, 'adx_threshold': 20.0}, 'strategies': [{'id': 'hl-temacb-btc', 'type': 'perps', 'platform': 'hyperliquid', 'open_strategy': {'name': 'tema_cross_bd'}, 'close_strategy': {'name': 'tiered_tp_atr', 'params': {'tp_tiers': [{'atr_multiple': 2.0, 'close_fraction': 1.0}]}}}]})
-    kwargs = run_backtest.load_strategy_config(path, 'hl-temacb-btc')
-    assert kwargs['regime_windows_spec'] is None
+    path = _write_config(tmp_path, {
+        "config_version": 15,
+        "regime": {"enabled": True, "period": 14, "adx_threshold": 20.0},
+        "strategies": [{
+            "id": "hl-temacb-btc", "type": "perps", "platform": "hyperliquid",
+            "open_strategy": {"name": "tema_cross_bd"},
+            "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+                {"atr_multiple": 2.0, "close_fraction": 1.0},
+            ]}},
+        }],
+    })
+    kwargs = run_backtest.load_strategy_config(path, "hl-temacb-btc")
+    assert kwargs["regime_windows_spec"] is None
+
 
 def test_regime_timeframe_override_aligns_without_lookahead(monkeypatch):
-    trade = pd.DataFrame({'open': [100.0, 101.0, 102.0, 103.0], 'high': [101.0, 102.0, 103.0, 104.0], 'low': [99.0, 100.0, 101.0, 102.0], 'close': [100.0, 101.0, 102.0, 103.0], 'volume': [1000.0] * 4}, index=pd.to_datetime(['2024-01-01 12:00:00+00:00', '2024-01-02 12:00:00+00:00', '2024-01-03 11:00:00+00:00', '2024-01-03 12:00:00+00:00']))
-    regime_source = pd.DataFrame({'open': [1.0, 2.0, 3.0], 'high': [1.0, 2.0, 3.0], 'low': [1.0, 2.0, 3.0], 'close': [1.0, 2.0, 3.0], 'volume': [1000.0, 1000.0, 1000.0]}, index=pd.to_datetime(['2024-01-01 00:00:00+00:00', '2024-01-02 00:00:00+00:00', '2024-01-03 12:00:00+00:00']))
+    trade = pd.DataFrame(
+        {"open": [100.0, 101.0, 102.0, 103.0],
+         "high": [101.0, 102.0, 103.0, 104.0],
+         "low": [99.0, 100.0, 101.0, 102.0],
+         "close": [100.0, 101.0, 102.0, 103.0],
+         "volume": [1000.0] * 4},
+        index=pd.to_datetime([
+            "2024-01-01 12:00:00+00:00",
+            "2024-01-02 12:00:00+00:00",
+            "2024-01-03 11:00:00+00:00",
+            "2024-01-03 12:00:00+00:00",
+        ]),
+    )
+    regime_source = pd.DataFrame(
+        {"open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
+         "close": [1.0, 2.0, 3.0], "volume": [1000.0, 1000.0, 1000.0]},
+        index=pd.to_datetime([
+            "2024-01-01 00:00:00+00:00",
+            "2024-01-02 00:00:00+00:00",
+            "2024-01-03 12:00:00+00:00",
+        ]),
+    )
 
     def fake_load(symbol, timeframe, start_date=None):
-        assert symbol == 'BTC/USDT'
-        assert timeframe == '1d'
-        assert start_date == '2024-01-01'
+        assert symbol == "BTC/USDT"
+        assert timeframe == "1d"
+        assert start_date == "2024-01-01"
         return regime_source.copy()
 
     def fake_ensure(df, *, period=14, adx_threshold=20.0, windows_spec=None):
         assert period == 14
         assert adx_threshold == 20.0
         assert windows_spec == COMPOSITE_SPEC
-        df['regime'] = ['macro_row0', 'macro_row1', 'macro_row2']
-        df['regime_score'] = [0.1, 0.5, 0.9]
-        df['adx'] = [11.0, 19.0, 29.0]
-        df['plus_di'] = [4.0, 6.0, 8.0]
-        df['minus_di'] = [6.0, 4.0, 2.0]
-    monkeypatch.setattr(run_backtest, 'load_cached_data', fake_load)
-    monkeypatch.setattr(run_backtest, 'ensure_regime_columns', fake_ensure)
-    out = run_backtest._apply_regime_timeframe_override(trade, 'BTC/USDT', '1h', '1d', '2024-01-01', regime_period=14, regime_adx_threshold=20.0, regime_windows_spec=COMPOSITE_SPEC)
+        df["regime"] = ["macro_row0", "macro_row1", "macro_row2"]
+        df["regime_score"] = [0.1, 0.5, 0.9]
+        df["adx"] = [11.0, 19.0, 29.0]
+        df["plus_di"] = [4.0, 6.0, 8.0]
+        df["minus_di"] = [6.0, 4.0, 2.0]
+
+    monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
+    monkeypatch.setattr(run_backtest, "ensure_regime_columns", fake_ensure)
+
+    out = run_backtest._apply_regime_timeframe_override(
+        trade,
+        "BTC/USDT",
+        "1h",
+        "1d",
+        "2024-01-01",
+        regime_period=14,
+        regime_adx_threshold=20.0,
+        regime_windows_spec=COMPOSITE_SPEC,
+    )
+
     assert out is not None
-    assert out['regime'].tolist() == ['', 'macro_row0', 'macro_row0', 'macro_row1']
-    assert out['adx'].tolist() == [0.0, 11.0, 11.0, 19.0]
+    assert out["regime"].tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
+    assert out["adx"].tolist() == [0.0, 11.0, 11.0, 19.0]
+
 
 def test_profile_label_series_cross_timeframe_aligns_without_lookahead(monkeypatch):
-    trade_index = pd.to_datetime(['2024-01-01 12:00:00+00:00', '2024-01-02 12:00:00+00:00', '2024-01-03 11:00:00+00:00', '2024-01-03 12:00:00+00:00'])
-    trade = pd.DataFrame({'close': [100.0, 101.0, 102.0, 103.0]}, index=trade_index)
-    regime_source = pd.DataFrame({'open': [1.0, 2.0, 3.0], 'high': [1.0, 2.0, 3.0], 'low': [1.0, 2.0, 3.0], 'close': [1.0, 2.0, 3.0], 'volume': [1000.0, 1000.0, 1000.0]}, index=pd.to_datetime(['2024-01-01 00:00:00+00:00', '2024-01-02 00:00:00+00:00', '2024-01-03 12:00:00+00:00']))
+    trade_index = pd.to_datetime([
+        "2024-01-01 12:00:00+00:00",
+        "2024-01-02 12:00:00+00:00",
+        "2024-01-03 11:00:00+00:00",
+        "2024-01-03 12:00:00+00:00",
+    ])
+    trade = pd.DataFrame({"close": [100.0, 101.0, 102.0, 103.0]}, index=trade_index)
+    regime_source = pd.DataFrame(
+        {"open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
+         "close": [1.0, 2.0, 3.0], "volume": [1000.0, 1000.0, 1000.0]},
+        index=pd.to_datetime([
+            "2024-01-01 00:00:00+00:00",
+            "2024-01-02 00:00:00+00:00",
+            "2024-01-03 12:00:00+00:00",
+        ]),
+    )
 
     def fake_load(symbol, timeframe, start_date=None):
-        assert symbol == 'BTC/USDT'
-        assert timeframe == '1d'
-        assert start_date == '2024-01-01'
+        assert symbol == "BTC/USDT"
+        assert timeframe == "1d"
+        assert start_date == "2024-01-01"
         return regime_source.copy()
-    monkeypatch.setattr(run_backtest, 'load_cached_data', fake_load)
-    monkeypatch.setattr(run_backtest, 'compute_regime_composite', lambda df, period=20, thresholds=None: pd.DataFrame({'regime': ['macro_row0', 'macro_row1', 'macro_row2']}, index=df.index))
-    out = run_backtest._profile_label_series(trade, 'BTC/USDT', '1h', '1d', '2024-01-01', {'classifier': 'composite', 'period': 20})
+
+    monkeypatch.setattr(run_backtest, "load_cached_data", fake_load)
+    monkeypatch.setattr(
+        run_backtest, "compute_regime_composite",
+        lambda df, period=20, thresholds=None: pd.DataFrame(
+            {"regime": ["macro_row0", "macro_row1", "macro_row2"]}, index=df.index
+        ),
+    )
+
+    out = run_backtest._profile_label_series(
+        trade, "BTC/USDT", "1h", "1d", "2024-01-01",
+        {"classifier": "composite", "period": 20},
+    )
+
     assert out is not None
-    assert out.tolist() == ['', 'macro_row0', 'macro_row0', 'macro_row1']
+    assert out.tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
+
+
+
 
 def _run_main(monkeypatch, argv):
-    monkeypatch.setattr(sys, 'argv', ['run_backtest.py', *argv])
+    monkeypatch.setattr(sys, "argv", ["run_backtest.py", *argv])
     return run_backtest.main()
+
 
 def test_cli_rejects_windows_spec_with_non_single_mode(monkeypatch):
     with pytest.raises(SystemExit):
-        _run_main(monkeypatch, ['--mode', 'compare', '--strategy', 'sma_crossover', '--regime-windows-spec-json', json.dumps(COMPOSITE_SPEC)])
+        _run_main(monkeypatch, [
+            "--mode", "compare", "--strategy", "sma_crossover",
+            "--regime-windows-spec-json", json.dumps(COMPOSITE_SPEC),
+        ])
+
 
 def test_cli_rejects_malformed_windows_spec(monkeypatch):
     with pytest.raises(SystemExit):
-        _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'sma_crossover', '--regime-windows-spec-json', '{not valid json'])
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "sma_crossover",
+            "--regime-windows-spec-json", "{not valid json",
+        ])
+
 
 def test_cli_rejects_windows_spec_with_config(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
-        _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'hl-temacb-btc', '--config', _composite_config(tmp_path), '--regime-windows-spec-json', json.dumps(COMPOSITE_SPEC)])
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "hl-temacb-btc",
+            "--config", _composite_config(tmp_path),
+            "--regime-windows-spec-json", json.dumps(COMPOSITE_SPEC),
+        ])
+
 
 def test_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
     seen = {}
 
     class SpyBacktester:
-
         def __init__(self, *args, regime_windows_spec=None, **kwargs):
-            seen['regime_windows_spec'] = regime_windows_spec
+            seen["regime_windows_spec"] = regime_windows_spec
 
         def run(self, df, **kwargs):
-            return {'strategy_name': 'sma_crossover', 'symbol': 'BTC/USDT', 'timeframe': '1d', 'start_date': str(df.index[0]), 'end_date': str(df.index[-1]), 'initial_capital': 1000.0, 'final_capital': 1000.0, 'total_return_pct': 0.0, 'annual_return_pct': 0.0, 'sharpe_ratio': 0.0, 'sortino_ratio': 0.0, 'max_drawdown_pct': 0.0, 'calmar_ratio': 0.0, 'volatility_pct': 0.0, 'win_rate': 0.0, 'profit_factor': 0.0, 'total_trades': 0, 'avg_win_pct': 0.0, 'avg_loss_pct': 0.0, 'trades': [], 'params': {}}
-    df = pd.DataFrame({'open': [100.0] * 60, 'high': [101.0] * 60, 'low': [99.0] * 60, 'close': [100.0] * 60, 'volume': [1000.0] * 60}, index=pd.date_range('2024-01-01', periods=60, freq='D'))
-    monkeypatch.setattr(run_backtest, 'Backtester', SpyBacktester)
-    monkeypatch.setattr(run_backtest, 'load_cached_data', lambda *a, **kw: df)
-    _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'sma_crossover', '--regime-enabled', '--regime-windows-spec-json', json.dumps(COMPOSITE_SPEC)])
-    spec = seen.get('regime_windows_spec')
-    assert spec is not None, 'windows spec did not thread to the Backtester'
-    assert spec['medium']['classifier'] == 'composite'
-    assert spec['medium']['period'] == 20
-_ADX_SPEC = {'medium': {'classifier': 'adx', 'period': 14}}
-_COMPOSITE_PRIMARY_WITH_ADX = {'medium': {'classifier': 'composite', 'period': 30}, 'short': {'classifier': 'adx', 'period': 7}}
-_COMPOSITE_NO_MEDIUM = {'slow': {'classifier': 'composite', 'period': 40}}
+            return {
+                "strategy_name": "sma_crossover", "symbol": "BTC/USDT",
+                "timeframe": "1d", "start_date": str(df.index[0]),
+                "end_date": str(df.index[-1]), "initial_capital": 1000.0,
+                "final_capital": 1000.0, "total_return_pct": 0.0,
+                "annual_return_pct": 0.0, "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0, "max_drawdown_pct": 0.0,
+                "calmar_ratio": 0.0, "volatility_pct": 0.0, "win_rate": 0.0,
+                "profit_factor": 0.0, "total_trades": 0, "avg_win_pct": 0.0,
+                "avg_loss_pct": 0.0, "trades": [], "params": {},
+            }
+
+    df = pd.DataFrame(
+        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
+         "close": [100.0] * 60, "volume": [1000.0] * 60},
+        index=pd.date_range("2024-01-01", periods=60, freq="D"),
+    )
+    monkeypatch.setattr(run_backtest, "Backtester", SpyBacktester)
+    monkeypatch.setattr(run_backtest, "load_cached_data", lambda *a, **kw: df)
+
+    _run_main(monkeypatch, [
+        "--mode", "single", "--strategy", "sma_crossover",
+        "--regime-enabled",
+        "--regime-windows-spec-json", json.dumps(COMPOSITE_SPEC),
+    ])
+    spec = seen.get("regime_windows_spec")
+    assert spec is not None, "windows spec did not thread to the Backtester"
+    assert spec["medium"]["classifier"] == "composite"
+    assert spec["medium"]["period"] == 20
+
+
+
+
+_ADX_SPEC = {"medium": {"classifier": "adx", "period": 14}}
+_COMPOSITE_PRIMARY_WITH_ADX = {
+    "medium": {"classifier": "composite", "period": 30},
+    "short": {"classifier": "adx", "period": 7},
+}
+_COMPOSITE_NO_MEDIUM = {"slow": {"classifier": "composite", "period": 40}}
+
 
 def test_primary_classifier_none_spec_is_adx():
-    assert run_backtest._primary_window_classifier(None) == 'adx'
-    assert run_backtest._primary_window_classifier({}) == 'adx'
+    assert run_backtest._primary_window_classifier(None) == "adx"
+    assert run_backtest._primary_window_classifier({}) == "adx"
+
 
 def test_primary_classifier_medium_first():
-    assert run_backtest._primary_window_classifier(COMPOSITE_SPEC) == 'composite'
+    assert run_backtest._primary_window_classifier(COMPOSITE_SPEC) == "composite"
+
 
 def test_primary_classifier_mixed_spec_uses_medium_not_other_window():
-    assert run_backtest._primary_window_classifier(_COMPOSITE_PRIMARY_WITH_ADX) == 'composite'
+    assert run_backtest._primary_window_classifier(
+        _COMPOSITE_PRIMARY_WITH_ADX) == "composite"
+
 
 def test_primary_classifier_no_medium_uses_sorted_first():
-    assert run_backtest._primary_window_classifier(_COMPOSITE_NO_MEDIUM) == 'composite'
-    assert run_backtest._primary_window_classifier({'z': {'classifier': 'composite'}, 'a': {'classifier': 'adx'}}) == 'adx'
+    assert run_backtest._primary_window_classifier(_COMPOSITE_NO_MEDIUM) == "composite"
+    assert run_backtest._primary_window_classifier(
+        {"z": {"classifier": "composite"}, "a": {"classifier": "adx"}}) == "adx"
+
 
 def test_validate_accepts_adx_label_no_spec():
-    run_backtest._validate_allowed_regimes_vocabulary(['trending_up', 'ranging'], None)
+    run_backtest._validate_allowed_regimes_vocabulary(["trending_up", "ranging"], None)
+
 
 def test_validate_accepts_composite_label_with_composite_spec():
-    run_backtest._validate_allowed_regimes_vocabulary(['ranging_quiet'], COMPOSITE_SPEC)
-    run_backtest._validate_allowed_regimes_vocabulary(['trending_up_clean', 'ranging_directional'], COMPOSITE_SPEC)
+    run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], COMPOSITE_SPEC)
+    run_backtest._validate_allowed_regimes_vocabulary(
+        ["trending_up_clean", "ranging_directional"], COMPOSITE_SPEC)
+
 
 def test_validate_rejects_composite_label_without_spec():
     with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(['ranging_quiet'], None)
+        run_backtest._validate_allowed_regimes_vocabulary(["ranging_quiet"], None)
     with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(['trending_up_clean'], _ADX_SPEC)
+        run_backtest._validate_allowed_regimes_vocabulary(["trending_up_clean"], _ADX_SPEC)
+
 
 def test_validate_rejects_bare_adx_label_with_composite_primary():
     with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(['trending_up'], COMPOSITE_SPEC)
+        run_backtest._validate_allowed_regimes_vocabulary(["trending_up"], COMPOSITE_SPEC)
     with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(['trending_up'], _COMPOSITE_PRIMARY_WITH_ADX)
+        run_backtest._validate_allowed_regimes_vocabulary(
+            ["trending_up"], _COMPOSITE_PRIMARY_WITH_ADX)
+
 
 def test_validate_rejects_garbage_label():
     with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(['not_a_regime'], None)
+        run_backtest._validate_allowed_regimes_vocabulary(["not_a_regime"], None)
+
 
 def test_validate_noop_on_empty():
     run_backtest._validate_allowed_regimes_vocabulary(None, COMPOSITE_SPEC)
     run_backtest._validate_allowed_regimes_vocabulary([], COMPOSITE_SPEC)
 
+
 def test_validate_compound_partial_invalid_rejects():
     with pytest.raises(SystemExit):
-        run_backtest._validate_allowed_regimes_vocabulary(['ranging_quiet', 'trending_up'], COMPOSITE_SPEC)
+        run_backtest._validate_allowed_regimes_vocabulary(
+            ["ranging_quiet", "trending_up"], COMPOSITE_SPEC)
+
 
 def test_cli_composite_label_reaches_backtester_with_spec(monkeypatch):
     seen = {}
 
     class SpyBacktester:
-
         def __init__(self, *args, regime_windows_spec=None, allowed_regimes=None, **kwargs):
-            seen['regime_windows_spec'] = regime_windows_spec
-            seen['allowed_regimes'] = allowed_regimes
+            seen["regime_windows_spec"] = regime_windows_spec
+            seen["allowed_regimes"] = allowed_regimes
 
         def run(self, df, **kwargs):
-            return {'strategy_name': 'sma_crossover', 'symbol': 'BTC/USDT', 'timeframe': '1d', 'start_date': str(df.index[0]), 'end_date': str(df.index[-1]), 'initial_capital': 1000.0, 'final_capital': 1000.0, 'total_return_pct': 0.0, 'annual_return_pct': 0.0, 'sharpe_ratio': 0.0, 'sortino_ratio': 0.0, 'max_drawdown_pct': 0.0, 'calmar_ratio': 0.0, 'volatility_pct': 0.0, 'win_rate': 0.0, 'profit_factor': 0.0, 'total_trades': 0, 'avg_win_pct': 0.0, 'avg_loss_pct': 0.0, 'trades': [], 'params': {}}
-    df = pd.DataFrame({'open': [100.0] * 60, 'high': [101.0] * 60, 'low': [99.0] * 60, 'close': [100.0] * 60, 'volume': [1000.0] * 60}, index=pd.date_range('2024-01-01', periods=60, freq='D'))
-    monkeypatch.setattr(run_backtest, 'Backtester', SpyBacktester)
-    monkeypatch.setattr(run_backtest, 'load_cached_data', lambda *a, **kw: df)
-    _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'sma_crossover', '--regime-enabled', '--regime-windows-spec-json', json.dumps(COMPOSITE_SPEC), '--allowed-regimes', 'ranging_quiet', '--allowed-regimes', 'trending_up_clean'])
-    assert seen.get('allowed_regimes') == ['ranging_quiet', 'trending_up_clean']
-    assert seen['regime_windows_spec']['medium']['classifier'] == 'composite'
+            return {
+                "strategy_name": "sma_crossover", "symbol": "BTC/USDT",
+                "timeframe": "1d", "start_date": str(df.index[0]),
+                "end_date": str(df.index[-1]), "initial_capital": 1000.0,
+                "final_capital": 1000.0, "total_return_pct": 0.0,
+                "annual_return_pct": 0.0, "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0, "max_drawdown_pct": 0.0,
+                "calmar_ratio": 0.0, "volatility_pct": 0.0, "win_rate": 0.0,
+                "profit_factor": 0.0, "total_trades": 0, "avg_win_pct": 0.0,
+                "avg_loss_pct": 0.0, "trades": [], "params": {},
+            }
+
+    df = pd.DataFrame(
+        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
+         "close": [100.0] * 60, "volume": [1000.0] * 60},
+        index=pd.date_range("2024-01-01", periods=60, freq="D"),
+    )
+    monkeypatch.setattr(run_backtest, "Backtester", SpyBacktester)
+    monkeypatch.setattr(run_backtest, "load_cached_data", lambda *a, **kw: df)
+
+    _run_main(monkeypatch, [
+        "--mode", "single", "--strategy", "sma_crossover",
+        "--regime-enabled",
+        "--regime-windows-spec-json", json.dumps(COMPOSITE_SPEC),
+        "--allowed-regimes", "ranging_quiet",
+        "--allowed-regimes", "trending_up_clean",
+    ])
+    assert seen.get("allowed_regimes") == ["ranging_quiet", "trending_up_clean"]
+    assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
 
 def test_cli_composite_label_rejected_without_spec(monkeypatch):
     with pytest.raises(SystemExit):
-        _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'sma_crossover', '--regime-enabled', '--allowed-regimes', 'ranging_quiet'])
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "sma_crossover",
+            "--regime-enabled",
+            "--allowed-regimes", "ranging_quiet",
+        ])
+
+
+
 
 def _config_with_regime(tmp_path, *, classifier, allowed_regimes=None):
-    strat = {'id': 'hl-temacb-btc', 'type': 'perps', 'platform': 'hyperliquid', 'open_strategy': {'name': 'sma_crossover'}, 'close_strategy': {'name': 'tiered_tp_atr', 'params': {'tp_tiers': [{'atr_multiple': 2.0, 'close_fraction': 1.0}]}}}
+    strat = {
+        "id": "hl-temacb-btc", "type": "perps", "platform": "hyperliquid",
+        "open_strategy": {"name": "sma_crossover"},
+        "close_strategy": {"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 1.0}]}},
+    }
     if allowed_regimes is not None:
-        strat['allowed_regimes'] = allowed_regimes
-    return _write_config(tmp_path, {'config_version': 15, 'regime': {'enabled': True, 'period': 14, 'adx_threshold': 20.0, 'windows': {'medium': {'classifier': classifier, 'period': 30}}}, 'strategies': [strat]})
+        strat["allowed_regimes"] = allowed_regimes
+    return _write_config(tmp_path, {
+        "config_version": 15,
+        "regime": {
+            "enabled": True, "period": 14, "adx_threshold": 20.0,
+            "windows": {"medium": {"classifier": classifier, "period": 30}},
+        },
+        "strategies": [strat],
+    })
+
 
 def test_config_rejects_adx_label_under_composite_primary(monkeypatch, tmp_path):
-    cfg = _config_with_regime(tmp_path, classifier='composite', allowed_regimes=['ranging'])
+    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=["ranging"])
     with pytest.raises(SystemExit):
-        _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'hl-temacb-btc', '--config', cfg])
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+        ])
+
 
 def test_config_rejects_composite_label_under_adx_primary(monkeypatch, tmp_path):
-    cfg = _config_with_regime(tmp_path, classifier='adx', allowed_regimes=['ranging_quiet'])
+    cfg = _config_with_regime(tmp_path, classifier="adx", allowed_regimes=["ranging_quiet"])
     with pytest.raises(SystemExit):
-        _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'hl-temacb-btc', '--config', cfg])
+        _run_main(monkeypatch, [
+            "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+        ])
+
 
 def _spy_backtester_seen(monkeypatch, df):
     seen = {}
 
     class SpyBacktester:
-
         def __init__(self, *args, regime_windows_spec=None, allowed_regimes=None, **kwargs):
-            seen['regime_windows_spec'] = regime_windows_spec
-            seen['allowed_regimes'] = allowed_regimes
+            seen["regime_windows_spec"] = regime_windows_spec
+            seen["allowed_regimes"] = allowed_regimes
 
         def run(self, df, **kwargs):
-            return {'strategy_name': 'tema_cross_bd', 'symbol': 'BTC/USDT', 'timeframe': '1d', 'start_date': str(df.index[0]), 'end_date': str(df.index[-1]), 'initial_capital': 1000.0, 'final_capital': 1000.0, 'total_return_pct': 0.0, 'annual_return_pct': 0.0, 'sharpe_ratio': 0.0, 'sortino_ratio': 0.0, 'max_drawdown_pct': 0.0, 'calmar_ratio': 0.0, 'volatility_pct': 0.0, 'win_rate': 0.0, 'profit_factor': 0.0, 'total_trades': 0, 'avg_win_pct': 0.0, 'avg_loss_pct': 0.0, 'trades': [], 'params': {}}
-    monkeypatch.setattr(run_backtest, 'Backtester', SpyBacktester)
-    monkeypatch.setattr(run_backtest, 'load_cached_data', lambda *a, **kw: df)
+            return {
+                "strategy_name": "tema_cross_bd", "symbol": "BTC/USDT",
+                "timeframe": "1d", "start_date": str(df.index[0]),
+                "end_date": str(df.index[-1]), "initial_capital": 1000.0,
+                "final_capital": 1000.0, "total_return_pct": 0.0,
+                "annual_return_pct": 0.0, "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0, "max_drawdown_pct": 0.0,
+                "calmar_ratio": 0.0, "volatility_pct": 0.0, "win_rate": 0.0,
+                "profit_factor": 0.0, "total_trades": 0, "avg_win_pct": 0.0,
+                "avg_loss_pct": 0.0, "trades": [], "params": {},
+            }
+
+    monkeypatch.setattr(run_backtest, "Backtester", SpyBacktester)
+    monkeypatch.setattr(run_backtest, "load_cached_data", lambda *a, **kw: df)
     return seen
 
+
 def test_config_matching_composite_label_runs(monkeypatch, tmp_path):
-    df = pd.DataFrame({'open': [100.0] * 60, 'high': [101.0] * 60, 'low': [99.0] * 60, 'close': [100.0] * 60, 'volume': [1000.0] * 60}, index=pd.date_range('2024-01-01', periods=60, freq='D'))
+    df = pd.DataFrame(
+        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
+         "close": [100.0] * 60, "volume": [1000.0] * 60},
+        index=pd.date_range("2024-01-01", periods=60, freq="D"),
+    )
     seen = _spy_backtester_seen(monkeypatch, df)
-    cfg = _config_with_regime(tmp_path, classifier='composite', allowed_regimes=['ranging_quiet'])
-    _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'hl-temacb-btc', '--config', cfg])
-    assert seen['allowed_regimes'] == ['ranging_quiet']
-    assert seen['regime_windows_spec']['medium']['classifier'] == 'composite'
+    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=["ranging_quiet"])
+    _run_main(monkeypatch, [
+        "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+    ])
+    assert seen["allowed_regimes"] == ["ranging_quiet"]
+    assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
 
 def test_config_absent_allowed_regimes_runs(monkeypatch, tmp_path):
-    df = pd.DataFrame({'open': [100.0] * 60, 'high': [101.0] * 60, 'low': [99.0] * 60, 'close': [100.0] * 60, 'volume': [1000.0] * 60}, index=pd.date_range('2024-01-01', periods=60, freq='D'))
+    df = pd.DataFrame(
+        {"open": [100.0] * 60, "high": [101.0] * 60, "low": [99.0] * 60,
+         "close": [100.0] * 60, "volume": [1000.0] * 60},
+        index=pd.date_range("2024-01-01", periods=60, freq="D"),
+    )
     seen = _spy_backtester_seen(monkeypatch, df)
-    cfg = _config_with_regime(tmp_path, classifier='composite', allowed_regimes=None)
-    _run_main(monkeypatch, ['--mode', 'single', '--strategy', 'hl-temacb-btc', '--config', cfg])
-    assert seen['allowed_regimes'] is None
-    assert seen['regime_windows_spec']['medium']['classifier'] == 'composite'
+    cfg = _config_with_regime(tmp_path, classifier="composite", allowed_regimes=None)
+    _run_main(monkeypatch, [
+        "--mode", "single", "--strategy", "hl-temacb-btc", "--config", cfg,
+    ])
+    assert seen["allowed_regimes"] is None
+    assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
+
+
+
+
 from backtester import _regime_primary_labels
-_COMPOSITE_SL_BLOCK = {'trend_regime': {'trending_up_clean': {'atr_multiple': 2.0}, 'trending_up_choppy': {'atr_multiple': 1.8}, 'trending_down_clean': {'atr_multiple': 2.0}, 'trending_down_choppy': {'atr_multiple': 1.8}, 'ranging_quiet': {'atr_multiple': 1.2}, 'ranging_volatile': {'atr_multiple': 1.5}, 'ranging_directional': {'atr_multiple': 1.4}, 'ranging_directional_up': {'atr_multiple': 1.4}, 'ranging_directional_down': {'atr_multiple': 1.4}}}
-_ADX_SL_BLOCK = {'trend_regime': {'trending_up': {'atr_multiple': 2.0}, 'trending_down': {'atr_multiple': 2.0}, 'ranging': {'atr_multiple': 1.5}}}
-_COMPOSITE_TRAIL_BLOCK = {'trend_regime': {k: {'atr_multiple': v['atr_multiple'] + 0.5} for k, v in _COMPOSITE_SL_BLOCK['trend_regime'].items()}}
+
+_COMPOSITE_SL_BLOCK = {"trend_regime": {
+    "trending_up_clean": {"atr_multiple": 2.0},
+    "trending_up_choppy": {"atr_multiple": 1.8},
+    "trending_down_clean": {"atr_multiple": 2.0},
+    "trending_down_choppy": {"atr_multiple": 1.8},
+    "ranging_quiet": {"atr_multiple": 1.2},
+    "ranging_volatile": {"atr_multiple": 1.5},
+    "ranging_directional": {"atr_multiple": 1.4},
+    "ranging_directional_up": {"atr_multiple": 1.4},
+    "ranging_directional_down": {"atr_multiple": 1.4},
+}}
+_ADX_SL_BLOCK = {"trend_regime": {
+    "trending_up": {"atr_multiple": 2.0},
+    "trending_down": {"atr_multiple": 2.0},
+    "ranging": {"atr_multiple": 1.5},
+}}
+_COMPOSITE_TRAIL_BLOCK = {"trend_regime": {
+    k: {"atr_multiple": v["atr_multiple"] + 0.5}
+    for k, v in _COMPOSITE_SL_BLOCK["trend_regime"].items()
+}}
+
 
 def test_regime_primary_labels_helper():
     labels = _regime_primary_labels(COMPOSITE_SPEC)
     assert set(labels) == set(VALID_LABELS_COMPOSITE)
-    assert _regime_primary_labels({'medium': {'classifier': 'adx', 'period': 14}}) is None
+    assert _regime_primary_labels({"medium": {"classifier": "adx", "period": 14}}) is None
     assert _regime_primary_labels(None) is None
-    assert set(_regime_primary_labels({'medium': {'classifier': 'composite', 'period': 30}, 'short': {'classifier': 'adx', 'period': 7}})) == set(VALID_LABELS_COMPOSITE)
+    assert set(_regime_primary_labels({
+        "medium": {"classifier": "composite", "period": 30},
+        "short": {"classifier": "adx", "period": 7},
+    })) == set(VALID_LABELS_COMPOSITE)
+
 
 def _bt_with_sl_regime(spec, block, *, trailing=False):
-    kw = {'trailing_stop_atr_regime': block} if trailing else {'stop_loss_atr_regime': block}
-    return Backtester(initial_capital=1000.0, regime_enabled=True, regime_windows_spec=spec, **kw)
+    kw = {"trailing_stop_atr_regime": block} if trailing else {"stop_loss_atr_regime": block}
+    return Backtester(initial_capital=1000.0, regime_enabled=True,
+                      regime_windows_spec=spec, **kw)
+
 
 def test_composite_keyed_sl_regime_parses_and_resolves():
     bt = _bt_with_sl_regime(COMPOSITE_SPEC, _COMPOSITE_SL_BLOCK)
-    assert bt._stop_loss_regime_block.resolve('ranging_quiet').atr == 1.2
-    assert bt._stop_loss_regime_block.resolve('trending_up_clean').atr == 2.0
+    assert bt._stop_loss_regime_block.resolve("ranging_quiet").atr == 1.2
+    assert bt._stop_loss_regime_block.resolve("trending_up_clean").atr == 2.0
+
 
 def test_composite_primary_adx_keyed_sl_regime_rejects():
     with pytest.raises(ValueError) as exc:
         _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK)
     msg = str(exc.value)
-    assert 'unknown regime label' in msg
-    assert 'ranging_quiet' in msg or 'trending_up_clean' in msg
+    assert "unknown regime label" in msg
+    assert "ranging_quiet" in msg or "trending_up_clean" in msg
+
 
 def test_adx_primary_adx_keyed_sl_regime_byte_identical():
-    bt_adx = _bt_with_sl_regime({'medium': {'classifier': 'adx', 'period': 14}}, _ADX_SL_BLOCK)
-    assert bt_adx._stop_loss_regime_block.resolve('ranging').atr == 1.5
+    bt_adx = _bt_with_sl_regime({"medium": {"classifier": "adx", "period": 14}}, _ADX_SL_BLOCK)
+    assert bt_adx._stop_loss_regime_block.resolve("ranging").atr == 1.5
     bt_legacy = _bt_with_sl_regime(None, _ADX_SL_BLOCK)
-    assert bt_legacy._stop_loss_regime_block.resolve('trending_up').atr == 2.0
+    assert bt_legacy._stop_loss_regime_block.resolve("trending_up").atr == 2.0
+
 
 def test_composite_primary_adx_keyed_sl_regime_does_not_silently_default():
     with pytest.raises(ValueError):
         _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK)
 
+
 def test_composite_keyed_trailing_regime_parses_and_resolves():
     bt = _bt_with_sl_regime(COMPOSITE_SPEC, _COMPOSITE_TRAIL_BLOCK, trailing=True)
-    assert bt._trailing_stop_regime_block.resolve('ranging_quiet').atr == 1.7
+    assert bt._trailing_stop_regime_block.resolve("ranging_quiet").atr == 1.7
+
 
 def test_composite_primary_adx_keyed_trailing_rejects():
     with pytest.raises(ValueError):
         _bt_with_sl_regime(COMPOSITE_SPEC, _ADX_SL_BLOCK, trailing=True)
 
+
 def test_validator_accepts_composite_sl_with_sl_after():
-    close_ref = {'name': 'tiered_tp_atr', 'params': {'tp_tiers': [{'atr_multiple': 2.0, 'close_fraction': 0.5}, {'atr_multiple': 3.0, 'close_fraction': 1.0, 'sl_after': {'kind': 'breakeven'}}]}}
-    bt = Backtester(initial_capital=1000.0, regime_enabled=True, regime_windows_spec=COMPOSITE_SPEC, stop_loss_atr_regime=_COMPOSITE_SL_BLOCK, close_strategies=[close_ref])
-    assert bt._stop_loss_regime_block.resolve('ranging_volatile').atr == 1.5
-_ADX_TP_LABELS = ['trending_up', 'trending_down', 'ranging']
+    close_ref = {"name": "tiered_tp_atr", "params": {
+        "tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 0.5},
+            {"atr_multiple": 3.0, "close_fraction": 1.0, "sl_after": {"kind": "breakeven"}},
+        ],
+    }}
+    bt = Backtester(
+        initial_capital=1000.0, regime_enabled=True,
+        regime_windows_spec=COMPOSITE_SPEC,
+        stop_loss_atr_regime=_COMPOSITE_SL_BLOCK,
+        close_strategies=[close_ref],
+    )
+    assert bt._stop_loss_regime_block.resolve("ranging_volatile").atr == 1.5
+
+
+
+_ADX_TP_LABELS = ["trending_up", "trending_down", "ranging"]
 _COMPOSITE_TP_LABELS = list(VALID_LABELS_COMPOSITE)
 
+
 def _regime_tp_tier(labels, atr, frac):
-    return {'trend_regime': {l: {'atr_multiple': atr, 'close_fraction': frac} for l in labels}}
+    return {"trend_regime": {l: {"atr_multiple": atr, "close_fraction": frac} for l in labels}}
+
 
 def _regime_tiered_ref(labels):
-    return {'name': 'tiered_tp_atr_regime', 'params': {'tp_tiers': [_regime_tp_tier(labels, 2.0, 0.5), _regime_tp_tier(labels, 3.0, 1.0)]}}
+    return {"name": "tiered_tp_atr_regime", "params": {"tp_tiers": [
+        _regime_tp_tier(labels, 2.0, 0.5),
+        _regime_tp_tier(labels, 3.0, 1.0),
+    ]}}
+
 
 def _bt_with_tiered_regime(spec, labels):
-    return Backtester(initial_capital=1000.0, regime_enabled=True, regime_windows_spec=spec, close_strategies=[_regime_tiered_ref(labels)])
+    return Backtester(initial_capital=1000.0, regime_enabled=True,
+                      regime_windows_spec=spec,
+                      close_strategies=[_regime_tiered_ref(labels)])
+
 
 def test_composite_keyed_tiered_tp_resolves():
     bt = _bt_with_tiered_regime(COMPOSITE_SPEC, _COMPOSITE_TP_LABELS)
-    fr = bt._sl_mod.parse_tp_tier_close_fractions([_regime_tiered_ref(_COMPOSITE_TP_LABELS)], regime='ranging_quiet')
+    fr = bt._sl_mod.parse_tp_tier_close_fractions(
+        [_regime_tiered_ref(_COMPOSITE_TP_LABELS)], regime="ranging_quiet")
     assert fr == [0.5, 1.0]
+
 
 def test_composite_primary_adx_keyed_tiered_tp_rejects():
     with pytest.raises(ValueError) as exc:
         _bt_with_tiered_regime(COMPOSITE_SPEC, _ADX_TP_LABELS)
-    assert 'tiered-TP' in str(exc.value) and 'unknown regime label' in str(exc.value)
+    assert "tiered-TP" in str(exc.value) and "unknown regime label" in str(exc.value)
+
 
 def test_adx_primary_composite_keyed_tiered_tp_rejects():
     with pytest.raises(ValueError):
-        _bt_with_tiered_regime({'medium': {'classifier': 'adx', 'period': 14}}, _COMPOSITE_TP_LABELS)
+        _bt_with_tiered_regime({"medium": {"classifier": "adx", "period": 14}},
+                               _COMPOSITE_TP_LABELS)
+
 
 def test_adx_keyed_tiered_tp_byte_identical():
-    bt_adx = _bt_with_tiered_regime({'medium': {'classifier': 'adx', 'period': 14}}, _ADX_TP_LABELS)
-    assert bt_adx._sl_mod.parse_tp_tier_close_fractions([_regime_tiered_ref(_ADX_TP_LABELS)], regime='ranging') == [0.5, 1.0]
+    bt_adx = _bt_with_tiered_regime({"medium": {"classifier": "adx", "period": 14}},
+                                    _ADX_TP_LABELS)
+    assert bt_adx._sl_mod.parse_tp_tier_close_fractions(
+        [_regime_tiered_ref(_ADX_TP_LABELS)], regime="ranging") == [0.5, 1.0]
     bt_legacy = _bt_with_tiered_regime(None, _ADX_TP_LABELS)
-    assert bt_legacy._sl_mod.parse_tp_tier_close_fractions([_regime_tiered_ref(_ADX_TP_LABELS)], regime='trending_up') == [0.5, 1.0]
+    assert bt_legacy._sl_mod.parse_tp_tier_close_fractions(
+        [_regime_tiered_ref(_ADX_TP_LABELS)], regime="trending_up") == [0.5, 1.0]
+
 
 def test_validate_regime_tiered_tp_labels_helper():
     _sl = _bt_with_tiered_regime(None, _ADX_TP_LABELS)._sl_mod
     assert _sl.validate_regime_tiered_tp_labels([_regime_tiered_ref(_ADX_TP_LABELS)]) == []
-    assert _sl.validate_regime_tiered_tp_labels([_regime_tiered_ref(_ADX_TP_LABELS)], labels=_COMPOSITE_TP_LABELS) != []
-    assert _sl.validate_regime_tiered_tp_labels([_regime_tiered_ref(_COMPOSITE_TP_LABELS)], labels=_COMPOSITE_TP_LABELS) == []
-    assert _sl.validate_regime_tiered_tp_labels([{'name': 'tiered_tp_atr', 'params': {'tp_tiers': [{'atr_multiple': 2.0, 'close_fraction': 0.5}, {'atr_multiple': 3.0, 'close_fraction': 1.0}]}}], labels=_COMPOSITE_TP_LABELS) == []
+    assert _sl.validate_regime_tiered_tp_labels(
+        [_regime_tiered_ref(_ADX_TP_LABELS)],
+        labels=_COMPOSITE_TP_LABELS) != []
+    assert _sl.validate_regime_tiered_tp_labels(
+        [_regime_tiered_ref(_COMPOSITE_TP_LABELS)],
+        labels=_COMPOSITE_TP_LABELS) == []
+    assert _sl.validate_regime_tiered_tp_labels(
+        [{"name": "tiered_tp_atr", "params": {"tp_tiers": [
+            {"atr_multiple": 2.0, "close_fraction": 0.5},
+            {"atr_multiple": 3.0, "close_fraction": 1.0}]}}],
+        labels=_COMPOSITE_TP_LABELS) == []
+
+
 
 def _partial_tiered_ref(labels, omit):
     kept = [l for l in labels if l != omit]
-    return {'name': 'tiered_tp_atr_regime', 'params': {'tp_tiers': [_regime_tp_tier(kept, 2.0, 0.5), _regime_tp_tier(kept, 3.0, 1.0)]}}
+    return {"name": "tiered_tp_atr_regime", "params": {"tp_tiers": [
+        _regime_tp_tier(kept, 2.0, 0.5),
+        _regime_tp_tier(kept, 3.0, 1.0),
+    ]}}
+
 
 def _bt_with_tiered_ref(spec, ref):
-    return Backtester(initial_capital=1000.0, regime_enabled=True, regime_windows_spec=spec, close_strategies=[ref])
+    return Backtester(initial_capital=1000.0, regime_enabled=True,
+                      regime_windows_spec=spec, close_strategies=[ref])
+
 
 def test_composite_primary_non_exhaustive_tiered_tp_rejects():
-    ref = _partial_tiered_ref(_COMPOSITE_TP_LABELS, 'ranging_directional')
+    ref = _partial_tiered_ref(_COMPOSITE_TP_LABELS, "ranging_directional")
     with pytest.raises(ValueError) as exc:
         _bt_with_tiered_ref(COMPOSITE_SPEC, ref)
     msg = str(exc.value)
-    assert 'tiered-TP' in msg
-    assert 'missing required regime labels' in msg
-    assert 'ranging_directional' in msg
+    assert "tiered-TP" in msg
+    assert "missing required regime labels" in msg
+    assert "ranging_directional" in msg
+
 
 def test_adx_primary_non_exhaustive_tiered_tp_rejects():
-    ref = _partial_tiered_ref(_ADX_TP_LABELS, 'ranging')
+    ref = _partial_tiered_ref(_ADX_TP_LABELS, "ranging")
     with pytest.raises(ValueError) as exc:
         _bt_with_tiered_ref(None, ref)
     msg = str(exc.value)
-    assert 'missing required regime labels' in msg
-    assert 'ranging' in msg
+    assert "missing required regime labels" in msg
+    assert "ranging" in msg
+
 
 def test_validate_regime_tiered_tp_labels_exhaustiveness_unit():
     _sl = _bt_with_tiered_regime(None, _ADX_TP_LABELS)._sl_mod
-    errs = _sl.validate_regime_tiered_tp_labels([_partial_tiered_ref(_COMPOSITE_TP_LABELS, 'ranging_volatile')], labels=_COMPOSITE_TP_LABELS)
-    assert errs and any(('missing required regime labels' in e for e in errs))
-    assert any(('ranging_volatile' in e for e in errs))
-    use_defaults_ref = {'name': 'tiered_tp_atr_regime', 'params': {'tp_tiers': [{'use_defaults': True, 'close_fraction': 1.0}]}}
-    assert _sl.validate_regime_tiered_tp_labels([use_defaults_ref], labels=_COMPOSITE_TP_LABELS) == []
-    assert _sl.validate_regime_tiered_tp_labels([_regime_tiered_ref(_COMPOSITE_TP_LABELS)], labels=_COMPOSITE_TP_LABELS) == []
+    errs = _sl.validate_regime_tiered_tp_labels(
+        [_partial_tiered_ref(_COMPOSITE_TP_LABELS, "ranging_volatile")],
+        labels=_COMPOSITE_TP_LABELS)
+    assert errs and any("missing required regime labels" in e for e in errs)
+    assert any("ranging_volatile" in e for e in errs)
+    use_defaults_ref = {"name": "tiered_tp_atr_regime", "params": {"tp_tiers": [
+        {"use_defaults": True, "close_fraction": 1.0}]}}
+    assert _sl.validate_regime_tiered_tp_labels(
+        [use_defaults_ref], labels=_COMPOSITE_TP_LABELS) == []
+    assert _sl.validate_regime_tiered_tp_labels(
+        [_regime_tiered_ref(_COMPOSITE_TP_LABELS)],
+        labels=_COMPOSITE_TP_LABELS) == []

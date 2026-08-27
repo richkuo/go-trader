@@ -45,7 +45,6 @@ func evaluateDailyLossLimit(pr *PortfolioRiskConfig, states map[string]*Strategy
 	if !st.Configured {
 		return st
 	}
-
 	if pr.DailyMaxLossUSD > 0 {
 		st.ThresholdUSD = pr.DailyMaxLossUSD
 	}
@@ -114,7 +113,6 @@ func dailyLossStatusNote(pr *PortfolioRiskConfig, states map[string]*StrategySta
 	case st.ThresholdUSD > 0:
 		note = fmt.Sprintf("\n🟢 daily loss limit armed: today $%.2f / threshold $%.2f", st.DailyPnL, st.ThresholdUSD)
 	}
-
 	if st.PctBasisMiss {
 		note += "\n" + dailyLossPctBasisMissWarning
 	}

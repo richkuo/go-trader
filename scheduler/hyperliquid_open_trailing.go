@@ -25,7 +25,6 @@ func armTrailingStopAtOpenNow(
 		mu.RUnlock()
 		return 0, ""
 	}
-
 	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 0 {
 		mu.RUnlock()
 		return 0, ""

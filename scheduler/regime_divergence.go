@@ -155,7 +155,6 @@ func (d *RegimeWindowDivergence) ResolveRaw(label string) []string {
 	} else {
 		switch onDiv {
 		case onDivergenceTrustShort, onDivergenceTrustMedium, onDivergenceAlertOnly:
-
 		default:
 			errs = append(errs, fmt.Sprintf("%s.on_divergence: must be %q, %q, or %q (got %q)",
 				label, onDivergenceTrustShort, onDivergenceTrustMedium, onDivergenceAlertOnly, onDiv))
@@ -186,12 +185,10 @@ func regimeLabelBias(label string, snapReturnEff float64) divergenceBias {
 	case "trending_down", "trending_down_clean", "trending_down_choppy":
 		return biasBearish
 	case "ranging_directional_up":
-
 		return biasBullish
 	case "ranging_directional_down":
 		return biasBearish
 	case "ranging_directional":
-
 		if snapReturnEff > 0 {
 			return biasBullish
 		}
@@ -200,7 +197,6 @@ func regimeLabelBias(label string, snapReturnEff float64) divergenceBias {
 		}
 		return biasNeutral
 	default:
-
 		return biasNeutral
 	}
 }
@@ -248,7 +244,6 @@ func classifyRegimeDivergence(shortLabel, mediumLabel string, shortReturnEff, me
 		result.OverrideDir = biasDirection(mediumBias)
 		result.TrustingWindow = "medium"
 	case onDivergenceAlertOnly:
-
 	}
 	return result
 }
@@ -284,7 +279,6 @@ func updateStrategyDivergenceState(s *StrategyState, result DivergenceResult) {
 	if s == nil {
 		return
 	}
-
 	if result.Kind != DivergenceSoft && result.Kind != DivergenceHard {
 		s.RegimeDivergence = nil
 		return

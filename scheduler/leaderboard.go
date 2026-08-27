@@ -214,7 +214,6 @@ func leaderboardAdjustedTotal(
 }
 
 func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, showType bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config, adjustedTotal float64) string {
-
 	sort.Slice(entries, func(i, j int) bool {
 		return leaderboardEntryBefore(entries[i], entries[j], true)
 	})
@@ -253,7 +252,6 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 			flat++
 		}
 	}
-
 	totalDisplayValue := totalValue
 	if adjustedTotal >= 0 {
 		totalDisplayValue = adjustedTotal
@@ -283,7 +281,6 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 		rowFmt = "%-18s %-6s %10s %10s %7s %4s %4s %4d %5s %7s\n"
 		labelMax = 18
 	} else {
-
 		header = fmt.Sprintf("%-26s %10s %10s %7s %4s %4s %4s %5s %7s",
 			"Strategy", "Value", "PnL", "PnL%", "Tf", "Int", "#T", "W/L", "Sharpe")
 		rowFmt = "%-26s %10s %10s %7s %4s %4s %4d %5s %7s\n"
@@ -341,7 +338,6 @@ func formatLeaderboardMessage(icon, title string, entries []LeaderboardEntry, sh
 }
 
 func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop bool, topN int, prices map[string]float64, regime *RegimeConfig, state *AppState, cfg *Config, configByID map[string]StrategyConfig, walletBalances map[SharedWalletKey]float64, accountShared map[SharedWalletKey][]string) string {
-
 	sorted := make([]LeaderboardEntry, len(entries))
 	copy(sorted, entries)
 	if isTop {
@@ -365,7 +361,6 @@ func formatAllTimeMessage(icon, title string, entries []LeaderboardEntry, isTop 
 }
 
 func PostLeaderboard(cfg *Config, state *AppState, prices map[string]float64, sharpeByStrategy map[string]float64, lifetimeStats map[string]LifetimeTradeStats, notifier *MultiNotifier) error {
-
 	walletBalances, _ := fetchSharedWalletBalances(cfg.Strategies, nil)
 	accountShared := detectSharedWallets(cfg.Strategies)
 	return postLeaderboardMessages(BuildLeaderboardMessages(cfg, state, prices, sharpeByStrategy, lifetimeStats, walletBalances, accountShared), notifier)

@@ -71,6 +71,7 @@ WATCHED = [
 ]
 MISSING = object()
 
+
 def classify(args):
     for i, a in enumerate(args):
         if a == "--mode=live":
@@ -83,6 +84,7 @@ def classify(args):
         if a == "--mode" and i + 1 < len(args) and args[i + 1] == "paper":
             return "paper"
     return "unset"
+
 
 def strip_mode(args):
     out = []
@@ -99,10 +101,12 @@ def strip_mode(args):
         out.append(a)
     return out
 
+
 def fmt(v):
     if v is MISSING:
         return "-"
     return json.dumps(v)
+
 
 rows = []
 with open(sys.argv[1]) as f:

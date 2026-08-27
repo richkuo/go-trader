@@ -3,20 +3,15 @@ package main
 import "fmt"
 
 type PerpsSizing struct {
-	SizingLeverage    float64
-	ExchangeLeverage  float64
-	MarginPerTradeUSD float64
-
+	SizingLeverage      float64
+	ExchangeLeverage    float64
+	MarginPerTradeUSD   float64
 	SharedWalletPool    bool
 	ReleasableMarginUSD float64
-
-	RiskPerTradePct float64
-
-	RiskStopDistance float64
-
-	RiskStopUnresolved string
-
-	EntrySizeMult float64
+	RiskPerTradePct     float64
+	RiskStopDistance    float64
+	RiskStopUnresolved  string
+	EntrySizeMult       float64
 }
 
 func (s PerpsSizing) entrySizeMult() float64 {
@@ -210,7 +205,6 @@ func validateRiskPerTradePct(sc StrategyConfig, prefix string) []string {
 	if sc.MarginPerTradeUSD != nil {
 		errs = append(errs, fmt.Sprintf("%s: risk_per_trade_pct and margin_per_trade_usd are mutually exclusive — pick one sizing mode", prefix))
 	}
-
 	if sc.AllowScaleIn {
 		errs = append(errs, fmt.Sprintf("%s: risk_per_trade_pct is incompatible with allow_scale_in — add legs re-size off frozen SL geometry, so per-trade dollar risk would not stay constant", prefix))
 	}

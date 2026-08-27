@@ -49,7 +49,6 @@ func TestFormatTradeDM_RegimeBeforeMode(t *testing.T) {
 		Regime:   "ranging",
 	}
 	msg := FormatTradeDM(sc, trade, "paper")
-
 	if !strings.Contains(msg, "Regime: ranging") {
 		t.Fatalf("missing Regime in DM: %s", msg)
 	}
@@ -287,7 +286,6 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 
 	t.Run("hyperliquid_balance/applyHyperliquidCircuitCloseFill_noPosition", func(t *testing.T) {
 		s := newState("hyperliquid")
-
 		applyHyperliquidCircuitCloseFill(s, "BTC", 1.0, 49000, 1.5, 1.0, 0, "")
 		if got := lastRegime(s); got != want {
 			t.Errorf("Regime = %q; want %q", got, want)
@@ -307,7 +305,6 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	t.Run("options/executeOptionSell", func(t *testing.T) {
 		s := newState("ibkr")
 		result := &OptionsResult{Underlying: "BTC", SpotPrice: 60000}
-
 		action := &OptionsAction{Action: "sell", OptionType: "call", Strike: 60000, Expiry: "2026-12-26", Quantity: 1, PremiumUSD: 100}
 		executeOptionSell(s, result, action, logger)
 		if got := lastRegime(s); got != want {
@@ -318,7 +315,6 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	t.Run("options/executeOptionClose", func(t *testing.T) {
 		s := newState("ibkr")
 		result := &OptionsResult{Underlying: "BTC", SpotPrice: 60000}
-
 		posID := "BTC-call-buy-60000-2026-12-26"
 		s.OptionPositions[posID] = &OptionPosition{
 			ID: posID, Underlying: "BTC", OptionType: "call", Strike: 60000,

@@ -37,9 +37,7 @@ type DirectionalCertStatus int
 
 const (
 	CertNever DirectionalCertStatus = iota
-
 	CertActive
-
 	CertExpired
 )
 
@@ -63,7 +61,6 @@ func normalizeCertAsset(symbol string) string {
 	if s == "" {
 		return ""
 	}
-
 	for _, sep := range []string{"/", ":", "-", "_"} {
 		if i := strings.Index(s, sep); i > 0 {
 			s = s[:i]
@@ -221,7 +218,6 @@ func stampDirectionCertifiedAtOpenIfOpened(s *StrategyState, symbol string, open
 	}
 	states, certified := strategyDirectionalCertified(sc, rc, time.Now().UTC())
 	pos.DirectionCertifiedAtOpen = certified
-
 	pos.DirectionCertifiedStatesAtOpen = cloneStringMap(states)
 }
 
@@ -298,7 +294,6 @@ func directionalCertSignMismatches(sc StrategyConfig, certStates map[string]stri
 		if !ok {
 			continue
 		}
-
 		if entry.Direction == DirectionBoth {
 			continue
 		}

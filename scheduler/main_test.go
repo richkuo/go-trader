@@ -415,7 +415,6 @@ func TestSendTradeAlerts_DMAndChannel(t *testing.T) {
 }
 
 func TestSendTradeAlerts_DMOnly(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -449,7 +448,6 @@ func TestSendTradeAlerts_DMOnly(t *testing.T) {
 }
 
 func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -482,7 +480,6 @@ func TestSendTradeAlerts_ChannelOnly(t *testing.T) {
 }
 
 func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "test-spot-sma",
@@ -515,7 +512,6 @@ func TestSendTradeAlerts_NeitherEnabled(t *testing.T) {
 }
 
 func TestSendTradeAlerts_NoChannelForPlatform(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-perps-sma",
@@ -548,7 +544,6 @@ func TestSendTradeAlerts_NoChannelForPlatform(t *testing.T) {
 }
 
 func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -592,7 +587,6 @@ func TestSendTradeAlerts_LiveChannelRouting(t *testing.T) {
 }
 
 func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -622,7 +616,6 @@ func TestSendTradeAlerts_LiveChannelDedup(t *testing.T) {
 }
 
 func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -655,7 +648,6 @@ func TestSendTradeAlerts_PaperNoLiveChannel(t *testing.T) {
 }
 
 func TestSendTradeAlerts_PaperChannelRouting(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -691,7 +683,6 @@ func TestSendTradeAlerts_PaperChannelRouting(t *testing.T) {
 }
 
 func TestSendTradeAlerts_PaperFallbackToBase(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -772,7 +763,6 @@ func TestSendTradeAlerts_DMChannelLive(t *testing.T) {
 }
 
 func TestSendTradeAlerts_DMMissingKey(t *testing.T) {
-
 	mock := &mockNotifier{}
 	sc := StrategyConfig{
 		ID:       "hl-sma-btc",
@@ -895,7 +885,6 @@ func TestExecuteHyperliquidResult_PaperModeNoExchangeData(t *testing.T) {
 	if tr.ExchangeOrderID != "" {
 		t.Errorf("ExchangeOrderID should be empty in paper mode, got %q", tr.ExchangeOrderID)
 	}
-
 	wantFee := CalculatePlatformSpotFee("hyperliquid", tr.Value)
 	if math.Abs(tr.ExchangeFee-wantFee) > 1e-9 || tr.FeeSource != FeeSourceModeled {
 		t.Errorf("paper open fee = %g (src %q), want modeled %g", tr.ExchangeFee, tr.FeeSource, wantFee)

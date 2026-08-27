@@ -37,18 +37,15 @@ func TestComputeCorrelation_SpotLong(t *testing.T) {
 		t.Fatal("expected BTC asset exposure")
 	}
 	ae := snap.Assets["BTC"]
-
 	if ae.NetDeltaUSD != 15000 {
 		t.Errorf("expected NetDeltaUSD=15000, got %f", ae.NetDeltaUSD)
 	}
 	if len(ae.Strategies) != 2 {
 		t.Errorf("expected 2 strategies, got %d", len(ae.Strategies))
 	}
-
 	if ae.ConcentrationPct != 100 {
 		t.Errorf("expected 100%% concentration, got %f", ae.ConcentrationPct)
 	}
-
 	if len(snap.Warnings) == 0 {
 		t.Error("expected concentration warning")
 	}
@@ -86,19 +83,15 @@ func TestComputeCorrelation_MixedDirections(t *testing.T) {
 	if ae == nil {
 		t.Fatal("expected BTC asset exposure")
 	}
-
 	if ae.NetDeltaUSD != 0 {
 		t.Errorf("expected NetDeltaUSD=0, got %f", ae.NetDeltaUSD)
 	}
-
 	if ae.GrossDeltaUSD != 10000 {
 		t.Errorf("expected GrossDeltaUSD=10000, got %f", ae.GrossDeltaUSD)
 	}
-
 	if ae.ConcentrationPct != 0 {
 		t.Errorf("expected 0%% concentration, got %f", ae.ConcentrationPct)
 	}
-
 	hasConcentrationWarning := false
 	for _, w := range snap.Warnings {
 		if strings.Contains(w, "concentration") {
@@ -146,7 +139,6 @@ func TestComputeCorrelation_OptionsGreeks(t *testing.T) {
 	if ae == nil {
 		t.Fatal("expected BTC asset exposure")
 	}
-
 	expectedNet := -40000.0
 	if ae.NetDeltaUSD != expectedNet {
 		t.Errorf("expected NetDeltaUSD=%f, got %f", expectedNet, ae.NetDeltaUSD)
@@ -252,11 +244,9 @@ func TestComputeCorrelation_MultiAsset(t *testing.T) {
 	if eth.NetDeltaUSD != 3000 {
 		t.Errorf("ETH net expected 3000, got %f", eth.NetDeltaUSD)
 	}
-
 	if snap.PortfolioGrossUSD != 8000 {
 		t.Errorf("expected portfolio gross 8000, got %f", snap.PortfolioGrossUSD)
 	}
-
 	if btc.ConcentrationPct < 62 || btc.ConcentrationPct > 63 {
 		t.Errorf("expected BTC concentration ~62.5%%, got %f", btc.ConcentrationPct)
 	}
@@ -355,7 +345,6 @@ func TestComputeCorrelation_OptionsCoarseDelta(t *testing.T) {
 	if ae == nil {
 		t.Fatal("expected BTC asset exposure")
 	}
-
 	expectedNet := 50000.0
 	if ae.NetDeltaUSD != expectedNet {
 		t.Errorf("expected NetDeltaUSD=%f, got %f", expectedNet, ae.NetDeltaUSD)

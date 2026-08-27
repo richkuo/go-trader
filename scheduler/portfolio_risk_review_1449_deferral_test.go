@@ -23,11 +23,9 @@ func TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed(t *testing.T) {
 	if !strings.Contains(reason, "DEFERRED") {
 		t.Errorf("the warn reason must name the deferral; got %q", reason)
 	}
-
 	if prs.CurrentDrawdownPct != 40 {
 		t.Errorf("a deferred cycle must persist its own measurement; got %.1f want 40", prs.CurrentDrawdownPct)
 	}
-
 	if n := countKillSwitchEvents(prs, "latch_deferred"); n != 1 {
 		t.Errorf("expected exactly one latch_deferred event on entry; got %d", n)
 	}

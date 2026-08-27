@@ -237,7 +237,6 @@ func TestDetectTopStepSharedWallet(t *testing.T) {
 	if key, ok := detectTopStepSharedWallet(twoLive); !ok || key.Account != "ts-account-42" {
 		t.Fatalf("expected 2 live TopStep strategies to be a shared wallet, got ok=%v key=%+v", ok, key)
 	}
-
 	if len(detectSharedWallets(twoLive)) != 0 {
 		t.Errorf("TopStep must stay out of detectSharedWallets (kill-switch path)")
 	}
@@ -398,7 +397,6 @@ func TestComputeTotalPortfolioValue_FallbackKeepsPeakFreezeSignal(t *testing.T) 
 		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 5000},
 		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}, Capital: 5000},
 	}
-
 	state := &AppState{
 		Strategies: map[string]*StrategyState{
 			"hl-a": {ID: "hl-a", Cash: 3500, Positions: map[string]*Position{}, OptionPositions: map[string]*OptionPosition{}},
@@ -626,7 +624,6 @@ func TestRebaselinePortfolioPeakAfterPrune_FloorAtCapitalSum(t *testing.T) {
 		{ID: "spot-eth", Platform: "binanceus", Type: "spot", Capital: 3000},
 	}}
 	state := &AppState{Strategies: map[string]*StrategyState{
-
 		"spot-btc": {ID: "spot-btc"},
 		"spot-eth": {ID: "spot-eth"},
 	}}
@@ -1055,7 +1052,6 @@ func TestSharedWalletPoolAvailableMarginReservesAllAccountPositions(t *testing.T
 		map[string]float64{"BTC": 100, "ETH": 200, "SOL": 50},
 		shared, map[SharedWalletKey]float64{key: 1000},
 	)
-
 	if !pooled || !balanceKnown || available != 915 {
 		t.Fatalf("available=%v pooled=%v known=%v, want 915/true/true", available, pooled, balanceKnown)
 	}
@@ -1113,7 +1109,6 @@ func TestSharedWalletPoolAvailableMarginReservesUnderwaterEntryMargin(t *testing
 		map[string]float64{"BTC": 70, "ETH": 250},
 		shared, map[SharedWalletKey]float64{key: 1000},
 	)
-
 	if !pooled || !balanceKnown || available != 930 {
 		t.Fatalf("available=%v pooled=%v known=%v, want 930/true/true", available, pooled, balanceKnown)
 	}
@@ -1304,23 +1299,19 @@ func TestSharedWalletPoolFlipPreservesSignedAccountHeadroom(t *testing.T) {
 		wantSize      float64
 	}{
 		{
-			name: "deficit remains after release and closes only",
-
+			name:        "deficit remains after release and closes only",
 			flippingQty: 6, peerQty: 12, wantAvailable: -80, wantSize: 6,
 		},
 		{
-			name: "deficit before release sizes within true remainder",
-
+			name:        "deficit before release sizes within true remainder",
 			flippingQty: 6, peerQty: 6, wantAvailable: -20, wantSize: 10,
 		},
 		{
-			name: "only position can reuse full equity",
-
+			name:        "only position can reuse full equity",
 			flippingQty: 6, wantAvailable: 40, wantSize: 16,
 		},
 		{
-			name: "healthy wallet keeps existing sizing",
-
+			name:        "healthy wallet keeps existing sizing",
 			flippingQty: 2, peerQty: 2, wantAvailable: 60, wantSize: 10,
 		},
 	}

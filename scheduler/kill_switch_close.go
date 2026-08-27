@@ -19,27 +19,22 @@ const (
 )
 
 type KillSwitchCloseInputs struct {
-	HLAddr         string
-	HLStateFetched bool
-	HLPositions    []HLPosition
-	HLLiveAll      []StrategyConfig
-
-	HLHedgeCoins map[string]bool
-	HLCloser     HyperliquidLiveCloser
-	HLFetcher    HLStateFetcher
-
+	HLAddr            string
+	HLStateFetched    bool
+	HLPositions       []HLPosition
+	HLLiveAll         []StrategyConfig
+	HLHedgeCoins      map[string]bool
+	HLCloser          HyperliquidLiveCloser
+	HLFetcher         HLStateFetcher
 	HLNoFillRecoverer HLNoFillRecoverer
-
-	HLStopLossOIDs map[string][]int64
+	HLStopLossOIDs    map[string][]int64
 
 	OKXLiveAllPerps []StrategyConfig
+	OKXLiveAllSpot  []StrategyConfig
+	OKXCloser       OKXLiveCloser
+	OKXFetcher      OKXPositionsFetcher
 
-	OKXLiveAllSpot []StrategyConfig
-	OKXCloser      OKXLiveCloser
-	OKXFetcher     OKXPositionsFetcher
-
-	RHLiveCrypto []StrategyConfig
-
+	RHLiveCrypto  []StrategyConfig
 	RHLiveOptions []StrategyConfig
 	RHCloser      RobinhoodLiveCloser
 	RHFetcher     RobinhoodPositionsFetcher
@@ -201,7 +196,6 @@ func recoverHyperliquidAlreadyFlatFills(report *HyperliquidLiveCloseReport, posi
 		raws = append(raws, r)
 	}
 	sort.Strings(raws)
-
 	candidates := make(map[string]HLFillSummary, len(result.ByOID))
 	for oid, summary := range result.ByOID {
 		if summary.ClosedPnLGross == 0 {
@@ -298,7 +292,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 				hlStateFetched = true
 			}
 		default:
-
 			plan.LogLines = append(plan.LogLines,
 				"[CRITICAL] hl-close: HLAddr configured but HLFetcher unwired — cannot confirm on-chain flat (kill switch will retry next cycle)")
 			plan.OnChainConfirmedFlat = false
@@ -340,7 +333,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 			plan.LogLines = append(plan.LogLines,
 				fmt.Sprintf("[CRITICAL] hl-close: %s failed: %v (kill switch will retry next cycle)", coin, plan.CloseReport.Errors[coin]))
 		}
-
 		if len(plan.CloseReport.Unconfigured) > 0 {
 			plan.Unconfigured = append(plan.Unconfigured, plan.CloseReport.Unconfigured...)
 			sort.Slice(plan.Unconfigured, func(i, j int) bool { return plan.Unconfigured[i].Coin < plan.Unconfigured[j].Coin })
@@ -374,7 +366,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 	switch {
 	case len(in.OKXLiveAllPerps) > 0 && in.OKXFetcher == nil:
-
 		plan.LogLines = append(plan.LogLines,
 			"[CRITICAL] okx-close: OKX live perps strategies configured but OKXFetcher unwired — cannot confirm on-chain flat (kill switch will retry next cycle)")
 		plan.OnChainConfirmedFlat = false
@@ -423,7 +414,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 	switch {
 	case len(in.RHLiveCrypto) > 0 && in.RHFetcher == nil:
-
 		plan.LogLines = append(plan.LogLines,
 			"[CRITICAL] rh-close: Robinhood live crypto strategies configured but RHFetcher unwired — cannot confirm flat (kill switch will retry next cycle)")
 		plan.OnChainConfirmedFlat = false
@@ -466,7 +456,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 
 	switch {
 	case len(in.TSLiveAll) > 0 && in.TSFetcher == nil:
-
 		plan.LogLines = append(plan.LogLines,
 			"[CRITICAL] ts-close: TopStep live futures strategies configured but TSFetcher unwired — cannot confirm flat (kill switch will retry next cycle)")
 		plan.OnChainConfirmedFlat = false
@@ -514,7 +503,6 @@ func planKillSwitchClose(in KillSwitchCloseInputs) KillSwitchClosePlan {
 func collectHLKillSwitchStopOIDs(strategies map[string]*StrategyState, roster []StrategyConfig) map[string][]int64 {
 	out := map[string][]int64{}
 	for _, sc := range roster {
-
 		sym := hyperliquidRawCoin(sc)
 		if sym == "" {
 			continue
@@ -639,7 +627,6 @@ func formatKillSwitchMessage(hlAddr string, plan KillSwitchClosePlan, portfolioR
 		segments = append(segments, "Robinhood options strategies present — verify manually (kill switch cannot auto-close options)")
 	}
 	if len(segments) == 0 {
-
 		segments = append(segments, "Could not fetch on-chain state to confirm flat")
 	}
 

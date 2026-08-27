@@ -74,13 +74,11 @@ func TestConfigValidationScaleInGuardScopedToLiveScalar(t *testing.T) {
 func TestScaleInFreezesFixedSLGeometry(t *testing.T) {
 	mult := 1.5
 	sc := StrategyConfig{Type: "perps", Platform: "hyperliquid", StopLossATRMult: &mult}
-
 	pos := &Position{
 		Side: "long", Quantity: 200, InitialQuantity: 200,
 		AvgCost: 2100, EntryATR: 50, RiskAnchorPrice: 2000, StopLossATRMult: &mult,
 	}
 	got := fixedStopLossATRTriggerPx(sc, "long", pos)
-
 	if !approxEq(got, 1925) {
 		t.Fatalf("fixed SL trigger = %v, want 1925 (frozen at riskAnchorPrice, not blended AvgCost)", got)
 	}
@@ -143,7 +141,6 @@ func TestScaleInTrailingSLOwnerDefersClearToWalker(t *testing.T) {
 		Side: "long", Quantity: 200, InitialQuantity: 200, AvgCost: 2100, EntryATR: 50,
 		RiskAnchorPrice: 2000, ScaleInResizePending: true, TPOIDs: []int64{111, 222},
 	}
-
 	plan := hlProtectionPlan{StopLossATRMult: 0, Tiers: []hlProtectionTier{{Multiple: 1}, {Multiple: 2}}}
 	forceSL, forceTP := scaleInProtectionForceReplace(pos, plan)
 	if forceSL {
@@ -152,11 +149,9 @@ func TestScaleInTrailingSLOwnerDefersClearToWalker(t *testing.T) {
 	if len(forceTP) != 2 || !forceTP[0] || !forceTP[1] {
 		t.Errorf("forceTP = %v, want [true true] (both resting TP tiers resize on the sync)", forceTP)
 	}
-
 	if got := effectiveTrailingStopPct(scTrailing, pos); got <= 0 {
 		t.Errorf("trailing effectiveTrailingStopPct = %v, want > 0 (sync must defer the clear)", got)
 	}
-
 	fixed := 1.5
 	scFixed := StrategyConfig{Type: "perps", Platform: "hyperliquid", StopLossATRMult: &fixed}
 	if got := effectiveTrailingStopPct(scFixed, pos); got != 0 {
@@ -181,22 +176,18 @@ func TestScaleInResizeTrailingSLNowGuards(t *testing.T) {
 	if n, d := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, nil, nil, 1, false, &mu, nil, newTestLogger(t)); n != 0 || d != "" {
 		t.Errorf("not-live: got (%d,%q), want (0,\"\")", n, d)
 	}
-
 	sc, st = mk(liveArgs, nil, &trail, false, 2)
 	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, nil, nil, 1, false, &mu, nil, newTestLogger(t)); n != 0 {
 		t.Errorf("flag-unset: got %d, want 0", n)
 	}
-
 	sc, st = mk(liveArgs, &fixed, nil, true, 2)
 	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 2}, nil, nil, 1, false, &mu, nil, newTestLogger(t)); n != 0 {
 		t.Errorf("non-trailing: got %d, want 0", n)
 	}
-
 	sc, st = mk(liveArgs, nil, &trail, true, 2)
 	if n, _ := scaleInResizeTrailingSLNow(sc, st, "ETH", 2050, map[string]float64{"ETH": 0.5}, nil, nil, 0.25, false, &mu, nil, newTestLogger(t)); n != 0 {
 		t.Errorf("capped: got %d, want 0 (deferred)", n)
 	}
-
 	if !st.Positions["ETH"].ScaleInResizePending {
 		t.Errorf("capped: flag cleared, want still pending for the next walker cycle")
 	}

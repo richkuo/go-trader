@@ -1,3 +1,4 @@
+
 import builtins
 import importlib.util
 import json
@@ -5,13 +6,17 @@ import os
 import sys
 from io import StringIO
 from unittest.mock import MagicMock, patch
+
 import pytest
 
+
 def _run_script(positions_or_exc, is_live=True, use_raise=True):
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fetch_topstep_positions.py')
-    spec = importlib.util.spec_from_file_location('fetch_topstep_positions', script_path)
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "fetch_topstep_positions.py")
+    spec = importlib.util.spec_from_file_location("fetch_topstep_positions", script_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+
     mock_adapter_cls = MagicMock()
     mock_adapter = MagicMock()
     mock_adapter.is_live = is_live
@@ -21,107 +26,130 @@ def _run_script(positions_or_exc, is_live=True, use_raise=True):
         target.side_effect = positions_or_exc
     else:
         target.return_value = positions_or_exc
+
     captured = StringIO()
-    exit_code = {'value': 0}
+    exit_code = {"value": 0}
     original_import = builtins.__import__
 
     def mock_import(name, *args, **kwargs):
-        if name == 'adapter':
+        if name == "adapter":
             fake_mod = MagicMock()
             fake_mod.TopStepExchangeAdapter = mock_adapter_cls
             return fake_mod
         return original_import(name, *args, **kwargs)
 
     def mock_exit(code=0):
-        exit_code['value'] = code
+        exit_code["value"] = code
         raise SystemExit(code)
-    with patch('builtins.__import__', side_effect=mock_import), patch('sys.stdout', captured), patch('sys.argv', ['fetch_topstep_positions.py']), patch.object(mod.sys, 'exit', side_effect=mock_exit):
+
+    with patch("builtins.__import__", side_effect=mock_import), \
+         patch("sys.stdout", captured), \
+         patch("sys.argv", ["fetch_topstep_positions.py"]), \
+         patch.object(mod.sys, "exit", side_effect=mock_exit):
         try:
             mod.main()
         except SystemExit:
             pass
+
     raw = captured.getvalue().strip()
     parsed = json.loads(raw) if raw else {}
-    return (parsed, exit_code['value'])
+    return parsed, exit_code["value"]
+
 
 class TestSuccess:
-
     def test_long_position(self):
-        out, code = _run_script([{'symbol': 'ES', 'quantity': 2, 'avg_price': 5000.0, 'side': 'long'}])
+        out, code = _run_script([
+            {"symbol": "ES", "quantity": 2, "avg_price": 5000.0, "side": "long"},
+        ])
         assert code == 0
-        assert len(out['positions']) == 1
-        p = out['positions'][0]
-        assert p['coin'] == 'ES'
-        assert p['size'] == 2
-        assert p['avg_price'] == 5000.0
-        assert p['side'] == 'long'
-        assert 'error' not in out
+        assert len(out["positions"]) == 1
+        p = out["positions"][0]
+        assert p["coin"] == "ES"
+        assert p["size"] == 2
+        assert p["avg_price"] == 5000.0
+        assert p["side"] == "long"
+        assert "error" not in out
 
     def test_short_position_size_is_negative(self):
-        out, code = _run_script([{'symbol': 'NQ', 'quantity': -1, 'avg_price': 18000.0, 'side': 'short'}])
+        out, code = _run_script([
+            {"symbol": "NQ", "quantity": -1, "avg_price": 18000.0, "side": "short"},
+        ])
         assert code == 0
-        assert out['positions'][0]['size'] == -1
-        assert out['positions'][0]['side'] == 'short'
+        assert out["positions"][0]["size"] == -1
+        assert out["positions"][0]["side"] == "short"
 
     def test_zero_size_filtered(self):
-        out, code = _run_script([{'symbol': 'ES', 'quantity': 0, 'avg_price': 5000.0, 'side': 'long'}])
+        out, code = _run_script([
+            {"symbol": "ES", "quantity": 0, "avg_price": 5000.0, "side": "long"},
+        ])
         assert code == 0
-        assert out['positions'] == []
+        assert out["positions"] == []
 
     def test_empty_positions(self):
         out, code = _run_script([])
         assert code == 0
-        assert out['positions'] == []
-        assert 'error' not in out
+        assert out["positions"] == []
+        assert "error" not in out
+
 
 class TestFailurePaths:
-
     def test_non_live_adapter(self):
         out, code = _run_script([], is_live=False)
         assert code == 1
-        assert 'TOPSTEP_API_KEY' in out['error']
+        assert "TOPSTEP_API_KEY" in out["error"]
 
     def test_exchange_raises_401(self):
-        out, code = _run_script(RuntimeError('401 Unauthorized'))
+        out, code = _run_script(RuntimeError("401 Unauthorized"))
         assert code == 1
-        assert '401' in out['error']
-        assert out['positions'] == []
+        assert "401" in out["error"]
+        assert out["positions"] == []
 
     def test_exchange_raises_5xx(self):
-        out, code = _run_script(RuntimeError('TopStepX 503 Service Unavailable'))
+        out, code = _run_script(RuntimeError("TopStepX 503 Service Unavailable"))
         assert code == 1
-        assert '503' in out['error']
-        assert out['positions'] == []
+        assert "503" in out["error"]
+        assert out["positions"] == []
 
     def test_network_error(self):
-        out, code = _run_script(ConnectionError('DNS resolution failed'))
+        out, code = _run_script(ConnectionError("DNS resolution failed"))
         assert code == 1
-        assert 'DNS' in out['error']
-        assert out['positions'] == []
+        assert "DNS" in out["error"]
+        assert out["positions"] == []
 
     def test_uses_raise_variant_not_soft_fail(self):
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fetch_topstep_positions.py')
-        spec = importlib.util.spec_from_file_location('fetch_topstep_positions', script_path)
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "fetch_topstep_positions.py")
+        spec = importlib.util.spec_from_file_location("fetch_topstep_positions", script_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+
         mock_adapter_cls = MagicMock()
         mock_adapter = MagicMock()
         mock_adapter.is_live = True
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.get_open_positions_raise.return_value = []
-        mock_adapter.get_open_positions.side_effect = AssertionError('fetch_topstep_positions must use get_open_positions_raise, not get_open_positions')
+        mock_adapter.get_open_positions.side_effect = AssertionError(
+            "fetch_topstep_positions must use get_open_positions_raise, not get_open_positions"
+        )
+
         original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
-            if name == 'adapter':
+            if name == "adapter":
                 fake_mod = MagicMock()
                 fake_mod.TopStepExchangeAdapter = mock_adapter_cls
                 return fake_mod
             return original_import(name, *args, **kwargs)
+
         captured = StringIO()
-        with patch('builtins.__import__', side_effect=mock_import), patch('sys.stdout', captured), patch('sys.argv', ['fetch_topstep_positions.py']):
+        with patch("builtins.__import__", side_effect=mock_import), \
+             patch("sys.stdout", captured), \
+             patch("sys.argv", ["fetch_topstep_positions.py"]):
             mod.main()
+
         assert mock_adapter.get_open_positions_raise.called
         assert not mock_adapter.get_open_positions.called
-if __name__ == '__main__':
-    sys.exit(pytest.main([__file__, '-v']))
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

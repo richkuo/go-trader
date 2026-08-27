@@ -20,8 +20,7 @@ var supportedAssets = []asset{
 }
 
 const (
-	starterAssetName = "BTC"
-
+	starterAssetName      = "BTC"
 	starterSpotStrategyID = "chart_pattern"
 	starterSpotCapital    = 1000.0
 	starterSpotDrawdown   = 5.0
@@ -113,13 +112,10 @@ func isBidirectionalPerpsStrategy(id string) bool {
 }
 
 var strategiesDefaultingToCompositeRangingGate = map[string][]string{
-	"atr_band_revert": {"ranging_quiet", "ranging_volatile"},
-
-	"anchored_vwap_channel": {"ranging_quiet", "ranging_volatile"},
-
+	"atr_band_revert":         {"ranging_quiet", "ranging_volatile"},
+	"anchored_vwap_channel":   {"ranging_quiet", "ranging_volatile"},
 	"anchored_vwap_reversion": {"ranging_quiet", "ranging_volatile"},
-
-	"rsi_bb_combo": {"ranging_quiet", "ranging_volatile"},
+	"rsi_bb_combo":            {"ranging_quiet", "ranging_volatile"},
 }
 
 func defaultCompositeRangingGate(stratID string) []string {
@@ -249,7 +245,6 @@ func discoverStrategies() {
 	futuresStrategies = defaultFuturesStrategies
 	if discovered := discoverPythonStrategies("shared_strategies/open/futures/strategies.py"); len(discovered) > 0 {
 		futuresStrategies = discovered
-
 		perpsStrategies = discovered
 	}
 }
@@ -267,7 +262,6 @@ func applyMinimalStarterDefaults(opts *InitOptions) {
 	}
 	if len(opts.Assets) == 0 {
 		opts.Assets = []string{starterAssetName}
-
 		opts.IncludePairs = false
 	}
 	if len(opts.SpotStrategies) == 0 && (!opts.IncludePairs || len(opts.Assets) < 2) {
@@ -299,79 +293,76 @@ func selectionDefaults(options []string, preferred []string, fallbackFirst bool)
 }
 
 type InitOptions struct {
-	OutputPath              string
-	Assets                  []string
-	EnableSpot              bool
-	EnableOptions           bool
-	EnablePerps             bool
-	OptionPlatforms         []string
-	PerpsMode               string
-	SpotStrategies          []string
-	IncludePairs            bool
-	OptStrategies           []string
-	PerpsStrategies         []string
-	SpotCapital             float64
-	OptionsCapital          float64
-	PerpsCapital            float64
-	PerpsLeverage           float64
-	PerpsSizingLeverage     float64
-	PerpsRiskPerTradePct    float64
-	HLStopLossPct           *float64
-	HLStopLossMarginPct     *float64
-	HLTrailingStopPct       *float64
-	SpotDrawdown            float64
-	OptionsDrawdown         float64
-	PerpsDrawdown           float64
-	EnableFutures           bool
-	FuturesMode             string
-	FuturesStrategies       []string
-	FuturesSymbols          []string
-	FuturesCapital          float64
-	FuturesDrawdown         float64
-	FuturesFeePerContract   float64
-	EnableLuno              bool
-	LunoStrategies          []string
-	LunoCapital             float64
-	LunoDrawdown            float64
-	EnableRobinhood         bool
-	RobinhoodMode           string
-	RobinhoodStrategies     []string
-	RobinhoodCapital        float64
-	RobinhoodDrawdown       float64
-	RobinhoodOptionsSymbols []string
-	EnableOKX               bool
-	OKXMode                 string
-	OKXSpotStrategies       []string
-	OKXPerpsStrategies      []string
-	OKXCapital              float64
-	OKXDrawdown             float64
-	CapitalPct              float64 `json:"capitalPct,omitempty"`
-	HTFFilter               bool
-	DisableCircuitBreaker   bool   `json:"disableCircuitBreaker,omitempty"`
-	ATRMethod               string `json:"atrMethod,omitempty"`
-
-	CBDrawdownCooldownMinutes   int `json:"cbDrawdownCooldownMinutes,omitempty"`
-	CBLossStreakThreshold       int `json:"cbLossStreakThreshold,omitempty"`
-	CBLossStreakCooldownMinutes int `json:"cbLossStreakCooldownMinutes,omitempty"`
-
-	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`
-	PortfolioWarnThresholdPct float64 `json:"portfolioWarnThresholdPct,omitempty"`
-	DiscordEnabled            bool
-	DiscordOwnerID            string
-	SpotChannelID             string
-	OptionsChannelID          string
-	ChannelMap                map[string]string
-	TelegramEnabled           bool
-	TelegramOwnerChatID       string
-	TelegramChannelMap        map[string]string
-	AutoUpdate                string
-
-	EnableManual    bool
-	ManualSymbol    string
-	ManualTimeframe string
-	ManualCapital   float64
-	ManualDrawdown  float64
-	ManualLeverage  float64
+	OutputPath                  string
+	Assets                      []string
+	EnableSpot                  bool
+	EnableOptions               bool
+	EnablePerps                 bool
+	OptionPlatforms             []string
+	PerpsMode                   string
+	SpotStrategies              []string
+	IncludePairs                bool
+	OptStrategies               []string
+	PerpsStrategies             []string
+	SpotCapital                 float64
+	OptionsCapital              float64
+	PerpsCapital                float64
+	PerpsLeverage               float64
+	PerpsSizingLeverage         float64
+	PerpsRiskPerTradePct        float64
+	HLStopLossPct               *float64
+	HLStopLossMarginPct         *float64
+	HLTrailingStopPct           *float64
+	SpotDrawdown                float64
+	OptionsDrawdown             float64
+	PerpsDrawdown               float64
+	EnableFutures               bool
+	FuturesMode                 string
+	FuturesStrategies           []string
+	FuturesSymbols              []string
+	FuturesCapital              float64
+	FuturesDrawdown             float64
+	FuturesFeePerContract       float64
+	EnableLuno                  bool
+	LunoStrategies              []string
+	LunoCapital                 float64
+	LunoDrawdown                float64
+	EnableRobinhood             bool
+	RobinhoodMode               string
+	RobinhoodStrategies         []string
+	RobinhoodCapital            float64
+	RobinhoodDrawdown           float64
+	RobinhoodOptionsSymbols     []string
+	EnableOKX                   bool
+	OKXMode                     string
+	OKXSpotStrategies           []string
+	OKXPerpsStrategies          []string
+	OKXCapital                  float64
+	OKXDrawdown                 float64
+	CapitalPct                  float64 `json:"capitalPct,omitempty"`
+	HTFFilter                   bool
+	DisableCircuitBreaker       bool    `json:"disableCircuitBreaker,omitempty"`
+	ATRMethod                   string  `json:"atrMethod,omitempty"`
+	CBDrawdownCooldownMinutes   int     `json:"cbDrawdownCooldownMinutes,omitempty"`
+	CBLossStreakThreshold       int     `json:"cbLossStreakThreshold,omitempty"`
+	CBLossStreakCooldownMinutes int     `json:"cbLossStreakCooldownMinutes,omitempty"`
+	PortfolioMaxDrawdownPct     float64 `json:"portfolioMaxDrawdownPct,omitempty"`
+	PortfolioWarnThresholdPct   float64 `json:"portfolioWarnThresholdPct,omitempty"`
+	DiscordEnabled              bool
+	DiscordOwnerID              string
+	SpotChannelID               string
+	OptionsChannelID            string
+	ChannelMap                  map[string]string
+	TelegramEnabled             bool
+	TelegramOwnerChatID         string
+	TelegramChannelMap          map[string]string
+	AutoUpdate                  string
+	EnableManual                bool
+	ManualSymbol                string
+	ManualTimeframe             string
+	ManualCapital               float64
+	ManualDrawdown              float64
+	ManualLeverage              float64
 }
 
 func generateConfig(opts InitOptions) *Config {
@@ -458,7 +449,6 @@ func generateConfig(opts InitOptions) *Config {
 		for _, stratID := range opts.OptStrategies {
 			shortName := deriveShortName(stratID)
 			for _, platform := range opts.OptionPlatforms {
-
 				var symbols []string
 				if platform == "robinhood" {
 					symbols = opts.RobinhoodOptionsSymbols
@@ -508,7 +498,6 @@ func generateConfig(opts InitOptions) *Config {
 		if perpsSizingLeverage <= 0 {
 			perpsSizingLeverage = perpsLeverage
 		}
-
 		var perpsRiskPerTradePct *float64
 		if opts.PerpsRiskPerTradePct > 0 {
 			v := opts.PerpsRiskPerTradePct
@@ -517,7 +506,6 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		for _, stratID := range opts.PerpsStrategies {
 			shortName := deriveShortName(stratID)
-
 			direction := DirectionLong
 			if isBidirectionalPerpsStrategy(stratID) {
 				direction = DirectionBoth
@@ -617,7 +605,6 @@ func generateConfig(opts InitOptions) *Config {
 		if okxMode == "" {
 			okxMode = "paper"
 		}
-
 		for _, stratID := range opts.OKXSpotStrategies {
 			shortName := deriveShortName(stratID)
 			for _, assetName := range opts.Assets {
@@ -634,7 +621,6 @@ func generateConfig(opts InitOptions) *Config {
 				})
 			}
 		}
-
 		okxPerpsLeverage := opts.PerpsLeverage
 		if okxPerpsLeverage <= 0 {
 			okxPerpsLeverage = 1
@@ -737,7 +723,6 @@ func generateConfig(opts InitOptions) *Config {
 		}
 		if gate := defaultCompositeRangingGate(sc.Args[0]); gate != nil {
 			sc.AllowedRegimes = gate
-
 			sc.RegimeGateOnFailure = RegimeGateOnFailureClosed
 			needsCompositeRangingRegime = true
 		}
@@ -817,16 +802,13 @@ func runInitFromJSON(jsonStr string, outputPath string) int {
 	if opts.EnablePerps && opts.PerpsMode == "" {
 		opts.PerpsMode = "paper"
 	}
-
 	if opts.EnablePerps && opts.PerpsLeverage <= 0 {
 		opts.PerpsLeverage = 1
 	}
-
 	if !validATRMethodValue(opts.ATRMethod) {
 		fmt.Fprintf(os.Stderr, "Error: atrMethod must be %q or %q, got %q\n", ATRMethodSimple, ATRMethodWilder, opts.ATRMethod)
 		return 1
 	}
-
 	if opts.EnablePerps && opts.PerpsRiskPerTradePct > 0 {
 		if opts.PerpsSizingLeverage > 0 {
 			fmt.Fprintln(os.Stderr, "Error: perpsRiskPerTradePct and perpsSizingLeverage are mutually exclusive — pick one sizing mode")
@@ -1208,9 +1190,7 @@ func runInit(args []string) int {
 	if anyLive {
 		fmt.Println("\n--- Risk settings (live trading) ---")
 		fmt.Println("These guard real capital. Press Enter to accept defaults.")
-
 		perStrategyDD := p.FloatRange("Per-strategy max drawdown % (applied to all strategies)", 5, 0, 100)
-
 		spotDrawdown = perStrategyDD
 		optionsDrawdown = perStrategyDD
 		perpsDrawdown = perStrategyDD
@@ -1218,7 +1198,6 @@ func runInit(args []string) int {
 		lunoDrawdown = perStrategyDD
 		futuresDrawdown = perStrategyDD
 		okxDrawdown = perStrategyDD
-
 		portfolioMaxDD = p.FloatRange("Portfolio kill-switch max drawdown %", 25, 0, 100)
 		portfolioWarnPct = p.FloatRange("Portfolio warn threshold % (of kill switch)", 60, 0, 100)
 	}

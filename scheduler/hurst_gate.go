@@ -15,7 +15,6 @@ import (
 
 const (
 	HurstGateModeGate = "gate"
-
 	HurstGateModeSize = "size"
 )
 
@@ -37,20 +36,14 @@ const hurstSizeSpan = 0.15
 const hurstDefaultSizeFloor = 0.25
 
 type HurstGateConfig struct {
-	Enabled bool `json:"enabled"`
-
-	Mode string `json:"mode,omitempty"`
-
-	Min *float64 `json:"min,omitempty"`
-	Max *float64 `json:"max,omitempty"`
-
+	Enabled   bool     `json:"enabled"`
+	Mode      string   `json:"mode,omitempty"`
+	Min       *float64 `json:"min,omitempty"`
+	Max       *float64 `json:"max,omitempty"`
 	DisarmMin *float64 `json:"disarm_min,omitempty"`
 	DisarmMax *float64 `json:"disarm_max,omitempty"`
-
-	WindowKey string `json:"window_key,omitempty"`
-
-	OnFailure string `json:"on_failure,omitempty"`
-
+	WindowKey string   `json:"window_key,omitempty"`
+	OnFailure string   `json:"on_failure,omitempty"`
 	SizeFloor *float64 `json:"size_floor,omitempty"`
 }
 
@@ -282,7 +275,6 @@ func evaluateHurstGate(sc StrategyConfig, payload RegimePayload, rc *RegimeConfi
 	failClosed := resolveHurstGateOnFailure(sc, rc) == HurstGateOnFailureClosed
 
 	if d.Mode == HurstGateModeSize {
-
 		if hKnown {
 			d.SizeMult = hurstSizeMultiplier(h, resolveHurstSizeFloor(hg))
 			d.Detail = fmt.Sprintf("hurst %.4f → size ×%.4f (window %q)", h, d.SizeMult, windowKey)
@@ -559,7 +551,6 @@ func validateHurstGateBounds(hg *HurstGateConfig, mode, prefix string) []string 
 	dMaxOK := inUnitInterval("disarm_max", hg.DisarmMax)
 
 	if mode == HurstGateModeSize {
-
 		for name, v := range map[string]*float64{"min": hg.Min, "max": hg.Max, "disarm_min": hg.DisarmMin, "disarm_max": hg.DisarmMax} {
 			if v != nil {
 				errs = append(errs, fmt.Sprintf("%s: hurst_gate.%s has no meaning with mode=%q (the band gates entries; size scales them) — remove it or switch to mode=%q", prefix, name, HurstGateModeSize, HurstGateModeGate))

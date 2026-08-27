@@ -57,7 +57,6 @@ func (p RegimePayload) Label(windowKey string, rc *RegimeConfig) string {
 		return strings.TrimSpace(p.Legacy)
 	}
 	if key == "" || key == regimeWindowDefaultKey {
-
 		if regimeMultiWindowEnabled(rc) {
 			key = primaryRegimeWindowKey(rc)
 		} else {
@@ -116,7 +115,6 @@ func (p *RegimePayload) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	if _, ok := raw["regime"]; ok {
-
 		if _, hasScore := raw["score"]; hasScore {
 			var snap RegimeSnapshot
 			if err := json.Unmarshal(data, &snap); err != nil {
@@ -330,7 +328,6 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 		errs = append(errs, validateRegimeWindowSpec(trimmed, spec, rc)...)
 	}
 	multi := regimeMultiWindowEnabled(rc)
-
 	if len(rc.DisplayWindows) > 0 {
 		if !multi {
 			errs = append(errs, "regime.display_windows requires regime.windows to be configured")
@@ -368,7 +365,6 @@ func validateRegimeWindowsConfig(cfg *Config) []string {
 				errs = append(errs, fmt.Sprintf("%s: %s=%q not found in regime.windows (valid: %s)", prefix, pair.field, pair.value, strings.Join(sortedRegimeWindowNamesFromConfig(rc.Windows), ", ")))
 			}
 		}
-
 	}
 	return errs
 }
@@ -532,7 +528,6 @@ func stampPositionRegimeFromPayload(s *StrategyState, symbol string, payload Reg
 	if pos.Regime != "" {
 		return
 	}
-
 	gateKey := resolveStrategyRegimeWindow(sc, "gate", rc)
 	if label := payload.Label(gateKey, rc); label != "" {
 		pos.Regime = label

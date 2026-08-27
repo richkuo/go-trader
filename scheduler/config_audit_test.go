@@ -117,7 +117,6 @@ func TestMigrateConfigNewerVersionPreservesAllFields(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	src := map[string]interface{}{
 		"config_version": CurrentConfigVersion + 1,
-
 		"discord": map[string]interface{}{
 			"spot_summary_freq": "hourly",
 		},
@@ -171,7 +170,6 @@ func TestCanonicalizeRegimeBlockAliasPrecedenceDeterministic(t *testing.T) {
 			t.Fatalf("iteration %d: legacy alias fold nondeterministic or wrong precedence: got %v, want 2.0 (atr > multiple)", i, label["atr_multiple"])
 		}
 	}
-
 	block := map[string]interface{}{
 		"trend_regime": map[string]interface{}{
 			"trending": map[string]interface{}{
@@ -186,7 +184,6 @@ func TestCanonicalizeRegimeBlockAliasPrecedenceDeterministic(t *testing.T) {
 	if label["atr_multiple"] != 1.5 {
 		t.Fatalf("canonical atr_multiple should win over legacy aliases, got %v", label["atr_multiple"])
 	}
-
 	block = map[string]interface{}{
 		"trend_regime": map[string]interface{}{
 			"trending": map[string]interface{}{

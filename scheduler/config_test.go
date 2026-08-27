@@ -1007,7 +1007,6 @@ func TestLoadConfigMarginPerTradeUSDAccepted(t *testing.T) {
 	if got := EffectiveMarginPerTradeUSD(sc); got != 56 {
 		t.Errorf("EffectiveMarginPerTradeUSD = %g, want 56", got)
 	}
-
 	if got := ComputePerpsOpenNotional(sc, 1000); got != 1120 {
 		t.Errorf("ComputePerpsOpenNotional(cash=1000) = %g, want 1120 (56 × 20)", got)
 	}
@@ -1064,7 +1063,6 @@ func TestEffectiveMarginPerTradeUSDOmittedReturnsZero(t *testing.T) {
 	if got := EffectiveMarginPerTradeUSD(sc); got != 0 {
 		t.Errorf("EffectiveMarginPerTradeUSD(omitted) = %g, want 0", got)
 	}
-
 	if got := ComputePerpsOpenNotional(sc, 1000); got != 1000 {
 		t.Errorf("ComputePerpsOpenNotional with omitted margin_per_trade_usd = %g, want 1000 (cash × sizing_leverage)", got)
 	}
@@ -1320,7 +1318,6 @@ func TestLoadConfigManualDefaultsTPTiersOverride(t *testing.T) {
 
 func TestLoadConfigManualDefaultsTPTiersDoesNotOverrideExplicit(t *testing.T) {
 	dir := t.TempDir()
-
 	cfgJSON := `{
 		"config_version": 14,
 		"user_defaults": {
@@ -1577,7 +1574,6 @@ func TestLoadConfigMarginModeRejectsSpot(t *testing.T) {
 
 func TestLoadConfigHLPerpsPeersOnSameCoinMatching(t *testing.T) {
 	dir := t.TempDir()
-
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -1729,7 +1725,6 @@ func TestLoadConfigHLPerpsPeersMultipleStopLossAllowed(t *testing.T) {
 
 func TestLoadConfigHLPerpsPeersSingleStopLossAllowed(t *testing.T) {
 	dir := t.TempDir()
-
 	cfgJSON := `{
 		"strategies": [
 			{
@@ -2072,7 +2067,6 @@ func TestConfigValidationLeaderboardSummariesDuplicateKey(t *testing.T) {
 		},
 		LeaderboardSummaries: []LeaderboardSummaryConfig{
 			{Platform: "hyperliquid", Ticker: "ETH", Channel: "chan-1", Frequency: "6h"},
-
 			{Platform: "Hyperliquid", Ticker: "eth", Channel: "chan-1", Frequency: "12h"},
 		},
 	}
@@ -2731,7 +2725,6 @@ func TestConfigValidationCBOverrides(t *testing.T) {
 	if err := validateConfig(&valid, false); err != nil {
 		t.Fatalf("in-bounds cb_* overrides should validate: %v", err)
 	}
-
 	boundary := mk(func(sc *StrategyConfig) {
 		sc.CBDrawdownCooldownMinutes = intp(30 * 24 * 60)
 		sc.CBLossStreakThreshold = intp(100)

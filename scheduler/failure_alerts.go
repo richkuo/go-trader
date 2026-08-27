@@ -74,7 +74,6 @@ func (t *LiveExecFailureThrottle) Record(key, errSig string, now time.Time) (boo
 	}
 	sig := truncErrSig(errSig)
 	if sig != e.lastErrSig {
-
 		e.count = 1
 		e.lastErrSig = sig
 		e.lastNotifiedAt = now

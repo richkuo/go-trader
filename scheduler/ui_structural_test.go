@@ -107,24 +107,20 @@ func TestUIStructuralEndpointsRejectCrossOriginAndNonPOST(t *testing.T) {
 		},
 	}
 	for url, h := range endpoints {
-
 		w := mutationPost(ss, h, url, `{"nonce":"x","params":{}}`, map[string]string{"Origin": "http://evil.example"})
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s cross-origin status = %d, want 403", url, w.Code)
 		}
-
 		req := newTestGetRequest(url)
 		rec := newTestRecorder()
 		h(rec, req)
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s GET status = %d, want 405", url, rec.Code)
 		}
-
 		w = mutationPost(ss, h, url, `{"params":{}}`, nil)
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "nonce is required") {
 			t.Errorf("%s no-nonce status = %d body %s, want 400 nonce-required", url, w.Code, w.Body.String())
 		}
-
 		w = mutationPost(ss, h, url, `{"nonce":"deadbeef","params":{}}`, nil)
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s bogus-nonce status = %d, want 403", url, w.Code)
@@ -155,15 +151,12 @@ func TestUIAddStrategyEndToEnd(t *testing.T) {
 	if len(ids) != 3 || ids[2] != confirm.ConfirmPhrase {
 		t.Fatalf("config strategies after add = %v, want 3rd = %s", ids, confirm.ConfirmPhrase)
 	}
-
 	if !strings.Contains(string(mustReadFile(t, path)), "--mode=paper") {
 		t.Error("new strategy must be created in paper mode")
 	}
-
 	if restarts.Load() != 0 {
 		t.Fatalf("restarts = %d, want 0 (restart not requested)", restarts.Load())
 	}
-
 	if _, err := LoadConfigForProbe(path); err != nil {
 		t.Fatalf("config after add-strategy fails validation: %v", err)
 	}
@@ -192,7 +185,6 @@ func TestUIAddStrategyRestartParamFiresRestart(t *testing.T) {
 func TestUIStructuralNonceBindingCoversParams(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
 	confirm := structuralConfirm(t, ss, "add-strategy", "", `{"name":"momentum","platform":"hyperliquid","asset":"SOL"}`)
-
 	body := fmt.Sprintf(`{"nonce":%q,"params":{"name":"momentum","platform":"hyperliquid","asset":"DOGE"}}`, confirm.Nonce)
 	w := mutationPost(ss, ss.handleAPIAddStrategy, "/api/config/add-strategy", body, nil)
 	if w.Code != http.StatusForbidden {
@@ -240,9 +232,7 @@ func TestUIRemoveStrategyEndToEnd(t *testing.T) {
 
 func TestUIRemoveStrategyExecuteRefusesOnlyStrategyAfterConcurrentPrune(t *testing.T) {
 	ss, path, _ := newStructuralTestServer(t)
-
 	confirm := structuralConfirm(t, ss, "remove-strategy", "hl-momentum-eth", `{}`)
-
 	if err := ss.mutateConfigRoot(func(root map[string]json.RawMessage) error {
 		return removeStrategyFromRoot(root, "sma-btc")
 	}); err != nil {
@@ -327,7 +317,6 @@ func TestUIPaperToLiveFlatChecks(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "opened a position") {
 		t.Fatalf("execute-while-open status = %d body %s, want 409 opened-a-position", w.Code, w.Body.String())
 	}
-
 	if raw := string(mustReadFile(t, path)); !strings.Contains(raw, "--mode=paper") || strings.Contains(raw, "--mode=live") {
 		t.Fatalf("refused execute must not flip args:\n%s", raw)
 	}
@@ -437,7 +426,6 @@ func TestUIApplyRegimeGateBlastRadiusGrowthRefused(t *testing.T) {
 	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "blast radius") {
 		t.Fatalf("blast-radius-growth status = %d body %s, want 409 refusal", w.Code, w.Body.String())
 	}
-
 	cfg, err := LoadConfigForProbe(path)
 	if err != nil {
 		t.Fatalf("config invalid after refusal: %v", err)

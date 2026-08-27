@@ -52,7 +52,6 @@ func TestApplyTrailingTPRatchetToPosition_AlertLongMath(t *testing.T) {
 	if a.OldTrailMult != 3.0 || a.NewTrailMult != 2.0 {
 		t.Fatalf("trail %g->%g want 3->2", a.OldTrailMult, a.NewTrailMult)
 	}
-
 	if a.HighWaterMark != 115 || a.IntendedSLTriggerPx != 95 {
 		t.Fatalf("hwm=%g intendedSL=%g want 115,95", a.HighWaterMark, a.IntendedSLTriggerPx)
 	}
@@ -77,7 +76,6 @@ func TestApplyTrailingTPRatchetToPosition_AlertShortMath(t *testing.T) {
 	if a.ProfitATR != 1.5 || a.ProfitUSD != 15 {
 		t.Fatalf("profitATR=%g profitUSD=%g want 1.5,15", a.ProfitATR, a.ProfitUSD)
 	}
-
 	if a.HighWaterMark != 85 || a.IntendedSLTriggerPx != 105 {
 		t.Fatalf("hwm=%g intendedSL=%g want 85,105", a.HighWaterMark, a.IntendedSLTriggerPx)
 	}
@@ -108,7 +106,6 @@ func TestApplyTrailingTPRatchetToPosition_MultiTierJump(t *testing.T) {
 }
 
 func TestApplyTrailingTPRatchetToPosition_NoAlertCases(t *testing.T) {
-
 	sc := ratchetAlertSC(3.0, tier(1.0, 0, 2.0), tier(2.0, 0, 1.0))
 	pos := &Position{
 		Symbol: "ETH", Side: "long", Quantity: 1, InitialQuantity: 1,
@@ -186,7 +183,6 @@ func TestFormatRatchetTriggerAlert_Rendering(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-
 	if strings.Contains(out, "stamped at open") {
 		t.Errorf("identical regime should not render the stamped-at-open suffix:\n%s", out)
 	}

@@ -21,18 +21,13 @@ func sharedWalletDriftLogInterval() time.Duration {
 }
 
 type sharedWalletDriftEntry struct {
-	coinStreaks map[string]int
-
-	alertedCoins map[string]bool
-
-	cycles         int
-	lastNotifiedAt time.Time
-
-	lastLoggedAt time.Time
-
-	lastLoggedDriftCents int64
-	alerted              bool
-
+	coinStreaks            map[string]int
+	alertedCoins           map[string]bool
+	cycles                 int
+	lastNotifiedAt         time.Time
+	lastLoggedAt           time.Time
+	lastLoggedDriftCents   int64
+	alerted                bool
 	lastNotifiedDriftCents int64
 }
 
@@ -57,7 +52,6 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 	if len(coins) == 0 {
 		coins = []string{""}
 	}
-
 	streaks := make(map[string]int, len(coins))
 	for _, coin := range coins {
 		streaks[coin] = e.coinStreaks[coin] + 1
@@ -82,7 +76,6 @@ func (t *SharedWalletDriftTracker) Record(walletKey string, drift float64, orpha
 	e.cycles++
 
 	driftCents := int64(math.Round(drift * 100))
-
 	deltaCents := absInt64(driftCents - e.lastNotifiedDriftCents)
 	sigChanged := deltaCents > 1 &&
 		float64(deltaCents) > sharedWalletDriftRealertRatio*float64(absInt64(e.lastNotifiedDriftCents))
@@ -196,7 +189,6 @@ func formatSharedWalletDriftAlert(key SharedWalletKey, balance, memberSum, drift
 	if len(orphanCoins) > 0 {
 		orphanDetail = "unattributed coins: " + strings.Join(orphanCoins, ", ")
 	}
-
 	rawDiff := memberSum - balance
 	return fmt.Sprintf(
 		"**SHARED-WALLET DRIFT** %s (pid=%d, %d consecutive): Σ member value $%.2f vs real balance $%.2f — raw reconciliation diff $%+.2f, post-baseline drift $%+.2f (>$%.2f tolerance). %s. Exchange-derived rows should reconcile exactly; a large raw diff with a small post-baseline drift may indicate legacy data baked into the adopted baseline OR a live attribution bug (orphan/weighting) near the offset — investigate before assuming it is benign.",
@@ -204,7 +196,6 @@ func formatSharedWalletDriftAlert(key SharedWalletKey, balance, memberSum, drift
 }
 
 func formatSharedWalletJournalDriftAlert(key SharedWalletKey, balance, expectedEquity, drift float64, count int, orphanCoins []string) string {
-
 	orphanNote := ""
 	if len(orphanCoins) > 0 {
 		orphanNote = fmt.Sprintf(" Additionally, %d on-chain position(s) are owned by NO strategy (%s) — investigate that unmanaged exposure as a possibly-separate issue alongside the journal gap.",
@@ -231,25 +222,20 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 	now := time.Now().UTC()
 	for _, r := range results {
 		label := sharedWalletKeyLabel(r.Key)
-
 		if r.JournalPending {
 			continue
 		}
-
 		trackerKey := label
 		if r.Basis == driftBasisJournal {
 			trackerKey += journalDriftStreakKeySuffix
-
 			if recovered, priorCount := sharedWalletDriftTracker.Clear(label); recovered && notifier != nil && notifier.HasBackends() {
 				msg := formatSharedWalletDriftRecovered(r.Key, priorCount)
 				notifier.SendToAllChannels(msg)
 				notifier.SendOwnerDM(msg)
 			}
 		}
-
 		orphanExposure := r.Basis == driftBasisJournal && len(r.OrphanCoins) > 0
 		if math.Abs(r.Drift) > sharedWalletDriftTolerance || orphanExposure {
-
 			recordCoins := r.OrphanCoins
 			if r.Basis == driftBasisJournal && math.Abs(r.Drift) > sharedWalletDriftTolerance {
 				recordCoins = append(append([]string{}, r.OrphanCoins...), "")
@@ -258,7 +244,6 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 			if shouldLog {
 				switch {
 				case r.Basis == driftBasisJournal && math.Abs(r.Drift) > sharedWalletDriftTolerance:
-
 					orphanNote := ""
 					if len(r.OrphanCoins) > 0 {
 						orphanNote = fmt.Sprintf("; unowned coins=[%s]", strings.Join(r.OrphanCoins, ","))
@@ -266,7 +251,6 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 					fmt.Printf("[WARN] shared-wallet %s JOURNAL drift $%+.2f (accountValue $%.2f vs exchange-sourced expected-equity $%.2f)%s\n",
 						label, r.Drift, r.Balance, r.ExpectedEquity, orphanNote)
 				case r.Basis == driftBasisJournal:
-
 					fmt.Printf("[WARN] shared-wallet %s JOURNAL orphan exposure: total reconciles (drift $%+.2f, accountValue $%.2f vs expected-equity $%.2f) but unowned coins=[%s]\n",
 						label, r.Drift, r.Balance, r.ExpectedEquity, strings.Join(r.OrphanCoins, ","))
 				default:
@@ -281,10 +265,8 @@ func reportSharedWalletDrift(notifier *MultiNotifier, results []sharedWalletDrif
 			var msg string
 			switch {
 			case r.Basis == driftBasisJournal && math.Abs(r.Drift) > sharedWalletDriftTolerance:
-
 				msg = formatSharedWalletJournalDriftAlert(r.Key, r.Balance, r.ExpectedEquity, r.Drift, count, r.OrphanCoins)
 			case r.Basis == driftBasisJournal:
-
 				msg = formatSharedWalletJournalOrphanAlert(r.Key, r.Balance, r.ExpectedEquity, r.Drift, count, r.OrphanCoins)
 			default:
 				msg = formatSharedWalletDriftAlert(r.Key, r.Balance, r.MemberSum, r.Drift, count, r.OrphanCoins)

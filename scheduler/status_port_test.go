@@ -33,7 +33,6 @@ func TestResolveStatusPort(t *testing.T) {
 }
 
 func TestBindWithFallback_FirstPortFree(t *testing.T) {
-
 	probe, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("probe listen: %v", err)
@@ -52,7 +51,6 @@ func TestBindWithFallback_FirstPortFree(t *testing.T) {
 }
 
 func TestBindWithFallback_FallsThrough(t *testing.T) {
-
 	port := findConsecutiveFreePorts(t, 2)
 
 	blocker, err := net.Listen("tcp", statusPortAddr(port))
@@ -94,7 +92,6 @@ func statusPortAddr(port int) string {
 
 func findConsecutiveFreePorts(t *testing.T, n int) int {
 	t.Helper()
-
 	l, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		t.Fatalf("probe listen: %v", err)

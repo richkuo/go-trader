@@ -256,7 +256,7 @@
       try {
         sessionStorage.removeItem(SIDEBAR_STORAGE_KEY);
       } catch (_err) {
-
+        
       }
       return;
     }
@@ -284,7 +284,7 @@
         sessionStorage.removeItem(SIDEBAR_STORAGE_KEY);
       }
     } catch (_err) {
-
+      
     }
   }
 
@@ -1019,6 +1019,7 @@
     updateDarkModeToggle();
     applyChartTheme();
   }
+
 
   function loadViewMode() {
     const saved = window.localStorage.getItem(VIEW_MODE_KEY);
@@ -2015,6 +2016,7 @@
     return buttons.join("");
   }
 
+
   function sortValue(row, key) {
     if (key === "pnl_pct" || key === "win_rate" || key === "sharpe") {
       const n = Number(row[key]);
@@ -2073,6 +2075,7 @@
     els.statusGrid.innerHTML = "<dt>Strategies</dt><dd>" + escapeHTML(String(state.overviewRows.length)) + "</dd>";
     els.positions.innerHTML = '<div class="position-row"><span>Table view</span><span>Select a row for detail</span></div>';
   }
+
 
   function panelFallback(el, text) {
     if (el) {
@@ -2179,6 +2182,7 @@
       panelFallback(els.transitionsContent, "-");
     }
   }
+
 
   function opsPnlClass(v) {
     return v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : "";

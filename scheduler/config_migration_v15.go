@@ -107,18 +107,15 @@ func canonicalizeRegimeBlock(raw interface{}) map[string]interface{} {
 		for ek, ev := range lm {
 			switch ek {
 			case "atr", "multiple", "atr_multiple", "fraction":
-
 			default:
 				labelOut[ek] = ev
 			}
 		}
-
 		for _, key := range []string{"multiple", "atr", "atr_multiple"} {
 			if v, ok := lm[key]; ok {
 				labelOut["atr_multiple"] = v
 			}
 		}
-
 		if v, ok := lm["fraction"]; ok {
 			if _, has := labelOut["close_fraction"]; !has {
 				labelOut["close_fraction"] = v

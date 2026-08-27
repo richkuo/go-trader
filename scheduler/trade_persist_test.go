@@ -450,7 +450,6 @@ func TestRecordTrade_OutOfOrderFailureRecoveredBySaveState(t *testing.T) {
 	if ss == nil || len(ss.TradeHistory) != 2 {
 		t.Fatalf("loaded trades = %d, want 2 (T1 was dropped by old ts-dedup?)", len(ss.TradeHistory))
 	}
-
 	if ss.TradeHistory[0].Symbol != "BTC" || ss.TradeHistory[1].Symbol != "ETH" {
 		t.Errorf("loaded symbols = %q,%q, want BTC,ETH", ss.TradeHistory[0].Symbol, ss.TradeHistory[1].Symbol)
 	}
@@ -476,7 +475,6 @@ func TestRecordTrade_PersistFailureTriggersWarnHook(t *testing.T) {
 	if !strings.Contains(warnings[0], "warn-test") || !strings.Contains(warnings[0], "boom") {
 		t.Errorf("warning = %q, want strategy ID + underlying error", warnings[0])
 	}
-
 	if len(s.TradeHistory) != 1 {
 		t.Errorf("TradeHistory len = %d, want 1 (append must survive recorder failure)", len(s.TradeHistory))
 	}
@@ -501,7 +499,6 @@ func TestExecutePerpsWithLeverage_FlipDoesNotDoubleCountFee(t *testing.T) {
 				Cash:           1000,
 				InitialCapital: 1000,
 				Positions: map[string]*Position{
-
 					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
 				},
 				OptionPositions: map[string]*OptionPosition{},
@@ -557,7 +554,6 @@ func TestExecutePerpsWithLeverage_FlipDoesNotDoubleCountFee(t *testing.T) {
 	if oidHits != 2 {
 		t.Errorf("rows with OID=99999 = %d, want 2 (both flip legs share the order)", oidHits)
 	}
-
 	if math.Abs(closeFee-0.2625) > 1e-9 {
 		t.Errorf("close ExchangeFee = %v, want 0.2625 (0.5/0.8 share)", closeFee)
 	}

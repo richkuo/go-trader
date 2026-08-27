@@ -34,7 +34,6 @@ func sortedUITradeActions() []string {
 
 type confirmNonceEntry struct {
 	binding string
-
 	payload string
 	expires time.Time
 }
@@ -145,7 +144,6 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 			strings.Join(append(sortedUITradeActions(), sortedUIStructuralActions()...), ", ")))
 		return
 	}
-
 	if strings.TrimSpace(req.StrategyID) == "" && req.Action != "add-strategy" {
 		writeJSONError(w, http.StatusBadRequest, "strategy_id is required")
 		return
@@ -171,7 +169,6 @@ func (ss *StatusServer) handleAPIConfirm(w http.ResponseWriter, r *http.Request)
 			writeJSONError(w, http.StatusServiceUnavailable, "config not available")
 			return
 		}
-
 		var lookupErr error
 		if req.Action == "force-close" {
 			_, _, lookupErr = lookupForceCloseStrategy(cfg, req.StrategyID)

@@ -70,7 +70,6 @@ func TestUpdateShellAllReportsSkippedAndFailsOnZeroUpdate1055(t *testing.T) {
 	t.Parallel()
 	script := updateShellScriptPath(t)
 	root := t.TempDir()
-
 	for _, d := range []string{"go-trader-live", "go-trader-paper", "unrelated"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
@@ -93,7 +92,6 @@ func TestUpdateShellAllReportsSkippedAndFailsOnZeroUpdate1055(t *testing.T) {
 			t.Errorf("--all output missing %q\n%s", want, text)
 		}
 	}
-
 	if strings.Contains(text, "unrelated") {
 		t.Errorf("--all glob should not match 'unrelated'\n%s", text)
 	}
@@ -126,11 +124,9 @@ func TestUpdateShellAllDispatchesWithoutBuildToolchain1055(t *testing.T) {
 	}
 	out, err := cmd.CombinedOutput()
 	text := string(out)
-
 	if strings.Contains(text, "uv not on PATH") || strings.Contains(text, "go not on PATH") {
 		t.Fatalf("--all aborted in build-toolchain preflight without uv/go (must dispatch first)\n%s", text)
 	}
-
 	if err == nil {
 		t.Fatalf("expected non-zero exit (zero deployments updated)\n%s", text)
 	}
@@ -154,11 +150,9 @@ func allUnionTestEnv(t *testing.T) (string, string, []string) {
 	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-
 	if err := os.MkdirAll(filepath.Join(parent, "go-trader-globonly"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-
 	scattered := filepath.Join(t.TempDir(), "go-trader-scattered")
 	if err := os.MkdirAll(scattered, 0o755); err != nil {
 		t.Fatal(err)
@@ -243,12 +237,10 @@ func TestUpdateShellAllDedupesCanonicalAliases1055(t *testing.T) {
 	if out, err := exec.Command("git", "-C", repo, "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-
 	aliased := filepath.Join(parent, "go-trader-aliased")
 	if err := os.MkdirAll(aliased, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
 	link := filepath.Join(t.TempDir(), "go-trader-link")
 	if err := os.Symlink(aliased, link); err != nil {
 		t.Fatal(err)

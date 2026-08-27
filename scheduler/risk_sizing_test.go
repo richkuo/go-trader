@@ -19,7 +19,6 @@ func TestPerpsRiskBasedNotionalConstantDollarRisk(t *testing.T) {
 	if wide <= 0 || tight <= 0 {
 		t.Fatalf("expected positive notionals, got wide=%g tight=%g", wide, tight)
 	}
-
 	wideRisk := wide / price * wideDist
 	tightRisk := tight / price * tightDist
 	if math.Abs(wideRisk-10) > 1e-9 || math.Abs(tightRisk-10) > 1e-9 {
@@ -31,12 +30,10 @@ func TestPerpsRiskBasedNotionalConstantDollarRisk(t *testing.T) {
 }
 
 func TestPerpsRiskBasedNotionalExchangeCap(t *testing.T) {
-
 	got := PerpsRiskBasedNotional(1000, 2000, 1.0, 1.0, 5)
 	if got != 5000 {
 		t.Fatalf("notional = %g, want 5000 (cash × exchange_leverage cap)", got)
 	}
-
 	got = PerpsRiskBasedNotional(1000, 2000, 1.0, 1.0, 0)
 	if got != 1000 {
 		t.Fatalf("notional = %g, want 1000 (1x cap when exchangeLeverage<=0)", got)
@@ -199,12 +196,10 @@ func TestPerpsSizingFor(t *testing.T) {
 	if s.ExchangeLeverage != 5 {
 		t.Fatalf("exchange leverage = %g, want 5", s.ExchangeLeverage)
 	}
-
 	s = PerpsSizingFor(sc, 2000, 0)
 	if s.RiskStopDistance != 0 || s.RiskStopUnresolved == "" {
 		t.Fatalf("unresolved sizing = %+v, want dist=0 with reason", s)
 	}
-
 	sc.RiskPerTradePct = nil
 	s = PerpsSizingFor(sc, 2000, 15)
 	if s.RiskPerTradePct != 0 || s.RiskStopDistance != 0 {
@@ -293,7 +288,6 @@ func TestPerpsLiveOrderSizeRiskMode(t *testing.T) {
 		return s
 	}
 	t.Run("fresh open sizes qty from stop distance", func(t *testing.T) {
-
 		size1, ok1, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(20), "", DirectionLong, 0)
 		size2, ok2, _ := perpsLiveOrderSize(1, 2000, 1000, 0, 0, riskSizing(60), "", DirectionLong, 0)
 		if !ok1 || !ok2 {
@@ -325,7 +319,6 @@ func TestPerpsLiveOrderSizeRiskMode(t *testing.T) {
 		}
 	})
 	t.Run("exchange cap bounds the flip open leg", func(t *testing.T) {
-
 		size, ok, _ := perpsLiveOrderSize(1, 2000, 1000, 0.1, 2000, riskSizing(1), "short", DirectionBoth, 0)
 		if !ok {
 			t.Fatal("flip must size")
@@ -345,7 +338,6 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 			Cash: 1000, Positions: map[string]*Position{},
 		}
 	}
-
 	riskSizing := func(dist float64) PerpsSizing {
 		s := PerpsSizing{ExchangeLeverage: 2, RiskPerTradePct: 1.0, RiskStopDistance: dist}
 		if dist <= 0 {
@@ -366,7 +358,6 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 		if pt == nil || pw == nil {
 			t.Fatal("both opens must create positions")
 		}
-
 		if math.Abs(pt.Quantity*20-10) > 1e-9 || math.Abs(pw.Quantity*60-10) > 1e-9 {
 			t.Fatalf("dollar risk must be $10: tight=%g wide=%g", pt.Quantity*20, pw.Quantity*60)
 		}
@@ -404,7 +395,6 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 		if pos == nil || pos.Side != "long" {
 			t.Fatalf("expected flipped long, got %+v", pos)
 		}
-
 		if riskDollars := pos.Quantity * 20; math.Abs(riskDollars-s.Cash*0.01) > s.Cash*0.01*0.01 {
 			t.Fatalf("flip risk %g must be ~1%% of post-close cash %g", riskDollars, s.Cash)
 		}
@@ -418,7 +408,6 @@ func TestExecutePerpsSignalRiskMode(t *testing.T) {
 		if pos == nil {
 			t.Fatal("expected position")
 		}
-
 		if notional := pos.Quantity * pos.AvgCost; math.Abs(notional-5000) > 1e-6 {
 			t.Fatalf("legacy sizing notional = %g, want 5000 (cash × sizing_leverage)", notional)
 		}
@@ -490,7 +479,6 @@ func TestGenerateConfig_RiskPerTradePct(t *testing.T) {
 		t.Fatalf("sizing_leverage = %g, want 0 (suppressed under risk mode)", sc.SizingLeverage)
 	}
 	if err := validateConfig(cfg, true); err == nil {
-
 		t.Log("validateConfig passed — a stop owner was emitted directly")
 	} else if !strings.Contains(err.Error(), "resolvable at sizing time") {
 		t.Fatalf("unexpected validation error: %v", err)
@@ -522,21 +510,17 @@ func TestValidateHotReloadStateCompatible_RiskPerTradePctModeSwitch(t *testing.T
 			"hl-x": {ID: "hl-x", Positions: map[string]*Position{}},
 		},
 	}
-
 	err := validateHotReloadStateCompatible(mkCfg(mkSC(nil, 2)), mkCfg(mkSC(fp(1.0), 0)), openState)
 	if err == nil || !strings.Contains(err.Error(), "risk_per_trade_pct sizing mode changed") {
 		t.Fatalf("expected mode-switch rejection while open, got: %v", err)
 	}
-
 	err = validateHotReloadStateCompatible(mkCfg(mkSC(fp(1.0), 0)), mkCfg(mkSC(nil, 2)), openState)
 	if err == nil || !strings.Contains(err.Error(), "risk_per_trade_pct sizing mode changed") {
 		t.Fatalf("expected mode-switch rejection while open, got: %v", err)
 	}
-
 	if err := validateHotReloadStateCompatible(mkCfg(mkSC(nil, 2)), mkCfg(mkSC(fp(1.0), 0)), flatState); err != nil {
 		t.Fatalf("flat mode switch must pass, got: %v", err)
 	}
-
 	if err := validateHotReloadStateCompatible(mkCfg(mkSC(fp(1.0), 0)), mkCfg(mkSC(fp(2.0), 0)), openState); err != nil {
 		t.Fatalf("value tweak while open must pass, got: %v", err)
 	}

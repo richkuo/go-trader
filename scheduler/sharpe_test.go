@@ -30,12 +30,10 @@ func TestComputeSharpeRatioInsufficientData(t *testing.T) {
 	if got := ComputeSharpeRatio(nil, 1000, 0.02); got != 0 {
 		t.Fatalf("empty input should yield 0, got %v", got)
 	}
-
 	one := []ClosedPosition{{ClosedAt: day("2026-01-01"), RealizedPnL: 10}}
 	if got := ComputeSharpeRatio(one, 1000, 0.02); got != 0 {
 		t.Fatalf("single-day input should yield 0, got %v", got)
 	}
-
 	skipped := []ClosedPosition{
 		{ClosedAt: time.Time{}, RealizedPnL: 10},
 		{ClosedAt: time.Time{}, RealizedPnL: -5},
@@ -43,7 +41,6 @@ func TestComputeSharpeRatioInsufficientData(t *testing.T) {
 	if got := ComputeSharpeRatio(skipped, 1000, 0.02); got != 0 {
 		t.Fatalf("zero-timestamp rows should be skipped, got %v", got)
 	}
-
 	short := manyDays(day("2026-01-01"), minSharpeDays-1, func(i int) float64 {
 		if i%2 == 0 {
 			return 10
@@ -56,7 +53,6 @@ func TestComputeSharpeRatioInsufficientData(t *testing.T) {
 }
 
 func TestComputeSharpeRatioZeroStdev(t *testing.T) {
-
 	same := manyDays(day("2026-01-01"), minSharpeDays, func(int) float64 { return 10 })
 	if got := ComputeSharpeRatio(same, 1000, 0); got != 0 {
 		t.Fatalf("zero-stdev should yield 0, got %v", got)
@@ -79,7 +75,6 @@ func TestComputeSharpeRatioInvalidCapital(t *testing.T) {
 }
 
 func TestComputeSharpeRatioKnownValue(t *testing.T) {
-
 	pattern := []float64{100, -50, 75}
 	closed := manyDays(day("2026-01-01"), minSharpeDays, func(i int) float64 {
 		return pattern[i%len(pattern)]
@@ -111,7 +106,6 @@ func TestComputeSharpeRatioKnownValue(t *testing.T) {
 }
 
 func TestComputeSharpeRatioZeroFillBetweenCloses(t *testing.T) {
-
 	sparse := []ClosedPosition{
 		{ClosedAt: day("2026-01-01"), RealizedPnL: 100},
 		{ClosedAt: day("2026-01-31"), RealizedPnL: -50},
@@ -122,7 +116,6 @@ func TestComputeSharpeRatioZeroFillBetweenCloses(t *testing.T) {
 }
 
 func TestComputeSharpeRatioBucketsByDay(t *testing.T) {
-
 	sameDay := []ClosedPosition{
 		{ClosedAt: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC), RealizedPnL: 30},
 		{ClosedAt: time.Date(2026, 1, 1, 18, 0, 0, 0, time.UTC), RealizedPnL: 20},
@@ -153,14 +146,12 @@ func TestComputeSharpeRatioRiskFreeLowersSharpe(t *testing.T) {
 }
 
 func TestRiskFreeRateOrDefault(t *testing.T) {
-
 	if got := RiskFreeRateOrDefault(nil); got != DefaultAnnualRiskFreeRate {
 		t.Fatalf("nil cfg should yield default, got %v", got)
 	}
 	if got := RiskFreeRateOrDefault(&Config{}); got != DefaultAnnualRiskFreeRate {
 		t.Fatalf("nil field should yield default, got %v", got)
 	}
-
 	zero := 0.0
 	if got := RiskFreeRateOrDefault(&Config{RiskFreeRate: &zero}); got != 0 {
 		t.Fatalf("explicit zero should be respected, got %v", got)
@@ -176,7 +167,6 @@ func TestRiskFreeRateOrDefault(t *testing.T) {
 }
 
 func TestFmtSharpe(t *testing.T) {
-
 	cases := []struct {
 		in   float64
 		want string

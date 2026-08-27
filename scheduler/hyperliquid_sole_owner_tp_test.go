@@ -83,7 +83,6 @@ func TestSoleOwnerTPPartial_BooksAtTPPriceFromTiers(t *testing.T) {
 	if trade.ExchangeOrderID != "" {
 		t.Errorf("trade.ExchangeOrderID = %q, want \"\" (no fill fee, no fabricated OID)", trade.ExchangeOrderID)
 	}
-
 	wantPnLBeforeFee := (expectedTP1 - entryPx) * (fullQty - onChainQty)
 	if trade.RealizedPnL > wantPnLBeforeFee {
 		t.Errorf("RealizedPnL = %g should not exceed PnL-before-fee %g", trade.RealizedPnL, wantPnLBeforeFee)
@@ -130,7 +129,6 @@ func TestSoleOwnerTPPartial_PrefersUserFillsPxOverConfiguredTP(t *testing.T) {
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: onChainQty, EntryPrice: entryPx, Leverage: 5}}
 	resolver := hlReconcileFillResolver(func(_ string, _ int64, qty float64) (HLFillLookup, bool) {
-
 		if math.Abs(qty-0.2) < 1e-6 {
 			return HLFillLookup{Fee: actualFee, FilledQty: 0.2, Px: actualPx, OID: 999, Count: 1}, true
 		}
@@ -154,7 +152,6 @@ func TestSoleOwnerTPPartial_PrefersUserFillsPxOverConfiguredTP(t *testing.T) {
 	if trade.ExchangeOrderID != "999" {
 		t.Errorf("trade.ExchangeOrderID = %q, want %q (from lookup.OID)", trade.ExchangeOrderID, "999")
 	}
-
 	wantGross := (actualPx - entryPx) * 0.2
 	if !trade.PnLGross || math.Abs(trade.RealizedPnL-wantGross) > 1e-6 {
 		t.Errorf("RealizedPnL = %g (gross=%v), want gross %g", trade.RealizedPnL, trade.PnLGross, wantGross)
@@ -180,7 +177,6 @@ func TestSoleOwnerTPFinal_FullCloseAtTPPrice_NotSL(t *testing.T) {
 				Symbol: "ETH", Quantity: fullQty, InitialQuantity: fullQty,
 				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
 				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
-
 				TPOIDs:            []int64{0, 0},
 				StopLossOID:       42,
 				StopLossTriggerPx: slTriggerPx,
@@ -346,7 +342,6 @@ func TestSoleOwnerTP_SkipsWhenNoTierCleared(t *testing.T) {
 	if len(alerts) != 0 {
 		t.Errorf("alerts = %d, want 0", len(alerts))
 	}
-
 	if math.Abs(ss.Positions["ETH"].Quantity-0.2) > 1e-9 {
 		t.Errorf("Quantity = %g, want 0.2 (legacy resync)", ss.Positions["ETH"].Quantity)
 	}
@@ -430,7 +425,6 @@ func TestSoleOwnerTPPartial_FallsBackToConfiguredTPWhenLookupPxZero(t *testing.T
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: onChainQty, EntryPrice: entryPx, Leverage: 5}}
 	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) {
-
 		return HLFillLookup{Fee: realFee, FilledQty: 0.2, Px: 0, OID: 555, Count: 1}, true
 	})
 	var alerts []ProtectionFillAlert
@@ -465,14 +459,12 @@ func TestSoleOwnerTP_FullCloseWithStaleClearedTier_DefersToSL(t *testing.T) {
 				Symbol: "ETH", Quantity: residualQty, InitialQuantity: 0.4,
 				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
 				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
-
 				TPOIDs:            []int64{0, 222},
 				StopLossOID:       42,
 				StopLossTriggerPx: slTriggerPx,
 			},
 		},
 	}
-
 	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
 		if oid == 42 {
 			return HLFillLookup{Fee: 0.05, FilledQty: residualQty, Px: slTriggerPx, Count: 1, OID: 42}, true
@@ -502,7 +494,6 @@ func TestSoleOwnerTP_FullCloseWithStaleClearedTier_DefersToSL(t *testing.T) {
 	if got := ss.ClosedPositions[0].CloseReason; got != "stop_loss" {
 		t.Errorf("CloseReason = %q, want \"stop_loss\" (defer to legacy SL handler)", got)
 	}
-
 	for _, a := range alerts {
 		if a.FillType == "TP1" || a.FillType == "TP2" {
 			t.Errorf("unexpected TP alert %+v — SL close must not mis-attribute to a TP tier", a)
@@ -602,7 +593,6 @@ func TestSoleOwnerTP_CycleOrderingRecovery_BooksWhenUserFillsOIDMatchesTPOID(t *
 				Symbol: "ETH", Quantity: fullQty, InitialQuantity: fullQty,
 				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
 				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
-
 				TPOIDs: []int64{tp1OID, 222},
 			},
 		},
@@ -638,7 +628,6 @@ func TestSoleOwnerTP_CycleOrderingRecovery_BooksWhenUserFillsOIDMatchesTPOID(t *
 	if pos == nil {
 		t.Fatal("expected position to remain after partial close")
 	}
-
 	if pos.TPOIDs[0] != 0 || pos.TPOIDs[1] != 222 {
 		t.Errorf("TPOIDs = %v, want [0 222]", pos.TPOIDs)
 	}
@@ -716,7 +705,6 @@ func TestSoleOwnerTP_CycleOrderingRecovery_DefersWhenUserFillsOIDDoesNotMatch(t 
 	}
 	positions := []HLPosition{{Coin: "ETH", Size: 0.2, EntryPrice: 2000, Leverage: 5}}
 	resolver := hlReconcileFillResolver(func(string, int64, float64) (HLFillLookup, bool) {
-
 		return HLFillLookup{Fee: 0.04, FilledQty: 0.2, Px: 1900, OID: 999, Count: 1}, true
 	})
 	var alerts []ProtectionFillAlert
@@ -730,7 +718,6 @@ func TestSoleOwnerTP_CycleOrderingRecovery_DefersWhenUserFillsOIDDoesNotMatch(t 
 	if len(alerts) != 0 {
 		t.Errorf("alerts = %d, want 0", len(alerts))
 	}
-
 	if math.Abs(ss.Positions["ETH"].Quantity-0.2) > 1e-9 {
 		t.Errorf("Quantity = %g, want 0.2 (legacy resync after recovery declines)", ss.Positions["ETH"].Quantity)
 	}
@@ -751,14 +738,12 @@ func TestSoleOwnerTP_CycleOrderingRecovery_NotAppliedToFullClose(t *testing.T) {
 				Symbol: "ETH", Quantity: residualQty, InitialQuantity: 0.4,
 				AvgCost: entryPx, EntryATR: entryATR, Side: "long",
 				Multiplier: 1, Leverage: 5, OwnerStrategyID: "hl-tp-sole",
-
 				TPOIDs:            []int64{0, 222},
 				StopLossOID:       42,
 				StopLossTriggerPx: slTriggerPx,
 			},
 		},
 	}
-
 	resolver := hlReconcileFillResolver(func(_ string, oid int64, _ float64) (HLFillLookup, bool) {
 		if oid == 42 {
 			return HLFillLookup{Fee: 0.05, FilledQty: residualQty, Px: slTriggerPx, Count: 1, OID: 42}, true

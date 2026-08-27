@@ -112,7 +112,6 @@ func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessag
 		if isBidirectionalPerpsStrategy(name) {
 			direction = DirectionBoth
 		}
-
 		obj = map[string]interface{}{
 			"id":               id,
 			"type":             "perps",
@@ -508,7 +507,6 @@ func followupText(s *discordgo.Session, i *discordgo.InteractionCreate, content 
 func (d *DiscordNotifier) applyConfigChange(s *discordgo.Session, i *discordgo.InteractionCreate, restartRequired bool, doneMsg string) {
 	if restartRequired {
 		followupText(s, i, doneMsg+"\nApplying via **service restart** — this instance briefly goes offline; the new one resumes the cycle.")
-
 		go func() {
 			_ = restartSelf()
 		}()
@@ -727,7 +725,6 @@ func (d *DiscordNotifier) handleClearCashReconcile(s *discordgo.Session, i *disc
 	cash, cleared, err := clearCashReconcileRequiredForStrategy(d.ss.state, id)
 	var saveErr error
 	if err == nil && cleared && d.ss.stateDB != nil {
-
 		saveErr = SaveStateWithDB(d.ss.state, d.cfg, d.ss.stateDB)
 	}
 	d.ss.mu.Unlock()

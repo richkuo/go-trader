@@ -60,7 +60,6 @@ func TestReplayDriftTracker_WindowExpiryRefires(t *testing.T) {
 }
 
 func TestReplayDriftTracker_TenthEventDoesNotBypassWindow(t *testing.T) {
-
 	tr := &replayDriftTracker{}
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	if !tr.Record("s1", replayDriftKindOpenWhileHolding, now) {
@@ -151,7 +150,6 @@ func TestMirrorReplayDriftDM_HighWaterRemarkDoesNotFire(t *testing.T) {
 	if trades != 0 || len(applied) != 1 {
 		t.Fatalf("first pass trades=%d applied=%v, want 0/1", trades, applied)
 	}
-
 	replayDriftAlerts.reset()
 	applied, trades, _, dms = applyReplayedLiveDecisions(sc, s, pending, 1908.0, replayTestResult(), &Config{}, logger)
 	if trades != 0 || len(applied) != 1 {

@@ -136,7 +136,6 @@ func TestRunProbeHappyPath(t *testing.T) {
 	if rc != 0 {
 		t.Fatalf("happy-path probe should return 0, got %d", rc)
 	}
-
 	if len(probed) != 14 {
 		t.Fatalf("expected 14 probe invocations, got %d: %v", len(probed), probed)
 	}

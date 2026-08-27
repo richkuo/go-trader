@@ -42,7 +42,6 @@ func fetchPythonBalance(platform string) (float64, error) {
 }
 
 func resolveCapitalPct(strategies []StrategyConfig) {
-
 	needsBalance := make(map[string]bool)
 	for _, sc := range strategies {
 		if sc.CapitalPct > 0 {

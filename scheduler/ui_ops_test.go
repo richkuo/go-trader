@@ -128,7 +128,6 @@ func TestAPIDiagnosticsNetPnLAndPendingMetrics(t *testing.T) {
 	if err := sdb.InsertTradeDiagnostics(row); err != nil {
 		t.Fatalf("insert diagnostics: %v", err)
 	}
-
 	if err := sdb.InsertTrade("hl-btc", Trade{
 		Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), StrategyID: "hl-btc",
 		Symbol: "BTC", Side: "sell", Quantity: 1, Price: 110, Value: 110,
@@ -196,7 +195,6 @@ func TestAPIDiagnosticsPagingNewestFirst(t *testing.T) {
 	if resp.Total != 3 || len(resp.Rows) != 1 {
 		t.Fatalf("total=%d rows=%d, want 3/1", resp.Total, len(resp.Rows))
 	}
-
 	if want := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC); !resp.Rows[0].ClosedAt.Equal(want) {
 		t.Errorf("closed_at = %v, want %v", resp.Rows[0].ClosedAt, want)
 	}

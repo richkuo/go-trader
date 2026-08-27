@@ -51,9 +51,8 @@ type hlFillRecord struct {
 	ClosedPnl string      `json:"closedPnl"`
 	Time      int64       `json:"time"`
 	Dir       string      `json:"dir"`
-
-	Tid  json.Number `json:"tid"`
-	Hash string      `json:"hash"`
+	Tid       json.Number `json:"tid"`
+	Hash      string      `json:"hash"`
 }
 
 var fetchHyperliquidUserFillsByTime = defaultFetchHyperliquidUserFillsByTime
@@ -209,7 +208,6 @@ func fillOIDMatches(f hlFillRecord, oid int64) bool {
 	if v, err := f.OID.Int64(); err == nil {
 		return v == oid
 	}
-
 	return f.OID.String() == strconv.FormatInt(oid, 10)
 }
 
@@ -330,7 +328,6 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			continue
 		}
 		onChainSize, present := onChainByCoin[sym]
-
 		mismatched := !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9
 		if !mismatched {
 			continue
@@ -338,15 +335,12 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		if pos.StopLossOID > 0 && pos.StopLossTriggerPx > 0 {
 			addCandidate(sym, pos.StopLossOID, pos.Quantity)
 		}
-
 		for _, tpOID := range pos.TPOIDs {
 			if tpOID > 0 {
 				addCandidate(sym, tpOID, pos.Quantity)
 			}
 		}
-
 		addCandidate(sym, 0, pos.Quantity)
-
 		if present && onChainSize != 0 {
 			signedVirtual := pos.Quantity
 			if pos.Side == "short" {
@@ -357,7 +351,6 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			if sameDirection && onChainAbs+1e-9 < pos.Quantity {
 				addCandidate(sym, 0, pos.Quantity-onChainAbs)
 			}
-
 			if sameDirection && hyperliquidAllTiersArmedAndCleared(sc, pos) {
 				tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 				initQty := pos.InitialQuantity
@@ -377,7 +370,6 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 				}
 			}
 		}
-
 		if hCoin := hedgeCoin(sc); hCoin != "" {
 			if hPos := ss.Positions[hCoin]; hPos != nil && hPos.isHedgeLeg() && hPos.Quantity > 0 {
 				onChainSize, present := onChainByCoin[hCoin]
@@ -393,7 +385,6 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 			}
 		}
 	}
-
 	coinStratCount := make(map[string]int)
 	coinVirtualQty := make(map[string]float64)
 	for _, sc := range allStrategies {
@@ -453,7 +444,6 @@ func buildCachedHyperliquidReconcileFillResolver(accountAddress string, allStrat
 		key := makeHLReconcileFeeCacheKey(c.coin, c.oid, c.qty)
 		ent := cache[key]
 		if _, exists := hintsByOID[c.oid]; exists {
-
 			continue
 		}
 		filled := ent.ok && ent.lookup.Count > 0

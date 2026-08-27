@@ -109,7 +109,6 @@ func TestArmTrailingStopAtOpenNowRegime(t *testing.T) {
 		gotSize, gotTrigger = size, triggerPx
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 777, StopLossTriggerPx: triggerPx}, "", nil
 	}
-
 	regimeBlock := &RegimeATRBlock{TrendRegime: map[string]RegimeATREntry{
 		"trending": {ATR: 2.0},
 		"ranging":  {ATR: 1.0},

@@ -17,13 +17,10 @@ type hlProtectionPlan struct {
 	StopLossOID     int64
 	Tiers           []hlProtectionTier
 	TPOIDs          []int64
-
-	TPArmedTiers []bool
-
-	ForceSLReplace bool
-	ForceTPReplace []bool
-
-	CancelTPOIDs []int64
+	TPArmedTiers    []bool
+	ForceSLReplace  bool
+	ForceTPReplace  []bool
+	CancelTPOIDs    []int64
 }
 
 func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidationPx float64) (hlProtectionPlan, bool) {
@@ -36,11 +33,9 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 	if pos.Side != "long" && pos.Side != "short" {
 		return hlProtectionPlan{}, false
 	}
-
 	atrRegime := protectionATRRegimeLabel(pos, sc)
 	slMult := 0.0
 	if v, ok := unifiedCloseStopLossATR(sc, atrRegime); ok {
-
 		slMult = v
 	} else if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
 		slMult = *sc.StopLossATRMult
@@ -49,39 +44,33 @@ func buildHyperliquidProtectionPlan(sc StrategyConfig, pos *Position, liquidatio
 			slMult = v
 		}
 	}
-
 	tiers := strategyTPTiersForRegime(sc, atrRegime)
 	if slMult <= 0 && len(tiers) == 0 {
 		return hlProtectionPlan{}, false
 	}
-
 	forceSLPastLiquidation := false
 	if liquidationPx > 0 {
 		if clampedMult, clamped := hlClampProtectionSLMult(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult, liquidationPx); clamped {
 			slMult = clampedMult
-
 			if clampedPx := hlProtectionSLTriggerPx(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult); hlTriggerStrictlyTighter(pos.Side, clampedPx, pos.StopLossTriggerPx) {
 				forceSLPastLiquidation = true
 			}
 		}
-
 		if stopPastLiquidation(pos.Side, pos.StopLossTriggerPx, liquidationPx) &&
 			hlProtectionSLTriggerReachable(pos.Side, pos.riskAnchorPrice(), pos.EntryATR, slMult, liquidationPx) {
 			forceSLPastLiquidation = true
 		}
 	}
-
 	if pos.StopLossOID == 0 && pos.StopLossTriggerPx > 0 {
 		slMult = 0
 		forceSLPastLiquidation = false
 	}
 	tierCount := len(tiers)
 	return hlProtectionPlan{
-		ForceSLReplace: forceSLPastLiquidation,
-		Symbol:         pos.Symbol,
-		Side:           pos.Side,
-		Size:           pos.Quantity,
-
+		ForceSLReplace:  forceSLPastLiquidation,
+		Symbol:          pos.Symbol,
+		Side:            pos.Side,
+		Size:            pos.Quantity,
 		AvgCost:         pos.riskAnchorPrice(),
 		EntryATR:        pos.EntryATR,
 		StopLossATRMult: slMult,
@@ -110,7 +99,6 @@ func strategyTPTiersForRegime(sc StrategyConfig, regime string) []hlProtectionTi
 		if n == "tiered_tp_atr_regime" || n == "tiered_tp_atr_live_regime" || n == dynamicCloseStrategyName {
 			regimeAware = true
 		}
-
 		if regimeAware && closeParamsAreUnifiedRegime(ref.Params) {
 			scalar, _, ok := unifiedRegimeScalarParams(ref.Params, regime)
 			if !ok {
@@ -128,7 +116,6 @@ func strategyTPTiersForRegime(sc StrategyConfig, regime string) []hlProtectionTi
 			break
 		}
 		if regimeAware {
-
 			if useDefaults, ok := ref.Params["use_defaults"].(bool); ok && useDefaults {
 				return defaultRegimeTPTiersForRegime(regime)
 			}
@@ -136,14 +123,12 @@ func strategyTPTiersForRegime(sc StrategyConfig, regime string) []hlProtectionTi
 		}
 	}
 	if regimeAware {
-
 		tiers := resolveRegimeTPTiers(raw, regime)
 		if len(tiers) < 2 {
 			return nil
 		}
 		return finalizeProtectionTiers(tiers)
 	}
-
 	tiers := parseHLProtectionTiers(raw)
 	if len(tiers) == 0 {
 		tiers = defaultHLProtectionTiers()
@@ -342,7 +327,6 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 		}
 		notifyHLProtectionFailure(notifier, sc, plan.Symbol, msg)
 	}
-
 	if hlProtectionLostExchangeStop(result) {
 		msg := fmt.Sprintf("**HL PROTECTION CRITICAL** [%s] %s force-replace cancelled the resting stop-loss but the replacement did NOT rest — the position has NO exchange-side stop; recorded state cleared, next sync re-places", sc.ID, plan.Symbol)
 		if logger != nil {
@@ -353,7 +337,6 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 			notifier.SendOwnerDM(msg)
 		}
 	}
-
 	if hlProtectionStopOutcomeUnknown(result) {
 		msg := fmt.Sprintf("**HL PROTECTION CRITICAL** [%s] %s force-replace cancelled the resting stop-loss and the replacement's outcome could NOT be read (open-order diff inconclusive) — a reduce-only stop may be resting untracked; recorded state kept, verify the order book on Hyperliquid", sc.ID, plan.Symbol)
 		if logger != nil {
@@ -368,7 +351,6 @@ var syncHyperliquidProtection = func(sc StrategyConfig, plan hlProtectionPlan, n
 }
 
 func hlProtectionLostExchangeStop(result *HyperliquidProtectionSyncResult) bool {
-
 	return result != nil &&
 		result.CancelStopLossSucceeded &&
 		result.StopLossOID <= 0 &&
@@ -394,11 +376,9 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	if result.StopLossOID > 0 {
 		pos.StopLossOID = result.StopLossOID
 	} else if result.CancelStopLossSucceeded && !result.StopLossOutcomeUnknown {
-
 		pos.StopLossOID = 0
 		pos.StopLossTriggerPx = 0
 	}
-
 	if result.StopLossTriggerPx > 0 {
 		pos.StopLossTriggerPx = result.StopLossTriggerPx
 	}
@@ -407,7 +387,6 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 	} else if result.TP1OID > 0 || result.TP2OID > 0 {
 		pos.TPOIDs = []int64{result.TP1OID, result.TP2OID}
 	}
-
 	if len(pos.TPOIDs) > 0 {
 		if len(pos.TPArmedTiers) < len(pos.TPOIDs) {
 			extended := make([]bool, len(pos.TPOIDs))
@@ -420,7 +399,6 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 			}
 		}
 	}
-
 	if len(result.TPFilledExternally) > 0 {
 		if len(pos.TPOIDs) < len(result.TPFilledExternally) {
 			pos.TPOIDs = tpOIDsForTierCount(pos.TPOIDs, len(result.TPFilledExternally))
@@ -433,7 +411,6 @@ func applyHyperliquidProtectionSync(pos *Position, result *HyperliquidProtection
 		for idx, filled := range result.TPFilledExternally {
 			if filled {
 				pos.TPOIDs[idx] = 0
-
 				pos.TPArmedTiers[idx] = true
 			}
 		}
@@ -534,7 +511,6 @@ func runHyperliquidProtectionSync(
 	logger *StrategyLogger,
 	logTag string,
 	reconcileFillHintsJSON []byte,
-
 	liqPxByCoin map[string]float64,
 	netSideByCoin map[string]string,
 ) (bool, float64) {
@@ -544,7 +520,6 @@ func runHyperliquidProtectionSync(
 	var plan hlProtectionPlan
 	var syncOK bool
 	if strategyUsesDynamicRegimeClose(sc) {
-
 		mu.Lock()
 		if pos, ok := stratState.Positions[symbol]; ok {
 			oldAppliedRegime := pos.RegimeAppliedLabel
@@ -554,12 +529,10 @@ func runHyperliquidProtectionSync(
 				plan.CancelTPOIDs = dynamicProtectionSurplusTPOIDs(pos.TPOIDs, len(plan.Tiers))
 				if regimeChanged {
 					forceSL, forceTP := dynamicProtectionForceReplace(sc, pos, plan, oldAppliedRegime, true)
-
 					plan.ForceSLReplace = plan.ForceSLReplace || forceSL
 					plan.ForceTPReplace = orForceReplace(plan.ForceTPReplace, forceTP)
 				}
 				if pos.ScaleInResizePending {
-
 					fSL, fTP := scaleInProtectionForceReplace(pos, plan)
 					plan.ForceSLReplace = plan.ForceSLReplace || fSL
 					plan.ForceTPReplace = orForceReplace(plan.ForceTPReplace, fTP)
@@ -572,7 +545,6 @@ func runHyperliquidProtectionSync(
 		if pos, ok := stratState.Positions[symbol]; ok {
 			plan, syncOK = buildHyperliquidProtectionPlan(sc, pos, hlLiquidationPxForSide(liqPxByCoin, netSideByCoin, symbol, pos.Side))
 			if syncOK && pos.ScaleInResizePending {
-
 				fSL, fTP := scaleInProtectionForceReplace(pos, plan)
 				plan.ForceSLReplace = plan.ForceSLReplace || fSL
 				plan.ForceTPReplace = orForceReplace(plan.ForceTPReplace, fTP)
@@ -593,21 +565,18 @@ func runHyperliquidProtectionSync(
 	if !ok || pos == nil || pos.Quantity <= 0 || pos.Side != plan.Side {
 		return false, 0
 	}
-
 	if protection.StopLossFilledImmediately && protection.StopLossTriggerPx > 0 {
 		if recordPerpsStopLossClose(stratState, symbol, protection.StopLossTriggerPx, "protection_sync_sl_immediate", logger) {
 			return true, protection.StopLossTriggerPx
 		}
 	}
 	applyHyperliquidProtectionSync(pos, protection, plan.CancelTPOIDs)
-
 	if effectiveTrailingStopPct(sc, pos) <= 0 {
 		pos.ScaleInResizePending = false
 	}
 	if logger != nil && len(protection.TPCancelFilledOIDs) > 0 {
 		logger.Info("surplus TP OIDs filled on-chain (reconciler will book): %v", protection.TPCancelFilledOIDs)
 	}
-
 	stampOpenTradeWithProtectionSnapshot(stratState, db, sc, symbol, pos)
 	if logger != nil {
 		logger.Info("%s (sl_oid=%d tp_oids=%v)", logTag, pos.StopLossOID, pos.TPOIDs)
@@ -622,7 +591,6 @@ func hyperliquidPlacesOnChainTPs(sc StrategyConfig) bool {
 	if !hyperliquidIsLive(sc.Args) {
 		return false
 	}
-
 	return strategyUsesTieredTPATRClose(sc)
 }
 

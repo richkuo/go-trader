@@ -18,7 +18,6 @@ func unifiedBlock() map[string]interface{} {
 					map[string]interface{}{"atr_multiple": 4.0, "close_fraction": 1.0},
 				},
 			},
-
 			"trending_down": map[string]interface{}{
 				"stop_loss_atr": 1.0,
 				"tp_tiers": []interface{}{
@@ -140,7 +139,6 @@ func TestValidateUnifiedRegimeClose_Errors(t *testing.T) {
 }
 
 func TestUnifiedRegimeScalarParams_ShapeMatchesScalarConfig(t *testing.T) {
-
 	scalar, _, _ := unifiedRegimeScalarParams(unifiedBlock(), "ranging")
 	want := map[string]interface{}{
 		"atr_source": "live",
@@ -179,7 +177,6 @@ func TestUnifiedRegimeSLFolding(t *testing.T) {
 	if !strategyUsesUnifiedRegimeClose(sc) {
 		t.Fatal("strategyUsesUnifiedRegimeClose = false, want true")
 	}
-
 	if got := EffectiveStopLossPct(sc); got != 0 {
 		t.Fatalf("EffectiveStopLossPct = %g, want 0 (deferred, not max-drawdown fallback)", got)
 	}
@@ -241,11 +238,9 @@ func TestValidateUnifiedCloseSoleOwner(t *testing.T) {
 			CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live_regime", Params: unifiedBlock()},
 		}
 	}
-
 	if errs := validateUnifiedCloseSoleOwner(mk(), "s"); len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-
 	sc := mk()
 	m := 1.5
 	sc.StopLossATRMult = &m
@@ -253,7 +248,6 @@ func TestValidateUnifiedCloseSoleOwner(t *testing.T) {
 	if len(errs) == 0 || !strings.Contains(errs[0], "stop_loss_atr_mult is not allowed alongside a unified per-regime close") {
 		t.Fatalf("expected sole-owner rejection, got: %v", errs)
 	}
-
 	plain := StrategyConfig{ID: "p", Type: "perps", Platform: "hyperliquid", StopLossATRMult: &m}
 	if errs := validateUnifiedCloseSoleOwner(plain, "p"); len(errs) > 0 {
 		t.Fatalf("non-unified strategy should not trip sole-owner: %v", errs)
@@ -268,17 +262,14 @@ func TestUnifiedCloseParamsEqualForReload(t *testing.T) {
 	if !unifiedCloseParamsEqualForReload(a, mk(unifiedBlock())) {
 		t.Fatal("identical unified blocks should compare equal")
 	}
-
 	changed := unifiedBlock()
 	changed[regimeClassifierKey].(map[string]interface{})["ranging"].(map[string]interface{})["tp_tiers"].([]interface{})[0].(map[string]interface{})["atr_multiple"] = 9.9
 	if unifiedCloseParamsEqualForReload(a, mk(changed)) {
 		t.Fatal("changed tier multiple should compare unequal")
 	}
-
 	if unifiedCloseParamsEqualForReload(a, StrategyConfig{}) {
 		t.Fatal("removing the unified close should compare unequal")
 	}
-
 	if !unifiedCloseParamsEqualForReload(StrategyConfig{}, StrategyConfig{}) {
 		t.Fatal("two non-unified strategies should compare equal")
 	}

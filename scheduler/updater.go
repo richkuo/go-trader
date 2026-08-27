@@ -14,7 +14,6 @@ import (
 const defaultGoTraderSystemdUnit = "go-trader"
 
 func checkForUpdates(cfg *Config, notifier *MultiNotifier, lastNotifiedHash *string, mu *sync.RWMutex, state *AppState, stateDB *StateDB) bool {
-
 	if err := gitCheck(); err != nil {
 		fmt.Printf("[update] Not a git repo or git unavailable: %v\n", err)
 		return false
@@ -113,11 +112,9 @@ func tailForDM(s string, max int) string {
 }
 
 func restartSelf() error {
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "systemctl", "restart", updateSystemdUnitName()).Run(); err == nil {
-
 		time.Sleep(30 * time.Second)
 	}
 

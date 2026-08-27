@@ -13,7 +13,6 @@ func runTrailingStopUpdateAfterRatchetTighten(
 	symbol string,
 	mark float64,
 	hlOnChainAbsQty map[string]float64,
-
 	hlLiquidationPx map[string]float64,
 	hlNetSideByCoin map[string]string,
 	mu *sync.RWMutex,
@@ -46,7 +45,6 @@ func runTrailingStopUpdateAfterRatchetTighten(
 		if capped && logger != nil {
 			logger.Warn("ratchet same-cycle trailing SL: virtual qty %.6f > on-chain %.6f for %s; capping (#621)", qty, slEffectiveQty, symbol)
 		}
-
 		livePolicy := ratchetTightenReplacePolicy
 		livePolicy.liquidationPx = hlLiquidationPxForSide(hlLiquidationPx, hlNetSideByCoin, symbol, side)
 		newHighWater, slUpdate, updateConfirmed := runHyperliquidTrailingStopUpdate(

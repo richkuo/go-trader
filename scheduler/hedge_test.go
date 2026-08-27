@@ -55,7 +55,6 @@ func TestHedgeTargetDecisionOpensInverseWithNotionalSizing(t *testing.T) {
 	if act.HedgeSide != "short" || act.Side != "sell" {
 		t.Fatalf("long primary must hedge SHORT via a sell, got side=%q order=%q", act.HedgeSide, act.Side)
 	}
-
 	if math.Abs(act.Qty-0.4) > 1e-12 {
 		t.Fatalf("qty = %v, want 0.4", act.Qty)
 	}
@@ -85,7 +84,6 @@ func TestHedgeTargetDecisionAppliesRatio(t *testing.T) {
 
 func TestHedgeTargetDecisionDefersOpenBelowMinNotional(t *testing.T) {
 	sc := hedgeTestConfig()
-
 	snap := hedgeSnapshot{PrimarySymbol: "ETH", PrimaryQty: 0.0045, PrimarySide: "long", HedgeSymbol: "BTC"}
 	act := hedgeTargetDecision(sc, snap, testPrimaryPx, testHedgePx)
 	if act.Kind != hedgeActionNone {
@@ -129,7 +127,6 @@ func TestHedgeTargetDecisionAddsOnPrimaryGrowth(t *testing.T) {
 	if act.Kind != hedgeActionAdd {
 		t.Fatalf("kind = %v, want add (%s)", act.Kind, act.Reason)
 	}
-
 	if math.Abs(act.Qty-0.2) > 1e-12 {
 		t.Fatalf("add qty = %v, want 0.2", act.Qty)
 	}
@@ -140,7 +137,6 @@ func TestHedgeTargetDecisionAddsOnPrimaryGrowth(t *testing.T) {
 
 func TestHedgeTargetDecisionReducesProportionallyOnPartialClose(t *testing.T) {
 	sc := hedgeTestConfig()
-
 	snap := hedgeSnapshot{
 		PrimarySymbol: "ETH", PrimaryQty: 5, PrimarySide: "long",
 		HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.4, HedgeSide: "short", HedgeBasis: 10,
@@ -398,7 +394,6 @@ func TestHeldHedgeCoinRequiresHeldStampedLeg(t *testing.T) {
 	if got := heldHedgeCoin(sc, s); got != "BTC" {
 		t.Fatalf("held leg → %q, want BTC", got)
 	}
-
 	s.Positions["BTC"].Quantity = 0
 	if got := heldHedgeCoin(sc, s); got != "" {
 		t.Fatalf("flat leg → %q, want empty", got)
@@ -453,7 +448,6 @@ func TestApplyHedgeFillOpensPositionWithOwnershipMetadata(t *testing.T) {
 	if tr.ExchangeFee != 12 {
 		t.Fatalf("ExchangeFee = %v, want the real fill fee 12", tr.ExchangeFee)
 	}
-
 	if math.Abs(s.Cash-(10000-12)) > 1e-9 {
 		t.Fatalf("cash = %v, want 9988 (open fee deducted)", s.Cash)
 	}
@@ -488,7 +482,6 @@ func applyHedgeFillPartial(t *testing.T, sc StrategyConfig, s *StrategyState, ac
 	pos := s.Positions[hedgeCoin(sc)]
 	prevBasis := pos.HedgePrimaryQtyBasis
 	_ = prevBasis
-
 	applyHedgeFill(sc, s, "ETH", act, filled, testHedgePx, 3, true, "1000", silentStrategyLogger(s.ID))
 	_ = requested
 }
@@ -510,7 +503,6 @@ func TestApplyHedgeFillBlendsAddIntoExistingLeg(t *testing.T) {
 	if math.Abs(pos.Quantity-0.6) > 1e-9 {
 		t.Fatalf("qty = %v, want 0.6", pos.Quantity)
 	}
-
 	wantAvg := (testHedgePx*0.4 + 60000*0.2) / 0.6
 	if math.Abs(pos.AvgCost-wantAvg) > 1e-6 {
 		t.Fatalf("avg cost = %v, want %v", pos.AvgCost, wantAvg)
@@ -602,7 +594,6 @@ func TestBookPerpsCloseRoutesHedgeLegAwayFromLossStreak(t *testing.T) {
 
 	s := hedgeTestState("eth-long")
 	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
-
 	if !bookPerpsCloseWithFillFee(s, "BTC", 55000, 5, true, "77", hedgeCloseCloseReason, "hedge(ETH) close", "hedge", silentStrategyLogger("eth-long")) {
 		t.Fatal("close was not booked")
 	}
@@ -1069,7 +1060,6 @@ func TestValidateHedgeStateConsistencyFlagsOrphanedAndRepointedLegs(t *testing.T
 			if len(warnings) != 1 || !strings.Contains(warnings[0], tc.needle) {
 				t.Fatalf("warnings = %v, want one containing %q", warnings, tc.needle)
 			}
-
 			if s.Positions["BTC"] == nil {
 				t.Fatal("the startup check must never close a position")
 			}
@@ -1186,7 +1176,6 @@ func TestApplyHyperliquidKillSwitchHedgeFillIsIdempotentOnOID(t *testing.T) {
 
 	applyHyperliquidKillSwitchHedgeFill(s, sc, fills)
 	rowsAfterFirst := len(s.TradeHistory)
-
 	s.Positions["BTC"] = hedgePos(0.4, "short", 10)
 	applyHyperliquidKillSwitchHedgeFill(s, sc, fills)
 
@@ -1371,7 +1360,6 @@ func TestHedgeFieldsRoundTripThroughSQLite(t *testing.T) {
 	if !got.isHedgeLeg() {
 		t.Fatal("restored leg must still identify as a hedge")
 	}
-
 	if loaded.Strategies["eth-long"].Positions["ETH"].isHedgeLeg() {
 		t.Fatal("primary position must not carry a hedge stamp")
 	}
@@ -1447,10 +1435,8 @@ func TestLifetimeTradeStatsExcludeHedgeLegs(t *testing.T) {
 	sdb := openTestDB(t)
 	now := time.Now().UTC()
 	trades := []Trade{
-
 		{StrategyID: "eth-long", Timestamp: now, Symbol: "ETH", PositionID: "p1", Side: "buy", Quantity: 10, Price: 2000, Value: 20000, TradeType: "perps", Details: "Open long"},
 		{StrategyID: "eth-long", Timestamp: now.Add(time.Second), Symbol: "ETH", PositionID: "p1", Side: "sell", Quantity: 10, Price: 2100, Value: 21000, TradeType: "perps", Details: "Close long", IsClose: true, RealizedPnL: 1000, PnLGross: true},
-
 		{StrategyID: "eth-long", Timestamp: now.Add(2 * time.Second), Symbol: "BTC", PositionID: "h1", Side: "sell", Quantity: 0.4, Price: 50000, Value: 20000, TradeType: "hedge", Details: "hedge(ETH) open"},
 		{StrategyID: "eth-long", Timestamp: now.Add(3 * time.Second), Symbol: "BTC", PositionID: "h1", Side: "buy", Quantity: 0.4, Price: 52000, Value: 20800, TradeType: "hedge", Details: "hedge(ETH) close", IsClose: true, RealizedPnL: -800, PnLGross: true},
 	}
@@ -1569,7 +1555,6 @@ func TestApplyHedgeFillBooksActualFillNotRequestedSize(t *testing.T) {
 		if s.TradeHistory[0].Quantity != 0.1 {
 			t.Fatalf("trade qty = %v, want 0.1", s.TradeHistory[0].Quantity)
 		}
-
 		snap := hedgeSnapshot{
 			PrimarySymbol: "ETH", PrimaryQty: 10, PrimarySide: "long",
 			HedgeSymbol: "BTC", HedgeHeld: true, HedgeQty: 0.1, HedgeSide: "short", HedgeBasis: 2.5,
@@ -1635,7 +1620,6 @@ func TestRunHedgeSyncBooksExchangeReportedFillSize(t *testing.T) {
 	s := hedgeTestState("eth-long")
 	s.Positions["ETH"] = primaryPos(10, "long")
 	var mu sync.RWMutex
-
 	f := &fakeHedgeExec{openResult: execFill(testHedgePx, 0.25, 6)}
 
 	runHedgeSync(sc, s, &mu, f.executor(), hedgeSyncInputs{
@@ -1697,7 +1681,6 @@ func TestPartialHedgeReduceLeavesDeltaForTheNextCycle(t *testing.T) {
 		if math.Abs(pos.Quantity-0.25) > 1e-9 {
 			t.Fatalf("hedge qty = %v, want 0.25", pos.Quantity)
 		}
-
 		act3 := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, s), testPrimaryPx, testHedgePx)
 		if act3.Kind != hedgeActionReduce {
 			t.Fatalf("third-cycle action = %v, want reduce (%s)", act3.Kind, act3.Reason)
@@ -1722,7 +1705,6 @@ func TestPartialHedgeReduceLeavesDeltaForTheNextCycle(t *testing.T) {
 	})
 
 	t.Run("short-filled residual full-close keeps a delta", func(t *testing.T) {
-
 		s := hedgeTestState("eth-long")
 		s.Positions["ETH"] = primaryPos(0.001, "long")
 		s.Positions["BTC"] = hedgePos(0.4, "short", 10)
@@ -1808,7 +1790,6 @@ func TestHedgeBasisAfterPartialReduceScalesByHeldQuantity(t *testing.T) {
 }
 
 func TestHeldQuantityAndFillRatioBasisRulesAgree(t *testing.T) {
-
 	for _, filled := range []float64{0.2, 0.15, 0.1, 0.05} {
 		byRatio := hedgeReducedBasis(10, 5, filled, 0.2)
 		byHeld := hedgeBasisAfterPartialReduce(10, 0.4, 0.4-filled)
@@ -1892,7 +1873,6 @@ func TestLossStreakCircuitBreakerWithFailedFetchLeavesNoPending(t *testing.T) {
 	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseHyperliquid) != nil {
 		t.Fatal("an empty on-chain snapshot must not produce a pending close")
 	}
-
 	if hedgeCoin(sc) != "BTC" {
 		t.Fatalf("hedge coin = %q, want BTC from config", hedgeCoin(sc))
 	}
@@ -1976,7 +1956,6 @@ func TestPrimaryReduceAfterExternalHedgeReductionSizesOffTheShrunkBasis(t *testi
 	if act.Kind != hedgeActionReduce {
 		t.Fatalf("kind = %v, want reduce (%s)", act.Kind, act.Reason)
 	}
-
 	if math.Abs(act.Qty-0.1) > 1e-9 {
 		t.Fatalf("reduce qty = %v, want 0.1", act.Qty)
 	}
@@ -2020,7 +1999,6 @@ func TestManualDrainReAnchorsHedgeBasisProportionally(t *testing.T) {
 		if math.Abs(pos.Quantity-0.32) > 1e-9 {
 			t.Fatalf("hedge qty = %v, want 0.32", pos.Quantity)
 		}
-
 		if math.Abs(pos.HedgePrimaryQtyBasis-8) > 1e-9 {
 			t.Fatalf("basis = %v, want 8 — a short fill must not claim alignment with the primary's 6", pos.HedgePrimaryQtyBasis)
 		}
@@ -2056,7 +2034,6 @@ func TestManualDrainReAnchorsHedgeBasisProportionally(t *testing.T) {
 		if math.Abs(pos.Quantity-0.24) > 1e-9 {
 			t.Fatalf("hedge qty = %v, want 0.24", pos.Quantity)
 		}
-
 		if math.Abs(pos.HedgePrimaryQtyBasis-6) > 1e-9 {
 			t.Fatalf("basis = %v, want 6 — consecutive partials must converge, not compound", pos.HedgePrimaryQtyBasis)
 		}
@@ -2100,7 +2077,6 @@ func TestShortFilledCoupledHedgeCloseStaysTracked(t *testing.T) {
 		if pos.HedgeFor != "ETH" {
 			t.Fatalf("HedgeFor = %q — the stamp must survive or reconcile refuses to adopt the leg", pos.HedgeFor)
 		}
-
 		act := hedgeTargetDecision(sc, hedgeSnapshotFromState(sc, st.Strategies["eth-long"]), testPrimaryPx, testHedgePx)
 		if act.Kind != hedgeActionCloseFull {
 			t.Fatalf("follow-up = %v, want closeFull (%s)", act.Kind, act.Reason)
@@ -2259,7 +2235,6 @@ func TestStuckCBRefusesSameSideHedgeCoinPositionButStillClosesPrimary(t *testing
 	}
 	runPendingHyperliquidCircuitCloses(
 		context.Background(), state, []StrategyConfig{hedgeTestConfig()}, "0xabc",
-
 		[]HLPosition{{Coin: "ETH", Size: 10, EntryPrice: testPrimaryPx}, {Coin: "BTC", Size: 0.4, EntryPrice: testHedgePx}},
 		true, nil, closer, 30*time.Second, &mu,
 		func(msg string) { dms = append(dms, msg) },

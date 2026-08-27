@@ -73,7 +73,6 @@ func annualizedSharpeFromDaily(returns []float64, annualRiskFreeRate float64) fl
 		d := r - mean
 		sqSum += d * d
 	}
-
 	variance := sqSum / float64(len(returns)-1)
 	stdev := math.Sqrt(variance)
 	if stdev < 1e-12 {
@@ -162,7 +161,6 @@ func aggregateSharpe(closedByStrategy map[string][]ClosedPosition, strategies []
 	if totalCap <= 0 || len(dailyPnL) < minSharpeDays {
 		return 0
 	}
-
 	days := make([]string, 0, len(dailyPnL))
 	for d := minDay; !d.After(maxDay); d = d.Add(24 * time.Hour) {
 		days = append(days, d.Format("2006-01-02"))

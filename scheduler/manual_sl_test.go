@@ -65,7 +65,6 @@ func TestManualSLAutoManaged(t *testing.T) {
 			wantManage: false,
 		},
 		{
-
 			name:       "regime stop-loss with unresolved label rejected by config presence",
 			sc:         StrategyConfig{ID: "x", Type: "manual", Platform: "hyperliquid", Symbol: "ETH", StopLossATRRegime: regimeBlock()},
 			pos:        regimePos("-"),

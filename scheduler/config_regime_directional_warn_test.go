@@ -43,7 +43,6 @@ func TestRegimeDirectionalPolicyWarningsEdgeCases(t *testing.T) {
 	if got := regimeDirectionalPolicyWarnings(empty); len(got) != 0 {
 		t.Errorf("strategies without the policy must yield no warnings, got %v", got)
 	}
-
 	one := &Config{Strategies: []StrategyConfig{{ID: "x", RegimeDirectionalPolicy: &RegimeDirectionalPolicy{
 		TrendRegime: map[string]RegimeDirectionalEntry{"trending_up": {Direction: "long"}},
 	}}}}

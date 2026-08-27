@@ -84,7 +84,6 @@ func TestPlanKillSwitchClose_ManualOnlyCoinCloseFailureLatches(t *testing.T) {
 	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
 		return nil, fmt.Errorf("simulated HL close failure")
 	}
-
 	fetcher, _ := stubHLStateFetcher(positions, nil)
 
 	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, roster,
@@ -119,7 +118,6 @@ func TestPlanKillSwitchClose_MixedFleetUnconfiguredCoinBlocksFlat(t *testing.T) 
 			Platform: "hyperliquid",
 		}, nil
 	}
-
 	fetcher, _ := stubHLStateFetcher(positions, nil)
 
 	plan := planKillSwitchClose(defaultHLInputs("0xaddr", true, positions, roster,
@@ -206,7 +204,6 @@ func TestCollectHLKillSwitchStopOIDs_LowerCaseManualSymbolFallsBackToRawKey(t *t
 			Args: []string{"hold", "sol", "1h", "--mode=live"}},
 	}
 	out := collectHLKillSwitchStopOIDs(strategies, roster)
-
 	if !reflect.DeepEqual(out["sol"], []int64{444}) {
 		t.Errorf("sol OIDs = %v; want [444] under the raw configured symbol", out["sol"])
 	}
@@ -259,7 +256,6 @@ func TestQueueModelOnlyCloseAlert_DrainsAndSkipsEmpty(t *testing.T) {
 }
 
 func TestPlanKillSwitchClose_DeclaredButFlatHedgeCoinStaysUnowned(t *testing.T) {
-
 	roster := []StrategyConfig{
 		{ID: "hl-perps-eth-live", Platform: "hyperliquid", Type: "perps",
 			Args:  []string{"sma", "ETH", "1h", "--mode=live"},
@@ -404,7 +400,6 @@ func TestApplyKillSwitchSettledLegsWhileLatched_OKXClosedCoinBooksModelOnly(t *t
 	if len(okxState.TradeHistory) != 1 || !okxState.TradeHistory[0].IsClose {
 		t.Fatalf("OKX close row missing: %+v", okxState.TradeHistory)
 	}
-
 	if hlState.Positions["BTC"] == nil || math.Abs(hlState.Positions["BTC"].Quantity-3.0) > 1e-9 {
 		t.Errorf("HL position must be untouched by the OKX settled set, got %+v", hlState.Positions)
 	}
@@ -440,7 +435,6 @@ func TestHyperliquidRawCoin_ManualSymbolWinsOverArgs(t *testing.T) {
 }
 
 func TestForceCloseHyperliquidLive_ManualDivergentArgsStaysInCloseScope(t *testing.T) {
-
 	roster := []StrategyConfig{
 		{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",
 			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
@@ -492,7 +486,6 @@ func TestForceCloseHyperliquidLive_ManualDivergentArgsStaysInCloseScope(t *testi
 
 func TestForceCloseAllPositions_ModelOnlyAlertLiveGate(t *testing.T) {
 	drainModelOnlyCloseAlerts()
-
 	liveHL := StrategyConfig{ID: "mo-gate-live-hl", Platform: "hyperliquid", Type: "perps",
 		Args: []string{"sma", "MOHLIVE", "1h", "--mode=live"}}
 	paperHL := StrategyConfig{ID: "mo-gate-paper-hl", Platform: "hyperliquid", Type: "perps",

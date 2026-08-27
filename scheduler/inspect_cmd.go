@@ -30,7 +30,6 @@ func runInspect(args []string) int {
 		fmt.Fprintf(os.Stderr, "inspect: failed to load config %s: %v\n", *configPath, err)
 		return 1
 	}
-
 	setDirectionalCertStore(LoadDirectionalCertSetFailClosed(directionalCertPath(), func(f string, a ...interface{}) {
 		fmt.Fprintf(os.Stderr, f+"\n", a...)
 	}))
@@ -130,7 +129,6 @@ func loadStrategyExplicitKeys(path string) (map[string]map[string]bool, error) {
 		for k := range s {
 			keys[k] = true
 		}
-
 		if keys["close_strategies"] {
 			keys["close_strategy"] = true
 		}
@@ -215,7 +213,6 @@ func resolveStopLoss(sc StrategyConfig, explicit map[string]bool) stopLossResolu
 		}
 		return stopLossResolution{Source: "stop_loss_margin_pct", Value: "disabled (explicit 0 or zero leverage)", Explicit: true}
 	}
-
 	if sc.MaxDrawdownPct > 0 {
 		v := sc.MaxDrawdownPct
 		if v > MaxAutoStopLossPct {
@@ -355,7 +352,6 @@ func formatInspectRegimeTPDetailLines(closeName string, ref StrategyRef, hasTier
 		}
 		return summarizeInspectRegimeTPSpecs(closeName, specs, tag)
 	}
-
 	tiersRaw, _ := closeTierListParam(ref.Params)
 	specs, errs := parseRegimeTPTiers(tiersRaw, closeName+".params", regimeLabelsFromTierRaw(tiersRaw))
 	if len(errs) > 0 || len(specs) == 0 {
@@ -470,7 +466,6 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	}
 
 	fmt.Fprintf(&b, "  max_drawdown_pct:    %g%s\n", sc.MaxDrawdownPct, markIfDefault(explicit, "max_drawdown_pct"))
-
 	if sc.Type != "manual" {
 		if !sc.CircuitBreakerEnabled() {
 			fmt.Fprintf(&b, "  circuit_breaker:     off (explicit) — drawdown + consecutive-loss halt disabled\n")
@@ -478,11 +473,9 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 			fmt.Fprintf(&b, "  circuit_breaker:     on — %s\n", ov)
 		}
 	}
-
 	if sc.Paused {
 		fmt.Fprintf(&b, "  paused:              true — position-increasing signals held; closes and SL/TP management still run\n")
 	}
-
 	if sc.Hedge != nil {
 		state := "disabled"
 		if sc.Hedge.Enabled {
@@ -508,7 +501,6 @@ func formatStrategyInspection(sc StrategyConfig, explicit map[string]bool, cfg *
 	if sc.HTFFilter {
 		fmt.Fprintf(&b, "  htf_filter:          true\n")
 	}
-
 	if sc.Type != "options" {
 		if m := resolveATRMethod(sc, cfg); m != ATRMethodSimple {
 			src := "inherited from global"
@@ -550,7 +542,6 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 			parts = append(parts, "tp=none")
 		}
 	}
-
 	if sc.Type != "manual" {
 		if !sc.CircuitBreakerEnabled() {
 			parts = append(parts, "cb=off")
@@ -558,21 +549,17 @@ func formatStrategySummaryLine(sc StrategyConfig, explicit map[string]bool, cfg 
 			parts = append(parts, "cb["+ov+"]")
 		}
 	}
-
 	if sc.Paused {
 		parts = append(parts, "paused")
 	}
-
 	if sc.Type != "options" {
 		if m := resolveATRMethod(sc, cfg); m != ATRMethodSimple {
 			parts = append(parts, "atr="+m)
 		}
 	}
-
 	if tag := edgeStatusSummaryTag(sc); tag != "" {
 		parts = append(parts, tag)
 	}
-
 	if line := hedgeStatusLine(sc, nil); line != "" {
 		parts = append(parts, line)
 	}
@@ -618,7 +605,6 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		"max_drawdown_pct":          sc.MaxDrawdownPct,
 		"max_drawdown_pct_explicit": explicit["max_drawdown_pct"],
 	}
-
 	if sc.Type != "manual" {
 		out["circuit_breaker_enabled"] = sc.CircuitBreakerEnabled()
 		out["circuit_breaker_explicit"] = explicit["circuit_breaker"]
@@ -629,9 +615,7 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 		out["cb_loss_streak_cooldown_minutes"] = int(sc.CircuitBreakerLossStreakCooldown() / time.Minute)
 		out["cb_loss_streak_cooldown_minutes_explicit"] = explicit["cb_loss_streak_cooldown_minutes"]
 	}
-
 	out["paused"] = sc.Paused
-
 	if hs := buildHedgeStatus(sc, nil); hs != nil {
 		out["hedge"] = hs
 	}
@@ -757,15 +741,12 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 	prov := directionProvenance(sc, explicit)
 	policyConfigured := sc.RegimeDirectionalPolicy != nil && sc.RegimeDirectionalPolicy.IsConfigured()
 	if policyConfigured {
-
 		fmt.Fprintf(b, "  base_direction:      %s (%s)\n", baseDir, prov)
 	} else {
-
 		fmt.Fprintf(b, "  direction:           %s (%s)\n", baseDir, prov)
 	}
 	if policyConfigured {
 		fmt.Fprintf(b, "  regime_directional_policy:\n")
-
 		certStatus, certCell := directionalCertInspectStatus(sc, cfg)
 		fmt.Fprintf(b, "    certification:     %s %s (#1085)\n", certStatus, certCell)
 		for _, label := range canonicalTrendRegimeLabels {
@@ -801,7 +782,6 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 			}
 			posDirRegime := positionDirectionalRegimeLabel(pos, sc)
 			effRegime := effectiveRegimeForPolicy(currentDirRegime, posDirRegime, pos.Quantity)
-
 			effDir := EffectiveDirectionForPositionGated(sc, currentDirRegime, posDirRegime, pos.Quantity, pos.DirectionCertifiedStatesAtOpen)
 			regimeSrc := "stamped at open"
 			if strings.TrimSpace(posDirRegime) == "" {
@@ -821,7 +801,6 @@ func appendDirectionInspectLines(b *strings.Builder, sc StrategyConfig, explicit
 
 func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[string]interface{} {
 	out := map[string]interface{}{
-
 		"direction":      EffectiveDirection(sc),
 		"base_direction": EffectiveDirection(sc),
 	}
@@ -837,7 +816,6 @@ func directionInspectJSON(sc StrategyConfig, cfg *Config, state *AppState) map[s
 			byRegime[label] = entry
 		}
 		out["regime_directional_policy"] = byRegime
-
 		certStatus, certCell := directionalCertInspectStatus(sc, cfg)
 		out["regime_directional_certification"] = map[string]interface{}{
 			"status": certStatus,

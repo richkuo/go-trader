@@ -66,7 +66,6 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 	if s == nil || pos == nil {
 		return
 	}
-
 	if pos.isHedgeLeg() {
 		return
 	}
@@ -90,12 +89,10 @@ func captureTradeDiagnostics(s *StrategyState, pos *Position, closePrice, realiz
 		ClosedAt:        closedAt,
 		MetricsStatus:   diagMetricsPending,
 	}
-
 	if pos.LLMVerdict != "" {
 		v := pos.LLMVerdict
 		row.LLMVerdict = &v
 	}
-
 	if pos.HurstAtOpen > 0 {
 		v := pos.HurstAtOpen
 		row.HurstAtOpen = &v
@@ -205,10 +202,8 @@ func diagTimeframeDuration(tf string) (time.Duration, bool) {
 }
 
 const (
-	diagQueueCap = 256
-
-	diagMaxFetchBars = 1500
-
+	diagQueueCap         = 256
+	diagMaxFetchBars     = 1500
 	diagDefaultTimeframe = "1h"
 )
 
@@ -290,7 +285,6 @@ func (w *tradeDiagnosticsWorker) computeRowMetrics(row TradeDiagnosticsRow) (str
 	if !ok {
 		tfDur, tf = time.Hour, diagDefaultTimeframe
 	}
-
 	sc.Timeframe = tf
 	from := row.OpenedAt.UTC().Truncate(tfDur)
 	to := row.ClosedAt.UTC()
@@ -302,7 +296,6 @@ func (w *tradeDiagnosticsWorker) computeRowMetrics(row TradeDiagnosticsRow) (str
 		bars = 10
 	}
 	if bars > diagMaxFetchBars {
-
 		return diagMetricsWindowUncovered, tf, nil
 	}
 	candles, _, err := w.fetchCandles(UICandleRequest{
@@ -318,7 +311,6 @@ func (w *tradeDiagnosticsWorker) computeRowMetrics(row TradeDiagnosticsRow) (str
 	if len(candles) == 0 {
 		return diagMetricsNoCandles, tf, nil
 	}
-
 	first := time.Unix(candles[0].Time, 0).UTC()
 	if first.After(from.Add(tfDur)) {
 		return diagMetricsWindowUncovered, tf, nil

@@ -76,11 +76,9 @@ func TestLedgerNetByStrategy_ConventionAware(t *testing.T) {
 	db := newLedgerTestDB(t)
 	now := time.Now().UTC()
 	rows := []Trade{
-
 		{Timestamp: now, StrategyID: "hl-a", Symbol: "BTC", Side: "buy", TradeType: "perps", ExchangeFee: 0.5, PnLGross: true, FeeSource: FeeSourceUserFills},
 		{Timestamp: now, StrategyID: "hl-a", Symbol: "BTC", Side: "sell", TradeType: "perps", IsClose: true, RealizedPnL: 100, ExchangeFee: 0.7, PnLGross: true, FeeSource: ""},
 		{Timestamp: now, StrategyID: "hl-a", Symbol: "BTC", Side: "funding", TradeType: TradeTypeFunding, RealizedPnL: -1.25, PnLGross: true},
-
 		{Timestamp: now, StrategyID: "hl-b", Symbol: "ETH", Side: "buy", TradeType: "perps", ExchangeFee: 0.4},
 		{Timestamp: now, StrategyID: "hl-b", Symbol: "ETH", Side: "sell", TradeType: "perps", IsClose: true, RealizedPnL: 19.6},
 	}
@@ -118,7 +116,6 @@ func TestLedgerSharedWalletMemberValues_Math(t *testing.T) {
 			"BTC": {"hl-btc": 0.1},
 			"ETH": {"hl-eth": 2},
 		},
-
 		AccountBalance: 1045 + 100 + 7,
 		NonTradeFlows:  100,
 		BaselineOffset: 0,
@@ -131,7 +128,6 @@ func TestLedgerSharedWalletMemberValues_Math(t *testing.T) {
 	if math.Abs(res.Values["hl-eth"]-370) > 0.001 {
 		t.Errorf("hl-eth = %v, want 370", res.Values["hl-eth"])
 	}
-
 	if math.Abs(rawDrift-7) > 0.001 {
 		t.Errorf("rawDrift = %v, want 7 (orphan uPnL)", rawDrift)
 	}
@@ -166,7 +162,6 @@ func TestLedgerSharedWalletMemberValues_BaselineAnchorsDrift(t *testing.T) {
 		InitialByID:    map[string]float64{"hl-a": 1000},
 		AccountBalance: 950,
 	}
-
 	res, rawDrift := ledgerSharedWalletMemberValues(in)
 	if res.Drift != 0 {
 		t.Errorf("first-cycle drift = %v, want 0", res.Drift)
@@ -174,7 +169,6 @@ func TestLedgerSharedWalletMemberValues_BaselineAnchorsDrift(t *testing.T) {
 	if math.Abs(rawDrift-(-50)) > 0.001 {
 		t.Fatalf("rawDrift = %v, want -50", rawDrift)
 	}
-
 	in.BaselineSet = true
 	in.BaselineOffset = rawDrift
 	res, _ = ledgerSharedWalletMemberValues(in)
@@ -192,7 +186,6 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
 	db := newLedgerTestDB(t)
 	now := time.Now().UTC()
-
 	for _, tr := range []Trade{
 		{Timestamp: now, StrategyID: "hl-btc", Symbol: "BTC", Side: "buy", TradeType: "perps", ExchangeFee: 0.5, PnLGross: true},
 		{Timestamp: now, StrategyID: "hl-btc", Symbol: "BTC", Side: "sell", TradeType: "perps", IsClose: true, RealizedPnL: 40, ExchangeFee: 1, PnLGross: true},
@@ -204,7 +197,6 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	if err := db.InsertWalletTransfer("hyperliquid", "0xtest", now.UnixMilli(), "deposit", 100, "dep1"); err != nil {
 		t.Fatalf("InsertWalletTransfer: %v", err)
 	}
-
 	if err := db.UpsertWalletLedgerState("hyperliquid", "0xtest", WalletLedgerState{
 		FundingSinceMs: now.UnixMilli(), TransfersSinceMs: now.UnixMilli(),
 	}); err != nil {
@@ -224,7 +216,6 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	sharedWallets := detectSharedWallets(strategies)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
 	hlPositions := []HLPosition{{Coin: "BTC", Size: 0.1, UnrealizedPnL: 12}}
-
 	walletBalances := map[SharedWalletKey]float64{key: 1155.5}
 
 	results := reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, hlPositions, nil, false)
@@ -253,7 +244,6 @@ func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	if len(results) != 1 || math.Abs(results[0].Drift-(-3)) > 0.001 {
 		t.Fatalf("cycle 2: want drift -3 vs baseline, got %+v", results)
 	}
-
 	if got := state.Strategies["hl-btc"].SharedWalletValue; math.Abs(got-650.5) > 0.001 {
 		t.Errorf("hl-btc display moved with balance: %v, want 650.5", got)
 	}
@@ -285,7 +275,6 @@ func TestReconcileSharedWalletDisplayValues_HLNilDBFallsBackToSplit(t *testing.T
 	if len(results) != 1 {
 		t.Fatalf("want 1 result via split fallback, got %d", len(results))
 	}
-
 	if got := state.Strategies["hl-a"].SharedWalletValue; math.Abs(got-600) > 0.001 {
 		t.Errorf("fallback hl-a = %v, want 600 (0.6 × 1000)", got)
 	}
@@ -308,7 +297,6 @@ func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *tes
 	}}
 	sharedWallets := detectSharedWallets(strategies)
 	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
-
 	walletBalances := map[SharedWalletKey]float64{key: 1100}
 
 	results := reconcileSharedWalletDisplayValues(strategies, state, db, sharedWallets, walletBalances, nil, nil, false)
@@ -359,7 +347,6 @@ func TestSignedPerpFlowUSD(t *testing.T) {
 		{"internal transfer outbound", hlLedgerEventDelta{Type: "internalTransfer", USDC: "10", Destination: "0xother"}, -10, true},
 		{"subaccount inbound", hlLedgerEventDelta{Type: "subAccountTransfer", USDC: "7", Destination: "0xME"}, 7, true},
 		{"vault deposit", hlLedgerEventDelta{Type: "vaultDeposit", USDC: "30"}, -30, true},
-
 		{"vault withdraw nets after commission", hlLedgerEventDelta{Type: "vaultWithdraw", NetWithdrawnUSD: "688.5"}, 688.5, true},
 		{"vault create includes fee", hlLedgerEventDelta{Type: "vaultCreate", USDC: "100", Fee: "0.5"}, -100.5, true},
 		{"spot transfer no perp effect", hlLedgerEventDelta{Type: "spotTransfer", USDC: "99"}, 0, true},
@@ -408,7 +395,6 @@ func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 	if len(a.TradeHistory) != 1 || len(b.TradeHistory) != 1 {
 		t.Fatalf("want 1 funding row each, got %d/%d", len(a.TradeHistory), len(b.TradeHistory))
 	}
-
 	if tr := a.TradeHistory[0]; math.Abs(tr.RealizedPnL-(-3)) > 1e-9 || tr.TradeType != TradeTypeFunding || !tr.PnLGross {
 		t.Errorf("hl-a funding row = %+v, want RealizedPnL -3 gross funding", tr)
 	}
@@ -422,7 +408,6 @@ func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 	if len(a.TradeHistory) != 1 || len(b.TradeHistory) != 1 {
 		t.Fatalf("dedup failed: got %d/%d rows", len(a.TradeHistory), len(b.TradeHistory))
 	}
-
 	sums, err := db.LedgerNetByStrategy([]string{"hl-a", "hl-b"})
 	if err != nil {
 		t.Fatalf("LedgerNetByStrategy: %v", err)
@@ -478,7 +463,6 @@ func TestIngestFundingEvent_PersistFailureHoldsWatermark(t *testing.T) {
 	if ok := ingestFundingEvent(db, state, key, ev, virtualQty); !ok {
 		t.Fatal("fully persisted split must release the watermark")
 	}
-
 	if len(state.Strategies["hl-a"].TradeHistory) != 1 || len(bss.TradeHistory) != 1 {
 		t.Fatalf("retry double-booked: %d/%d rows", len(state.Strategies["hl-a"].TradeHistory), len(bss.TradeHistory))
 	}
@@ -564,7 +548,6 @@ func TestIngestFundingEvent_OrphanCoinGoesToWalletTransfers(t *testing.T) {
 	if err != nil || math.Abs(sum-2.5) > 1e-9 {
 		t.Fatalf("orphan funding flow = %v (err %v), want 2.5 in wallet_transfers", sum, err)
 	}
-
 	if ok := ingestFundingEvent(db, state, key, ev, nil); !ok {
 		t.Fatal("orphan re-ingest returned false")
 	}
@@ -622,7 +605,6 @@ func TestBookPerpsClose_GrossConventionAndOIDDedup(t *testing.T) {
 			"BTC": {Symbol: "BTC", Side: "long", Quantity: 0.1, AvgCost: 60000},
 		},
 	}
-
 	if ok := bookPerpsCloseWithFillFee(s, "BTC", 61000, 2.10, true, "12345", "test_close", "test", "test", nil); !ok {
 		t.Fatal("bookPerpsCloseWithFillFee returned false")
 	}
@@ -630,14 +612,12 @@ func TestBookPerpsClose_GrossConventionAndOIDDedup(t *testing.T) {
 		t.Fatalf("want 1 trade, got %d", len(s.TradeHistory))
 	}
 	tr := s.TradeHistory[0]
-
 	if !tr.PnLGross || math.Abs(tr.RealizedPnL-100) > 1e-9 || math.Abs(tr.ExchangeFee-2.10) > 1e-9 {
 		t.Errorf("trade = pnl %v fee %v gross %v, want 100 / 2.10 / true", tr.RealizedPnL, tr.ExchangeFee, tr.PnLGross)
 	}
 	if tr.FeeSource != FeeSourceUserFills {
 		t.Errorf("FeeSource = %q, want %q", tr.FeeSource, FeeSourceUserFills)
 	}
-
 	if math.Abs(s.Cash-1097.90) > 1e-9 {
 		t.Errorf("cash = %v, want 1097.90 (net)", s.Cash)
 	}
@@ -687,11 +667,8 @@ func TestBookPerpsClose_ModeledFeeStampsGrossRow(t *testing.T) {
 func TestPlanTradeLedgerForStrategy_MigratesAndTruesUp(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	trades := []TradeBackfillRow{
-
 		{RowID: 1, Timestamp: base, Symbol: "BTC", Side: "buy", Quantity: 0.1, Price: 60000, Value: 6000, ExchangeOrderID: "100"},
-
 		{RowID: 2, Timestamp: base.Add(time.Hour), Symbol: "BTC", Side: "sell", Quantity: 0.1, Price: 61000, Value: 6100, IsClose: true, RealizedPnL: 95, ExchangeOrderID: "200"},
-
 		{RowID: 3, Timestamp: base.Add(2 * time.Hour), Symbol: "BTC", TradeType: TradeTypeFunding, RealizedPnL: -1, PnLGross: true},
 	}
 	fills := map[string]HLFillSummary{
@@ -717,7 +694,6 @@ func TestPlanTradeLedgerForStrategy_MigratesAndTruesUp(t *testing.T) {
 	if math.Abs(close.NewPnL-99) > 1e-9 || math.Abs(close.NewFee-2.05) > 1e-9 {
 		t.Errorf("close true-up: pnl %v fee %v, want gross 99 / 2.05", close.NewPnL, close.NewFee)
 	}
-
 	if math.Abs(plan.NewCash-1095) > 1e-9 {
 		t.Errorf("NewCash = %v, want 1095", plan.NewCash)
 	}
@@ -1114,11 +1090,9 @@ func TestPlanTradeLedgerForStrategy_FlipOIDFeeAcrossLegsPnLOnClose(t *testing.T)
 	for _, c := range plan.Changes {
 		byRow[c.RowID] = c
 	}
-
 	if c, ok := byRow[1]; !ok || math.Abs(c.NewFee-0.2625) > 1e-9 || math.Abs(c.NewPnL-55) > 1e-9 {
 		t.Errorf("close leg = %+v, want fee 0.2625 pnl 55 (full closedPnl)", c)
 	}
-
 	if c, ok := byRow[2]; ok && math.Abs(c.NewFee-0.1575) > 1e-9 {
 		t.Errorf("open leg fee = %v, want 0.1575 (qty share of the whole order)", c.NewFee)
 	}
@@ -1144,7 +1118,6 @@ func TestPlanBackfillForStrategy_SkipsGrossConventionRows(t *testing.T) {
 	if !found {
 		t.Errorf("want gross_convention_row skip, got %+v", plan.Skipped)
 	}
-
 	if math.Abs(plan.NewCash-1098) > 1e-9 {
 		t.Errorf("NewCash = %v, want 1098 (net replay of gross row)", plan.NewCash)
 	}
@@ -1153,7 +1126,6 @@ func TestPlanBackfillForStrategy_SkipsGrossConventionRows(t *testing.T) {
 func TestApplyTradeLedgerPlan_RoundTrip(t *testing.T) {
 	db := newLedgerTestDB(t)
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-
 	if err := db.InsertTrade("hl-x", Trade{
 		Timestamp: now, StrategyID: "hl-x", Symbol: "BTC", Side: "sell", Quantity: 0.1,
 		Price: 61000, Value: 6100, TradeType: "perps", IsClose: true, RealizedPnL: 95, ExchangeOrderID: "200",
@@ -1192,7 +1164,6 @@ func TestApplyTradeLedgerPlan_RoundTrip(t *testing.T) {
 	if want := 1000 + 99 - 2.05; math.Abs(cash-want) > 1e-9 {
 		t.Errorf("cash = %v, want %v", cash, want)
 	}
-
 	sums, err := db.LedgerNetByStrategy([]string{"hl-x"})
 	if err != nil || math.Abs(sums["hl-x"]-(99-2.05)) > 1e-9 {
 		t.Errorf("ledger sum = %v (err %v), want 96.95", sums["hl-x"], err)
@@ -1216,7 +1187,6 @@ func TestPlanTradeLedgerForStrategy_StaleValueAloneTriggersRewrite(t *testing.T)
 	if c := plan.Changes[0]; math.Abs(c.NewValue-6001) > 1e-9 {
 		t.Errorf("NewValue = %v, want 6001 (qty × VWAP)", c.NewValue)
 	}
-
 	trades[0].Value = 6001
 	if second := planTradeLedgerForStrategyWithOIDTotals("hl-x", trades, fills, 1000, plan.NewCash, nil); len(second.Changes) != 0 {
 		t.Errorf("corrected row re-flagged: %+v", second.Changes)
@@ -1232,7 +1202,6 @@ func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
 			t.Fatalf("seed %s: %v", acct, err)
 		}
 	}
-
 	strategies := []StrategyConfig{
 		{ID: "hl-a1", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}},
 		{ID: "hl-a2", Platform: "hyperliquid", Type: "perps", Args: []string{"rsi", "ETH", "1h", "--mode=live"}},
@@ -1247,7 +1216,6 @@ func TestResetWalletBaselinesForAppliedStrategies_Scoped(t *testing.T) {
 	if err != nil || !other.BaselineSet || math.Abs(other.BaselineOffset-7.5) > 1e-9 {
 		t.Errorf("untouched wallet baseline = %+v (err %v), want preserved 7.5", other, err)
 	}
-
 	if err := db.UpsertWalletLedgerState("hyperliquid", "0xmain", seed); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
@@ -1284,7 +1252,6 @@ func TestIngestWalletLedgerEvents_SameMsFailureDoesNotSkipEvent(t *testing.T) {
 		},
 		FundingFetched: true,
 	}
-
 	tradeRecorder = func(strategyID string, trade Trade) error {
 		if strategyID == "hl-b" {
 			return errInjectedPersist
@@ -1361,7 +1328,6 @@ func TestIngestWalletLedgerEvents_LaterFailureStillAdvancesPastPrefix(t *testing
 func TestBackfillTradeCloseFlags_SkipsGrossConventionRows(t *testing.T) {
 	db := newLedgerTestDB(t)
 	now := time.Now().UTC()
-
 	if err := db.InsertTrade("hl-x", Trade{
 		Timestamp: now, StrategyID: "hl-x", Symbol: "ETH", Side: "sell", Quantity: 0.5,
 		Price: 2000, Value: 1000, TradeType: "perps", IsClose: true,
@@ -1370,7 +1336,6 @@ func TestBackfillTradeCloseFlags_SkipsGrossConventionRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTrade gross: %v", err)
 	}
-
 	if err := db.InsertTrade("hl-x", Trade{
 		Timestamp: now, StrategyID: "hl-x", Symbol: "BTC", Side: "sell", Quantity: 0.1,
 		Price: 61000, Value: 6100, TradeType: "perps", IsClose: true,
@@ -1379,7 +1344,6 @@ func TestBackfillTradeCloseFlags_SkipsGrossConventionRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTrade legacy: %v", err)
 	}
-
 	for i := 0; i < 2; i++ {
 		if err := db.backfillTradeCloseFlags(); err != nil {
 			t.Fatalf("backfillTradeCloseFlags run %d: %v", i+1, err)

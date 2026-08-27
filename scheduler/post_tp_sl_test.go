@@ -90,7 +90,6 @@ func TestComputePostTPStopLossTrigger_ATROffsetMode(t *testing.T) {
 		mult float64
 		want string
 	}{
-
 		{0, "atr+0"},
 		{0.25, "atr+0.25"},
 		{-0.5, "atr-0.5"},
@@ -289,7 +288,6 @@ func TestParseSLAfterRule_Errors(t *testing.T) {
 }
 
 func TestParseStrategyTPSLAfterRules(t *testing.T) {
-
 	sc := StrategyConfig{
 		Type:     "perps",
 		Platform: "hyperliquid",
@@ -298,7 +296,6 @@ func TestParseStrategyTPSLAfterRules(t *testing.T) {
 			Params: map[string]interface{}{
 				"sl_after": "breakeven",
 				"tp_tiers": []interface{}{
-
 					map[string]interface{}{"atr_multiple": 3, "close_fraction": 1.0, "sl_after": map[string]interface{}{"atr_mult": 0.25}},
 					map[string]interface{}{"atr_multiple": 2, "close_fraction": 0.5},
 				},
@@ -324,7 +321,6 @@ func TestParseStrategyTPSLAfterRules(t *testing.T) {
 	if !rules.HasAny() {
 		t.Fatal("HasAny() should be true")
 	}
-
 	if got := rules.ForTier(0); got.Kind != "breakeven" {
 		t.Fatalf("ForTier(0) = %+v, want breakeven (inherited)", got)
 	}
@@ -518,11 +514,9 @@ func TestNotifySLAdjustment_GatedOnEnabled(t *testing.T) {
 }
 
 func TestEffectiveTrailingStopPct_HonorsPostTPTrailingATRMult(t *testing.T) {
-
 	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps"}
 	mult := 1.0
 	pos := &Position{AvgCost: 100, EntryATR: 5, PostTPTrailingATRMult: &mult}
-
 	got := effectiveTrailingStopPct(sc, pos)
 	if math.Abs(got-5.0) > 1e-9 {
 		t.Fatalf("effectiveTrailingStopPct = %v, want 5", got)
@@ -539,7 +533,6 @@ func TestEffectiveTrailingStopPct_PostTPMissingATRReturnsZero(t *testing.T) {
 }
 
 func TestEffectiveTrailingStopPct_PostTPTakesPrecedenceOverStrategy(t *testing.T) {
-
 	trail := 2.0
 	sc := StrategyConfig{Platform: "hyperliquid", Type: "perps", TrailingStopPct: &trail}
 	mult := 1.0
@@ -599,7 +592,6 @@ func TestRunPostTPStopLossAdjustment_SkipsNeverArmedTier(t *testing.T) {
 		Symbol: "ETH", Quantity: 0.5, InitialQuantity: 1.0,
 		AvgCost: 100, EntryATR: 5, Side: "long",
 		StopLossOID: 111, StopLossTriggerPx: 95,
-
 		TPOIDs:                   []int64{0, 222},
 		TPArmedTiers:             []bool{false, true},
 		SLAdjustedTiersProcessed: 0,
@@ -732,7 +724,6 @@ func TestRunPostTPStopLossAdjustment_RegimeTPATRFraction(t *testing.T) {
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 105, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-
 	if gotTrigger != 100 {
 		t.Fatalf("trigger=%v, want 100 (0.5×2.0×ATR(5) below mark 105)", gotTrigger)
 	}
@@ -807,7 +798,6 @@ func TestRunPostTPStopLossAdjustment_TrailFromHereTransition(t *testing.T) {
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-
 	if pos.StopLossTriggerPx != 105 {
 		t.Errorf("StopLossTriggerPx=%v, want 105", pos.StopLossTriggerPx)
 	}
@@ -850,7 +840,6 @@ func TestRunPostTPStopLossAdjustment_TPATRFractionUsesFiringTierMultiple(t *test
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-
 	if gotTrigger != 105 {
 		t.Fatalf("trigger=%v, want 105", gotTrigger)
 	}
@@ -887,7 +876,6 @@ func TestRunPostTPStopLossAdjustment_TPATRFractionUsesDefaultTierMultiple(t *tes
 	if !runPostTPStopLossAdjustment(sc, state, "ETH", 110, nil, &mu, nil, nil, nil) {
 		t.Fatal("expected runPostTPStopLossAdjustment to apply")
 	}
-
 	if gotTrigger != 106.25 {
 		t.Fatalf("trigger=%v, want 106.25", gotTrigger)
 	}
@@ -1064,7 +1052,6 @@ func TestRunPostTPStopLossAdjustment_NoCapWhenOnChainGEVirtual(t *testing.T) {
 }
 
 func TestFindHighestClearedTier(t *testing.T) {
-
 	mkArmed := func(oids []int64) []bool {
 		out := make([]bool, len(oids))
 		for i := range out {
@@ -1111,10 +1098,9 @@ func TestFindHighestClearedTier_NeverArmedSkipped(t *testing.T) {
 		wantClear bool
 	}{
 		{
-			name:  "never armed tier 0, armed tier 1 still resting",
-			oids:  []int64{0, 222},
-			armed: []bool{false, true},
-
+			name:      "never armed tier 0, armed tier 1 still resting",
+			oids:      []int64{0, 222},
+			armed:     []bool{false, true},
 			wantClear: false,
 		},
 		{
@@ -1259,7 +1245,6 @@ func TestParseSLAfterRule_RegimeATROffset(t *testing.T) {
 	if got.ATRMult != 0 || got.TrailATRMult != 0 {
 		t.Fatalf("scalar fields should be zero, got %+v", got)
 	}
-
 	for label, want := range map[string]float64{
 		"trending_up":   0.0,
 		"trending_down": 0.0,
@@ -1401,7 +1386,6 @@ func TestParseSLAfterRule_RegimeErrors(t *testing.T) {
 			wantInErr: "pick one shape",
 		},
 		{
-
 			name: "atr_offset_regime_with_stray_trail_atr_mult",
 			raw: map[string]interface{}{
 				"kind": "atr_offset",
@@ -1415,7 +1399,6 @@ func TestParseSLAfterRule_RegimeErrors(t *testing.T) {
 			wantInErr: "pick one shape",
 		},
 		{
-
 			name: "trail_regime_with_stray_atr_offset",
 			raw: map[string]interface{}{
 				"trail_from_here": map[string]interface{}{
@@ -1480,7 +1463,6 @@ func TestSLAfterRule_EqualRegime(t *testing.T) {
 	if a.Equal(c) {
 		t.Fatalf("rules with different atr values should not be Equal")
 	}
-
 	scalar := SLAfterRule{Kind: "atr_offset", ATRMult: 0.5}
 	if a.Equal(scalar) {
 		t.Fatalf("scalar atr_offset must not Equal regime atr_offset")

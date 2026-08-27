@@ -160,7 +160,6 @@ func runAgentInfo(args []string) int {
 		return loadConfigSnapshot(*configPath)
 	}()
 	if err != nil {
-
 		fmt.Fprintf(os.Stderr, "agent-info: warning: could not load config %s: %v\n", *configPath, err)
 		cfg = nil
 	}
@@ -302,7 +301,6 @@ func readStateDBReadOnly(path string, statusPort int) ([]agentTable, agentLiveSt
 		live.Note = fmt.Sprintf("state DB %s not present yet; %s", path, live.Note)
 		return nil, live
 	}
-
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		live.DBPresent = false
@@ -317,12 +315,10 @@ func readStateDBReadOnly(path string, statusPort int) ([]agentTable, agentLiveSt
 	}
 	positions, err := readOpenPositions(db)
 	if err != nil {
-
 		live.DBPresent = false
 		live.Note = fmt.Sprintf("state DB %s present but open-position read failed (%v) — do not trust this snapshot; query the status API on port %d. %s", path, err, statusPort, live.Note)
 		return tables, live
 	}
-
 	optionPositions, err := readOpenOptionPositions(db)
 	if err != nil {
 		live.DBPresent = false
@@ -367,7 +363,6 @@ func readDBSchema(db *sql.DB) ([]agentTable, error) {
 }
 
 func readTableColumns(db *sql.DB, table string) ([]agentTableColumn, error) {
-
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%q)", table))
 	if err != nil {
 		return nil, err
@@ -393,7 +388,6 @@ func readTableColumns(db *sql.DB, table string) ([]agentTableColumn, error) {
 
 func readCycleCount(db *sql.DB) int64 {
 	var c int64
-
 	_ = db.QueryRow(`SELECT cycle_count FROM app_state WHERE id=1`).Scan(&c)
 	return c
 }
@@ -408,7 +402,6 @@ func readOpenPositions(db *sql.DB) ([]agentOpenPosition, error) {
 	for rows.Next() {
 		var p agentOpenPosition
 		if err := rows.Scan(&p.StrategyID, &p.Symbol, &p.Side, &p.Quantity, &p.AvgCost, &p.Regime); err != nil {
-
 			return nil, err
 		}
 		out = append(out, p)
@@ -426,7 +419,6 @@ func readOpenOptionPositions(db *sql.DB) ([]agentOpenOptionPosition, error) {
 	for rows.Next() {
 		var p agentOpenOptionPosition
 		if err := rows.Scan(&p.StrategyID, &p.Underlying, &p.OptionType, &p.Strike, &p.Expiry, &p.Action, &p.Quantity); err != nil {
-
 			return nil, err
 		}
 		out = append(out, p)

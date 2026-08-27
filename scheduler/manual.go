@@ -69,7 +69,6 @@ func runManualOpen(args []string) int {
 		if marginDefaulted {
 			fmt.Fprintf(os.Stderr, "[manual-open] no sizing flag provided; defaulting to --margin %g\n", resolvedMargin)
 		}
-
 		if *tif != "Alo" && *tif != "Gtc" {
 			fmt.Fprintf(os.Stderr, "error: --tif must be Alo or Gtc, got %q\n", *tif)
 			return 2
@@ -101,17 +100,14 @@ func runManualOpen(args []string) int {
 						return 1
 					}
 				}
-
 				if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)\n", dailyLossHoldDetail(st))
 					return 1
 				}
-
 				if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
 					fmt.Fprintf(os.Stderr, "error: %s — manual-open blocked (closes and SL edits are unaffected)\n", detail)
 					return 1
 				}
-
 				capSt := manualExposureCapStatus(cfg, state)
 				if blocked, why := exposureCapManualEntryBlock(capSt, extractAsset(sc), resolvedSide); blocked {
 					fmt.Fprintf(os.Stderr, "error: %s — manual limit-open (%s) blocked (closes and SL edits are unaffected)\n", why, resolvedSide)
@@ -167,7 +163,6 @@ func runManualOpen(args []string) int {
 }
 
 func runManualAdd(args []string) int {
-
 	fs := flag.NewFlagSet("manual-add", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
 	size := fs.Float64("size", 0, "Add size in base units (coin qty)")
@@ -360,7 +355,6 @@ func drainPendingManualActions(state *AppState, cfg *Config, stateDB *StateDB) [
 		if a.ID > maxDrained {
 			maxDrained = a.ID
 		}
-
 		if !manualActionRecordsTrade(a.Action) {
 			continue
 		}
@@ -426,7 +420,6 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			TPOIDs:                          a.TPOIDs,
 			RatchetFallbackNormalizePending: a.RatchetFallbackNormalizePending,
 		}
-
 		pos.ATRMethodAtOpen = normalizeATRMethod(a.ATRMethod)
 		if pos.ATRMethodAtOpen == "" {
 			pos.ATRMethodAtOpen = resolveATRMethod(sc, cfg)
@@ -456,7 +449,6 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			Manual:            true,
 		}
 		recordPositionOpen(ss, sc, &trade, pos)
-
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied open: %s %s %.6f %s @ $%.4f\n",
 			a.StrategyID, a.Side, a.Quantity, a.Symbol, a.FillPrice)
@@ -479,7 +471,6 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
 			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
 		}
-
 		closedFull := a.IsFullClose
 		side := closeTradeSide(pos.Side)
 		closeLabel := operatorCloseLabel(sc)
@@ -505,26 +496,21 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		}
 		RecordTrade(ss, trade)
 		if sc.Type != "manual" {
-
 			recordPositionTradeResult(ss, pos, a.RealizedPnL)
 		}
-
 		ss.Cash += a.RealizedPnL
 
 		if closedFull {
 			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, operatorCloseReason(sc), now)
 			delete(ss.Positions, a.Symbol)
-
 			clearHLPerpsPositionAlertThrottles(ss, a.Symbol)
 		} else {
-
 			preReduceQty := pos.Quantity
 			preReduceBasis := pos.HedgePrimaryQtyBasis
 			pos.Quantity -= a.Quantity
 			if sc.Type != "manual" {
 				clearForceCloseCanceledProtectionOIDs(pos, a.StopLossOID, a.TPOIDs)
 			}
-
 			if pos.isHedgeLeg() {
 				pos.HedgePrimaryQtyBasis = hedgeBasisAfterPartialReduce(preReduceBasis, preReduceQty, pos.Quantity)
 			}
@@ -533,7 +519,6 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			closeLabel, a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
 
 	case "add":
-
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s; open one first", a.StrategyID, a.Symbol)
@@ -566,13 +551,11 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 		trade.Regime = pos.Regime
 		trade.EntryATR = pos.EntryATR
 		RecordTrade(ss, trade)
-
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied scale-in: %s +%.6f %s @ $%.4f (new qty %.6f, avg $%.4f)\n",
 			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, pos.Quantity, pos.AvgCost)
 
 	case "update-sl":
-
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
@@ -586,7 +569,6 @@ func applyManualAction(state *AppState, cfg *Config, scByID map[string]StrategyC
 			a.StrategyID, a.Symbol, a.StopLossTriggerPx, a.StopLossOID)
 
 	case "cancel-sl":
-
 		pos, exists := ss.Positions[a.Symbol]
 		if !exists || pos == nil {
 			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)

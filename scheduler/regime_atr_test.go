@@ -26,14 +26,12 @@ func TestParseRegimeATRBlock_UseDefaultsExpandsToBaseline(t *testing.T) {
 			t.Fatalf("default %s.atr must be > 0, got %g", label, entry.ATR)
 		}
 	}
-
 	if got.TrendRegime["ranging"].ATR == got.TrendRegime["trending_up"].ATR {
 		t.Fatalf("ranging should differ from trending_up in stop_loss defaults")
 	}
 }
 
 func TestParseRegimeATRBlock_RejectsBareLabelKeys(t *testing.T) {
-
 	raw := map[string]interface{}{
 		"trending_up":   map[string]interface{}{"atr_multiple": 2.0},
 		"trending_down": map[string]interface{}{"atr_multiple": 2.0},
@@ -43,7 +41,6 @@ func TestParseRegimeATRBlock_RejectsBareLabelKeys(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatalf("expected errors for bare label keys")
 	}
-
 	found := false
 	for _, e := range errs {
 		if strings.Contains(e, regimeClassifierKey) || strings.Contains(e, "unknown key") {
@@ -142,7 +139,6 @@ func TestResolveRegimeATR_ReturnsLabeledMultiplier(t *testing.T) {
 }
 
 func TestDefaultRegimeTPTiersForRegime(t *testing.T) {
-
 	cases := []struct {
 		regime    string
 		wantMults []float64
@@ -195,7 +191,6 @@ func TestStrategyTPTiersForRegime_RegimeAwareNeedsRegime(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_regime", Params: map[string]interface{}{"use_defaults": true}},
 	}
-
 	if tiers := strategyTPTiersForRegime(sc, ""); len(tiers) != 0 {
 		t.Fatalf("regime-aware without pos.Regime must return nil, got %v", tiers)
 	}
@@ -356,7 +351,6 @@ func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *te
 	mkCfg := func(sc StrategyConfig) *Config {
 		return &Config{Strategies: []StrategyConfig{sc}}
 	}
-
 	old := mkOld()
 	mult := 2.0
 	ns := old
@@ -366,11 +360,9 @@ func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *te
 	if err == nil || !strings.Contains(err.Error(), "stop_loss_atr_regime mode changed") {
 		t.Fatalf("expected mode-change rejection with open position, got: %v", err)
 	}
-
 	if err := validateHotReloadStateCompatible(mkCfg(old), mkCfg(ns), flatState); err != nil {
 		t.Fatalf("flat-position hot reload should be accepted, got: %v", err)
 	}
-
 	ns2 := mkOld()
 	ns2.StopLossATRRegime = &RegimeATRBlock{
 		TrendRegime: map[string]RegimeATREntry{
@@ -387,7 +379,6 @@ func TestValidateHotReloadStateCompatible_BlocksRegimeShapeChangeWhileOpen(t *te
 }
 
 func TestRegimeATRBlock_IsConfigured(t *testing.T) {
-
 	var nilBlock *RegimeATRBlock
 	if nilBlock.IsConfigured() {
 		t.Fatalf("nil block should not be configured")

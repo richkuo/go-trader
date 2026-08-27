@@ -1,51 +1,76 @@
+#!/usr/bin/env python3
+
 import json
 import os
 import sys
 import traceback
 from datetime import datetime, timezone
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'platforms', 'okx'))
+
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "platforms", "okx"))
+
 
 def main():
     try:
         from adapter import OKXExchangeAdapter
         adapter = OKXExchangeAdapter()
         if not adapter.is_live:
-            _emit_error('OKX adapter not live — set OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE')
+            _emit_error("OKX adapter not live — set OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE")
             return
         raw = adapter.fetch_open_positions()
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _emit_error(str(e))
         return
+
     positions = []
     for p in raw or []:
         try:
-            contracts = float(p.get('contracts') or 0)
+            contracts = float(p.get("contracts") or 0)
         except (TypeError, ValueError):
             continue
         if contracts == 0:
             continue
-        symbol = p.get('symbol') or ''
-        coin = symbol.split('/', 1)[0] if '/' in symbol else symbol
+        symbol = p.get("symbol") or ""
+        coin = symbol.split("/", 1)[0] if "/" in symbol else symbol
         if not coin:
             continue
-        side = (p.get('side') or '').lower()
-        signed_size = -contracts if side == 'short' else contracts
+        side = (p.get("side") or "").lower()
+        signed_size = -contracts if side == "short" else contracts
         entry_price = 0.0
         try:
-            entry_price = float(p.get('entryPrice') or 0)
+            entry_price = float(p.get("entryPrice") or 0)
         except (TypeError, ValueError):
             pass
         unrealized_pnl = 0.0
         try:
-            unrealized_pnl = float(p.get('unrealizedPnl') or 0)
+            unrealized_pnl = float(p.get("unrealizedPnl") or 0)
         except (TypeError, ValueError):
             pass
-        positions.append({'coin': coin, 'size': signed_size, 'entry_price': entry_price, 'side': side, 'unrealized_pnl': unrealized_pnl})
-    print(json.dumps({'positions': positions, 'platform': 'okx', 'timestamp': datetime.now(timezone.utc).isoformat()}))
+        positions.append({
+            "coin": coin,
+            "size": signed_size,
+            "entry_price": entry_price,
+            "side": side,
+            "unrealized_pnl": unrealized_pnl,
+        })
+
+    print(json.dumps({
+        "positions": positions,
+        "platform": "okx",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }))
+
 
 def _emit_error(message):
-    print(json.dumps({'positions': [], 'platform': 'okx', 'timestamp': datetime.now(timezone.utc).isoformat(), 'error': message}))
+    print(json.dumps({
+        "positions": [],
+        "platform": "okx",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "error": message,
+    }))
     sys.exit(1)
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     main()

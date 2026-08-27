@@ -23,7 +23,6 @@ func unifiedRegimeScalarParams(params map[string]interface{}, regime string) (sc
 	r := strings.TrimSpace(regime)
 	labelRaw, isMap := trendRaw[r].(map[string]interface{})
 	if !isMap {
-
 		if regimeDirectionalSubs[r] {
 			labelRaw, isMap = trendRaw[regimeDirectionalBare].(map[string]interface{})
 		}
@@ -36,7 +35,6 @@ func unifiedRegimeScalarParams(params map[string]interface{}, regime string) (sc
 		return nil, 0, false
 	}
 	scalar = map[string]interface{}{"tp_tiers": tiers}
-
 	if v, ok := params["atr_source"]; ok {
 		scalar["atr_source"] = v
 	}
@@ -152,7 +150,6 @@ func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, 
 	for _, l := range labels {
 		lr, ok := trendRaw[l]
 		if !ok {
-
 			if regimeLabelFamilyCovered(l, bareDirectional) {
 				continue
 			}
@@ -171,7 +168,6 @@ func validateUnifiedRegimeClose(params map[string]interface{}, labels []string, 
 					ctxLabel, regimeClassifierKey, l, k))
 			}
 		}
-
 		if v, ok := lm["stop_loss_atr"]; !ok {
 			errs = append(errs, fmt.Sprintf("%s.%s.%s: missing required %q (the unified close owns the per-regime SL)", ctxLabel, regimeClassifierKey, l, "stop_loss_atr"))
 		} else if f, err := floatFromAnyChecked(v); err != nil || f <= 0 {
@@ -192,7 +188,6 @@ func validateUnifiedTierList(raw interface{}, ctxLabel string) []string {
 	if !ok {
 		return []string{fmt.Sprintf("%s.tp_tiers: must be a list, got %T", ctxLabel, raw)}
 	}
-
 	if len(items) < 2 {
 		return []string{fmt.Sprintf("%s.tp_tiers: must have at least 2 tiers, got %d", ctxLabel, len(items))}
 	}

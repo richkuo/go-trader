@@ -24,7 +24,6 @@ const (
 )
 
 func ApplySlippage(price float64) float64 {
-
 	slippage := (rand.Float64()*2 - 1) * SlippagePct
 	return price * (1 + slippage)
 }

@@ -133,7 +133,6 @@ func TestFetchOKXPerpsMids_InvalidJSON(t *testing.T) {
 }
 
 func TestFetchOKXPerpsMids_APIErrorCode(t *testing.T) {
-
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := json.Marshal(map[string]any{
 			"code": "50011",

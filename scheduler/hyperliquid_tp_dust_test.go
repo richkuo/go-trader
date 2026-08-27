@@ -143,7 +143,6 @@ func TestSoleOwnerTPDust_NeverPlaced_NoBook(t *testing.T) {
 	if pos == nil {
 		t.Fatal("expected position to remain")
 	}
-
 	if math.Abs(pos.Quantity-dustQty) > 1e-9 {
 		t.Errorf("Quantity = %g, want legacy resync to %g", pos.Quantity, dustQty)
 	}

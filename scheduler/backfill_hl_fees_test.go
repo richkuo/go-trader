@@ -39,7 +39,6 @@ func TestPlanBackfillRewritesFeeAndPnLOnCloseLeg(t *testing.T) {
 	openValue := 1000.0
 	closeValue := 1010.0
 	modeledCloseFee := closeValue * HyperliquidTakerFeePct
-
 	storedRealizedPnL := 10.0 - modeledCloseFee
 
 	trades := []TradeBackfillRow{
@@ -143,7 +142,6 @@ func TestPlanBackfillMissingOID(t *testing.T) {
 	if plan.MissingOIDCount != 1 {
 		t.Fatalf("MissingOIDCount=%d want 1", plan.MissingOIDCount)
 	}
-
 	expectedCash := 1000.0 - 1000*HyperliquidTakerFeePct
 	if !approxEq(plan.NewCash, expectedCash) {
 		t.Fatalf("NewCash=%v want %v (modeled fee fallback)", plan.NewCash, expectedCash)
@@ -389,7 +387,6 @@ func TestPlanBackfillCashBaselineDivergent(t *testing.T) {
 		{RowID: 1, Timestamp: ts(100), Symbol: "ETH", Value: 1000,
 			IsClose: false, ExchangeOrderID: "111", ExchangeFee: 0},
 	}
-
 	plan := planBackfillForStrategy("hl-eth", trades, map[string]HLFillSummary{}, 1000.0, 1500.0)
 	if !plan.CashBaselineDivergent {
 		t.Fatalf("expected CashBaselineDivergent=true (replayed=%v vs old=%v)",
@@ -406,7 +403,6 @@ func TestPlanBackfillCashBaselineWithinTolerance(t *testing.T) {
 		{RowID: 1, Timestamp: ts(100), Symbol: "ETH", Value: 1000,
 			IsClose: false, ExchangeOrderID: "111", ExchangeFee: 0},
 	}
-
 	plan := planBackfillForStrategy("hl-eth", trades, map[string]HLFillSummary{}, 1000.0, 999.65)
 	if plan.CashBaselineDivergent {
 		t.Fatalf("did not expect divergence (replayed=%v old=%v)",
@@ -421,7 +417,6 @@ func TestPlanClosedPositionRecomputesRejectsAmbiguousFallback(t *testing.T) {
 		{RowID: 2, Timestamp: ts(103), Symbol: "ETH", PositionID: "pB",
 			IsClose: true, RealizedPnL: 7.0},
 	}
-
 	closedRows := []ClosedPositionRow{
 		{ID: 11, Symbol: "ETH", ClosedAt: ts(100), RealizedPnL: 4.9},
 	}

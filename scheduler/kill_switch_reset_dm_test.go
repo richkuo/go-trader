@@ -17,7 +17,6 @@ func TestParseKillSwitchResetDMTimeout_DefaultsToSixHours(t *testing.T) {
 	if d != DefaultKillSwitchResetDMTimeout {
 		t.Fatalf("got %s, want %s", d, DefaultKillSwitchResetDMTimeout)
 	}
-
 	if DefaultKillSwitchResetDMTimeout == 30*time.Minute {
 		t.Fatal("default must not be the former hard-coded 30m")
 	}
@@ -290,7 +289,6 @@ func TestTryClaimKillSwitchResetPrompt_ConcurrentClaimRelease(t *testing.T) {
 			for r := 0; r < rounds; r++ {
 				if tryClaimKillSwitchResetPrompt(&running) {
 					claims.Add(1)
-
 					releaseKillSwitchResetPrompt(&running)
 				}
 			}

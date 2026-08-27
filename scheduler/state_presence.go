@@ -33,7 +33,6 @@ func CheckStatePresence(dbPath string, strategies []StrategyConfig) string {
 	if _, err := os.Stat(dbPath); err == nil {
 		return ""
 	} else if !os.IsNotExist(err) {
-
 		return ""
 	}
 	return fmt.Sprintf(

@@ -32,7 +32,6 @@ func RunHyperliquidFetchATR(script, symbol, timeframe string, period int, atrMet
 
 func parseHyperliquidFetchATROutput(stdout []byte, stderrStr string, runErr error) (*HyperliquidFetchATRResult, string, error) {
 	if runErr != nil {
-
 		return nil, stderrStr, fmt.Errorf("fetch-atr error: %w (stderr: %s)", runErr, stderrStr)
 	}
 	var result HyperliquidFetchATRResult
@@ -55,7 +54,6 @@ func fetchManualEntryATR(sc StrategyConfig, cfg *Config) (float64, string, bool)
 	if sc.Script == "" || sc.Symbol == "" {
 		return 0, "missing script/symbol on strategy config", false
 	}
-
 	timeframe := resolveManualATRTimeframe(sc)
 	if sc.Timeframe == "" {
 		fmt.Fprintf(os.Stderr, "[manual-open] defaulting to 1h ATR (strategy timeframe unset)\n")

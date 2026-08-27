@@ -122,7 +122,6 @@ func TestOKXCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	if drift := res.AccountValue - expected; math.Abs(drift) > 1e-9 {
 		t.Errorf("journal drift = %v, want ~0", drift)
 	}
-
 	if st.FillsSinceMs != t0.UnixMilli()+20+1 {
 		t.Errorf("bills cursor = %d, want %d", st.FillsSinceMs, t0.UnixMilli()+21)
 	}
@@ -219,7 +218,6 @@ func TestOKXCashflowJournalCappedSameMsSiblingNotStranded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sum: %v", err)
 	}
-
 	if math.Abs(sum-11) > 1e-9 {
 		t.Errorf("same-ms sibling stranded or double-counted: sum = %v, want 11", sum)
 	}
@@ -320,7 +318,6 @@ func TestOKXCashflowJournalHaltsCursorOnPersistFailure(t *testing.T) {
 	if err := db.UpsertCashflowJournalState(key.Platform, key.Account, base); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-
 	db.Close()
 	res := okxCashflowJournalFetchResult{
 		Key: key, State: base, StateFound: true, BillsFetched: true,

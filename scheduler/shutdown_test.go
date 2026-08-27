@@ -29,7 +29,6 @@ func TestBeginDrainCancelsReadOnlyContextAndSetsFlag(t *testing.T) {
 	if shutdownReadOnlyCtx.Err() == nil {
 		t.Fatal("readOnlyCtx not cancelled after beginDrain")
 	}
-
 	if shutdownSideEffectCtx.Err() != nil {
 		t.Fatalf("sideEffectCtx cancelled by beginDrain (should be Phase 2 only): %v", shutdownSideEffectCtx.Err())
 	}
@@ -47,11 +46,9 @@ func TestBeginDrainIsIdempotent(t *testing.T) {
 
 func TestRunDrainWaitsForSideEffectWG(t *testing.T) {
 	resetShutdownState(t)
-
 	sideEffectWG.Add(1)
 	finished := make(chan struct{})
 	go func() {
-
 		time.Sleep(50 * time.Millisecond)
 		sideEffectWG.Done()
 	}()
@@ -61,7 +58,6 @@ func TestRunDrainWaitsForSideEffectWG(t *testing.T) {
 	}()
 	select {
 	case <-finished:
-
 	case <-time.After(2 * time.Second):
 		t.Fatal("runDrain did not return after sideEffectWG drained")
 	}
@@ -72,7 +68,6 @@ func TestRunDrainWaitsForSideEffectWG(t *testing.T) {
 
 func TestRunDrainCancelsSideEffectCtxAfterCapWithStubbedCap(t *testing.T) {
 	resetShutdownState(t)
-
 	sideEffectWG.Add(1)
 	defer sideEffectWG.Done()
 

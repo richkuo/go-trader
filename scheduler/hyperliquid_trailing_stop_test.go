@@ -22,11 +22,9 @@ func TestApplyTrailingStopUpdateResultKeepsStateOnOutcomeUnknown(t *testing.T) {
 	if pos.StopLossOID != 0 || pos.StopLossTriggerPx != 1860 {
 		t.Fatalf("outcome-unknown left oid=%d trigger=%.2f, want 0 / 1860 (dead OID unrecorded, requested trigger kept)", pos.StopLossOID, pos.StopLossTriggerPx)
 	}
-
 	if pos.StopLossOID == 0 && pos.StopLossTriggerPx <= 0 {
 		t.Errorf("position reads as Unprotected after an outcome-unknown placement — a re-arm would stack a second untracked stop")
 	}
-
 	ss = newSS()
 	if _, _ = applyTrailingStopUpdateResult(ss, "ETH", "long", 111, 0, true,
 		&HyperliquidStopLossUpdateResult{CancelStopLossSucceeded: true, StopLossOutcomeUnknown: true}, "", logger, 0); ss.Positions["ETH"].StopLossOID != 0 || ss.Positions["ETH"].StopLossTriggerPx != 1850 {

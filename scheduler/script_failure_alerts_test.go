@@ -41,18 +41,15 @@ func TestScriptFailureTracker_AlertsAtThreshold(t *testing.T) {
 func TestScriptFailureTracker_ThrottlesAfterThreshold(t *testing.T) {
 	tr := &ScriptFailureTracker{}
 	now := time.Unix(1700000000, 0).UTC()
-
 	alerts := 0
 	for i := 0; i < 9; i++ {
 		if notify, _ := tr.Record("hl-x", "boom", now); notify {
 			alerts++
 		}
 	}
-
 	if alerts != 1 {
 		t.Fatalf("alerts in first 9 failures = %d, want 1 (only threshold crossing)", alerts)
 	}
-
 	if notify, count := tr.Record("hl-x", "boom", now); !notify || count != 10 {
 		t.Fatalf("10th failure: notify=%v count=%d, want notify=true count=10", notify, count)
 	}
@@ -65,11 +62,9 @@ func TestScriptFailureTracker_HourlyReAlert(t *testing.T) {
 	for i := 0; i < scriptFailureAlertThreshold; i++ {
 		tr.Record("hl-x", "boom", now)
 	}
-
 	if notify, _ := tr.Record("hl-x", "boom", now.Add(5*time.Minute)); notify {
 		t.Fatalf("expected throttle a few minutes after threshold alert")
 	}
-
 	if notify, _ := tr.Record("hl-x", "boom", now.Add(61*time.Minute)); !notify {
 		t.Fatalf("expected hourly re-alert")
 	}
@@ -81,7 +76,6 @@ func TestScriptFailureTracker_ErrorSignatureChangeReAlerts(t *testing.T) {
 	for i := 0; i < scriptFailureAlertThreshold; i++ {
 		tr.Record("hl-x", "list index out of range", now)
 	}
-
 	if notify, _ := tr.Record("hl-x", "connection refused", now.Add(time.Minute)); !notify {
 		t.Fatalf("expected re-alert when error signature changes mid-streak")
 	}
@@ -100,7 +94,6 @@ func TestScriptFailureTracker_ClearReportsRecovery(t *testing.T) {
 	if prior != scriptFailureAlertThreshold {
 		t.Fatalf("priorCount = %d, want %d", prior, scriptFailureAlertThreshold)
 	}
-
 	if notify, count := tr.Record("hl-x", "boom", now); notify || count != 1 {
 		t.Fatalf("post-clear first failure: notify=%v count=%d, want notify=false count=1", notify, count)
 	}
@@ -128,7 +121,6 @@ func TestScriptFailureTracker_IndependentPerStrategy(t *testing.T) {
 	for i := 0; i < scriptFailureAlertThreshold; i++ {
 		tr.Record("hl-a", "boom", now)
 	}
-
 	if notify, count := tr.Record("hl-b", "boom", now); notify || count != 1 {
 		t.Fatalf("hl-b first failure: notify=%v count=%d, want false/1", notify, count)
 	}
@@ -290,7 +282,6 @@ func TestScriptFailureTransientTracker_WallClockEscalation(t *testing.T) {
 	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, t0, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); notify || count != 1 {
 		t.Fatalf("first failure: notify=%v count=%d, want false/1", notify, count)
 	}
-
 	tLate := t0.Add(scriptFailureTransientAlertMaxDuration + time.Minute)
 	if notify, count := recordScriptFailureAtThreshold(tr, id, err429, tLate, scriptFailureTransientAlertThreshold, scriptFailureTransientAlertMaxDuration); !notify || count != 2 {
 		t.Fatalf("wall-clock escalation: notify=%v count=%d, want true/2", notify, count)

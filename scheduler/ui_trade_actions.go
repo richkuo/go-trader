@@ -197,7 +197,6 @@ func (ss *StatusServer) handleAPIStrategyTradeAction(w http.ResponseWriter, r *h
 	if action == "force-close" {
 		guardSym = sym
 	}
-
 	if action == "open" || action == "add" || action == "close" || action == "force-close" {
 		if pending, perr := pendingManualActionExists(ss.stateDB, id, guardSym, "open", "add", "close"); perr != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("could not check pending actions: %v", perr))

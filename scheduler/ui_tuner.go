@@ -150,7 +150,6 @@ func (ss *StatusServer) handleAPIStrategySimulate(w http.ResponseWriter, r *http
 
 	livePayload := simulateConfigPayload(liveCfg, ss.regime)
 	simPayload := simulateConfigPayload(simCfg, ss.regime)
-
 	uiCfg := ss.uiTradeConfig()
 	livePayload["atr_method"] = resolveATRMethod(liveCfg, uiCfg)
 	simPayload["atr_method"] = resolveATRMethod(simCfg, uiCfg)
@@ -902,7 +901,6 @@ func patchStrategyJSON(item map[string]json.RawMessage, merged StrategyConfig, o
 			deleteKey("stop_loss_pct")
 		}
 	}
-
 	if _, ok := overrides["paused"]; ok {
 		if merged.Paused {
 			if err := set("paused", true); err != nil {

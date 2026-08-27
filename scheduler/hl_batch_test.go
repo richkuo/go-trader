@@ -70,22 +70,18 @@ func TestPartitionHyperliquidBatchGroups(t *testing.T) {
 		hlBatchStrategy("hl-btc-4h", "breakout", "BTC", "4h"),
 		hlBatchStrategy("hl-eth-a", "breakout", "ETH", "1h"),
 		hlBatchStrategy("hl-eth-b", "momentum_pro", "ETH", "1h"),
-
 		hlBatchStrategy("hl-btc-wilder", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 			sc.ATRMethod = "wilder"
 		}),
-
 		hlBatchStrategy("hl-btc-custom", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 			sc.Script = "shared_scripts/check_hyperliquid_custom.py"
 		}),
-
 		{ID: "okx-btc", Type: "perps", Platform: "okx", Script: hyperliquidCheckScript,
 			Args: []string{"breakout", "BTC", "1h", "--mode=paper"}},
 		{ID: "spot-btc", Type: "spot", Platform: "binanceus", Script: "shared_scripts/check_strategy.py",
 			Args: []string{"breakout", "BTC/USDT", "1h"}},
 		{ID: "manual-btc", Type: "manual", Platform: "hyperliquid", Script: hyperliquidCheckScript,
 			Args: []string{"hold", "BTC", "1h", "--mode=live"}},
-
 		hlBatchStrategy("hl-btc-extra", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
 			sc.Args = append(sc.Args, "--params", `{"lookback":30}`)
 		}),
@@ -153,7 +149,6 @@ func TestPartitionBatchesExactlyTheDueSet(t *testing.T) {
 }
 
 func TestPartitionTakesNoLocks(t *testing.T) {
-
 	var mu sync.RWMutex
 	mu.Lock()
 	defer mu.Unlock()
@@ -257,7 +252,6 @@ func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 func TestSlotOmitsPositionFieldsExactlyLikeTheArgvBuilder(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true}
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h")
-
 	posCtx := PositionCtx{Side: "short", AvgCost: 0, Quantity: 0, EntryATR: 4}
 	slot, err := buildHyperliquidBatchSlot(sc, posCtx, rc)
 	if err != nil {
@@ -320,7 +314,6 @@ func TestSharedArgsCarryOnlyKeyAndSharedFlags(t *testing.T) {
 			t.Fatalf("shared argv %q missing %q", joined, want)
 		}
 	}
-
 	for _, banned := range []string{"--position-", "--strategy-refs", "--htf-filter", "--regime-atr-window", "--mode"} {
 		if strings.Contains(joined, banned) {
 			t.Fatalf("shared argv %q leaked per-slot flag %q", joined, banned)
@@ -434,7 +427,6 @@ func TestBatchSlotErrorIsolatesOneMember(t *testing.T) {
 		t.Fatalf("healthy peer disturbed: %+v", good)
 	}
 	bad, _ := results.lookup("hl-b")
-
 	if bad.Result != nil || bad.Err != "boom in this slot" || bad.Mode != scriptFailureError {
 		t.Fatalf("failing slot outcome = %+v", bad)
 	}
@@ -470,7 +462,6 @@ func TestSharedStateFailureLeavesMembersAsMisses(t *testing.T) {
 			t.Fatalf("%s member tracker moved on a shared outage: %d", id, count)
 		}
 	}
-
 	if _, count := scriptFailureTracker.Clear(hlBatchAlertConfig(inputs[0].Key).ID); count != 1 {
 		t.Fatalf("group tracker count = %d, want 1", count)
 	}
@@ -509,7 +500,6 @@ func TestUnparseableEnvelopeLeavesMembersAsMisses(t *testing.T) {
 func TestSharedStateFailureDoesNotFalselyClearAMemberStreak(t *testing.T) {
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
-
 	scriptFailureTracker.Record("hl-a", "prior failure", time.Now().UTC())
 	inputs, cfg := hlBatchTwoMemberInput(t)
 	stubBatchCheck(t, func(string, []string, []byte) (*HyperliquidBatchResult, string, error) {
@@ -519,7 +509,6 @@ func TestSharedStateFailureDoesNotFalselyClearAMemberStreak(t *testing.T) {
 	if out, ok := results.lookup("hl-a"); ok {
 		t.Fatalf("hl-a must be a map miss after a shared-state failure, got %+v", out)
 	}
-
 	if _, count := scriptFailureTracker.Clear("hl-a"); count != 1 {
 		t.Fatalf("prior member streak = %d, want it preserved at 1", count)
 	}
@@ -621,7 +610,6 @@ func TestGroupStderrIsNotStampedOnHealthyMembers(t *testing.T) {
 }
 
 func TestBatchTimeoutStaysTransient(t *testing.T) {
-
 	err := &pythonScriptTimeoutError{d: hlBatchTimeout}
 	if !scriptFailureErrorIsTransient(err.Error()) {
 		t.Fatalf("batch timeout %q must classify transient", err.Error())
@@ -743,7 +731,6 @@ func TestSnapshotSkipsStrategiesWithNoState(t *testing.T) {
 	}
 	groups := partitionHyperliquidBatchGroups(due, cfg)
 	var mu sync.RWMutex
-
 	inputs := snapshotHyperliquidBatchGroups(groups, hlBatchTestState("hl-a"), &mu, cfg, nil)
 	if len(inputs) != 0 {
 		t.Fatalf("inputs = %+v, want none", inputs)
@@ -774,7 +761,6 @@ func TestSnapshotReadsPositionsUnderTheReadLock(t *testing.T) {
 	if inputs[0].MarkPrice != 25_000 {
 		t.Fatalf("MarkPrice = %v", inputs[0].MarkPrice)
 	}
-
 	if !mu.TryLock() {
 		t.Fatal("snapshot did not release the read lock")
 	}
@@ -795,7 +781,6 @@ func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	batch.put("hl-a", hlBatchMemberOutcome{Result: cached, Fingerprint: fp})
 
 	got, signalStr, price, ok := runHyperliquidCheck(&sc, prices, posCtx, nil, "simple", nil, hlBatchTestLogger(), batch)
-
 	if !ok || got == nil || !reflect.DeepEqual(*got, *cached) || price != 25_000 || signalStr != signalLabel(1) {
 		t.Fatalf("batched consumption = (%v, %q, %v, %v)", got, signalStr, price, ok)
 	}
@@ -811,7 +796,6 @@ func TestRoundedPriceWriteBackKeepsPeersBatched(t *testing.T) {
 
 	batch := &hlBatchCycleResults{}
 	for _, sc := range []StrategyConfig{scA, scB} {
-
 		fp, err := hyperliquidBatchSlotFingerprint(sc, posCtx, nil)
 		if err != nil {
 			t.Fatalf("fingerprint %s: %v", sc.ID, err)
@@ -862,7 +846,6 @@ func TestBatchedMemberReportsDispatchTimeMark(t *testing.T) {
 	if price != 26_000.57 || got.Price != 26_000.57 {
 		t.Fatalf("dispatch-time mark not adopted: price=%v result.Price=%v", price, got.Price)
 	}
-
 	if cached.Price != 25_000 {
 		t.Fatalf("cached slot mutated: %v", cached.Price)
 	}
@@ -904,7 +887,6 @@ func TestFailedSlotIsNotResurrectedByThePricePath(t *testing.T) {
 }
 
 func TestRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
-
 	resetBatchFallback(t)
 	resetFailureTrackers(t)
 	inputs, cfg := hlBatchTwoMemberInput(t)
@@ -912,7 +894,6 @@ func TestRunHyperliquidCheckRefusesToDecideOnAFailedSlot(t *testing.T) {
 		out := batchOK("hl-a")
 		out.Results = append(out.Results, HyperliquidBatchSlotResult{
 			ID: "hl-b",
-
 			HyperliquidResult: HyperliquidResult{
 				Strategy: "momentum_pro", Symbol: "BTC", Timeframe: "1h",
 				Signal: 0, Price: 0, Error: "slot blew up",

@@ -29,7 +29,6 @@ func liqValidationConfig(stopPct, leverage float64, mode, marginMode string) Con
 }
 
 func TestConfigValidationRejectsStopPastBankruptcyDistance(t *testing.T) {
-
 	cfg := liqValidationConfig(10, 20, "live", "isolated")
 	err := validateConfig(&cfg, true)
 	if err == nil {
@@ -48,7 +47,6 @@ func TestConfigValidationAcceptsAggressiveButReachableStops(t *testing.T) {
 		expectValidationErr bool
 	}{
 		{"aggressive but valid at 20x", 4.9, 20, "live", "isolated", false},
-
 		{"valid low leverage", 45, 2, "live", "isolated", false},
 		{"paper skips entirely", 10, 20, "paper", "isolated", false},
 		{"cross margin skips entirely", 10, 20, "live", "cross", false},
@@ -105,11 +103,8 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheck(t *testing.T) {
 		mode, marginMode  string
 		goRejects         bool
 	}{
-
 		{"paper offender", 10, 20, "paper", "isolated", false},
-
 		{"cross offender", 10, 20, "live", "cross", false},
-
 		{"live isolated offender", 10, 20, "live", "isolated", true},
 		{"aggressive but valid", 4.9, 20, "live", "isolated", false},
 		{"low leverage", 45, 2, "live", "isolated", false},
@@ -143,7 +138,6 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckNewScope(t *testing.T) {
 			c.Strategies[0].TrailingStopPct = &trail
 		}, false},
 		{"max_drawdown fallback above bound rejected", func(c *Config) {
-
 			c.DefaultStopLossATRMult = floatPtr(0)
 			c.Strategies[0].StopLossPct = nil
 			c.Strategies[0].MaxDrawdownPct = 15
@@ -204,7 +198,6 @@ func bankruptcyPreflightParity(t *testing.T, cfg Config) (bool, bool) {
 	goRejects := false
 	if _, err := LoadConfigForProbe(path); err != nil {
 		if !strings.Contains(err.Error(), "bankruptcy") {
-
 			t.Fatalf("fixture failed to load for a non-bankruptcy reason: %v\nconfig: %s", err, blob)
 		}
 		goRejects = true
@@ -251,7 +244,6 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 		goRejects bool
 	}{
 		{
-
 			name: "explicit-zero trailing_stop_atr_mult falls through to the fallback",
 			mutate: func(c *Config) {
 				c.Strategies[0].TrailingStopATRMult = floatPtr(0)
@@ -266,7 +258,6 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 			goRejects: true,
 		},
 		{
-
 			name: "positive stop_loss_atr_mult owns the stop",
 			mutate: func(c *Config) {
 				c.Strategies[0].StopLossATRMult = floatPtr(1.5)
@@ -274,13 +265,11 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 			goRejects: false,
 		},
 		{
-
 			name:      "auto-default attaches an ATR owner when every stop field is omitted",
 			mutate:    func(c *Config) {},
 			goRejects: false,
 		},
 		{
-
 			name: "default_stop_loss_atr_mult=0 lets the fallback own the stop",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)
@@ -288,7 +277,6 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 			goRejects: true,
 		},
 		{
-
 			name: "default_stop_loss_atr_mult=0 with the fallback inside the bound",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)
@@ -297,7 +285,6 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 			goRejects: false,
 		},
 		{
-
 			name: "user_defaults ratchet-regime trail owns the stop",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)
@@ -316,7 +303,6 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 			goRejects: false,
 		},
 		{
-
 			name: "explicit stop_loss_atr_regime owns the stop",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)
@@ -326,7 +312,6 @@ func TestHLBankruptcyBoundPreflightMatchesGoCheckLoadTimeResolution(t *testing.T
 			goRejects: false,
 		},
 		{
-
 			name: "explicit trailing_stop_atr_regime owns the stop",
 			mutate: func(c *Config) {
 				c.DefaultStopLossATRMult = floatPtr(0)

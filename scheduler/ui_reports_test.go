@@ -35,7 +35,6 @@ func TestStrategyAuditPageRendersData(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-
 	for _, want := range []string{
 		"squeeze_momentum", "0.03", "47.9",
 		"vwap_reversion", "-59.5", "-10.9",
@@ -70,7 +69,6 @@ func TestStrategyAuditDatasetIntegrity(t *testing.T) {
 		if !validVerdict[r.Verdict] {
 			t.Errorf("row %s has invalid verdict class %q", r.Strategy, r.Verdict)
 		}
-
 		if r.Trades == 0 && r.HasVsBH {
 			t.Errorf("row %s has 0 trades but claims a vs-B&H value", r.Strategy)
 		}

@@ -150,7 +150,6 @@ func TestNextStrategyCheckDelay_FirstRunReturnsZero(t *testing.T) {
 func TestNextStrategyCheckDelay_NoCandidatesReturnsNegative(t *testing.T) {
 	now := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
 	strategies := []StrategyConfig{
-
 		{ID: "skipped-zero-cap", IntervalSeconds: 3600, CapitalPct: 0.5, Capital: 0},
 	}
 	intervals := effectiveStrategyIntervals(strategies, nil, 600, 80)

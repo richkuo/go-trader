@@ -21,17 +21,12 @@ func hlReconcileGapLogInterval() time.Duration {
 }
 
 type hlReconcileGapEntry struct {
-	cycles int
-
-	alerted bool
-
-	lastNotifiedAt time.Time
-
+	cycles            int
+	alerted           bool
+	lastNotifiedAt    time.Time
 	lastNotifiedDelta float64
-
-	lastLoggedAt time.Time
-
-	lastLoggedDelta float64
+	lastLoggedAt      time.Time
+	lastLoggedDelta   float64
 }
 
 type HLReconcileGapTracker struct {
@@ -154,7 +149,6 @@ func reportHLReconcileGaps(notifier ownerDMSender, results []hlReconcileGapResul
 		notifier.SendOwnerDM(msg)
 	}
 	present := make(map[string]bool, len(results))
-
 	sort.Slice(results, func(i, j int) bool { return results[i].Coin < results[j].Coin })
 	for _, r := range results {
 		present[r.Coin] = true
@@ -173,7 +167,6 @@ func reportHLReconcileGaps(notifier ownerDMSender, results []hlReconcileGapResul
 			emit(formatHLReconcileGapRecovered(r.Coin, prior))
 		}
 	}
-
 	for _, coin := range hlReconcileGapTracker.trackedCoins() {
 		if present[coin] {
 			continue

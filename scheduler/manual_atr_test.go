@@ -42,7 +42,6 @@ func TestParseHyperliquidFetchATROutput_RunError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on runErr")
 	}
-
 	if !strings.Contains(err.Error(), "missing python") {
 		t.Errorf("error should include stderr; got %q", err.Error())
 	}

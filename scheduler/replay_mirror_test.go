@@ -48,18 +48,15 @@ func TestMirrorReplayOpenBooksLiveFill(t *testing.T) {
 	if pos == nil {
 		t.Fatal("no position booked")
 	}
-
 	if pos.Quantity != 0.5 || pos.AvgCost != 1908.25 || pos.Side != "long" {
 		t.Errorf("position mismatch: %+v", pos)
 	}
-
 	if !pos.OpenedAt.Equal(decidedAt) {
 		t.Errorf("OpenedAt = %v, want %v", pos.OpenedAt, decidedAt)
 	}
 	if len(details) != 1 || !strings.Contains(details[0], "REPLAY OPEN") {
 		t.Errorf("details = %v", details)
 	}
-
 	if len(s.TradeHistory) != 1 || !s.TradeHistory[0].Timestamp.Equal(decidedAt) {
 		t.Fatalf("trade history = %+v", s.TradeHistory)
 	}
@@ -100,7 +97,6 @@ func TestMirrorReplayFullCloseBooksMirrorReason(t *testing.T) {
 		t.Fatalf("closed positions = %d, want 1", len(s.ClosedPositions))
 	}
 	cp := s.ClosedPositions[0]
-
 	if cp.CloseReason != "replay_live_mirror" || cp.ClosePrice != 1902.0 {
 		t.Errorf("closed position = %+v, want reason replay_live_mirror @ 1902", cp)
 	}
@@ -111,7 +107,6 @@ func TestMirrorReplayFullCloseBooksMirrorReason(t *testing.T) {
 
 func TestMirrorReplayFullCloseWhenAlreadyFlat(t *testing.T) {
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-
 	pending := []ReplayDecision{
 		{DecisionID: 9, StrategyID: sc.ID, DecisionType: ReplayDecisionFullClose, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1900, CloseReason: "signal"},
 	}
@@ -161,7 +156,6 @@ func TestMirrorReplayPartialCloseReduces(t *testing.T) {
 
 func TestMirrorReplayDriftSkipsWithoutWedging(t *testing.T) {
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
-
 	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 	pending := []ReplayDecision{
 		{DecisionID: 1, StrategyID: sc.ID, DecisionType: ReplayDecisionOpen, DecidedAt: time.Now().UTC(), Symbol: "ETH", Side: "long", Quantity: 0.5, ReferencePrice: 1908},
@@ -189,7 +183,6 @@ func TestMirrorReplayHighWaterPreventsDoubleApply(t *testing.T) {
 	if trades != 2 || len(applied) != 2 {
 		t.Fatalf("first pass trades=%d applied=%v, want 2/2", trades, applied)
 	}
-
 	applied, trades, _, _ = applyReplayedLiveDecisions(sc, s, pending, 1910.0, replayTestResult(), &Config{}, logger)
 	if trades != 0 {
 		t.Fatalf("second pass re-applied %d trades — double-apply protection failed", trades)
@@ -203,7 +196,6 @@ func TestMirrorReplayHighWaterPreventsDoubleApply(t *testing.T) {
 }
 
 func TestMirrorSuppressionWiring(t *testing.T) {
-
 	src := string(mustReadFile(t, "main.go"))
 	if !strings.Contains(src, "replayMirrorPaperActive(sc) && pausedBlocksSignal(") {
 		t.Fatal("HL perps dispatch missing the #1431 replay-mirror suppression arm paired with pausedBlocksSignal")
@@ -220,7 +212,6 @@ func TestMirrorSuppressionWiring(t *testing.T) {
 }
 
 func TestMergeTradeDetailsPreservesEarlierNativeAction(t *testing.T) {
-
 	sl := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
 	replay := []string{"[hl-paper-eth] REPLAY OPEN long ETH 0.500000 @ $1908.25"}
 	got := mergeTradeDetails(sl, replay...)
@@ -245,7 +236,6 @@ func TestMergeTradeDetailsJoinsMultipleReplayRowsWithoutDroppingNative(t *testin
 }
 
 func TestMergeTradeDetailsEmptyReplayKeepsNative(t *testing.T) {
-
 	native := "[hl-paper-eth] PAPER TRAILING SL ETH @ $1900.00"
 	if got := mergeTradeDetails(native); got != native {
 		t.Fatalf("empty parts dropped native: %q", got)
@@ -259,7 +249,6 @@ func TestMergeTradeDetailsEmptyReplayKeepsNative(t *testing.T) {
 }
 
 func TestMirrorReplayPersistedWatermarkSurvivesRestart(t *testing.T) {
-
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
 	s.Positions["ETH"] = &Position{Symbol: "ETH", Quantity: 1.0, InitialQuantity: 1.0, AvgCost: 1905, Side: "long", Multiplier: 1}
 	s.ReplayMirrorWatermark = 2
@@ -297,7 +286,6 @@ func TestMirrorReplayWatermarkAdvancesOnApply(t *testing.T) {
 }
 
 func TestMirrorReplayOpenSeedsLiveStamps(t *testing.T) {
-
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
 	result := replayTestResult()
 	result.Indicators["atr"] = 99.0
@@ -317,7 +305,6 @@ func TestMirrorReplayOpenSeedsLiveStamps(t *testing.T) {
 }
 
 func TestMirrorReplayOpenFallsBackToPaperStamps(t *testing.T) {
-
 	sc, s, logger := replayMirrorTestSetup(t, "hl-paper-eth")
 	result := replayTestResult()
 	result.Indicators["atr"] = 33.0
@@ -333,7 +320,6 @@ func TestMirrorReplayOpenFallsBackToPaperStamps(t *testing.T) {
 }
 
 func TestMirrorSaveBeforeMarkWiring(t *testing.T) {
-
 	src := string(mustReadFile(t, "main.go"))
 	applyIdx := strings.Index(src, "applyReplayedLiveDecisions(sc, stratState, pending, price, result, cfg, logger)")
 	if applyIdx < 0 {
@@ -353,7 +339,6 @@ func TestMirrorSaveBeforeMarkWiring(t *testing.T) {
 }
 
 func TestMirrorReplaySuspendsEagerTradePersist(t *testing.T) {
-
 	src := string(mustReadFile(t, "replay_mirror.go"))
 	if !strings.Contains(src, "defer suspendEagerTradePersist()()") {
 		t.Fatal("applyReplayedLiveDecisions missing suspendEagerTradePersist — replayed trades would eager-insert before the watermark save")
@@ -392,7 +377,6 @@ func TestMirrorReplaySuspendsEagerTradePersist(t *testing.T) {
 }
 
 func TestMirrorReplayKillDuringSaveDoesNotDuplicateTrades(t *testing.T) {
-
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -437,7 +421,6 @@ func TestMirrorReplayKillDuringSaveDoesNotDuplicateTrades(t *testing.T) {
 }
 
 func TestMirrorReplayTradesFlushWithWatermarkSave(t *testing.T) {
-
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -483,7 +466,6 @@ func TestMirrorReplayTradesFlushWithWatermarkSave(t *testing.T) {
 }
 
 func TestSystemdTemplateGrantsSharedReplayDir(t *testing.T) {
-
 	src := string(mustReadFile(t, "../systemd/go-trader@.service"))
 	if !strings.Contains(src, "StateDirectory=go-trader/%i go-trader/shared") {
 		t.Fatal("template unit StateDirectory missing go-trader/shared — template instances cannot write the shared replay log path")
@@ -494,7 +476,6 @@ func TestSystemdTemplateGrantsSharedReplayDir(t *testing.T) {
 }
 
 func TestSaveStrategyBookDoesNotRewriteUnrelatedStrategies(t *testing.T) {
-
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -549,7 +530,6 @@ func TestSaveStrategyBookDoesNotRewriteUnrelatedStrategies(t *testing.T) {
 }
 
 func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
-
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
@@ -655,7 +635,6 @@ func TestMirrorReplayFullCloseDefersDiagnosticsUntilSave(t *testing.T) {
 }
 
 func TestSaveStrategyBookReplacesOpenPositionAcrossCycles(t *testing.T) {
-
 	sdb, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)

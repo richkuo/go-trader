@@ -477,135 +477,89 @@ func OpenStateDB(path string) (*StateDB, error) {
 }
 
 func (sdb *StateDB) migrateSchema() error {
-
 	migrations := []string{
 		"ALTER TABLE trades ADD COLUMN exchange_order_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE trades ADD COLUMN exchange_fee REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN opened_at TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE portfolio_risk ADD COLUMN current_margin_drawdown_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE kill_switch_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE portfolio_risk ADD COLUMN warn_band_entered_at TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE portfolio_risk ADD COLUMN last_warning_equity_dd_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN last_warning_margin_dd_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN warning_equity_delta_pct REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE portfolio_risk ADD COLUMN warning_margin_delta_pct REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE app_state ADD COLUMN last_leaderboard_summaries TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE app_state ADD COLUMN last_summary_post TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN stop_loss_high_water_px REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE trades ADD COLUMN is_close INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN realized_pnl REAL NOT NULL DEFAULT 0",
 		"CREATE INDEX IF NOT EXISTS idx_trades_close ON trades(strategy_id, is_close)",
-
 		"ALTER TABLE trades ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE option_positions ADD COLUMN position_id TEXT NOT NULL DEFAULT ''",
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_position ON trades(strategy_id, position_id)",
-
 		"ALTER TABLE positions ADD COLUMN initial_quantity REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE trades ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE trades ADD COLUMN entry_atr REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN stop_loss_trigger_px REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE trades ADD COLUMN manual INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE pending_manual_actions ADD COLUMN is_full_close INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN tp1_oid INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN tp2_oid INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE pending_manual_actions ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE trades ADD COLUMN stop_loss_atr_mult REAL",
 		"ALTER TABLE trades ADD COLUMN tp_tiers_json TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN stop_loss_atr_mult REAL",
 		"ALTER TABLE positions ADD COLUMN tp_tiers_json TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE trades ADD COLUMN stop_loss_oid INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN tp_oids_json TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN sl_adjusted_tiers_processed INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN post_tp_trailing_atr_mult REAL",
-
 		"ALTER TABLE positions ADD COLUMN tp_armed_tiers_json TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN regime TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN regime_windows_json TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN regime_pending_label TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN regime_pending_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN regime_applied_label TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN scale_in_count INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN last_add_price REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN added_notional_usd REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN risk_anchor_price REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN scale_in_resize_pending INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE pending_manual_actions ADD COLUMN ratchet_fallback_normalize_pending INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE trades ADD COLUMN pnl_gross INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE trades ADD COLUMN fee_source TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN open_profile TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE strategies ADD COLUMN active_profile TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN direction_certified_at_open INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN direction_certified_states_json TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN llm_analysis_requested INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN llm_verdict TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN atr_method_at_open TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE positions ADD COLUMN hedge_for TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE positions ADD COLUMN hedge_primary_qty_basis REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE pending_manual_actions ADD COLUMN atr_method TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE strategies ADD COLUMN cash_reconcile_required INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE strategies ADD COLUMN shared_wallet_pool_budget INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE strategies ADD COLUMN hurst_gate_state TEXT NOT NULL DEFAULT ''",
-
 		"ALTER TABLE strategies ADD COLUMN replay_mirror_watermark INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE positions ADD COLUMN hurst_at_open REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN hurst_size_mult REAL NOT NULL DEFAULT 0",
-
 		"ALTER TABLE trade_diagnostics ADD COLUMN hurst_at_open REAL",
 		"ALTER TABLE trade_diagnostics ADD COLUMN hurst_size_mult REAL",
-
 		"ALTER TABLE portfolio_risk ADD COLUMN manual_mark_basis_rebaselined INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE portfolio_risk ADD COLUMN drawdown_reading_substituted INTEGER NOT NULL DEFAULT 0",
-
 		"ALTER TABLE portfolio_risk ADD COLUMN untrusted_over_limit_since TEXT NOT NULL DEFAULT ''",
-
 		"CREATE INDEX IF NOT EXISTS idx_trades_strategy_timestamp ON trades(strategy_id, timestamp DESC, rowid DESC)",
 	}
 	for _, ddl := range migrations {
 		if _, err := sdb.db.Exec(ddl); err != nil {
 			msg := err.Error()
-
 			if strings.Contains(msg, "duplicate column") {
 				continue
 			}
@@ -619,7 +573,6 @@ func (sdb *StateDB) migrateSchema() error {
 }
 
 func firstTwoTPOIDs(oids []int64) (int64, int64) {
-
 	var first, second int64
 	if len(oids) > 0 {
 		first = oids[0]
@@ -738,13 +691,11 @@ func backfillTPArmedTiers(pos *Position) {
 }
 
 func (sdb *StateDB) backfillTradeCloseFlags() error {
-
 	_, err := sdb.db.Exec(`UPDATE trades SET is_close = 1
 		WHERE is_close = 0 AND realized_pnl = 0 AND COALESCE(pnl_gross, 0) = 0 AND details LIKE '%PnL%'`)
 	if err != nil {
 		return fmt.Errorf("backfill is_close: %w", err)
 	}
-
 	rows, err := sdb.db.Query(`SELECT rowid, details FROM trades
 		WHERE is_close = 1 AND realized_pnl = 0 AND COALESCE(pnl_gross, 0) = 0 AND details LIKE '%PnL%'`)
 	if err != nil {
@@ -812,7 +763,6 @@ func (sdb *StateDB) migratePendingCircuitClosesColumn() error {
 	}
 	switch {
 	case hasNew:
-
 		return nil
 	case hasLegacy:
 		_, err := sdb.db.Exec("ALTER TABLE strategies RENAME COLUMN risk_pending_hl_close_json TO risk_pending_circuit_closes_json")
@@ -1014,7 +964,6 @@ func (sdb *StateDB) ReconcileModelOnlyClose(u modelOnlyCloseCorrection) error {
 	}
 
 	if u.PositionID != "" {
-
 		if _, err := tx.Exec(
 			`UPDATE trade_diagnostics SET exit_price = ?, realized_pnl = ?
 			 WHERE strategy_id = ? AND position_id = ? AND closed_at = ?`,
@@ -1093,7 +1042,6 @@ func (sdb *StateDB) SetInitialCapital(strategyID string, value float64) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
-
 	initialCapitalGuardWarned.Delete(strategyID)
 	fmt.Fprintf(os.Stderr, "[state] initial_capital override for %s set to $%.2f (#343)\n", strategyID, value)
 	return nil
@@ -1180,7 +1128,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 		}
 		existingInitCaps[id] = existing
 	}
-
 	if err := existingRows.Err(); err != nil {
 		existingRows.Close()
 		return fmt.Errorf("iterate existing initial_capital: %w", err)
@@ -1219,7 +1166,6 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	defer stmtOpt.Close()
 
 	for _, s := range state.Strategies {
-
 		if prev, ok := existingInitCaps[s.ID]; ok && prev > 0 && s.InitialCapital != prev {
 			applyInitialCapitalGuard(s, prev)
 		}
@@ -1451,13 +1397,11 @@ func (sdb *StateDB) SaveState(state *AppState) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-
 	for _, s := range state.Strategies {
 		s.ClosedPositions = nil
 		s.ClosedOptionPositions = nil
 		s.pendingTradeDiagnostics = nil
 	}
-
 	for _, f := range flushed {
 		f.strat.TradeHistory[f.index].persisted = true
 	}
@@ -1734,7 +1678,6 @@ func (sdb *StateDB) QueryClosedPositions(strategyID, symbol string, since, until
 		where = append(where, "closed_at <= ?")
 		args = append(args, formatTime(until))
 	}
-
 	whereClause := ""
 	if len(where) > 0 {
 		whereClause = "WHERE " + strings.Join(where, " AND ")
@@ -1848,7 +1791,6 @@ func (sdb *StateDB) QueryClosedOptionPositions(strategyID, underlying string, si
 }
 
 func (sdb *StateDB) LoadState() (*AppState, error) {
-
 	var cycleCount int
 	var lastCycleStr, lastLeaderboardDate, lastLBSummariesJSON, lastSummaryPostJSON string
 	err := sdb.db.QueryRow("SELECT cycle_count, last_cycle, last_leaderboard_post_date, last_leaderboard_summaries, last_summary_post FROM app_state WHERE id = 1").
@@ -1919,10 +1861,8 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		s.RiskState.UnmarshalPendingCircuitClosesJSON(pendingCircuitClosesJSON)
 		s.CashReconcileRequired = cashReconcileInt != 0
 		s.SharedWalletPoolBudget = poolBudgetInt != 0
-
 		s.HurstGate = unmarshalHurstGateStateJSON(hurstGateJSON)
 		s.SharedWalletPerformanceOnly = s.SharedWalletPoolBudget
-
 		if activeProfile != "" {
 			s.RegimeProfile = &RegimeProfileState{ActiveProfile: activeProfile}
 		}
@@ -2045,7 +1985,6 @@ func (sdb *StateDB) LoadState() (*AppState, error) {
 		if err := tradeRows.Err(); err != nil {
 			return nil, fmt.Errorf("iterate trades for %s: %w", id, err)
 		}
-
 		for i, j := 0, len(allTrades)-1; i < j; i, j = i+1, j-1 {
 			allTrades[i], allTrades[j] = allTrades[j], allTrades[i]
 		}
@@ -2190,7 +2129,6 @@ func (sdb *StateDB) LifetimeTradeStatsForStrategy(strategyID string) (LifetimeTr
 	}
 	var out LifetimeTradeStats
 	var opens sql.NullInt64
-
 	if err := sdb.db.QueryRow(`SELECT COUNT(*)
 		FROM trades
 		WHERE strategy_id = ? AND is_close = 0 AND trade_type NOT IN `+tradeStatsExcludedTypesSQL+``, strategyID).Scan(&opens); err != nil {

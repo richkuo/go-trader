@@ -35,7 +35,6 @@ func TestForceCloseOKXLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	if len(report.ClosedCoins) != 1 || report.ClosedCoins[0] != "BTC" {
 		t.Errorf("ClosedCoins = %v, want [BTC]", report.ClosedCoins)
 	}
-
 	if len(report.Unconfigured) != 1 || report.Unconfigured[0].Coin != "SOL" {
 		t.Errorf("Unconfigured = %v, want [SOL]", report.Unconfigured)
 	}
@@ -62,7 +61,6 @@ func TestForceCloseOKXLive_CloseErrorLatches(t *testing.T) {
 }
 
 func TestForceCloseOKXLive_ZeroSizeMarkedAlreadyFlat(t *testing.T) {
-
 	okxLive := []StrategyConfig{
 		{ID: "okx-btc", Platform: "okx", Type: "perps",
 			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
@@ -88,7 +86,6 @@ func TestForceCloseOKXLive_ZeroSizeMarkedAlreadyFlat(t *testing.T) {
 }
 
 func TestForceCloseOKXLive_CtxExpiredBeforeSubmit(t *testing.T) {
-
 	okxLive := []StrategyConfig{
 		{ID: "okx-btc", Platform: "okx", Type: "perps",
 			Args: []string{"sma", "BTC", "1h", "--mode=live"}},
@@ -113,7 +110,6 @@ func TestForceCloseOKXLive_CtxExpiredBeforeSubmit(t *testing.T) {
 }
 
 func TestForceCloseOKXLive_SpotStrategiesIgnored(t *testing.T) {
-
 	mixed := []StrategyConfig{
 		{ID: "okx-btc-spot", Platform: "okx", Type: "spot",
 			Args: []string{"sma", "BTC", "1h", "--mode=live", "--inst-type=spot"}},
@@ -227,7 +223,6 @@ func TestComputeOKXCircuitCloseQty_MixedUnitsFallsBackToEqualWeights(t *testing.
 	if !ok {
 		t.Fatal("expected ok")
 	}
-
 	want := 0.25
 	if math.Abs(q-want) > 1e-9 {
 		t.Errorf("qty=%.6f want %.6f (equal-weight fallback on mixed units)", q, want)
@@ -625,7 +620,6 @@ func TestRunPendingOKXCircuitCloses_RepeatedFailureThrottlesNotifier(t *testing.
 	}
 	var dmMsgs []string
 	ownerDM := func(msg string) { dmMsgs = append(dmMsgs, msg) }
-
 	state.Strategies["okx-a"].RiskState.PendingCircuitCloses[PlatformPendingCloseOKX].LastNotifiedAt = time.Now()
 
 	runPendingOKXCircuitCloses(
@@ -724,7 +718,6 @@ func TestRunPendingOKXCircuitCloses_CtxExpiryMidLoopDoesNotCountAsFailure(t *tes
 	var calls []string
 	closer := func(sym string, partialSz *float64) (*OKXCloseResult, error) {
 		calls = append(calls, sym)
-
 		cancel()
 		return &OKXCloseResult{Close: &OKXClose{Symbol: sym}}, nil
 	}

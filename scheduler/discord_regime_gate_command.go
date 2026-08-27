@@ -206,7 +206,6 @@ func ensureRegimeGateWindow(root map[string]json.RawMessage, preset regimeGatePr
 			return fmt.Errorf("parse regime: %w", err)
 		}
 	}
-
 	if tb, err := json.Marshal(true); err == nil {
 		regime["enabled"] = tb
 	}
@@ -227,7 +226,6 @@ func ensureRegimeGateWindow(root map[string]json.RawMessage, preset regimeGatePr
 				preset.WindowKey, spec.effectiveClassifier(), spec.Period, preset.Name,
 				preset.WindowSpec.effectiveClassifier(), preset.WindowSpec.Period)
 		}
-
 	} else {
 		specB, err := json.Marshal(preset.WindowSpec)
 		if err != nil {

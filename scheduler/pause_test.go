@@ -18,7 +18,6 @@ func TestPausedBlocksSignal(t *testing.T) {
 		allowsShort   bool
 		want          bool
 	}{
-
 		{"hold flat", 0, 0, 0, "", true, false, false},
 		{"hold open", 0, 0, 1, "long", true, true, false},
 

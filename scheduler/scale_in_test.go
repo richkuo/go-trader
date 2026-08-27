@@ -80,7 +80,6 @@ func TestScaleInLegExcludedFromOpenCount(t *testing.T) {
 	if got.Wins != 1 {
 		t.Errorf("Wins = %d, want 1 (round-trip still graded)", got.Wins)
 	}
-
 	one, err := db.LifetimeTradeStatsForStrategy("hl-scalein-eth")
 	if err != nil {
 		t.Fatalf("LifetimeTradeStatsForStrategy: %v", err)
@@ -91,7 +90,6 @@ func TestScaleInLegExcludedFromOpenCount(t *testing.T) {
 }
 
 func TestScaleInProtectionForceReplace(t *testing.T) {
-
 	pos := &Position{
 		TPOIDs:                   []int64{0, 555},
 		TPArmedTiers:             []bool{true, true},
@@ -114,7 +112,6 @@ func TestScaleInProtectionForceReplace(t *testing.T) {
 	if !forceTP[1] {
 		t.Errorf("forceTP[1] = false, want true (resting tier must resize to new total)")
 	}
-
 	if pos.SLAdjustedTiersProcessed != 1 {
 		t.Errorf("watermark mutated: %d, want 1", pos.SLAdjustedTiersProcessed)
 	}
@@ -142,7 +139,6 @@ func TestTrailingStopForceResizeReplacesWithoutMove(t *testing.T) {
 	if !ok || result != nil || called {
 		t.Fatalf("without force, expected no replace (called=%v result=%+v)", called, result)
 	}
-
 	called = false
 	_, result, ok = runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 2.0, &Position{AvgCost: 100}, 100, 100, 97, 111, trailingReplacePolicy{forceResize: true}, nil, logger)
 	if !ok || result == nil || !called {
@@ -264,7 +260,6 @@ func TestApplyScaleInBlendsPriceAndSizeFreezesRiskPlan(t *testing.T) {
 	if !approxEq(pos.Quantity, 200) {
 		t.Fatalf("Quantity = %v, want 200", pos.Quantity)
 	}
-
 	if !approxEq(pos.InitialQuantity, 200) {
 		t.Fatalf("InitialQuantity = %v, want 200", pos.InitialQuantity)
 	}
@@ -280,7 +275,6 @@ func TestApplyScaleInBlendsPriceAndSizeFreezesRiskPlan(t *testing.T) {
 	if !pos.ScaleInResizePending {
 		t.Fatalf("ScaleInResizePending = false, want true")
 	}
-
 	if !approxEq(pos.EntryATR, 50) {
 		t.Fatalf("EntryATR moved: %v, want 50 (frozen)", pos.EntryATR)
 	}
@@ -305,7 +299,6 @@ func TestApplyScaleInMultipleAddsAccumulate(t *testing.T) {
 	if !approxEq(pos.Quantity, 30) || !approxEq(pos.InitialQuantity, 30) {
 		t.Fatalf("Quantity/InitialQuantity = %v/%v, want 30/30", pos.Quantity, pos.InitialQuantity)
 	}
-
 	if !approxEq(pos.AvgCost, 100) {
 		t.Fatalf("AvgCost = %v, want 100", pos.AvgCost)
 	}
@@ -374,24 +367,19 @@ func TestPerpsScaleInDecisionRequiresOptIn(t *testing.T) {
 
 func TestPerpsScaleInDecisionDirectionMatch(t *testing.T) {
 	sc := StrategyConfig{AllowScaleIn: true}
-
 	if _, ok, _ := perpsScaleInDecision(sc, longSnap(), 1, 2000, 1000); !ok {
 		t.Fatalf("buy on long should add")
 	}
-
 	if _, ok, _ := perpsScaleInDecision(sc, longSnap(), -1, 2000, 1000); ok {
 		t.Fatalf("sell on long should NOT add")
 	}
-
 	short := scaleInSnapshot{Side: "short", Quantity: 100, AvgCost: 2000, EntryATR: 50, LastAddPrice: 2000}
 	if _, ok, _ := perpsScaleInDecision(sc, short, 1, 2000, 1000); ok {
 		t.Fatalf("buy on short should NOT add")
 	}
-
 	if _, ok, _ := perpsScaleInDecision(sc, short, -1, 2000, 1000); !ok {
 		t.Fatalf("sell on short should add")
 	}
-
 	flat := scaleInSnapshot{Side: "", Quantity: 0}
 	if _, ok, _ := perpsScaleInDecision(sc, flat, 1, 2000, 1000); ok {
 		t.Fatalf("add from flat should be rejected")
@@ -415,11 +403,9 @@ func TestPerpsScaleInDecisionMaxAddedNotional(t *testing.T) {
 	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{MaxAddedNotionalUSD: 1500}}
 	snap := longSnap()
 	snap.AddedNotionalUSD = 1000
-
 	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2000, 1000); ok {
 		t.Fatalf("add past max_added_notional allowed")
 	}
-
 	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2000, 400); !ok {
 		t.Fatalf("add under max_added_notional rejected")
 	}
@@ -428,15 +414,12 @@ func TestPerpsScaleInDecisionMaxAddedNotional(t *testing.T) {
 func TestPerpsScaleInDecisionSpacingAddToWinnersLong(t *testing.T) {
 	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}}
 	snap := longSnap()
-
 	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2049, 1000); ok {
 		t.Fatalf("add allowed before reaching spacing distance")
 	}
-
 	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2051, 1000); !ok {
 		t.Fatalf("add blocked after reaching spacing distance")
 	}
-
 	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 1900, 1000); ok {
 		t.Fatalf("add-to-winners allowed on adverse move")
 	}
@@ -451,14 +434,12 @@ func TestPerpsScaleInDecisionSpacingAverageDownLong(t *testing.T) {
 	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 1949, 1000); !ok {
 		t.Fatalf("average-down blocked after reaching adverse distance")
 	}
-
 	if _, ok, _ := perpsScaleInDecision(sc, snap, 1, 2100, 1000); ok {
 		t.Fatalf("average-down allowed on favorable move")
 	}
 }
 
 func TestPerpsScaleInDecisionSpacingShort(t *testing.T) {
-
 	sc := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddSpacingATR: 1.0}}
 	snap := scaleInSnapshot{Side: "short", Quantity: 100, AvgCost: 2000, EntryATR: 50, LastAddPrice: 2000}
 	if _, ok, _ := perpsScaleInDecision(sc, snap, -1, 1949, 1000); !ok {
@@ -486,13 +467,11 @@ func TestPerpsScaleInDecisionLastAddPriceFallsBackToAvgCost(t *testing.T) {
 }
 
 func TestPerpsScaleInDecisionAddQtySizing(t *testing.T) {
-
 	sc := StrategyConfig{AllowScaleIn: true}
 	addQty, ok, _ := perpsScaleInDecision(sc, longSnap(), 1, 2000, 1000)
 	if !ok || !approxEq(addQty, 0.5) {
 		t.Fatalf("addQty = %v ok=%v, want 0.5 from default notional 1000/2000", addQty, ok)
 	}
-
 	sc2 := StrategyConfig{AllowScaleIn: true, ScaleIn: &ScaleInConfig{AddNotionalUSD: 4000}}
 	addQty2, ok2, _ := perpsScaleInDecision(sc2, longSnap(), 1, 2000, 1000)
 	if !ok2 || !approxEq(addQty2, 2.0) {

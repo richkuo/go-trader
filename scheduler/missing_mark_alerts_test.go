@@ -22,7 +22,6 @@ func TestMissingMarkTracker_ThrottlesPerStrategySymbol(t *testing.T) {
 	if !tr.Record(sol, base) {
 		t.Fatal("first SOL miss should notify — slots are per symbol")
 	}
-
 	for i := 1; i <= 20; i++ {
 		at := base.Add(time.Duration(i) * time.Minute)
 		if tr.Record(btc, at) {
@@ -32,7 +31,6 @@ func TestMissingMarkTracker_ThrottlesPerStrategySymbol(t *testing.T) {
 			t.Fatalf("SOL re-notified %v into the throttle window", at.Sub(base))
 		}
 	}
-
 	if !tr.Record(btc, base.Add(6*time.Hour)) {
 		t.Error("BTC should re-notify once the throttle window elapses")
 	}
@@ -54,9 +52,7 @@ func TestMissingMarkTracker_RetainRearmsAfterMarkReturns(t *testing.T) {
 	if tr.Record(miss, base.Add(time.Minute)) {
 		t.Fatal("second miss inside the window should stay silent")
 	}
-
 	tr.Retain(nil)
-
 	tr.Retain([]missingMarkPosition{miss})
 	if !tr.Record(miss, base.Add(10*time.Minute)) {
 		t.Error("a NEW outage after a recovery must notify immediately")
@@ -75,7 +71,6 @@ func TestMissingMarkTracker_RetainKeepsOtherSlots(t *testing.T) {
 
 	tr.Record(btc, base)
 	tr.Record(sol, base)
-
 	tr.Retain([]missingMarkPosition{btc})
 	if tr.Record(btc, base.Add(time.Minute)) {
 		t.Error("BTC kept missing: its throttle window must survive Retain")

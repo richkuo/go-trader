@@ -50,8 +50,7 @@ type HyperliquidResult struct {
 	Platform   string                 `json:"platform"`
 	Timestamp  string                 `json:"timestamp"`
 	Error      string                 `json:"error,omitempty"`
-
-	Divergence DivergenceResult `json:"-"`
+	Divergence DivergenceResult       `json:"-"`
 }
 
 type HyperliquidFill struct {
@@ -92,41 +91,36 @@ type HyperliquidStopLossUpdateResult struct {
 	StopLossError             string  `json:"stop_loss_error,omitempty"`
 	StopLossFilledImmediately bool    `json:"stop_loss_filled_immediately,omitempty"`
 	StopLossFilledExternally  bool    `json:"stop_loss_filled_externally,omitempty"`
-
-	StopLossOutcomeUnknown bool   `json:"stop_loss_outcome_unknown,omitempty"`
-	OpenOrderCheckError    string `json:"open_order_check_error,omitempty"`
+	StopLossOutcomeUnknown    bool    `json:"stop_loss_outcome_unknown,omitempty"`
+	OpenOrderCheckError       string  `json:"open_order_check_error,omitempty"`
 }
 
 type HyperliquidProtectionSyncResult struct {
-	Platform                 string    `json:"platform"`
-	Timestamp                string    `json:"timestamp"`
-	Error                    string    `json:"error,omitempty"`
-	StopLossOID              int64     `json:"stop_loss_oid,omitempty"`
-	StopLossTriggerPx        float64   `json:"stop_loss_trigger_px,omitempty"`
-	TPOIDs                   []int64   `json:"tp_oids,omitempty"`
-	TPPxs                    []float64 `json:"tp_pxs,omitempty"`
-	TPErrors                 []string  `json:"tp_errors,omitempty"`
-	TPFilledExternally       []bool    `json:"tp_filled_externally,omitempty"`
-	TP1OID                   int64     `json:"tp1_oid,omitempty"`
-	TP2OID                   int64     `json:"tp2_oid,omitempty"`
-	TP1Px                    float64   `json:"tp1_px,omitempty"`
-	TP2Px                    float64   `json:"tp2_px,omitempty"`
-	StopLossError            string    `json:"stop_loss_error,omitempty"`
-	TP1Error                 string    `json:"tp1_error,omitempty"`
-	TP2Error                 string    `json:"tp2_error,omitempty"`
-	OpenOrderCheckError      string    `json:"open_order_check_error,omitempty"`
-	StopLossFilledExternally bool      `json:"stop_loss_filled_externally,omitempty"`
-
-	StopLossFilledImmediately bool `json:"stop_loss_filled_immediately,omitempty"`
-	TP1FilledExternally       bool `json:"tp1_filled_externally,omitempty"`
-	TP2FilledExternally       bool `json:"tp2_filled_externally,omitempty"`
-
-	TPCancelFailedOIDs []int64 `json:"tp_cancel_failed_oids,omitempty"`
-	TPCancelFilledOIDs []int64 `json:"tp_cancel_filled_oids,omitempty"`
-
-	CancelStopLossSucceeded bool `json:"cancel_stop_loss_succeeded,omitempty"`
-
-	StopLossOutcomeUnknown bool `json:"stop_loss_outcome_unknown,omitempty"`
+	Platform                  string    `json:"platform"`
+	Timestamp                 string    `json:"timestamp"`
+	Error                     string    `json:"error,omitempty"`
+	StopLossOID               int64     `json:"stop_loss_oid,omitempty"`
+	StopLossTriggerPx         float64   `json:"stop_loss_trigger_px,omitempty"`
+	TPOIDs                    []int64   `json:"tp_oids,omitempty"`
+	TPPxs                     []float64 `json:"tp_pxs,omitempty"`
+	TPErrors                  []string  `json:"tp_errors,omitempty"`
+	TPFilledExternally        []bool    `json:"tp_filled_externally,omitempty"`
+	TP1OID                    int64     `json:"tp1_oid,omitempty"`
+	TP2OID                    int64     `json:"tp2_oid,omitempty"`
+	TP1Px                     float64   `json:"tp1_px,omitempty"`
+	TP2Px                     float64   `json:"tp2_px,omitempty"`
+	StopLossError             string    `json:"stop_loss_error,omitempty"`
+	TP1Error                  string    `json:"tp1_error,omitempty"`
+	TP2Error                  string    `json:"tp2_error,omitempty"`
+	OpenOrderCheckError       string    `json:"open_order_check_error,omitempty"`
+	StopLossFilledExternally  bool      `json:"stop_loss_filled_externally,omitempty"`
+	StopLossFilledImmediately bool      `json:"stop_loss_filled_immediately,omitempty"`
+	TP1FilledExternally       bool      `json:"tp1_filled_externally,omitempty"`
+	TP2FilledExternally       bool      `json:"tp2_filled_externally,omitempty"`
+	TPCancelFailedOIDs        []int64   `json:"tp_cancel_failed_oids,omitempty"`
+	TPCancelFilledOIDs        []int64   `json:"tp_cancel_filled_oids,omitempty"`
+	CancelStopLossSucceeded   bool      `json:"cancel_stop_loss_succeeded,omitempty"`
+	StopLossOutcomeUnknown    bool      `json:"stop_loss_outcome_unknown,omitempty"`
 }
 
 func runPython(parentCtx context.Context, script string, args []string, stdinData []byte) ([]byte, []byte, error) {
@@ -230,7 +224,6 @@ func RunSpotCheck(script string, args []string) (*SpotResult, string, error) {
 	stdout, stderr, err := RunPythonScript(script, args)
 	stderrStr := string(stderr)
 	if err != nil {
-
 		var result SpotResult
 		if jsonErr := json.Unmarshal(stdout, &result); jsonErr == nil && result.Error != "" {
 			return &result, stderrStr, nil
@@ -321,7 +314,6 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 		if leverage > 0 {
 			args = append(args, fmt.Sprintf("--leverage=%g", leverage))
 		}
-
 		if snapshot.AccountLeverage > 0 && (snapshot.AccountMarginMode == "isolated" || snapshot.AccountMarginMode == "cross") {
 			args = append(args, fmt.Sprintf("--account-leverage=%d", snapshot.AccountLeverage))
 			args = append(args, fmt.Sprintf("--account-margin-mode=%s", snapshot.AccountMarginMode))
@@ -522,23 +514,18 @@ func parseHyperliquidCloseOutput(stdout []byte, stderrStr string, runErr error) 
 
 	switch {
 	case runErr == nil && parseErr == nil && result.Error == "":
-
 		return &result, stderrStr, nil
 
 	case runErr == nil && parseErr == nil && result.Error != "":
-
 		return &result, stderrStr, fmt.Errorf("close reported error despite exit 0: %s", result.Error)
 
 	case parseErr == nil && result.Error != "":
-
 		return &result, stderrStr, fmt.Errorf("close failed: %s", result.Error)
 
 	case parseErr == nil && runErr != nil:
-
 		return &result, stderrStr, fmt.Errorf("close subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
 
 	default:
-
 		return nil, stderrStr, fmt.Errorf("parse close output: %v (run err: %v, stdout: %s)", parseErr, runErr, string(stdout))
 	}
 }
@@ -1033,19 +1020,15 @@ func parseOKXPositionsOutput(stdout []byte, stderrStr string, runErr error) (*OK
 
 	switch {
 	case runErr == nil && parseErr == nil && result.Error == "":
-
 		return &result, stderrStr, nil
 
 	case runErr == nil && parseErr == nil && result.Error != "":
-
 		return &result, stderrStr, fmt.Errorf("fetch positions reported error despite exit 0: %s", result.Error)
 
 	case parseErr == nil && result.Error != "":
-
 		return &result, stderrStr, fmt.Errorf("fetch positions failed: %s", result.Error)
 
 	case parseErr == nil && runErr != nil:
-
 		return &result, stderrStr, fmt.Errorf("fetch positions subprocess exit %v with no error field (stderr: %s)", runErr, stderrStr)
 
 	default:
@@ -1244,7 +1227,6 @@ func FetchFuturesMarks(symbols []string) (map[string]float64, string, error) {
 	}
 
 	marks := make(map[string]float64, len(raw))
-
 	mode := ""
 	for k, v := range raw {
 		if k == "_mode" {

@@ -299,7 +299,6 @@ func TestApplyAssignmentCallFullCloseUsesSingleTimestamp(t *testing.T) {
 }
 
 func TestFetchMarkPricesExpiredOTM(t *testing.T) {
-
 	prices := map[string]float64{"BTC/USDT": 60000}
 	pricer := NewIBKRPricer(prices)
 
@@ -367,7 +366,6 @@ func TestFetchMarkPricesExpiredITMPut(t *testing.T) {
 	if r.AssignOptionType != "put" {
 		t.Error("should be put assignment")
 	}
-
 	expectedValue := -5000.0
 	if r.CurrentValueUSD != expectedValue {
 		t.Errorf("CurrentValueUSD = %g, want %g", r.CurrentValueUSD, expectedValue)

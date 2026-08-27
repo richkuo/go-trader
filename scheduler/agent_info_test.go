@@ -22,7 +22,6 @@ func TestAgentInfoCommandsCoverKnownSubcommands(t *testing.T) {
 			t.Errorf("subcommand %q is dispatched (knownSubcommands) but not documented in agentInfoCommands", sub)
 		}
 	}
-
 	known := map[string]bool{}
 	for _, sub := range knownSubcommands {
 		known[sub] = true
@@ -83,19 +82,16 @@ func TestReflectConfigSchema(t *testing.T) {
 	for _, f := range schema {
 		byName[f.JSONName] = f
 	}
-
 	if f, ok := byName["interval_seconds"]; !ok {
 		t.Error("expected interval_seconds in config schema")
 	} else if f.Optional {
 		t.Error("interval_seconds has no omitempty; should be required")
 	}
-
 	if f, ok := byName["db_file"]; !ok {
 		t.Error("expected db_file in config schema")
 	} else if !f.Optional {
 		t.Error("db_file has omitempty; should be optional")
 	}
-
 	if _, ok := byName["status_token"]; ok {
 		t.Error("status_token is json:\"-\" and must not appear in schema")
 	}
@@ -128,7 +124,6 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStateDB: %v", err)
 	}
-
 	if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('s1','perps','hyperliquid')`); err != nil {
 		t.Fatalf("seed strategy: %v", err)
 	}
@@ -138,7 +133,6 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	if _, err := sdb.db.Exec(`INSERT INTO app_state (id, cycle_count) VALUES (1, 42) ON CONFLICT(id) DO UPDATE SET cycle_count=42`); err != nil {
 		t.Fatalf("seed app_state: %v", err)
 	}
-
 	if _, err := sdb.db.Exec(`INSERT INTO strategies (id, type, platform) VALUES ('opt1','options','deribit')`); err != nil {
 		t.Fatalf("seed option strategy: %v", err)
 	}
@@ -163,7 +157,6 @@ func TestReadStateDBReadOnly(t *testing.T) {
 	if !strings.Contains(live.Note, "8099") {
 		t.Errorf("live note should point at status port: %q", live.Note)
 	}
-
 	names := map[string]bool{}
 	for _, tb := range tables {
 		names[tb.Name] = true
@@ -210,7 +203,6 @@ func TestRenderAgentInfoMarkdownAndChangelog(t *testing.T) {
 			t.Errorf("markdown missing %q", want)
 		}
 	}
-
 	if strings.Contains(agentInfoGeneratedFile, "AGENTS.md") || agentInfoGeneratedFile == "AGENTS.md" {
 		t.Fatal("generated file must not be AGENTS.md (symlink to CLAUDE.md)")
 	}
@@ -261,7 +253,6 @@ func TestBareRefreshPreservesChangelog(t *testing.T) {
 	if strings.Count(s, "## Changelog") != 1 {
 		t.Errorf("changelog section should appear once, got %d", strings.Count(s, "## Changelog"))
 	}
-
 	if strings.Contains(s, "v1.1.0") && strings.Contains(s, "2026-06-19") {
 		t.Error("bare refresh wrote a new changelog entry; only --append-changelog may")
 	}
@@ -290,7 +281,6 @@ func TestChangelogCapBounded(t *testing.T) {
 	total := agentInfoChangelogMaxEntries + 25
 	for i := 0; i < total; i++ {
 		info.Version = "v0.0." + strconv.Itoa(i)
-
 		day := 1 + (i % 27)
 		if err := writeAgentInfoMarkdown(path, md, true, info, time.Date(2026, 1, day, 0, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("append %d: %v", i, err)
@@ -298,7 +288,6 @@ func TestChangelogCapBounded(t *testing.T) {
 	}
 	data, _ := os.ReadFile(path)
 	s := string(data)
-
 	idx := strings.Index(s, "## Changelog")
 	if idx < 0 {
 		t.Fatal("no changelog block written")
@@ -307,7 +296,6 @@ func TestChangelogCapBounded(t *testing.T) {
 	if gotEntries != agentInfoChangelogMaxEntries {
 		t.Errorf("changelog retained %d entries, want cap %d", gotEntries, agentInfoChangelogMaxEntries)
 	}
-
 	if !strings.Contains(s, "v0.0."+strconv.Itoa(total-1)) {
 		t.Error("newest entry missing after cap")
 	}
@@ -378,7 +366,6 @@ func TestLoadConfigSnapshotDoesNotMutateFile(t *testing.T) {
 	if cfg == nil || len(cfg.Strategies) == 0 {
 		t.Fatal("expected a loaded config with strategies")
 	}
-
 	if cfg.ConfigVersion <= 15 {
 		t.Fatalf("migration did not advance config_version (in=15, out=%d); test no longer exercises the write path", cfg.ConfigVersion)
 	}

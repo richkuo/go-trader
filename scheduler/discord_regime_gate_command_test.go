@@ -19,7 +19,6 @@ func TestRegimeGatePresetLookup(t *testing.T) {
 	if len(p.AllowedRegimes) != 1 || p.AllowedRegimes[0] != "trending_up_clean" {
 		t.Errorf("preset allowed_regimes mismatch: %v", p.AllowedRegimes)
 	}
-
 	if _, ok := regimeGatePresetByName("  Comp_Up_Clean_P21 "); !ok {
 		t.Error("lookup should be case/space-insensitive")
 	}
@@ -79,7 +78,6 @@ func TestParseRegimeGateSelection(t *testing.T) {
 
 func TestApplyRegimeGateToRoot_RoundTripValidates(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
-
 	root := rootFromJSON(t, minimalConfigJSON)
 	if err := applyRegimeGateToRoot(root, "hl-momentum-eth", preset); err != nil {
 		t.Fatalf("applyRegimeGateToRoot: %v", err)
@@ -119,7 +117,6 @@ func TestApplyRegimeGateToRoot_RoundTripValidates(t *testing.T) {
 	if !found {
 		t.Fatal("target strategy missing after reload")
 	}
-
 	for _, sc := range cfg.Strategies {
 		if sc.ID == "sma-btc" && (sc.RegimeGateWindow != "" || len(sc.AllowedRegimes) != 0) {
 			t.Errorf("untouched strategy gained a gate: %+v", sc)
@@ -134,7 +131,6 @@ func TestApplyRegimeGateToRoot_RejectsIneligibleType(t *testing.T) {
 	if err == nil {
 		t.Fatal("gating a spot strategy must be refused")
 	}
-
 	if _, ok := root["regime"]; ok {
 		t.Error("regime block must not be added when the mutation is refused")
 	}
@@ -167,7 +163,6 @@ func TestApplyRegimeGateToRoot_IdempotentReapply(t *testing.T) {
 func TestEnsureRegimeGateWindow_RefusesConflictingExistingWindow(t *testing.T) {
 	preset, _ := regimeGatePresetByName(defaultRegimeGatePresetName)
 	root := rootFromJSON(t, minimalConfigJSON)
-
 	root["regime"] = json.RawMessage(`{"enabled":true,"windows":{"comp_p21":14}}`)
 	err := ensureRegimeGateWindow(root, preset)
 	if err == nil {
@@ -182,7 +177,6 @@ func TestEnsureRegimeGateWindow_AcceptsMatchingExistingWindow(t *testing.T) {
 	if err := ensureRegimeGateWindow(root, preset); err != nil {
 		t.Fatalf("matching existing window should be accepted: %v", err)
 	}
-
 	var regime map[string]json.RawMessage
 	_ = json.Unmarshal(root["regime"], &regime)
 	var enabled bool
@@ -293,11 +287,9 @@ func TestBuildRegimeGateConfirmMessage(t *testing.T) {
 
 func TestRegimeGateDoesNotBlockOpenPositionManagement(t *testing.T) {
 	allowed := []string{"trending_up_clean"}
-
 	if !regimeBlocksOpen(allowed, "ranging", 0, false) {
 		t.Fatal("a disallowed regime must block a fresh entry (posQty=0)")
 	}
-
 	if regimeBlocksOpen(allowed, "ranging", 1.5, false) {
 		t.Error("a newly-activated gate must not block management of an open position")
 	}

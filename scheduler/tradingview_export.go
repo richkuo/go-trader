@@ -251,7 +251,6 @@ func tradingViewSide(sc StrategyConfig, trade Trade) (string, error) {
 		if strings.EqualFold(trade.TradeType, "options") || strings.EqualFold(sc.Type, "options") {
 			return tradingViewOptionCloseSide(trade)
 		}
-
 		details := strings.ToLower(trade.Details)
 		switch {
 		case strings.Contains(details, "close long"):
@@ -284,7 +283,6 @@ func tradingViewOptionCloseSide(trade Trade) (string, error) {
 			return "sell", nil
 		}
 	}
-
 	return "sell", nil
 }
 
@@ -416,7 +414,6 @@ func splitCryptoPair(symbol string) (string, string, bool) {
 	parts := strings.FieldsFunc(strings.ToUpper(strings.TrimSpace(symbol)), func(r rune) bool {
 		return r == '/' || r == '-' || r == '_' || r == ' '
 	})
-
 	filtered := parts[:0]
 	for _, part := range parts {
 		if part != "" && part != "SWAP" && part != "PERP" && part != "PERPS" {

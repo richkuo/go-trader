@@ -112,7 +112,6 @@ func TestPlanTradeLedgerForStrategy_MigrationOnlyPreservesNetSum(t *testing.T) {
 	if math.Abs(c.NewFee-modeledFee) > 1e-9 {
 		t.Errorf("NewFee = %v, want modeled %v", c.NewFee, modeledFee)
 	}
-
 	if math.Abs((c.NewPnL-c.NewFee)-95) > 1e-9 {
 		t.Errorf("net effect NewPnL-NewFee = %v, want 95 (migration must not move money)", c.NewPnL-c.NewFee)
 	}

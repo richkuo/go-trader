@@ -153,19 +153,16 @@ func makeTestState() *AppState {
 		},
 		PortfolioRisk: PortfolioRiskState{
 			PeakValue: 2050, CurrentDrawdownPct: 1.5, CurrentMarginDrawdownPct: 18.7,
-			KillSwitchActive:       false,
-			WarningSent:            true,
-			WarnBandEnteredAt:      now.Add(-20 * time.Minute),
-			LastWarningEquityDDPct: 1.5,
-			LastWarningMarginDDPct: 18.7,
-			WarningEquityDeltaPct:  0.3,
-			WarningMarginDeltaPct:  -0.2,
-
+			KillSwitchActive:           false,
+			WarningSent:                true,
+			WarnBandEnteredAt:          now.Add(-20 * time.Minute),
+			LastWarningEquityDDPct:     1.5,
+			LastWarningMarginDDPct:     18.7,
+			WarningEquityDeltaPct:      0.3,
+			WarningMarginDeltaPct:      -0.2,
 			ManualMarkBasisRebaselined: true,
-
 			DrawdownReadingSubstituted: true,
-
-			UntrustedOverLimitSince: now.Add(-7 * time.Minute),
+			UntrustedOverLimitSince:    now.Add(-7 * time.Minute),
 			Events: []KillSwitchEvent{
 				{Timestamp: now.Add(-3 * time.Hour), Type: "warning", Source: "margin", DrawdownPct: 18.7, PortfolioValue: 1950, PeakValue: 2050, Details: "approaching threshold"},
 			},
@@ -380,7 +377,6 @@ func TestSaveState_KillSwitchEventsCapped(t *testing.T) {
 		CycleCount: 1,
 		Strategies: make(map[string]*StrategyState),
 	}
-
 	for i := 0; i < 60; i++ {
 		state.PortfolioRisk.Events = append(state.PortfolioRisk.Events, KillSwitchEvent{
 			Timestamp: now.Add(time.Duration(i) * time.Minute), Type: "warning", DrawdownPct: float64(i),
@@ -449,7 +445,6 @@ func TestQueryTradeHistory_NoFilter(t *testing.T) {
 	if len(trades) != 2 {
 		t.Errorf("trades len = %d, want 2", len(trades))
 	}
-
 	if len(trades) >= 2 && trades[0].Side != "sell" {
 		t.Errorf("first trade should be most recent (sell), got %q", trades[0].Side)
 	}
@@ -518,7 +513,6 @@ func TestQueryTradeHistory_Pagination(t *testing.T) {
 			},
 		},
 	}
-
 	for i := 0; i < 10; i++ {
 		state.Strategies["test"].TradeHistory = append(state.Strategies["test"].TradeHistory,
 			Trade{Timestamp: now.Add(time.Duration(i) * time.Minute), StrategyID: "test", Symbol: "BTC", Side: "buy", Quantity: 1, Price: float64(100 + i), Value: float64(100 + i)},
@@ -598,7 +592,6 @@ func TestQueryTradeHistory_LimitClamped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryTradeHistory: %v", err)
 	}
-
 	if len(trades) != 2 {
 		t.Errorf("trades len = %d, want 2", len(trades))
 	}
@@ -883,7 +876,6 @@ func TestSaveLoadState_ATRMethodAtOpenRoundTrip(t *testing.T) {
 				Cash: 1000, InitialCapital: 1000,
 				Positions: map[string]*Position{
 					"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 3000, Side: "long", OpenedAt: now, ATRMethodAtOpen: ATRMethodWilder},
-
 					"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 50000, Side: "long", OpenedAt: now},
 				},
 				TradeHistory: []Trade{},
@@ -1089,7 +1081,6 @@ func TestQueryTradeHistory_PositionIDRoundTripAndLegacyNull(t *testing.T) {
 }
 
 func TestMigrateSchema_AddsExchangeColumns(t *testing.T) {
-
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -2084,11 +2075,9 @@ func TestSaveAndLoadDB_LegacyPendingHLJSON_MigratesOnLoad(t *testing.T) {
 
 func TestMigrateSchema_PendingCircuitClosesColumn_Idempotent(t *testing.T) {
 	db := openTestDB(t)
-
 	if err := db.migrateSchema(); err != nil {
 		t.Fatalf("second migrateSchema: %v", err)
 	}
-
 	if err := db.migrateSchema(); err != nil {
 		t.Fatalf("third migrateSchema: %v", err)
 	}

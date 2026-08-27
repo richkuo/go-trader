@@ -79,7 +79,6 @@ func ratchetCloseDefaultGroup(label string) (string, bool) {
 	case "ranging_quiet", "ranging_volatile", "ranging_directional":
 		return l, true
 	case "ranging_directional_up", "ranging_directional_down":
-
 		return "ranging_directional", true
 	case "ranging":
 		return "ranging_quiet", true
@@ -201,7 +200,6 @@ func trailingRatchetTiersForRegime(sc StrategyConfig, regime string) []trailingR
 		}
 		raw, ok := closeTierListParam(ref.Params)
 		if !ok {
-
 			if name == trailingTPRatchetRegimeCloseName {
 				return defaultTrailingRatchetTiersForRegime(regime)
 			}
@@ -215,7 +213,6 @@ func trailingRatchetTiersForRegime(sc StrategyConfig, regime string) []trailingR
 			key := strings.TrimSpace(regime)
 			block, ok := table[key]
 			if !ok {
-
 				if regimeDirectionalSubs[key] {
 					block, ok = table[regimeDirectionalBare]
 				}
@@ -249,7 +246,6 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 	if sc.Platform != "hyperliquid" || (sc.Type != "perps" && sc.Type != "manual") {
 		errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet* is HL perps/manual only", prefix))
 	}
-
 	regimeVariant := false
 	for _, ref := range sc.closeRefs() {
 		if strings.ToLower(strings.TrimSpace(ref.Name)) == trailingTPRatchetRegimeCloseName {
@@ -288,7 +284,6 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 	if sc.StopLossATRRegime.IsConfigured() {
 		errs = append(errs, fmt.Sprintf("%s: trailing_tp_ratchet* cannot combine with stop_loss_atr_regime", prefix))
 	}
-
 	scalarInitialTrail := 0.0
 	if !regimeVariant && sc.TrailingStopATRMult != nil {
 		scalarInitialTrail = *sc.TrailingStopATRMult
@@ -309,7 +304,6 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 		sub := fmt.Sprintf("%s.close_strategy(%s)", prefix, ref.Name)
 		name := strings.ToLower(strings.TrimSpace(ref.Name))
 		isRegime := name == trailingTPRatchetRegimeCloseName
-
 		for k := range ref.Params {
 			switch k {
 			case "tp_tiers", "use_defaults":
@@ -324,7 +318,6 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 		}
 		raw, hasTiers := closeTierListParam(ref.Params)
 		if !hasTiers {
-
 			if isRegime {
 				for _, key := range labels {
 					def := defaultTrailingRatchetTiersForRegime(key)
@@ -355,7 +348,6 @@ func validateTrailingTPRatchetClose(sc StrategyConfig, labels []string, regimeEn
 			for _, key := range labels {
 				block, ok := table[key]
 				if !ok {
-
 					if regimeLabelFamilyCovered(key, bareDirectional) {
 						continue
 					}
@@ -440,7 +432,6 @@ func effectiveTrailingRatchetMult(pos *Position, sc StrategyConfig) float64 {
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		return *sc.TrailingStopATRMult
 	}
-
 	if sc.TrailingStopATRRegime != nil && !sc.TrailingStopATRRegime.IsZero() && pos != nil {
 		if v, ok := resolveRegimeATR(*sc.TrailingStopATRRegime, protectionATRRegimeLabel(pos, sc)); ok {
 			return v
@@ -499,7 +490,6 @@ func applyTrailingTPRatchetToPosition(sc StrategyConfig, pos *Position, symbol s
 	if len(tiers) == 0 {
 		return false, nil
 	}
-
 	anchor := pos.riskAnchorPrice()
 	profitDistance := mark - anchor
 	if side == "short" {
@@ -539,7 +529,6 @@ func buildRatchetTriggerAlert(sc StrategyConfig, pos *Position, symbol, side, re
 	if side == "short" {
 		profitDistance = anchor - mark
 	}
-
 	hwm := pos.StopLossHighWaterPx
 	if side == "long" {
 		if hwm <= 0 || mark > hwm {

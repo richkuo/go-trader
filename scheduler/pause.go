@@ -5,7 +5,6 @@ func pausedBlocksSignal(signal int, closeFraction, posQty float64, posSide strin
 		return false
 	}
 	if posQty <= 0 {
-
 		return true
 	}
 	if closeFraction > 0 {

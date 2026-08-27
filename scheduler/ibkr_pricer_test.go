@@ -47,7 +47,6 @@ func TestStdNormPDF(t *testing.T) {
 }
 
 func TestBsPriceCallBasic(t *testing.T) {
-
 	S := 50000.0
 	K := 50000.0
 	T := 1.0
@@ -59,19 +58,15 @@ func TestBsPriceCallBasic(t *testing.T) {
 	if price <= 0 {
 		t.Errorf("call price should be > 0, got %g", price)
 	}
-
 	if delta < 0.4 || delta > 0.8 {
 		t.Errorf("ATM call delta = %g, expected ~0.5-0.7", delta)
 	}
-
 	if gamma <= 0 {
 		t.Errorf("gamma should be > 0, got %g", gamma)
 	}
-
 	if vega <= 0 {
 		t.Errorf("vega should be > 0, got %g", vega)
 	}
-
 	if theta >= 0 {
 		t.Errorf("theta should be < 0, got %g", theta)
 	}
@@ -89,14 +84,12 @@ func TestBsPricePutBasic(t *testing.T) {
 	if price <= 0 {
 		t.Errorf("put price should be > 0, got %g", price)
 	}
-
 	if delta >= 0 {
 		t.Errorf("put delta should be < 0, got %g", delta)
 	}
 }
 
 func TestBsPriceZeroInputs(t *testing.T) {
-
 	cases := []struct {
 		name              string
 		S, K, T, r, sigma float64

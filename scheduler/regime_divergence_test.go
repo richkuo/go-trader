@@ -69,7 +69,6 @@ func TestClassifyRegimeDivergence_HardOppositeDirections(t *testing.T) {
 }
 
 func TestClassifyRegimeDivergence_TrustMedium(t *testing.T) {
-
 	r := classifyRegimeDivergence("trending_up_clean", "trending_down", 0, 0, onDivergenceTrustMedium)
 	if r.Kind != DivergenceHard {
 		t.Fatalf("expected hard, got %q", r.Kind)
@@ -96,7 +95,6 @@ func TestClassifyRegimeDivergence_AlertOnly(t *testing.T) {
 }
 
 func TestClassifyRegimeDivergence_RangingDirectionalSign(t *testing.T) {
-
 	r := classifyRegimeDivergence("ranging_directional", "trending_down", 0.05, 0, onDivergenceTrustShort)
 	if r.Kind != DivergenceHard {
 		t.Fatalf("positive return_eff: expected hard, got %q", r.Kind)
@@ -117,17 +115,14 @@ func TestClassifyRegimeDivergence_RangingDirectionalSign(t *testing.T) {
 }
 
 func TestClassifyRegimeDivergence_RangingDirectionalExplicit(t *testing.T) {
-
 	up := classifyRegimeDivergence("ranging_directional_up", "trending_down", 0, 0, onDivergenceTrustShort)
 	if up.Kind != DivergenceHard || up.OverrideDir != DirectionLong {
 		t.Fatalf("ranging_directional_up: want hard/long, got %q/%q", up.Kind, up.OverrideDir)
 	}
-
 	down := classifyRegimeDivergence("ranging_directional_down", "trending_down", 0.99, 0, onDivergenceTrustShort)
 	if down.Kind != DivergenceNone {
 		t.Fatalf("ranging_directional_down vs trending_down: want none, got %q", down.Kind)
 	}
-
 	downVsUp := classifyRegimeDivergence("ranging_directional_down", "trending_up", 0, 0, onDivergenceTrustShort)
 	if downVsUp.Kind != DivergenceHard || downVsUp.OverrideDir != DirectionShort {
 		t.Fatalf("ranging_directional_down vs trending_up: want hard/short, got %q/%q", downVsUp.Kind, downVsUp.OverrideDir)
@@ -230,7 +225,6 @@ func TestRegimeWindowDivergence_IsConfigured_IsZero(t *testing.T) {
 	if !d.IsConfigured() {
 		t.Error("configured block: IsConfigured should be true")
 	}
-
 	if !d.IsZero() {
 		t.Error("before ResolveRaw: IsZero should be true (raw only)")
 	}
@@ -268,7 +262,6 @@ func TestRegimeWindowDivergence_EqualForReload(t *testing.T) {
 }
 
 func TestApplyRegimeDivergenceOverride_MutatesFlatSC(t *testing.T) {
-
 	d := &RegimeWindowDivergence{ShortWindow: "short", MediumWindow: "medium", OnDivergence: onDivergenceTrustShort}
 	sc := &StrategyConfig{Direction: DirectionBoth, InvertSignal: true}
 	sc.RegimeWindowDivergence = d
@@ -293,7 +286,6 @@ func TestApplyRegimeDivergenceOverride_MutatesFlatSC(t *testing.T) {
 }
 
 func TestApplyRegimeDivergenceOverride_DoesNotMutateWhenOpen(t *testing.T) {
-
 	d := &RegimeWindowDivergence{ShortWindow: "short", MediumWindow: "medium", OnDivergence: onDivergenceTrustShort}
 	sc := &StrategyConfig{Direction: DirectionBoth}
 	sc.RegimeWindowDivergence = d
@@ -309,7 +301,6 @@ func TestApplyRegimeDivergenceOverride_DoesNotMutateWhenOpen(t *testing.T) {
 	if result.Kind != DivergenceHard {
 		t.Fatalf("expected hard divergence detected, got %q", result.Kind)
 	}
-
 	if sc.Direction != DirectionBoth {
 		t.Errorf("open position: sc.Direction should be unchanged, got %q", sc.Direction)
 	}

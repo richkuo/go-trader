@@ -132,7 +132,6 @@ func MigrateConfig(configPath string, fieldValues map[string]string, cfg *Config
 	if oldVer != 0 && oldVer < MinSupportedConfigVersion {
 		return errUnsupportedConfigVersion(oldVer)
 	}
-
 	if oldVer == 0 {
 		if key, found := versionlessConfigRemovedTranslationKey(data); found {
 			return errVersionlessRemovedTranslationKey(key)
@@ -234,11 +233,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	fields := NewFieldsSince(cfg.ConfigVersion)
 
 	if len(fields) == 0 {
-
 		if err := MigrateConfig(configPath, nil, cfg); err != nil {
 			fmt.Printf("[migration] Failed to bump config version: %v\n", err)
 		}
-
 		if cfg.ConfigVersion < 14 {
 			if notifier != nil && notifier.HasOwner() {
 				notifier.SendOwnerDM(v14DeprecationNotice)
@@ -246,7 +243,6 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 				fmt.Printf("[migration] %s\n", v14DeprecationNotice)
 			}
 		}
-
 		if cfg.ConfigVersion < 17 {
 			if notifier != nil && notifier.HasOwner() {
 				notifier.SendOwnerDM(v17ATRMethodNotice)
@@ -260,7 +256,6 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	values := make(map[string]string)
 
 	if notifier == nil || !notifier.HasOwner() {
-
 		fmt.Printf("[migration] %d new config field(s) — applying defaults (no DM configured)\n", len(fields))
 		for _, f := range fields {
 			if f.Default != "" {
@@ -311,11 +306,9 @@ func runConfigMigrationDM(cfg *Config, notifier *MultiNotifier, configPath strin
 	if cfg.ConfigVersion < 14 {
 		notifier.SendOwnerDM(v14DeprecationNotice)
 	}
-
 	if cfg.ConfigVersion < 15 {
 		notifier.SendOwnerDM(v15DeprecationNotice)
 	}
-
 	if cfg.ConfigVersion < 17 {
 		notifier.SendOwnerDM(v17ATRMethodNotice)
 	}
@@ -332,9 +325,8 @@ func needsV13SchemaMigration(data []byte) bool {
 }
 
 var closeStrategyOwnedKeys = map[string]map[string]struct{}{
-	"tiered_tp_atr":      {"tp_tiers": {}, "tiers": {}},
-	"tiered_tp_atr_live": {"tp_tiers": {}, "tiers": {}, "atr_source": {}},
-
+	"tiered_tp_atr":                     {"tp_tiers": {}, "tiers": {}},
+	"tiered_tp_atr_live":                {"tp_tiers": {}, "tiers": {}, "atr_source": {}},
 	"tiered_tp_atr_regime":              {"tp_tiers": {}, "tiers": {}, "use_defaults": {}, "sl_after": {}},
 	"tiered_tp_atr_live_regime":         {"tp_tiers": {}, "tiers": {}, "use_defaults": {}, "atr_source": {}, "sl_after": {}},
 	"tiered_tp_atr_live_regime_dynamic": {"trend_regime": {}, "atr_source": {}, "regime_confirm_cycles": {}},
@@ -342,12 +334,10 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"trailing_tp_ratchet_regime":        {"tp_tiers": {}, "use_defaults": {}},
 	"tiered_tp_pct":                     {"tp_tiers": {}, "tiers": {}},
 	"tp_at_pct":                         {"pct": {}},
-
-	"time_stop":     {"max_bars": {}},
-	"atr_stop":      {"atr_mult": {}, "atr_source": {}},
-	"zscore_target": {"lookback": {}, "z_target": {}},
-
-	"avwap_stop": {"buffer_atr_mult": {}, "atr_source": {}},
+	"time_stop":                         {"max_bars": {}},
+	"atr_stop":                          {"atr_mult": {}, "atr_source": {}},
+	"zscore_target":                     {"lookback": {}, "z_target": {}},
+	"avwap_stop":                        {"buffer_atr_mult": {}, "atr_source": {}},
 }
 
 func migrateV14Direction(raw map[string]interface{}) {
@@ -361,18 +351,15 @@ func migrateV14Direction(raw map[string]interface{}) {
 			continue
 		}
 		legacyAllow, hadLegacy := sc["allow_shorts"]
-
 		delete(sc, "allow_shorts")
 		if !hadLegacy {
 			continue
 		}
-
 		switch stringFromJSON(sc["type"]) {
 		case "perps", "manual":
 		default:
 			continue
 		}
-
 		if existing := strictStringFromJSON(sc["direction"]); existing != "" {
 			continue
 		}

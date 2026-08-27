@@ -526,6 +526,7 @@ verify_cur_restart_pid() {
     fi
 }
 
+
 begin_phase preflight
 
 repo_root=$(git rev-parse --show-toplevel)

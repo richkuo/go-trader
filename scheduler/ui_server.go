@@ -269,15 +269,12 @@ func (ss *StatusServer) handleAPIStrategy(w http.ResponseWriter, r *http.Request
 			return
 		}
 		ss.handleAPIStrategySimulate(w, r, id)
-
 	case "pause":
 		ss.handleAPIStrategyPause(w, r, id)
 	case "notifications":
 		ss.handleAPIStrategyNotifications(w, r, id)
-
 	case "open", "add", "close", "force-close", "update-sl", "cancel-sl":
 		ss.handleAPIStrategyTradeAction(w, r, id, resource)
-
 	case "remove-strategy", "paper-to-live", "apply-regime-gate":
 		ss.handleAPIStrategyStructural(w, r, id, resource)
 	default:
@@ -607,7 +604,6 @@ func (ss *StatusServer) handleAPIStrategyEquity(w http.ResponseWriter, r *http.R
 	}
 
 	initCap := EffectiveInitialCapital(sc, &snapshot)
-
 	pv := displayStrategyValue(&snapshot, map[string]float64{})
 
 	var closed []ClosedPosition

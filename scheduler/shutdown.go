@@ -44,9 +44,7 @@ func runDrain() {
 	}()
 	select {
 	case <-done:
-
 	case <-time.After(shutdownDrainCap):
-
 		if shutdownSideEffectCancel != nil {
 			shutdownSideEffectCancel()
 		}

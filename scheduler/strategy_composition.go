@@ -18,18 +18,16 @@ type StrategyDecisionFields struct {
 }
 
 type PositionCtx struct {
-	Side              string
-	AvgCost           float64
-	Quantity          float64
-	InitialQuantity   float64
-	EntryATR          float64
-	Regime            string
-	DirectionalRegime string
-	RegimeWindows     map[string]string
-	Profile           string
-
-	DirectionCertifiedAtOpen bool
-
+	Side                           string
+	AvgCost                        float64
+	Quantity                       float64
+	InitialQuantity                float64
+	EntryATR                       float64
+	Regime                         string
+	DirectionalRegime              string
+	RegimeWindows                  map[string]string
+	Profile                        string
+	DirectionCertifiedAtOpen       bool
 	DirectionCertifiedStatesAtOpen map[string]string
 }
 
@@ -92,7 +90,6 @@ func buildStrategyRefsArg(sc StrategyConfig) ([]string, error) {
 	if openName != "" {
 		payload["open"] = StrategyRef{Name: openName, Params: sc.OpenStrategy.Params}
 	}
-
 	if refs := sc.closeRefs(); len(refs) > 0 {
 		payload["closes"] = refs
 	}
@@ -138,7 +135,6 @@ func appendStrategyRegimeWindowArgs(args []string, sc StrategyConfig, regime *Re
 	if key := resolveStrategyRegimeWindow(sc, "atr", regime); key != "" && key != regimeWindowDefaultKey {
 		out = append(out, "--regime-atr-window", key)
 	}
-
 	return out
 }
 
@@ -154,17 +150,16 @@ func positionCtxFromPosition(pos *Position) PositionCtx {
 		return PositionCtx{}
 	}
 	return PositionCtx{
-		Side:                     pos.Side,
-		AvgCost:                  pos.AvgCost,
-		Quantity:                 pos.Quantity,
-		InitialQuantity:          pos.InitialQuantity,
-		EntryATR:                 pos.EntryATR,
-		Regime:                   pos.Regime,
-		DirectionalRegime:        pos.Regime,
-		RegimeWindows:            cloneStringMap(pos.RegimeWindows),
-		Profile:                  pos.OpenProfile,
-		DirectionCertifiedAtOpen: pos.DirectionCertifiedAtOpen,
-
+		Side:                           pos.Side,
+		AvgCost:                        pos.AvgCost,
+		Quantity:                       pos.Quantity,
+		InitialQuantity:                pos.InitialQuantity,
+		EntryATR:                       pos.EntryATR,
+		Regime:                         pos.Regime,
+		DirectionalRegime:              pos.Regime,
+		RegimeWindows:                  cloneStringMap(pos.RegimeWindows),
+		Profile:                        pos.OpenProfile,
+		DirectionCertifiedAtOpen:       pos.DirectionCertifiedAtOpen,
 		DirectionCertifiedStatesAtOpen: cloneStringMap(pos.DirectionCertifiedStatesAtOpen),
 	}
 }

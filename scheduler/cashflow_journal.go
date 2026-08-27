@@ -289,7 +289,6 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult, c
 			coin := strings.ToUpper(strings.TrimSpace(f.Coin))
 			closedPnl := parseHLFloat(f.ClosedPnl)
 			fee := parseHLFloat(f.Fee)
-
 			kind := "fill"
 			delta := cashflowFillSettledDelta(closedPnl, fee)
 			if hlFillIsSpot(coin) {
@@ -320,7 +319,6 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult, c
 			if ev.Time > cutoffMs {
 				continue
 			}
-
 			amount := parseHLFloat(ev.Delta.USDC)
 			coin := strings.ToUpper(strings.TrimSpace(ev.Delta.Coin))
 			if err := sdb.InsertCashflowJournalEntry(key.Platform, key.Account, ev.Time, "funding", amount, coin, 0, 0, cashflowFundingDedupID(ev)); err != nil {
@@ -349,7 +347,6 @@ func ingestCashflowJournalEvents(sdb *StateDB, res cashflowJournalFetchResult, c
 			}
 			amount, known := signedPerpFlowUSD(ev.Delta, key.Account)
 			if !known {
-
 				st.Incomplete = true
 				fmt.Printf("[WARN] cashflow-journal %s: unmapped ledger delta type %q (hash %s) — recorded with $0 effect, journal marked incomplete\n",
 					sharedWalletKeyLabel(key), ev.Delta.Type, ev.Hash)
@@ -407,7 +404,6 @@ func reconcileCashflowJournal(sdb *StateDB, key SharedWalletKey, accountValue, c
 	rec.DeltaUPnL = res.CurrentUPnL - st.BaselineUPnL
 	rec.ExpectedEquity = cashflowJournalExpectedEquity(st.BaselineAccountValue, st.BaselineUPnL, settled, res.CurrentUPnL)
 	rec.Drift = res.AccountValue - rec.ExpectedEquity
-
 	rec.Usable = res.FillsFetched && res.FundingFetched && res.TransfersFetched && !st.Incomplete
 	return rec
 }
@@ -477,7 +473,6 @@ func (r *cashflowJournalBasisRegistry) get(label string) string {
 var cashflowJournalBases = &cashflowJournalBasisRegistry{}
 
 func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key SharedWalletKey, rec *cashflowJournalReconcile, enabled bool) {
-
 	if key.Platform != "hyperliquid" {
 		return
 	}
@@ -504,7 +499,6 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 
 	ledgerNote := "n/a"
 	if ledger != nil {
-
 		ledgerNote = fmt.Sprintf("raw $%+.2f / post-baseline $%+.2f", ledger.Balance-ledger.MemberSum, ledger.Drift)
 	}
 	var switchNote, basis string
@@ -537,21 +531,17 @@ func applyCashflowJournalDriftBasis(results []sharedWalletDriftResult, key Share
 	}
 	if !rec.Usable {
 		if rec.Incomplete {
-
 			return
 		}
 		if suppressPending {
-
 			ledger.JournalPending = true
 			return
 		}
-
 		return
 	}
 	ledger.Drift = rec.Drift
 	ledger.Basis = driftBasisJournal
 	ledger.ExpectedEquity = rec.ExpectedEquity
-
 }
 
 func sumHLAccountUPnL(positions []HLPosition) float64 {

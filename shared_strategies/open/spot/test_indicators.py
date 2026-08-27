@@ -1,24 +1,32 @@
+
 import importlib.util
 import numpy as np
 import pandas as pd
 import pytest
+
 import sys, os
+
 _spot_dir = os.path.dirname(os.path.abspath(__file__))
 _shared_dir = os.path.join(_spot_dir, '..')
 sys.path.insert(0, _spot_dir)
 sys.path.insert(0, _shared_dir)
-_spec = importlib.util.spec_from_file_location('spot_indicators', os.path.join(_spot_dir, 'indicators.py'))
+
+_spec = importlib.util.spec_from_file_location(
+    "spot_indicators", os.path.join(_spot_dir, "indicators.py"))
 _imod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_imod)
+
 sma = _imod.sma
 ema = _imod.ema
 sma_crossover = _imod.sma_crossover
 rsi = _imod.rsi
 bollinger_bands = _imod.bollinger_bands
+
 from conftest import make_ohlcv
 
-class TestSMA:
 
+
+class TestSMA:
     def test_basic_calculation(self):
         s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
         result = sma(s, 3)
@@ -43,8 +51,9 @@ class TestSMA:
         result = sma(s, 1)
         assert result.iloc[0] == pytest.approx(42.0)
 
-class TestEMA:
 
+
+class TestEMA:
     def test_basic_calculation(self):
         s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
         result = ema(s, 3)
@@ -63,100 +72,107 @@ class TestEMA:
         sma_result = sma(s, 10)
         assert ema_result.iloc[21] > sma_result.iloc[21]
 
-class TestSMACrossover:
 
+
+class TestSMACrossover:
     def test_bullish_crossover(self):
         closes = list(np.linspace(120, 90, 60)) + list(np.linspace(90, 130, 60))
         df = make_ohlcv(closes)
         result = sma_crossover(df, fast_period=10, slow_period=30)
-        assert 'signal' in result.columns
-        buy_signals = result[result['signal'] == 1]
+        assert "signal" in result.columns
+        buy_signals = result[result["signal"] == 1]
         assert len(buy_signals) >= 1
 
     def test_bearish_crossover(self):
         closes = list(np.linspace(90, 130, 60)) + list(np.linspace(130, 80, 60))
         df = make_ohlcv(closes)
         result = sma_crossover(df, fast_period=10, slow_period=30)
-        sell_signals = result[result['signal'] == -1]
+        sell_signals = result[result["signal"] == -1]
         assert len(sell_signals) >= 1
 
     def test_flat_data_no_crossovers(self):
         df = make_ohlcv([100.0] * 100, noise=0)
         result = sma_crossover(df, fast_period=10, slow_period=30)
-        signals = result['signal'].dropna()
+        signals = result["signal"].dropna()
         real_signals = signals[(signals == 1) | (signals == -1)]
         assert len(real_signals) <= 1
 
     def test_insufficient_data(self):
         df = make_ohlcv([100.0, 101.0, 99.0])
         result = sma_crossover(df, fast_period=20, slow_period=50)
-        valid_signals = result['signal'].dropna()
+        valid_signals = result["signal"].dropna()
         assert (valid_signals.abs() <= 1).all()
 
     def test_output_columns(self):
         df = make_ohlcv(list(range(100, 200)))
         result = sma_crossover(df)
-        assert 'sma_fast' in result.columns
-        assert 'sma_slow' in result.columns
-        assert 'signal' in result.columns
+        assert "sma_fast" in result.columns
+        assert "sma_slow" in result.columns
+        assert "signal" in result.columns
+
+
 
 class TestRSI:
-
     def test_buy_signal_on_oversold_recovery(self):
         closes = list(np.linspace(100, 100, 20)) + list(np.linspace(100, 70, 15)) + list(np.linspace(70, 90, 30))
         df = make_ohlcv(closes)
         result = rsi(df, period=14, overbought=70, oversold=30)
-        assert 'rsi' in result.columns
-        assert 'signal' in result.columns
-        valid_rsi = result['rsi'].dropna()
+        assert "rsi" in result.columns
+        assert "signal" in result.columns
+        valid_rsi = result["rsi"].dropna()
         assert (valid_rsi >= 0).all() and (valid_rsi <= 100).all()
 
     def test_sell_signal_on_overbought_drop(self):
         closes = list(np.linspace(100, 100, 20)) + list(np.linspace(100, 150, 15)) + list(np.linspace(150, 130, 30))
         df = make_ohlcv(closes)
         result = rsi(df, period=14, overbought=70, oversold=30)
-        sell_signals = result[result['signal'] == -1]
+        sell_signals = result[result["signal"] == -1]
         assert isinstance(sell_signals, pd.DataFrame)
 
     def test_flat_data_no_signals(self):
         df = make_ohlcv([100.0] * 50, noise=0)
         result = rsi(df, period=14)
-        signals = result['signal']
+        signals = result["signal"]
         assert (signals == 0).all() or signals.isna().all()
 
     def test_insufficient_data(self):
         df = make_ohlcv([100.0, 101.0])
         result = rsi(df, period=14)
-        assert (result['signal'] == 0).all()
+        assert (result["signal"] == 0).all()
+
+
 
 class TestBollingerBands:
-
     def test_output_columns(self):
         df = make_ohlcv(list(range(80, 130)))
         result = bollinger_bands(df, period=20, num_std=2.0)
-        for col in ['bb_middle', 'bb_upper', 'bb_lower', 'bb_width', 'signal']:
+        for col in ["bb_middle", "bb_upper", "bb_lower", "bb_width", "signal"]:
             assert col in result.columns
 
     def test_upper_above_middle_above_lower(self):
         closes = list(np.linspace(90, 110, 50)) + list(np.linspace(110, 90, 50))
         df = make_ohlcv(closes)
         result = bollinger_bands(df, period=20, num_std=2.0)
-        valid = result.dropna(subset=['bb_upper', 'bb_lower'])
-        assert (valid['bb_upper'] >= valid['bb_middle']).all()
-        assert (valid['bb_middle'] >= valid['bb_lower']).all()
+        valid = result.dropna(subset=["bb_upper", "bb_lower"])
+        assert (valid["bb_upper"] >= valid["bb_middle"]).all()
+        assert (valid["bb_middle"] >= valid["bb_lower"]).all()
 
     def test_buy_signal_at_lower_band(self):
-        closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 80, 15)) + list(np.linspace(80, 95, 15))
+        closes = (
+            list(np.linspace(100, 100, 30)) +
+            list(np.linspace(100, 80, 15)) +
+            list(np.linspace(80, 95, 15))
+        )
         df = make_ohlcv(closes)
         result = bollinger_bands(df, period=20, num_std=2.0)
-        assert set(result['signal'].unique()).issubset({-1, 0, 1})
+        assert set(result["signal"].unique()).issubset({-1, 0, 1})
 
     def test_flat_data_no_signals(self):
         df = make_ohlcv([100.0] * 50, noise=0)
         result = bollinger_bands(df, period=20, num_std=2.0)
-        assert (result['signal'] == 0).all()
+        assert (result["signal"] == 0).all()
 
     def test_insufficient_data(self):
         df = make_ohlcv([100.0] * 5)
         result = bollinger_bands(df, period=20, num_std=2.0)
-        assert (result['signal'] == 0).all()
+        assert (result["signal"] == 0).all()

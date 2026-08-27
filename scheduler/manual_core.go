@@ -57,14 +57,13 @@ func manualCoreExitCode(err error) int {
 }
 
 type manualStateView struct {
-	KillSwitch     bool
-	HasStrategy    bool
-	PendingCBClose bool
-	DailyLossHold  bool
-	DailyLossNote  string
-	NotionalHold   bool
-	NotionalNote   string
-
+	KillSwitch       bool
+	HasStrategy      bool
+	PendingCBClose   bool
+	DailyLossHold    bool
+	DailyLossNote    string
+	NotionalHold     bool
+	NotionalNote     string
 	ExposureCap      ExposureCapStatus
 	ExposureCapAsset string
 	Pos              *Position
@@ -72,18 +71,15 @@ type manualStateView struct {
 
 func manualStateViewFromState(cfg *Config, state *AppState, strategyID, symbol string) manualStateView {
 	v := manualStateView{KillSwitch: state.PortfolioRisk.KillSwitchActive}
-
 	if cfg != nil {
 		if st := evaluateDailyLossLimit(cfg.PortfolioRisk, state.Strategies, cfg.Strategies, time.Now().UTC()); st.Tripped {
 			v.DailyLossHold = true
 			v.DailyLossNote = dailyLossHoldDetail(st)
 		}
-
 		if held, detail := evaluateNotionalCapHold(cfg.PortfolioRisk, state.Strategies, nil); held {
 			v.NotionalHold = true
 			v.NotionalNote = detail
 		}
-
 		v.ExposureCap = manualExposureCapStatus(cfg, state)
 		for _, sc := range cfg.Strategies {
 			if sc.ID == strategyID {
@@ -305,7 +301,6 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 		if err := d.stateDB.DeletePendingLimitOrder(o.ID); err != nil {
 			return 0, 0, manualFailf("error: cancelled limit order for %s/%s (oid=%d) is off-book but the queue row could not be cleared (%v) — refusing %s so the scheduler can finalize it safely", strategyID, o.Symbol, o.OrderOID, err, cmdName)
 		}
-
 		fillPx := st.AvgPx
 		if fillPx <= 0 {
 			fillPx = o.LimitPrice
@@ -415,11 +410,9 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 			if view.DailyLossHold {
 				return res, manualFailf("error: %s — manual-open blocked until UTC rollover (closes and SL edits are unaffected)", view.DailyLossNote)
 			}
-
 			if view.NotionalHold {
 				return res, manualFailf("error: %s — manual-open blocked (closes and SL edits are unaffected)", view.NotionalNote)
 			}
-
 			if blocked, why := exposureCapManualEntryBlock(view.ExposureCap, view.ExposureCapAsset, side); blocked {
 				return res, manualFailf("error: %s — manual-open (%s) blocked (closes and SL edits are unaffected)", why, side)
 			}
@@ -430,7 +423,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	}
 
 	if !in.RecordOnly && !in.DryRun {
-
 		unlock, lockErr := d.acquireManualActionLock()
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
@@ -483,13 +475,11 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	}
 
 	if in.RecordOnly {
-
 		fillQty = in.Size
 		resolvedFillPrice = in.FillPrice
 		if entryATR > 0 && entryATR > 0.5*resolvedFillPrice {
 			return res, manualFailf("error: --atr %.4f exceeds 50%% of fill price %.4f (plausibility guard)", entryATR, resolvedFillPrice)
 		}
-
 		if in.SLATRMult > 0 || in.SLPct > 0 || (sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0) {
 			res.errf("warning: --record-only does not arm a stop-loss trigger automatically — place the SL manually on the HL UI")
 		}
@@ -542,7 +532,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	ratchetFallbackNormalizePending := false
 	if effectiveATRMult == 0 && !in.RecordOnly && strategyUsesTrailingTPRatchetClose(sc) &&
 		sc.TrailingStopATRRegime != nil && sc.TrailingStopATRRegime.IsConfigured() {
-
 		label := resolveManualRatchetRegimeLabel(sc, cfg, notifier)
 		mult, fellBack := manualRatchetOpeningTrailOrFallback(sc.TrailingStopATRRegime, label, cfg.resolveManualRatchetFallbackATRMult())
 		effectiveATRMult = mult
@@ -641,7 +630,6 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 		CreatedAt:                       time.Now().UTC(),
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
-
 		if in.RecordOnly {
 			return res, manualFailf("error queuing action: %v", err)
 		}
@@ -715,11 +703,9 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	if pos == nil {
 		return res, manualFailf("error: no open position for %s/%s; open one first with manual-open", strategyID, sc.Symbol)
 	}
-
 	if view.NotionalHold {
 		return res, manualFailf("error: %s — manual-add blocked (closes and SL edits are unaffected)", view.NotionalNote)
 	}
-
 	addDir := "long"
 	if pos.Side == "short" {
 		addDir = "short"
@@ -732,13 +718,11 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	}
 
 	if !in.RecordOnly && !in.DryRun {
-
 		unlock, lockErr := d.acquireManualActionLock()
 		if lockErr != nil {
 			return res, manualFailf("error: %v — refusing to avoid double-firing an on-chain order", lockErr)
 		}
 		defer unlock()
-
 		if _, _, err := clearRestingLimitRemainderForPositionAction(d, res, sc, "manual-add", strategyID, sc.Symbol); err != nil {
 			return res, err
 		}
@@ -780,7 +764,6 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 		fillQty = in.Size
 		resolvedFillPrice = in.FillPrice
 	} else {
-
 		execResult, execStderr, execErr := d.execute(
 			sc.Script, sc.Symbol, addSide,
 			resolvedOrderSize,
@@ -881,9 +864,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	if err != nil {
 		return res, err
 	}
-
 	if clearedQty > 0 {
-
 		if clearedQty > pos.Quantity+limitFillEpsilon {
 			staleQty := pos.Quantity
 			pos.Quantity = clearedQty
@@ -894,7 +875,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 				strategyID, sc.Symbol, staleQty, pos.Quantity)
 		}
 	} else {
-
 		refreshed, rerr := d.loadState(strategyID, sc.Symbol)
 		if rerr != nil {
 			return res, manualFailf("Failed to re-load state: %v", rerr)
@@ -920,7 +900,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 			return res, manualFailf("error: --qty %.6f exceeds open position %.6f", in.Qty, pos.Quantity)
 		}
 		closeQty = in.Qty
-
 		if pos.Quantity-in.Qty > 0.0001 {
 			intentFullClose = false
 		}
@@ -964,7 +943,6 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	if execResult.Error != "" {
 		return res, manualFailf("error from HL: %s", execResult.Error)
 	}
-
 	if execResult.CancelStopLossError != "" {
 		res.errf("warning: manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers",
 			strategyID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
@@ -1228,7 +1206,6 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 			fraction = 1
 		}
 		closeQty = hPos.Quantity * fraction
-
 		fullClose = hPos.Quantity-closeQty <= 1e-9
 		if closeQty <= 1e-9 {
 			return
@@ -1295,9 +1272,8 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 		FillFee:         fill.Fee,
 		ExchangeOrderID: oid,
 		RealizedPnL:     pnl,
-
-		IsFullClose: hPos.Quantity-filled <= 1e-9,
-		CreatedAt:   time.Now().UTC(),
+		IsFullClose:     hPos.Quantity-filled <= 1e-9,
+		CreatedAt:       time.Now().UTC(),
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
 		res.errf("CRITICAL: the %s hedge leg was closed ON-CHAIN but queuing its bookkeeping row failed: %v — virtual state now overstates the hedge. Run the scheduler to reconcile.", hCoin, err)
@@ -1402,18 +1378,15 @@ func manualUpdateSLCore(d manualCoreDeps, sc StrategyConfig, in manualSLInputs) 
 		res.errf("SL update stderr: %s", slStderr)
 	}
 	if slErr != nil {
-
 		return res, manualFailf("error updating stop-loss: %v — the old stop-loss may have been cancelled without a replacement; verify protection on the HL UI before retrying.", slErr)
 	}
 	if slResult.Error != "" {
 		return res, manualFailf("error from HL: %s", slResult.Error)
 	}
 	if slResult.StopLossFilledImmediately {
-
 		return res, manualFailf("error: stop-loss filled immediately on placement — position closed on-chain; reconcile will adopt the close. Do not retry.")
 	}
 	if slResult.StopLossOID == 0 {
-
 		if slPlacementFailureLeftNaked(slResult.CancelStopLossSucceeded, pos.StopLossOID) {
 			return res, manualFailf("CRITICAL: stop-loss placement failed after the old order was removed (%s) — the position is now UNPROTECTED on-chain. Re-arm immediately (manual-update-sl) or close the position.", slResult.StopLossError)
 		}

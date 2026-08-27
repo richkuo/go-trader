@@ -331,7 +331,6 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 		ID:   "hl-triple-ema-eth",
 		Type: "perps",
 		Positions: map[string]*Position{
-
 			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -339,7 +338,6 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 		ID:   "hl-bidir-btc",
 		Type: "perps",
 		Positions: map[string]*Position{
-
 			"BTC": {Symbol: "BTC", Quantity: 0.1, AvgCost: 60000, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -347,7 +345,6 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 		ID:   "hl-bear-sol",
 		Type: "perps",
 		Positions: map[string]*Position{
-
 			"SOL": {Symbol: "SOL", Quantity: 1.0, AvgCost: 200, Side: "long", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -355,7 +352,6 @@ func TestValidatePerpsDirectionConfig(t *testing.T) {
 		ID:   "bn-sma-btc",
 		Type: "spot",
 		Positions: map[string]*Position{
-
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.01, AvgCost: 60000, Side: "long"},
 		},
 	}
@@ -438,7 +434,6 @@ func TestValidatePerpsDirectionConfig_LegacyAllowShortsFallthrough(t *testing.T)
 	}
 	cfg := &Config{
 		Strategies: []StrategyConfig{
-
 			{ID: "hl-legacy-eth", Type: "perps", Platform: "hyperliquid", AllowShorts: false},
 		},
 	}
@@ -508,7 +503,6 @@ func TestValidatePerpsDirectionConfig_RegimePolicyUncertifiedWarnsForMigration(t
 		ID:   "hl-mr-hype",
 		Type: "perps",
 		Positions: map[string]*Position{
-
 			"HYPE": {Symbol: "HYPE", Quantity: 1, Side: "short", Multiplier: 1, Leverage: 1},
 		},
 	}
@@ -712,7 +706,6 @@ func TestSaveStateWithDB_Error(t *testing.T) {
 }
 
 func TestNewStrategyState_ConfigInitialCapital(t *testing.T) {
-
 	cfg := StrategyConfig{
 		ID:             "hl-sma-btc",
 		Type:           "perps",
@@ -731,7 +724,6 @@ func TestNewStrategyState_ConfigInitialCapital(t *testing.T) {
 }
 
 func TestNewStrategyState_NoConfigInitialCapital(t *testing.T) {
-
 	cfg := StrategyConfig{
 		ID:             "hl-sma-btc",
 		Type:           "perps",

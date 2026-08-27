@@ -51,11 +51,9 @@ func newTopStepJournalKey() SharedWalletKey {
 }
 
 func TestValidatedTopStepEquity(t *testing.T) {
-
 	if eq, upnl, err := validatedTopStepEquity(50000.0, 12.5); err != nil || eq != 50000.0 || upnl != 12.5 {
 		t.Errorf("positive equity: got (%v,%v,%v), want (50000,12.5,nil)", eq, upnl, err)
 	}
-
 	for _, bad := range []float64{0, -1, math.NaN()} {
 		if _, _, err := validatedTopStepEquity(bad, 5.0); err == nil {
 			t.Errorf("equity %v must be treated as a fetch miss (error), got nil", bad)
@@ -107,7 +105,6 @@ func TestTopStepCashflowJournalIngestAndExpectedEquity(t *testing.T) {
 	}
 
 	snap := t0.Add(time.Minute)
-
 	res := fetchTopStepCashflowJournalEvents(db, key, 1023.2, 5.0, snap)
 	if !res.FillsFetched || res.Capped {
 		t.Fatalf("expected fills fetched, not capped: %+v", res)

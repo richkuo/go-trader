@@ -101,15 +101,12 @@ func TestCreateGitHubIssueErrorStatus(t *testing.T) {
 }
 
 func TestReportCommandIsOwnerDMGated(t *testing.T) {
-
 	if ok, _ := authorizeCommand("report-an-issue", "intruder", "", "owner"); ok {
 		t.Fatal("report must reject non-owner")
 	}
-
 	if ok, _ := authorizeCommand("report-an-issue", "owner", "guild1", "owner"); ok {
 		t.Fatal("report must reject guild context")
 	}
-
 	if ok, _ := authorizeCommand("report-an-issue", "owner", "", "owner"); !ok {
 		t.Fatal("owner DM should be allowed to report")
 	}

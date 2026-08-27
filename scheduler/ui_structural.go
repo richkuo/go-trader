@@ -118,7 +118,6 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 		if !ok {
 			return "", "", "", fmt.Errorf("strategy %q not found", strategyID)
 		}
-
 		if isOnlyStrategyOnDisk(ss.configPath, sc.ID) {
 			return "", "", "", fmt.Errorf("refusing to remove the only strategy %q — a config must keep at least one strategy", sc.ID)
 		}
@@ -148,7 +147,6 @@ func (ss *StatusServer) confirmStructuralAction(action, strategyID string, param
 			}
 			return "", "", "", fmt.Errorf("strategy %q has no --mode=paper arg to flip (only perps/futures-style strategies support paper→live)", strategyID)
 		}
-
 		if reason := ss.paperToLiveBlockedReason(strategyID, false); reason != "" {
 			return "", "", "", fmt.Errorf("%s", reason)
 		}
@@ -308,7 +306,6 @@ func (ss *StatusServer) paperToLiveBlockedReason(id string, afterConfirm bool) s
 }
 
 func (ss *StatusServer) executePaperToLive(id string) (string, error) {
-
 	if reason := ss.paperToLiveBlockedReason(id, true); reason != "" {
 		return "", fmt.Errorf("%s", reason)
 	}

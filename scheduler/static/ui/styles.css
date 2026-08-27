@@ -323,12 +323,14 @@ h3 {
   border-color: rgba(102, 112, 98, 0.28);
 }
 
+
 .regime-badge--paused {
   color: var(--muted);
   background: rgba(102, 112, 98, 0.12);
   border-color: rgba(102, 112, 98, 0.32);
   cursor: help;
 }
+
 
 .regime-badge--divergence {
   color: var(--amber);
@@ -551,6 +553,7 @@ h3 {
 .pos-short {
   color: var(--red);
 }
+
 
 .risk-panel,
 .regime-store-panel,
@@ -875,6 +878,7 @@ h3 {
   background: #e8efe8;
 }
 
+
 .ops-panels {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -1131,6 +1135,7 @@ h3 {
   display: none;
 }
 
+
 .controls-row {
   margin: 10px 0 6px;
 }
@@ -1159,6 +1164,7 @@ h3 {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+
 
 .trade-panel {
   border-top: 1px solid var(--border, rgba(128, 128, 128, 0.25));
@@ -1218,6 +1224,7 @@ h3 {
   background: transparent;
   color: inherit;
 }
+
 
 .tuning-shell {
   width: min(1480px, 100%);

@@ -71,7 +71,6 @@ func TestComputeTradeQualityLoserHasNoCaptureRatio(t *testing.T) {
 }
 
 func TestComputeTradeQualityImmediateReversal(t *testing.T) {
-
 	candles := []UICandle{diagCandle(0, 100, 100, 92, 93)}
 	m, ok := computeTradeQuality(candles, "long", 100, 93)
 	if !ok {
@@ -100,7 +99,6 @@ func TestComputeTradeQualitySingleBarHold(t *testing.T) {
 }
 
 func TestComputeTradeQualityCaptureClampsAtOne(t *testing.T) {
-
 	candles := []UICandle{diagCandle(0, 100, 104, 99, 104)}
 	m, ok := computeTradeQuality(candles, "long", 100, 106)
 	if !ok {
@@ -308,7 +306,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("uncovered window", func(t *testing.T) {
-
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Add(2*time.Hour).Unix(), 3150, 3160, 3080, 3100)}, nil)
 		f.worker.process(diagTestRow(opened, closed))
 		if f.updates[0] != diagMetricsWindowUncovered || f.metrics[0] != nil {
@@ -348,7 +345,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("missing timeframe defaults to 1h and fetches at 1h", func(t *testing.T) {
-
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Unix(), 3000, 3200, 2980, 3100)}, nil)
 		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "manual", Symbol: "ETH"}})
 		f.worker.process(diagTestRow(opened, closed))
@@ -363,7 +359,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("unknown timeframe token uses 1h for both window math and fetch", func(t *testing.T) {
-
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Unix(), 3000, 3200, 2980, 3100)}, nil)
 		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Timeframe: "bogus"}})
 		f.worker.process(diagTestRow(opened, closed))
@@ -378,7 +373,6 @@ func TestDiagnosticsWorkerFailurePaths(t *testing.T) {
 		}
 	})
 	t.Run("explicit timeframe fetches unchanged", func(t *testing.T) {
-
 		f := newDiagWorkerFixture([]UICandle{diagCandle(opened.Truncate(15*time.Minute).Unix(), 3000, 3200, 2980, 3100)}, nil)
 		f.worker.UpdateStrategies([]StrategyConfig{{ID: "hl-test", Platform: "hyperliquid", Type: "perps", Symbol: "ETH", Timeframe: "15m"}})
 		f.worker.process(diagTestRow(opened, closed))
@@ -492,7 +486,6 @@ func TestNetPnLByPositionAggregatesLegs(t *testing.T) {
 	defer sdb.Close()
 
 	now := time.Now().UTC()
-
 	for i, pnl := range []float64{60, 50} {
 		trade := Trade{
 			Timestamp: now.Add(time.Duration(i) * time.Minute), Symbol: "ETH", Side: "sell",
@@ -503,13 +496,11 @@ func TestNetPnLByPositionAggregatesLegs(t *testing.T) {
 			t.Fatalf("insert trade: %v", err)
 		}
 	}
-
 	legacy := Trade{Timestamp: now, Symbol: "ETH", Side: "sell", Quantity: 1, Price: 3000, Value: 3000,
 		PositionID: "p2", IsClose: true, RealizedPnL: -25}
 	if err := sdb.InsertTrade("hl-a", legacy); err != nil {
 		t.Fatalf("insert legacy: %v", err)
 	}
-
 	open := Trade{Timestamp: now, Symbol: "ETH", Side: "buy", Quantity: 1, Price: 3000, Value: 3000,
 		PositionID: "p1", PnLGross: true, ExchangeFee: 1, FeeSource: FeeSourceModeled}
 	if err := sdb.InsertTrade("hl-a", open); err != nil {
@@ -561,7 +552,6 @@ func TestDiagnosticsReportSampleGating(t *testing.T) {
 
 func TestDiagnosticsReportCaptureAndRegimeHypotheses(t *testing.T) {
 	var rows []TradeDiagnosticsRow
-
 	for i := 0; i < 20; i++ {
 		rows = append(rows, diagReportRow(i, "trending_up", "long", 10, fptr(0.2)))
 	}
@@ -601,7 +591,6 @@ func TestDiagnosticsReportDirectionHypothesis(t *testing.T) {
 }
 
 func TestDiagnosticsReportPartialCloseAggregation(t *testing.T) {
-
 	row := diagReportRow(0, "trending_up", "long", -5, nil)
 	net := map[string]map[string]float64{"hl-a": {"p0": 40}}
 	out := buildTradeDiagnosticsReport([]TradeDiagnosticsRow{row}, net, "cfg.json", diagReportOptions{MinTrades: 30, MinBucket: 10})

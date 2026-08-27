@@ -170,13 +170,11 @@ func TestFormatStrategyRegimeDisplay_DefaultShowsAllWindows(t *testing.T) {
 			t.Fatalf("unset DisplayWindows should render %q; got: %s", name, got)
 		}
 	}
-
 	for _, suffix := range []string{"[adx]", "[composite]", "["} {
 		if strings.Contains(got, suffix) {
 			t.Fatalf("regime display should not carry a classifier suffix %q; got: %s", suffix, got)
 		}
 	}
-
 	if !strings.Contains(got, "composite_long=ranging_directional") {
 		t.Fatalf("expected bare name=label rendering; got: %s", got)
 	}
@@ -191,7 +189,6 @@ func TestFormatStrategyRegimeDisplay_CompositeOnly(t *testing.T) {
 			t.Fatalf("composite window %q should render; got: %s", name, got)
 		}
 	}
-
 	for _, scalar := range []string{"long", "medium", "short"} {
 		if regimeDisplayHasBareWindow(got, scalar) {
 			t.Fatalf("scalar window %q should be hidden; got: %s", scalar, got)
@@ -212,7 +209,6 @@ func TestFormatStrategyRegimeDisplay_CaseInsensitiveMatch(t *testing.T) {
 }
 
 func TestFormatStrategyRegimeDisplay_SelectedWindowsUnpopulatedFallsBackToPrimary(t *testing.T) {
-
 	rc, ss := regimeDisplayTestConfig()
 	rc.DisplayWindows = []string{"composite_long", "composite_medium", "composite_short"}
 	delete(ss.RegimeWindows, "composite_long")
@@ -291,7 +287,6 @@ func TestFormatStrategyRegimeDisplay_BlankEntriesTreatedAsUnset(t *testing.T) {
 	rc, ss := regimeDisplayTestConfig()
 	rc.DisplayWindows = []string{"", "   "}
 	got := formatStrategyRegimeDisplay(ss, rc)
-
 	for _, name := range []string{"long", "composite_long"} {
 		if !strings.Contains(got, name+"=") {
 			t.Fatalf("blank DisplayWindows should render all windows; missing %q in: %s", name, got)

@@ -202,7 +202,6 @@ func TestRunPendingRobinhoodCircuitCloses_SharedOwnershipSkipsAndDMs(t *testing.
 	if len(dms) != 1 {
 		t.Fatalf("expected exactly one owner DM, got %d: %v", len(dms), dms)
 	}
-
 	msg := dms[0]
 	if !strings.Contains(msg, "rh-sma-btc") {
 		t.Errorf("DM missing firing strategy ID: %q", msg)

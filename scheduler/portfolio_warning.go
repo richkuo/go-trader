@@ -15,16 +15,15 @@ const (
 )
 
 type PortfolioWarningMessageInputs struct {
-	Reason      string
-	Config      *PortfolioRiskConfig
-	State       *AppState
-	Prices      map[string]float64
-	TotalValue  float64
-	PerpsLoss   float64
-	PerpsMargin float64
-	Recent      []Trade
-	Now         time.Time
-
+	Reason           string
+	Config           *PortfolioRiskConfig
+	State            *AppState
+	Prices           map[string]float64
+	TotalValue       float64
+	PerpsLoss        float64
+	PerpsMargin      float64
+	Recent           []Trade
+	Now              time.Time
 	EquityGuardArmed bool
 }
 
@@ -70,7 +69,6 @@ func BuildPortfolioWarningMessage(in PortfolioWarningMessageInputs) string {
 		maxDD, warnDD, entered.Format("2006-01-02 15:04 UTC"), formatWarningDuration(now.Sub(entered))))
 
 	if in.EquityGuardArmed {
-
 		note := ""
 		if prs.DrawdownReadingSubstituted {
 			note = "* (carried forward; balance substituted this cycle, does not reconcile with the figures below)"

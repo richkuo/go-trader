@@ -1,3 +1,4 @@
+
 update_systemd_envfile_check_path() {
     local entry="$1"
     local path="$entry"

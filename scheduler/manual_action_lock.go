@@ -30,7 +30,6 @@ func acquireManualActionFileLock(dbPath string) (release func(), err error) {
 		if flockErr == nil {
 			return func() { f.Close() }, nil
 		}
-
 		if !errors.Is(flockErr, syscall.EWOULDBLOCK) {
 			f.Close()
 			return nil, fmt.Errorf("flock manual-action lock %s: %w", lockPath, flockErr)

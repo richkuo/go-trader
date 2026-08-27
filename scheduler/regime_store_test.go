@@ -26,7 +26,6 @@ func TestStrategyRegimeBundleRequestPlatformMapping(t *testing.T) {
 		{"okx perps", StrategyConfig{ID: "okx-a", Type: "perps", Platform: "okx", Args: []string{"momentum", "BTC-USDT-SWAP", "1h"}}, "okx", "BTC-USDT-SWAP", "1h"},
 		{"okx spot", StrategyConfig{ID: "okx-s", Type: "spot", Platform: "okx", Args: []string{"sma", "BTC-USDT", "4h"}}, "okx", "BTC-USDT", "4h"},
 		{"robinhood spot", StrategyConfig{ID: "rh-a", Type: "spot", Platform: "robinhood", Args: []string{"sma", "BTC", "1d"}}, "robinhood", "BTC", "1d"},
-
 		{"default spot", StrategyConfig{ID: "spot-a", Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}}, "binanceus", "BTC/USDT", "1h"},
 		{"luno spot uses binanceus data", StrategyConfig{ID: "luno-a", Type: "spot", Platform: "luno", Args: []string{"sma", "BTC/USDT", "1h"}}, "binanceus", "BTC/USDT", "1h"},
 		{"futures", StrategyConfig{ID: "ts-a", Type: "futures", Platform: "topstep", Args: []string{"momentum", "MES", "15m"}}, "topstep", "MES", "15m"},
@@ -88,7 +87,6 @@ func TestStrategyRegimeBundleRequestDisabled(t *testing.T) {
 }
 
 func TestStrategyRegimeBundleRequestOptions(t *testing.T) {
-
 	sc := StrategyConfig{ID: "deribit-theta", Type: "options", Platform: "deribit", Args: []string{"theta_harvest", "btc", "--platform=deribit"}}
 	rc := testRegimeConfig()
 	rc.Timeframe = "1d"
@@ -123,7 +121,6 @@ func TestCollectRegimeBundleRequestsDedupesPeers(t *testing.T) {
 	if len(reqs) != 3 {
 		t.Fatalf("expected 3 distinct signatures, got %d: %+v", len(reqs), reqs)
 	}
-
 	if reqs[0].Key.Platform != "deribit" || reqs[1].Key.Symbol != "BTC" || reqs[2].Key.Symbol != "ETH" {
 		t.Errorf("unexpected order: %+v", reqs)
 	}
@@ -153,7 +150,6 @@ func TestParseRegimeBundleOutput(t *testing.T) {
 	if got := b.Payload.Label("default", nil); got != "trending_up" {
 		t.Errorf("label = %q", got)
 	}
-
 	if !strings.Contains(b.RawRegimeJSON, `"classifier":"adx"`) {
 		t.Errorf("raw payload lost subprocess fields: %s", b.RawRegimeJSON)
 	}
@@ -213,7 +209,6 @@ func TestPopulateRegimeStoreSharesBundleAcrossPeers(t *testing.T) {
 }
 
 func TestPopulateRegimeStoreFailureYieldsEmptyPayload(t *testing.T) {
-
 	rc := testRegimeConfig()
 	sc := StrategyConfig{ID: "hl-a", Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "BTC", "1h"}}
 	stubRegimeBundleCheck(t, func(_ context.Context, req regimeBundleRequest) (*RegimeBundle, error) {
@@ -257,7 +252,6 @@ func TestPopulateRegimeStoreClearsPriorCycle(t *testing.T) {
 	if store.PayloadForStrategy(sc, rc).IsEmpty() {
 		t.Fatal("first cycle should have a payload")
 	}
-
 	ok = false
 	populateRegimeStore(store, []StrategyConfig{sc}, rc, nil)
 	if !store.PayloadForStrategy(sc, rc).IsEmpty() {
@@ -276,7 +270,6 @@ func TestRegimeStoreSetAfterSealDiscards(t *testing.T) {
 	if _, ok := store.get(key); ok {
 		t.Error("a sealed store must discard late bundles (no mid-cycle flips)")
 	}
-
 	gen2 := store.resetForCycle(time.Now().UTC())
 	store.set(&RegimeBundle{Key: key, Payload: RegimePayload{Legacy: "trending_up"}}, gen2)
 	if _, ok := store.get(key); !ok {
@@ -285,7 +278,6 @@ func TestRegimeStoreSetAfterSealDiscards(t *testing.T) {
 }
 
 func TestRegimeStoreStaleGenerationWriteDropped(t *testing.T) {
-
 	store := &RegimeStore{}
 	genN := store.resetForCycle(time.Now().UTC())
 	store.seal()
@@ -305,7 +297,6 @@ func TestRegimeStoreStaleGenerationWriteDropped(t *testing.T) {
 }
 
 func TestRegimeStorePhaseBudgetSealsStragglers(t *testing.T) {
-
 	origBudget := regimeStorePhaseBudget
 	regimeStorePhaseBudget = 50 * time.Millisecond
 	t.Cleanup(func() { regimeStorePhaseBudget = origBudget })

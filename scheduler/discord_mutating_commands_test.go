@@ -42,14 +42,12 @@ func TestRedactConfigForDisplay(t *testing.T) {
 	if strings.Count(out, configSecretReplacement) != 2 {
 		t.Errorf("expected 2 redactions, got: %s", out)
 	}
-
 	if !strings.Contains(out, "\"interval_seconds\": 300") {
 		t.Errorf("non-secret field not preserved: %s", out)
 	}
 }
 
 func TestRedactConfigForDisplayEmptyTokenUntouched(t *testing.T) {
-
 	out, err := redactConfigForDisplay([]byte(`{"discord":{"enabled":false,"token":"","channels":{}}}`))
 	if err != nil {
 		t.Fatalf("redact: %v", err)
@@ -142,7 +140,6 @@ func TestAddStrategyToRoot(t *testing.T) {
 	if len(list) != 3 {
 		t.Errorf("expected 3 strategies after add, got %d", len(list))
 	}
-
 	if _, err := addStrategyToRoot(root, "rsi", "hyperliquid", "sol"); err == nil {
 		t.Error("expected duplicate-id error on second add")
 	}
@@ -160,7 +157,6 @@ func TestRemoveStrategyFromRoot(t *testing.T) {
 	if err := removeStrategyFromRoot(root, "does-not-exist"); err == nil {
 		t.Error("expected not-found error")
 	}
-
 	if err := removeStrategyFromRoot(root, "hl-momentum-eth"); err == nil {
 		t.Error("expected refusal to remove the only strategy")
 	}
@@ -178,7 +174,6 @@ func TestFlipStrategyToLive(t *testing.T) {
 	if !strings.Contains(strings.Join(after, " "), "--mode=live") || strings.Contains(strings.Join(after, " "), "--mode=paper") {
 		t.Errorf("expected live (not paper) in after: %v", after)
 	}
-
 	list, _ := configStrategies(root)
 	var found bool
 	for _, raw := range list {
@@ -191,15 +186,12 @@ func TestFlipStrategyToLive(t *testing.T) {
 	if !found {
 		t.Error("flip not persisted into root")
 	}
-
 	if _, _, err := flipStrategyToLive(root, "hl-momentum-eth"); err == nil {
 		t.Error("expected already-live error")
 	}
-
 	if _, _, err := flipStrategyToLive(root, "sma-btc"); err == nil {
 		t.Error("expected no-mode error for spot strategy")
 	}
-
 	if _, _, err := flipStrategyToLive(root, "ghost"); err == nil {
 		t.Error("expected not-found error")
 	}
@@ -224,22 +216,18 @@ func TestClassifyConfigSetKey(t *testing.T) {
 }
 
 func TestBuildTunerOverride(t *testing.T) {
-
 	ov, err := buildTunerOverride("interval_seconds", "300")
 	if err != nil || string(ov["interval_seconds"]) != "300" {
 		t.Errorf("interval_seconds override = %v, err %v", ov, err)
 	}
-
 	ov, err = buildTunerOverride("direction", "Long")
 	if err != nil || string(ov["direction"]) != `"long"` {
 		t.Errorf("direction override = %v, err %v", ov, err)
 	}
-
 	ov, _ = buildTunerOverride("invert_signal", "true")
 	if string(ov["invert_signal"]) != "true" {
 		t.Errorf("invert_signal override = %v", ov)
 	}
-
 	ov, _ = buildTunerOverride("stop_loss_pct", "null")
 	if string(ov["stop_loss_pct"]) != "null" {
 		t.Errorf("stop_loss_pct null override = %v", ov)
@@ -248,7 +236,6 @@ func TestBuildTunerOverride(t *testing.T) {
 	if string(ov["stop_loss_atr_mult"]) != "1.5" {
 		t.Errorf("stop_loss_atr_mult override = %v", ov)
 	}
-
 	for _, bad := range []struct{ field, value string }{
 		{"direction", "sideways"},
 		{"leverage", "0"},
@@ -325,7 +312,6 @@ func TestPlatformSetupGuide(t *testing.T) {
 	if !strings.Contains(guide, "/opt/go-trader/.env") || !strings.Contains(guide, "/go-trader-add-strategy") {
 		t.Errorf("hyperliquid guide missing setup steps: %s", guide)
 	}
-
 	guide, err = platformSetupGuide("deribit")
 	if err != nil {
 		t.Fatalf("guide: %v", err)
@@ -365,7 +351,6 @@ func TestWriteValidatedConfigRootRoundTrip(t *testing.T) {
 }
 
 func TestAddStrategyRoundTripValidates(t *testing.T) {
-
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(path, []byte(minimalConfigJSON), 0o600); err != nil {
@@ -408,12 +393,10 @@ func TestWriteValidatedConfigRootRejectsInvalid(t *testing.T) {
 	raw, _ := os.ReadFile(path)
 	var root map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &root)
-
 	root["interval_seconds"] = json.RawMessage(`"not-an-int"`)
 	if err := writeValidatedConfigRoot(path, root); err == nil {
 		t.Fatal("expected writeValidatedConfigRoot to reject an invalid config")
 	}
-
 	after, _ := os.ReadFile(path)
 	if string(after) != minimalConfigJSON {
 		t.Errorf("original config was modified despite validation failure:\n%s", after)

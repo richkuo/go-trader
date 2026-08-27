@@ -104,9 +104,7 @@ func appendReplayDriftDM(dst *[]string, strategyID, kind, detail string, now tim
 }
 
 func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []ReplayDecision, price float64, result *HyperliquidResult, cfg *Config, logger *StrategyLogger) (appliedIDs []int64, trades int, details []string, driftDMs []string) {
-
 	defer suspendEagerTradePersist()()
-
 	defer suspendEagerDiagnosticsPersist()()
 
 	lastApplied := replayMirrorLastApplied(sc.ID)
@@ -122,7 +120,6 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 	now := time.Now()
 	for _, row := range pending {
 		if row.DecisionID <= lastApplied {
-
 			markApplied(row.DecisionID)
 			continue
 		}
@@ -160,7 +157,6 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 			}
 			n, trade := applyPerpsScaleIn(s, sc, row.Symbol, row.ReferencePrice, row.Quantity, 0, "", false, logger)
 			if n > 0 && trade != nil {
-
 				trade.Timestamp = row.DecidedAt
 				trade.Details = fmt.Sprintf("%s [replay_live_mirror]", trade.Details)
 				recordPositionOpen(s, sc, trade, pos)
@@ -191,7 +187,6 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 		case ReplayDecisionFullClose:
 			pos := s.Positions[row.Symbol]
 			if pos == nil || pos.Quantity <= 0 {
-
 				logger.Info("Replay mirror: live closed %s (%s) but paper is already flat — nothing to replay (#1431)", row.Symbol, row.CloseReason)
 				markApplied(row.DecisionID)
 				continue
@@ -210,7 +205,6 @@ func applyReplayedLiveDecisions(sc StrategyConfig, s *StrategyState, pending []R
 	}
 	replayMirrorSetLastApplied(sc.ID, lastApplied)
 	if lastApplied > s.ReplayMirrorWatermark {
-
 		s.ReplayMirrorWatermark = lastApplied
 	}
 	return appliedIDs, trades, details, driftDMs
@@ -237,7 +231,6 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 		}
 		return 0, ""
 	}
-
 	exec.OpenTrade.Timestamp = row.DecidedAt
 	exec.OpenTrade.Details = fmt.Sprintf("%s [replay_live_mirror]", exec.OpenTrade.Details)
 	if pos, ok := s.Positions[row.Symbol]; ok && pos != nil {
@@ -247,7 +240,6 @@ func replayBookOpen(sc StrategyConfig, s *StrategyState, row ReplayDecision, res
 	if result != nil {
 		stampPositionRegimeIfOpened(s, row.Symbol, regimePayloadValue(result.Regime), sc, regime)
 	}
-
 	if pos := s.Positions[row.Symbol]; pos != nil {
 		if row.EntryATR > 0 {
 			pos.EntryATR = row.EntryATR

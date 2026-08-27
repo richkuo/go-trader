@@ -83,7 +83,6 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 	}}); len(errs) != 0 {
 		t.Fatalf("trailing_tp_ratchet_regime trail default should pass, got: %v", errs)
 	}
-
 	nonMonotonicRatchet := []interface{}{
 		map[string]interface{}{"atr_multiple": 1.0, "trailing_mult_after": 1.0, "close_fraction": 0.0},
 		map[string]interface{}{"atr_multiple": 2.0, "trailing_mult_after": 2.0, "close_fraction": 0.0},
@@ -97,16 +96,12 @@ func TestValidateUserCloseDefaults(t *testing.T) {
 		{"missing tp_tiers", CloseDefaultsMap{"tiered_tp_atr": {}}, "missing tp_tiers"},
 		{"stray key", CloseDefaultsMap{"tiered_tp_atr": {"tp_tiers": validTiered, "foo": 1}}, "unknown key"},
 		{"trail key on other evaluator", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": ratchetUserTiers(), "trailing_stop_atr_regime": ratchetRegimeTrailRaw(2.0, 2.0, 1.0)}}, "unknown key"},
-
 		{"empty list", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": []interface{}{}}}, "must not be empty"},
 		{"empty regime map", CloseDefaultsMap{"trailing_tp_ratchet_regime": {"tp_tiers": map[string]interface{}{}}}, "must not be empty"},
 		{"wrong type", CloseDefaultsMap{"tiered_tp_atr": {"tp_tiers": 42}}, "must be a tier list or regime-keyed object"},
 		{"bad trail shape", CloseDefaultsMap{"trailing_tp_ratchet_regime": {"tp_tiers": ratchetRegimeUserTiers(), "trailing_stop_atr_regime": map[string]interface{}{"trend_regime": map[string]interface{}{"trending_up": map[string]interface{}{"close_fraction": 0.5}}}}}, "close_fraction is only allowed inside close-evaluator tiers"},
-
 		{"non-monotonic ratchet attributed", CloseDefaultsMap{"trailing_tp_ratchet": {"tp_tiers": nonMonotonicRatchet}}, "user_defaults.close[\"trailing_tp_ratchet\"].tp_tiers"},
-
 		{"dynamic excluded", CloseDefaultsMap{"tiered_tp_atr_live_regime_dynamic": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
-
 		{"tiered regime excluded", CloseDefaultsMap{"tiered_tp_atr_regime": {"tp_tiers": []interface{}{}}}, "not a tp_tiers close evaluator"},
 		{"regime_atr moved", CloseDefaultsMap{"regime_atr": {"stop_loss_atr_regime": ratchetRegimeTrailRaw(2.0, 2.0, 1.5)}}, "regime_atr moved to user_defaults.regime_atr"},
 	}
@@ -137,7 +132,6 @@ func TestUserCloseDefaults_EndToEndRatchet(t *testing.T) {
 	if len(tiers) != 2 || tiers[0].ATRMultiple != 1.0 || tiers[1].TrailingMultAfter != 1.0 {
 		t.Fatalf("expected user-default tiers, got %+v", tiers)
 	}
-
 	if len(tiers) == len(defaultTrailingRatchetTiers()) {
 		t.Fatal("resolved tiers match system default — user layer did not apply")
 	}
@@ -701,7 +695,6 @@ func TestUserCloseDefaults_RegimeATRLoadConfigCompositeBareCoversSubs(t *testing
 	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "trending_up_clean"); !ok || got != 2.5 {
 		t.Fatalf("trending_up_clean SL = (%g, %v), want (2.5, true)", got, ok)
 	}
-
 	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging_directional_up"); !ok || got != 1.25 {
 		t.Fatalf("ranging_directional_up SL = (%g, %v), want (1.25, true) via bare fallback", got, ok)
 	}
@@ -745,7 +738,6 @@ func TestUserCloseDefaults_RegimeATRLoadConfigSoleOwnerNoScalarSecondOwner(t *te
 	if got, ok := resolveRegimeATR(*sc.StopLossATRRegime, "ranging"); !ok || got != 1.75 {
 		t.Fatalf("ranging SL = (%g, %v), want user regime_atr (1.75, true)", got, ok)
 	}
-
 	if sc.StopLossATRMult != nil {
 		t.Fatalf("StopLossATRMult = %v, want nil — regime owner is the sole SL owner (#605 mutex)", *sc.StopLossATRMult)
 	}

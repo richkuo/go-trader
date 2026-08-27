@@ -103,7 +103,6 @@ func computeTopStepCircuitCloseQty(symbol, strategyID string, tsPositions []TopS
 	if len(peers) <= 1 {
 		return abs, true
 	}
-
 	fmt.Printf("[WARN] ts-circuit-close: strategy %s shares contract %s with %d peers; skipping enqueue (market_close has no partial-size variant — manual intervention required)\n",
 		strategyID, symbol, len(peers))
 	return 0, false
@@ -256,7 +255,6 @@ func runPendingTopStepCircuitCloses(
 				allOK = false
 				break
 			}
-
 			var absOC int
 			stillOpen := false
 			for _, p := range positions {
@@ -277,7 +275,6 @@ func runPendingTopStepCircuitCloses(
 				continue
 			}
 			if _, err := closer(c.Symbol); err != nil {
-
 				fmt.Printf("[CRITICAL] ts-circuit-close: strategy %s contract %s sz=%d failed: %v (will retry next cycle)\n",
 					j.stratID, c.Symbol, absOC, err)
 				allOK = false
@@ -298,7 +295,6 @@ func runPendingTopStepCircuitCloses(
 			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseTopStep)
 			} else if failedErr != nil {
-
 				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep); p != nil {
 					p.ConsecutiveFailures++
 					failCount = p.ConsecutiveFailures
@@ -333,7 +329,6 @@ func forceCloseTopStepLive(ctx context.Context, positions []TopStepPosition, tsL
 
 	for _, p := range positions {
 		if !tradedCoins[p.Coin] {
-
 			if p.Size != 0 {
 				report.Unconfigured = append(report.Unconfigured, p)
 			}
@@ -347,7 +342,6 @@ func forceCloseTopStepLive(ctx context.Context, positions []TopStepPosition, tsL
 			report.Errors[p.Coin] = fmt.Errorf("close budget exhausted before submit: %w", err)
 			continue
 		}
-
 		if _, err := closer(p.Coin); err != nil {
 			report.Errors[p.Coin] = err
 			continue

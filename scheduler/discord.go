@@ -134,7 +134,6 @@ func (d *DiscordNotifier) messageCreate(s *discordgo.Session, m *discordgo.Messa
 			default:
 			}
 			dispatched = true
-
 		} else {
 			remaining = append(remaining, h)
 		}
@@ -475,7 +474,6 @@ func FormatCategorySummary(
 		if effectiveInterval <= 0 {
 			effectiveInterval = globalIntervalSeconds
 		}
-
 		closedT, winT, lossT := 0, 0, 0
 		if lt, ok := lifetimeStats[sc.ID]; ok {
 			closedT = lt.PositionsOpened
@@ -510,7 +508,6 @@ func FormatCategorySummary(
 	totalPnl := totalRowValue - totalInitCap
 	totalPnlPct := 0.0
 	if hasPoolBudget {
-
 		totalPnl = math.NaN()
 		totalPnlPct = math.NaN()
 	} else if totalInitCap > 0 {
@@ -685,11 +682,9 @@ func extractStrategyName(sc StrategyConfig) string {
 		return sc.Args[0]
 	}
 	parts := strings.Split(sc.ID, "-")
-
 	if sc.Type == "perps" && len(parts) >= 3 && parts[0] == "hl" {
 		return parts[1]
 	}
-
 	if len(parts) > 0 {
 		return parts[0]
 	}
@@ -708,7 +703,6 @@ func summaryStrategyLabel(id string) string {
 }
 
 func extractAsset(sc StrategyConfig) string {
-
 	if len(sc.Args) > 1 {
 		asset := strings.ToUpper(sc.Args[1])
 		return strings.TrimSuffix(asset, "/USDT")
@@ -812,7 +806,6 @@ func writeCatTablePartial(sb *strings.Builder, bots []botInfo, showWalletPct, in
 	}
 	sb.WriteString("\n```\n")
 	if hasPoolBudget {
-
 		if showWalletPct {
 			header := fmt.Sprintf("%-*s %6s %8s%5s %8s%5s %4s %4s %5s", catTableStrategyWidth, "Strategy", "PnL", "PnL%", "DD", "Wallet%", "Tf", "Int", "#T", "W/L")
 			sep := strings.Repeat("-", len(header))
@@ -1059,7 +1052,6 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		if name := closeStrategySummaryName(sc); name != "" {
 			extras += fmt.Sprintf(" | close: %s", name)
 		}
-
 		anchor := pos.riskAnchorPrice()
 		if pos.EntryATR > 0 {
 			extras += fmt.Sprintf(" | ATR: $%s", fmtComma2(pos.EntryATR))
@@ -1078,7 +1070,6 @@ func collectPositions(sc StrategyConfig, ss *StrategyState, prices map[string]fl
 		tiers := strategyTPTiersForRegime(sc, positionATRRegimeLabel(pos, sc))
 		tps := tieredTPATRPricesFromTiers(tiers, pos.Side, anchor, pos.EntryATR)
 		if len(tps) > 0 {
-
 			partiallyClosed := pos.InitialQuantity > 0 && pos.Quantity+1e-9 < pos.InitialQuantity
 			for i, tp := range tps {
 				multSuffix := ""
@@ -1233,10 +1224,8 @@ func tradeDirectionLabel(trade Trade) string {
 func tradeAlertCloseSource(details string) string {
 	d := strings.ToLower(details)
 	switch {
-
 	case strings.Contains(d, "liquidation-clamp sl close"):
 		return "liquidation-clamp SL"
-
 	case strings.Contains(d, "paper trailing sl close"):
 		return "paper trailing SL"
 	case strings.Contains(d, "trailing sl close"):
@@ -1246,7 +1235,6 @@ func tradeAlertCloseSource(details string) string {
 	case strings.Contains(d, "stop loss close"):
 		return "exchange SL"
 	case strings.HasPrefix(d, "tp") && strings.Contains(d, "fill close"):
-
 		end := strings.Index(d, " ")
 		if end > 0 {
 			return "exchange " + strings.ToUpper(details[:end])

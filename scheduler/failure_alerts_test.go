@@ -33,14 +33,12 @@ func TestShouldNotifyDrainFailure_EveryTenthNotifies(t *testing.T) {
 func TestShouldNotifyDrainFailure_HourlyEvenIfNotMod10(t *testing.T) {
 	withAlertThrottleInterval(t, time.Hour)
 	notifiedAt := time.Now()
-
 	if !shouldNotifyDrainFailure(5, notifiedAt, notifiedAt.Add(61*time.Minute)) {
 		t.Error("expected notify when >1 hour since last notify")
 	}
 }
 
 func TestShouldNotifyDrainFailure_ZeroLastNotifiedAt_FirstNotifiesMidSuppressed(t *testing.T) {
-
 	if !shouldNotifyDrainFailure(1, time.Time{}, time.Now()) {
 		t.Error("count==1 with zero LastNotifiedAt must notify")
 	}
@@ -63,12 +61,10 @@ func TestLiveExecFailureThrottle_FirstFailureNotifies(t *testing.T) {
 func TestLiveExecFailureThrottle_RepeatsThrottled(t *testing.T) {
 	th := &LiveExecFailureThrottle{}
 	now := time.Now()
-
 	notify, _ := th.Record("k1", "err", now)
 	if !notify {
 		t.Fatal("first call must notify")
 	}
-
 	for i := 2; i <= 9; i++ {
 		notify, count := th.Record("k1", "err", now.Add(time.Minute))
 		if notify {
@@ -96,7 +92,6 @@ func TestLiveExecFailureThrottle_DifferentErrorSigReNotifies(t *testing.T) {
 	now := time.Now()
 	th.Record("k1", "error-type-A", now)
 	th.Record("k1", "error-type-A", now.Add(time.Minute))
-
 	notify, count := th.Record("k1", "error-type-B", now.Add(2*time.Minute))
 	if !notify {
 		t.Error("new error signature must re-notify fresh")

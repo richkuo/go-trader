@@ -9,7 +9,6 @@ import (
 )
 
 func TestDiscordBackend(t *testing.T) {
-
 	mn := NewMultiNotifier()
 	if got := mn.DiscordBackend(); got != nil {
 		t.Fatalf("expected nil DiscordBackend on empty notifier, got %v", got)
@@ -39,7 +38,6 @@ func TestAuthorizeCommand(t *testing.T) {
 		{"restart", "intruder", "", false},
 		{"backtest", owner, "", true},
 		{"backtest", "intruder", "", false},
-
 		{"clear-cash-reconcile", owner, "", true},
 		{"clear-cash-reconcile", owner, "guild1", false},
 		{"clear-cash-reconcile", "intruder", "", false},
@@ -187,18 +185,15 @@ func TestFormatStatusResponse_CashReconcileRequired(t *testing.T) {
 	if !strings.Contains(got, "CASH RECONCILE REQUIRED") {
 		t.Fatalf("expected reconcile banner, got: %s", got)
 	}
-
 	if !strings.Contains(got, "a-latched") || !strings.Contains(got, "z-latched") {
 		t.Fatalf("expected both latched IDs, got: %s", got)
 	}
 	if strings.Contains(got, "m-ok") && strings.Contains(got[strings.Index(got, "CASH RECONCILE REQUIRED"):], "m-ok") {
 		t.Fatalf("unlatched strategy must not appear in reconcile list, got: %s", got)
 	}
-
 	idx := strings.Index(got, "CASH RECONCILE REQUIRED:")
 	list := got[idx:]
 	if !strings.Contains(list, "a-latched, z-latched") && !strings.Contains(list, "a-latched,z-latched") {
-
 		if !(strings.Contains(list, "a-latched") && strings.Index(list, "a-latched") < strings.Index(list, "z-latched")) {
 			t.Fatalf("expected a-latched before z-latched in sorted list, got: %s", list)
 		}
@@ -227,7 +222,6 @@ func TestFormatPositionsResponse(t *testing.T) {
 }
 
 func TestFormatPnLResponse(t *testing.T) {
-
 	got := formatPnLResponse(testPnLState(), map[string]float64{"BTC": 60})
 	if !strings.Contains(got, "+10.00") || !strings.Contains(got, "+20.00%") {
 		t.Errorf("expected hl-a pnl +10 (+20%%), got: %s", got)
@@ -241,8 +235,7 @@ func TestFormatPnLResponsePooledReturnsAreUndefined(t *testing.T) {
 	allPooled := &AppState{Strategies: map[string]*StrategyState{
 		"hl-a": {
 			ID: "hl-a", Platform: "hyperliquid", Cash: -200,
-			SharedWalletPoolBudget: true,
-
+			SharedWalletPoolBudget:      true,
 			SharedWalletPerformanceOnly: false,
 		},
 		"hl-b": {
@@ -383,7 +376,6 @@ func TestFormatLeaderboardResponse(t *testing.T) {
 	}
 	state := testPnLState()
 	got := formatLeaderboardResponse(cfg, state, map[string]float64{"BTC": 60}, nil, 5)
-
 	ai := strings.Index(got, "hl-a")
 	bi := strings.Index(got, "hl-b")
 	if ai < 0 || bi < 0 || ai > bi {
@@ -415,7 +407,6 @@ func TestFormatCorrelationResponseDeterministicTies(t *testing.T) {
 			"SOL": {NetDeltaUSD: 500, ConcentrationPct: 50},
 		},
 	}
-
 	first := formatCorrelationResponse(snap)
 	for i := 0; i < 20; i++ {
 		if got := formatCorrelationResponse(snap); got != first {
@@ -454,7 +445,6 @@ func TestParseBacktestSummary(t *testing.T) {
 }
 
 func TestTruncateForDiscord(t *testing.T) {
-
 	if got := truncateForDiscord("hello"); got != "hello" {
 		t.Errorf("short input mutated: %q", got)
 	}

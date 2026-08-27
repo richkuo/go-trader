@@ -84,7 +84,6 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 
 	for _, p := range positions {
 		if !tradedCoins[p.Coin] {
-
 			if p.Size > 0 {
 				report.Unconfigured = append(report.Unconfigured, p)
 			}
@@ -103,7 +102,6 @@ func forceCloseRobinhoodLive(ctx context.Context, positions []RobinhoodPosition,
 			report.Errors[p.Coin] = err
 			continue
 		}
-
 		if result != nil && result.Close != nil && result.Close.AlreadyFlat {
 			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
 			continue

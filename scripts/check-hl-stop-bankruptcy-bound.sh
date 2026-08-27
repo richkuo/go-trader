@@ -20,6 +20,7 @@ except Exception:
     print("unreadable")
     sys.exit(0)
 
+
 def is_live(args):
     args = args or []
     for i, a in enumerate(args):
@@ -29,17 +30,21 @@ def is_live(args):
             return True
     return False
 
+
 def effective_leverage(sc):
     v = sc.get("leverage")
     if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
         return float(v)
     return 1.0
 
+
+
 SCALAR_STOP_FIELDS = (
     "stop_loss_pct", "stop_loss_margin_pct", "trailing_stop_pct",
     "trailing_stop_atr_mult", "stop_loss_atr_mult",
 )
 REGIME_STOP_FIELDS = ("stop_loss_atr_regime", "trailing_stop_atr_regime")
+
 
 def uses_unified_regime_close(sc):
     cs = sc.get("close_strategy")
@@ -52,14 +57,17 @@ def uses_unified_regime_close(sc):
     params = cs.get("params")
     return isinstance(params, dict) and "trend_regime" in params
 
+
 def uses_ratchet_regime_close(sc):
     cs = sc.get("close_strategy")
     if not isinstance(cs, dict):
         return False
     return str(cs.get("name", "") or "").strip().lower() == "trailing_tp_ratchet_regime"
 
+
 def regime_block_is_configured(v):
     return isinstance(v, dict) and len(v) > 0
+
 
 def has_explicit_stop_owner(sc):
     if any(sc.get(f) is not None for f in SCALAR_STOP_FIELDS):
@@ -67,6 +75,7 @@ def has_explicit_stop_owner(sc):
     if any(regime_block_is_configured(sc.get(f)) for f in REGIME_STOP_FIELDS):
         return True
     return uses_unified_regime_close(sc)
+
 
 def user_close_default_trailing_regime(cfg):
     ud = cfg.get("user_defaults")
@@ -87,11 +96,13 @@ def user_close_default_trailing_regime(cfg):
         return None
     return block
 
+
 def default_stop_loss_atr_mult(cfg):
     v = cfg.get("default_stop_loss_atr_mult")
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return float(v)
     return 1.0
+
 
 def resolve_stop_owners(cfg, sc):
     sc = dict(sc)
@@ -108,6 +119,7 @@ def resolve_stop_owners(cfg, sc):
         ):
             sc["stop_loss_atr_mult"] = default_mult
     return sc
+
 
 def effective_max_drawdown_pct(cfg, sc):
     v = sc.get("max_drawdown_pct")
@@ -127,6 +139,7 @@ def effective_max_drawdown_pct(cfg, sc):
         return 45.0
     return 60.0
 
+
 def resolves_from_max_drawdown_fallback(sc):
     if uses_unified_regime_close(sc):
         return False
@@ -140,6 +153,7 @@ def resolves_from_max_drawdown_fallback(sc):
         sc.get(f) is None
         for f in ("trailing_stop_pct", "stop_loss_pct", "stop_loss_margin_pct")
     )
+
 
 for sc in cfg.get("strategies", []) or []:
     if not isinstance(sc, dict):

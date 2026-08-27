@@ -21,9 +21,8 @@ type HLFillSummary struct {
 	Fee            float64 `json:"fee"`
 	ClosedPnLGross float64 `json:"closed_pnl"`
 	Count          int     `json:"count"`
-
-	Qty float64 `json:"qty"`
-	Px  float64 `json:"px"`
+	Qty            float64 `json:"qty"`
+	Px             float64 `json:"px"`
 }
 
 type HLUserFillsResult struct {
@@ -203,7 +202,6 @@ func planBackfillForStrategy(
 			if matched {
 				realFee := summary.Fee
 				if t.ExchangeFee != 0 {
-
 					plan.AlreadyRealFeeCount++
 					plan.Skipped = append(plan.Skipped, SkippedTrade{
 						RowID:     t.RowID,
@@ -215,7 +213,6 @@ func planBackfillForStrategy(
 				} else {
 					newFee = realFee
 					if t.IsClose {
-
 						newPnL = t.RealizedPnL + (modeledFee - realFee)
 					}
 					if newFee != t.ExchangeFee || newPnL != t.RealizedPnL {
@@ -242,7 +239,6 @@ func planBackfillForStrategy(
 		if !matched && matchAttempted {
 			effectiveFee = modeledFee
 		} else if !matched && !matchAttempted {
-
 			effectiveFee = modeledFee
 		}
 		if t.IsClose {
@@ -261,7 +257,6 @@ func planClosedPositionRecomputes(
 	corrected []TradeBackfillRow,
 	closedRows []ClosedPositionRow,
 ) []ClosedPositionRecompute {
-
 	sumsByPID := make(map[string]float64)
 	pidToSymbol := make(map[string]string)
 	for _, t := range corrected {
@@ -296,7 +291,6 @@ func planClosedPositionRecomputes(
 	for _, cp := range closedRows {
 		pid := exact[tradeKey{Symbol: cp.Symbol, UnixNs: cp.ClosedAt.UnixNano()}]
 		if pid == "" {
-
 			var candidate string
 			candidates := 0
 			for _, leg := range closeLegs {
@@ -326,7 +320,6 @@ func planClosedPositionRecomputes(
 		if !ok {
 			continue
 		}
-
 		if math.Abs(newPnL-cp.RealizedPnL) < 1e-3 {
 			continue
 		}
@@ -428,7 +421,6 @@ func runBackfillHLFees(args []string) int {
 			if sc.Type != "perps" && sc.Type != "manual" {
 				continue
 			}
-
 			if sc.Type == "perps" && !hyperliquidIsLive(sc.Args) {
 				fmt.Printf("[%s] skipped: paper-mode (no real OIDs)\n", sc.ID)
 				continue
@@ -581,7 +573,6 @@ func printBackfillReport(plan BackfillPlan) {
 func refuseIfSchedulerRunning() error {
 	out, err := exec.Command("pgrep", "-x", "go-trader").Output()
 	if err != nil {
-
 		return nil
 	}
 	self := os.Getpid()

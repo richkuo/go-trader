@@ -32,7 +32,6 @@ func newTradeActionTestServer(t *testing.T) (*StatusServer, *StateDB, *Config) {
 				Args: []string{"hold", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2,
 			},
 			{
-
 				ID: "hl-perps-eth", Type: "perps", Platform: "hyperliquid",
 				Script: "shared_scripts/check_hyperliquid.py",
 				Args:   []string{"tcross", "ETH", "1h", "--mode=live"}, Capital: 1000, Leverage: 2,
@@ -153,7 +152,6 @@ func TestConfirmNonceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("binding: %v", err)
 	}
-
 	binding2, _ := canonicalConfirmBinding("close", "hl-manual-eth", json.RawMessage(`{ "qty": 0.1 }`))
 	if binding != binding2 {
 		t.Fatalf("binding not canonical: %q vs %q", binding, binding2)
@@ -166,7 +164,6 @@ func TestConfirmNonceLifecycle(t *testing.T) {
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err != nil {
 		t.Fatalf("consume: %v", err)
 	}
-
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
 		t.Fatal("reused nonce must be rejected")
 	}
@@ -175,7 +172,6 @@ func TestConfirmNonceLifecycle(t *testing.T) {
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now.Add(confirmNonceTTL+time.Second)); err == nil {
 		t.Fatal("expired nonce must be rejected")
 	}
-
 	if _, err := ss.consumeConfirmNonce(nonce, binding, now); err == nil {
 		t.Fatal("expired nonce must stay burned")
 	}
@@ -212,13 +208,11 @@ func TestTradeActionNonceBindingOverHTTP(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("rebound nonce status = %d, body %s", w.Code, w.Body.String())
 	}
-
 	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/close",
 		fmt.Sprintf(`{"nonce":%q,"params":{"qty":0.1}}`, nonce), nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("burned nonce status = %d, body %s", w.Code, w.Body.String())
 	}
-
 	w = tradeActionPost(ss, "/api/strategies/hl-manual-eth/close", `{"params":{"qty":0.1}}`, nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing nonce status = %d", w.Code)
@@ -318,7 +312,6 @@ func TestUIUpdateSLQueuesPendingActionLikeCLI(t *testing.T) {
 		t.Fatalf("UI rows = %d (err=%v), want 1", len(uiRows), err)
 	}
 	uiRow := uiRows[0]
-
 	cliRow.ID, uiRow.ID = 0, 0
 	cliRow.CreatedAt, uiRow.CreatedAt = time.Time{}, time.Time{}
 	if fmt.Sprintf("%+v", cliRow) != fmt.Sprintf("%+v", uiRow) {
@@ -422,11 +415,9 @@ func TestUICloseQueuesFromStubbedFill(t *testing.T) {
 	if row.Action != "close" || !row.IsFullClose || row.Quantity != 0.4 || row.FillPrice != 2100 {
 		t.Fatalf("queued close row = %+v", row)
 	}
-
 	if row.RealizedPnL != 38.5 {
 		t.Fatalf("realized pnl = %v, want 38.5", row.RealizedPnL)
 	}
-
 	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"].Quantity != 0.4 {
 		t.Fatal("position mutated before drain")
 	}
@@ -485,11 +476,9 @@ func TestUIOpenGuardsDoubleFire(t *testing.T) {
 	if rows[0].Action != "open" || rows[0].Quantity != 0.05 || rows[0].FillPrice != 2000 {
 		t.Fatalf("queued open row = %+v", rows[0])
 	}
-
 	if ss.state.Strategies["hl-manual-eth"].Positions["ETH"] != nil {
 		t.Fatal("position created before drain")
 	}
-
 	if ss.state.Strategies["hl-perps-eth"].Positions["ETH"] == nil {
 		t.Fatal("fixture peer position missing")
 	}

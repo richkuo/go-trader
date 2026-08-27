@@ -14,10 +14,8 @@ type SharedWalletPosition struct {
 }
 
 type sharedWalletReconcileResult struct {
-	Values map[string]float64
-
-	Drift float64
-
+	Values      map[string]float64
+	Drift       float64
 	OrphanCoins []string
 }
 
@@ -42,7 +40,6 @@ func reconcileSharedWalletMemberValues(
 		}
 	}
 	if capitalSum > 0 {
-
 		for _, id := range members {
 			c := capitalByID[id]
 			if c > 0 {
@@ -52,7 +49,6 @@ func reconcileSharedWalletMemberValues(
 			}
 		}
 	} else {
-
 		eq := 1.0 / float64(len(members))
 		for _, id := range members {
 			weights[id] = eq
@@ -60,7 +56,6 @@ func reconcileSharedWalletMemberValues(
 	}
 
 	totalUPnL := 0.0
-
 	uPnLByCoin := make(map[string]float64)
 	for _, p := range positions {
 		totalUPnL += p.UnrealizedPnL
@@ -109,7 +104,6 @@ func attributeSharedWalletUPnL(
 	virtualQty map[string]map[string]float64,
 ) (ownedUPnL map[string]float64, attributedUPnL float64, orphanCoins []string) {
 	ownedUPnL = make(map[string]float64, len(memberSet))
-
 	coins := make([]string, 0, len(uPnLByCoin))
 	for coin := range uPnLByCoin {
 		coins = append(coins, coin)
@@ -145,16 +139,13 @@ func attributeSharedWalletUPnL(
 }
 
 type ledgerWalletInputs struct {
-	Members     []string
-	InitialByID map[string]float64
-	LedgerByID  map[string]float64
-	Positions   []SharedWalletPosition
-	VirtualQty  map[string]map[string]float64
-
+	Members        []string
+	InitialByID    map[string]float64
+	LedgerByID     map[string]float64
+	Positions      []SharedWalletPosition
+	VirtualQty     map[string]map[string]float64
 	AccountBalance float64
-
-	NonTradeFlows float64
-
+	NonTradeFlows  float64
 	BaselineOffset float64
 	BaselineSet    bool
 }
@@ -196,16 +187,13 @@ func roundCents(v float64) float64 {
 }
 
 type sharedWalletDriftResult struct {
-	Key         SharedWalletKey
-	Drift       float64
-	Balance     float64
-	MemberSum   float64
-	OrphanCoins []string
-
-	Basis string
-
+	Key            SharedWalletKey
+	Drift          float64
+	Balance        float64
+	MemberSum      float64
+	OrphanCoins    []string
+	Basis          string
 	ExpectedEquity float64
-
 	JournalPending bool
 }
 
@@ -426,7 +414,6 @@ func buildSharedWalletBooks(
 			}
 			virtualQty[coin][id] = pos.Quantity
 		}
-
 		if key.Platform == "hyperliquid" {
 			if hCoin := hedgeCoin(sc); hCoin != "" {
 				if hPos, hok := ss.Positions[hCoin]; hok && hPos != nil && hPos.isHedgeLeg() && hPos.Quantity > 0 {
@@ -470,7 +457,6 @@ func reconcileHLWalletViaLedger(
 	if err != nil {
 		return fallback("ledger state", err)
 	}
-
 	if !found {
 		return fallback("ledger state", fmt.Errorf("watermark row not initialized"))
 	}

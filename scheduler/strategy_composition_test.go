@@ -35,7 +35,6 @@ func TestEffectiveOpenStrategy(t *testing.T) {
 }
 
 func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
-
 	legacy := StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}}
 	if got := appendOpenCloseArgs(legacy.Args, legacy, PositionCtx{Side: "long"}); !reflect.DeepEqual(got, legacy.Args) {
 		t.Fatalf("legacy args mutated: %#v", got)
@@ -57,14 +56,12 @@ func TestAppendOpenCloseArgsOnlyWhenOptedIn(t *testing.T) {
 }
 
 func TestBuildStrategyRefsArg(t *testing.T) {
-
 	legacy := StrategyConfig{Args: []string{"sma_crossover", "BTC/USDT", "1h"}}
 	got, err := buildStrategyRefsArg(legacy)
 	if err != nil {
 		t.Fatalf("legacy: unexpected err: %v", err)
 	}
 	if got != nil {
-
 		if len(got) != 2 || got[0] != "--strategy-refs" {
 			t.Fatalf("legacy: got %#v, want a single --strategy-refs flag", got)
 		}
@@ -87,7 +84,6 @@ func TestBuildStrategyRefsArg(t *testing.T) {
 	if len(got) != 2 || got[0] != "--strategy-refs" {
 		t.Fatalf("got %#v, want --strategy-refs JSON", got)
 	}
-
 	var payload struct {
 		Open   StrategyRef   `json:"open"`
 		Closes []StrategyRef `json:"closes"`
@@ -101,7 +97,6 @@ func TestBuildStrategyRefsArg(t *testing.T) {
 	if got, want := payload.Open.Params["rsi_period"], 14.0; got != want {
 		t.Errorf("open.params[rsi_period] = %v, want %v", got, want)
 	}
-
 	if len(payload.Closes) != 1 {
 		t.Fatalf("closes length = %d, want 1 (single close)", len(payload.Closes))
 	}

@@ -140,12 +140,10 @@ func TestBuildLeaderboardMessages_TfIntColumns(t *testing.T) {
 	}
 	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000, "ETH/USDT": 3000}, nil, nil, nil, nil)
 	topMsg := messages["top"]
-
 	smaCell := fmt.Sprintf("%4s %4s", "30m", "10m")
 	if !containsStr(topMsg, smaCell) {
 		t.Errorf("top message should contain Tf+Int cell %q for sma-btc, got:\n%s", smaCell, topMsg)
 	}
-
 	rsiCell := fmt.Sprintf("%4s %4s", "4h", "1h")
 	if !containsStr(topMsg, rsiCell) {
 		t.Errorf("top message should contain Tf+Int cell %q for rsi-eth, got:\n%s", rsiCell, topMsg)
@@ -168,7 +166,6 @@ func TestBuildLeaderboardMessages_PositionsOpenedAndWinLoss(t *testing.T) {
 	}
 	messages := BuildLeaderboardMessages(cfg, state, map[string]float64{"BTC/USDT": 50000}, nil, lifetime, nil, nil)
 	topMsg := messages["top"]
-
 	wantCell := fmt.Sprintf("%4d %5s", 7, fmtWinLossRatio(5, 2))
 	if !containsStr(topMsg, wantCell) {
 		t.Errorf("top message should render #T+W/L cell %q, got:\n%s", wantCell, topMsg)
@@ -274,7 +271,6 @@ func TestBuildLeaderboardMessages_TopN(t *testing.T) {
 	if topMsg == "" {
 		t.Fatal("Expected non-empty top all-time message")
 	}
-
 	if !containsStr(topMsg, "sma-s07") {
 		t.Error("top all-time should contain sma-s07 when top_n=3")
 	}
@@ -494,7 +490,6 @@ func TestBuildLeaderboardSummary_PlatformOnly(t *testing.T) {
 	if !containsStr(msg, "hl-sma-btc") || !containsStr(msg, "hl-rsi-eth") || !containsStr(msg, "hl-mom-sol") {
 		t.Errorf("Expected all 3 HL strategies in message, got:\n%s", msg)
 	}
-
 	if containsStr(msg, " sma-btc ") {
 		t.Errorf("Expected non-HL strategy to be excluded, got:\n%s", msg)
 	}
@@ -553,7 +548,6 @@ func TestBuildLeaderboardSummary_TickerFilter(t *testing.T) {
 	if !containsStr(msg, "hl-rsi-eth") || !containsStr(msg, "hl-mom-eth") {
 		t.Errorf("Expected both ETH strategies, got:\n%s", msg)
 	}
-
 	rsiIdx := strings.Index(msg, "hl-rsi-eth")
 	momIdx := strings.Index(msg, "hl-mom-eth")
 	if rsiIdx < 0 || momIdx < 0 || rsiIdx >= momIdx {
@@ -773,7 +767,6 @@ func TestBuildLeaderboardSummary_AdjustedTotal(t *testing.T) {
 	if totalLine == "" {
 		t.Fatalf("no TOTAL row found in:\n%s", msg)
 	}
-
 	if !strings.Contains(totalLine, "8,000") {
 		t.Errorf("TOTAL row should show adjusted $8,000; got: %q\nfull msg:\n%s", totalLine, msg)
 	}

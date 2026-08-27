@@ -75,6 +75,5 @@ func lastBookedTradePnL(s *StrategyState) float64 {
 	if s == nil || len(s.TradeHistory) == 0 {
 		return 0
 	}
-
 	return tradeNetPnL(s.TradeHistory[len(s.TradeHistory)-1])
 }

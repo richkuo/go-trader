@@ -179,7 +179,6 @@ func TestShouldPostSummary_InvalidValueFallsBackToLegacy(t *testing.T) {
 	if !ShouldPostSummary("nonsense", true, false, now, now.Add(time.Second)) {
 		t.Error("invalid freq + continuous should fall back to legacy every-run")
 	}
-
 	if ShouldPostSummary("nonsense", false, false, now, now.Add(time.Hour-time.Second)) {
 		t.Error("invalid freq + spot should fall back to legacy hourly cadence")
 	}

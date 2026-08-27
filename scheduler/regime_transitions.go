@@ -22,13 +22,10 @@ const (
 var regimeTransitionPruneInterval = time.Hour
 
 type RegimeTransitionAlertsConfig struct {
-	Enabled bool `json:"enabled"`
-
-	DebounceCycles int `json:"debounce_cycles,omitempty"`
-
-	RetentionDays int `json:"retention_days,omitempty"`
-
-	ReversalMinOpposing int `json:"reversal_min_opposing,omitempty"`
+	Enabled             bool `json:"enabled"`
+	DebounceCycles      int  `json:"debounce_cycles,omitempty"`
+	RetentionDays       int  `json:"retention_days,omitempty"`
+	ReversalMinOpposing int  `json:"reversal_min_opposing,omitempty"`
 }
 
 func (c *RegimeTransitionAlertsConfig) enabled() bool {
@@ -251,15 +248,13 @@ func netRegimeTransition(pending []RegimeWindowTransitionRow, confirmedLabel str
 type regimeReversalResult struct {
 	LongestWindow string
 	LongestLabel  string
-
-	Opposing map[string]string
+	Opposing      map[string]string
 }
 
 func classifyRegimeReversal(snaps map[string]RegimeSnapshot, periods map[string]int, minOpposing int) (regimeReversalResult, bool) {
 	if len(snaps) < 2 || len(periods) < 2 {
 		return regimeReversalResult{}, false
 	}
-
 	longest := ""
 	longestPeriod := 0
 	for _, name := range sortedStringKeys(periods) {
@@ -360,10 +355,9 @@ var regimeAlertSendFn = func(notifier *MultiNotifier, msg string) {
 }
 
 type regimeReversalPending struct {
-	sig      string
-	count    int
-	inactive int
-
+	sig         string
+	count       int
+	inactive    int
 	lastBarTime string
 }
 
@@ -394,7 +388,6 @@ func processRegimeTransitionAlerts(sdb *StateDB, store *RegimeStore, rc *RegimeC
 				fmt.Printf("[WARN] regime transitions %s/%s: history read failed: %v\n", b.Key, window, err)
 				continue
 			}
-
 			if b.BarTime != "" && len(trailing) > 0 && trailing[0].BarTime == b.BarTime {
 				continue
 			}
@@ -406,7 +399,6 @@ func processRegimeTransitionAlerts(sdb *StateDB, store *RegimeStore, rc *RegimeC
 				fmt.Printf("[WARN] regime transitions %s/%s: history write failed: %v\n", b.Key, window, err)
 				continue
 			}
-
 			if len(trailing) > 0 && trailing[0].Label != label {
 				if err := sdb.InsertRegimeWindowTransition(b.Key, window, trailing[0].Label, label, b.BarTime, ts); err != nil {
 					fmt.Printf("[WARN] regime transitions %s/%s: transition write failed: %v\n", b.Key, window, err)
@@ -421,7 +413,6 @@ func processRegimeTransitionAlerts(sdb *StateDB, store *RegimeStore, rc *RegimeC
 				fmt.Printf("[WARN] regime transitions %s/%s: pending read failed: %v\n", b.Key, window, err)
 				continue
 			}
-
 			if len(pending) == 0 || pending[len(pending)-1].NewLabel != label {
 				continue
 			}
@@ -430,7 +421,6 @@ func processRegimeTransitionAlerts(sdb *StateDB, store *RegimeStore, rc *RegimeC
 			for i, p := range pending {
 				ids[i] = p.ID
 			}
-
 			if err := sdb.MarkRegimeWindowTransitionsAlerted(ids, ts); err != nil {
 				fmt.Printf("[WARN] regime transitions %s/%s: alert mark failed: %v\n", b.Key, window, err)
 				continue
@@ -458,7 +448,6 @@ func processRegimeTransitionAlerts(sdb *StateDB, store *RegimeStore, rc *RegimeC
 }
 
 func processRegimeReversal(sdb *StateDB, b *RegimeBundle, rc *RegimeConfig, notifier *MultiNotifier, debounce int, ts string) {
-
 	if !b.Payload.MultiMode || b.Key.SpecJSON != regimeWindowsSpecJSON(rc) {
 		return
 	}
@@ -474,7 +463,6 @@ func processRegimeReversal(sdb *StateDB, b *RegimeBundle, rc *RegimeConfig, noti
 		pending = &regimeReversalPending{}
 		regimeReversalPendingState[b.Key] = pending
 	}
-
 	if b.BarTime != "" && pending.lastBarTime == b.BarTime {
 		return
 	}
@@ -484,7 +472,6 @@ func processRegimeReversal(sdb *StateDB, b *RegimeBundle, rc *RegimeConfig, noti
 		pending.count = 0
 		pending.inactive++
 		if pending.inactive == debounce {
-
 			if err := sdb.ClearRegimeReversalSignature(b.Key); err != nil {
 				fmt.Printf("[WARN] regime reversal %s: signature clear failed: %v\n", b.Key, err)
 			}
@@ -510,7 +497,6 @@ func processRegimeReversal(sdb *StateDB, b *RegimeBundle, rc *RegimeConfig, noti
 	if stored == sig {
 		return
 	}
-
 	if err := sdb.SetRegimeReversalSignature(b.Key, sig, ts); err != nil {
 		fmt.Printf("[WARN] regime reversal %s: signature write failed: %v\n", b.Key, err)
 		return

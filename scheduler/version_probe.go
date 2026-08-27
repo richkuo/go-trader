@@ -15,14 +15,11 @@ import (
 var probeArgv = []string{
 	"probe", "BTC", "1h",
 	"--strategy-refs", `{"open":{"name":"probe","params":{}},"closes":[{"name":"probe_close","params":{}}]}`,
-
 	"--mark-price=0",
 	"--ohlcv-limit", "200",
 	"--regime-windows-spec-json", `{"default":{"classifier":"adx","period":14,"adx_threshold":20}}`,
 	"--regime-atr-window", "",
-
 	"--regime-payload-json", `{"default":{"regime":"trending_up","score":0.5,"classifier":"adx","metrics":{"adx":25.0,"plus_di":20.0,"minus_di":10.0,"atr_pct":1.0}}}`,
-
 	"--atr-method=simple",
 	"--probe-only",
 }
@@ -108,16 +105,13 @@ func probeCheckScripts(cfg *Config) error {
 		if err := probeOneCheckScriptFn(script, probeCompositeArgv); err != nil {
 			return err
 		}
-
 		if filepath.Base(script) == "check_hyperliquid.py" {
 			if err := probeOneCheckScriptFn(script, fetchATRProbeArgv); err != nil {
 				return err
 			}
-
 			if err := probeOneCheckScriptFn(script, executeProbeArgv); err != nil {
 				return err
 			}
-
 			if err := probeOneCheckScriptFn(script, limitOpenProbeArgv); err != nil {
 				return err
 			}
@@ -127,13 +121,11 @@ func probeCheckScripts(cfg *Config) error {
 			if err := probeOneCheckScriptFn(script, cancelOrderProbeArgv); err != nil {
 				return err
 			}
-
 			if err := probeOneCheckScriptFn(script, hyperliquidBatchProbeArgv); err != nil {
 				return err
 			}
 		}
 	}
-
 	if anyStrategyUsesLLMEntryAnalysis(cfg) {
 		if err := probeOneCheckScriptFn(llmEntryAnalysisScript, llmReviewProbeArgv); err != nil {
 			return err
@@ -214,6 +206,5 @@ func formatProbeFailure(script string, runErr error, stderr, stdout string) erro
 }
 
 func probeFailureScriptMissing(detail string) bool {
-
 	return strings.Contains(detail, "can't open file")
 }

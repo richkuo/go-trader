@@ -13,14 +13,12 @@ import (
 )
 
 func TestNewFieldsSince(t *testing.T) {
-
 	cases := []int{0, 1, MinSupportedConfigVersion, CurrentConfigVersion, 999}
 	for _, version := range cases {
 		fields := NewFieldsSince(version)
 		if len(fields) != 0 {
 			t.Errorf("NewFieldsSince(%d) returned %d fields, want 0 (registry emptied by #1285 floor)", version, len(fields))
 		}
-
 		for _, f := range fields {
 			if f.Version <= version {
 				t.Errorf("NewFieldsSince(%d) returned field %q with version %d", version, f.JSONPath, f.Version)
@@ -104,7 +102,6 @@ func TestMigrateConfigBasic(t *testing.T) {
 	if updated["interval_seconds"].(float64) != 300 {
 		t.Error("interval_seconds should be preserved")
 	}
-
 	if _, ok := updated["default_stop_loss_atr_mult"]; ok {
 		t.Error("default_stop_loss_atr_mult should no longer be backfilled on disk (#1285)")
 	}
@@ -285,7 +282,6 @@ func TestMigrateConfigRejectsPreFloorVersions(t *testing.T) {
 		extra   map[string]interface{}
 	}{
 		{
-
 			name:    "v5_channel_booleans",
 			version: 5,
 			extra: map[string]interface{}{
@@ -297,7 +293,6 @@ func TestMigrateConfigRejectsPreFloorVersions(t *testing.T) {
 			},
 		},
 		{
-
 			name:    "v6_dm_booleans",
 			version: 6,
 			extra: map[string]interface{}{
@@ -309,7 +304,6 @@ func TestMigrateConfigRejectsPreFloorVersions(t *testing.T) {
 			},
 		},
 		{
-
 			name:    "v7_summary_freq",
 			version: 7,
 			extra: map[string]interface{}{
@@ -320,7 +314,6 @@ func TestMigrateConfigRejectsPreFloorVersions(t *testing.T) {
 			},
 		},
 		{
-
 			name:    "v9_sizing_leverage",
 			version: 9,
 			extra: map[string]interface{}{
@@ -330,7 +323,6 @@ func TestMigrateConfigRejectsPreFloorVersions(t *testing.T) {
 			},
 		},
 		{
-
 			name:    "v12_boundary",
 			version: 12,
 			extra:   map[string]interface{}{},
@@ -432,7 +424,6 @@ func TestVersionlessConfigRejectsRemovedDMTranslationKeys(t *testing.T) {
 				ownerKey = "owner_chat_id"
 			}
 			obj := map[string]interface{}{
-
 				"interval_seconds": 3600,
 				tc.section: map[string]interface{}{
 					ownerKey: "owner-target",
@@ -443,9 +434,7 @@ func TestVersionlessConfigRejectsRemovedDMTranslationKeys(t *testing.T) {
 			fullKey := tc.section + "." + tc.key
 
 			assertVersionlessDMKeyError(t, checkRawConfigVersionSupported(original), fullKey, "", nil)
-
 			assertVersionlessDMKeyError(t, MigrateConfig(path, nil, nil), fullKey, path, original)
-
 			_, loadErr := LoadConfig(path)
 			assertVersionlessDMKeyError(t, loadErr, fullKey, path, original)
 		})
@@ -507,7 +496,6 @@ func TestVersionlessConfigWithInertPreFloorKeysMigrates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 	writeRawConfig(t, path, map[string]interface{}{
-
 		"interval_seconds": 3600,
 		"strategies":       []interface{}{},
 		"discord": map[string]interface{}{
@@ -658,12 +646,10 @@ func TestCloneOrNewJSONMap(t *testing.T) {
 		if got["a"] != "alpha" || got["b"] != float64(2) {
 			t.Errorf("clone missing expected values: %v", got)
 		}
-
 		got["a"] = "changed"
 		if orig["a"] != "alpha" {
 			t.Error("mutating clone affected original")
 		}
-
 		got["c"] = "new"
 		if _, ok := orig["c"]; ok {
 			t.Error("new key in clone leaked to original")
@@ -693,7 +679,6 @@ func TestMigrateV13StrategyShape(t *testing.T) {
 				},
 			},
 			map[string]interface{}{
-
 				"id":       "hl-rsi-eth",
 				"type":     "perps",
 				"platform": "hyperliquid",
@@ -927,12 +912,10 @@ func TestLoadConfigMigratesVersionlessEndToEnd(t *testing.T) {
 				"leverage":         1.0,
 				"allow_shorts":     true,
 				"params": map[string]interface{}{
-
 					"tp_tiers": []interface{}{
 						map[string]interface{}{"atr_multiple": 2.0, "close_fraction": 0.5},
 						map[string]interface{}{"atr_multiple": 3.0, "close_fraction": 1.0},
 					},
-
 					"short_period": 5.0,
 					"mid_period":   13.0,
 				},
@@ -966,7 +949,6 @@ func TestLoadConfigMigratesVersionlessEndToEnd(t *testing.T) {
 	if sc.OpenStrategy.Name != "tema_cross_bd" {
 		t.Errorf("OpenStrategy.Name = %q, want tema_cross_bd", sc.OpenStrategy.Name)
 	}
-
 	if got := sc.OpenStrategy.Params["short_period"]; got != 5.0 {
 		t.Errorf("OpenStrategy.Params[short_period] = %v, want 5", got)
 	}
@@ -976,7 +958,6 @@ func TestLoadConfigMigratesVersionlessEndToEnd(t *testing.T) {
 	if _, leaked := sc.OpenStrategy.Params["tiers"]; leaked {
 		t.Error("OpenStrategy.Params still contains tiers — the original #640 bug")
 	}
-
 	if sc.CloseStrategy == nil {
 		t.Fatalf("CloseStrategy = nil, want a single tiered_tp_atr ref")
 	}
@@ -1071,7 +1052,6 @@ func TestMigrateV14Direction(t *testing.T) {
 			},
 			wantDir: "",
 		},
-
 		{
 			name: "manual_allow_shorts_true_to_both",
 			strategy: map[string]interface{}{
@@ -1167,14 +1147,12 @@ func TestLoadConfig_V14_TranslatesAllowShortsToDirection(t *testing.T) {
 	if got := byID["hl-tema-btc"].Direction; got != "long" {
 		t.Errorf("hl-tema-btc Direction = %q, want %q (allow_shorts=false)", got, "long")
 	}
-
 	if byID["hl-temab-eth"].AllowShorts {
 		t.Error("hl-temab-eth AllowShorts should be false post-migration (key removed from JSON)")
 	}
 	if byID["hl-tema-btc"].AllowShorts {
 		t.Error("hl-tema-btc AllowShorts should be false post-migration")
 	}
-
 	if got := EffectiveDirection(byID["hl-temab-eth"]); got != DirectionBoth {
 		t.Errorf("EffectiveDirection(temab) = %q, want %q", got, DirectionBoth)
 	}

@@ -33,12 +33,10 @@ func TestBuildHyperliquidProtectionPlanUsesDefaultTieredATR(t *testing.T) {
 	if plan.StopLossATRMult != 1 {
 		t.Errorf("StopLossATRMult = %g, want 1", plan.StopLossATRMult)
 	}
-
 	wantTiers := []hlProtectionTier{{Multiple: 1.5, Fraction: 0.4}, {Multiple: 3, Fraction: 0.8}, {Multiple: 5, Fraction: 1}}
 	if !reflect.DeepEqual(plan.Tiers, wantTiers) {
 		t.Errorf("tiers = %+v, want %+v", plan.Tiers, wantTiers)
 	}
-
 	if !reflect.DeepEqual(plan.TPOIDs, []int64{101, 202, 0}) {
 		t.Errorf("TP OIDs = %v, want [101 202 0]", plan.TPOIDs)
 	}
@@ -109,8 +107,7 @@ func TestApplyHyperliquidProtectionSyncClearsFilledExternally(t *testing.T) {
 	applyHyperliquidProtectionSync(pos, &HyperliquidProtectionSyncResult{
 		StopLossFilledExternally: true,
 		TPFilledExternally:       []bool{true, false},
-
-		TPOIDs: []int64{0, 33},
+		TPOIDs:                   []int64{0, 33},
 	}, nil)
 	if pos.StopLossOID != 0 {
 		t.Errorf("StopLossOID = %d, want 0 (cleared because filled externally)", pos.StopLossOID)
@@ -293,7 +290,6 @@ func TestStrategyConfigWithOnChainProtectionFilter(t *testing.T) {
 }
 
 func TestCloseStrategiesSuppressedMatchesTieredTPATRClose(t *testing.T) {
-
 	for name := range closeStrategiesSuppressedByOnChainProtection {
 		sc := StrategyConfig{CloseStrategy: &StrategyRef{Name: name}}
 		if !strategyUsesTieredTPATRClose(sc) {
@@ -546,7 +542,6 @@ func TestRunHyperliquidProtectionSyncSkipsApplyAfterExternalClose(t *testing.T) 
 		},
 	}
 	withStubbedSyncHyperliquidProtection(t, func(_ StrategyConfig, _ hlProtectionPlan, _ *MultiNotifier, _ *StrategyLogger, _ []byte) (*HyperliquidProtectionSyncResult, bool) {
-
 		state.Positions["ETH"].Quantity = 0
 		return &HyperliquidProtectionSyncResult{StopLossOID: 999, TPOIDs: []int64{111}}, true
 	})
@@ -640,14 +635,12 @@ func TestBuildHyperliquidProtectionPlanPadsTPArmedTiers(t *testing.T) {
 	if !ok {
 		t.Fatal("expected plan ok=true")
 	}
-
 	if want := []bool{true, true, false}; !reflect.DeepEqual(plan.TPArmedTiers, want) {
 		t.Errorf("TPArmedTiers = %v, want %v", plan.TPArmedTiers, want)
 	}
 	if want := []int64{0, 300, 0}; !reflect.DeepEqual(plan.TPOIDs, want) {
 		t.Errorf("TPOIDs = %v, want %v", plan.TPOIDs, want)
 	}
-
 	pos.TPArmedTiers = []bool{true}
 	plan, ok = buildHyperliquidProtectionPlan(sc, pos, 0)
 	if !ok {
@@ -812,7 +805,6 @@ func TestStrategyTPTiersForRegime_UnifiedBlock(t *testing.T) {
 	if len(rng) != 2 || rng[0].Multiple != 1.0 || rng[1].Multiple != 2.0 {
 		t.Fatalf("ranging tiers = %+v, want [1,2]", rng)
 	}
-
 	if got := strategyTPTiersForRegime(sc, ""); got != nil {
 		t.Fatalf("empty regime tiers = %+v, want nil", got)
 	}

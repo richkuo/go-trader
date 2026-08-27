@@ -107,7 +107,6 @@ func TestRegimeGate_DefaultWindowBlocks(t *testing.T) {
 	if !blocked {
 		t.Fatalf("expected gate to block trending_down entry (allowed=trending_up); gateLabel=%q", gateLabel)
 	}
-
 	scAllowed := StrategyConfig{AllowedRegimes: []string{"trending_down"}}
 	if _, blocked := applyRegimeGate(scAllowed, p, rc, 0); blocked {
 		t.Fatal("expected trending_down entry to pass when allowed")

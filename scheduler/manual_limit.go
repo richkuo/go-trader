@@ -82,7 +82,6 @@ func parseHyperliquidLimitOpenOutput(stdout []byte, stderrStr string, runErr err
 		}
 		return nil, stderrStr, fmt.Errorf("parse output: %w (stdout: %s)", jsonErr, string(stdout))
 	}
-
 	return &result, stderrStr, nil
 }
 
@@ -177,7 +176,6 @@ type manualLimitOpenInputs struct {
 }
 
 func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in manualLimitOpenInputs) int {
-
 	size := resolveManualSize(in.size, in.notional, in.margin, in.limitPrice, sc.Leverage)
 	if size <= 0 {
 		fmt.Fprintf(os.Stderr, "error: resolved size is zero (size=%g notional=%g margin=%g limit=%g leverage=%g)\n",
@@ -272,7 +270,6 @@ func runManualLimitOpen(cfg *Config, sc StrategyConfig, stateDB *StateDB, in man
 		CreatedAt:  time.Now().UTC(),
 	}
 	if _, err := stateDB.InsertPendingLimitOrder(row); err != nil {
-
 		fmt.Fprintf(os.Stderr, "CRITICAL: limit order placed (oid=%d) but DB insert failed (%v); attempting cancel...\n", res.OrderOID, err)
 		if _, cstderr, cerr := RunHyperliquidCancelOrder(sc.Script, sc.Symbol, res.OrderOID); cerr != nil {
 			fmt.Fprintf(os.Stderr, "cancel ALSO failed (%v, stderr=%s) — MANUAL INTERVENTION REQUIRED: cancel oid=%d on the HL UI\n", cerr, cstderr, res.OrderOID)
@@ -367,7 +364,6 @@ func resolveLimitFillEntryATR(sc StrategyConfig, cfg *Config, rowATR, avgPx floa
 			}
 		}
 	}
-
 	if entryATR > 0 && avgPx > 0 && entryATR > 0.5*avgPx {
 		warnNotifier(notifier, fmt.Sprintf(
 			"[limit-fill] %s %s: entry ATR %.6f exceeds 50%% of fill price %.4f — not stamping ATR",
@@ -392,7 +388,6 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 	pos := ss.Positions[o.Symbol]
 
 	if o.FilledSize == 0 {
-
 		if pos != nil {
 			return 0, fmt.Errorf("limit fill for %s/%s but a position already exists (owner=%q) — not adopting", o.StrategyID, o.Symbol, pos.OwnerStrategyID)
 		}
@@ -456,14 +451,13 @@ func applyLimitFillProgress(state *AppState, sc StrategyConfig, o PendingLimitOr
 	}
 
 	trade := Trade{
-		Timestamp:  now,
-		StrategyID: o.StrategyID,
-		Symbol:     o.Symbol,
-		Side:       openTradeSide(o.Side),
-		Quantity:   deltaQty,
-		Price:      avgPx,
-		Value:      deltaQty * avgPx,
-
+		Timestamp:       now,
+		StrategyID:      o.StrategyID,
+		Symbol:          o.Symbol,
+		Side:            openTradeSide(o.Side),
+		Quantity:        deltaQty,
+		Price:           avgPx,
+		Value:           deltaQty * avgPx,
 		TradeType:       scaleInTradeType,
 		Details:         fmt.Sprintf("manual limit add %s %s %.6f @ $%.4f (oid=%d)", o.Side, o.Symbol, deltaQty, avgPx, o.OrderOID),
 		PositionID:      ensurePositionTradeID(o.StrategyID, o.Symbol, pos),
@@ -506,7 +500,6 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 	for _, o := range orders {
 		sc, ok := scByID[o.StrategyID]
 		if !ok || sc.Type != "manual" {
-
 			fmt.Printf("[limit] skipping row %d: strategy %q missing or not type=manual\n", o.ID, o.StrategyID)
 			continue
 		}
@@ -541,7 +534,6 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			if avgPx <= 0 {
 				avgPx = o.LimitPrice
 			}
-
 			entryATR := o.EntryATR
 			resolveATR := o.FilledSize == 0
 			if !resolveATR {
@@ -561,21 +553,17 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 			mu.Unlock()
 			if applyErr != nil {
 				warnNotifier(notifier, fmt.Sprintf("[limit-fill] %s %s: %v", o.StrategyID, o.Symbol, applyErr))
-
 				continue
 			}
 			if err := stateDB.UpdatePendingLimitOrderFill(o.ID, st.FilledSize, avgPx, st.Fee); err != nil {
 				fmt.Printf("[limit] failed to persist fill watermark for row %d: %v\n", o.ID, err)
 			}
-
 			o.FilledSize = st.FilledSize
 			o.AvgFillPrice = avgPx
 			o.FillFee = st.Fee
-
 			if _, fillPx := runHyperliquidProtectionSync(sc, state.Strategies[o.StrategyID], stateDB, o.Symbol, mu, notifier, logger, "HL limit-fill protection synced", nil, nil, nil); fillPx > 0 {
 				tradesBooked++
 			}
-
 			if ma := applied[o.StrategyID]; ma == nil {
 				applied[o.StrategyID] = &manualAlert{sc: sc, ss: state.Strategies[o.StrategyID], trades: tradesBooked}
 				order = append(order, o.StrategyID)
@@ -585,7 +573,6 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 		}
 
 		if st.Resting != nil && !*st.Resting {
-
 			if limitOrderFullyFilled(o.FilledSize, o.OrderSize) {
 				fmt.Printf("[limit] %s oid=%d fully filled (%.6f %s)\n", o.StrategyID, o.OrderOID, o.FilledSize, o.Symbol)
 			} else if o.FilledSize > 0 {
@@ -597,7 +584,6 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 					"[limit] %s %s: limit order cancelled with no fill (oid=%d)",
 					o.StrategyID, o.Symbol, o.OrderOID))
 			}
-
 			if o.FilledSize > 0 {
 				mu.Lock()
 				saveErr := SaveStateWithDB(state, cfg, stateDB)
@@ -626,7 +612,6 @@ func reconcilePendingLimitOrders(state *AppState, cfg *Config, stateDB *StateDB,
 				fmt.Fprintf(os.Stderr, "[limit] %s cancel stderr: %s\n", o.StrategyID, cstderr)
 			}
 			if cerr != nil || cancelRes == nil || cancelRes.Error != "" {
-
 				fmt.Printf("[limit] cancel (%s) failed for %s oid=%d: %v — will retry\n", reason, o.StrategyID, o.OrderOID, cerr)
 				continue
 			}

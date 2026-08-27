@@ -36,11 +36,9 @@ func TestHandleHealth(t *testing.T) {
 	if resp["status"] != "ok" {
 		t.Errorf("status = %q, want %q", resp["status"], "ok")
 	}
-
 	if resp["version"] != Version {
 		t.Errorf("version = %q, want %q", resp["version"], Version)
 	}
-
 	if pid, ok := resp["pid"].(float64); !ok || int(pid) != os.Getpid() {
 		t.Errorf("pid = %v, want %d", resp["pid"], os.Getpid())
 	}
@@ -60,7 +58,6 @@ func TestHandleHealthStale(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
 	}
-
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["version"] != Version {
@@ -70,7 +67,6 @@ func TestHandleHealthStale(t *testing.T) {
 
 func TestHandleHealthZeroTime(t *testing.T) {
 	state := NewAppState()
-
 	var mu sync.RWMutex
 
 	ss := NewStatusServer(state, &mu, "", nil, nil)
@@ -236,7 +232,6 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 		{Type: "spot", Args: []string{"sma", "BTC/USDT", "1h"}},
 		{Type: "spot", Args: []string{"rsi", "ETH/USDT", "1h"}},
 		{Type: "options", Args: []string{"vol", "BTC"}},
-
 		{Type: "perps", Platform: "hyperliquid", Args: []string{"momentum", "SOL", "1h"}},
 		{Type: "perps", Platform: "okx", Args: []string{"ema", "BTC", "1h"}},
 	}
@@ -255,7 +250,6 @@ func TestNewStatusServerExtractsSymbols(t *testing.T) {
 	if !symbolSet["ETH/USDT"] {
 		t.Error("ETH/USDT should be in priceSymbols")
 	}
-
 	if symbolSet["SOL/USDT"] {
 		t.Error("SOL/USDT must not be in priceSymbols (HL perps now venue-native — #263)")
 	}

@@ -72,7 +72,6 @@ func tradeLedgerNoOIDReconcileMatches(trades []TradeBackfillRow, fillMap map[str
 		if t.FeeSource != FeeSourceReconcileAdjustment || !t.IsClose || t.ExchangeOrderID != "" || t.Quantity <= 0 {
 			continue
 		}
-
 		if strings.Contains(t.Details, modelOnlyFillReconciledMarker) && !strings.Contains(t.Details, modelOnlyAbandonedMarker) {
 			continue
 		}
@@ -274,7 +273,6 @@ func planTradeLedgerForStrategyWithOIDTotals(
 					if total := closeQtyTotal(t.ExchangeOrderID); total > 0 && t.Quantity > 0 {
 						pnlShare = t.Quantity / total
 					}
-
 					nv.PnL = summary.ClosedPnLGross * pnlShare
 				}
 				plan.MatchedCount++
@@ -644,7 +642,6 @@ func runBackfillTradeLedger(args []string) int {
 	}
 
 	if len(appliedIDs) > 0 {
-
 		resetWalletBaselinesForAppliedStrategies(stateDB, cfg.Strategies, appliedIDs)
 	}
 	if !*apply {

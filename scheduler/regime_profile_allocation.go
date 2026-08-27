@@ -181,7 +181,6 @@ func (a *RegimeProfileAllocation) ResolveRaw(label string, labels []string) []st
 	if len(paramSets) != regimeProfileExactProfiles {
 		errs = append(errs, fmt.Sprintf("%s.param_sets: must define exactly %d profiles (the M4 two-profile model), got %d", label, regimeProfileExactProfiles, len(paramSets)))
 	}
-
 	for lbl, prof := range profiles {
 		if _, ok := paramSets[prof]; !ok {
 			errs = append(errs, fmt.Sprintf("%s.profiles[%q]=%q is not a param_sets profile (valid: %s)", label, lbl, prof, strings.Join(sortedKeys(paramSets), ", ")))
@@ -190,7 +189,6 @@ func (a *RegimeProfileAllocation) ResolveRaw(label string, labels []string) []st
 	if _, ok := paramSets[initialProfile]; !ok {
 		errs = append(errs, fmt.Sprintf("%s.initial_profile=%q is not a param_sets profile (valid: %s)", label, initialProfile, strings.Join(sortedKeys(paramSets), ", ")))
 	}
-
 	_, bareDirectional := profiles[regimeDirectionalBare]
 	for _, l := range labels {
 		if _, ok := profiles[l]; ok {
@@ -309,7 +307,6 @@ func resolveRegimeProfile(alloc *RegimeProfileAllocation, label, barTime string,
 	desired := ""
 	if label != "" {
 		desired = alloc.Profiles[label]
-
 		if desired == "" && regimeDirectionalSubs[label] {
 			desired = alloc.Profiles[regimeDirectionalBare]
 		}
@@ -320,20 +317,16 @@ func resolveRegimeProfile(alloc *RegimeProfileAllocation, label, barTime string,
 		next.LastBarTime = barTime
 		switch {
 		case desired == "":
-
 		case desired == next.ActiveProfile:
-
 			next.PendingProfile = ""
 			next.PendingBarsSeen = 0
 		default:
-
 			if next.PendingProfile == desired {
 				next.PendingBarsSeen++
 			} else {
 				next.PendingProfile = desired
 				next.PendingBarsSeen = 1
 			}
-
 			if posQty <= 0 && next.PendingBarsSeen >= alloc.ConfirmBars {
 				next.ActiveProfile = desired
 				next.PendingProfile = ""
@@ -344,7 +337,6 @@ func resolveRegimeProfile(alloc *RegimeProfileAllocation, label, barTime string,
 
 	active := next.ActiveProfile
 	if posQty > 0 {
-
 		if p := strings.TrimSpace(posProfile); p != "" {
 			active = p
 		}

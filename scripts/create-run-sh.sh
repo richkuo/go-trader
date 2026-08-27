@@ -4,6 +4,7 @@ out="${1:-run.sh}"
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$repo_root"
 cat >"$out" <<'EOS'
+#!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
 PIDFILE="${GO_TRADER_PIDFILE:-./go-trader.pid}"

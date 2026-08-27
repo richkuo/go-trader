@@ -8,12 +8,10 @@ import (
 )
 
 func review1449Config() *PortfolioRiskConfig {
-
 	return &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 60}
 }
 
 func TestUntrustedEquity_FreezesPeakAndFloorsDrawdown(t *testing.T) {
-
 	prs := &PortfolioRiskState{PeakValue: 10000, CurrentDrawdownPct: 10}
 	cfg := review1449Config()
 
@@ -185,7 +183,6 @@ func TestPortfolioWarnBandSignals_SharedDefinition(t *testing.T) {
 	if eq, _ := portfolioWarnBandSignals(cfg, prs, false); eq {
 		t.Error("equity must never be in band when the total is unavailable")
 	}
-
 	noPeak := &PortfolioRiskState{PeakValue: 0, CurrentDrawdownPct: 16}
 	if eq, _ := portfolioWarnBandSignals(cfg, noPeak, true); eq {
 		t.Error("PeakValue==0 must not report an equity warn band")
@@ -289,7 +286,6 @@ func TestUntrustedEquity_StoredOverLimitFloorCannotLatch(t *testing.T) {
 	if !strings.Contains(reason, "portfolio drawdown") {
 		t.Errorf("expected an equity-sourced latch reason; got %q", reason)
 	}
-
 	if real.DrawdownReadingSubstituted {
 		t.Error("a latch driven by a this-cycle measurement must not be marked substituted")
 	}
@@ -319,11 +315,9 @@ func TestManualKillSwitchReset_ClearsStaleReadings(t *testing.T) {
 	if prs.DrawdownReadingSubstituted {
 		t.Error("reset must clear the substituted marker")
 	}
-
 	if prs.PeakValue != 10000 {
 		t.Errorf("manual reset must retain the real high-water mark; got %.2f", prs.PeakValue)
 	}
-
 	cfg := review1449Config()
 	if allowed, _, _, _ := checkPortfolioRiskWithEquityAvailability(prs, cfg, 10000, 0, 0, 0, true, false); !allowed {
 		t.Fatal("a freshly reset portfolio must not re-latch on the next untrusted cycle")

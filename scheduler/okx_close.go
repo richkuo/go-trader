@@ -11,11 +11,10 @@ import (
 )
 
 type OKXPosition struct {
-	Coin       string
-	Size       float64
-	EntryPrice float64
-	Side       string
-
+	Coin          string
+	Size          float64
+	EntryPrice    float64
+	Side          string
 	UnrealizedPnL float64
 }
 
@@ -92,7 +91,6 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 
 	for _, p := range positions {
 		if !tradedCoins[p.Coin] {
-
 			if p.Size != 0 {
 				report.Unconfigured = append(report.Unconfigured, p)
 			}
@@ -111,7 +109,6 @@ func forceCloseOKXLive(ctx context.Context, positions []OKXPosition, okxLiveAll 
 			report.Errors[p.Coin] = err
 			continue
 		}
-
 		if result != nil && result.Close != nil && result.Close.AlreadyFlat {
 			report.AlreadyFlat = append(report.AlreadyFlat, p.Coin)
 			continue
@@ -394,7 +391,6 @@ func runPendingOKXCircuitCloses(
 			if allOK {
 				ss.RiskState.clearPendingCircuitClose(PlatformPendingCloseOKX)
 			} else if failedErr != nil {
-
 				if p := ss.RiskState.getPendingCircuitClose(PlatformPendingCloseOKX); p != nil {
 					p.ConsecutiveFailures++
 					failCount = p.ConsecutiveFailures

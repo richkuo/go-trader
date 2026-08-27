@@ -34,7 +34,6 @@ func TestReconcileSharedWallet_DistinctCoins_SumsExact(t *testing.T) {
 	if got := sumValues(res.Values); math.Abs(got-accountBalance) > 0.01 {
 		t.Fatalf("sum %v != balance %v", got, accountBalance)
 	}
-
 	if math.Abs(res.Values["a"]-650) > 0.01 {
 		t.Errorf("a = %v, want 650", res.Values["a"])
 	}
@@ -59,7 +58,6 @@ func TestReconcileSharedWallet_SharedCoin_SplitsByVirtualQty(t *testing.T) {
 	if math.Abs(res.Drift) > 1e-9 {
 		t.Fatalf("expected ~0 drift, got %v", res.Drift)
 	}
-
 	if math.Abs(res.Values["a"]-560) > 0.01 {
 		t.Errorf("a = %v, want 560", res.Values["a"])
 	}
@@ -88,11 +86,9 @@ func TestReconcileSharedWallet_OrphanPosition_SurfacesAsDrift(t *testing.T) {
 	if math.Abs(res.Drift-25) > 0.01 {
 		t.Fatalf("expected drift ~25 (orphan SOL uPnL), got %v", res.Drift)
 	}
-
 	if got := sumValues(res.Values); math.Abs(got-(accountBalance-25)) > 0.02 {
 		t.Fatalf("sum %v != balance-orphan %v", got, accountBalance-25)
 	}
-
 	if len(res.OrphanCoins) != 1 || res.OrphanCoins[0] != "SOL" {
 		t.Fatalf("expected OrphanCoins [SOL], got %v", res.OrphanCoins)
 	}

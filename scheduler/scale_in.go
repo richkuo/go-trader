@@ -12,7 +12,6 @@ func scaleInResizeTrailingSLNow(
 	symbol string,
 	mark float64,
 	preAddOnChainAbsQty map[string]float64,
-
 	hlLiquidationPx map[string]float64,
 	hlNetSideByCoin map[string]string,
 	filledAddQty float64,
@@ -40,7 +39,6 @@ func scaleInResizeTrailingSLNow(
 	grownOnChain := map[string]float64{symbol: preAddOnChainAbsQty[symbol] + filledAddQty}
 	slEffectiveQty, capped := hlSLEffectiveQty(symbol, posSnap.Quantity, grownOnChain)
 	if capped {
-
 		logger.Warn("scale-in eager SL resize: %s still capped (virtual %.6f > on-chain %.6f); deferring to next walker cycle", symbol, posSnap.Quantity, slEffectiveQty)
 		return 0, ""
 	}
@@ -68,7 +66,6 @@ func applyScaleIn(pos *Position, addQty, addPrice float64) {
 	if pos == nil || addQty <= 0 || addPrice <= 0 {
 		return
 	}
-
 	if pos.RiskAnchorPrice <= 0 {
 		pos.RiskAnchorPrice = pos.AvgCost
 	}
@@ -78,12 +75,10 @@ func applyScaleIn(pos *Position, addQty, addPrice float64) {
 		pos.AvgCost = (oldQty*pos.AvgCost + addQty*addPrice) / newQty
 	}
 	pos.Quantity = newQty
-
 	pos.InitialQuantity += addQty
 	pos.ScaleInCount++
 	pos.LastAddPrice = addPrice
 	pos.AddedNotionalUSD += addQty * addPrice
-
 	pos.ScaleInResizePending = true
 }
 
@@ -95,11 +90,9 @@ func scaleInLiveProtectionResizable(sc StrategyConfig) bool {
 	if trailing {
 		return true
 	}
-
 	if EffectiveStopLossPct(sc) > 0 {
 		return false
 	}
-
 	return true
 }
 
@@ -120,7 +113,6 @@ func perpsScaleInDecision(sc StrategyConfig, snap scaleInSnapshot, signal int, p
 	if price <= 0 {
 		return 0, false, "no price for scale-in"
 	}
-
 	switch {
 	case signal == 1 && snap.Side == "long" && snap.Quantity > 0:
 	case signal == -1 && snap.Side == "short" && snap.Quantity > 0:
@@ -144,7 +136,6 @@ func perpsScaleInDecision(sc StrategyConfig, snap scaleInSnapshot, signal int, p
 	if addNotional <= 0 {
 		return 0, false, "scale-in add notional resolves to zero"
 	}
-
 	if cfg.MaxAddedNotionalUSD > 0 && snap.AddedNotionalUSD+addNotional > cfg.MaxAddedNotionalUSD+1e-9 {
 		return 0, false, "scale-in max_added_notional_usd reached"
 	}
@@ -161,16 +152,13 @@ func perpsScaleInDecision(sc StrategyConfig, snap scaleInSnapshot, signal int, p
 		if snap.Side == "short" {
 			dir = -1.0
 		}
-
 		favorableMove := (price - lastAdd) * dir
 		needed := cfg.AddSpacingATR * snap.EntryATR
 		if cfg.AddSpacingATR > 0 {
-
 			if favorableMove+1e-9 < needed {
 				return 0, false, "scale-in spacing (add-to-winners) not reached"
 			}
 		} else {
-
 			if -favorableMove+1e-9 < -needed {
 				return 0, false, "scale-in spacing (average-down) not reached"
 			}
@@ -186,7 +174,6 @@ func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPr
 	}
 	pos, ok := s.Positions[symbol]
 	if !ok || pos == nil {
-
 		if useFillFee {
 			logger.Error("scale-in fill (oid=%s qty=%.6f @ $%.2f) has no position to apply to for %s — fill booked on-chain with NO Trade record", fillOID, addQty, addPrice, symbol)
 		}
@@ -203,7 +190,6 @@ func applyPerpsScaleIn(s *StrategyState, sc StrategyConfig, symbol string, addPr
 	if pos.Side == "short" {
 		side = "sell"
 	}
-
 	applyScaleIn(pos, addQty, addPrice)
 	now := time.Now().UTC()
 	var oid string
@@ -310,15 +296,12 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		logger.Info("Live scale-in fill at $%.2f qty=%.6f (mid was $%.2f)", fillPrice, fillAddQty, price)
 	}
 	trades, openTrade := applyPerpsScaleIn(s, sc, result.Symbol, fillPrice, fillAddQty, fillFee, fillOID, useFillFee, logger)
-
 	var ratchetAlert *RatchetTriggerAlert
 	if trades > 0 {
 		if pos, ok := s.Positions[result.Symbol]; ok {
-
 			_, ratchetAlert = applyTrailingTPRatchetToPosition(sc, pos, result.Symbol, price, logger)
 		}
 	}
-
 	detail := ""
 	if trades > 0 {
 		prefix := ""
@@ -328,7 +311,6 @@ func executeHyperliquidScaleInDeferredOpen(sc StrategyConfig, s *StrategyState, 
 		detail = fmt.Sprintf("[%s] %sSCALE-IN %s @ $%.2f", sc.ID, prefix, result.Symbol, fillPrice)
 	}
 	if execResult == nil {
-
 		var pos *Position
 		if p, ok := s.Positions[result.Symbol]; ok {
 			pos = p

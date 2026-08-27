@@ -29,7 +29,6 @@ type scriptFailureMode string
 
 const (
 	scriptFailureCrash scriptFailureMode = "crash"
-
 	scriptFailureError scriptFailureMode = "error"
 )
 

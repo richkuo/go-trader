@@ -25,7 +25,6 @@ func TestTrailingWalkerClampsCandidateInsideLiquidation(t *testing.T) {
 	defer clearHLLiquidationAlert("hl-eth", "ETH")
 
 	sc := liqWalkerStrategy()
-
 	var gotTrigger float64
 	calls := 0
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
@@ -64,7 +63,6 @@ func TestTrailingWalkerHealsRestingStopPastLiquidation(t *testing.T) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 7002, StopLossTriggerPx: triggerPx}, "", nil
 	}
 	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
-
 	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
 		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t))
 	if !ok {
@@ -93,7 +91,6 @@ func TestTrailingWalkerUnknownLiquidationIsUnchanged(t *testing.T) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 7003, StopLossTriggerPx: triggerPx}, "", nil
 	}
 	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
-
 	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
 		trailingReplacePolicy{}, nil, newTestLogger(t))
 	if !ok {
@@ -115,7 +112,6 @@ func TestTrailingWalkerClampNeverWidens(t *testing.T) {
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 7004, StopLossTriggerPx: triggerPx}, "", nil
 	}
 	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
-
 	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
 		trailingReplacePolicy{liquidationPx: 1500}, nil, newTestLogger(t))
 	if !ok {
@@ -182,7 +178,6 @@ func TestProtectionPlanForcesReplaceForRestingStopPastLiquidation(t *testing.T) 
 	if !ok {
 		t.Fatal("expected a plan")
 	}
-
 	if !approxEqLiq(plan.StopLossATRMult, 0.5) {
 		t.Errorf("mult = %g, want the configured 0.5 (already reachable)", plan.StopLossATRMult)
 	}
@@ -338,7 +333,6 @@ func TestTrailingWalkerClampReportsProtectionLostWhenPlacementRejected(t *testin
 
 	sc := liqWalkerStrategy()
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
-
 		return &HyperliquidStopLossUpdateResult{
 			CancelStopLossSucceeded: true,
 			StopLossError:           "Order would exceed the open order limit",
@@ -347,7 +341,6 @@ func TestTrailingWalkerClampReportsProtectionLostWhenPlacementRejected(t *testin
 	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
 	_, _, ok := runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2400, 2330, 4242,
 		trailingReplacePolicy{liquidationPx: 2340.5}, nil, newTestLogger(t))
-
 	if !ok {
 		t.Fatal("the cancelled OID must still be cleared from state")
 	}
@@ -473,15 +466,12 @@ func TestLiquidationAlertLectureOnlyOnMeasuredOpenGeometry(t *testing.T) {
 	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 2330, 2352, 2340.5, hlLiquidationActionExited); strings.Contains(msg, lecture) {
 		t.Errorf("exited alert must not carry the lecture: %q", msg)
 	}
-
 	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 0, 2352, 0, hlLiquidationActionRearmed); strings.Contains(msg, lecture) {
 		t.Errorf("re-arm without a liquidation price must not carry the lecture: %q", msg)
 	}
-
 	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 2330, 2352, 2340.5, hlLiquidationActionFilledOnChain); strings.Contains(msg, lecture) {
 		t.Errorf("filled-on-chain alert must not carry the lecture: %q", msg)
 	}
-
 	if msg := hlLiquidationAlertFullMessage(sc, "ETH", "long", 2330, 2352, 2340.5, hlLiquidationActionClamped); !strings.Contains(msg, lecture) {
 		t.Errorf("clamped alert with known geometry should keep the lecture: %q", msg)
 	}
@@ -548,9 +538,8 @@ func TestFixedATRArmFailedMessageNamesBothFacts(t *testing.T) {
 
 func TestProtectionSyncEchoKeepsTheRestingTrigger(t *testing.T) {
 	cases := []struct {
-		name string
-		side string
-
+		name         string
+		side         string
 		liqPx        float64
 		healedRestPx float64
 	}{
@@ -575,7 +564,6 @@ func TestProtectionSyncEchoKeepsTheRestingTrigger(t *testing.T) {
 			if !ok {
 				t.Fatal("expected a plan")
 			}
-
 			if plan.ForceSLReplace {
 				t.Error("an unclampable far-side geometry must not force a replace")
 			}
@@ -616,7 +604,6 @@ func TestProtectionSyncPlacementStillRefreshesTheTrigger(t *testing.T) {
 }
 
 func TestUnprotectedAlertNamesActualRecoveryCadence(t *testing.T) {
-
 	walker := liqWalkerStrategy()
 	walker.IntervalSeconds = 14400
 	_, detail, _ := hlLiquidationAlertMessage(2325, 2352, 2340.5, hlLiquidationActionProtectionLost, hlLiquidationUnprotectedRecovery(walker))
@@ -662,13 +649,11 @@ func TestTrailingWalkerClampRetriesPlacementItStripped(t *testing.T) {
 		callN++
 		calls = append(calls, call{cancelOID: cancelStopLossOID})
 		if callN == 1 {
-
 			return &HyperliquidStopLossUpdateResult{
 				CancelStopLossSucceeded: true,
 				StopLossError:           "Order would exceed the open order limit",
 			}, "", nil
 		}
-
 		return &HyperliquidStopLossUpdateResult{StopLossOID: 8100, StopLossTriggerPx: triggerPx}, "", nil
 	}
 	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
@@ -700,7 +685,6 @@ func TestTrailingWalkerNonClampReplaceTakesNoRetry(t *testing.T) {
 		}, "", nil
 	}
 	pos := &Position{AvgCost: 2400, RiskAnchorPrice: 2400}
-
 	_, _, _ = runHyperliquidTrailingStopUpdate(sc, "ETH", "long", 1.0, pos, 2400, 2500, 2330, 4242,
 		trailingReplacePolicy{}, nil, newTestLogger(t))
 	if calls != 1 {
@@ -759,10 +743,8 @@ func TestTrailingWalkerErrorPayloadAfterCancelLandedRunsRetry(t *testing.T) {
 	runHyperliquidUpdateStopLossFunc = func(script, symbol, side string, size, triggerPx float64, cancelStopLossOID int64) (*HyperliquidStopLossUpdateResult, string, error) {
 		calls++
 		if calls == 1 {
-
 			return &HyperliquidStopLossUpdateResult{Error: "boom after cancel", CancelStopLossSucceeded: true}, "", nil
 		}
-
 		if cancelStopLossOID != 0 {
 			t.Errorf("retry cancel OID = %d, want 0 (fresh placement)", cancelStopLossOID)
 		}
@@ -950,7 +932,6 @@ func TestLiquidationClampReplaceOutcomeUnknownSuppressesRetry(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("placement calls = %d, want 1", calls)
 	}
-
 	if hlLiquidationMayRetryReplace(result) {
 		t.Error("outcome-unknown must suppress the fresh-placement retry")
 	}

@@ -267,7 +267,6 @@ func TestMultiNotifier_SendToAllChannels_Deduplicated(t *testing.T) {
 	})
 
 	mn.SendToAllChannels("broadcast")
-
 	if len(mock.messages) != 1 {
 		t.Errorf("expected 1 message (deduplicated), got %d: %v", len(mock.messages), mock.messages)
 	}
@@ -460,7 +459,6 @@ func TestMultiNotifier_PostLeaderboardBroadcast_PerBackend(t *testing.T) {
 	if len(discord.messages) != 1 || discord.messages[0].channelID != "discord-lb" {
 		t.Errorf("expected discord 1 message on discord-lb, got %v", discord.messages)
 	}
-
 	if len(telegram.messages) != 2 {
 		t.Fatalf("expected telegram 2 broadcast messages, got %d: %v", len(telegram.messages), telegram.messages)
 	}
@@ -623,14 +621,12 @@ func TestTradeAlertRoutes_OverrideDoesNotAffectSummaries(t *testing.T) {
 	if routes[0].channel != "trade-ch" {
 		t.Errorf("trade route: expected trade-ch, got %q", routes[0].channel)
 	}
-
 	if routes[0].liveChan != "" {
 		t.Errorf("liveChan: expected empty, got %q", routes[0].liveChan)
 	}
 }
 
 func TestTradeAlertRoutes_LiveChanConsultsOverride(t *testing.T) {
-
 	mn := NewMultiNotifier(notifierBackend{
 		notifier: &mockNotifier{},
 		channels: map[string]string{
@@ -647,18 +643,15 @@ func TestTradeAlertRoutes_LiveChanConsultsOverride(t *testing.T) {
 		t.Fatalf("expected 1 route, got %d", len(routes))
 	}
 	r := routes[0]
-
 	if r.channel != "trade-live-ch" {
 		t.Errorf("channel: expected trade-live-ch, got %q", r.channel)
 	}
-
 	if r.liveChan != "" {
 		t.Errorf("liveChan: expected empty (deduped), got %q", r.liveChan)
 	}
 }
 
 func TestTradeAlertRoutes_LiveChanFallbackWhenNoLiveOverride(t *testing.T) {
-
 	mn := NewMultiNotifier(notifierBackend{
 		notifier: &mockNotifier{},
 		channels: map[string]string{
@@ -674,11 +667,9 @@ func TestTradeAlertRoutes_LiveChanFallbackWhenNoLiveOverride(t *testing.T) {
 		t.Fatalf("expected 1 route, got %d", len(routes))
 	}
 	r := routes[0]
-
 	if r.channel != "trade-ch" {
 		t.Errorf("channel: expected trade-ch, got %q", r.channel)
 	}
-
 	if r.liveChan != "legacy-live-ch" {
 		t.Errorf("liveChan: expected legacy-live-ch, got %q", r.liveChan)
 	}

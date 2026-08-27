@@ -95,7 +95,6 @@ func (s *RegimeStore) set(b *RegimeBundle, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sealed || gen != s.gen {
-
 		return
 	}
 	if s.entries == nil {
@@ -150,7 +149,6 @@ func strategyRegimeDataPlatform(sc StrategyConfig) string {
 		case "robinhood":
 			return "robinhood"
 		default:
-
 			return "binanceus"
 		}
 	case "perps":
@@ -317,7 +315,6 @@ var runRegimeBundleCheckFn = runRegimeBundleCheck
 func runRegimeBundleCheck(ctx context.Context, req regimeBundleRequest) (*RegimeBundle, error) {
 	stdout, stderr, err := runPython(ctx, regimeCheckScript, regimeBundleCheckArgs(req), nil)
 	now := time.Now().UTC()
-
 	if bundle, perr := parseRegimeBundleOutput(req.Key, stdout, now); perr == nil {
 		return bundle, nil
 	} else if err == nil {
@@ -386,7 +383,6 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 	if len(reqs) == 0 {
 		return func() {}
 	}
-
 	popCtx, popCancel := context.WithCancel(shutdownReadOnlyCtx)
 	done := make(chan struct{})
 	go func() {
@@ -407,14 +403,12 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 			}()
 		}
 		wg.Wait()
-
 		for i, req := range reqs {
 			if errs[i] != nil {
 				msg := errs[i].Error()
 				if errors.Is(errs[i], context.Canceled) {
 					msg = fmt.Sprintf("cancelled at phase-budget seal (%s); signature unavailable this cycle", regimeStorePhaseBudget)
 				}
-
 				msg += regimeGateOutagePolicyNote(req.Key, due, rc)
 				fmt.Printf("[WARN] regime store %s: %s\n", req.Key, msg)
 				notifyScriptFailure(notifier, regimeBundleAlertConfig(req.Key), scriptFailureError, msg)
@@ -429,7 +423,6 @@ func startRegimeStorePopulation(store *RegimeStore, due []StrategyConfig, rc *Re
 			popCancel()
 		case <-time.After(regimeStorePhaseBudget):
 			kept := store.seal()
-
 			popCancel()
 			fmt.Printf("[WARN] regime store: phase budget %s exceeded; sealed with %d/%d bundles — missing signatures resolve per regime_gate_on_failure this cycle (default fail-open)\n",
 				regimeStorePhaseBudget, kept, len(reqs))

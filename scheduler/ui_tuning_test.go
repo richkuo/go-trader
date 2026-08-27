@@ -742,7 +742,6 @@ func TestTuningRunManagerNeverPrunesQueuedOrRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	for _, rec := range []tuningRunRecord{
 		{ID: "20260705T030000000000000Z-queued01", Status: tuningRunQueued,
 			StrategyIDs: []string{"spot-a"}, CreatedAt: base.Add(3 * time.Hour)},
@@ -931,7 +930,6 @@ func TestTuningRunManagerPrefersResultsOverNewerEmptyReject(t *testing.T) {
 	}
 	completedID := "20260706T000000000000000Z-withres1"
 	rejectedID := "20260706T120000000000000Z-rejected"
-
 	seedTuningTerminalRun(t, root, completedID, tuningRunCompleted,
 		time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC))
 	seedTuningTerminalRunNoResults(t, root, rejectedID, tuningRunRejected,
@@ -970,7 +968,6 @@ func TestTuningRunManagerPrefersResultsOverNewerInterrupted(t *testing.T) {
 	if err := writeTuningJSON(filepath.Join(root, completedID, tuningRunRecordFile), rec); err != nil {
 		t.Fatal(err)
 	}
-
 	seedTuningTerminalRunNoResults(t, root, interruptedID, tuningRunInterrupted,
 		time.Date(2026, 7, 7, 1, 0, 0, 0, time.UTC),
 		time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC))

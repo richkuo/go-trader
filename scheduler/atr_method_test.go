@@ -33,7 +33,6 @@ func TestResolveATRMethodPrecedence(t *testing.T) {
 			}
 		})
 	}
-
 	if got := resolveATRMethod(StrategyConfig{ATRMethod: "wilder"}, nil); got != ATRMethodWilder {
 		t.Fatalf("nil cfg with per-strategy wilder: got %q", got)
 	}
@@ -151,7 +150,6 @@ func TestValidateHotReloadStateCompatibleATRMethod(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("open position: resolved method unchanged, want accept, got: %v", err)
 			}
-
 			if err := validateHotReloadStateCompatible(old, next, flatState); err != nil {
 				t.Fatalf("flat: want accept, got: %v", err)
 			}
@@ -461,7 +459,6 @@ func TestApplyManualActionOpenStampsATRMethod(t *testing.T) {
 		state := newState("hl-manual-eth-live")
 		a := open
 		a.ATRMethod = ATRMethodSimple
-
 		cfg := &Config{ATRMethod: "wilder"}
 		if err := applyManualAction(state, cfg, scByID, a); err != nil {
 			t.Fatalf("applyManualAction: %v", err)

@@ -272,7 +272,6 @@ func formatCircuitBreakersResponse(state *AppState, now time.Time) string {
 	if state.PortfolioRisk.KillSwitchActive {
 		sb.WriteString(fmt.Sprintf("🛑 Portfolio kill switch ACTIVE (drawdown %.2f%%)\n", state.PortfolioRisk.CurrentDrawdownPct))
 	}
-
 	if !state.PortfolioRisk.KillSwitchActive && !state.PortfolioRisk.UntrustedOverLimitSince.IsZero() {
 		sb.WriteString(fmt.Sprintf("⚠️ Portfolio latch DEFERRED: equity drawdown %.2f%% is over the limit on an untrusted total (since %s); escalates %s unless a trusted measurement lands first\n",
 			state.PortfolioRisk.CurrentDrawdownPct,
@@ -407,7 +406,6 @@ func slashCommands() []*discordgo.ApplicationCommand {
 			{Type: discordgo.ApplicationCommandOptionString, Name: "symbol", Description: "Symbol, e.g. BTC/USDT", Required: true},
 			{Type: discordgo.ApplicationCommandOptionString, Name: "timeframe", Description: "Timeframe (default 1h)"},
 		}},
-
 		{Name: commandPrefix + "config", Description: "Show or change configuration (owner DM only)", Contexts: dmContext(), Options: []*discordgo.ApplicationCommandOption{
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "show", Description: "Show the current config (secrets redacted)"},
 			{Type: discordgo.ApplicationCommandOptionSubCommand, Name: "set", Description: "Set a config key", Options: []*discordgo.ApplicationCommandOption{
@@ -460,7 +458,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		return
 	}
 	data := i.ApplicationCommandData()
-
 	name := strings.TrimPrefix(data.Name, commandPrefix)
 	ok, reason := authorizeCommand(name, interactionUserID(i), i.GuildID, d.ownerID)
 	if !ok {
@@ -468,7 +465,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		return
 	}
 	switch name {
-
 	case "status":
 		d.respondReadOnlyDeferred(s, i, d.buildDiscordStatus)
 	case "positions":
@@ -478,7 +474,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 	case "leaderboard":
 		top := optionInt(data.Options, "top", 5)
 		d.respondReadOnlyDeferred(s, i, func() string { return d.buildLeaderboard(top) })
-
 	case "health":
 		d.respondReadOnlyInline(s, i, d.buildHealth())
 	case "circuit-breakers":
@@ -489,7 +484,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.respondReadOnlyInline(s, i, d.buildCorrelation())
 	case "closing-strategies":
 		d.handleClosingStrategies(s, i)
-
 	case "logs":
 		respondText(s, i, runLogs(optionInt(data.Options, "n", 50)))
 	case "restart":
@@ -498,7 +492,6 @@ func (d *DiscordNotifier) interactionCreate(s *discordgo.Session, i *discordgo.I
 		d.handleBacktest(s, i, data)
 	case "report-an-issue":
 		d.handleReport(s, i, data)
-
 	case "config":
 		sub, subOpts := subcommandOptions(data)
 		switch sub {
@@ -760,7 +753,6 @@ func (d *DiscordNotifier) handleClosingStrategies(s *discordgo.Session, i *disco
 		})
 		return
 	}
-
 	var pages []string
 	if d.ss == nil {
 		pages = formatClosingStrategiesResponse(d.cfg, entries)
@@ -811,7 +803,6 @@ func (d *DiscordNotifier) handleRestart(s *discordgo.Session, i *discordgo.Inter
 	_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content: "Restarting go-trader service… (this instance will go offline; the new one resumes the cycle)",
 	})
-
 	go func() {
 		_ = restartSelf()
 	}()
@@ -824,7 +815,6 @@ func (d *DiscordNotifier) handleBacktest(s *discordgo.Session, i *discordgo.Inte
 	deferAck(s, i)
 
 	args := []string{"--strategy", strategy, "--symbol", symbol, "--timeframe", timeframe, "--mode", "single"}
-
 	stdout, stderr, err := runPythonWithTimeout(shutdownReadOnlyCtx, "backtest/run_backtest.py", args, nil, 5*time.Minute)
 	report := string(stdout)
 	if err != nil {

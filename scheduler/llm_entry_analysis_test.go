@@ -18,7 +18,6 @@ func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 	if p.Model != llmEntryAnalysisDefaultModel || p.MaxDebateRounds != llmEntryAnalysisDefaultRounds || p.Timeout != llmEntryAnalysisDefaultTimeoutS*time.Second {
 		t.Fatalf("defaults wrong: %+v", p)
 	}
-
 	if !p.NotifyDM || p.NotifyChannel {
 		t.Fatalf("routing defaults wrong: dm=%t channel=%t (want dm=true channel=false)", p.NotifyDM, p.NotifyChannel)
 	}
@@ -35,7 +34,6 @@ func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 }
 
 func TestLLMEntryAnalysisNotifyRouting(t *testing.T) {
-
 	var sc StrategyConfig
 	if !sc.llmNotifyDM() || sc.llmNotifyChannel() {
 		t.Fatalf("nil block: dm=%t channel=%t (want dm=true channel=false)", sc.llmNotifyDM(), sc.llmNotifyChannel())
@@ -110,7 +108,6 @@ func TestTruncateToWordCap(t *testing.T) {
 	}
 	long := strings.Repeat("word ", 100)
 	fields := strings.Fields(truncateToWordCap(long, llmEntryAnalysisWordCap))
-
 	if len(fields) != llmEntryAnalysisWordCap+1 {
 		t.Fatalf("capped length = %d, want %d", len(fields), llmEntryAnalysisWordCap+1)
 	}
@@ -225,7 +222,6 @@ func TestQueueLLMEntryAnalysisIfOpened(t *testing.T) {
 func TestQueueLLMEntryAnalysisNilHookNoOp(t *testing.T) {
 	llmEntryAnalysisEnqueue = nil
 	s := llmTestState()
-
 	queueLLMEntryAnalysisIfOpened(llmTestStrategyConfig(true), s, "BTC", 1, &Trade{}, nil)
 	if s.Positions["BTC"].LLMAnalysisRequested {
 		t.Fatal("nil hook must not set the marker")
@@ -282,7 +278,6 @@ func TestFormatLLMEntryAnalysisDigestSortedAndLabeled(t *testing.T) {
 	if !strings.Contains(msg, "**Verdict: MIXED**") || !strings.Contains(msg, "cuts both ways") {
 		t.Fatalf("verdict line wrong: %q", msg)
 	}
-
 	if strings.Index(msg, "derivatives:") > strings.Index(msg, "technical:") {
 		t.Fatalf("analyst topics not sorted: %q", msg)
 	}

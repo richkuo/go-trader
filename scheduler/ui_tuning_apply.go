@@ -486,7 +486,6 @@ func (m *tuningRunManager) resolveApplyTarget(runID, strategyID, suggestionKey s
 	if !validTuningRunID(runID) {
 		return tuningApplyTarget{}, tuningReasonRunMissing, os.ErrNotExist
 	}
-
 	if promo, ok, jerr := m.getPromotion(runID, strategyID, suggestionKey); jerr == nil && ok && promo.State == tuningPromoApplied {
 		return tuningApplyTarget{
 			RunID: runID, StrategyID: strategyID, SuggestionKey: suggestionKey,
@@ -636,7 +635,6 @@ func overlayTuningApplyEligibility(detail *tuningRunDetail, configPath string, m
 		liveRootOK = liveRoot
 	}
 	promoIdx, promoErr := m.promotionIndex()
-
 	liveBaselines := map[string]tuningPromotionBaseline{}
 	liveBaselineErrs := map[string]error{}
 	lookupLive := func(strategyID string) (*tuningPromotionBaseline, error) {
@@ -709,7 +707,6 @@ func (ss *StatusServer) applyTuningPromotion(target tuningApplyTarget) (reason s
 			if rec.AppliedAt != nil {
 				at = *rec.AppliedAt
 			}
-
 			return tuningReasonAlreadyApplied, at, "", nil
 		case tuningPromoManualReview:
 			return tuningReasonManualReview, time.Time{}, "", errors.New("promotion requires manual review")
@@ -767,7 +764,6 @@ func (ss *StatusServer) recoverPendingTuningPromotion(target tuningApplyTarget, 
 		if err := ss.tuning.upsertPromotion(rec); err != nil {
 			return tuningReasonConflict, time.Time{}, "", err
 		}
-
 		return tuningReasonAlreadyApplied, now, ss.triggerConfigReload(), nil
 	}
 	liveBaseline, err := extractLivePromotionBaseline(root, target.StrategyID)
@@ -798,11 +794,9 @@ func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending 
 		return finalizePendingManualReview(ss.tuning, pending, "baseline drifted during apply", tuningReasonBaselineDrift, errTuningBaselineDrifted)
 	}
 	if isTuningStrategyIdentityError(err) {
-
 		return finalizePendingManualReview(ss.tuning, pending, "target strategy missing or ambiguous during apply", tuningReasonManualReview, err)
 	}
 	if err != nil {
-
 		return tuningReasonConflict, time.Time{}, "", err
 	}
 	now := ss.tuning.now()
@@ -812,7 +806,6 @@ func (ss *StatusServer) commitTuningPromotion(target tuningApplyTarget, pending 
 	if err := ss.tuning.upsertPromotion(pending); err != nil {
 		return tuningReasonConflict, time.Time{}, "", err
 	}
-
 	return tuningReasonApplied, now, ss.triggerConfigReload(), nil
 }
 

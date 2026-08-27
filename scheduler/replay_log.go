@@ -38,10 +38,9 @@ type ReplayDecision struct {
 	Quantity       float64
 	ReferencePrice float64
 	CloseReason    string
-
-	EntryATR     float64
-	Regime       string
-	ReplayStatus string
+	EntryATR       float64
+	Regime         string
+	ReplayStatus   string
 }
 
 const replayLogSchemaDDL = `

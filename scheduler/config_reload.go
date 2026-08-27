@@ -29,7 +29,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("interval_seconds: %d -> %d", cfg.IntervalSeconds, next.IntervalSeconds)
 		cfg.IntervalSeconds = next.IntervalSeconds
 	}
-
 	if !boolPtrEqual(cfg.NotifyRatchetTriggers, next.NotifyRatchetTriggers) {
 		addChange("notify_ratchet_triggers: %s -> %s", formatNotifyRatchetTriggers(cfg.NotifyRatchetTriggers), formatNotifyRatchetTriggers(next.NotifyRatchetTriggers))
 		cfg.NotifyRatchetTriggers = next.NotifyRatchetTriggers
@@ -38,7 +37,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("default_stop_loss_atr_mult: %s -> %s (applies to strategies opened after restart; existing StopLossATRMult on currently-loaded strategies is unchanged)", formatFloatPtr(cfg.DefaultStopLossATRMult), formatFloatPtr(next.DefaultStopLossATRMult))
 		cfg.DefaultStopLossATRMult = next.DefaultStopLossATRMult
 	}
-
 	if normalizeATRMethod(cfg.ATRMethod) != normalizeATRMethod(next.ATRMethod) {
 		addChange("atr_method: %q -> %q", cfg.ATRMethod, next.ATRMethod)
 		cfg.ATRMethod = next.ATRMethod
@@ -57,7 +55,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			return nil, fmt.Errorf("kill_switch_reset_dm_timeout: %w", err)
 		}
 	}
-
 	if !reflect.DeepEqual(cfg.Tuning, next.Tuning) {
 		addChange("tuning: %+v -> %+v", cfg.Tuning, next.Tuning)
 		cfg.Tuning = cloneTuningConfig(next.Tuning)
@@ -65,7 +62,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			server.tuning.setMaxRetainedRuns(cfg.tuningMaxRetainedRuns())
 		}
 	}
-
 	if !reflect.DeepEqual(cfg.UserDefaults, next.UserDefaults) {
 		addChange("user_defaults: %s -> %s", formatUserDefaults(cfg.UserDefaults), formatUserDefaults(next.UserDefaults))
 		cfg.UserDefaults = cloneUserDefaults(next.UserDefaults)
@@ -79,18 +75,15 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("regime.timeframe: %q -> %q", normalizeRegimeTimeframe(cfg.Regime.Timeframe), normalizeRegimeTimeframe(next.Regime.Timeframe))
 		cfg.Regime.Timeframe = normalizeRegimeTimeframe(next.Regime.Timeframe)
 	}
-
 	if cfg.Regime != nil && next.Regime != nil && !reflect.DeepEqual(cfg.Regime.Transitions, next.Regime.Transitions) {
 		addChange("regime.transitions: %+v -> %+v", cfg.Regime.Transitions, next.Regime.Transitions)
 		cfg.Regime.Transitions = cloneRegimeTransitionAlertsConfig(next.Regime.Transitions)
 	}
-
 	if cfg.Regime != nil && next.Regime != nil &&
 		normalizeRegimeGateOnFailure(cfg.Regime.GateOnFailure) != normalizeRegimeGateOnFailure(next.Regime.GateOnFailure) {
 		addChange("regime.gate_on_failure: %q -> %q", cfg.Regime.GateOnFailure, next.Regime.GateOnFailure)
 		cfg.Regime.GateOnFailure = next.Regime.GateOnFailure
 	}
-
 	if cfg.Regime != nil && next.Regime != nil &&
 		normalizeRegimeGateOnFailure(cfg.Regime.HurstGateOnFailure) != normalizeRegimeGateOnFailure(next.Regime.HurstGateOnFailure) {
 		addChange("regime.hurst_gate_on_failure: %q -> %q", cfg.Regime.HurstGateOnFailure, next.Regime.HurstGateOnFailure)
@@ -110,12 +103,10 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				ss.RiskState.MaxDrawdownPct = ns.MaxDrawdownPct
 			}
 		}
-
 		if !boolPtrEqual(sc.CircuitBreaker, ns.CircuitBreaker) {
 			addChange("strategy[%s].circuit_breaker: %s -> %s", sc.ID, formatCircuitBreaker(sc.CircuitBreaker), formatCircuitBreaker(ns.CircuitBreaker))
 			sc.CircuitBreaker = ns.CircuitBreaker
 		}
-
 		if !intPtrEqual(sc.CBDrawdownCooldownMinutes, ns.CBDrawdownCooldownMinutes) {
 			addChange("strategy[%s].cb_drawdown_cooldown_minutes: %s -> %s", sc.ID, formatCBMinutes(sc.CBDrawdownCooldownMinutes, DefaultCBDrawdownCooldown), formatCBMinutes(ns.CBDrawdownCooldownMinutes, DefaultCBDrawdownCooldown))
 			sc.CBDrawdownCooldownMinutes = ns.CBDrawdownCooldownMinutes
@@ -128,22 +119,18 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].cb_loss_streak_cooldown_minutes: %s -> %s", sc.ID, formatCBMinutes(sc.CBLossStreakCooldownMinutes, DefaultCBLossStreakCooldown), formatCBMinutes(ns.CBLossStreakCooldownMinutes, DefaultCBLossStreakCooldown))
 			sc.CBLossStreakCooldownMinutes = ns.CBLossStreakCooldownMinutes
 		}
-
 		if !boolPtrEqual(sc.NotifyRatchetTriggers, ns.NotifyRatchetTriggers) {
 			addChange("strategy[%s].notify_ratchet_triggers: %s -> %s", sc.ID, formatNotifyRatchetTriggers(sc.NotifyRatchetTriggers), formatNotifyRatchetTriggers(ns.NotifyRatchetTriggers))
 			sc.NotifyRatchetTriggers = ns.NotifyRatchetTriggers
 		}
-
 		if !llmEntryAnalysisConfigEqual(sc.LLMEntryAnalysis, ns.LLMEntryAnalysis) {
 			addChange("strategy[%s].llm_entry_analysis: %s -> %s", sc.ID, formatLLMEntryAnalysis(sc.LLMEntryAnalysis), formatLLMEntryAnalysis(ns.LLMEntryAnalysis))
 			sc.LLMEntryAnalysis = ns.LLMEntryAnalysis
 		}
-
 		if sc.Paused != ns.Paused && !sc.sharedWalletModeDeferred {
 			addChange("strategy[%s].paused: %t -> %t", sc.ID, sc.Paused, ns.Paused)
 			sc.Paused = ns.Paused
 		}
-
 		if !boolPtrEqual(sc.AllowDeprecated, ns.AllowDeprecated) {
 			addChange("strategy[%s].allow_deprecated: %s -> %s", sc.ID, formatAllowDeprecated(sc.AllowDeprecated), formatAllowDeprecated(ns.AllowDeprecated))
 			sc.AllowDeprecated = ns.AllowDeprecated
@@ -174,7 +161,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].margin_per_trade_usd: %s -> %s", sc.ID, formatFloatPtrUSD(sc.MarginPerTradeUSD), formatFloatPtrUSD(ns.MarginPerTradeUSD))
 			sc.MarginPerTradeUSD = ns.MarginPerTradeUSD
 		}
-
 		if !floatPtrEqual(sc.RiskPerTradePct, ns.RiskPerTradePct) {
 			addChange("strategy[%s].risk_per_trade_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.RiskPerTradePct), formatFloatPtrPct(ns.RiskPerTradePct))
 			sc.RiskPerTradePct = ns.RiskPerTradePct
@@ -204,22 +190,18 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].allowed_regimes: %v -> %v", sc.ID, sc.AllowedRegimes, ns.AllowedRegimes)
 			sc.AllowedRegimes = append([]string{}, ns.AllowedRegimes...)
 		}
-
 		if normalizeRegimeGateOnFailure(sc.RegimeGateOnFailure) != normalizeRegimeGateOnFailure(ns.RegimeGateOnFailure) {
 			addChange("strategy[%s].regime_gate_on_failure: %q -> %q", sc.ID, sc.RegimeGateOnFailure, ns.RegimeGateOnFailure)
 			sc.RegimeGateOnFailure = ns.RegimeGateOnFailure
 		}
-
 		if !reflect.DeepEqual(sc.HurstGate, ns.HurstGate) {
 			addChange("strategy[%s].hurst_gate: %s -> %s", sc.ID, formatHurstGateForLog(sc.HurstGate), formatHurstGateForLog(ns.HurstGate))
 			sc.HurstGate = cloneHurstGateConfig(ns.HurstGate)
 		}
-
 		if sc.MarginMode != ns.MarginMode {
 			addChange("strategy[%s].margin_mode: %q -> %q", sc.ID, sc.MarginMode, ns.MarginMode)
 			sc.MarginMode = ns.MarginMode
 		}
-
 		if normalizeATRMethod(sc.ATRMethod) != normalizeATRMethod(ns.ATRMethod) {
 			addChange("strategy[%s].atr_method: %q -> %q", sc.ID, sc.ATRMethod, ns.ATRMethod)
 			sc.ATRMethod = ns.ATRMethod
@@ -231,7 +213,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if !floatPtrEqual(sc.TrailingStopATRMult, ns.TrailingStopATRMult) {
 			addChange("strategy[%s].trailing_stop_atr_mult: %s -> %s", sc.ID, formatFloatPtr(sc.TrailingStopATRMult), formatFloatPtr(ns.TrailingStopATRMult))
 			sc.TrailingStopATRMult = ns.TrailingStopATRMult
-
 			if ns.TrailingStopATRMult == nil || *ns.TrailingStopATRMult <= 0 {
 				clearATRMultMissingEntryATRWarningsForStrategy(sc.ID)
 			}
@@ -239,7 +220,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		if !floatPtrEqual(sc.StopLossATRMult, ns.StopLossATRMult) {
 			addChange("strategy[%s].stop_loss_atr_mult: %s -> %s", sc.ID, formatFloatPtr(sc.StopLossATRMult), formatFloatPtr(ns.StopLossATRMult))
 			sc.StopLossATRMult = ns.StopLossATRMult
-
 			if ns.StopLossATRMult == nil || *ns.StopLossATRMult <= 0 {
 				clearATRMultMissingEntryATRWarningsForStrategy(sc.ID)
 			}
@@ -256,23 +236,19 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			addChange("strategy[%s].trailing_stop_min_move_pct: %s -> %s", sc.ID, formatFloatPtrPct(sc.TrailingStopMinMovePct), formatFloatPtrPct(ns.TrailingStopMinMovePct))
 			sc.TrailingStopMinMovePct = ns.TrailingStopMinMovePct
 		}
-
 		if EffectiveDirection(*sc) != EffectiveDirection(ns) {
 			addChange("strategy[%s].direction: %q -> %q", sc.ID, EffectiveDirection(*sc), EffectiveDirection(ns))
 			sc.Direction = ns.Direction
 			sc.AllowShorts = ns.AllowShorts
 		}
-
 		if !sc.RegimeDirectionalPolicy.EqualForReload(ns.RegimeDirectionalPolicy) {
 			addChange("strategy[%s].regime_directional_policy: shape updated", sc.ID)
 			sc.RegimeDirectionalPolicy = ns.RegimeDirectionalPolicy
 		}
-
 		if !sc.RegimeWindowDivergence.EqualForReload(ns.RegimeWindowDivergence) {
 			addChange("strategy[%s].regime_window_divergence: shape updated", sc.ID)
 			sc.RegimeWindowDivergence = ns.RegimeWindowDivergence
 		}
-
 		if !sc.RegimeProfileAllocation.EqualForReload(ns.RegimeProfileAllocation) {
 			addChange("strategy[%s].regime_profile_allocation: shape updated", sc.ID)
 			sc.RegimeProfileAllocation = ns.RegimeProfileAllocation
@@ -291,7 +267,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 			sc.RegimeATRWindow = ns.RegimeATRWindow
 			sc.RegimeDirectionalWindow = ns.RegimeDirectionalWindow
 		}
-
 		if sc.AllowScaleIn != ns.AllowScaleIn {
 			addChange("strategy[%s].allow_scale_in: %t -> %t", sc.ID, sc.AllowScaleIn, ns.AllowScaleIn)
 			sc.AllowScaleIn = ns.AllowScaleIn
@@ -305,7 +280,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.ScaleIn = nil
 			}
 		}
-
 		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) {
 			addChange("strategy[%s].hedge: shape updated", sc.ID)
 			if ns.Hedge != nil {
@@ -315,7 +289,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 				sc.Hedge = nil
 			}
 		}
-
 		if normalizeReplaySharing(sc.ReplaySharing) != normalizeReplaySharing(ns.ReplaySharing) {
 			addChange("strategy[%s].replay_sharing: %q -> %q", sc.ID, normalizeReplaySharing(sc.ReplaySharing), normalizeReplaySharing(ns.ReplaySharing))
 			sc.ReplaySharing = ns.ReplaySharing
@@ -330,7 +303,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("portfolio_risk.warn_threshold_pct: %.2f%% -> %.2f%%",
 			portfolioRiskWarnThreshold(cfg.PortfolioRisk), portfolioRiskWarnThreshold(next.PortfolioRisk))
 	}
-
 	if portfolioRiskDailyMaxLossUSD(cfg.PortfolioRisk) != portfolioRiskDailyMaxLossUSD(next.PortfolioRisk) {
 		addChange("portfolio_risk.daily_max_loss_usd: $%.2f -> $%.2f",
 			portfolioRiskDailyMaxLossUSD(cfg.PortfolioRisk), portfolioRiskDailyMaxLossUSD(next.PortfolioRisk))
@@ -339,7 +311,6 @@ func applyHotReloadConfig(cfg, next *Config, state *AppState, notifier *MultiNot
 		addChange("portfolio_risk.daily_max_loss_pct: %.2f%% -> %.2f%%",
 			portfolioRiskDailyMaxLossPct(cfg.PortfolioRisk), portfolioRiskDailyMaxLossPct(next.PortfolioRisk))
 	}
-
 	if portfolioRiskMaxSameDirectionNotional(cfg.PortfolioRisk) != portfolioRiskMaxSameDirectionNotional(next.PortfolioRisk) {
 		addChange("portfolio_risk.max_same_direction_notional_usd: $%.2f -> $%.2f",
 			portfolioRiskMaxSameDirectionNotional(cfg.PortfolioRisk), portfolioRiskMaxSameDirectionNotional(next.PortfolioRisk))
@@ -429,7 +400,6 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if cfg.DBFile != next.DBFile {
 		errs = append(errs, fmt.Sprintf("db_file changed (%q -> %q; restart required)", cfg.DBFile, next.DBFile))
 	}
-
 	if cfg.ReplayLogPath != next.ReplayLogPath {
 		errs = append(errs, fmt.Sprintf("replay_log_path changed (%q -> %q; restart required)", cfg.ReplayLogPath, next.ReplayLogPath))
 	}
@@ -451,7 +421,6 @@ func validateHotReloadCompatible(cfg, next *Config) error {
 	if !reflect.DeepEqual(cfg.Correlation, next.Correlation) {
 		errs = append(errs, "correlation changed (restart required)")
 	}
-
 	if !regimeConfigEqualIgnoringReloadableFields(cfg.Regime, next.Regime) {
 		errs = append(errs, "regime changed (restart required)")
 	}
@@ -544,22 +513,18 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 			errs = append(errs, fmt.Sprintf("strategy[%s] leverage changed with open positions (%.2fx -> %.2fx; flatten first or restart after close)",
 				sc.ID, sc.Leverage, ns.Leverage))
 		}
-
 		if (sc.Type == "perps" || sc.Type == "manual") && EffectiveDirection(sc) != EffectiveDirection(ns) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] direction changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, EffectiveDirection(sc), EffectiveDirection(ns)))
 		}
-
 		if sc.InvertSignal != ns.InvertSignal && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] invert_signal changed with open positions (%t -> %t; flatten first or restart after close)",
 				sc.ID, sc.InvertSignal, ns.InvertSignal))
 		}
-
 		if sc.Type != "options" && resolveATRMethod(sc, cfg) != resolveATRMethod(ns, next) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] effective atr_method changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, resolveATRMethod(sc, cfg), resolveATRMethod(ns, next)))
 		}
-
 		if (sc.Type == "perps" || sc.Type == "manual") && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			if sc.AllowScaleIn != ns.AllowScaleIn {
 				errs = append(errs, fmt.Sprintf("strategy[%s] allow_scale_in changed with open positions (%t -> %t; flatten first or restart after close)",
@@ -569,17 +534,14 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
-
 		if !hedgeConfigEqual(sc.Hedge, ns.Hedge) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] hedge block changed with open positions (flatten both the primary and the hedge leg first, or restart after close)",
 				sc.ID))
 		}
-
 		if normalizeReplaySharing(sc.ReplaySharing) != normalizeReplaySharing(ns.ReplaySharing) && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] replay_sharing changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, normalizeReplaySharing(sc.ReplaySharing), normalizeReplaySharing(ns.ReplaySharing)))
 		}
-
 		if sc.Type == "perps" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldRiskMode := sc.RiskPerTradePct != nil && *sc.RiskPerTradePct > 0
 			newRiskMode := ns.RiskPerTradePct != nil && *ns.RiskPerTradePct > 0
@@ -588,7 +550,6 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
-
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && sc.MarginMode != ns.MarginMode && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] margin_mode changed with open positions (%q -> %q; flatten first or restart after close)",
 				sc.ID, sc.MarginMode, ns.MarginMode))
@@ -600,21 +561,18 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_pct mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
-
 			oldATR := sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0
 			newATR := ns.TrailingStopATRMult != nil && *ns.TrailingStopATRMult > 0
 			if oldATR != newATR {
 				errs = append(errs, fmt.Sprintf("strategy[%s] trailing_stop_atr_mult mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
-
 			oldFixedATR := sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0
 			newFixedATR := ns.StopLossATRMult != nil && *ns.StopLossATRMult > 0
 			if oldFixedATR != newFixedATR {
 				errs = append(errs, fmt.Sprintf("strategy[%s] stop_loss_atr_mult mode changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
-
 			oldFixedRegime := sc.StopLossATRRegime.IsConfigured()
 			newFixedRegime := ns.StopLossATRRegime.IsConfigured()
 			if oldFixedRegime != newFixedRegime {
@@ -634,7 +592,6 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
-
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldConfigured := sc.RegimeDirectionalPolicy.IsConfigured()
 			newConfigured := ns.RegimeDirectionalPolicy.IsConfigured()
@@ -646,7 +603,6 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
-
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldDivConfigured := sc.RegimeWindowDivergence.IsConfigured()
 			newDivConfigured := ns.RegimeWindowDivergence.IsConfigured()
@@ -658,7 +614,6 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
-
 		if sc.Type == "perps" && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldPALConfigured := sc.RegimeProfileAllocation.IsConfigured()
 			newPALConfigured := ns.RegimeProfileAllocation.IsConfigured()
@@ -670,12 +625,10 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 					sc.ID))
 			}
 		}
-
 		if strategyHasOpenPositions(stateStrategy(state, sc.ID)) && !regimeWindowFieldsEqual(sc, ns) {
 			errs = append(errs, fmt.Sprintf("strategy[%s] regime_*_window changed with open positions (flatten first or restart after close)",
 				sc.ID))
 		}
-
 		if cfg.Regime != nil && next.Regime != nil && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			for _, win := range sortedRegimeWindowNamesFromConfig(cfg.Regime.Windows) {
 				if !openPositionsReferenceRegimeWindow(state, win) {
@@ -695,7 +648,6 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				}
 			}
 		}
-
 		if (sc.Type == "perps" || sc.Type == "manual") && sc.Platform == "hyperliquid" && strategyHasOpenPositions(stateStrategy(state, sc.ID)) {
 			oldRules, _ := parseStrategyTPSLAfterRules(sc)
 			newRules, _ := parseStrategyTPSLAfterRules(ns)
@@ -703,7 +655,6 @@ func validateHotReloadStateCompatible(cfg, next *Config, state *AppState) error 
 				errs = append(errs, fmt.Sprintf("strategy[%s] sl_after rules changed with open positions (flatten first or restart after close)",
 					sc.ID))
 			}
-
 			if !unifiedCloseParamsEqualForReload(sc, ns) {
 				errs = append(errs, fmt.Sprintf("strategy[%s] unified per-regime close block changed with open positions (flatten first or restart after close)",
 					sc.ID))

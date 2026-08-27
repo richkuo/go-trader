@@ -41,12 +41,9 @@ type StatusServer struct {
 	uiNotifier    *MultiNotifier
 	confirmMu     sync.Mutex
 	confirmNonces map[string]confirmNonceEntry
-
 	tradeActionMu sync.Mutex
-
 	tradeDepsHook func(*manualCoreDeps)
-
-	restartFn func() error
+	restartFn     func() error
 
 	perpsErrMu              sync.Mutex
 	lastFuturesErrLoggedAt  time.Time
@@ -62,7 +59,6 @@ const DefaultStatusPort = 8099
 const statusPortMaxAttempts = 5
 
 func NewStatusServer(state *AppState, mu *sync.RWMutex, statusToken string, strategies []StrategyConfig, stateDB *StateDB) *StatusServer {
-
 	symbols := collectPriceSymbols(strategies)
 	futuresSymbols := collectFuturesMarkSymbols(strategies)
 	hlCoins, okxCoins := collectPerpsMarkSymbols(strategies)
@@ -179,20 +175,16 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
 	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
 	mux.HandleFunc("/api/regime/transitions", ss.handleAPIRegimeTransitions)
-
 	mux.HandleFunc("/api/leaderboard", ss.handleAPILeaderboard)
 	mux.HandleFunc("/api/diagnostics", ss.handleAPIDiagnostics)
 	mux.HandleFunc("/api/cashflow", ss.handleAPICashflow)
 	mux.HandleFunc("/api/strategies/dead", ss.handleAPIDeadStrategies)
 	mux.HandleFunc("/api/closing-strategies", ss.handleAPIClosingStrategies)
 	mux.HandleFunc("/api/correlation", ss.handleAPICorrelation)
-
 	mux.HandleFunc("/api/tuning/runs", ss.handleAPITuningRuns)
 	mux.HandleFunc("/api/tuning/runs/", ss.handleAPITuningRun)
 	mux.HandleFunc("/api/tuning/apply", ss.handleAPITuningApply)
-
 	mux.HandleFunc("/api/config/notifications", ss.handleAPIConfigNotifications)
-
 	mux.HandleFunc("/api/confirm", ss.handleAPIConfirm)
 	mux.HandleFunc("/api/config/add-strategy", ss.handleAPIAddStrategy)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
@@ -203,7 +195,6 @@ func (ss *StatusServer) Start(port int) {
 		return
 	}
 	if boundPort != port {
-
 		fmt.Printf("[server] WARNING: requested port %d was in use, bound to %d instead — another go-trader may already be running on %d; compare /health pid across ports\n", port, boundPort, port)
 	}
 	fmt.Printf("[server] Status endpoint at http://localhost:%d/status\n", boundPort)
@@ -212,7 +203,6 @@ func (ss *StatusServer) Start(port int) {
 	if ss.statusToken != "" {
 		fmt.Printf("[server] Dashboard API requires the configured status token\n")
 	} else {
-
 		fmt.Printf("[server] NOTE: status_token unset — dashboard mutations are open to any local (loopback) client; set status_token if other users can reach this host\n")
 	}
 	go func() {
@@ -251,7 +241,6 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
-
 	if ss.statusToken != "" {
 		if r.Header.Get("Authorization") != "Bearer "+ss.statusToken {
 			w.Header().Set("Content-Type", "application/json")
@@ -336,7 +325,6 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if initCap > 0 {
 			pnlPct = (pnl / initCap) * 100
 		}
-
 		dirView := directionalStatusForStrategy(sc, s, ss.regime, time.Now().UTC())
 
 		resp.Strategies[id] = StratStatus{

@@ -11,7 +11,6 @@ func tradeOpenStopLossATRMult(sc StrategyConfig) *float64 {
 
 func tradeOpenStopLossATRMultForRegime(sc StrategyConfig, regime string) *float64 {
 	if v, ok := unifiedCloseStopLossATR(sc, regime); ok {
-
 		return &v
 	}
 	if sc.StopLossATRMult != nil && *sc.StopLossATRMult > 0 {
@@ -54,7 +53,6 @@ func tradeOpenTPTiersJSONForRegime(sc StrategyConfig, regime string) string {
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
-
 		fmt.Printf("[WARN] %s: marshal tp_tiers_json failed: %v\n", sc.ID, err)
 		return ""
 	}
@@ -69,7 +67,6 @@ func stampPositionProtectionSnapshot(pos *Position, sc StrategyConfig) {
 		pos.StopLossATRMult = tradeOpenStopLossATRMultForRegime(sc, positionATRRegimeLabel(pos, sc))
 	}
 	if pos.TPTiersJSON == "" {
-
 		pos.TPTiersJSON = tradeOpenTPTiersJSONForRegime(sc, positionATRRegimeLabel(pos, sc))
 	}
 }
@@ -98,7 +95,6 @@ func recordPositionOpen(s *StrategyState, sc StrategyConfig, trade *Trade, pos *
 	stampPositionProtectionSnapshot(pos, sc)
 	copyPositionOpenSnapshotToTrade(trade, pos)
 	RecordTrade(s, *trade)
-
 	if pos != nil && !pos.isHedgeLeg() {
 		decisionType := ReplayDecisionOpen
 		if pos.Quantity > trade.Quantity+1e-9 {

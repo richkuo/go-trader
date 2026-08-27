@@ -495,7 +495,6 @@ func TestMakePairs(t *testing.T) {
 	if len(pairs) != 3 {
 		t.Errorf("expected 3 pairs, got %d", len(pairs))
 	}
-
 	expected := [][2]string{{"BTC", "ETH"}, {"BTC", "SOL"}, {"ETH", "SOL"}}
 	for i, pair := range pairs {
 		if pair != expected[i] {
@@ -515,18 +514,15 @@ func TestStratShortName(t *testing.T) {
 	if got := stratShortName(spotStrategies, "chart_pattern"); got != "cpat" {
 		t.Errorf("expected cpat, got %s", got)
 	}
-
 	if got := stratShortName(spotStrategies, "tema_cross"); got != "tema_cross" {
 		t.Errorf("expected tema_cross, got %s", got)
 	}
-
 	if got := stratShortName(spotStrategies, "sma_crossover"); got != "sma_crossover" {
 		t.Errorf("expected sma_crossover, got %s", got)
 	}
 	if got := stratShortName(optionsStrategies, "vol_mean_reversion"); got != "vol" {
 		t.Errorf("expected vol, got %s", got)
 	}
-
 	if got := stratShortName(spotStrategies, "unknown_strat"); got != "unknown_strat" {
 		t.Errorf("expected unknown_strat, got %s", got)
 	}
@@ -712,7 +708,6 @@ func TestDeriveShortName(t *testing.T) {
 		{"rsi_macd_combo", "rmc"},
 		{"vol_mean_reversion", "vol"},
 		{"momentum_options", "mom"},
-
 		{"my_new_strategy", "mns"},
 		{"alpha_beta_gamma", "abg"},
 	}
@@ -760,7 +755,6 @@ func TestGenerateConfig_PerpsDirectionWiring(t *testing.T) {
 		if s.Direction != expected {
 			t.Errorf("%s Direction = %q, want %q", s.ID, s.Direction, expected)
 		}
-
 		if s.AllowShorts {
 			t.Errorf("%s AllowShorts = true, want false (deprecated; use Direction)", s.ID)
 		}
@@ -1140,7 +1134,6 @@ func TestConfigValidation_SharedWalletPoolRejectsAllocationBaselines(t *testing.
 }
 
 func TestGenerateConfig_DefaultsForOptionalFields(t *testing.T) {
-
 	opts := InitOptions{
 		Assets:         []string{"BTC"},
 		EnableSpot:     true,
@@ -1183,7 +1176,6 @@ func TestGenerateConfig_DefaultsForOptionalFields(t *testing.T) {
 }
 
 func TestRunInitFromJSON_DefaultCapitalAndNotifications(t *testing.T) {
-
 	out := filepath.Join(t.TempDir(), "config.json")
 	jsonStr := `{"assets":["BTC"],"enableSpot":true,"spotStrategies":["sma_crossover"],"spotCapital":1000,"spotDrawdown":5}`
 	code := runInitFromJSON(jsonStr, out)
@@ -1507,7 +1499,6 @@ func TestGenerateConfig_HTFFilterSkipsOptionsAndDNF(t *testing.T) {
 
 func TestRunInitFromJSON_FuturesAutoPopulate(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "config.json")
-
 	jsonStr := `{"assets":["BTC"],"enableFutures":true}`
 	code := runInitFromJSON(jsonStr, out)
 	if code != 0 {
@@ -1642,7 +1633,6 @@ func TestRunInitFromJSON_DeprecatedChannelMigration(t *testing.T) {
 
 func TestRunInitFromJSON_PerpsSizingLeverageInherits(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "config.json")
-
 	jsonStr := `{"assets":["BTC"],"enablePerps":true,"perpsLeverage":5,"perpsStrategies":["momentum"],"perpsCapital":1000,"perpsDrawdown":5}`
 	code := runInitFromJSON(jsonStr, out)
 	if code != 0 {
@@ -1667,7 +1657,6 @@ func TestRunInitFromJSON_PerpsSizingLeverageInherits(t *testing.T) {
 }
 
 func TestRunInitFromJSON_WriteError(t *testing.T) {
-
 	dir := t.TempDir()
 	jsonStr := `{"assets":["BTC"],"enableSpot":true,"spotStrategies":["momentum"],"spotCapital":1000,"spotDrawdown":5}`
 	code := runInitFromJSON(jsonStr, dir)
@@ -1688,7 +1677,6 @@ func TestGenerateConfig_DisableCircuitBreaker(t *testing.T) {
 		PerpsCapital:    1000,
 		SpotDrawdown:    5,
 		PerpsDrawdown:   5,
-
 		EnableManual:    true,
 		ManualSymbol:    "ETH",
 		ManualTimeframe: "1h",

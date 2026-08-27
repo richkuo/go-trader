@@ -93,7 +93,6 @@ func TestManualDefault_RegimeADX_SelectsRatchetRegime(t *testing.T) {
 	if block == nil || len(block.TrendRegime) != 3 {
 		t.Fatalf("trailing_stop_atr_regime must resolve to 3 ADX labels, got %#v", block)
 	}
-
 	for _, label := range []string{"trending_up", "trending_down", "ranging"} {
 		if v, ok := resolveRegimeATR(*block, label); !ok || v <= 0 {
 			t.Fatalf("opening trail for %q = (%g, %v), want positive", label, v, ok)
@@ -337,7 +336,6 @@ func TestManualRatchetOpeningTrailOrFallback(t *testing.T) {
 				t.Fatalf("manualRatchetOpeningTrailOrFallback(%v, %q, %g) = (%g, %v), want (%g, %v)",
 					tc.block, tc.label, tc.fallback, mult, fellBack, tc.wantMult, tc.wantFellBk)
 			}
-
 			if mult <= 0 {
 				t.Fatalf("armed mult = %g, must be strictly positive (no-naked invariant)", mult)
 			}

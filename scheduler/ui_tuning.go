@@ -175,7 +175,6 @@ func ensureTuningCacheWritable(path string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect tuning OHLCV cache path %s: %w", path, err)
 	}
-
 	probe, err := os.CreateTemp(filepath.Dir(path), ".ohlcv-cache-write-*")
 	if err != nil {
 		return fmt.Errorf("tuning OHLCV cache directory %s is not writable: %w", filepath.Dir(path), err)
@@ -210,7 +209,6 @@ func (m *tuningRunManager) loadPersistedRuns() error {
 		path := filepath.Join(m.rootDir, entry.Name(), tuningRunRecordFile)
 		var rec tuningRunRecord
 		if err := readTuningJSON(path, &rec); err != nil {
-
 			log.Printf("[tuning] skipping run directory %s: %v", entry.Name(), err)
 			continue
 		}
@@ -230,7 +228,6 @@ func (m *tuningRunManager) loadPersistedRuns() error {
 			rec.CompletedAt = &now
 			rec.Error = "scheduler restarted before the tuning run completed"
 			if err := writeTuningJSON(path, rec); err != nil {
-
 				log.Printf("[tuning] mark run %s interrupted on disk failed: %v", rec.ID, err)
 			}
 		}
@@ -404,7 +401,6 @@ func (m *tuningRunManager) pruneRetainedRuns() {
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].hasResults != cands[j].hasResults {
-
 			return !cands[i].hasResults && cands[j].hasResults
 		}
 		if !cands[i].retainedAt.Equal(cands[j].retainedAt) {
@@ -845,7 +841,6 @@ func (ss *StatusServer) handleAPITuningRun(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
 	overlayTuningApplyEligibility(&detail, ss.configPath, ss.tuning)
 	writeJSON(w, detail)
 }

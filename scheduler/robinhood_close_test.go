@@ -107,7 +107,6 @@ func TestForceCloseRobinhoodLive_CtxExpiredBeforeSubmit(t *testing.T) {
 }
 
 func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
-
 	rhLive := []StrategyConfig{
 		{ID: "rh-sma-btc", Platform: "robinhood", Type: "spot",
 			Args: []string{"sma_crossover", "BTC", "1h", "--mode=live"}},
@@ -139,7 +138,6 @@ func TestForceCloseRobinhoodLive_NegativeSizeNotTraded(t *testing.T) {
 }
 
 func TestForceCloseRobinhoodLive_OptionsStrategiesIgnored(t *testing.T) {
-
 	mixed := []StrategyConfig{
 		{ID: "rh-ccall-spy", Platform: "robinhood", Type: "options",
 			Args: []string{"covered_call", "SPY", "1d", "--mode=live"}},
@@ -220,7 +218,6 @@ func TestParseRobinhoodCloseOutput_CleanSuccess(t *testing.T) {
 }
 
 func TestParseRobinhoodCloseOutput_Exit0WithErrorField(t *testing.T) {
-
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x","error":"bad thing"}`)
 	_, _, err := parseRobinhoodCloseOutput(stdout, "", nil)
 	if err == nil {
@@ -237,7 +234,6 @@ func TestParseRobinhoodCloseOutput_ExitNonZeroWithErrorEnvelope(t *testing.T) {
 }
 
 func TestParseRobinhoodCloseOutput_ExitNonZeroNoErrorField(t *testing.T) {
-
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{}},"platform":"robinhood","timestamp":"x"}`)
 	_, _, err := parseRobinhoodCloseOutput(stdout, "stderr msg", fmt.Errorf("exit 2"))
 	if err == nil {

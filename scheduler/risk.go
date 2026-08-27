@@ -50,7 +50,6 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 			}
 			coin = sc.Args[1]
 		case "manual":
-
 			if sc.Platform != "hyperliquid" {
 				continue
 			}
@@ -68,7 +67,6 @@ func collectPerpsMarkSymbols(strategies []StrategyConfig) (hlCoins, okxCoins []s
 			okxSet[coin] = true
 		}
 	}
-
 	for _, coin := range hedgeCoinsForStrategies(strategies) {
 		hlSet[coin] = true
 	}
@@ -99,13 +97,11 @@ func mergePerpsMarks(prices map[string]float64, marks map[string]float64) {
 }
 
 type missingMarkPosition struct {
-	StrategyID string
-	Symbol     string
-	Live       bool
-
-	Platform string
-	Type     string
-
+	StrategyID       string
+	Symbol           string
+	Live             bool
+	Platform         string
+	Type             string
 	DisabledManagers []string
 }
 
@@ -334,22 +330,20 @@ type KillSwitchEvent struct {
 }
 
 type PortfolioRiskState struct {
-	PeakValue                float64 `json:"peak_value"`
-	CurrentDrawdownPct       float64 `json:"current_drawdown_pct"`
-	CurrentMarginDrawdownPct float64 `json:"current_margin_drawdown_pct,omitempty"`
-
-	DrawdownReadingSubstituted bool `json:"drawdown_reading_substituted,omitempty"`
-
-	UntrustedOverLimitSince time.Time         `json:"untrusted_over_limit_since,omitempty"`
-	KillSwitchActive        bool              `json:"kill_switch_active"`
-	KillSwitchAt            time.Time         `json:"kill_switch_at,omitempty"`
-	WarningSent             bool              `json:"warning_sent,omitempty"`
-	WarnBandEnteredAt       time.Time         `json:"warn_band_entered_at,omitempty"`
-	LastWarningEquityDDPct  float64           `json:"last_warning_equity_dd_pct,omitempty"`
-	LastWarningMarginDDPct  float64           `json:"last_warning_margin_dd_pct,omitempty"`
-	WarningEquityDeltaPct   float64           `json:"warning_equity_delta_pct,omitempty"`
-	WarningMarginDeltaPct   float64           `json:"warning_margin_delta_pct,omitempty"`
-	Events                  []KillSwitchEvent `json:"events,omitempty"`
+	PeakValue                  float64           `json:"peak_value"`
+	CurrentDrawdownPct         float64           `json:"current_drawdown_pct"`
+	CurrentMarginDrawdownPct   float64           `json:"current_margin_drawdown_pct,omitempty"`
+	DrawdownReadingSubstituted bool              `json:"drawdown_reading_substituted,omitempty"`
+	UntrustedOverLimitSince    time.Time         `json:"untrusted_over_limit_since,omitempty"`
+	KillSwitchActive           bool              `json:"kill_switch_active"`
+	KillSwitchAt               time.Time         `json:"kill_switch_at,omitempty"`
+	WarningSent                bool              `json:"warning_sent,omitempty"`
+	WarnBandEnteredAt          time.Time         `json:"warn_band_entered_at,omitempty"`
+	LastWarningEquityDDPct     float64           `json:"last_warning_equity_dd_pct,omitempty"`
+	LastWarningMarginDDPct     float64           `json:"last_warning_margin_dd_pct,omitempty"`
+	WarningEquityDeltaPct      float64           `json:"warning_equity_delta_pct,omitempty"`
+	WarningMarginDeltaPct      float64           `json:"warning_margin_delta_pct,omitempty"`
+	Events                     []KillSwitchEvent `json:"events,omitempty"`
 
 	ManualMarkBasisRebaselined bool `json:"manual_mark_basis_rebaselined,omitempty"`
 }
@@ -425,7 +419,6 @@ func ClearLatchedKillSwitchSharedWallet(state *AppState, strategies []StrategyCo
 	state.PortfolioRisk.LastWarningMarginDDPct = 0
 	state.PortfolioRisk.WarningEquityDeltaPct = 0
 	state.PortfolioRisk.WarningMarginDeltaPct = 0
-
 	state.PortfolioRisk.PeakValue = totalBalance
 	state.PortfolioRisk.CurrentDrawdownPct = 0
 	state.PortfolioRisk.CurrentMarginDrawdownPct = 0
@@ -556,7 +549,6 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 		if equityDD < 0 {
 			equityDD = 0
 		}
-
 		substituted := false
 		if !equityTrusted && equityDD < priorEquityDD {
 			equityDD = priorEquityDD
@@ -597,7 +589,6 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 		prs.WarningMarginDeltaPct = 0
 		var r, source string
 		var dd float64
-
 		if !equityGuardArmed {
 			source = "margin"
 			dd = marginDD
@@ -611,7 +602,6 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 		} else {
 			source = "equity"
 			dd = equityDD
-
 			if !prs.UntrustedOverLimitSince.IsZero() {
 				r = fmt.Sprintf("portfolio drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f); measurement is UNTRUSTED (substituted or stale total) and has read over the limit continuously since %s — latch escalated after %s",
 					equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue,
@@ -622,7 +612,6 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 					equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue)
 			}
 		}
-
 		prs.UntrustedOverLimitSince = time.Time{}
 		addKillSwitchEvent(prs, "triggered", source, dd, totalValue, prs.PeakValue, r)
 		return false, false, false, r
@@ -630,7 +619,6 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 
 	if cfg.MaxDrawdownPct > 0 {
 		warnDrawdownPct := cfg.MaxDrawdownPct * cfg.WarnThresholdPct / 100
-
 		equityWarn, marginWarn := portfolioWarnBandSignals(cfg, prs, equityAvailable)
 		if equityWarn || marginWarn {
 			now := time.Now().UTC()
@@ -652,11 +640,9 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 			prs.LastWarningMarginDDPct = marginDD
 			prs.WarningSent = true
 			warning = true
-
 			marginOverLimit := marginDD > cfg.MaxDrawdownPct
 			switch {
 			case equityLatchDeferred:
-
 				reason = fmt.Sprintf("portfolio equity drawdown %.1f%% exceeds limit %.1f%% (value=$%.2f, peak=$%.2f) but the total is UNTRUSTED (substituted or one-generation-stale) — full-book latch DEFERRED since %s, escalates at %s unless a trusted measurement lands first; per-strategy circuit breakers (#292) remain active",
 					equityDD, cfg.MaxDrawdownPct, totalValue, prs.PeakValue,
 					prs.UntrustedOverLimitSince.Format("2006-01-02 15:04 UTC"),
@@ -669,7 +655,6 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 				reason = fmt.Sprintf("portfolio drawdown warning: equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% exceeds limit %.1f%% (unrealized loss=$%.2f, margin=$%.2f); portfolio latch governed by equity drawdown (limit %.1f%%); per-strategy circuit breakers own margin protection (#1448)",
 					equityDD, totalValue, prs.PeakValue, marginDD, cfg.MaxDrawdownPct, perpsUnrealizedLoss, perpsMargin, cfg.MaxDrawdownPct)
 			case equityWarn && marginWarn:
-
 				reason = fmt.Sprintf("portfolio drawdown approaching kill switch limit %.1f%% (warn at %.1f%%): equity=%.1f%% (value=$%.2f, peak=$%.2f); perps margin=%.1f%% (unrealized loss=$%.2f, margin=$%.2f)",
 					cfg.MaxDrawdownPct, warnDrawdownPct, equityDD, totalValue, prs.PeakValue, marginDD, perpsUnrealizedLoss, perpsMargin)
 			case marginWarn && marginOverLimit:
@@ -683,7 +668,6 @@ func checkPortfolioRiskWithEquityAvailability(prs *PortfolioRiskState, cfg *Port
 					equityDD, cfg.MaxDrawdownPct, warnDrawdownPct, totalValue, prs.PeakValue)
 			}
 		} else if equityAvailable {
-
 			prs.WarningSent = false
 			prs.WarnBandEnteredAt = time.Time{}
 			prs.LastWarningEquityDDPct = 0
@@ -736,15 +720,14 @@ func PortfolioNotional(strategies map[string]*StrategyState, prices map[string]f
 }
 
 type RiskState struct {
-	PeakValue           float64   `json:"peak_value"`
-	MaxDrawdownPct      float64   `json:"max_drawdown_pct"`
-	CurrentDrawdownPct  float64   `json:"current_drawdown_pct"`
-	DailyPnL            float64   `json:"daily_pnl"`
-	DailyPnLDate        string    `json:"daily_pnl_date"`
-	ConsecutiveLosses   int       `json:"consecutive_losses"`
-	CircuitBreaker      bool      `json:"circuit_breaker"`
-	CircuitBreakerUntil time.Time `json:"circuit_breaker_until"`
-
+	PeakValue            float64                         `json:"peak_value"`
+	MaxDrawdownPct       float64                         `json:"max_drawdown_pct"`
+	CurrentDrawdownPct   float64                         `json:"current_drawdown_pct"`
+	DailyPnL             float64                         `json:"daily_pnl"`
+	DailyPnLDate         string                          `json:"daily_pnl_date"`
+	ConsecutiveLosses    int                             `json:"consecutive_losses"`
+	CircuitBreaker       bool                            `json:"circuit_breaker"`
+	CircuitBreakerUntil  time.Time                       `json:"circuit_breaker_until"`
 	PendingCircuitCloses map[string]*PendingCircuitClose `json:"pending_circuit_closes,omitempty"`
 }
 
@@ -778,21 +761,16 @@ type PlatformRiskAssist struct {
 	HLLiveAll    []StrategyConfig
 	OKXPositions []OKXPosition
 	OKXLiveAll   []StrategyConfig
-
-	RHPositions []RobinhoodPosition
-
-	RHLiveAll []StrategyConfig
-
-	TSPositions []TopStepPosition
-
-	TSLiveAll []StrategyConfig
+	RHPositions  []RobinhoodPosition
+	RHLiveAll    []StrategyConfig
+	TSPositions  []TopStepPosition
+	TSLiveAll    []StrategyConfig
 }
 
 func (r *RiskState) MarshalPendingCircuitClosesJSON() string {
 	if r == nil || len(r.PendingCircuitCloses) == 0 {
 		return ""
 	}
-
 	filtered := make(map[string]*PendingCircuitClose, len(r.PendingCircuitCloses))
 	for k, v := range r.PendingCircuitCloses {
 		if v == nil || len(v.Symbols) == 0 {
@@ -934,7 +912,6 @@ func setHyperliquidCircuitBreakerPending(sc *StrategyConfig, s *StrategyState, a
 		return
 	}
 	symbols := []PendingCircuitCloseSymbol{{Symbol: sym, Size: qty}}
-
 	if hCoin := heldHedgeCoin(*sc, s); hCoin != "" {
 		if hQty, hok := computeHyperliquidCircuitCloseQty(hCoin, s.ID, assist.HLPositions, assist.HLLiveAll); hok && hQty > 0 {
 			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: hCoin, Size: hQty})
@@ -979,7 +956,6 @@ func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategySta
 			OperatorRequired: true,
 		})
 	case sc.Platform == "robinhood" && sc.Type == "options" && robinhoodIsLive(sc.Args):
-
 		symbols := make([]PendingCircuitCloseSymbol, 0, len(s.OptionPositions))
 		for id, op := range s.OptionPositions {
 			if op == nil {
@@ -988,7 +964,6 @@ func setOperatorRequiredCircuitBreakerPending(sc *StrategyConfig, s *StrategySta
 			symbols = append(symbols, PendingCircuitCloseSymbol{Symbol: id, Size: op.Quantity})
 		}
 		if len(symbols) == 0 {
-
 			sym := robinhoodSymbol(sc.Args)
 			if sym == "" {
 				return
@@ -1070,9 +1045,7 @@ func rolloverDailyPnL(r *RiskState) {
 }
 
 func forceCloseKillSwitchPositions(s *StrategyState, sc StrategyConfig, prices map[string]float64, hlFills map[string]HyperliquidCloseFill, hlLiveAll []StrategyConfig, hlVirtualQty hlVirtualQuantitySnapshot, logger *StrategyLogger) {
-
 	applyHyperliquidKillSwitchCloseFill(s, sc, hlFills, hlLiveAll, hlVirtualQty)
-
 	applyHyperliquidKillSwitchHedgeFill(s, sc, hlFills)
 	forceCloseAllPositions(s, &sc, prices, logger)
 }
@@ -1081,7 +1054,6 @@ func classifyPositionTradeType(s *StrategyState, pos *Position) string {
 	if pos == nil {
 		return "spot"
 	}
-
 	if pos.isHedgeLeg() {
 		return hedgeTradeType
 	}
@@ -1152,11 +1124,9 @@ func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol str
 		price = pos.AvgCost
 	}
 	var pnl, value float64
-
 	tradeType := classifyPositionTradeType(s, pos)
 	reason := "circuit_breaker"
 	details := ""
-
 	if closePositionIsCorrupt(pos) {
 		reason = "circuit_breaker_corrupt"
 		details = fmt.Sprintf("Circuit breaker close %s (corrupt qty=%.6f avg_cost=%.4f) — zero PnL booked", pos.Side, pos.Quantity, pos.AvgCost)
@@ -1164,7 +1134,6 @@ func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol str
 			logger.Warn("Circuit breaker: corrupt %s position %s (qty=%.6f avg_cost=%.4f) — booking zero realized PnL, not qty*(price-avgCost)", pos.Side, symbol, pos.Quantity, pos.AvgCost)
 		}
 	} else if pos.Multiplier > 0 {
-
 		if pos.Side == "long" {
 			pnl = pos.Quantity * pos.Multiplier * (price - pos.AvgCost)
 		} else {
@@ -1184,12 +1153,10 @@ func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol str
 	}
 	if details == "" {
 		details = fmt.Sprintf("Circuit breaker close %s, PnL: $%.2f (model-only reconciliation adjustment; no exchange fill)", pos.Side, pnl)
-
 		if sc != nil && isLiveArgs(sc.Args) {
 			queueModelOnlyCloseAlert(s.ID, symbol, pos.Quantity)
 		}
 	}
-
 	details = fmt.Sprintf("%s, pre-streak=%d", details, s.RiskState.ConsecutiveLosses)
 	if logger != nil {
 		logger.Warn("Circuit breaker: force-closing %s %s @ $%.2f (PnL: $%.2f)", pos.Side, symbol, price, pnl)
@@ -1217,7 +1184,6 @@ func closeVirtualPositionAtMark(s *StrategyState, sc *StrategyConfig, symbol str
 		TPTiersJSON:       pos.TPTiersJSON,
 	}
 	RecordTrade(s, trade)
-
 	recordPositionTradeResult(s, pos, pnl)
 	recordClosedPosition(s, pos, price, pnl, reason, now)
 	delete(s.Positions, symbol)
@@ -1287,7 +1253,6 @@ func circuitBreakerPermitsManagement(reason, platform, stratType string, posQty 
 }
 
 func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, prices map[string]float64, logger *StrategyLogger, assist *PlatformRiskAssist) (bool, string) {
-
 	if sc != nil && sc.Type == "manual" {
 		return true, ""
 	}
@@ -1306,7 +1271,6 @@ func CheckRisk(sc *StrategyConfig, s *StrategyState, portfolioValue float64, pri
 
 	cbEnabled := sc.CircuitBreakerEnabled()
 	if cbEnabled {
-
 		circuitBreakerSuppressedWarned.Delete(s.ID)
 	}
 
@@ -1384,7 +1348,6 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 		return
 	}
 	r := &s.RiskState
-
 	drawdownBreached := r.CurrentDrawdownPct > r.MaxDrawdownPct
 	lossBreached := r.ConsecutiveLosses >= lossStreakThreshold
 	if cbEnabled || (!drawdownBreached && !lossBreached) {
@@ -1405,7 +1368,6 @@ func recordCircuitBreakerSuppression(s *StrategyState, cbEnabled bool, lossStrea
 		logger.Warn("WARNING: circuit breaker is DISABLED (circuit_breaker:false) and a halt threshold was crossed (%s) — NO circuit breaker fired. This strategy is trading WITHOUT the drawdown/consecutive-loss auto-halt and positions are NOT being auto-closed on this condition. This is a warning only (nothing was closed); re-enable circuit_breaker to restore protection.",
 			strings.Join(reasons, "; "))
 	}
-
 	queueCircuitBreakerSuppressionAlert(s.ID, reasons)
 }
 

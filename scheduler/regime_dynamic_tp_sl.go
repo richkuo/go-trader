@@ -199,7 +199,6 @@ func dynamicProtectionForceReplace(
 			continue
 		}
 		if i < len(pos.TPOIDs) && pos.TPOIDs[i] == 0 && (i >= len(pos.TPArmedTiers) || !pos.TPArmedTiers[i]) {
-
 			continue
 		}
 		oldMult := 0.0

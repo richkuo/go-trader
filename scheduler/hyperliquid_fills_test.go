@@ -103,7 +103,6 @@ func TestLookupHyperliquidFillByCoinSize_MatchesByCoinAndSize(t *testing.T) {
 }
 
 func TestLookupHyperliquidFillByCoinSize_PicksNewestGroupNotSumOfWindow(t *testing.T) {
-
 	withFastFillRetries(t)
 	srv := newHLUserFillsServer(t, []map[string]any{
 		{"coin": "BTC", "oid": 100, "fee": "0.40", "closedPnl": "75.00", "sz": "0.1", "time": 1_000_000_000},
@@ -133,7 +132,6 @@ func TestLookupHyperliquidFillByCoinSize_PicksNewestGroupNotSumOfWindow(t *testi
 }
 
 func TestLookupHyperliquidFillByCoinSize_AggregatesPartialFillsByAnchorOID(t *testing.T) {
-
 	withFastFillRetries(t)
 	srv := newHLUserFillsServer(t, []map[string]any{
 		{"coin": "BTC", "oid": 555, "fee": "0.20", "closedPnl": "30.00", "sz": "0.04", "time": 1_500_000_000},
@@ -165,7 +163,6 @@ func TestLookupHyperliquidFillByCoinSize_AggregatesPartialFillsByAnchorOID(t *te
 
 func TestLookupHyperliquidReconcileFillFee_OIDFirstFallsBackToCoinSize(t *testing.T) {
 	withFastFillRetries(t)
-
 	calls := 0
 	orig := fetchHyperliquidUserFillsByTime
 	defer func() { fetchHyperliquidUserFillsByTime = orig }()
@@ -173,12 +170,10 @@ func TestLookupHyperliquidReconcileFillFee_OIDFirstFallsBackToCoinSize(t *testin
 		calls++
 		switch calls {
 		case 1:
-
 			return []hlFillRecord{
 				{Coin: "BTC", OID: "1", Fee: "0.10", Sz: "0.5"},
 			}, nil
 		default:
-
 			return []hlFillRecord{
 				{Coin: "BTC", OID: "1", Fee: "0.10", ClosedPnl: "20.00", Sz: "0.5"},
 			}, nil
@@ -195,11 +190,9 @@ func TestLookupHyperliquidReconcileFillFee_OIDFirstFallsBackToCoinSize(t *testin
 }
 
 func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
-
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
-
 		if oid == 4242 && coin == "BTC" {
 			return HLFillLookup{Fee: 1.23, ClosedPnLGross: 0, FilledQty: 0.1, Px: 58000, Count: 1, OID: oid}, true
 		}
@@ -242,12 +235,10 @@ func TestReconcileHyperliquidPositions_ExternalCloseUsesFillFee(t *testing.T) {
 }
 
 func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.T) {
-
 	origLookup := lookupHyperliquidReconcileFillFee
 	defer func() { lookupHyperliquidReconcileFillFee = origLookup }()
 	lookupHyperliquidReconcileFillFee = func(addr, coin string, oid int64, qty float64) (HLFillLookup, bool) {
 		if oid == 5005 {
-
 			return HLFillLookup{Fee: 2.50, Count: 1, OID: oid, FilledQty: 0.2}, true
 		}
 		if oid == 0 && coin == "BTC" && qty > 0 {
@@ -287,7 +278,6 @@ func TestReconcileHyperliquidAccountPositions_DetectorOneUsesFillFee(t *testing.
 	var mu sync.RWMutex
 
 	prices := map[string]float64{"BTC": 59000}
-
 	_, _, _ = reconcileHyperliquidAccountPositions(scs, scs, state, &mu, logMgr, nil, prices, "0xtest", nil, false)
 
 	ownerSS := state.Strategies["hl-owner"]

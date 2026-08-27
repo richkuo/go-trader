@@ -48,7 +48,6 @@ func (p *RegimeDirectionalPolicy) Resolve(regime string) (RegimeDirectionalEntry
 	if entry, ok := p.TrendRegime[r]; ok {
 		return entry, true
 	}
-
 	if regimeDirectionalSubs[r] {
 		if entry, ok := p.TrendRegime[regimeDirectionalBare]; ok {
 			return entry, true
@@ -121,7 +120,6 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 		return errs
 	}
 	parsed := make(map[string]RegimeDirectionalEntry, len(classifier))
-
 	seen := make(map[string]bool, len(classifier))
 	keys := make([]string, 0, len(classifier))
 	for k := range classifier {
@@ -136,7 +134,6 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 			errs = append(errs, fmt.Sprintf("%s.%s: must be an object with {direction, invert_signal}", label, regimeLabel))
 			continue
 		}
-
 		dirRaw, hasDir := entryMap["direction"]
 		if !hasDir {
 			errs = append(errs, fmt.Sprintf("%s.%s: missing required key %q", label, regimeLabel, "direction"))
@@ -149,12 +146,10 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 		}
 		switch dir {
 		case DirectionLong, DirectionShort, DirectionBoth:
-
 		default:
 			errs = append(errs, fmt.Sprintf("%s.%s.direction: must be %q, %q, or %q (got %q)", label, regimeLabel, DirectionLong, DirectionShort, DirectionBoth, dir))
 			continue
 		}
-
 		invert := false
 		if invRaw, hasInv := entryMap["invert_signal"]; hasInv {
 			b, ok := invRaw.(bool)
@@ -164,7 +159,6 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 			}
 			invert = b
 		}
-
 		for k := range entryMap {
 			if k != "direction" && k != "invert_signal" {
 				errs = append(errs, fmt.Sprintf("%s.%s: unknown key %q (valid: direction, invert_signal)", label, regimeLabel, k))
@@ -175,7 +169,6 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 	if len(labels) == 0 {
 		labels = canonicalTrendRegimeLabels
 	}
-
 	validLabels := map[string]bool{}
 	for _, l := range labels {
 		validLabels[l] = true
@@ -185,7 +178,6 @@ func (p *RegimeDirectionalPolicy) ResolveRawWithLabels(label string, labels []st
 			errs = append(errs, fmt.Sprintf("%s: unknown regime label %q (valid: %s)", label, k, strings.Join(labels, ", ")))
 		}
 	}
-
 	bareDirectional := seen[regimeDirectionalBare]
 	missing := []string{}
 	for _, l := range labels {
@@ -221,7 +213,6 @@ func applyRegimeDirectionalPolicy(sc *StrategyConfig, currentRegime, posRegime s
 	regime := effectiveRegimeForPolicy(currentRegime, posRegime, posQty)
 	entry, honored := gatedDirectionalEntry(*sc, regime, certStates)
 	if !honored {
-
 		return RegimeDirectionalEntry{}, false, legacyFallback
 	}
 	sc.Direction = entry.Direction
@@ -233,7 +224,6 @@ func gatedDirectionalEntry(sc StrategyConfig, regime string, certStates map[stri
 	if sc.RegimeDirectionalPolicy == nil || sc.RegimeDirectionalPolicy.IsZero() {
 		return RegimeDirectionalEntry{}, false
 	}
-
 	certDir, certOK := certStates[strings.TrimSpace(regime)]
 	if !certOK {
 		return RegimeDirectionalEntry{}, false

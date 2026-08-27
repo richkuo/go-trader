@@ -29,18 +29,12 @@ func closeTierListParam(params map[string]interface{}) (interface{}, bool) {
 }
 
 type SLAfterRule struct {
-	Kind string
-
-	ATRMult float64
-
-	TrailATRMult float64
-
-	ATRRegime *RegimeATRBlock
-
-	TrailATRRegime *RegimeATRBlock
-
-	TPATRFraction float64
-
+	Kind                string
+	ATRMult             float64
+	TrailATRMult        float64
+	ATRRegime           *RegimeATRBlock
+	TrailATRRegime      *RegimeATRBlock
+	TPATRFraction       float64
 	TPATRFractionRegime *RegimeFloatBlock
 }
 
@@ -56,7 +50,6 @@ func (b *RegimeFloatBlock) Resolve(regime string) (float64, bool) {
 	if v, ok := b.TrendRegime[r]; ok {
 		return v, true
 	}
-
 	if regimeDirectionalSubs[r] {
 		if v, ok := b.TrendRegime[regimeDirectionalBare]; ok {
 			return v, true
@@ -219,7 +212,6 @@ func validateSLAfterRule(rule SLAfterRule) error {
 		if rule.TrailATRRegime != nil || rule.TPATRFractionRegime != nil || rule.TPATRFraction != 0 {
 			return errors.New("sl_after atr_offset accepts trend_regime under atr, not trail_from_here trail fields")
 		}
-
 		return nil
 	case "trail_from_here":
 		if rule.ATRRegime != nil {
@@ -271,7 +263,6 @@ func parseSLAfterRuleWithLabels(raw interface{}, labels []string) (SLAfterRule, 
 			return SLAfterRule{}, fmt.Errorf("sl_after string %q is not recognized (expected \"breakeven\")", v)
 		}
 	case map[string]interface{}:
-
 		if kindRaw, ok := v["kind"]; ok {
 			kindStr, isStr := kindRaw.(string)
 			if !isStr {
@@ -289,7 +280,6 @@ func parseSLAfterRuleWithLabels(raw interface{}, labels []string) (SLAfterRule, 
 				return SLAfterRule{}, fmt.Errorf("sl_after kind %q is not recognized", kind)
 			}
 		}
-
 		if trailRaw, ok := v["trail_from_here"]; ok {
 			trailMap, isMap := trailRaw.(map[string]interface{})
 			if !isMap {
@@ -297,15 +287,12 @@ func parseSLAfterRuleWithLabels(raw interface{}, labels []string) (SLAfterRule, 
 			}
 			return parseSLAfterTrailFromHere(trailMap, "sl_after.trail_from_here", labels)
 		}
-
 		if _, ok := v[regimeClassifierKey]; ok {
 			return parseSLAfterATROffset(v, "sl_after", labels)
 		}
-
 		if _, ok := firstNonNil(v, "atr_mult", "atr_offset"); ok {
 			return parseSLAfterATROffset(v, "sl_after atr_mult", labels)
 		}
-
 		if _, ok := v["use_defaults"]; ok {
 			return SLAfterRule{}, fmt.Errorf("sl_after: use_defaults requires a kind — wrap under \"trail_from_here\" or set \"kind\" explicitly (atr_offset/trail_from_here)")
 		}
@@ -446,7 +433,6 @@ func parseRegimeFloatBlock(raw map[string]interface{}, ctxLabel string, labels [
 			ctxLabel, regimeClassifierKey, label, strings.Join(labels, ", ")))
 	}
 	missing := make([]string, 0)
-
 	bareDirectional := trend[regimeDirectionalBare] != nil
 	for _, label := range labels {
 		if _, ok := trend[label]; ok {
@@ -643,7 +629,6 @@ func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, re
 		}
 		break
 	}
-
 	unifiedScalar := false
 	if closeParamsAreUnifiedRegime(refParams) {
 		scalar, _, ok := unifiedRegimeScalarParams(refParams, regime)
@@ -671,7 +656,6 @@ func parseStrategyTPSLAfterRulesForRegime(sc StrategyConfig, labels []string, re
 	items, ok := tiersRaw.([]interface{})
 	if !ok || len(items) == 0 {
 		if rules.HasAny() {
-
 			defaults := defaultHLProtectionTiers()
 			rules.Multiples = make([]float64, len(defaults))
 			rules.TierFingerprints = make([]string, len(defaults))
@@ -880,7 +864,6 @@ func validatePostTPStopLossRulesWithLabels(sc StrategyConfig, labels []string) [
 	if !hasFixedSL {
 		out = append(out, "sl_after requires a fixed stop-loss to adjust (set stop_loss_atr_mult, stop_loss_atr_regime, stop_loss_pct, or stop_loss_margin_pct)")
 	}
-
 	if sc.Type == "manual" {
 		if rules.Default.Kind == "trail_from_here" {
 			out = append(out, "sl_after: trail_from_here is not supported on manual strategies (perps only in v1) — use breakeven or atr_mult instead")
@@ -980,7 +963,6 @@ func runPostTPStopLossAdjustment(
 		mu.RUnlock()
 		return false
 	}
-
 	if pos.Quantity >= pos.InitialQuantity-1e-9 {
 		mu.RUnlock()
 		return false
@@ -991,7 +973,6 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 	side := pos.Side
-
 	avgCost := pos.riskAnchorPrice()
 	entryATR := pos.EntryATR
 	qty := pos.Quantity
@@ -1029,7 +1010,6 @@ func runPostTPStopLossAdjustment(
 
 	triggerPx, mode, computeOK := computePostTPStopLossTrigger(rule, side, avgCost, entryATR, mark)
 	if !computeOK {
-
 		return false
 	}
 

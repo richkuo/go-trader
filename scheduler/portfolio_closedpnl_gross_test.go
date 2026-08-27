@@ -39,7 +39,6 @@ func TestBookPerpsPartialCloseWithFillFee_NetOfFee(t *testing.T) {
 		t.Fatal("TP1 booking returned false")
 	}
 	tp1Trade := s.TradeHistory[len(s.TradeHistory)-1]
-
 	if !tp1Trade.PnLGross || math.Abs(tp1Trade.RealizedPnL-tp1Gross) > 1e-6 {
 		t.Errorf("TP1 RealizedPnL = %.6f (gross=%v), want local gross %.4f", tp1Trade.RealizedPnL, tp1Trade.PnLGross, tp1Gross)
 	}

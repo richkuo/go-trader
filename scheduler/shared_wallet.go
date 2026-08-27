@@ -25,13 +25,9 @@ var walletKeyRegistry = []struct {
 	liveFn     func([]string) bool
 	envVar     string
 }{
-
 	{platform: "hyperliquid", instrument: "perps", liveFn: hyperliquidIsLive, envVar: "HYPERLIQUID_ACCOUNT_ADDRESS"},
-
 	{platform: "okx", instrument: "perps", liveFn: okxIsLive, envVar: "OKX_API_KEY"},
-
 	{platform: "topstep", instrument: "futures", liveFn: topstepIsLive, envVar: "TOPSTEP_ACCOUNT_ID"},
-
 	{platform: "robinhood", instrument: "spot", liveFn: robinhoodIsLive, envVar: "ROBINHOOD_USERNAME"},
 }
 
@@ -308,7 +304,6 @@ func defaultSharedWalletFetcher(key SharedWalletKey) (float64, error) {
 	case "hyperliquid":
 		return fetchHyperliquidBalance(key.Account)
 	case "okx":
-
 		return defaultSharedWalletBalance("okx")
 	}
 	return 0, fmt.Errorf("unsupported shared-wallet platform %q", key.Platform)
@@ -401,7 +396,6 @@ func computeTotalPortfolioValue(
 	if sharedWallets == nil {
 		sharedWallets = detectSharedWallets(strategies)
 	}
-
 	return computeSubsetPortfolioValue(strategies, state, prices, walletBalances, sharedWallets)
 }
 
@@ -428,7 +422,6 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 		if sharedStrategyIDs[sc.ID] {
 			continue
 		}
-
 		if sc.CapitalPct > 0 {
 			if !walletCounted[sc.Platform] {
 				total += sc.Capital / sc.CapitalPct

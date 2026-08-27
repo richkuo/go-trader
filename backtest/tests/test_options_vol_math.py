@@ -1,12 +1,16 @@
 import math
+
 import numpy as np
 import pytest
+
 from backtest_options import calc_historical_vol
+
 
 def _numpy_vol(closes, window):
     closes = np.asarray(closes[-(window + 1):], dtype=float)
     log_returns = np.log(closes[1:] / closes[:-1])
     return float(np.std(log_returns, ddof=0) * math.sqrt(365))
+
 
 def test_matches_numpy_for_random_walk():
     rng = np.random.default_rng(42)
@@ -14,20 +18,24 @@ def test_matches_numpy_for_random_walk():
     closes = [100.0]
     for r in log_returns:
         closes.append(closes[-1] * math.exp(r))
+
     window = 30
     got = calc_historical_vol(closes, window=window)
     expected = _numpy_vol(closes, window=window)
-    assert got == pytest.approx(expected, rel=1e-09)
+    assert got == pytest.approx(expected, rel=1e-9)
+
 
 def test_trending_window_vol_matches_reference():
-    closes = [100.0 * 1.01 ** i for i in range(60)]
+    closes = [100.0 * (1.01 ** i) for i in range(60)]
     got = calc_historical_vol(closes, window=30)
     expected = _numpy_vol(closes, window=30)
-    assert got == pytest.approx(expected, rel=1e-09)
+    assert got == pytest.approx(expected, rel=1e-9)
     assert got < 0.01
+
 
 def test_short_history_returns_default():
     assert calc_historical_vol([100.0, 101.0, 102.0], window=14) == 0.5
+
 
 def test_exact_minimum_length_computes_vol():
     window = 14
@@ -36,16 +44,19 @@ def test_exact_minimum_length_computes_vol():
     closes = [100.0]
     for r in log_returns:
         closes.append(closes[-1] * math.exp(r))
+
     assert len(closes) == window + 1
     got = calc_historical_vol(closes, window=window)
     expected = _numpy_vol(closes, window=window)
-    assert got == pytest.approx(expected, rel=1e-09)
+    assert got == pytest.approx(expected, rel=1e-9)
     assert got != 0.5
+
 
 def test_one_below_minimum_returns_default():
     window = 14
     closes = [100.0 + i for i in range(window)]
     assert calc_historical_vol(closes, window=window) == 0.5
+
 
 def test_flat_prices_give_zero_vol():
     closes = [100.0] * 50

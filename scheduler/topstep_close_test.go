@@ -109,7 +109,6 @@ func TestForceCloseTopStepLive_CtxExpiredBeforeSubmit(t *testing.T) {
 }
 
 func TestForceCloseTopStepLive_ShortPositionClosed(t *testing.T) {
-
 	tsLive := []StrategyConfig{
 		{ID: "ts-momentum-es", Platform: "topstep", Type: "futures",
 			Args: []string{"momentum", "ES", "1h", "--mode=live"}},
@@ -132,7 +131,6 @@ func TestForceCloseTopStepLive_ShortPositionClosed(t *testing.T) {
 }
 
 func TestForceCloseTopStepLive_NonFuturesStrategiesIgnored(t *testing.T) {
-
 	mixed := []StrategyConfig{
 		{ID: "hl-mom-btc", Platform: "hyperliquid", Type: "perps",
 			Args: []string{"momentum", "BTC", "1h", "--mode=live"}},
@@ -233,7 +231,6 @@ func TestParseTopStepPositionsOutput_CleanSuccess(t *testing.T) {
 }
 
 func TestParseTopStepPositionsOutput_ErrorEnvelopeLatchesSwitch(t *testing.T) {
-
 	stdout := []byte(`{"positions":[],"platform":"topstep","timestamp":"x","error":"credentials missing"}`)
 	_, _, err := parseTopStepPositionsOutput(stdout, "", fmt.Errorf("exit 1"))
 	if err == nil {
@@ -268,7 +265,6 @@ func TestComputeTopStepCircuitCloseQty_SolePeerShortFullFlatten(t *testing.T) {
 		{ID: "ts-es", Platform: "topstep", Type: "futures",
 			Args: []string{"sma", "ES", "15m", "--mode=live"}},
 	}
-
 	pos := []TopStepPosition{{Coin: "ES", Size: -2, AvgPrice: 5000, Side: "short"}}
 	q, ok := computeTopStepCircuitCloseQty("ES", "ts-es", pos, tsLive)
 	if !ok {
@@ -352,7 +348,6 @@ func TestSetTopStepCircuitBreakerPending_NilAssistBails(t *testing.T) {
 		ID:        "ts-es",
 		Positions: map[string]*Position{"ES": {Side: "long", Quantity: 3}},
 	}
-
 	setTopStepCircuitBreakerPending(sc, s, nil)
 	if s.RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) != nil {
 		t.Error("expected no enqueue when assist is nil (stuck-CB path will recover)")
@@ -567,7 +562,6 @@ func TestRunPendingTopStepCircuitCloses_StuckCBMultiPeerSkipped(t *testing.T) {
 			},
 		},
 	}
-
 	cfg := []StrategyConfig{
 		{ID: "ts-a", Platform: "topstep", Type: "futures",
 			Args: []string{"sma", "ES", "15m", "--mode=live"}},
@@ -643,7 +637,6 @@ func TestRunPendingTopStepCircuitCloses_FetcherErrorBails(t *testing.T) {
 	if len(calls) != 0 {
 		t.Errorf("closer should not be called when fetcher errors, got %v", calls)
 	}
-
 	if state.Strategies["ts-es"].RiskState.getPendingCircuitClose(PlatformPendingCloseTopStep) == nil {
 		t.Error("expected pending to remain latched when fetcher errors")
 	}
@@ -771,7 +764,6 @@ func TestRunPendingTopStepCircuitCloses_CtxExpiryMidLoopDoesNotCountAsFailure(t 
 	var calls []string
 	closer := func(sym string) (*TopStepCloseResult, error) {
 		calls = append(calls, sym)
-
 		cancel()
 		return &TopStepCloseResult{Close: &TopStepClose{Symbol: sym}}, nil
 	}

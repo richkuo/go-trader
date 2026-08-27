@@ -82,7 +82,6 @@ func TestExecuteSpotLiveBuyCashBudget(t *testing.T) {
 	})
 
 	t.Run("tolerance_covered_overshoot", func(t *testing.T) {
-
 		fillQty := 0.01
 		fillPrice := 50000.0
 		fillFee := 0.0
@@ -133,7 +132,6 @@ func TestExecuteSpotLiveBuyCashBudget(t *testing.T) {
 		}
 		tr := s.TradeHistory
 		if len(tr) != 0 {
-
 		}
 		if exec.OpenTrade == nil || !strings.Contains(exec.OpenTrade.Details, "CASH OVER BUDGET") {
 			t.Fatalf("OpenTrade details should mark reconcile; got %#v", exec.OpenTrade)
@@ -141,7 +139,6 @@ func TestExecuteSpotLiveBuyCashBudget(t *testing.T) {
 	})
 
 	t.Run("live_fill_with_sub_dollar_cash", func(t *testing.T) {
-
 		s := newState(0.50)
 		fillQty := 0.002
 		fillPrice := 50000.0
@@ -212,7 +209,6 @@ func TestNotifySpotLiveCashOverBudget(t *testing.T) {
 }
 
 func TestMaybeClearCashReconcileRequired(t *testing.T) {
-
 	s := &StrategyState{Cash: 0, CashReconcileRequired: true}
 	maybeClearCashReconcileRequired(s)
 	if !s.CashReconcileRequired {
@@ -282,7 +278,6 @@ func TestClearCashReconcileRequiredForStrategy(t *testing.T) {
 }
 
 func TestValidateStateDoesNotInferCashReconcileFromNegativeCash(t *testing.T) {
-
 	state := &AppState{Strategies: map[string]*StrategyState{
 		"paper-spot": {ID: "paper-spot", Type: "spot", Platform: "binanceus", Cash: -1.0, Positions: map[string]*Position{}},
 		"live-spot":  {ID: "live-spot", Type: "spot", Platform: "robinhood", Cash: -40.5, CashReconcileRequired: true, Positions: map[string]*Position{}},
@@ -343,7 +338,6 @@ func TestPaperSpotFeeNegativeReloadDoesNotLatchCashReconcile(t *testing.T) {
 	if s.CashReconcileRequired {
 		t.Fatal("paper spot fee-negative reload must NOT latch CashReconcileRequired")
 	}
-
 	if err := SaveStateWithDB(loaded, &Config{}, db); err != nil {
 		t.Fatal(err)
 	}
@@ -395,11 +389,9 @@ func TestSpotCashReconcileReminderTracker(t *testing.T) {
 	if tr.ShouldNotify("a,b", now.Add(time.Minute)) {
 		t.Fatal("same sig inside throttle must not notify")
 	}
-
 	if tr.ShouldNotify("a", now.Add(2*time.Minute)) {
 		t.Fatal("subset shrink must not notify")
 	}
-
 	if !tr.ShouldNotify("a,c", now.Add(3*time.Minute)) {
 		t.Fatal("new strategy ID in set must notify")
 	}
@@ -414,12 +406,10 @@ func TestSpotCashReconcileReminderTracker(t *testing.T) {
 func TestSpotCashReconcileReminderMarkNotifiedSuppressesSameCycle(t *testing.T) {
 	tr := &spotCashReconcileReminderTracker{}
 	now := time.Date(2026, 7, 20, 15, 0, 0, 0, time.UTC)
-
 	tr.MarkNotified("rh-btc", now)
 	if tr.ShouldNotify("rh-btc", now.Add(time.Second)) {
 		t.Fatal("MarkNotified must suppress same-cycle reminder for the founding sig")
 	}
-
 	tr.ShouldNotify("", now.Add(2*time.Second))
 	if !tr.ShouldNotify("rh-btc", now.Add(3*time.Second)) {
 		t.Fatal("re-onset after clear must still notify")
@@ -427,21 +417,18 @@ func TestSpotCashReconcileReminderMarkNotifiedSuppressesSameCycle(t *testing.T) 
 }
 
 func TestSpotCashReconcileReminderCompoundClearDoesNotDoubleDM(t *testing.T) {
-
 	tr := &spotCashReconcileReminderTracker{}
 	now := time.Date(2026, 7, 20, 16, 0, 0, 0, time.UTC)
 	tr.MarkNotified("a,b", now)
 	if tr.ShouldNotify("b", now.Add(time.Second)) {
 		t.Fatal("after MarkNotified(a,b), shrink to b must not re-DM b")
 	}
-
 	tr2 := &spotCashReconcileReminderTracker{}
 	tr2.MarkNotified("a", now)
 	tr2.MarkNotified("a,b", now.Add(time.Millisecond))
 	if tr2.ShouldNotify("a,b", now.Add(2*time.Second)) {
 		t.Fatal("two founding over-budgets must not also fire the cycle reminder")
 	}
-
 	if !tr.ShouldNotify("b,c", now.Add(3*time.Second)) {
 		t.Fatal("new peer latching later must still notify")
 	}
@@ -502,12 +489,10 @@ func TestCashReconcileRequiredSaveLoadRoundTrip(t *testing.T) {
 
 	ValidateState(loaded, nil)
 	if loaded.Strategies["rh-btc"].Cash != 0.005 {
-
 	}
 	if !loaded.Strategies["okx-btc"].CashReconcileRequired || loaded.Strategies["okx-btc"].Cash != 0 {
 		t.Fatalf("okx after ValidateState: cash=%g latch=%v", loaded.Strategies["okx-btc"].Cash, loaded.Strategies["okx-btc"].CashReconcileRequired)
 	}
-
 	loaded.Strategies["rh-btc"].Cash = 0
 	loaded.Strategies["rh-btc"].CashReconcileRequired = true
 	if err := SaveStateWithDB(loaded, &Config{}, db); err != nil {
@@ -576,7 +561,6 @@ func TestCollectCashReconcileRequiredSnapshots(t *testing.T) {
 }
 
 func TestSellDoesNotClearCashReconcileWhenSolvent(t *testing.T) {
-
 	lm, err := NewLogManager("")
 	if err != nil {
 		t.Fatal(err)
@@ -598,7 +582,6 @@ func TestSellDoesNotClearCashReconcileWhenSolvent(t *testing.T) {
 		TradeHistory:          []Trade{},
 		CashReconcileRequired: true,
 	}
-
 	trades, err := ExecuteSpotSignalWithFillFee(s, -1, "BTC", 60000, 0.01, 0, "oid-close", 0, logger)
 	if err != nil {
 		t.Fatal(err)

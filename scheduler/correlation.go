@@ -63,7 +63,6 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 
 		switch sc.Type {
 		case "spot", "perps", "manual":
-
 			syms := make([]string, 0, len(ss.Positions))
 			for sym := range ss.Positions {
 				syms = append(syms, sym)
@@ -125,7 +124,6 @@ func computeAssetDeltas(strategies map[string]*StrategyState, cfgStrategies []St
 				if opt.Greeks.Delta != 0 {
 					deltaUSD += sign * opt.Greeks.Delta * opt.Quantity * spotPrice
 				} else {
-
 					coarseDelta := 1.0
 					if opt.OptionType == "put" {
 						coarseDelta = -1.0
@@ -215,14 +213,12 @@ func ComputeCorrelation(strategies map[string]*StrategyState, cfgStrategies []St
 }
 
 func findSpotPrice(asset string, prices map[string]float64) float64 {
-
 	if p, ok := prices[asset+"/USDT"]; ok {
 		return p
 	}
 	if p, ok := prices[asset]; ok {
 		return p
 	}
-
 	for sym, p := range prices {
 		base := strings.ToUpper(strings.SplitN(sym, "/", 2)[0])
 		if base == asset {

@@ -147,7 +147,6 @@ func TestPortfolioValueWithPositions(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 60000}
 
 	got := PortfolioValue(s, prices)
-
 	if math.Abs(got-1100) > 0.01 {
 		t.Errorf("PortfolioValue = %g, want 1100", got)
 	}
@@ -161,7 +160,6 @@ func TestPortfolioValueFallbackPrice(t *testing.T) {
 		},
 		OptionPositions: make(map[string]*OptionPosition),
 	}
-
 	got := PortfolioValue(s, map[string]float64{})
 	if math.Abs(got-1000) > 0.01 {
 		t.Errorf("PortfolioValue with fallback = %g, want 1000", got)
@@ -179,7 +177,6 @@ func TestPortfolioValueFutures(t *testing.T) {
 	prices := map[string]float64{"ES": 5100}
 
 	got := PortfolioValue(s, prices)
-
 	if math.Abs(got-20000) > 0.01 {
 		t.Errorf("PortfolioValue futures = %g, want 20000", got)
 	}
@@ -196,7 +193,6 @@ func TestPortfolioValueShort(t *testing.T) {
 	prices := map[string]float64{"BTC/USDT": 55000}
 
 	got := PortfolioValue(s, prices)
-
 	if math.Abs(got-1650) > 0.01 {
 		t.Errorf("PortfolioValue short = %g, want 1650", got)
 	}
@@ -206,18 +202,15 @@ func TestPortfolioValueShort_UsesExchangeMarkNotSpotBasis(t *testing.T) {
 	s := &StrategyState{
 		Cash: 1000,
 		Positions: map[string]*Position{
-
 			"ETH": {Symbol: "ETH", Quantity: 0.01, AvgCost: 3000.0, Side: "short", Multiplier: 1},
 		},
 		OptionPositions: make(map[string]*OptionPosition),
 	}
 
 	hlMark := 3200.10
-
 	spotPrice := 3199.85
 
 	gotHL := PortfolioValue(s, map[string]float64{"ETH": hlMark})
-
 	expectedHL := 1000.0 + 0.01*(3000.0-hlMark)
 	if math.Abs(gotHL-expectedHL) > 1e-6 {
 		t.Errorf("PortfolioValue with HL mark = %.6f, want %.6f", gotHL, expectedHL)
@@ -251,7 +244,6 @@ func TestPortfolioValueWithOptions(t *testing.T) {
 	}
 
 	got := PortfolioValue(s, nil)
-
 	if math.Abs(got-1100) > 0.01 {
 		t.Errorf("PortfolioValue with options = %g, want 1100", got)
 	}
@@ -431,7 +423,6 @@ func TestExecuteSpotWithFillFeeOKXPerpsFee(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	if len(s.Positions) == 0 {
 		t.Fatal("expected a position to be opened")
 	}
@@ -440,7 +431,6 @@ func TestExecuteSpotWithFillFeeOKXPerpsFee(t *testing.T) {
 	expectedFee := tradeCost * OKXPerpsTakerFeePct
 	actualCash := s.Cash
 	expectedCash := 1000.0 - tradeCost - expectedFee
-
 	diff := actualCash - expectedCash
 	if diff < -0.01 || diff > 0.01 {
 		t.Errorf("cash mismatch: got %.6f, want %.6f (diff %.6f) -- wrong fee rate may have been used", actualCash, expectedCash, diff)
@@ -619,11 +609,9 @@ func TestExecuteSpotWithFillFeeLiveFill(t *testing.T) {
 	if pos == nil {
 		t.Fatal("should have BTC position")
 	}
-
 	if math.Abs(pos.Quantity-fillQty) > 1e-9 {
 		t.Errorf("Quantity = %.9f, want %.9f (exact fill qty)", pos.Quantity, fillQty)
 	}
-
 	if math.Abs(pos.AvgCost-fillPrice) > 1e-6 {
 		t.Errorf("AvgCost = %.6f, want %.6f (exact fill price)", pos.AvgCost, fillPrice)
 	}
@@ -774,11 +762,9 @@ func TestExecutePerpsWithLeveragePaperBuyNoNotionalDeduction(t *testing.T) {
 	if pos.Leverage != 5 {
 		t.Errorf("leverage = %v, want 5", pos.Leverage)
 	}
-
 	if pos.Quantity < 2.2 || pos.Quantity > 2.8 {
 		t.Errorf("quantity = %v, want ~2.5 (5x leverage)", pos.Quantity)
 	}
-
 	if s.Cash < 990 {
 		t.Errorf("cash = %v, want ~1000 (only fee deducted, not notional)", s.Cash)
 	}
@@ -816,7 +802,6 @@ func TestExecutePerpsWithLeverageDecouplesSizingAndExchangeLeverage(t *testing.T
 	if pos.Leverage != 20 {
 		t.Errorf("position leverage = %g, want exchange leverage 20", pos.Leverage)
 	}
-
 	if pos.Quantity < 0.85 || pos.Quantity > 1.15 {
 		t.Errorf("quantity = %g, want ~1.0 from sizing_leverage=2", pos.Quantity)
 	}
@@ -878,17 +863,14 @@ func TestExecutePerpsWithLeveragePortfolioValueAfterMove(t *testing.T) {
 	}
 	cashAfterOpen := s.Cash
 	valueAtEntry := PortfolioValue(s, map[string]float64{"ETH": 2000})
-
 	if math.Abs(valueAtEntry-cashAfterOpen) > 1e-6 {
 		t.Errorf("at entry value = %v, cash = %v, want equal (PnL=0)", valueAtEntry, cashAfterOpen)
 	}
-
 	valueAfterMove := PortfolioValue(s, map[string]float64{"ETH": 2010})
 	expected := cashAfterOpen + 5.0
 	if math.Abs(valueAfterMove-expected) > 1e-6 {
 		t.Errorf("value after +$10 move = %v, want %v (cash + PnL)", valueAfterMove, expected)
 	}
-
 	valueAfterDrop := PortfolioValue(s, map[string]float64{"ETH": 1990})
 	expectedDrop := cashAfterOpen - 5.0
 	if math.Abs(valueAfterDrop-expectedDrop) > 1e-6 {
@@ -916,7 +898,6 @@ func TestExecutePerpsWithLeverageNotInflatedByNotional(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := PortfolioValue(s, map[string]float64{"ETH": 2201.10})
-
 	if value > 700 {
 		t.Errorf("value = %v, leaking into spot-branch (>$700 means notional not stripped)", value)
 	}
@@ -957,7 +938,6 @@ func TestExecutePerpsWithLeverageCloseLong(t *testing.T) {
 	if _, ok := s.Positions["ETH"]; ok {
 		t.Error("position should be closed")
 	}
-
 	if s.Cash < 1039 || s.Cash > 1040.5 {
 		t.Errorf("cash = %v, want ~1039.6 (990 + 50 - fee)", s.Cash)
 	}
@@ -971,7 +951,6 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 		direction string
 		wantSet   bool
 	}{
-
 		{"buy_flat_allowed_long", 1, "", DirectionLong, false},
 		{"buy_short_allowed_flip_long", 1, "short", DirectionLong, false},
 		{"buy_long_skipped_long", 1, "long", DirectionLong, true},
@@ -980,16 +959,13 @@ func TestPerpsOrderSkipReason(t *testing.T) {
 		{"sell_short_skipped_long", -1, "short", DirectionLong, true},
 		{"signal_zero_flat", 0, "", DirectionLong, false},
 		{"signal_zero_long", 0, "long", DirectionLong, false},
-
 		{"empty_dir_buy_long_skipped", 1, "long", "", true},
 		{"empty_dir_sell_flat_skipped", -1, "", "", true},
-
 		{"sell_flat_allowed_both", -1, "", DirectionBoth, false},
 		{"sell_short_deduped_both", -1, "short", DirectionBoth, true},
 		{"sell_long_allowed_both", -1, "long", DirectionBoth, false},
 		{"buy_long_skipped_both", 1, "long", DirectionBoth, true},
 		{"buy_short_flip_both", 1, "short", DirectionBoth, false},
-
 		{"sell_flat_allowed_short", -1, "", DirectionShort, false},
 		{"sell_short_skipped_short", -1, "short", DirectionShort, true},
 		{"sell_long_skipped_short", -1, "long", DirectionShort, true},
@@ -1128,11 +1104,9 @@ func TestExecuteFuturesWithFillFeeLiveFill(t *testing.T) {
 	if pos == nil {
 		t.Fatal("should have ES position")
 	}
-
 	if int(pos.Quantity) != fillContracts {
 		t.Errorf("Quantity = %g, want %d (exact fill contracts)", pos.Quantity, fillContracts)
 	}
-
 	if math.Abs(pos.AvgCost-fillPrice) > 1e-6 {
 		t.Errorf("AvgCost = %.6f, want %.6f (exact fill price)", pos.AvgCost, fillPrice)
 	}
@@ -1270,7 +1244,6 @@ func TestExecutePerpsWithLeverageOpenShortFromFlat(t *testing.T) {
 	if pos.OwnerStrategyID != s.ID {
 		t.Errorf("OwnerStrategyID = %q, want %q", pos.OwnerStrategyID, s.ID)
 	}
-
 	feeOnly := 1000.0 - s.Cash
 	notional := pos.Quantity * pos.AvgCost
 	if feeOnly >= notional*0.1 {
@@ -1424,7 +1397,6 @@ func TestExecutePerpsWithLeverage_DirectionShort_OrphanLongNotAutoClosed(t *test
 		Platform: "hyperliquid",
 		Type:     "perps",
 		Positions: map[string]*Position{
-
 			"ETH": {Symbol: "ETH", Quantity: 0.5, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 1, OwnerStrategyID: "hl-bear-eth"},
 		},
 		OptionPositions: make(map[string]*OptionPosition),
@@ -1492,7 +1464,6 @@ func TestEffectiveDirection_PrecedenceAndFallback(t *testing.T) {
 		{"perps_legacy_allowshorts_false", StrategyConfig{Type: "perps", AllowShorts: false}, DirectionLong, true, false},
 		{"perps_unknown_falls_back", StrategyConfig{Type: "perps", Direction: "weird", AllowShorts: true}, DirectionBoth, true, true},
 		{"non_perps_always_long", StrategyConfig{Type: "spot", Direction: DirectionShort}, DirectionLong, true, false},
-
 		{"manual_explicit_short", StrategyConfig{Type: "manual", Direction: DirectionShort}, DirectionShort, false, true},
 		{"manual_explicit_both", StrategyConfig{Type: "manual", Direction: DirectionBoth}, DirectionBoth, true, true},
 		{"manual_legacy_allowshorts_true", StrategyConfig{Type: "manual", AllowShorts: true}, DirectionBoth, true, true},
@@ -1543,7 +1514,6 @@ func TestExecutePerpsWithLeverageLegacyCloseShortThenOpenLongUsesOpenFillFee(t *
 	}
 
 	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
-
 	modeledCloseFee := CalculatePlatformSpotFee("hyperliquid", 0.5*2000)
 	if closeLeg.ExchangeOrderID != "" || math.Abs(closeLeg.ExchangeFee-modeledCloseFee) > 1e-9 || closeLeg.FeeSource != FeeSourceModeled {
 		t.Errorf("legacy close leg = oid %q fee %g src %q, want no-OID modeled fee %g",
@@ -1600,7 +1570,6 @@ func TestExecutePerpsWithLeverageFlipLongToShort(t *testing.T) {
 		t.Fatalf("TradeHistory len = %d, want 2", len(s.TradeHistory))
 	}
 	closeLeg, openLeg := s.TradeHistory[0], s.TradeHistory[1]
-
 	if closeLeg.ExchangeOrderID != "live-flip-oid" || math.Abs(closeLeg.ExchangeFee-0.25) > 1e-9 {
 		t.Errorf("close leg exchange metadata = oid %q fee %g, want oid live-flip-oid fee 0.25",
 			closeLeg.ExchangeOrderID, closeLeg.ExchangeFee)
@@ -1609,7 +1578,6 @@ func TestExecutePerpsWithLeverageFlipLongToShort(t *testing.T) {
 		t.Errorf("open leg exchange metadata = oid %q fee %g, want shared OID with fee 0.25",
 			openLeg.ExchangeOrderID, openLeg.ExchangeFee)
 	}
-
 	wantCash := 1000.0 + 50 - 0.5
 	if math.Abs(s.Cash-wantCash) > 1e-9 {
 		t.Errorf("cash = %.9f, want %.9f (single real fee apportioned across flip legs)", s.Cash, wantCash)
@@ -1650,7 +1618,6 @@ func TestExecutePerpsWithLeverageAlreadyShortIsInertNoOp(t *testing.T) {
 }
 
 func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
-
 	cases := []struct {
 		name      string
 		signal    int
@@ -1661,19 +1628,13 @@ func TestPerpsLiveOrderSize_FlipIncludesCloseLeg(t *testing.T) {
 		wantSize  float64
 		wantOK    bool
 	}{
-
 		{"long_from_flat", 1, 0, 0, "", DirectionLong, 0.5, true},
 		{"short_from_flat_allowed_both", -1, 0, 0, "", DirectionBoth, 0.5, true},
-
 		{"short_from_flat_short_only", -1, 0, 0, "", DirectionShort, 0.5, true},
-
 		{"close_long_legacy", -1, 0.3, 2000, "long", DirectionLong, 0.3, true},
-
 		{"close_short_short_only", 1, 0.4, 2000, "short", DirectionShort, 0.4, true},
-
 		{"flip_long_to_short_flat_pnl", -1, 0.5, 2000, "long", DirectionBoth, 1.0, true},
 		{"flip_short_to_long_flat_pnl", 1, 0.5, 2000, "short", DirectionBoth, 1.0, true},
-
 		{"buy_vs_short_legacy_not_flip", 1, 0.5, 2000, "short", DirectionLong, 0.5, true},
 	}
 	for _, tc := range cases {
@@ -1701,7 +1662,6 @@ func TestPerpsLiveOrderSize_FlipLongToShortExceedsCloseOnly(t *testing.T) {
 }
 
 func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
-
 	size, ok, reason := perpsLiveOrderSize(-1, 1900, 1000, 0.5, 2000, PerpsSizing{SizingLeverage: 5.0, ExchangeLeverage: 5.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
@@ -1710,7 +1670,6 @@ func TestPerpsLiveOrderSize_FlipSizesAgainstPostCloseMargin(t *testing.T) {
 	if diff := size - wantSize; diff > 1e-9 || diff < -1e-9 {
 		t.Errorf("size = %g, want %g (post-close margin sizing)", size, wantSize)
 	}
-
 	preCloseSize := 0.5 + float64(1000)*5/1900
 	if size >= preCloseSize {
 		t.Errorf("size = %g must be < pre-close-sized %g to avoid over-sizing on a losing flip", size, preCloseSize)
@@ -1730,7 +1689,6 @@ func TestPerpsLiveOrderSize_SharedWalletPoolUsesReleasedMargin(t *testing.T) {
 	if !ok || reason != "" {
 		t.Fatalf("pooled flip rejected: ok=%v reason=%q", ok, reason)
 	}
-
 	if math.Abs(size-0.75) > 1e-9 {
 		t.Fatalf("pooled flip size=%v, want 0.75", size)
 	}
@@ -1775,7 +1733,6 @@ func TestWithSharedWalletPoolSizingReleasesMarginOnlyWithKnownBalance(t *testing
 }
 
 func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
-
 	size, ok, reason := perpsLiveOrderSize(-1, 500, 100, 1.0, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatalf("expected ok (should degrade to close-only, not abort); reason=%q", reason)
@@ -1786,7 +1743,6 @@ func TestPerpsLiveOrderSize_CatastrophicFlipDegradesToCloseOnly(t *testing.T) {
 }
 
 func TestPerpsLiveOrderSize_FlipProfitableFlipUsesRealizedGain(t *testing.T) {
-
 	size, ok, _ := perpsLiveOrderSize(1, 1900, 1000, 0.5, 2000, PerpsSizing{SizingLeverage: 5.0, ExchangeLeverage: 5.0}, "short", DirectionBoth, 0)
 	if !ok {
 		t.Fatal("expected ok")
@@ -1810,21 +1766,14 @@ func TestPerpsOpenNotional(t *testing.T) {
 		marginPerTradeUSD float64
 		want              float64
 	}{
-
 		{"legacy_1x", 1000, 1, 1, 0, 1000},
 		{"legacy_5x", 1000, 5, 5, 0, 5000},
-
 		{"issue_518_legacy_pain", 560, 0.1, 20, 0, 56},
-
 		{"issue_518_fixed", 560, 0.1, 20, 56, 1120},
-
 		{"margin_clamps_to_cash", 100, 1, 5, 200, 500},
-
 		{"margin_overrides_sizing_leverage", 1000, 0.5, 10, 100, 1000},
-
 		{"negative_cash_returns_zero", -100, 1, 1, 0, 0},
 		{"zero_cash_returns_zero", 0, 5, 5, 50, 0},
-
 		{"margin_zero_exchange_leverage_fallback", 1000, 1, 0, 100, 100},
 	}
 	for _, tc := range cases {
@@ -1864,14 +1813,12 @@ func TestExecutePerpsWithLeverageMarginPerTradeUSDOverridesSizingLeverage(t *tes
 	if pos == nil {
 		t.Fatal("should have ETH position")
 	}
-
 	if pos.Quantity < 0.45 || pos.Quantity > 0.55 {
 		t.Errorf("quantity = %g, want ~0.50 (margin_per_trade_usd=$56 × 20x leverage at $2257)", pos.Quantity)
 	}
 }
 
 func TestPerpsLiveOrderSize_PartialCloseScalesPosQty(t *testing.T) {
-
 	size, ok, reason := perpsLiveOrderSize(-1, 2100, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionLong, 0.5)
 	if !ok {
 		t.Fatalf("expected ok, got reason=%q", reason)
@@ -1949,7 +1896,6 @@ func TestExecutePerpsWithLeverage_PartialCloseLongPaperPreservesRemainder(t *tes
 	if tr.PositionID != "etrip-1" {
 		t.Errorf("trade.PositionID = %q, want %q (round-trip grouping)", tr.PositionID, "etrip-1")
 	}
-
 	wantGross := 0.2 * (tr.Price - 2000)
 	wantFee := CalculatePlatformSpotFee("hyperliquid", 0.2*tr.Price)
 	if !tr.PnLGross || math.Abs(tr.RealizedPnL-wantGross) > 1e-6 {
@@ -2096,11 +2042,8 @@ func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
 		frac     float64
 		wantSize float64
 	}{
-
 		{"partial close long", -1, "long", 0.5, 0.2},
-
 		{"partial close short", 1, "short", 0.5, 0.2},
-
 		{"full close long", -1, "long", 1.0, 0.4},
 		{"full close short", 1, "short", 1.0, 0.4},
 	}
@@ -2118,7 +2061,6 @@ func TestPerpsLiveOrderSize_CloseActionUnderBothDoesNotFlipSize(t *testing.T) {
 }
 
 func TestPerpsLiveOrderSize_GenuineFlipStillFlipSizes(t *testing.T) {
-
 	size, ok, _ := perpsLiveOrderSize(-1, 2000, 1000, 0.4, 2000, PerpsSizing{SizingLeverage: 1.0, ExchangeLeverage: 1.0}, "long", DirectionBoth, 0)
 	if !ok {
 		t.Fatal("expected ok")
@@ -2196,18 +2138,13 @@ func TestPerpsCloseActionSuppressesNewSL(t *testing.T) {
 		frac                    float64
 		want                    bool
 	}{
-
 		{"full close long under both", -1, "long", true, true, 1.0, true},
 		{"full close short under both", 1, "short", true, true, 1.0, true},
-
 		{"flip long-to-short under both", -1, "long", true, true, 0, false},
 		{"flip short-to-long under both", 1, "short", true, true, 0, false},
-
 		{"partial close under both not pureClose", -1, "long", true, true, 0.5, false},
-
 		{"long-only sell on long", -1, "long", true, false, 0, true},
 		{"short-only buy on short", 1, "short", false, true, 0, true},
-
 		{"both-direction long open arms SL", 1, "", true, true, 0, false},
 	}
 	for _, tc := range cases {
@@ -2293,7 +2230,6 @@ func TestExecuteFuturesWithFillFee_PartialCloseRoundsDownContracts(t *testing.T)
 	defer logger.Close()
 
 	spec := ContractSpec{Multiplier: 50, Margin: 1000}
-
 	trades, err := ExecuteFuturesSignalWithFillFee(s, -1, "ES", 5050, spec, 2.5, 5, 0, 0, "", 0.5, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -2338,7 +2274,6 @@ func TestExecuteFuturesWithFillFee_PartialCloseFractionTooSmallNoOps(t *testing.
 	defer logger.Close()
 
 	spec := ContractSpec{Multiplier: 50, Margin: 1000}
-
 	trades, _ := ExecuteFuturesSignalWithFillFee(s, -1, "ES", 5050, spec, 2.5, 5, 0, 0, "", 0.25, logger)
 	if trades != 0 {
 		t.Errorf("trades = %d, want 0 (sub-contract fraction must no-op)", trades)

@@ -28,7 +28,6 @@ func TestAcquireStateDBLock_Basic(t *testing.T) {
 	}
 
 	lock.Release()
-
 	lock.Release()
 }
 
@@ -91,11 +90,9 @@ func TestAcquireStateDBLock_DistinctPaths(t *testing.T) {
 func TestAcquireStateDBLock_SymlinkedPathContends(t *testing.T) {
 	dir := t.TempDir()
 	realDB := filepath.Join(dir, "state.db")
-
 	if err := os.WriteFile(realDB, nil, 0o644); err != nil {
 		t.Fatalf("create db file: %v", err)
 	}
-
 	linkedDB := filepath.Join(dir, "state-alias.db")
 	if err := os.Symlink(realDB, linkedDB); err != nil {
 		t.Skipf("symlinks unavailable on this platform: %v", err)
