@@ -32,7 +32,7 @@ def _go_regime_atr_trailing() -> dict[str, float]:
 
 def _go_regime_atr_stop_loss() -> dict[str, float]:
     text = open(_REGIME_ATR_GO, encoding='utf-8').read()
-    body = re.search('StopLoss:\\s*map\\[string\\]RegimeATREntry\\s*\\{(.*?)\\n\\t\\},\\n\\t// #870', text, re.DOTALL)
+    body = re.search('StopLoss:\\s*map\\[string\\]RegimeATREntry\\s*\\{(.*?)\\},\\s*\\n\\s*Trailing:', text, re.DOTALL)
     assert body, 'regimeATRDefaults.StopLoss block not found'
     return {m.group(1): float(m.group(2)) for m in re.finditer('"([^"]+)":\\s*\\{ATR:\\s*([0-9.]+)\\}', body.group(1))}
 

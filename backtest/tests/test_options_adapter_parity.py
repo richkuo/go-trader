@@ -33,7 +33,7 @@ def test_strike_grid_matches_adapter_source():
     assert match, "get_real_strike fallback no longer matches 'return round(target_strike / N) * N' — update scraper regex"
     default_step = int(match.group(1))
     assert default_step == int(DEFAULT_STRIKE_STEP), f'Adapter uses ${default_step} default strike step, backtest uses ${DEFAULT_STRIKE_STEP}'
-    btc_match = re.search('underlying\\.upper\\(\\) == "BTC":\\s*\\n\\s*return round\\(target_strike, (-?\\d+)\\)', text)
+    btc_match = re.search("underlying\\.upper\\(\\) == ['\"]BTC['\"]:\\s*(?:\\n\\s*)?return round\\(target_strike, (-?\\d+)\\)", text)
     assert btc_match, "get_real_strike BTC branch no longer matches 'round(target_strike, -N)' — update scraper regex"
     btc_digits = int(btc_match.group(1))
     assert 10 ** (-btc_digits) == int(ADAPTER_STRIKE_STEP['BTC']), f"Adapter rounds BTC to 10^{-btc_digits}, backtest uses {ADAPTER_STRIKE_STEP['BTC']}"
