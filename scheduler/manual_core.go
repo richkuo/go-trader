@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"fmt"
 	"strings"
@@ -57,13 +58,13 @@ func manualCoreExitCode(err error) int {
 }
 
 type manualStateView struct {
-	KillSwitch       bool
-	HasStrategy      bool
-	PendingCBClose   bool
-	DailyLossHold    bool
-	DailyLossNote    string
-	NotionalHold     bool
-	NotionalNote     string
+	KillSwitch     bool
+	HasStrategy    bool
+	PendingCBClose bool
+	DailyLossHold  bool
+	DailyLossNote  string
+	NotionalHold   bool
+	NotionalNote   string
 	ExposureCap      ExposureCapStatus
 	ExposureCapAsset string
 	Pos              *Position
@@ -315,6 +316,7 @@ func clearRestingLimitRemainderForPositionAction(d manualCoreDeps, res *manualCo
 	}
 	return clearedQty, clearedAvgPx, nil
 }
+
 
 type manualOpenInputs struct {
 	StrategyID string
@@ -652,6 +654,7 @@ func manualOpenCore(d manualCoreDeps, sc StrategyConfig, in manualOpenInputs) (*
 	return res, nil
 }
 
+
 type manualAddInputs struct {
 	StrategyID string
 	Size       float64
@@ -814,6 +817,7 @@ func manualAddCore(d manualCoreDeps, sc StrategyConfig, in manualAddInputs) (*ma
 	res.outf("Queued: scale-in for %s will blend into the position after the next scheduler cycle.", strategyID)
 	return res, nil
 }
+
 
 type manualCloseInputs struct {
 	StrategyID string
@@ -992,6 +996,7 @@ func manualCloseCore(d manualCoreDeps, sc StrategyConfig, in manualCloseInputs) 
 	res.outf("Queued: close will be reflected in the dashboard after the next scheduler cycle.")
 	return res, nil
 }
+
 
 type forceCloseInputs struct {
 	StrategyID string
@@ -1272,8 +1277,8 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 		FillFee:         fill.Fee,
 		ExchangeOrderID: oid,
 		RealizedPnL:     pnl,
-		IsFullClose:     hPos.Quantity-filled <= 1e-9,
-		CreatedAt:       time.Now().UTC(),
+		IsFullClose: hPos.Quantity-filled <= 1e-9,
+		CreatedAt:   time.Now().UTC(),
 	}
 	if err := d.stateDB.InsertPendingManualAction(action); err != nil {
 		res.errf("CRITICAL: the %s hedge leg was closed ON-CHAIN but queuing its bookkeeping row failed: %v — virtual state now overstates the hedge. Run the scheduler to reconcile.", hCoin, err)
@@ -1281,6 +1286,7 @@ func forceCloseCoupledHedgeLeg(d manualCoreDeps, sc StrategyConfig, res *manualC
 	}
 	res.outf("Force-closed coupled hedge: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)", filled, hCoin, fill.AvgPx, pnl, fill.Fee)
 }
+
 
 type manualSLInputs struct {
 	StrategyID string

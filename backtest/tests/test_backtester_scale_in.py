@@ -41,8 +41,6 @@ def _run(df, capital=10000.0, **kw):
                   timeframe="1d", save=False)
 
 
-
-
 def _decide(cfg=None, side="long", qty=1.0, avg_cost=100.0, entry_atr=2.0,
             count=0, added=0.0, last_add=0.0, signal=1, price=100.0,
             default_notional=1000.0):
@@ -139,8 +137,6 @@ def test_gate_spacing_zero_no_gate():
     assert ok
 
 
-
-
 def test_init_rejects_scale_in_without_flag():
     with pytest.raises(ValueError, match="allow_scale_in"):
         Backtester(scale_in={"max_adds": 2})
@@ -171,8 +167,6 @@ def test_run_rejects_entry_fraction_column():
         _run(df, allow_scale_in=True)
 
 
-
-
 def test_default_off_same_direction_signal_still_skipped():
     closes = [100, 100, 110, 110, 120, 100]
     repeat = _run(_df(closes, [1, 0, 1, 0, -1, 0]))
@@ -180,8 +174,6 @@ def test_default_off_same_direction_signal_still_skipped():
     assert repeat["trades"] == plain["trades"]
     assert repeat["final_capital"] == plain["final_capital"]
     assert "scale_in_adds" not in repeat
-
-
 
 
 def test_add_blends_avg_cost_and_pnl_uses_blend():
@@ -271,8 +263,6 @@ def test_short_add_mirrors_long_math():
     assert res["final_capital"] == pytest.approx(10000.0 + expected_pnl, abs=0.01)
 
 
-
-
 def test_tiered_tp_threshold_reads_anchor_not_blend():
     closes = [100, 100, 96, 96, 100.5, 100.5, 102.5, 102.5, 102.5]
     df = _df(closes, [1, 0, 1, 0, 0, 0, 0, 0, 0], atr=[2.0] * 9)
@@ -313,8 +303,6 @@ def test_partial_close_pro_rates_against_grown_initial_quantity():
     total = 100.0 + 10000.0 / 96.0
     first = res["trades"][0]
     assert first["shares"] == pytest.approx(total * 0.5)
-
-
 
 
 def test_add_pays_commission_and_joins_entry_fee_pool():
@@ -401,8 +389,6 @@ def test_two_adds_straddling_partial_close_pnl_reconciles():
         res["final_capital"] - 10000.0, abs=0.05)
 
 
-
-
 def test_adds_create_no_trade_rows():
     closes = [100, 100, 100, 100, 100, 100]
     df = _df(closes, [1, 0, 1, 0, -1, 0])
@@ -420,8 +406,6 @@ def test_second_position_starts_with_clean_scale_state():
     assert res["scale_in_adds"] == 2
     assert len(res["trades"]) == 2
     assert all(t["scale_in_adds"] == 1 for t in res["trades"])
-
-
 
 
 def _config(tmp_path, strategy):

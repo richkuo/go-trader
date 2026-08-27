@@ -29,8 +29,6 @@ def _gated_df(label: str, n: int = 100, buy_at: int = 50) -> pd.DataFrame:
     return df
 
 
-
-
 @pytest.mark.parametrize("label", COMPOSITE_LABELS)
 def test_composite_label_allows_entry_when_gate_matches(label):
     df = _gated_df(label)
@@ -42,8 +40,6 @@ def test_composite_label_allows_entry_when_gate_matches(label):
     assert result["total_trades"] >= 1, (
         f"Composite label '{label}' in allowed_regimes should permit the entry"
     )
-
-
 
 
 @pytest.mark.parametrize("label", COMPOSITE_LABELS)
@@ -64,8 +60,6 @@ def test_composite_label_blocks_entry_when_gate_mismatches(label):
     )
 
 
-
-
 @pytest.mark.parametrize("label", COMPOSITE_LABELS)
 def test_composite_label_allowed_within_multi_label_gate(label):
     allow = [label] + [l for l in COMPOSITE_LABELS if l != label][:2]
@@ -76,8 +70,6 @@ def test_composite_label_allowed_within_multi_label_gate(label):
     )
     result = bt.run(df, save=False)
     assert result["total_trades"] >= 1
-
-
 
 
 def test_clean_and_choppy_variants_are_distinct_gates():
@@ -96,8 +88,6 @@ def test_clean_and_choppy_variants_are_distinct_gates():
     assert bt.run(df_clean, save=False)["total_trades"] == 0
 
 
-
-
 def test_ranging_directional_blocked_by_trending_gate():
     df = _gated_df("ranging_directional")
     bt = Backtester(
@@ -106,8 +96,6 @@ def test_ranging_directional_blocked_by_trending_gate():
         allowed_regimes=["trending_up_clean", "trending_down_clean"],
     )
     assert bt.run(df, save=False)["total_trades"] == 0
-
-
 
 
 def test_composite_regime_flip_does_not_close_open_position():
@@ -121,8 +109,6 @@ def test_composite_regime_flip_does_not_close_open_position():
     result = bt.run(df, save=False)
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_price"] > 0
-
-
 
 
 @pytest.mark.parametrize("sub", ["ranging_directional_up", "ranging_directional_down"])

@@ -21,8 +21,8 @@ type HLFillSummary struct {
 	Fee            float64 `json:"fee"`
 	ClosedPnLGross float64 `json:"closed_pnl"`
 	Count          int     `json:"count"`
-	Qty            float64 `json:"qty"`
-	Px             float64 `json:"px"`
+	Qty float64 `json:"qty"`
+	Px  float64 `json:"px"`
 }
 
 type HLUserFillsResult struct {

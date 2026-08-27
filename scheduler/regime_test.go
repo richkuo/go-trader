@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+
 func TestConfigValidation_AllowedRegimes_AcceptsEmpty(t *testing.T) {
 	cfg := minimalSpotConfig()
 	cfg.Strategies[0].AllowedRegimes = []string{}
@@ -48,6 +49,7 @@ func TestConfigValidation_AllowedRegimes_AcceptsAllThreeLabels(t *testing.T) {
 		t.Fatalf("all three valid labels should pass, got: %v", err)
 	}
 }
+
 
 func TestConfigValidation_RegimeConfig_NilIsValid(t *testing.T) {
 	cfg := minimalSpotConfig()
@@ -96,6 +98,7 @@ func TestConfigValidation_RegimeConfig_ThresholdOver100Invalid(t *testing.T) {
 		t.Fatal("ADXThreshold>100 should fail validation")
 	}
 }
+
 
 func TestRegimeAllowsEntry_EmptyAllowedAlwaysTrue(t *testing.T) {
 	if !regimeAllowsEntry(nil, "ranging") {
@@ -156,6 +159,7 @@ func TestRegimeAllowsEntry_EmptyCurrentAllowsWhenListNonEmpty(t *testing.T) {
 	}
 }
 
+
 func TestRegimeBlocksOpen_BlocksOpenWhenNoPosition(t *testing.T) {
 	allowed := []string{"trending_up"}
 	if !regimeBlocksOpen(allowed, "ranging", 0, false) {
@@ -192,6 +196,7 @@ func TestRegimeBlocksOpen_EmptyAllowedNeverBlocks(t *testing.T) {
 	}
 }
 
+
 func TestStrategyDecisionFields_RegimeRoundTrip(t *testing.T) {
 	sdf := StrategyDecisionFields{Regime: &RegimePayload{Legacy: "trending_up"}}
 	b, err := json.Marshal(sdf)
@@ -222,11 +227,13 @@ func TestStrategyDecisionFields_RegimeOmitEmpty(t *testing.T) {
 	}
 }
 
+
 func TestCurrentConfigVersion_IsSeventeen(t *testing.T) {
 	if CurrentConfigVersion != 17 {
 		t.Errorf("expected CurrentConfigVersion=17, got %d", CurrentConfigVersion)
 	}
 }
+
 
 func TestConfigValidation_AllowedRegimes_RejectsOnOptions(t *testing.T) {
 	cfg := minimalOptionsConfig()
@@ -290,6 +297,7 @@ func TestConfigValidation_AllowedRegimes_NoWarnWhenRegimeEnabled(t *testing.T) {
 	}
 }
 
+
 func TestHotReload_AllowedRegimesChangeIsAccepted(t *testing.T) {
 	cfg := minimalSpotConfig()
 	next := minimalSpotConfig()
@@ -307,6 +315,7 @@ func TestHotReload_RegimeConfigChangeRequiresRestart(t *testing.T) {
 		t.Fatal("Regime config change should require restart")
 	}
 }
+
 
 func minimalSpotConfig() Config {
 	return Config{

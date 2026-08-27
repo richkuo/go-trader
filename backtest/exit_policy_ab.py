@@ -46,7 +46,6 @@ STOP_FIELD_KEYS = (
 )
 
 
-
 def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
@@ -214,7 +213,6 @@ def paired_delta_summary(deltas: Sequence[float],
     }
 
 
-
 def collapse_entry(legs: Sequence[dict]) -> Optional[dict]:
     legs = [l for l in legs if l]
     if not legs:
@@ -281,7 +279,6 @@ def arm_summary(results: Optional[dict]) -> dict:
 
 def _round_or_none(v, prec: int = 4):
     return round(float(v), prec) if v is not None else None
-
 
 
 def build_paired_rows(control_entries: Sequence[dict],
@@ -360,7 +357,6 @@ def per_regime_table(rows: Sequence[dict], n_resamples: int = DEFAULT_BOOTSTRAP_
         "all": _delta_block(list(rows), n_resamples, ci, seed),
         "by_regime": regimes,
     }
-
 
 
 _REPLAYABLE_CLOSE_NAMES = {
@@ -531,7 +527,6 @@ def evaluate_dataset_window(reg, spec: dict, symbol: str, timeframe: str,
     }
 
 
-
 def _parse_close_arg(raw: str, label: str) -> Optional[List[dict]]:
     if raw is None:
         return None
@@ -636,7 +631,6 @@ def resolve_regime_cfg(args, regime_section: dict) -> dict:
     return {**base, "classifier": "adx", "windows_spec": None}
 
 
-
 def _p(v, prec=2):
     return f"{v:+.{prec}f}" if isinstance(v, (int, float)) else "    -"
 
@@ -727,7 +721,6 @@ def format_summary(per_window: "OrderedDict[str, List[dict]]") -> str:
     out.append("  Δnet/e = candidate − incumbent net % per paired entry; "
                "positive favours the candidate exit.")
     return "\n".join(out)
-
 
 
 def build_parser() -> argparse.ArgumentParser:

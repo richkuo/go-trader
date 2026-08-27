@@ -8,7 +8,6 @@ from backtester import Backtester
 import exit_diagnostics as ed
 
 
-
 def _t(**kw):
     base = dict(pnl_pct=0.0, shares=10.0, entry_price=100.0, exit_price=100.0,
                entry_fee=1.0, exit_fee=1.0, mfe_pct=0.0, mae_pct=0.0,
@@ -71,7 +70,6 @@ def test_empty_inputs_are_safe():
     assert diag["holding_time"]["trades"] == 0
     assert diag["bleed_modes"] == {}
     assert diag["fee_churn"] == {"trades": 0}
-
 
 
 def test_backtester_stamps_exact_excursions():

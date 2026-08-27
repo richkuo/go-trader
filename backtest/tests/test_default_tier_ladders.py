@@ -62,8 +62,6 @@ def _go_default_protection_tiers():
     return tuple((float(m), float(f)) for m, f in rows)
 
 
-
-
 def test_python_tiered_tp_atr_default_tiers_match_expected():
     assert _python_tiered_tp_atr_ladder() == EXPECTED_LADDER
 
@@ -74,8 +72,6 @@ def test_python_scalar_tp_tiers_match_expected():
 
 def test_go_default_protection_tiers_match_expected():
     assert _go_default_protection_tiers() == EXPECTED_LADDER
-
-
 
 
 def test_all_three_default_tier_ladders_agree():

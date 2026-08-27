@@ -31,7 +31,6 @@ def paper_adapter():
         return RobinhoodExchangeAdapter(mode="paper")
 
 
-
 class TestProperties:
     def test_name(self, paper_adapter):
         assert paper_adapter.name == "robinhood"
@@ -48,7 +47,6 @@ class TestProperties:
                 RobinhoodExchangeAdapter(mode="live")
 
 
-
 class TestSymbolResolution:
     def test_crypto_resolves_to_yahoo(self, paper_adapter):
         assert paper_adapter._resolve_yahoo_symbol("BTC") == "BTC-USD"
@@ -57,7 +55,6 @@ class TestSymbolResolution:
     def test_stock_passes_through(self, paper_adapter):
         assert paper_adapter._resolve_yahoo_symbol("SPY") == "SPY"
         assert paper_adapter._resolve_yahoo_symbol("AAPL") == "AAPL"
-
 
 
 class TestMarketData:
@@ -85,7 +82,6 @@ class TestMarketData:
             assert paper_adapter.get_ohlcv_closes("BTC", "4h", 100) is None
 
 
-
 class TestStrikeInterval:
     def test_under_100(self):
         assert _get_strike_interval(50) == 1
@@ -95,7 +91,6 @@ class TestStrikeInterval:
 
     def test_over_500(self):
         assert _get_strike_interval(600) == 10
-
 
 
 class TestOptionsProtocol:
@@ -120,7 +115,6 @@ class TestOptionsProtocol:
         assert usd > 0
         assert "delta" in greeks
         assert usd >= pct * 445 * 90
-
 
 
 class TestOrderExecution:

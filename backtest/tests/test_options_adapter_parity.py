@@ -24,7 +24,6 @@ from pricing import bs_price, bs_price_and_greeks
 DERIBIT_ADAPTER = REPO_ROOT / "platforms" / "deribit" / "adapter.py"
 
 
-
 def test_btc_strikes_round_to_1000():
     assert adapter_strike("BTC", 67234) == 67000
     assert adapter_strike("BTC", 67501) == 68000
@@ -75,7 +74,6 @@ def test_strike_grid_matches_adapter_source():
     )
 
 
-
 @pytest.mark.parametrize(
     "spot,strike,dte,vol,option_type",
     [
@@ -110,7 +108,6 @@ def test_greeks_populated_on_bs_put():
     assert -0.6 < greeks["delta"] < -0.3, greeks
     assert greeks["gamma"] > 0
     assert greeks["theta"] < 0
-
 
 
 def _deterministic_candles(underlying: str = "BTC", start_price: float = 50000.0,

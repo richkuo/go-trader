@@ -42,7 +42,6 @@ WIDE_LADDER = [
 ]
 
 
-
 def test_grid_expands_cartesian_per_spec():
     grid = generate_close_stack_grid([
         {"close": {"name": "tiered_tp_atr",
@@ -121,7 +120,6 @@ def test_close_stack_label_is_compact():
     assert grid[0]["label"] == "tiered_tp_atr[0.5x:0.5,1x:1] sl_atr=2"
 
 
-
 def test_result_metric_reads_plain_keys():
     assert _result_metric({"sharpe_ratio": 1.5}, "sharpe_ratio") == 1.5
 
@@ -133,7 +131,6 @@ def test_result_metric_dd_adjusted_return():
     assert _result_metric(
         {"total_return_pct": 10.0, "max_drawdown_pct": 0.0},
         "dd_adjusted_return") == 0.0
-
 
 
 def test_joint_sweep_reports_best_close_stack():
@@ -254,7 +251,6 @@ def test_stack_specs_survive_json_round_trip():
     grid = generate_close_stack_grid(specs)
     assert len(grid) == 2
     assert {g["stop_loss_atr_mult"] for g in grid} == {None, 1.5}
-
 
 
 def test_joint_sweep_defaults_to_long_universe():

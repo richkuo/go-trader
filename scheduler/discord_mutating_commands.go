@@ -14,7 +14,9 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+
 const configSecretReplacement = "***redacted***"
+
 
 func redactConfigForDisplay(raw []byte) (string, error) {
 	var root map[string]json.RawMessage
@@ -60,6 +62,7 @@ func redactSectionKeys(root map[string]json.RawMessage, section string, keys ...
 	}
 }
 
+
 func configStrategies(root map[string]json.RawMessage) ([]json.RawMessage, error) {
 	raw, ok := root["strategies"]
 	if !ok {
@@ -88,6 +91,7 @@ func strategyRawID(raw json.RawMessage) string {
 	_ = json.Unmarshal(raw, &item)
 	return item.ID
 }
+
 
 func buildAddStrategyEntry(name, platform, asset string) (string, json.RawMessage, error) {
 	name = strings.TrimSpace(name)
@@ -181,6 +185,7 @@ func addStrategyToRoot(root map[string]json.RawMessage, name, platform, asset st
 	return id, nil
 }
 
+
 func removeStrategyFromRoot(root map[string]json.RawMessage, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -206,6 +211,7 @@ func removeStrategyFromRoot(root map[string]json.RawMessage, id string) error {
 	list = append(list[:idx], list[idx+1:]...)
 	return setConfigStrategies(root, list)
 }
+
 
 func flipStrategyToLive(root map[string]json.RawMessage, id string) (before, after []string, err error) {
 	id = strings.TrimSpace(id)
@@ -269,6 +275,7 @@ func flipStrategyToLive(root map[string]json.RawMessage, id string) (before, aft
 	}
 	return before, args, nil
 }
+
 
 func classifyConfigSetKey(key string) (kind, id, field string) {
 	key = strings.TrimSpace(key)
@@ -407,6 +414,7 @@ func setNestedRaw(root map[string]json.RawMessage, section, key string, v interf
 	return nil
 }
 
+
 var addPlatformKnown = map[string]string{
 	"hyperliquid": "Hyperliquid perps",
 	"binanceus":   "BinanceUS spot",
@@ -451,6 +459,7 @@ func confirmYes(reply string) bool {
 	return false
 }
 
+
 func writeValidatedConfigRoot(configPath string, root map[string]json.RawMessage) error {
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
@@ -479,6 +488,7 @@ func writeValidatedConfigRoot(configPath string, root map[string]json.RawMessage
 func requestSIGHUPReload() error {
 	return syscall.Kill(os.Getpid(), syscall.SIGHUP)
 }
+
 
 func (d *DiscordNotifier) configOpsReady() (string, error) {
 	if d.ss == nil {

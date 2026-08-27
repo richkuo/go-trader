@@ -19,22 +19,22 @@ const (
 )
 
 type KillSwitchCloseInputs struct {
-	HLAddr            string
-	HLStateFetched    bool
-	HLPositions       []HLPosition
-	HLLiveAll         []StrategyConfig
-	HLHedgeCoins      map[string]bool
-	HLCloser          HyperliquidLiveCloser
-	HLFetcher         HLStateFetcher
+	HLAddr         string
+	HLStateFetched bool
+	HLPositions    []HLPosition
+	HLLiveAll      []StrategyConfig
+	HLHedgeCoins map[string]bool
+	HLCloser     HyperliquidLiveCloser
+	HLFetcher    HLStateFetcher
 	HLNoFillRecoverer HLNoFillRecoverer
-	HLStopLossOIDs    map[string][]int64
+	HLStopLossOIDs map[string][]int64
 
 	OKXLiveAllPerps []StrategyConfig
-	OKXLiveAllSpot  []StrategyConfig
-	OKXCloser       OKXLiveCloser
-	OKXFetcher      OKXPositionsFetcher
+	OKXLiveAllSpot []StrategyConfig
+	OKXCloser      OKXLiveCloser
+	OKXFetcher     OKXPositionsFetcher
 
-	RHLiveCrypto  []StrategyConfig
+	RHLiveCrypto []StrategyConfig
 	RHLiveOptions []StrategyConfig
 	RHCloser      RobinhoodLiveCloser
 	RHFetcher     RobinhoodPositionsFetcher

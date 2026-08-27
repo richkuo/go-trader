@@ -8,7 +8,6 @@ import eval_windows as ew
 import monte_carlo as mc
 
 
-
 def test_equity_path_empty():
     assert mc.equity_path_stats([]) == (0.0, 0.0)
 
@@ -35,7 +34,6 @@ def test_equity_path_dd_positive_magnitude():
     assert dd == pytest.approx(10.0)
 
 
-
 def test_percentile_empty_none_and_interpolation():
     assert mc.percentile([], 50) is None
     assert mc.percentile([5.0], 95) == 5.0
@@ -52,7 +50,6 @@ def test_auto_block_len():
     assert mc.auto_block_len(1) == 1
     assert mc.auto_block_len(27) == 3
     assert mc.auto_block_len(28) == 4
-
 
 
 def test_permutation_dds_stay_in_enumerated_set():
@@ -79,7 +76,6 @@ def test_permutation_per_path_dds_match_enumeration_exactly():
             for _ in range(300)}
     assert seen <= enumerated
     assert seen == enumerated
-
 
 
 def test_block_path_preserves_circular_contiguity():
@@ -111,7 +107,6 @@ def test_block_scheme_auto_len_recorded():
     stats = mc.resample_stats([1.0] * 27, "block", n_paths=10, seed=1,
                               block_len=5)
     assert stats["block_len"] == 5
-
 
 
 def test_resample_stats_deterministic_under_seed():
@@ -156,7 +151,6 @@ def test_unknown_scheme_rejected():
         mc.resample_stats([1.0], "bogus")
 
 
-
 def _trade(pnl_pct, shares=2.0, entry_price=100.0, pnl=None):
     return {"pnl_pct": pnl_pct, "shares": shares, "entry_price": entry_price,
             "pnl": pnl}
@@ -195,7 +189,6 @@ def test_payload_dict_and_list_forms():
         mc.trades_from_json_payload("nope")
 
 
-
 def _cfg(strategies, platforms=None):
     return {"strategies": strategies, "platforms": platforms or {}}
 
@@ -229,7 +222,6 @@ def test_kill_switch_missing_strategy_raises():
         mc.resolve_kill_switch_pct(_cfg([]), "ghost")
 
 
-
 def test_trade_samples_carry_net_return():
     results = {"trades": [{"entry_date": "2025-01-01", "pnl_pct": 5.0,
                            "shares": 2.0, "entry_price": 100.0, "pnl": 8.0}]}
@@ -243,7 +235,6 @@ def test_trade_samples_net_falls_back_to_gross():
                            "shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}
     samples = ew.trade_samples_from_results(results)
     assert samples[0]["pnl_pct_net"] == 5.0
-
 
 
 def test_cli_deterministic_byte_identical_json(tmp_path, capsys):
@@ -302,7 +293,6 @@ def test_cli_empty_trades_no_crash(tmp_path, capsys):
     rc = mc.main(["--trades-json", str(src), "--n-paths", "50"])
     assert rc == 0
     assert "nothing to resample" in capsys.readouterr().out
-
 
 
 def _valid_trades_json(tmp_path):
@@ -384,7 +374,6 @@ def test_cli_rejects_trades_json_bare_number(tmp_path):
         mc.main(["--trades-json", str(src)])
 
 
-
 def test_cli_config_missing_file_exits_cleanly(tmp_path):
     src = _valid_trades_json(tmp_path)
     with pytest.raises(SystemExit):
@@ -443,7 +432,6 @@ def test_cli_trades_json_missing_pnl_pct_exits_cleanly(tmp_path):
         {"shares": 0.0, "entry_price": 0.0, "pnl": 8.0}]}))
     with pytest.raises(SystemExit):
         mc.main(["--trades-json", str(src)])
-
 
 
 class _FakeReg:
@@ -540,7 +528,6 @@ def test_default_dataset_args_matches_the_eval_windows_audit_six():
     assert len(mc.default_dataset_args()) == 6
 
 
-
 def _write_candidate(tmp_path, **over):
     cand = {"name": "squeeze_momentum", "direction": "long"}
     cand.update(over)
@@ -627,7 +614,6 @@ def test_multileg_bare_strategy_source_also_fans(monkeypatch, tmp_path):
                     "--datasets", "BTC/USDT:1h", "--n-paths", "20",
                     "--json", str(out)]) == 0
     assert len(json.loads(out.read_text())["legs"]) == 1
-
 
 
 def test_cli_rejects_three_way_source_ambiguity(tmp_path):

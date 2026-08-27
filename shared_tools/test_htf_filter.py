@@ -6,7 +6,6 @@ import pytest
 from htf_filter import get_default_htf, htf_trend_filter, apply_htf_filter, _compute_ema
 
 
-
 class TestGetDefaultHtf:
     def test_known_mappings(self):
         assert get_default_htf("1m") == "15m"
@@ -24,7 +23,6 @@ class TestGetDefaultHtf:
 
     def test_unknown_timeframe_returns_4h(self):
         assert get_default_htf("bogus") == "4h"
-
 
 
 class TestComputeEma:
@@ -52,7 +50,6 @@ class TestComputeEma:
         values = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
         ema = _compute_ema(values, 3)
         assert len(ema) == len(values)
-
 
 
 def _make_fetch_fn(closes):
@@ -109,7 +106,6 @@ class TestHtfTrendFilter:
         closes = list(np.linspace(50, 100, 30))
         result = htf_trend_filter("BTC/USDT", "1h", _make_fetch_fn(closes), ema_period=10)
         assert result["htf_trend"] == 1
-
 
 
 class TestApplyHtfFilter:

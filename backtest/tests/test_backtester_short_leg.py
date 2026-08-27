@@ -41,8 +41,6 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-
-
 def test_short_round_trip_profits_when_price_falls():
     closes = [100, 100, 90, 80, 80, 80]
     signals = [-1, 0, 0, 1, 0, 0]
@@ -122,8 +120,6 @@ def test_end_of_data_flush_closes_open_short():
     assert t["pnl"] > 0
 
 
-
-
 def test_fixed_atr_stop_buys_back_on_adverse_rally():
     closes = [100, 100, 103, 110, 120, 130, 130]
     signals = [-1, 0, 0, 0, 0, 0, 0]
@@ -176,8 +172,6 @@ def test_fixed_pct_stop_mirrors_above_entry():
     assert stopped["final_capital"] > no_stop["final_capital"]
 
 
-
-
 def test_starting_long_rejected_on_short_path():
     closes = [100, 100, 100]
     signals = [0, 0, 0]
@@ -203,8 +197,6 @@ def test_direction_long_default_is_unchanged():
     assert base["final_capital"] == explicit["final_capital"]
     assert [t["side"] for t in base["trades"]] == ["long"]
     assert [t["side"] for t in explicit["trades"]] == ["long"]
-
-
 
 
 def test_no_short_reentry_after_blowup_plain_path():

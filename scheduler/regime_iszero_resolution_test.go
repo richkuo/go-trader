@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+
 const (
 	minMoveRequiresErr = "trailing_stop_min_move_pct requires"
 	regimeStopMutexErr = "stop_loss_atr_regime is mutually exclusive with trailing_stop_atr_regime"

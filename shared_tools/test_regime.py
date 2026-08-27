@@ -36,8 +36,6 @@ _indicators_core_mod = importlib.util.module_from_spec(_indicators_core_spec)
 _indicators_core_spec.loader.exec_module(_indicators_core_mod)
 
 
-
-
 def _make_uptrend(n: int = 100, noise: float = 0.5) -> pd.DataFrame:
     close = np.linspace(100.0, 200.0, n)
     high = close + noise
@@ -75,8 +73,6 @@ def _make_flat(n: int = 100, noise: float = 0.05) -> pd.DataFrame:
         "close": close,
         "volume": np.ones(n) * 1000.0,
     })
-
-
 
 
 def test_compute_regime_returns_dataframe():
@@ -194,8 +190,6 @@ def test_compute_regime_tied_di_labels_ranging(monkeypatch):
     assert result["regime"].iloc[-1] == "ranging"
 
 
-
-
 def test_latest_regime_returns_dict():
     df = _make_uptrend()
     result = latest_regime(df)
@@ -245,8 +239,6 @@ def test_latest_regime_empty_df_returns_ranging():
     assert result["score"] == 0.0
 
 
-
-
 def test_ensure_regime_columns_injects_when_missing():
     df = _make_uptrend()
     assert "regime" not in df.columns
@@ -279,8 +271,6 @@ def test_ensure_regime_columns_idempotent():
     first = df["regime"].copy()
     ensure_regime_columns(df)
     pd.testing.assert_series_equal(df["regime"], first)
-
-
 
 
 def test_compute_multi_regime_returns_per_window_snapshots():
@@ -472,8 +462,6 @@ def test_normalize_regime_gate_on_failure():
     import pytest as _pytest
     with _pytest.raises(ValueError, match="regime_gate_on_failure"):
         _regime_mod.normalize_regime_gate_on_failure("fail-closed")
-
-
 
 
 def test_latest_regime_composite_includes_hurst_when_data_sufficient():

@@ -235,7 +235,7 @@ func TestFormatPnLResponsePooledReturnsAreUndefined(t *testing.T) {
 	allPooled := &AppState{Strategies: map[string]*StrategyState{
 		"hl-a": {
 			ID: "hl-a", Platform: "hyperliquid", Cash: -200,
-			SharedWalletPoolBudget:      true,
+			SharedWalletPoolBudget: true,
 			SharedWalletPerformanceOnly: false,
 		},
 		"hl-b": {

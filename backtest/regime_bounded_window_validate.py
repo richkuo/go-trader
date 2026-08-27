@@ -77,7 +77,6 @@ def _provenance_status(model, symbol: str, timeframe: str, window: str,
             "in_sample": in_sample}
 
 
-
 def bounded_window_adx(df: pd.DataFrame, period: int, lookback: int,
                        adx_threshold: float, eval_start: int = 0) -> np.ndarray:
     n = len(df)
@@ -131,7 +130,6 @@ def bounded_window_views(df: pd.DataFrame, model, period: int, th: dict,
     return feats, model_arr, hr_arr
 
 
-
 def adx_drift_stats(full_adx: np.ndarray, bounded_adx: np.ndarray) -> dict:
     a = np.asarray(full_adx, dtype=float)
     b = np.asarray(bounded_adx, dtype=float)
@@ -181,7 +179,6 @@ def _feature_valid_mask(full_feats: np.ndarray, bounded_feats: np.ndarray) -> np
     fv = ~np.isnan(np.asarray(full_feats, dtype=float)).any(axis=1)
     bv = ~np.isnan(np.asarray(bounded_feats, dtype=float)).any(axis=1)
     return fv & bv
-
 
 
 def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr_scored,
@@ -235,7 +232,6 @@ def go_no_go(full_model_scored, full_hr_scored, bounded_model_scored, bounded_hr
         "full_window_verdict": full_verdict,
         "bounded_window_verdict": bounded_verdict,
     }
-
 
 
 def validate_frames(df_window: pd.DataFrame, df_ext: pd.DataFrame, eval_start: int, model, *,
@@ -375,7 +371,6 @@ def _sweep_summary(report: dict) -> dict:
 def _sweep_blocked(sweep: list[dict]) -> bool:
     model_rows = [r for r in sweep if "promote" in r]
     return bool(model_rows) and not all(bool(r["promote"]) for r in model_rows)
-
 
 
 def build_parser():

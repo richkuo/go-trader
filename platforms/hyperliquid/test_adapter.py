@@ -58,7 +58,6 @@ def _load_hl_adapter(mock_info_cls=None, mock_exchange_cls=None, mock_api_cls=No
     return mod
 
 
-
 class TestProperties:
     def test_name(self):
         mock_info = MagicMock()
@@ -83,7 +82,6 @@ class TestProperties:
         mod._SDK_AVAILABLE = False
         with pytest.raises(ImportError, match="hyperliquid-python-sdk"):
             mod.HyperliquidExchangeAdapter()
-
 
 
 class TestMarketData:
@@ -282,7 +280,6 @@ class TestMarketData:
         assert adapter.get_funding_history("BTC") == []
 
 
-
 class TestAccountData:
     def _make_adapter_with_address(self):
         mock_info = MagicMock()
@@ -318,7 +315,6 @@ class TestAccountData:
         adapter, mock_info = self._make_adapter_with_address()
         mock_info.user_state.side_effect = Exception("fail")
         assert adapter.get_open_positions() == []
-
 
 
 class TestOrderExecution:
@@ -427,7 +423,6 @@ class TestOrderExecution:
         with pytest.raises(ValueError, match="Size rounded to zero"):
             adapter.market_close("BTC", 0.4)
         mock_exchange.market_close.assert_not_called()
-
 
 
 class TestStopLossPlacement:
@@ -540,7 +535,6 @@ class TestStopLossPlacement:
             {"coin": "ETH", "oid": "333"},
         ]
         assert adapter.open_order_oids("ETH") == {111, 333}
-
 
 
 class TestLookupFillFeeByOID:
@@ -776,7 +770,6 @@ class TestFundingHistoryRange:
         adapter = self._adapter(mock_info)
         out = adapter.get_funding_history_range("BTC", base, base + 100 * self._HOUR)
         assert len(out) == 5
-
 
 
 class TestLazyExchangeInit:

@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,14 +37,14 @@ const hurstSizeSpan = 0.15
 const hurstDefaultSizeFloor = 0.25
 
 type HurstGateConfig struct {
-	Enabled   bool     `json:"enabled"`
-	Mode      string   `json:"mode,omitempty"`
-	Min       *float64 `json:"min,omitempty"`
-	Max       *float64 `json:"max,omitempty"`
+	Enabled bool `json:"enabled"`
+	Mode string `json:"mode,omitempty"`
+	Min *float64 `json:"min,omitempty"`
+	Max *float64 `json:"max,omitempty"`
 	DisarmMin *float64 `json:"disarm_min,omitempty"`
 	DisarmMax *float64 `json:"disarm_max,omitempty"`
-	WindowKey string   `json:"window_key,omitempty"`
-	OnFailure string   `json:"on_failure,omitempty"`
+	WindowKey string `json:"window_key,omitempty"`
+	OnFailure string `json:"on_failure,omitempty"`
 	SizeFloor *float64 `json:"size_floor,omitempty"`
 }
 
@@ -177,6 +178,7 @@ func hurstFromPayload(payload RegimePayload, windowKey string) (float64, bool) {
 	}
 	return v, true
 }
+
 
 func hurstInArmBand(hg *HurstGateConfig, h float64) bool {
 	if hg == nil {
@@ -489,6 +491,7 @@ func hurstGateStatusMarker(d HurstGateDecision) string {
 	}
 	return fmt.Sprintf("hurst=%.4f (gate armed)", d.H)
 }
+
 
 func validateHurstGateConfigs(cfg *Config) []string {
 	if cfg == nil {

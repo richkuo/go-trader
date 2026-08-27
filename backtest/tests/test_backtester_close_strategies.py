@@ -284,7 +284,6 @@ def test_close_strategy_unknown_name_raises():
         raise AssertionError("expected ValueError for unknown close strategy")
 
 
-
 _FAR_TP = [{"name": "tp_at_pct", "params": {"pct": 0.5}}]
 
 
@@ -394,7 +393,6 @@ def test_tp_tier_partial_then_scalar_stop_closes_remainder():
     assert result["final_capital"] == 5 * 102.0 + 5 * 96.0
 
 
-
 def test_seeded_position_fixed_atr_stop_fires_plain_path():
     n = 3
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
@@ -487,7 +485,6 @@ def test_seeded_position_without_entry_atr_stop_stays_unarmed():
     assert result["trades"][0]["exit_date"] == str(idx[-1])
 
 
-
 def _df_avwap_hold(opens, closes, avwaps, atrs):
     n = len(closes)
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
@@ -565,7 +562,6 @@ def test_avwap_stop_short_side_fires_on_reclaim():
     assert result["trades"][0]["exit_price"] == 105.0
 
 
-
 _AVWAP_WARN_MARK = "avwap_stop"
 
 
@@ -620,7 +616,6 @@ def test_avwap_stop_does_not_warn_when_not_configured(capsys):
     _run_avwap_stop_backtest(df, [{"name": "tp_at_pct", "params": {"pct": 0.03}}])
     err = capsys.readouterr().err
     assert _AVWAP_WARN_MARK not in err
-
 
 
 _UNIFIED_CLOSE = {
@@ -745,7 +740,6 @@ def test_unified_regime_close_bare_block_arms_sl_for_directional_sub_stamp():
     assert result["total_trades"] == 1
     assert result["trades"][0]["exit_price"] == 95.0
     assert result["trades"][0]["exit_date"] == str(idx[3])
-
 
 
 def _unified_adx_block(sl_overrides=None, drop_sl_for=()):

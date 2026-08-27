@@ -18,7 +18,6 @@ from backtest_options import OptionsBacktester
 from backtest_theta import ThetaHarvestBacktester
 
 
-
 def _df_with_signals(signals):
     n = len(signals)
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
@@ -54,7 +53,6 @@ def test_non_integral_float_signal_raises():
     bt = Backtester(initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0)
     with pytest.raises(ValueError, match=r"non-integral values"):
         bt.run(df, save=False)
-
 
 
 def _synthetic_returns_df(n=400, seed=7):
@@ -106,7 +104,6 @@ def test_volatility_scales_with_timeframe():
     )
 
 
-
 def test_options_backtester_rejects_max_positions_below_two():
     with pytest.raises(ValueError, match=r"max_positions must be >= 2"):
         OptionsBacktester(initial_capital=1000.0, max_positions=1)
@@ -115,7 +112,6 @@ def test_options_backtester_rejects_max_positions_below_two():
 def test_options_backtester_accepts_max_positions_two_and_above():
     OptionsBacktester(initial_capital=1000.0, max_positions=2)
     OptionsBacktester(initial_capital=1000.0, max_positions=4)
-
 
 
 def test_annualized_return_uses_calendar_days_not_curve_length():
@@ -147,7 +143,6 @@ def test_elapsed_days_returns_calendar_difference():
     assert bt._elapsed_days() == 364
 
 
-
 def _synthetic_candles(n_days=200, start_price=20000.0, vol=0.02, seed=11):
     rng = np.random.default_rng(seed)
     closes = [start_price]
@@ -176,7 +171,6 @@ def test_theta_force_close_emits_trade_log_entries():
     assert len(bt.positions) == 0
     if bt.total_trades > 0:
         assert len(bt.trade_log) > 0
-
 
 
 def _htf_ohlcv_df(n=120, start_price=100.0, drift=0.5, seed=3):

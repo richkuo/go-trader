@@ -14,7 +14,6 @@ import fee_audit as fa
 from backtester import Backtester
 
 
-
 def _metrics(equities, initial_capital=1000.0, timeframe="1d"):
     idx = pd.date_range("2024-01-01", periods=len(equities), freq="D")
     equity_df = pd.DataFrame({"equity": np.asarray(equities, dtype=float)},
@@ -105,7 +104,6 @@ def test_faster_bust_never_outranks_slower_on_sharpe():
     assert fast["sortino_ratio"] <= slow["sortino_ratio"]
 
 
-
 def test_short_leg_blowup_end_to_end():
     closes = np.array([100, 100, 150, 250, 300, 300], dtype=float)
     n = len(closes)
@@ -128,7 +126,6 @@ def test_short_leg_blowup_end_to_end():
     assert results["liquidated"] is True
     assert results["total_return_pct"] == pytest.approx(-100.0)
     assert results["max_drawdown_pct"] == pytest.approx(-100.0)
-
 
 
 def _results(ret=-100.0, dd=-100.0, sharpe=-2.0, trades=3, liquidated=True):
@@ -193,7 +190,6 @@ def test_format_window_report_silent_when_no_liquidation():
     assert "liquidated" not in report
 
 
-
 def _screen_leg_with(monkeypatch, net_liquidated, gross_liquidated):
     def fake_run_leg(reg, name, params, sym, tf, window, capital=0.0,
                      direction=None, commission_pct=None, slippage_pct=None,
@@ -222,7 +218,6 @@ def test_screen_leg_liquidated_when_only_gross_run_busts(monkeypatch):
 
 def test_screen_leg_not_liquidated_when_neither_run_busts(monkeypatch):
     assert _screen_leg_with(monkeypatch, False, False)["liquidated"] is False
-
 
 
 def _fa_leg(liquidated=False):
@@ -254,7 +249,6 @@ def test_render_markdown_liquidated_section_only_when_present():
     clean = fa.aggregate_strategy("ok", "spot", [_fa_leg(False)])
     md_clean = fa.render_markdown(fa.rank_rows([clean]), meta)
     assert "## Liquidated legs" not in md_clean
-
 
 
 def test_liquidated_ddadj_floor_constant_mirrors_backtester():

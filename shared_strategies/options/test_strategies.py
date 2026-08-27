@@ -23,7 +23,6 @@ from strategies import (
 )
 
 
-
 def _make_adapter():
     adapter = MagicMock()
     adapter.get_portfolio_value.return_value = 100_000.0
@@ -74,7 +73,6 @@ def _make_position(pid="pos1", underlying="BTC", option_type=OptionType.CALL,
     return pid, pos
 
 
-
 class TestOptionsRegistry:
     def test_strategies_registered(self):
         names = list_options_strategies()
@@ -92,7 +90,6 @@ class TestOptionsRegistry:
         risk = _make_risk()
         strat = create_options_strategy("momentum_options", adapter, risk)
         assert isinstance(strat, MomentumOptionsStrategy)
-
 
 
 class TestMomentumOptions:
@@ -205,7 +202,6 @@ class TestMomentumOptions:
         assert "expiry" in actions[0]["reason"].lower()
 
 
-
 class TestVolMeanReversion:
     def test_high_iv_sells_strangle(self):
         adapter = _make_adapter()
@@ -296,7 +292,6 @@ class TestVolMeanReversion:
         assert "expiry" in actions[0]["reason"].lower()
 
 
-
 class TestProtectivePuts:
     def test_buys_otm_put(self):
         adapter = _make_adapter()
@@ -347,7 +342,6 @@ class TestProtectivePuts:
         actions = strat.manage_positions("BTC")
         assert len(actions) == 1
         assert actions[0]["type"] == "roll"
-
 
 
 class TestCoveredCalls:
@@ -413,7 +407,6 @@ class TestCoveredCalls:
         assert len(actions) == 1
         assert actions[0]["type"] == "roll"
         assert "DTE" in actions[0]["reason"]
-
 
 
 class TestRiskBlocking:

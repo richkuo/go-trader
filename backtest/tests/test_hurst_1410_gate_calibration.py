@@ -14,7 +14,6 @@ import hurst_1410_gate_calibration as study
 _UNSET = object()
 
 
-
 @pytest.mark.parametrize("value,expected", [
     (0.0, "<0.45"),
     (0.4499999, "<0.45"),
@@ -39,7 +38,6 @@ def test_nan_is_its_own_bucket_and_never_becomes_a_half():
 def test_every_bucket_label_is_declared():
     for value in (0.1, 0.46, 0.51, 0.9, float("nan")):
         assert study.bucket_label(value) in study.BUCKETS
-
 
 
 def test_hysteresis_high_sense_arms_and_disarms():
@@ -94,7 +92,6 @@ def test_unknown_sense_is_rejected():
         study.hysteresis_mask([0.5], 0.55, 0.50, "sideways")
 
 
-
 def test_only_entries_are_suppressed_and_only_while_disarmed():
     signal = [1, 1, -1, -1, 0, 1]
     armed = [True, False, True, False, False, True]
@@ -117,7 +114,6 @@ def test_fully_armed_gate_is_a_no_op():
 def test_mask_length_mismatch_is_rejected():
     with pytest.raises(ValueError):
         study.mask_entry_signals([1, 1, 1], [True, False])
-
 
 
 def _synthetic_walk(n=260, seed=7):
@@ -184,7 +180,6 @@ def test_rolling_hurst_rejects_a_degenerate_window():
         study.rolling_hurst(_synthetic_walk(n=10), 1)
 
 
-
 def _frame(n=40, start="2024-12-20"):
     idx = pd.date_range(start, periods=n, freq="1D")
     return pd.DataFrame({"close": np.arange(n, dtype=float)}, index=idx)
@@ -203,7 +198,6 @@ def test_open_ended_window_keeps_every_later_bar():
     df = _frame()
     out = study.slice_window(df, ("2025-01-01", None))
     assert out.index[-1] == df.index[-1]
-
 
 
 def _entry(window, entry_date, strategy="momentum", symbol="BTC/USDT",
@@ -247,7 +241,6 @@ def test_window_order_is_chronological():
     starts = [study.WINDOWS[w][0] for w in study.WINDOW_ORDER]
     assert starts == sorted(starts)
     assert set(study.WINDOW_ORDER) == set(study.WINDOWS)
-
 
 
 def test_compound_equity_matches_a_hand_computed_sequence():
@@ -317,7 +310,6 @@ def test_nan_size_multiplier_is_exactly_one_never_a_half_edge():
 def test_size_multiplier_rejects_an_unknown_sense():
     with pytest.raises(ValueError):
         study.size_multiplier(0.6, "sideways", 2.5)
-
 
 
 def test_group_permutation_is_seeded_and_reproducible():
@@ -400,7 +392,6 @@ def test_permutation_helpers_reject_length_mismatches():
         study.permutation_pvalue_weighted([1.0, 2.0], [1.0])
 
 
-
 def test_bucket_tables_route_every_trade_including_nan():
     trades = [
         {"pnl_pct_net": 3.0, "h": {128: 0.60}},
@@ -416,7 +407,6 @@ def test_bucket_tables_route_every_trade_including_nan():
     assert table["0.50-0.55"]["trades"] == 0
     assert sum(table[b]["trades"] for b in study.BUCKETS) == len(trades)
     assert table[">=0.55"]["win_rate_pct"] == pytest.approx(50.0)
-
 
 
 def _window_row(dd=-3.0, chop=-2.0, ret_gated=10.0, ret_ungated=9.0, n_legs=6):
@@ -511,7 +501,6 @@ def test_protocol_dd_reduction_is_positive_when_drawdown_falls():
     assert study.protocol_dd_reduction(_cfg()) == pytest.approx(6.0)
 
 
-
 def test_no_winner_anywhere_yields_the_inconclusive_verdict():
     configs = [_cfg(family=f, bh_reject=False,
                     config_id=f"{f}/gate/W256/arm0.55/dis0.5")
@@ -564,7 +553,6 @@ def test_the_tie_break_is_deterministic_for_equal_reductions():
     second = study.decide_recommendation([b, a])
     assert (first["families"][study.FAMILY_MOMENTUM]["winner"]["config_id"]
             == second["families"][study.FAMILY_MOMENTUM]["winner"]["config_id"])
-
 
 
 def test_inconclusive_recommendation_prints_the_bare_token():
@@ -775,7 +763,6 @@ def test_report_refuses_to_attest_the_nan_bucket_without_an_audit():
     assert "never 0.5" in report
 
 
-
 @pytest.mark.parametrize("hw,expected", [(128, 130), (256, 258), (512, 514)])
 def test_required_lead_is_the_hurst_window_plus_the_stamp_margin(hw, expected):
     assert study.required_lead_bars(hw) == expected
@@ -815,7 +802,6 @@ def test_warmup_audit_requirement_follows_the_selected_hurst_windows():
     leads = {"d": 200}
     assert study.warmup_audit(leads, [128])["sufficient"] is True
     assert study.warmup_audit(leads, [128, 512])["sufficient"] is False
-
 
 
 def _idx(n=3000, start="2023-01-01"):
@@ -871,7 +857,6 @@ def test_report_states_that_trading_less_is_not_trading_better():
     assert "trading less, not trading better" in report
 
 
-
 def test_bh_denominator_covers_every_tested_hypothesis():
     configs = [_cfg(config_id="c0", p_raw=0.001)]
     configs += [_cfg(config_id=f"n{i}", p_raw=None) for i in range(99)]
@@ -902,7 +887,6 @@ def test_bh_on_an_all_untestable_sweep_rejects_nothing():
         cfg.pop("bh_reject", None)
     study.apply_bh(configs)
     assert not any(c["bh_reject"] for c in configs)
-
 
 
 def test_the_five_named_exemplars_are_the_declared_families():

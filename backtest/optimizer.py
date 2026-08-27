@@ -76,7 +76,6 @@ def max_indicator_lookback(param_ranges: Dict[str, list]) -> int:
     return max_lb
 
 
-
 ATR_CLOSE_WARMUP = 14
 
 _CLOSE_STACK_SPEC_KEYS = {"close", "stop_loss_atr_mult", "trailing_stop_atr_mult"}

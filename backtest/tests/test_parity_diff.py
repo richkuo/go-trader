@@ -583,8 +583,6 @@ def test_config_mode_injects_user_close_defaults(tmp_path):
     assert cfg.close_refs[0]["params"].get("tp_tiers") == ladder
 
 
-
-
 def _batched_cfg(**overrides) -> ParityConfig:
     cfg = ParityConfig(
         strategy_name="breakout",

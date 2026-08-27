@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+
 func exposureTestStates() map[string]*StrategyState {
 	return map[string]*StrategyState{
 		"hl-a-btc": {
@@ -47,6 +48,7 @@ func exposureTestConfigs() []StrategyConfig {
 func exposureTestPrices() map[string]float64 {
 	return map[string]float64{"BTC": 50000, "ETH": 3000, "SOL": 150}
 }
+
 
 func TestEvaluateExposureCap_AllLongBookBlocksLongsOnly(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxSameDirectionNotionalUSD: 15000}
@@ -258,6 +260,7 @@ func TestEvaluateExposureCap_ManualPositionsCounted(t *testing.T) {
 	}
 }
 
+
 func TestEvaluateExposureCap_Concentration(t *testing.T) {
 	pr := &PortfolioRiskConfig{MaxDrawdownPct: 25, MaxAssetConcentrationPct: 40}
 	st := evaluateExposureCap(pr, exposureTestStates(), exposureTestConfigs(), exposureTestPrices(), 20000)
@@ -303,6 +306,7 @@ func TestEvaluateExposureCap_PVBasisMiss(t *testing.T) {
 	}
 }
 
+
 func TestExposureCapBlocksSignal_ManageAndReducePassThrough(t *testing.T) {
 	st := ExposureCapStatus{
 		Configured: true, CapUSD: 100, LongUSD: 500, ShortUSD: 500,
@@ -342,6 +346,7 @@ func TestExposureCapBlocksSignal_DirectionalIncreases(t *testing.T) {
 		t.Error("fresh short open must pass while only longs are capped")
 	}
 }
+
 
 func TestExposureCapOptionsActions(t *testing.T) {
 	st := ExposureCapStatus{
@@ -390,6 +395,7 @@ func TestExposureCapOptionsActions_ConcentrationScopedToAsset(t *testing.T) {
 		t.Error("BTC short-delta open must pass — it reduces the long concentration")
 	}
 }
+
 
 func TestExposureCapAlertMessage_EdgeTriggered(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
@@ -480,6 +486,7 @@ func TestExposureCapHoldDetail(t *testing.T) {
 	}
 }
 
+
 func TestExposureCapFieldsHotReloadable(t *testing.T) {
 	mkCfg := func(pr *PortfolioRiskConfig) *Config {
 		return &Config{
@@ -523,6 +530,7 @@ func TestValidateConfig_ExposureCapBounds(t *testing.T) {
 		}
 	}
 }
+
 
 func manualExposureTestConfig() *Config {
 	return &Config{
@@ -615,6 +623,7 @@ func TestManualExposureCapStatus_PVBasisMissSurfaced(t *testing.T) {
 		t.Error("PVBasisMiss must never block — loudly inert only")
 	}
 }
+
 
 func exposureCapE2EDeps(t *testing.T, view manualStateView, executed *bool) manualCoreDeps {
 	t.Helper()

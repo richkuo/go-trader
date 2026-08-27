@@ -39,8 +39,6 @@ def build_downtrend_with_rally(n_trend=900, pop=10.0):
     return make_ohlcv(closes)
 
 
-
-
 def test_columns_present():
     out = mtf_confluence_core(build_uptrend_with_pullback())
     for col in ("signal", "position", "htf_trend", "htf_ema_fast",
@@ -67,8 +65,6 @@ def test_range_index_fallback_is_safe():
     out = mtf_confluence_core(df)
     assert "signal" in out.columns
     assert out["htf_trend"].iloc[-1] == 1
-
-
 
 
 def test_uptrend_pullback_fires_long_at_resumption_bar():
@@ -127,8 +123,6 @@ def test_flat_market_no_signal():
     assert (out["signal"] == 0).all()
 
 
-
-
 def test_resample_buckets_are_epoch_aligned_4h():
     df = make_ohlcv(np.linspace(100, 110, 50), start="2024-01-01 03:00")
     htf, visible_at = _resample_htf(df, 4)
@@ -144,8 +138,6 @@ def test_incomplete_trailing_bucket_never_visible():
     proj = pd.Series(htf["close"].to_numpy(), index=visible_at).reindex(
         df.index, method="ffill")
     assert proj.iloc[-1] == df["close"].iloc[19]
-
-
 
 
 def test_prefix_consistency_no_lookahead():

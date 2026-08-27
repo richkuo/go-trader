@@ -171,6 +171,7 @@ func TestCheckRisk_LiveOKXSpot_SetsOperatorRequiredPending(t *testing.T) {
 	}
 }
 
+
 type captureNotifier struct {
 	hasBackends bool
 	channels    []string

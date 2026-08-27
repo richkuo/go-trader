@@ -116,7 +116,6 @@ WINDOW_ORDER = tuple(
 )
 
 
-
 def required_lead_bars(hurst_window: int) -> int:
     return int(hurst_window) + WARMUP_MARGIN_BARS
 
@@ -443,7 +442,6 @@ def decide_recommendation(configs: Sequence[dict]) -> dict:
     }
 
 
-
 def rolling_hurst(close: pd.Series, window: int,
                   first_needed: Optional[pd.Timestamp] = None) -> pd.Series:
     if window < 2:
@@ -466,7 +464,6 @@ def decision_series(rolling: pd.Series) -> pd.Series:
 
 def entry_stamp_series(rolling: pd.Series) -> pd.Series:
     return rolling.shift(2)
-
 
 
 _MIRRORED_LEG_KEYS = ("sharpe", "return_pct", "max_dd_pct", "ddadj", "trades",
@@ -540,7 +537,6 @@ def _leg_metrics(leg: Optional[dict]) -> dict:
         "chop_loss": chop_loss(rets),
         "trades": int(leg["trades"]),
     }
-
 
 
 CONFIG_ID_SEP = "/"
@@ -646,7 +642,6 @@ def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
         "gated": gated,
         "trades": trades,
     }
-
 
 
 def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
@@ -805,7 +800,6 @@ def apply_bh(configs: Sequence[dict], alpha: float = ALPHA) -> None:
         cfg["bh_reject"] = bool(flag)
     for cfg in configs:
         cfg.setdefault("bh_reject", False)
-
 
 
 def _fmt(value, digits: int = 2, suffix: str = "") -> str:
@@ -1139,7 +1133,6 @@ def render_report(payload: dict) -> str:
 
     a(render_recommendation(decision, cfgs))
     return "\n".join(out)
-
 
 
 def report_from_payload(payload: dict) -> str:

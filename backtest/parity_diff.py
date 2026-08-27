@@ -275,7 +275,6 @@ def _live_bar_decision(window: pd.DataFrame, cfg: ParityConfig, reg,
     return decision
 
 
-
 HL_CHECK_SCRIPT = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "shared_scripts", "check_hyperliquid.py"))
 

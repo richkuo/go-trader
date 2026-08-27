@@ -59,7 +59,6 @@ FOOTER = ("Suggest-only. No config was modified and no live default was written.
           "Promotion is a human decision.")
 
 
-
 def _resolve_ref(ref, spec_dir: str) -> dict:
     if isinstance(ref, dict):
         return copy.deepcopy(ref)
@@ -303,7 +302,6 @@ def expand_candidates(spec: dict) -> list:
     return entries
 
 
-
 def _csv(items) -> str:
     return ",".join(items)
 
@@ -387,7 +385,6 @@ def m6_argv_tail(m6_candidate, registry, windows, datasets, resamples, seed, out
     if datasets:
         tail += ["--datasets", _csv(datasets)]
     return tail
-
 
 
 def extract_m1(payload: dict) -> dict:
@@ -513,7 +510,6 @@ def extract_m5(payload: dict, strategy: str) -> dict:
                 "mean_net_ret": row.get("mean_net_ret"),
             }
     return {}
-
 
 
 def collect_family_pvalues(entries: list) -> list:
@@ -680,7 +676,6 @@ def reproduction_command(entry: dict) -> list:
     return cmds
 
 
-
 def _mc_column_window(mc: dict):
     def pick(windows):
         return "oos" if "oos" in windows else (sorted(windows)[0] if windows else None)
@@ -758,7 +753,6 @@ def format_shortlist(report: dict) -> str:
                  "entries carry no MC column.")
     lines.append(FOOTER)
     return "\n".join(lines)
-
 
 
 def _direction_for(candidate: dict):

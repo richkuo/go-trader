@@ -17,6 +17,7 @@ func silentStrategyLogger(id string) *StrategyLogger {
 	return &StrategyLogger{stratID: id, writer: io.Discard}
 }
 
+
 func TestParseHyperliquidExecuteOutput_StopLossFields(t *testing.T) {
 	stdout := []byte(`{
 		"execution": {
@@ -2365,6 +2366,7 @@ func TestHyperliquidArmFixedATRStopLossLive_NotifiesOnError(t *testing.T) {
 		t.Fatal("expected a notification on arm error, got none")
 	}
 }
+
 
 func TestHLSLEffectiveQty_NoCapWhenOnChainGeVirtual(t *testing.T) {
 	onChain := map[string]float64{"ETH": 0.422}

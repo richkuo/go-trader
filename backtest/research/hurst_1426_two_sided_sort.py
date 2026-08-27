@@ -263,7 +263,6 @@ _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1426_two_sided_sort.md")
 _CONTRACT_REPORT_OUT = os.path.join(_THIS_DIR, CONTRACT_REPORT_BASENAME)
 
 
-
 def doubled_tail_p(n_ge: int, n_le: int, draws: int) -> Optional[float]:
     draws = int(draws)
     if draws <= 0:
@@ -463,7 +462,6 @@ def two_sided_cluster_permutation_pvalue_weighted(
             "n_excluded_trades": n_excluded,
             "n_distinct_offsets": int(hi) - int(lo) + 1,
             "offset_range": [int(lo), int(hi)]}
-
 
 
 def two_sided_min_detectable_effect_on_grid(trades: Sequence[dict],
@@ -686,7 +684,6 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
     return out
 
 
-
 def validity_gate(mde: dict) -> dict:
     family = PRIMARY_FAMILY
     limit = (mde.get("by_family_cluster") or {}).get(family)
@@ -835,7 +832,6 @@ def decision_payload(decision: dict) -> dict:
     }
 
 
-
 def build_configs(legs: Sequence[dict], pooled: dict, hurst_windows: Sequence[int],
                   rho_by_symbol: dict, n_perm: int, seed: int) -> list:
     configs = []
@@ -927,7 +923,6 @@ def joint_separation_verdict(trades: Sequence[dict], hurst_window: int,
                              n_perm: int = N_PERM, seed: int = SEED) -> dict:
     return study1422.joint_separation_verdict(trades, hurst_window,
                                               n_perm=n_perm, seed=seed)
-
 
 
 def _largest_magnitude_signed(seps: dict):
@@ -1602,7 +1597,6 @@ def render_report(payload: dict) -> str:
 
 def report_from_payload(payload: dict) -> str:
     return render_report(payload)
-
 
 
 def _parse_datasets(raw: Optional[str]) -> list:

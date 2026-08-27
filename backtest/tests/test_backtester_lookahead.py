@@ -37,8 +37,6 @@ def _step_up_df(n: int = 20, jump_bar: int = 10, jump_pct: float = 0.10) -> pd.D
     )
 
 
-
-
 def test_signal_at_bar_k_fills_at_bar_k_plus_1_open():
     df = _step_up_df(n=20, jump_bar=10, jump_pct=0.10)
     df["signal"] = 0
@@ -71,8 +69,6 @@ def test_intra_bar_jump_captured_at_next_bar_open_documents_limit():
     assert final_pct > 15.0, (
         f"Expected ≥+15% (captures intra-bar jump at bar 10's open), got {final_pct:.2f}%"
     )
-
-
 
 
 def test_regime_gate_uses_prior_bar_regime_not_current():
@@ -137,8 +133,6 @@ def test_regime_directional_policy_uses_prior_bar_regime_not_current():
         "Policy resolver must read bar 9's trending_down label for the bar 10 "
         "fill. Reading bar 10's trending_up label would open long instead."
     )
-
-
 
 
 def test_forward_peek_signal_documents_caller_responsibility():
@@ -362,7 +356,6 @@ def test_anchored_vwap_reversion_no_lookahead():
     assert not np.array_equal(bf[:cut], bt), (
         "forward-peeking variant should break truncation-invariance — the test "
         "is not sensitive to look-ahead")
-
 
 
 def test_entry_atr_stamped_from_bar_before_fill():

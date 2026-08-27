@@ -435,7 +435,6 @@ def test_failing_family_keeps_the_per_rank_bar():
     assert v["bh_threshold"] == v["bh_rank_threshold"]
 
 
-
 def test_certified_cell_does_not_display_a_wrong_signed_best_row():
     rows = [_row(p=1e-6, sign_aligned=False), _row(p=1e-5, sign_aligned=True)]
     v = certify_mod.cell_verdicts(rows)[("BTC", "1h", "composite")]

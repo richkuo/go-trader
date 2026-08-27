@@ -41,7 +41,6 @@ def _trade(symbol="BTC/USDT", timeframe="1h", window="2021", day=0, pnl=1.0,
     }
 
 
-
 def test_primary_hypothesis_is_the_committed_1410_argmin():
     assert study.resolve_primary_config_id(study._JSON_1410) == \
         study.PRIMARY_CONFIG_ID
@@ -98,7 +97,6 @@ def test_bh_reject_is_reset_not_merely_set():
     cfgs = [{"cohort": study.COHORT_PRIMARY, "p_cluster": 0.9, "bh_reject": True}]
     study.apply_bh_by_cohort(cfgs)
     assert cfgs[0]["bh_reject"] is False
-
 
 
 def test_binanceus_symbols_keep_their_plain_identity():
@@ -247,7 +245,6 @@ def test_infeasible_routes_are_recorded_not_omitted():
     assert {v for v in sources.values()} == {"USED", "INFEASIBLE"}
 
 
-
 def test_horizon_is_fixed_in_calendar_time_across_timeframes():
     assert study.horizon_bars("1h") * 60 == study.HORIZON_HOURS * 60
     assert study.horizon_bars("4h") * 240 == study.HORIZON_HOURS * 60
@@ -345,7 +342,6 @@ def test_nan_h_still_gets_its_own_bucket():
     assert table["0.50-0.55"]["trades"] == 0
 
 
-
 def _spread_trades(n=60, symbol="BTC/USDT"):
     return [_trade(symbol=symbol, day=i * 5, hold_days=1) for i in range(n)]
 
@@ -413,7 +409,6 @@ def test_mde_shrinks_as_the_family_denominator_shrinks():
     assert one <= thirty
 
 
-
 def _win(dd=-1.0, chop=-1.0, ret_g=10.0, ret_u=10.0, legs=1):
     return {"n_legs": legs, "dd_delta": dd, "chop_delta": chop,
             "ret_gated": ret_g, "ret_ungated": ret_u}
@@ -473,7 +468,6 @@ def test_primary_protocol_and_held_out_windows_partition_the_window_set():
 def test_primary_protocol_spans_two_bull_and_two_bear_years():
     assert study.PRIMARY_PROTOCOL_WINDOWS == ("2017", "2018", "2021", "2022")
     assert study.PRIMARY_PROTOCOL_MIN_WINDOWS == 3
-
 
 
 def _cfg(**over):
@@ -543,7 +537,6 @@ def test_economics_still_read_net_return():
     ok, reasons = study.config_verdict(_cfg(windows=windows))
     assert not ok
     assert any("drawdown not reduced" in r for r in reasons)
-
 
 
 _MR = "mean_reversion"
@@ -657,7 +650,6 @@ def test_a_reversed_separation_never_closes_the_question():
     assert "OPPOSITE" in decision["justification"]
 
 
-
 _PASSING_MDE = _mde(mom_limit=0.05, mom_sep=0.09)
 _FAILING_MDE = _mde(mom_limit=0.20, mom_sep=0.09)
 
@@ -695,7 +687,6 @@ def test_a_passing_primary_config_produces_a_recommendation():
     assert decision["families"]["momentum"]["winner"]["config_id"] == \
         study.PRIMARY_CONFIG_ID
     assert decision["families"]["mean_reversion"]["n_tested"] == 0
-
 
 
 def _render_payload(decision=None, mde=None, configs=None):
@@ -777,7 +768,6 @@ def test_report_pairs_each_pools_limit_with_its_own_separation():
     text = study.report_from_payload(_render_payload())
     assert "Largest separation ON THAT POOL" in text
     assert "Resolvable?" in text
-
 
 
 def test_equal_magnitudes_of_opposite_sign_render_differently():
@@ -871,7 +861,6 @@ def test_render_only_rehydrates_a_winner_stored_as_an_id():
 def test_render_only_raises_when_a_named_winner_is_absent():
     with pytest.raises(AssertionError):
         study._resolve_winner("momentum/gate/W512/arm0.52/dis0.48", [])
-
 
 
 def test_the_committed_decision_is_what_the_current_rule_produces():
@@ -1022,7 +1011,6 @@ def test_dataset_arg_defaults_to_the_binanceus_venue():
     assert study._parse_datasets("BTC/USDT:1h") == [("binanceus", "BTC/USDT", "1h")]
     assert study._parse_datasets("coinbaseexchange=ETH/USD:1h") == \
         [("coinbaseexchange", "ETH/USD", "1h")]
-
 
 
 def test_the_estimator_is_the_1409_ssot_and_is_never_reimplemented():

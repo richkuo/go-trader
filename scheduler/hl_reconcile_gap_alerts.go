@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+
 const hlReconcileGapTolerance = 1e-6
 
 const hlReconcileGapAlertThreshold = 3
@@ -21,12 +22,12 @@ func hlReconcileGapLogInterval() time.Duration {
 }
 
 type hlReconcileGapEntry struct {
-	cycles            int
-	alerted           bool
-	lastNotifiedAt    time.Time
+	cycles int
+	alerted bool
+	lastNotifiedAt time.Time
 	lastNotifiedDelta float64
-	lastLoggedAt      time.Time
-	lastLoggedDelta   float64
+	lastLoggedAt time.Time
+	lastLoggedDelta float64
 }
 
 type HLReconcileGapTracker struct {

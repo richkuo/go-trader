@@ -32,7 +32,6 @@ def test_gate_blocks_when_no_stability_gain():
     assert gate_verdict(hr, md)["ship"] is False
 
 
-
 def test_gate_blocks_useless_model_when_incumbent_also_useless():
     hr = _report(0.1, 0.40, p_value=0.90)
     md = _report(0.1, 0.05, p_value=0.95)
@@ -57,7 +56,6 @@ def test_gate_ships_strong_incumbent_with_model_within_tolerance():
     v = gate_verdict(hr, md)
     assert v["ship"] is True
     assert v["incumbent_trustworthy"] is True
-
 
 
 def test_gate_v2_ships_self_significant_noninferior_model_over_insignificant_incumbent():
@@ -98,7 +96,6 @@ def test_gate_v2_blocks_self_significant_noninferior_but_no_stability_gain():
     assert v["ship"] is False
 
 
-
 def test_gate_surfaces_target_from_reports():
     hr = _report(13.0, 0.40, p_value=0.005, target="volatility")
     md = _report(12.4, 0.25, p_value=0.005, target="volatility")
@@ -112,7 +109,6 @@ def test_gate_ships_on_trustworthy_volatility_incumbent():
     assert v["incumbent_trustworthy"] is True
     assert v["separation_ok"] and v["stability_ok"]
     assert v["ship"] is True
-
 
 
 def test_engaged_gate_rejects_degenerate_but_perfectly_stable_model():

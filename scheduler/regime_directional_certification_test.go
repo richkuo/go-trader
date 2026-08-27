@@ -431,7 +431,7 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 
 	setDirectionalCertStore(emptyDirectionalCertSet())
 	ssA := newState()
-	stampDirectionCertifiedAtOpenIfOpened(ssA, "BTC", true, sc, rc)
+	stampDirectionCertifiedAtOpenIfOpened(ssA, "BTC", true , sc, rc)
 	if ssA.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(a) uncertified-at-open must stamp false")
 	}
@@ -439,7 +439,7 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 		t.Fatal("(a) uncertified-at-open must freeze a nil per-state map")
 	}
 	setDirectionalCertStore(certifiedStore())
-	stampDirectionCertifiedAtOpenIfOpened(ssA, "BTC", false, sc, rc)
+	stampDirectionCertifiedAtOpenIfOpened(ssA, "BTC", false , sc, rc)
 	stampPositionRegimeIfOpened(ssA, "BTC", RegimePayload{Legacy: "ranging"}, sc, rc)
 	if ssA.Positions["BTC"].DirectionCertifiedAtOpen {
 		t.Fatal("(a) a later SIGHUP certification / label-record cycle must NOT flip an open position to true")
@@ -499,7 +499,7 @@ func TestDirectionCertifiedAtOpenIsWriteOnce(t *testing.T) {
 	}
 	setDirectionalCertStore(emptyDirectionalCertSet())
 	ssD := newState()
-	stampDirectionCertifiedAtOpenIfOpened(ssD, "BTC", true, sc, rcMW)
+	stampDirectionCertifiedAtOpenIfOpened(ssD, "BTC", true , sc, rcMW)
 	warmup := RegimePayload{MultiMode: true, Windows: map[string]RegimeSnapshot{"short": {Regime: ""}}}
 	stampPositionRegimeIfOpened(ssD, "BTC", warmup, sc, rcMW)
 	if ssD.Positions["BTC"].Regime != "" {

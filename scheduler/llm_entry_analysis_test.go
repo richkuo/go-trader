@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+
 func TestLLMEntryAnalysisConfigParseAndDefaults(t *testing.T) {
 	var sc StrategyConfig
 	if sc.LLMEntryAnalysisEnabled() {
@@ -95,6 +96,7 @@ func TestLLMEntryAnalysisKeyKnownToUnknownKeyGuard(t *testing.T) {
 	}
 }
 
+
 func TestTruncateToWordCap(t *testing.T) {
 	if got := truncateToWordCap("one two three", 5); got != "one two three" {
 		t.Fatalf("under-cap changed: %q", got)
@@ -143,6 +145,7 @@ func TestParseLLMEntryAnalysisOutput(t *testing.T) {
 		t.Fatal("non-JSON must error")
 	}
 }
+
 
 func llmTestStrategyConfig(enabled bool) StrategyConfig {
 	sc := StrategyConfig{
@@ -228,6 +231,7 @@ func TestQueueLLMEntryAnalysisNilHookNoOp(t *testing.T) {
 	}
 }
 
+
 func TestLLMEntryAnalysisWorkerProcess(t *testing.T) {
 	var stamped []string
 	var notified []*LLMEntryAnalysisResult
@@ -265,6 +269,7 @@ func TestLLMEntryAnalysisWorkerQueueFull(t *testing.T) {
 	}
 }
 
+
 func TestFormatLLMEntryAnalysisDigestSortedAndLabeled(t *testing.T) {
 	job := llmEntryAnalysisJob{StrategyID: "hl-btc", Symbol: "BTC", Side: "long", EntryPrice: 50000, IsLive: true}
 	res := &LLMEntryAnalysisResult{
@@ -300,6 +305,7 @@ func TestFormatLLMEntryAnalysisDigestPlainTextOmitsMarkdown(t *testing.T) {
 		t.Fatalf("markdown digest must still bold the verdict: %q", markdown)
 	}
 }
+
 
 func TestCaptureTradeDiagnosticsCarriesLLMVerdict(t *testing.T) {
 	var rows []*TradeDiagnosticsRow
@@ -352,6 +358,7 @@ func TestInsertTradeDiagnosticsWritesLLMVerdict(t *testing.T) {
 	}
 }
 
+
 func TestPositionLLMFieldsPersistRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	sdb, err := OpenStateDB(path)
@@ -381,6 +388,7 @@ func TestPositionLLMFieldsPersistRoundTrip(t *testing.T) {
 		t.Fatalf("LLM fields must survive a save/load cycle: %+v", pos)
 	}
 }
+
 
 func TestApplyHotReloadConfig_LLMEntryAnalysisWhileOpen(t *testing.T) {
 	base := func(block *LLMEntryAnalysisConfig) []StrategyConfig {

@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+
 func TestPlanKillSwitchClose_ManualOnlyCoinClosedAndBooked(t *testing.T) {
 	roster := []StrategyConfig{
 		{ID: "hl-manual-eth-live", Platform: "hyperliquid", Type: "manual", Symbol: "ETH",

@@ -599,6 +599,7 @@ func TestComputeInitialPortfolioPeak_NoSharedWalletsSumsCapital(t *testing.T) {
 	}
 }
 
+
 func TestRebaselinePortfolioPeakAfterPrune_SumsRemainingPerStrategyPeaks(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
 
@@ -750,6 +751,7 @@ func TestRebaselinePortfolioPeakAfterPrune_DedupedManualZeroCapitalUnchanged(t *
 		t.Errorf("zero-capital manual: want 1000, got %.2f", got)
 	}
 }
+
 
 func TestComputeSubsetPortfolioValue_FullyContainedWallet(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
@@ -1299,19 +1301,19 @@ func TestSharedWalletPoolFlipPreservesSignedAccountHeadroom(t *testing.T) {
 		wantSize      float64
 	}{
 		{
-			name:        "deficit remains after release and closes only",
+			name: "deficit remains after release and closes only",
 			flippingQty: 6, peerQty: 12, wantAvailable: -80, wantSize: 6,
 		},
 		{
-			name:        "deficit before release sizes within true remainder",
+			name: "deficit before release sizes within true remainder",
 			flippingQty: 6, peerQty: 6, wantAvailable: -20, wantSize: 10,
 		},
 		{
-			name:        "only position can reuse full equity",
+			name: "only position can reuse full equity",
 			flippingQty: 6, wantAvailable: 40, wantSize: 16,
 		},
 		{
-			name:        "healthy wallet keeps existing sizing",
+			name: "healthy wallet keeps existing sizing",
 			flippingQty: 2, peerQty: 2, wantAvailable: 60, wantSize: 10,
 		},
 	}

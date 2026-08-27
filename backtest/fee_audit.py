@@ -41,7 +41,6 @@ VERDICT_ORDER = ("deprecate", "graduate_m1", "healthy", "unscreened_short",
                  "no_trades")
 
 
-
 def _mean(values: List[float]) -> Optional[float]:
     vals = [v for v in values if v is not None]
     return statistics.mean(vals) if vals else None
@@ -252,7 +251,6 @@ def render_markdown(ranked: List[dict], meta: dict) -> str:
                 f"errored leg(s) — {'; '.join(reasons)}")
 
     return "\n".join(lines) + "\n"
-
 
 
 def screen_leg(reg, name: str, symbol: str, timeframe: str,

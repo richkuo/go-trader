@@ -43,7 +43,6 @@ def _short_rejection_df():
     return _ohlcv(closes, highs=highs, volume=10.0)
 
 
-
 def test_empty_and_short_df_return_zero_signal():
     empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     out = anchored_vwap_channel_core(empty)
@@ -57,7 +56,6 @@ def test_empty_and_short_df_return_zero_signal():
     assert (out["signal"] == 0).all()
     assert (out["anchor_low_index"] == -1).all()
     assert (out["anchor_high_index"] == -1).all()
-
 
 
 def test_typed_anchors_confirm_independently():
@@ -76,7 +74,6 @@ def test_no_signal_before_both_anchors():
     out = anchored_vwap_channel_core(_ohlcv(closes, volume=10.0), **_PARAMS)
     assert (out["anchor_low_index"] == -1).all()
     assert (out["signal"] == 0).all()
-
 
 
 def test_avwaps_match_hand_computed_prefix_sums():
@@ -106,7 +103,6 @@ def test_zero_volume_window_falls_back_to_typical():
     for nbar in range(8, 12):
         assert abs(support[nbar] - tp[nbar]) < 1e-9
         assert abs(resistance[nbar] - tp[nbar]) < 1e-9
-
 
 
 def test_long_bounce_fires_once_on_completing_bar():
@@ -147,7 +143,6 @@ def test_nan_atr_warmup_yields_no_signal():
     assert (out["signal"] == 0).all()
 
 
-
 def test_inverted_channel_blocks_would_be_bounce():
     closes = [104, 106, 108, 106, 104, 102, 100, 104, 108, 112, 116, 120, 118, 119]
     lows = np.asarray(closes) - 0.5
@@ -172,7 +167,6 @@ def test_min_width_gate_blocks_thin_channel():
         _long_bounce_df(), pivot_strength=2, buffer_atr_mult=0.0,
         confirm_bars=2, min_width_atr_mult=50.0, atr_period=3)
     assert (out["signal"] == 0).all()
-
 
 
 def _load_registry():

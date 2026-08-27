@@ -43,7 +43,6 @@ def _short_stretch_df():
     return _ohlcv(closes, highs=highs, volume=10.0)
 
 
-
 def test_empty_and_short_df_return_zero_signal():
     empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     out = anchored_vwap_reversion_core(empty)
@@ -55,7 +54,6 @@ def test_empty_and_short_df_return_zero_signal():
     out = anchored_vwap_reversion_core(short)
     assert (out["signal"] == 0).all()
     assert (out["anchor_index"] == -1).all()
-
 
 
 def test_anchor_confirms_at_pivot_plus_strength():
@@ -72,7 +70,6 @@ def test_no_signal_before_first_anchor():
     out = anchored_vwap_reversion_core(_ohlcv(closes, volume=10.0), **_PARAMS)
     assert (out["anchor_index"] == -1).all()
     assert (out["signal"] == 0).all()
-
 
 
 def test_avwap_matches_hand_computed_prefix_sum():
@@ -98,7 +95,6 @@ def test_avwap_zero_volume_window_falls_back_to_typical():
     avwap = out["avwap"].to_numpy()
     for nbar in range(4, 12):
         assert abs(avwap[nbar] - tp[nbar]) < 1e-9
-
 
 
 def test_long_stretch_fires_once_on_completing_bar():
@@ -176,7 +172,6 @@ def test_nan_atr_warmup_yields_no_signal():
         _long_stretch_df(), pivot_strength=2, entry_atr_mult=1.0,
         buffer_atr_mult=0.0, confirm_bars=2, atr_period=99)
     assert (out["signal"] == 0).all()
-
 
 
 def _load_registry():

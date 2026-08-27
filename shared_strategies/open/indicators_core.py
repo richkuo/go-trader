@@ -109,7 +109,6 @@ def atr_sma(
     )
 
 
-
 HURST_DFA_MIN_POINTS = 100
 _HURST_DFA_MIN_SCALE = 8
 _HURST_DFA_NUM_SCALES = 12

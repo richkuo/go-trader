@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+
 func newCashflowJournalTestDB(t *testing.T) *StateDB {
 	t.Helper()
 	db, err := OpenStateDB(filepath.Join(t.TempDir(), "state.db"))

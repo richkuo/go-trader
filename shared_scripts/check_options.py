@@ -22,7 +22,6 @@ REGIME_LIMIT = 100
 REGIME_MIN_BARS = 30
 
 
-
 def _load_adapter(platform: str):
     adapter_path = os.path.join(_REPO_ROOT, "platforms", platform, "adapter.py")
     if not os.path.exists(adapter_path):
@@ -37,7 +36,6 @@ def _load_adapter(platform: str):
         if name.endswith("ExchangeAdapter"):
             return getattr(module, name)()
     raise AttributeError(f"No ExchangeAdapter class found in {adapter_path}")
-
 
 
 def _fetch_ohlcv_df(underlying, timeframe, limit, min_len, adapter=None):
@@ -174,7 +172,6 @@ def score_new_trade(proposed_action, existing_positions, spot_price):
                 reasons.append("better premium")
 
     return round(score, 2), "; ".join(reasons) if reasons else "default"
-
 
 
 def evaluate_momentum_options(underlying, spot_price, vol_annual, iv_rank,
@@ -377,7 +374,6 @@ STRATEGY_MAP = {
     "wheel": evaluate_wheel,
     "butterfly": evaluate_butterfly,
 }
-
 
 
 def main():

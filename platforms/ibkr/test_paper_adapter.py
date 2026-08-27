@@ -21,7 +21,6 @@ get_spot_price_ibkr = _mod.get_spot_price_ibkr
 calc_vol_and_iv_rank = _mod.calc_vol_and_iv_rank
 
 
-
 class TestBlackScholes:
     def test_call_price_positive(self):
         price = black_scholes(100, 100, 30, 0.3, option_type="call")
@@ -86,7 +85,6 @@ class TestNormCdf:
         assert norm_cdf(-5) < 0.001
 
 
-
 class TestIBKRPaperAdapter:
     def test_multiplier_btc(self):
         adapter = IBKRPaperAdapter()
@@ -141,14 +139,12 @@ class TestIBKRPaperAdapter:
         assert expiries == sorted(expiries)
 
 
-
 class TestIBKRConnection:
     def test_init(self):
         conn = IBKRConnection(host="127.0.0.1", port=4002, client_id=1)
         assert conn.host == "127.0.0.1"
         assert conn.port == 4002
         assert conn.is_connected() is False
-
 
 
 class TestConvenienceFunctions:

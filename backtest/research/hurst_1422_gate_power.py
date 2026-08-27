@@ -158,7 +158,6 @@ _DEFAULT_JSON_OUT = os.path.join(_THIS_DIR, "hurst_1422_gate_power.json")
 _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_1422_gate_power.md")
 
 
-
 def cell_cohort(symbol: str, timeframe: str, window_name: str) -> str:
     if window_name not in WINDOWS:
         raise ValueError(f"unknown window {window_name!r}")
@@ -881,7 +880,6 @@ def symbol_return_correlations(frames: dict) -> dict:
     return out
 
 
-
 def adx_series(frame: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
     from regime import _compute_adx_components
     n = len(frame)
@@ -898,7 +896,6 @@ def adx_series(frame: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
 
 def adx_entry_stamp(frame: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
     return entry_stamp_series(adx_series(frame, period=period))
-
 
 
 def trade_samples_with_span(results: dict) -> list:
@@ -1085,7 +1082,6 @@ def build_leg(reg, family: str, exemplar: str, symbol: str, timeframe: str,
         "gated": gated,
         "trades": trades,
     }
-
 
 
 def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
@@ -1293,7 +1289,6 @@ def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
                                    family_size=len(own))
         for cfg, flag in zip(testable, flags):
             cfg["bh_reject"] = bool(flag)
-
 
 
 def _fmt(value, digits: int = 2, suffix: str = "") -> str:
@@ -1933,7 +1928,6 @@ def render_report(payload: dict) -> str:
 
 def report_from_payload(payload: dict) -> str:
     return render_report(payload)
-
 
 
 def ensure_min_history(datasets: Sequence[tuple], since: str = HISTORY_SINCE,

@@ -1,17 +1,18 @@
 package main
 
+
 import "fmt"
 
 type PerpsSizing struct {
-	SizingLeverage      float64
-	ExchangeLeverage    float64
-	MarginPerTradeUSD   float64
+	SizingLeverage    float64
+	ExchangeLeverage  float64
+	MarginPerTradeUSD float64
 	SharedWalletPool    bool
 	ReleasableMarginUSD float64
-	RiskPerTradePct     float64
-	RiskStopDistance    float64
-	RiskStopUnresolved  string
-	EntrySizeMult       float64
+	RiskPerTradePct float64
+	RiskStopDistance float64
+	RiskStopUnresolved string
+	EntrySizeMult float64
 }
 
 func (s PerpsSizing) entrySizeMult() float64 {

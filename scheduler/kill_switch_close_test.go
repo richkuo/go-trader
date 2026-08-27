@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+
 func stubHLLiveCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	closer, calls, _ := stubHLLiveCloserWithCancel(errs)
 	return closer, calls
@@ -438,7 +439,7 @@ func TestHyperliquidKillSwitchClose_AlreadyFlatSharedLowKCoinRecoversAndSplits(t
 		Type:      "perps",
 		Platform:  "hyperliquid",
 		Cash:      1000,
-		Positions: map[string]*Position{},
+		Positions: map[string]*Position{  },
 	}
 	hlVirtualQty := snapshotHyperliquidVirtualQuantities(map[string]*StrategyState{
 		"hl-a": stateA, "hl-b": stateB, "hl-zero": zeroState,
@@ -1005,6 +1006,7 @@ func TestPlanKillSwitchClose_ZeroInputsAreSafe(t *testing.T) {
 	}
 }
 
+
 func TestPlanKillSwitchClose_OKXHappyPath(t *testing.T) {
 	okxLive := []StrategyConfig{
 		{ID: "okx-sma-btc", Platform: "okx", Type: "perps",
@@ -1244,6 +1246,7 @@ func TestPlanKillSwitchClose_OKXUnconfiguredBlocksReset(t *testing.T) {
 		t.Errorf("expected manual intervention note, got: %s", plan.DiscordMessage)
 	}
 }
+
 
 func stubRHLiveCloser(errs map[string]error) (RobinhoodLiveCloser, *[]string) {
 	var calls []string
@@ -1593,6 +1596,7 @@ func TestPlanKillSwitchClose_OKXDeterministicErrorOrder(t *testing.T) {
 		t.Errorf("expected alphabetical BTC < ETH < SOL in: %s", prev)
 	}
 }
+
 
 func stubTSLiveCloser(errs map[string]error) (TopStepLiveCloser, *[]string) {
 	var calls []string

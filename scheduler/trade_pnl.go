@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+
 const TradeTypeFunding = "funding"
 
 const (

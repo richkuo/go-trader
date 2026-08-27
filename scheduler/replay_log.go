@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+
 const (
 	ReplayDecisionOpen         = "open"
 	ReplayDecisionScaleIn      = "scale_in"
@@ -38,9 +39,9 @@ type ReplayDecision struct {
 	Quantity       float64
 	ReferencePrice float64
 	CloseReason    string
-	EntryATR       float64
-	Regime         string
-	ReplayStatus   string
+	EntryATR     float64
+	Regime       string
+	ReplayStatus string
 }
 
 const replayLogSchemaDDL = `
@@ -184,6 +185,7 @@ func (d *DecisionLogDB) MarkDecisionsApplied(ids []int64) error {
 	}
 	return nil
 }
+
 
 var replayLiveSources = struct {
 	sync.RWMutex

@@ -229,7 +229,6 @@ def test_attach_tz_naive_bars():
     assert out["funding_rate"].iloc[0] == 3e-5
 
 
-
 def test_accrual_1h_is_per_bar_event():
     df = _bars(4, freq="1h")
     rates = [1e-5, 2e-5, 3e-5, 4e-5]

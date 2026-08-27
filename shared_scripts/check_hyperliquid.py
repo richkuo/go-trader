@@ -66,7 +66,6 @@ def _position_ctx_from_args(args):
     return ctx
 
 
-
 BATCH_PROTOCOL_VERSION = 1
 
 
@@ -576,7 +575,6 @@ def _classify_sl_response(sdk_response: dict):
     except Exception as e:
         return ("error", f"_classify_sl_response: {e}")
     return ("missing", None)
-
 
 
 def _resolve_sl_placement_by_book_diff(adapter, symbol, pre_oids):

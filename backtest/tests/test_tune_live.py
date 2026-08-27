@@ -11,7 +11,6 @@ import tune_live as tl
 from registry_loader import load_registry
 
 
-
 def _synthetic_df(start="2019-01-01", end="2026-03-01", freq="1D"):
     idx = pd.date_range(start, end, freq=freq)
     n = len(idx)
@@ -71,7 +70,6 @@ def _canned_stage2(spec_path, out_json, out_dir, jobs, survivor_key="cand_0"):
     }
 
 
-
 @pytest.mark.parametrize("raw,expected", [
     ("10", 10), ("1.5", 1.5), ("true", True), ("false", False),
     ("us_open", "us_open"), ("-3", -3),
@@ -127,7 +125,6 @@ def test_build_search_grid_value_ok_filters_but_keeps_live():
 
 def test_grid_size():
     assert tl.grid_size({"a": [1, 2, 3], "b": [1, 2], "c": [9]}) == 6
-
 
 
 def _check_value(reg):
@@ -296,7 +293,6 @@ def test_unsupported_reason(resolution, expected):
 ])
 def test_stage1_skip_reason(resolution, expected):
     assert tl.stage1_skip_reason(resolution) == expected
-
 
 
 def test_baseline_params_byte_match_load_strategy_config(tmp_path):
@@ -543,7 +539,6 @@ def test_promotion_baseline_deepcopy_no_alias(tmp_path):
                            str(tmp_path))
     res["promotion_baseline"]["open_strategy"]["params"]["fast_period"] = 111
     assert res["baseline_params"]["fast_period"] == 18
-
 
 
 def test_dry_run_emits_spec_without_running_stage2(tmp_path, monkeypatch):

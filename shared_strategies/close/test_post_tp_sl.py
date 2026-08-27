@@ -21,8 +21,6 @@ def _regime(entries):
     }
 
 
-
-
 def test_scalar_atr_offset_implicit():
     rule = parse_sl_after_rule({"atr_mult": 0.25})
     assert rule == SLAfterRule(kind="atr_offset", atr_mult=0.25)
@@ -49,8 +47,6 @@ def test_scalar_trail_from_here_tp_atr_fraction():
 
 def test_scalar_breakeven_string():
     assert parse_sl_after_rule("breakeven") == SLAfterRule(kind="breakeven")
-
-
 
 
 def test_regime_atr_offset_implicit():
@@ -189,8 +185,6 @@ def test_trail_regime_rejects_stray_atr_offset():
     assert "pick one shape" in str(exc.value)
 
 
-
-
 def test_resolve_for_regime_atr_offset():
     rule = parse_sl_after_rule(
         _regime({"trending_up": 0.0, "trending_down": 0.0, "ranging": -0.5})
@@ -228,8 +222,6 @@ def test_resolve_scalar_pass_through():
     rule = SLAfterRule(kind="atr_offset", atr_mult=0.25)
     resolved = rule.resolve_for_regime("trending_up")
     assert resolved is rule
-
-
 
 
 def test_parse_strategy_tp_sl_after_rules_regime():
@@ -318,8 +310,6 @@ def test_parse_tp_tier_close_fractions_use_defaults_composite_label():
     assert got == [0.25, 0.5, 0.75, 1.0]
 
 
-
-
 def test_validate_rejects_trail_regime_on_manual():
     close_refs = [
         {
@@ -349,8 +339,6 @@ def test_validate_rejects_trail_regime_on_manual():
     assert any(
         "trail_from_here is not supported on manual" in e for e in errs
     ), errs
-
-
 
 
 def test_validate_breakeven_rejects_regime_block():

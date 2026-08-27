@@ -11,10 +11,10 @@ import (
 )
 
 type OKXPosition struct {
-	Coin          string
-	Size          float64
-	EntryPrice    float64
-	Side          string
+	Coin       string
+	Size       float64
+	EntryPrice float64
+	Side       string
 	UnrealizedPnL float64
 }
 

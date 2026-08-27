@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+
 func dlState(id string, initialCapital, dailyPnL float64, date string) *StrategyState {
 	return &StrategyState{
 		ID:             id,

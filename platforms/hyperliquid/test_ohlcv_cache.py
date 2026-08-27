@@ -76,7 +76,6 @@ def _sample_candles():
     ]
 
 
-
 def test_cache_enabled_by_default(adapter_mod, monkeypatch):
     monkeypatch.delenv("GO_TRADER_HL_OHLCV_CACHE", raising=False)
     assert adapter_mod._ohlcv_cache_enabled() is True
@@ -85,7 +84,6 @@ def test_cache_enabled_by_default(adapter_mod, monkeypatch):
 def test_cache_disabled_via_env(adapter_mod, monkeypatch):
     monkeypatch.setenv("GO_TRADER_HL_OHLCV_CACHE", "0")
     assert adapter_mod._ohlcv_cache_enabled() is False
-
 
 
 def test_cache_path_sanitizes_symbol(adapter_mod, tmp_path):
@@ -109,7 +107,6 @@ def test_cache_path_sanitizes_interval(adapter_mod, tmp_path):
     assert "/" not in os.path.basename(path)
 
 
-
 def test_ttl_caps_fast_intervals_to_half_bar(adapter_mod):
     assert adapter_mod._ohlcv_cache_ttl(60_000) == 30
 
@@ -120,7 +117,6 @@ def test_ttl_caps_slow_intervals_at_default(adapter_mod):
 
 def test_ttl_never_zero(adapter_mod):
     assert adapter_mod._ohlcv_cache_ttl(1) >= 1
-
 
 
 def test_save_then_load_returns_candles(adapter_mod, cache_path):
@@ -172,7 +168,6 @@ def test_save_unserializable_swallows_error(adapter_mod, cache_path):
     adapter_mod._save_ohlcv_cache(MagicMock(), cache_path)
     if os.path.exists(cache_path):
         pytest.fail("cache file should not exist after a failed save")
-
 
 
 def _make_adapter(adapter_mod, monkeypatch, candles_return):

@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+
 func TestSpotResultJSON(t *testing.T) {
 	raw := `{
 		"strategy": "sma_crossover",
@@ -328,6 +329,7 @@ func TestContractSpecJSON(t *testing.T) {
 	}
 }
 
+
 func TestParseHyperliquidCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"ETH","fill":{"avg_px":3000,"total_sz":0.5,"oid":12345,"fee":0.6}},"platform":"hyperliquid","timestamp":"2026-04-19T00:00:00Z"}`)
 	result, _, err := parseHyperliquidCloseOutput(stdout, "", nil)
@@ -429,6 +431,7 @@ func TestBuildHyperliquidCloseArgs_CancelAfterClose(t *testing.T) {
 	}
 }
 
+
 func TestParseOKXCloseOutput_CleanSuccess(t *testing.T) {
 	stdout := []byte(`{"close":{"symbol":"BTC","fill":{"avg_px":42000,"total_sz":0.01,"oid":"abc123","fee":0.02}},"platform":"okx","timestamp":"2026-04-19T00:00:00Z"}`)
 	result, _, err := parseOKXCloseOutput(stdout, "", nil)
@@ -508,6 +511,7 @@ func TestParseOKXCloseOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
+
 func TestParseOKXPositionsOutput_Success(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.01,"entry_price":42000,"side":"long"},{"coin":"ETH","size":-0.5,"entry_price":3000,"side":"short"}],"platform":"okx","timestamp":"x"}`)
 	result, _, err := parseOKXPositionsOutput(stdout, "", nil)
@@ -554,6 +558,7 @@ func TestParseOKXPositionsOutput_MalformedJSON(t *testing.T) {
 		t.Fatal("expected non-nil err for malformed JSON — cannot infer positions from garbage")
 	}
 }
+
 
 func argsContains(args []string, want string) bool {
 	for _, a := range args {

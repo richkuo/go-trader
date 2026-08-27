@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+
 func readMainSource(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile("main.go")
@@ -104,6 +105,7 @@ func TestLabelGateSemanticsUntouchedByHurstGate(t *testing.T) {
 		t.Fatalf("adding a hurst_gate changed the label gate: (%q,%v) -> (%q,%v)", labelOnly, blockedOnly, labelWith, blockedWith)
 	}
 }
+
 
 func hurstValidationConfig(rc *RegimeConfig, sc StrategyConfig) *Config {
 	return &Config{Regime: rc, Strategies: []StrategyConfig{sc}}
@@ -243,6 +245,7 @@ func TestValidateHurstGateRejectsUnsupportedStrategyTypes(t *testing.T) {
 	}
 }
 
+
 func TestHurstGateNestedUnknownKeysRejected(t *testing.T) {
 	raw := []byte(`{"strategies":[{"id":"s1","hurst_gate":{"enabled":true,"min":0.55,"disarm":0.5}}]}`)
 	errs := validateStrategyJSONKeys(raw)
@@ -288,6 +291,7 @@ func TestHurstGateJSONRoundTripsThroughStrategyConfig(t *testing.T) {
 		t.Fatalf("unexpected block: %+v", sc.HurstGate)
 	}
 }
+
 
 func TestConfigExampleShipsNoHurstThresholds(t *testing.T) {
 	b, err := os.ReadFile("config.example.json")

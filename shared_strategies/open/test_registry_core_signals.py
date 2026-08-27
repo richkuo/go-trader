@@ -59,8 +59,6 @@ def _up_then_down(up_n=60, down_n=80, start=100.0, high=150.0, low=60.0):
     return np.concatenate([np.linspace(start, high, up_n), np.linspace(high, low, down_n)])
 
 
-
-
 def test_ema_crossover_buy_on_bullish_cross(registry):
     df = make_ohlcv(_down_then_up())
     out = _apply(registry, "ema_crossover", df)
@@ -83,8 +81,6 @@ def test_ema_crossover_sell_on_bearish_cross(registry):
 def test_ema_crossover_flat_market_silent(registry):
     out = _apply(registry, "ema_crossover", _flat_df())
     assert (out["signal"].fillna(0) == 0).all()
-
-
 
 
 def test_macd_buy_on_bullish_cross(registry):
@@ -110,8 +106,6 @@ def test_macd_flat_market_silent(registry):
     assert (out["signal"].fillna(0) == 0).all()
 
 
-
-
 def test_bollinger_buy_on_reentry_from_below_lower_band(registry):
     df = make_ohlcv(_dip_and_recover())
     out = _apply(registry, "bollinger_bands", df)
@@ -128,8 +122,6 @@ def test_bollinger_sell_on_reentry_from_above_upper_band(registry):
     assert len(sells) >= 1, "Expected a sell when close re-crosses below the upper band"
     i = sells[0]
     assert out.loc[i, "close"] < out.loc[i, "bb_upper"]
-
-
 
 
 def test_volume_weighted_buy_needs_price_cross_and_volume_spike(registry):
@@ -151,8 +143,6 @@ def test_volume_weighted_sell_on_breakdown_with_volume(registry):
     df = make_ohlcv(prices, volume=vol, noise=0.1)
     out = _apply(registry, "volume_weighted", df)
     assert out["signal"].iloc[40] == -1
-
-
 
 
 def test_rsi_macd_combo_buy_requires_macd_cross_with_low_rsi(registry):
@@ -180,8 +170,6 @@ def test_rsi_macd_combo_flat_market_silent(registry):
     assert (out["signal"].fillna(0) == 0).all()
 
 
-
-
 def _stoch_rsi_cycle_df():
     t = np.arange(250)
     return make_ohlcv(100 + 4 * np.sin(2 * np.pi * t / 20), noise=0.05)
@@ -205,8 +193,6 @@ def test_stoch_rsi_sell_on_k_cross_down_in_overbought(registry):
         assert out.loc[i, "stoch_k"] < out.loc[i, "stoch_d"]
 
 
-
-
 def test_atr_breakout_buy_on_upside_gap(registry):
     prices = [100.0] * 40 + [104.0] + [104.0] * 5
     df = make_ohlcv(prices, noise=0.2)
@@ -220,8 +206,6 @@ def test_atr_breakout_sell_on_downside_gap(registry):
     df = make_ohlcv(prices, noise=0.2)
     out = _apply(registry, "atr_breakout", df)
     assert out["signal"].iloc[40] == -1, "Close beyond prev_close - 1.5×ATR must fire a sell"
-
-
 
 
 def test_heikin_ashi_ema_buy_in_clean_uptrend(registry):
@@ -256,8 +240,6 @@ def test_heikin_ashi_ema_sell_in_clean_downtrend(registry):
     assert out.loc[i, "ha_close"] < out.loc[i, "ha_ema"]
 
 
-
-
 def test_ichimoku_buy_on_tk_cross_above_cloud(registry):
     prices = np.concatenate([
         np.linspace(110, 100, 80),
@@ -284,8 +266,6 @@ def test_ichimoku_sell_on_tk_cross_below_cloud(registry):
     i = sells[0]
     assert out.loc[i, "tenkan"] < out.loc[i, "kijun"]
     assert out.loc[i, "close"] < min(out.loc[i, "senkou_a"], out.loc[i, "senkou_b"])
-
-
 
 
 def _squeeze_then_breakout(direction=1):
@@ -321,8 +301,6 @@ def test_squeeze_momentum_sell_on_downside_release(registry):
     assert len(sells) >= 1, "Expected a sell when the squeeze releases with falling momentum"
     i = sells[0]
     assert out.loc[i, "squeeze_mom"] < 0
-
-
 
 
 def test_order_blocks_buy_on_retest_of_bullish_ob(registry):
@@ -372,8 +350,6 @@ def test_order_blocks_sell_on_retest_of_bearish_ob(registry):
     assert out["signal"].iloc[36] == -1, "Retest of the bearish order block must fire a sell"
 
 
-
-
 def test_parabolic_sar_reversals_fire_on_trend_flips(registry):
     prices = _up_then_down(up_n=80, down_n=80, start=100.0, high=180.0, low=60.0)
     df = make_ohlcv(prices, noise=1.0)
@@ -393,8 +369,6 @@ def test_parabolic_sar_no_reversal_in_monotone_trend(registry):
     df = make_ohlcv(prices, noise=0.2)
     out = _apply(registry, "parabolic_sar", df)
     assert (out["signal"] != -1).all(), "A clean monotone uptrend must never flip short"
-
-
 
 
 def test_sweep_squeeze_combo_flat_market_silent(registry):

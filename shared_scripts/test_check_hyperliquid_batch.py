@@ -104,8 +104,6 @@ def _strip_volatile(result):
     return out
 
 
-
-
 SLOT_MATRIX = [
     _slot("hl-a", "breakout"),
     _slot("hl-b", "momentum_pro", mode="live"),
@@ -177,8 +175,6 @@ def test_spot_price_fallback_used_once_when_mark_absent(mod):
         assert result["price"] == 31_337.0
 
 
-
-
 def test_slot_cannot_mutate_the_shared_frame(mod):
     adapter = FakeAdapter()
     shared = _shared(mod, adapter)
@@ -230,8 +226,6 @@ def test_funding_fetches_are_memoized_across_slots(mod):
     assert len(envelope["results"]) == 2
 
 
-
-
 def test_one_failing_slot_does_not_disturb_its_peers(mod):
     slots = [
         _slot("hl-ok-1", "breakout"),
@@ -279,8 +273,6 @@ def test_build_shared_signal_state_raises_typed_errors(mod):
         mod.build_shared_signal_state("BTC", "1h")
 
 
-
-
 def test_parse_batch_slots_accepts_the_documented_envelope(mod):
     raw = json.dumps({"v": 1, "slots": [
         {"id": "hl-a", "strategy": "breakout",
@@ -307,8 +299,6 @@ def test_parse_batch_slots_rejects_bad_envelopes(mod, payload, fragment):
     with pytest.raises(ValueError) as exc:
         mod.parse_batch_slots(json.dumps(payload))
     assert fragment in str(exc.value)
-
-
 
 
 def _run_main(mod, monkeypatch, argv, stdin_text, adapter):
@@ -412,8 +402,6 @@ def test_single_strategy_error_shape_is_unchanged(mod, monkeypatch):
     assert result["signal"] == 0
 
 
-
-
 def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
     df = mod._make_dataframe(_candles())
     shared = mod.build_shared_signal_state("BTC", "1h", df=df, atr_method="simple")
@@ -422,8 +410,6 @@ def test_shared_state_accepts_a_prebuilt_frame_without_an_adapter(mod):
     result = mod.evaluate_signal_slot(shared, _slot("hl-offline", "breakout"))
     assert result["strategy"] == "breakout"
     assert math.isfinite(result["price"])
-
-
 
 
 def test_futures_registry_fast_path_rejects_the_spot_registry(mod, monkeypatch):

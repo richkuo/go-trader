@@ -94,8 +94,6 @@ def test_downtrend_pullback_fires_short():
     assert (out["signal"] == -1).any(), "expected a short entry on the breakdown bar"
 
 
-
-
 def test_vol_target_off_by_default_no_entry_fraction_column():
     df = build_uptrend_with_pullback()
     out = momentum_pro_core(df)

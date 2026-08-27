@@ -30,6 +30,7 @@ func TestAnchoredVWAPChannelWiring(t *testing.T) {
 	}
 }
 
+
 func TestGenerateConfig_AnchoredVWAPChannel_DefaultsToCompositeRangingGate(t *testing.T) {
 	opts := baseOpts()
 	opts.Assets = []string{"BTC"}

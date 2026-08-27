@@ -30,7 +30,6 @@ def _short_pos(**over):
     return pos
 
 
-
 def test_long_hit_and_boundary(reg):
     params = {"buffer_atr_mult": 0.5, "atr_source": "live"}
     mkt = {"avwap": 100.0, "atr": 2.0}
@@ -60,7 +59,6 @@ def test_zero_buffer_exits_at_line_touch_without_atr(reg):
     assert out["close_fraction"] == 0.0
 
 
-
 def test_atr_source_entry_vs_live(reg):
     pos = _long_pos(entry_atr=1.0)
     mkt = {"mark_price": 99.0, "avwap": 100.0, "atr": 4.0}
@@ -83,7 +81,6 @@ def test_missing_atr_fails_safe_when_buffer_positive(reg):
     assert out["reason"] == "noop:missing_entry_atr"
 
 
-
 def test_missing_avwap_fails_safe(reg):
     out = reg.evaluate("avwap_stop", _long_pos(), {"mark_price": 50.0, "atr": 2.0}, None)
     assert out["close_fraction"] == 0.0
@@ -97,7 +94,6 @@ def test_missing_position_or_mark_fails_safe(reg):
     out = reg.evaluate("avwap_stop", _long_pos(), {"avwap": 100.0, "atr": 2.0}, None)
     assert out["close_fraction"] == 0.0
     assert out["reason"] == "noop:missing_mark_price"
-
 
 
 def test_registry_defaults_use_live_atr_quarter_buffer(reg):

@@ -11,7 +11,6 @@ _STUDY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
                           "candidates", "squeeze_momentum_1198")
 
 
-
 def _base_spec(**over):
     spec = {
         "study": "t",
@@ -61,7 +60,6 @@ def test_load_spec_runs_candidate_validator():
         "name": "squeeze_momentum", "allowed_regimes": "trending_up"}}])
     with pytest.raises(ValueError, match="allowed_regimes"):
         asug.load_spec(bad, _STUDY_DIR)
-
 
 
 def test_expand_explicit_candidates():
@@ -121,7 +119,6 @@ def test_close_stack_specs_round_trip_through_optimizer_grid():
     entries = asug.expand_candidates(spec)
     ab = [e for e in entries if e["kind"] == "exit_ab"]
     assert len(ab) == expected
-
 
 
 def test_non_replayable_m6_close_excluded():
@@ -238,7 +235,6 @@ def test_m5_params_limitation_flagged():
     assert "m5_params_unaudited" in entry["limitations"]
 
 
-
 def test_m1_argv_tail():
     assert asug.m1_argv_tail("/t/c.json", "spot", ["is", "oos"],
                              ["BTC/USDT:1h"], "/t/o.json") == [
@@ -294,7 +290,6 @@ def test_m5_argv_tail():
     tail = asug.m5_argv_tail("sq", "spot", None, ["oos"], None, "/t/m5.json")
     assert tail == ["--strategies", "sq", "--registry", "spot",
                     "--windows", "oos", "--json", "/t/m5.json"]
-
 
 
 def _m6_payload(is_rows, oos_rows):
@@ -361,7 +356,6 @@ def test_extract_m5_matches_strategy_row():
     assert out["fee_drag_pp"] == 0.3
 
 
-
 def test_apply_correction_matches_direct_bh_and_reports_threshold():
     tests = [{"candidate_key": "a", "harness": "m6", "p": p, "effect_positive": True}
              for p in [0.001, 0.02, 0.04, 0.5]]
@@ -381,7 +375,6 @@ def test_correction_empty_family():
     assert corr["m"] == 0
     assert corr["effective_threshold"] is None
     assert corr["n_survivors"] == 0
-
 
 
 def _one_test(p):
@@ -456,7 +449,6 @@ def test_collect_family_pvalues_dedupes_noise_and_excludes_m3_m5():
     tests = asug.collect_family_pvalues([e1, e2, e3])
     harnesses = sorted(t["harness"] for t in tests)
     assert harnesses == ["m1_noise", "m6"]
-
 
 
 def _open_entry(key, noise=None, m1=None, harnesses=("m1_noise", "m1"), fam=None):
@@ -575,7 +567,6 @@ def test_verdict_m6_incumbent_stands_when_not_both_positive():
     assert asug.candidate_verdict(e, []) == "incumbent_stands"
 
 
-
 def test_rank_survivors_first_failed_still_present():
     entries = [
         {"key": "loser", "verdict": "incumbent_stands", "results": {}},
@@ -609,7 +600,6 @@ def test_reproduction_command_uses_relative_harness_paths():
     cmds = asug.reproduction_command(entry)
     assert cmds and cmds[0].startswith("uv run --no-sync python backtest/eval_windows.py")
     assert "--candidate-json" in cmds[0]
-
 
 
 def _survivor_entry(**results_over):
@@ -688,7 +678,6 @@ def test_mc_contributes_no_pvalue_and_leaves_bh_family_size_unchanged():
     assert all(t["harness"] != "mc" for t in with_mc)
 
 
-
 def test_mc_argv_tail_threads_the_candidate_json_not_a_bare_strategy():
     tail = asug.mc_argv_tail("/t/c.json", "spot", ["is", "oos"],
                              ["BTC/USDT:1h"], 500, 7, {}, "/t/o.json")
@@ -718,7 +707,6 @@ def test_mc_argv_tail_threshold_sources_are_exclusive():
     assert from_cfg[from_cfg.index("--config") + 1] == "/cfg.json"
     assert from_cfg[from_cfg.index("--strategy-id") + 1] == "hl-x"
     assert "--kill-switch-pct" not in from_cfg
-
 
 
 def test_load_spec_rejects_both_mc_threshold_sources():
@@ -757,7 +745,6 @@ def test_mc_is_opt_in_not_a_default_harness():
     assert "mc" in asug.expand_candidates(spec)[0]["harnesses"]
 
 
-
 def _mc_payload():
     def leg(window, ds, p_ks, p95, p_down, status="ok"):
         return {"window": window, "dataset": ds, "status": status, "n_trades": 20,
@@ -794,7 +781,6 @@ def test_extract_mc_tolerates_no_data_legs_and_missing_percentiles():
     assert asug.extract_mc({}) == {}
 
 
-
 def test_format_shortlist_labels_mc_advisory_and_prints_the_oos_worst_case():
     report = {
         "study": "t", "exploratory": False,
@@ -828,7 +814,6 @@ def test_format_shortlist_omits_the_mc_segment_when_the_run_failed():
     assert "survivor" in row
 
 
-
 def test_dry_run_prints_a_command_for_every_enabled_harness():
     spec = asug.load_spec(_base_spec(harnesses=["m1_noise", "m1", "m3", "m5", "mc"]),
                            _STUDY_DIR)
@@ -857,7 +842,6 @@ def test_dry_run_omits_the_mc_command_when_mc_is_not_enabled():
     spec["seed"], spec["resamples"], spec["datasets"] = 1066, 10, None
     cmds = asug._dry_run_commands(asug.expand_candidates(spec), spec, "/tmp/out")
     assert not any("monte_carlo.py" in c for c in cmds)
-
 
 
 def _open_spec(harnesses):
@@ -924,7 +908,6 @@ def test_candidate_json_is_written_once_per_run_and_shared_by_m1_and_mc(monkeypa
     asug.run_open_entry(entry, spec, str(tmp_path), {}, {})
     assert len(paths) == 2 and paths[0] == paths[1]
     assert len(writes) == 1
-
 
 
 def _mc_data(**windows):

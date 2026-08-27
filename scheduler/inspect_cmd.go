@@ -675,6 +675,7 @@ func buildStrategyInspectionJSON(sc StrategyConfig, explicit map[string]bool, cf
 	return out
 }
 
+
 const inspectHLDetailIndent = "                       "
 
 func markIfDefault(explicit map[string]bool, key string) string {

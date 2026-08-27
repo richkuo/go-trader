@@ -24,7 +24,6 @@ else:
     del sys.modules["storage"]
 
 
-
 SAMPLE_CANDLES = [
     [1700000000000, 35000.0, 35500.0, 34800.0, 35200.0, 100.0],
     [1700003600000, 35200.0, 35800.0, 35100.0, 35600.0, 120.0],
@@ -43,7 +42,6 @@ def _make_mock_exchange(candles=None, exchange_id="binanceus"):
     return mock_ex
 
 
-
 class TestGetExchange:
     def test_returns_exchange_instance(self):
         ex = get_exchange("binanceus")
@@ -56,7 +54,6 @@ class TestGetExchange:
     def test_invalid_exchange_raises(self):
         with pytest.raises(AttributeError):
             get_exchange("nonexistent_exchange_xyz")
-
 
 
 class TestFetchOhlcv:
@@ -107,7 +104,6 @@ class TestFetchOhlcv:
         mock_get_ex.return_value = _make_mock_exchange()
         fetch_ohlcv("BTC/USDT", "1h", limit=5, store=False)
         mock_store.assert_not_called()
-
 
 
 class TestFetchFullHistory:
@@ -227,7 +223,6 @@ class TestFetchFullHistory:
 
         df = fetch_full_history("BTC/USDT", "1h", since="2023-11-14", store=False)
         assert mock_ex.fetch_ohlcv.call_count == 1
-
 
 
 class TestLoadCachedData:

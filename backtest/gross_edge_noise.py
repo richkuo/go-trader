@@ -39,7 +39,6 @@ VERDICT_INDISTINGUISHABLE = "indistinguishable_from_zero"
 VERDICT_NO_EDGE = "no_positive_edge"
 
 
-
 def summarize_returns(values: Sequence[float], zero_tol: float = 1e-12) -> dict:
     n = len(values)
     if n == 0:
@@ -183,7 +182,6 @@ def analyze_sample(values: Sequence[float],
     }
 
 
-
 def collect_gross_legs(reg, name: str, params: Optional[dict],
                        datasets: List[tuple], window_names: List[str],
                        capital: float = DEFAULT_CAPITAL,
@@ -234,7 +232,6 @@ def pool_trade_samples(legs: List[dict],
         if all(w != wname for w, _ in claimed):
             claimed.append((wname, wrange))
     return pooled, dropped_exact, dropped_overlap
-
 
 
 def _fmt(v, prec=3):

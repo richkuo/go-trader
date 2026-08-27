@@ -85,8 +85,6 @@ def _perturbed_df(df: pd.DataFrame, cut: int) -> pd.DataFrame:
 _DF = _fixture_df()
 
 
-
-
 def _range_scalper_fixture() -> pd.DataFrame:
     rng = np.random.RandomState(_SEED + 2)
     n = 400

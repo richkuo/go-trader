@@ -52,7 +52,6 @@ _UNSUPPORTED_STOP_OWNERS = (
 )
 
 
-
 def _is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
@@ -128,7 +127,6 @@ def grid_size(grid: dict) -> int:
     for values in grid.values():
         n *= max(1, len(values))
     return n
-
 
 
 def parse_cli_param_grids(param_args: list) -> dict:
@@ -263,7 +261,6 @@ def stage1_skip_reason(resolution: dict) -> str | None:
             and resolution.get("regime_windows_spec")):
         return "composite_regime_gate_unmodelable_in_walk_forward"
     return None
-
 
 
 def config_strategy_entries(config_path: str,

@@ -250,6 +250,7 @@ func TestDisplayStrategyValue_PrefersSetValue(t *testing.T) {
 	}
 }
 
+
 func TestSharedWalletDriftTracker_ConfirmThenThrottleThenRecover(t *testing.T) {
 	tr := &SharedWalletDriftTracker{}
 	now := time.Now().UTC()
@@ -291,6 +292,7 @@ func TestReportSharedWalletDrift_WithinToleranceNoPanic(t *testing.T) {
 		{Key: SharedWalletKey{Platform: "hyperliquid", Account: "0x"}, Drift: 0.004, Balance: 100, MemberSum: 100},
 	})
 }
+
 
 func TestParseOKXPositionsOutput_CarriesUnrealizedPnL(t *testing.T) {
 	stdout := []byte(`{"positions":[{"coin":"BTC","size":0.3,"entry_price":60000,"side":"long","unrealized_pnl":123.45}],"platform":"okx"}`)
@@ -353,6 +355,7 @@ func TestSharedWalletDriftTracker_SameOrphanChangingMagnitudeStillAlerts(t *test
 		t.Fatalf("same orphan second cycle must alert at count 2, got notify=%v count=%d", notify, count)
 	}
 }
+
 
 func TestComputeSubsetDisplayValue_GatedPartialSliceMatchesRows(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")

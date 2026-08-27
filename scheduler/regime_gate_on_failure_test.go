@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"context"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 )
+
 
 func TestRegimeBlocksOpenFailurePolicyMatrix(t *testing.T) {
 	gate := []string{"trending_up"}
@@ -37,6 +39,7 @@ func TestRegimeBlocksOpenFailurePolicyMatrix(t *testing.T) {
 		}
 	}
 }
+
 
 func TestResolveRegimeGateOnFailure(t *testing.T) {
 	cases := []struct {
@@ -75,6 +78,7 @@ func TestParseRegimeGateOnFailure(t *testing.T) {
 		}
 	}
 }
+
 
 func TestApplyRegimeGateFailClosedOnEmptyStorePayload(t *testing.T) {
 	rc := testRegimeConfig()
@@ -142,6 +146,7 @@ func TestRegimeStoreFailureRespectsPerStrategyPolicy(t *testing.T) {
 	}
 }
 
+
 func TestRegimeGateBlockDetail(t *testing.T) {
 	if got := regimeGateBlockDetail(""); got != "regime unknown, fail-closed" {
 		t.Errorf("empty label detail = %q", got)
@@ -150,6 +155,7 @@ func TestRegimeGateBlockDetail(t *testing.T) {
 		t.Errorf("known label detail = %q", got)
 	}
 }
+
 
 func testGatePolicyConfig(strategyPolicy, globalPolicy string, regimeEnabled bool) *Config {
 	return &Config{
@@ -208,6 +214,7 @@ func TestValidateConfigRejectsFailClosedWithRegimeDisabled(t *testing.T) {
 	}
 }
 
+
 func TestHotReloadGateOnFailureWhileOpen(t *testing.T) {
 	base := func(policy, globalPolicy string) *Config {
 		return &Config{
@@ -261,6 +268,7 @@ func TestHotReloadGateOnFailureWhileOpen(t *testing.T) {
 		t.Errorf("revert not applied, got %q", got)
 	}
 }
+
 
 func TestRegimeGateOutagePolicyNote(t *testing.T) {
 	rc := testRegimeConfig()

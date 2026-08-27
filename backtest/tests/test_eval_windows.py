@@ -13,7 +13,6 @@ def _leg(sharpe, ddadj=0.0, trades=5, return_pct=-1.0, max_dd_pct=-10.0):
             "bh_return_pct": -30.0}
 
 
-
 def test_ddadj_definition():
     assert ew.dd_adjusted_return(-10.0, -50.0) == pytest.approx(-0.2)
     assert ew.dd_adjusted_return(5.0, -2.5) == pytest.approx(2.0)
@@ -22,7 +21,6 @@ def test_ddadj_definition():
 def test_ddadj_zero_drawdown_is_zero():
     assert ew.dd_adjusted_return(0.0, 0.0) == 0.0
     assert ew.dd_adjusted_return(12.0, 0.0) == 0.0
-
 
 
 def test_leg_from_results_collapses_backtester_dict():
@@ -35,7 +33,6 @@ def test_leg_from_results_collapses_backtester_dict():
     assert leg["ddadj"] == pytest.approx(-0.5)
     assert leg["trades"] == 17
     assert leg["bh_return_pct"] == -44.3
-
 
 
 def test_incumbent_bars_per_dataset_median():
@@ -61,7 +58,6 @@ def test_incumbent_bars_skips_missing_legs_and_empty_datasets():
     assert bars["BTC/USDT 1h"]["sharpe"] == pytest.approx(-2.0)
     assert bars["BTC/USDT 1h"]["n"] == 2
     assert bars["SOL/USDT 4h"] is None
-
 
 
 def _bars(sharpe=-1.0, ddadj=-0.5, datasets=("d1", "d2", "d3", "d4")):
@@ -127,7 +123,6 @@ def test_score_no_data_verdict():
     assert score["verdict"] == "no data"
 
 
-
 def test_parse_sweep_arg_coerces_numbers():
     assert ew.parse_sweep_arg("period=10,14,20") == ("period", [10, 14, 20])
     assert ew.parse_sweep_arg("z=1.75,2.0") == ("z", [1.75, 2.0])
@@ -153,7 +148,6 @@ def test_expand_sweep_cartesian_preserves_base_params():
         assert "a" in params and params["b"] == "x"
 
 
-
 def test_parse_dataset_arg():
     assert ew.parse_dataset_arg("BTC/USDT:1h") == ("BTC/USDT", "1h")
     with pytest.raises(ValueError):
@@ -170,7 +164,6 @@ def test_versioned_definitions_match_protocol():
     assert ew.WINDOWS["oos"] == ("2026-01-01", None)
     for w in ew.HELD_OUT_WINDOWS:
         assert ew.WINDOWS[w][1] is not None
-
 
 
 class _FakeRegistry:
@@ -256,7 +249,6 @@ def test_run_leg_threads_allowed_regimes_and_blocks_entries(monkeypatch):
     assert gated.get("trades", -1) == 0, (
         "allowed_regimes gate did not suppress entries when bar regime "
         "was never in the allowed set")
-
 
 
 def test_validate_candidate_allows_short_without_close_refs():
@@ -422,7 +414,6 @@ def test_evaluate_window_validates_before_any_work():
     with pytest.raises(ValueError, match="silently dropped"):
         ew.evaluate_window(None, {"name": "x", "direction": "both"},
                            [("BTC/USDT", "1h")], "oos", 1000.0, {})
-
 
 
 def test_validate_candidate_accepts_regime_directional_policy():

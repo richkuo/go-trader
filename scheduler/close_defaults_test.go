@@ -633,6 +633,7 @@ func TestRegimeATRBlockIsUseDefaultsOnly(t *testing.T) {
 	}
 }
 
+
 func TestUserCloseDefaults_RegimeATRLoadConfigRejectsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	cfgJSON := `{

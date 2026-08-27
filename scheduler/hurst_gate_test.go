@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+
 func hfp(v float64) *float64 { return &v }
 
 func hurstTestRegimeConfig(classifier string) *RegimeConfig {
@@ -31,6 +32,7 @@ func hurstPayload(windowKey string, h float64, present bool) RegimePayload {
 func hurstStrategy(hg *HurstGateConfig) StrategyConfig {
 	return StrategyConfig{ID: "s1", Type: "perps", Platform: "hyperliquid", HurstGate: hg}
 }
+
 
 func TestResolveHurstGateOnFailurePrecedence(t *testing.T) {
 	cases := []struct {
@@ -74,6 +76,7 @@ func TestResolveHurstGateWindowFallsBackToGateWindow(t *testing.T) {
 		t.Fatalf("explicit window_key must win, got %q", got)
 	}
 }
+
 
 func TestHurstStateMachineHysteresisMinOnly(t *testing.T) {
 	hg := &HurstGateConfig{Enabled: true, Min: hfp(0.55), DisarmMin: hfp(0.50)}
@@ -175,6 +178,7 @@ func TestHurstStateMachineHandlesReadingsAboveOne(t *testing.T) {
 	}
 }
 
+
 func TestHurstThresholdKeyChangesWithEveryBoundAndWindow(t *testing.T) {
 	base := &HurstGateConfig{Enabled: true, Min: hfp(0.55), Max: hfp(0.80), DisarmMin: hfp(0.50), DisarmMax: hfp(0.85)}
 	baseKey := hurstGateThresholdKey(base, "medium")
@@ -226,6 +230,7 @@ func TestHurstThresholdChangeDiscardsPersistedLatch(t *testing.T) {
 		t.Fatalf("matching key must honor the disarmed latch, got state=%q holds=%v", d2.State, d2.Holds)
 	}
 }
+
 
 func TestEvaluateHurstGateDisabledIsInert(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
@@ -302,6 +307,7 @@ func TestHurstFromPayloadRejectsNonFinite(t *testing.T) {
 	}
 }
 
+
 func TestHurstSizeMultiplierFormulaAndClamps(t *testing.T) {
 	cases := []struct {
 		h, floor, want float64
@@ -376,6 +382,7 @@ func TestOpenSizeMultRejectsOutOfRangeValues(t *testing.T) {
 	}
 }
 
+
 func TestHurstHoldOnlyBlocksPositionIncreasingSignals(t *testing.T) {
 	blocked := func(signal int, closeFraction, posQty float64, posSide string, allowsLong, allowsShort bool) bool {
 		return pausedBlocksSignal(signal, closeFraction, posQty, posSide, allowsLong, allowsShort)
@@ -405,6 +412,7 @@ func TestHurstHoldOnlyBlocksPositionIncreasingSignals(t *testing.T) {
 		})
 	}
 }
+
 
 func TestAdvanceHurstGateCommitsStateEveryCycleIncludingManageCycles(t *testing.T) {
 	rc := hurstTestRegimeConfig(regimeClassifierComposite)
@@ -455,6 +463,7 @@ func TestHurstGateStateJSONRoundTrip(t *testing.T) {
 		}
 	}
 }
+
 
 func TestPerpsOpenNotionalSizedAppliesEntryMultInNotionalMode(t *testing.T) {
 	sizing := PerpsSizing{SizingLeverage: 2, ExchangeLeverage: 5}
@@ -560,6 +569,7 @@ func TestFuturesPaperOpenFloorsToZeroAndRefuses(t *testing.T) {
 	}
 }
 
+
 func TestStampHurstGateAtOpenIfOpened(t *testing.T) {
 	newState := func() *StrategyState {
 		return &StrategyState{ID: "s1", Positions: map[string]*Position{"BTC": {Symbol: "BTC", Quantity: 1}}}
@@ -664,6 +674,7 @@ func TestHurstStampsAcceptReadingsAboveOne(t *testing.T) {
 	}
 }
 
+
 func TestHurstGateStatusMarker(t *testing.T) {
 	cases := []struct {
 		name string
@@ -685,6 +696,7 @@ func TestHurstGateStatusMarker(t *testing.T) {
 		})
 	}
 }
+
 
 func TestHurstGateLatchSurvivesRestart(t *testing.T) {
 	db := openTestDB(t)

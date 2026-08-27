@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+
 const (
 	testPrimaryPx = 2000.0
 	testHedgePx   = 50000.0
@@ -43,6 +44,7 @@ func hedgePos(qty float64, side string, basis float64) *Position {
 		Multiplier: 1, OwnerStrategyID: "eth-long", HedgeFor: "ETH", HedgePrimaryQtyBasis: basis,
 	}
 }
+
 
 func TestHedgeTargetDecisionOpensInverseWithNotionalSizing(t *testing.T) {
 	sc := hedgeTestConfig()
@@ -287,6 +289,7 @@ func TestHedgeTargetDecisionNoopWhenDisabled(t *testing.T) {
 	}
 }
 
+
 func TestHedgeOrderSkipReasonBlocksStaleDecisions(t *testing.T) {
 	sc := hedgeTestConfig()
 	open := hedgeAction{Kind: hedgeActionOpen, Qty: 0.4, Side: "sell", HedgeSide: "short", NewBasis: 10}
@@ -359,6 +362,7 @@ func TestHedgeOrderSkipReasonAllowsValidOrder(t *testing.T) {
 	}
 }
 
+
 func TestHedgeSnapshotIgnoresUnstampedPositionOnHedgeCoin(t *testing.T) {
 	sc := hedgeTestConfig()
 	s := hedgeTestState("eth-long")
@@ -399,6 +403,7 @@ func TestHeldHedgeCoinRequiresHeldStampedLeg(t *testing.T) {
 		t.Fatalf("flat leg → %q, want empty", got)
 	}
 }
+
 
 func TestApplyHedgeFillOpensPositionWithOwnershipMetadata(t *testing.T) {
 	prev := tradeRecorder
@@ -554,6 +559,7 @@ func TestApplyHedgeFillCloseDeletesLeg(t *testing.T) {
 	}
 }
 
+
 func TestRecordHedgeTradeResultKeepsDailyPnLButNotTheLossStreak(t *testing.T) {
 	r := &RiskState{}
 	RecordTradeResult(r, -100)
@@ -604,6 +610,7 @@ func TestBookPerpsCloseRoutesHedgeLegAwayFromLossStreak(t *testing.T) {
 		t.Fatalf("daily PnL = %v, want the hedge loss counted", s.RiskState.DailyPnL)
 	}
 }
+
 
 type fakeHedgeExec struct {
 	openCalls      []string
@@ -949,6 +956,7 @@ func TestHedgeLifecycleMirrorsPrimaryQuantityEvents(t *testing.T) {
 	}
 }
 
+
 func TestReconcileHyperliquidHedgeLegBooksExternalCloseAndAlerts(t *testing.T) {
 	prev := tradeRecorder
 	tradeRecorder = nil
@@ -1028,6 +1036,7 @@ func TestReconcileHyperliquidHedgeLegRefusesUnstampedPosition(t *testing.T) {
 	}
 }
 
+
 func TestValidateHedgeStateConsistencyFlagsOrphanedAndRepointedLegs(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -1090,6 +1099,7 @@ func TestValidatePerpsDirectionConfigSkipsHedgeLegs(t *testing.T) {
 		t.Fatalf("hedge legs must be exempt from the direction gap check, got %v", w)
 	}
 }
+
 
 func TestForceCloseHyperliquidLiveIncludesHeldHedgeCoins(t *testing.T) {
 	closed := map[string]bool{}
@@ -1240,6 +1250,7 @@ func TestSetHyperliquidCircuitBreakerPendingSkipsFlatHedge(t *testing.T) {
 	}
 }
 
+
 func TestCollectPerpsMarkSymbolsIncludesHedgeCoins(t *testing.T) {
 	hl, _ := collectPerpsMarkSymbols([]StrategyConfig{hedgeTestConfig()})
 	found := map[string]bool{}
@@ -1283,6 +1294,7 @@ func TestHedgeCoinsForStrategiesIsSortedAndDeduped(t *testing.T) {
 		t.Fatalf("hedge coins = %v, want sorted [BTC SOL] with the disabled block excluded", got)
 	}
 }
+
 
 func TestHedgeStatusLineDescribesConfigAndLeg(t *testing.T) {
 	sc := hedgeTestConfig()
@@ -1329,6 +1341,7 @@ func TestManualCloseTradeTypeLabelsHedgeLegs(t *testing.T) {
 	}
 }
 
+
 func TestHedgeFieldsRoundTripThroughSQLite(t *testing.T) {
 	db := openTestDB(t)
 	state := &AppState{Strategies: map[string]*StrategyState{
@@ -1364,6 +1377,7 @@ func TestHedgeFieldsRoundTripThroughSQLite(t *testing.T) {
 		t.Fatal("primary position must not carry a hedge stamp")
 	}
 }
+
 
 func TestHedgeHotReloadBlockedWhileOpenAllowedWhenFlat(t *testing.T) {
 	mk := func(h *HedgeConfig) *Config {
@@ -1765,6 +1779,7 @@ func TestHedgeReducedBasisInterpolatesByFillRatio(t *testing.T) {
 	}
 }
 
+
 func TestHedgeBasisAfterPartialReduceScalesByHeldQuantity(t *testing.T) {
 	cases := []struct {
 		name                        string
@@ -2140,6 +2155,7 @@ func forceCloseCoupledHedgeQueuedFullFlag(t *testing.T, heldQty, filled float64,
 	t.Fatal("no hedge close action was queued")
 	return false
 }
+
 
 func TestStuckCBClosesOrphanedHedgeWhenPrimaryWentFlatDuringTheOutage(t *testing.T) {
 	state := &AppState{Strategies: map[string]*StrategyState{

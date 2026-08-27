@@ -24,7 +24,6 @@ from chart_patterns import (
 )
 
 
-
 def make_ohlcv(closes, volume=None, noise=0.5):
     closes = np.array(closes, dtype=float)
     n = len(closes)
@@ -40,7 +39,6 @@ def make_ohlcv(closes, volume=None, noise=0.5):
         "close": closes,
         "volume": np.array(volume, dtype=float),
     })
-
 
 
 class TestSwingPoints:
@@ -76,7 +74,6 @@ class TestSwingPoints:
         assert sl.notna().sum() == 0
 
 
-
 class TestVolumeConfirmed:
     def test_high_volume_confirmed(self):
         vol = pd.Series([100] * 25)
@@ -91,7 +88,6 @@ class TestVolumeConfirmed:
     def test_insufficient_history_allows(self):
         vol = pd.Series([100] * 5)
         assert volume_confirmed(vol, 3, vol_period=20, vol_multiplier=1.5)
-
 
 
 class TestDoubleTop:
@@ -146,7 +142,6 @@ class TestDoubleBottom:
         assert matches[0].signal == 1
 
 
-
 class TestHeadAndShoulders:
     def test_detects_head_and_shoulders(self):
         prices = (
@@ -185,7 +180,6 @@ class TestInverseHeadAndShoulders:
         )
         assert len(matches) >= 1
         assert matches[0].signal == 1
-
 
 
 class TestTripleTop:
@@ -228,7 +222,6 @@ class TestTripleBottom:
         assert matches[0].signal == 1
 
 
-
 class TestBullFlag:
     def test_detects_bull_flag(self):
         prices = (
@@ -267,7 +260,6 @@ class TestBearFlag:
         assert isinstance(matches, list)
 
 
-
 class TestCupAndHandle:
     def test_detects_cup_and_handle(self):
         prices = (
@@ -284,7 +276,6 @@ class TestCupAndHandle:
             df["high"], df["low"], df["close"], sh, sl
         )
         assert isinstance(matches, list)
-
 
 
 class TestDatetimeIndex:
@@ -356,8 +347,6 @@ class TestDatetimeIndex:
             df_bear["high"], df_bear["low"], df_bear["close"], df_bear["volume"], sh_b2, sl_b2,
         )
         assert isinstance(bear_matches, list)
-
-
 
 
 class TestLookaheadRegression:
@@ -496,7 +485,6 @@ class TestChartPatternCore:
         result = chart_pattern_core(df, pivot_lookback=3, tolerance=0.03, vol_multiplier=3.0)
         sell_signals = result[result["signal"] == -1]
         assert len(sell_signals) == 0
-
 
 
 def _double_top_fixture(prefix=None):

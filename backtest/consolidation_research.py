@@ -15,8 +15,6 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared_tools"))
 
 
-
-
 @dataclass
 class Episode:
 
@@ -27,8 +25,6 @@ class Episode:
     @property
     def n_bars(self) -> int:
         return self.end_idx - self.start_idx
-
-
 
 
 _INDICATORS_CORE_PATH = os.path.join(
@@ -48,8 +44,6 @@ def true_range(df: pd.DataFrame) -> pd.Series:
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return _indicators_core.atr_sma(df, period, min_periods=1)
-
-
 
 
 def _coalesce_mask(mask: np.ndarray, min_bars: int, method: str) -> List[Episode]:
@@ -145,8 +139,6 @@ DETECTOR_PARAM_KEYS: Dict[str, Tuple[str, ...]] = {
 
 def _detector_cache_key(name: str, params: dict):
     return (name,) + tuple(params.get(k) for k in DETECTOR_PARAM_KEYS.get(name, ()))
-
-
 
 
 def measure_box(df: pd.DataFrame, ep: Episode) -> Dict[str, float]:
@@ -348,8 +340,6 @@ def measure_escape_candle(
     return out
 
 
-
-
 def benchmark_detectors(
     df: pd.DataFrame, params: dict, detector_cache: Optional[dict] = None
 ) -> Tuple[Dict[str, List[Episode]], pd.DataFrame]:
@@ -401,8 +391,6 @@ def benchmark_detectors(
             / (1 + bench["avg_width_pct"].fillna(1.0))
         )
     return results, bench
-
-
 
 
 def correlate_shape_breakout(episodes_df: pd.DataFrame) -> Dict[str, object]:
@@ -460,8 +448,6 @@ def correlate_shape_breakout(episodes_df: pd.DataFrame) -> Dict[str, object]:
     return out
 
 
-
-
 def build_episode_table(
     df: pd.DataFrame, episodes: List[Episode], params: dict
 ) -> pd.DataFrame:
@@ -486,8 +472,6 @@ def build_episode_table(
         row.update(measure_escape_candle(df, ep, atr_series, escape_k))
         rows.append(row)
     return pd.DataFrame(rows)
-
-
 
 
 def render_report(
@@ -623,7 +607,6 @@ def _render_charts(df, episodes, episodes_df, out_dir, symbol, timeframe):
     return paths
 
 
-
 RUNS_CSV_COLUMNS = [
     "run_id", "date", "symbol", "timeframe", "since", "bars", "method",
     "is_primary", "n_episodes", "avg_bars", "avg_width_pct", "false_break_rate",
@@ -721,8 +704,6 @@ def append_runs_csv(
         if write_header:
             w.writeheader()
         w.writerows(rows)
-
-
 
 
 def run(

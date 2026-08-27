@@ -35,7 +35,6 @@ GO_TYPE_DEFAULT_MAX_DD = {"options": 40.0, "perps": 50.0, "futures": 45.0}
 GO_FALLBACK_MAX_DD = 60.0
 
 
-
 def equity_path_stats(returns_pct: Sequence[float]) -> tuple:
     equity = 1.0
     peak = 1.0
@@ -141,7 +140,6 @@ def resample_stats(values: Sequence[float], scheme: str,
     }
 
 
-
 def trade_returns(trades: Sequence, returns: str = "net") -> List[float]:
     if returns not in ("net", "gross"):
         raise ValueError(f"returns must be 'net' or 'gross', got {returns!r}")
@@ -218,7 +216,6 @@ def resolve_kill_switch_pct(cfg: dict, strategy_id: str) -> float:
     return GO_TYPE_DEFAULT_MAX_DD.get(stype, GO_FALLBACK_MAX_DD)
 
 
-
 def _leg_returns(leg: Optional[dict], returns: str) -> Optional[List[float]]:
     if leg is None:
         return None
@@ -293,7 +290,6 @@ def leg_blocks(values: Sequence[float], schemes: Sequence[str], *,
                            kill_switch_pct=kill_switch_pct,
                            percentiles=percentiles)
             for scheme in schemes]
-
 
 
 def _fmt(v, prec=2):

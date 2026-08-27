@@ -51,7 +51,6 @@ def _open_hold(n: int) -> list[int]:
     return [-1] * n
 
 
-
 def test_funding_booked_on_perp_leg_only() -> None:
     n = 50
     a = 0.0001
@@ -212,7 +211,6 @@ def test_run_rejects_missing_columns() -> None:
         bt.run(pd.DataFrame({"open": [1.0], "close": [1.0]}))
 
 
-
 def test_delta_drift_pct_math() -> None:
     assert delta_drift_pct(10.0, 100.0, 10.0, 100.0) == pytest.approx(0.0)
     assert delta_drift_pct(10.0, 100.0, 9.5, 100.0) == pytest.approx(5.0)
@@ -303,7 +301,6 @@ def test_rebalance_pnl_survives_into_signal_close() -> None:
     assert ep.rebalances == 1
     assert ep.realized_spot_pnl == pytest.approx(500.0)
     assert ep.price_pnl == pytest.approx(1000.0)
-
 
 
 def test_leg_from_results_liquidated_floors() -> None:

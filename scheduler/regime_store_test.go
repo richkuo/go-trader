@@ -13,6 +13,7 @@ func testRegimeConfig() *RegimeConfig {
 	return &RegimeConfig{Enabled: true, Period: 14, ADXThreshold: 20}
 }
 
+
 func TestStrategyRegimeBundleRequestPlatformMapping(t *testing.T) {
 	rc := testRegimeConfig()
 	cases := []struct {
@@ -137,6 +138,7 @@ func TestCollectRegimeBundleRequestsDisabledKeepsOptions(t *testing.T) {
 	}
 }
 
+
 func TestParseRegimeBundleOutput(t *testing.T) {
 	key := regimeBundleKey{Platform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", SpecJSON: "{}"}
 	now := time.Now().UTC()
@@ -176,6 +178,7 @@ func TestParseRegimeBundleOutputErrors(t *testing.T) {
 		}
 	}
 }
+
 
 func stubRegimeBundleCheck(t *testing.T, fn func(context.Context, regimeBundleRequest) (*RegimeBundle, error)) {
 	t.Helper()
@@ -352,6 +355,7 @@ func TestRegimeBundleCheckArgs(t *testing.T) {
 		t.Error("options request must pass --allow-spot-fallback")
 	}
 }
+
 
 func TestUIRegimeEntriesProjection(t *testing.T) {
 	store := &RegimeStore{}

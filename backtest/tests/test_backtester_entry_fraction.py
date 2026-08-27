@@ -40,8 +40,6 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-
-
 def test_long_fractional_entry_commits_fraction_and_keeps_reserve():
     closes = [100, 100, 120, 120, 120]
     signals = [1, 0, -1, 0, 0]
@@ -100,8 +98,6 @@ def test_compounding_reuses_reserve_plus_proceeds():
     assert res["final_capital"] == pytest.approx(10000.0)
 
 
-
-
 def test_signal_close_preserves_reserve():
     closes = [100, 100, 90, 90, 90]
     signals = [1, 0, -1, 0, 0]
@@ -116,8 +112,6 @@ def test_standalone_stop_fill_preserves_reserve():
                stop_loss_pct=0.10)
     assert res["total_trades"] == 1
     assert res["final_capital"] == pytest.approx(9250.0)
-
-
 
 
 def test_engine_path_long_fractional_entry():
@@ -157,8 +151,6 @@ def test_engine_path_short_fractional_entry():
     assert res["trades"][0]["side"] == "short"
     assert res["trades"][0]["shares"] == pytest.approx(5.0)
     assert res["final_capital"] == pytest.approx(1100.0)
-
-
 
 
 def test_zero_entry_fraction_rejected():

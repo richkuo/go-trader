@@ -21,8 +21,6 @@ def _flat_df():
     )
 
 
-
-
 def test_backtester_accepts_open_strategy_ref():
     bt = Backtester(
         initial_capital=1000,
@@ -74,8 +72,6 @@ def test_backtester_rejects_close_strategy_without_name():
 def test_backtester_rejects_close_strategy_non_dict():
     with pytest.raises(ValueError, match="must be dicts"):
         Backtester(close_strategies=["bare_string_no_longer_supported"])
-
-
 
 
 def test_parse_close_strategy_arg_bare_name():
@@ -152,8 +148,6 @@ def test_defaults_user_without_config_warns_and_falls_back(capsys):
     assert "requires --config" in capsys.readouterr().out
 
 
-
-
 def _write_config(tmp_path, version, strategies):
     cfg = {"config_version": version, "strategies": strategies}
     p = tmp_path / "config.json"
@@ -199,8 +193,6 @@ def test_load_strategy_config_reads_single_close_strategy(tmp_path):
     assert len(kwargs["close_strategies"]) == 1
     assert kwargs["close_strategies"][0]["name"] == "tiered_tp_atr"
     assert kwargs["close_strategies"][0]["params"]["tp_tiers"][1]["atr_multiple"] == 3.0
-
-
 
 
 def _init_shaped_strategy():
@@ -261,8 +253,6 @@ def test_load_strategy_config_rejects_when_no_open_name_and_no_args(tmp_path):
     ])
     with pytest.raises(ValueError, match="neither open_strategy.name nor"):
         run_backtest.load_strategy_config(path, "spot-z")
-
-
 
 
 def _write_full_config(tmp_path, cfg):
@@ -544,8 +534,6 @@ def test_load_strategy_config_then_backtester_parity(tmp_path):
     assert bt_from_config.close_params == bt_inline.close_params
 
 
-
-
 def test_config_flag_threads_live_open_params_to_result(tmp_path, monkeypatch):
     config_path = _write_config(tmp_path, version=15, strategies=[
         {
@@ -621,8 +609,6 @@ def test_direction_flag_rejected_alongside_config(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         run_backtest.main()
     assert "hit" not in called
-
-
 
 
 def _perps_strategy(strategy_id="hl-d-btc", **extra):
@@ -778,8 +764,6 @@ def test_load_strategy_config_both_with_close_is_allowed(tmp_path):
     assert kwargs["direction"] == "both"
 
 
-
-
 _SPOT_NEVER_FIRES_CLOSE = {"name": "tiered_tp_pct", "params": {"tp_tiers": [
     {"profit_pct": 0.9, "close_fraction": 1.0},
 ]}}
@@ -868,8 +852,6 @@ def test_load_strategy_config_allows_invert_signal_on_hl_types(tmp_path, strateg
     kwargs = run_backtest.load_strategy_config(path, "inv-x")
     assert kwargs["invert_signal"] is True
     assert kwargs["strategy_type"] == strategy_type
-
-
 
 
 def test_load_strategy_config_threads_allowed_regimes(tmp_path):

@@ -46,8 +46,6 @@ def make_htf_clean_uptrend():
     ])
 
 
-
-
 def test_columns_present():
     out = regime_adaptive_htf_core(make_ohlcv(make_htf_range()), **PIN)
     for col in ("signal", "position", "rah_label", "rah_raw_label",
@@ -92,8 +90,6 @@ def test_warmup_returns_no_signal():
     assert (out["position"] == 0).all()
 
 
-
-
 def test_confirm_labels_requires_streak():
     raw = np.array([_RANGING_QUIET] * 3 + [_TREND_UP_CLEAN] + [_RANGING_QUIET] * 3)
     conf = _confirm_labels(raw, 2)
@@ -117,7 +113,6 @@ def test_confirm_labels_warmup_resets_streak():
 def test_confirm_one_is_identity():
     raw = np.array([_RANGING_QUIET, _TREND_UP_CLEAN, _TREND_DOWN_CLEAN])
     assert _confirm_labels(raw, 1).tolist() == raw.tolist()
-
 
 
 PINNED_RANGE_ENTRIES = [106, 133, 142]
@@ -227,8 +222,6 @@ def test_impossible_entry_z_blocks_fades():
     assert (out["position"] == 0).all()
 
 
-
-
 def make_bear_with_dips(n_legs=10, seed=7):
     rng = np.random.RandomState(seed)
     seg = []
@@ -264,8 +257,6 @@ def test_slow_trend_veto_inactive_in_flat_range():
     assert (off["position"].values == on["position"].values).all()
 
 
-
-
 def test_registered_long_only_on_both_platforms():
     import importlib.util
     import os
@@ -280,8 +271,6 @@ def test_registered_long_only_on_both_platforms():
     for platform in ("spot", "futures"):
         built = open_registry.build_registry(platform)["regime_adaptive_htf"]
         assert built["default_params"]["allow_short"] is False
-
-
 
 
 def test_prefix_consistency_no_lookahead():

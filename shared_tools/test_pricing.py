@@ -5,7 +5,6 @@ import pytest
 from pricing import norm_cdf, norm_pdf, bs_price, bs_greeks, bs_price_and_greeks
 
 
-
 class TestNormCdf:
     def test_zero(self):
         assert norm_cdf(0.0) == pytest.approx(0.5, abs=1e-10)
@@ -25,7 +24,6 @@ class TestNormCdf:
         assert norm_cdf(-1.0) == pytest.approx(0.1587, abs=1e-4)
 
 
-
 class TestNormPdf:
     def test_zero(self):
         assert norm_pdf(0.0) == pytest.approx(1.0 / math.sqrt(2 * math.pi), abs=1e-10)
@@ -39,7 +37,6 @@ class TestNormPdf:
 
     def test_known_value(self):
         assert norm_pdf(1.0) == pytest.approx(0.2420, abs=1e-4)
-
 
 
 class TestBsPrice:
@@ -105,7 +102,6 @@ class TestBsPrice:
         assert price < 20000
 
 
-
 class TestBsGreeks:
     def test_atm_call_delta_near_half(self):
         g = bs_greeks(100, 100, 365, 0.20, 0.05, "call")
@@ -165,7 +161,6 @@ class TestBsGreeks:
     def test_deep_otm_call_delta_near_zero(self):
         g = bs_greeks(50, 100, 30, 0.20, 0.05, "call")
         assert g["delta"] == pytest.approx(0.0, abs=0.01)
-
 
 
 class TestBsPriceAndGreeks:

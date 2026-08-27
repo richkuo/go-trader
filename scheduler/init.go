@@ -20,7 +20,7 @@ var supportedAssets = []asset{
 }
 
 const (
-	starterAssetName      = "BTC"
+	starterAssetName = "BTC"
 	starterSpotStrategyID = "chart_pattern"
 	starterSpotCapital    = 1000.0
 	starterSpotDrawdown   = 5.0
@@ -112,10 +112,10 @@ func isBidirectionalPerpsStrategy(id string) bool {
 }
 
 var strategiesDefaultingToCompositeRangingGate = map[string][]string{
-	"atr_band_revert":         {"ranging_quiet", "ranging_volatile"},
-	"anchored_vwap_channel":   {"ranging_quiet", "ranging_volatile"},
+	"atr_band_revert": {"ranging_quiet", "ranging_volatile"},
+	"anchored_vwap_channel": {"ranging_quiet", "ranging_volatile"},
 	"anchored_vwap_reversion": {"ranging_quiet", "ranging_volatile"},
-	"rsi_bb_combo":            {"ranging_quiet", "ranging_volatile"},
+	"rsi_bb_combo": {"ranging_quiet", "ranging_volatile"},
 }
 
 func defaultCompositeRangingGate(stratID string) []string {
@@ -293,76 +293,76 @@ func selectionDefaults(options []string, preferred []string, fallbackFirst bool)
 }
 
 type InitOptions struct {
-	OutputPath                  string
-	Assets                      []string
-	EnableSpot                  bool
-	EnableOptions               bool
-	EnablePerps                 bool
-	OptionPlatforms             []string
-	PerpsMode                   string
-	SpotStrategies              []string
-	IncludePairs                bool
-	OptStrategies               []string
-	PerpsStrategies             []string
-	SpotCapital                 float64
-	OptionsCapital              float64
-	PerpsCapital                float64
-	PerpsLeverage               float64
-	PerpsSizingLeverage         float64
-	PerpsRiskPerTradePct        float64
-	HLStopLossPct               *float64
-	HLStopLossMarginPct         *float64
-	HLTrailingStopPct           *float64
-	SpotDrawdown                float64
-	OptionsDrawdown             float64
-	PerpsDrawdown               float64
-	EnableFutures               bool
-	FuturesMode                 string
-	FuturesStrategies           []string
-	FuturesSymbols              []string
-	FuturesCapital              float64
-	FuturesDrawdown             float64
-	FuturesFeePerContract       float64
-	EnableLuno                  bool
-	LunoStrategies              []string
-	LunoCapital                 float64
-	LunoDrawdown                float64
-	EnableRobinhood             bool
-	RobinhoodMode               string
-	RobinhoodStrategies         []string
-	RobinhoodCapital            float64
-	RobinhoodDrawdown           float64
-	RobinhoodOptionsSymbols     []string
-	EnableOKX                   bool
-	OKXMode                     string
-	OKXSpotStrategies           []string
-	OKXPerpsStrategies          []string
-	OKXCapital                  float64
-	OKXDrawdown                 float64
-	CapitalPct                  float64 `json:"capitalPct,omitempty"`
-	HTFFilter                   bool
-	DisableCircuitBreaker       bool    `json:"disableCircuitBreaker,omitempty"`
-	ATRMethod                   string  `json:"atrMethod,omitempty"`
-	CBDrawdownCooldownMinutes   int     `json:"cbDrawdownCooldownMinutes,omitempty"`
-	CBLossStreakThreshold       int     `json:"cbLossStreakThreshold,omitempty"`
-	CBLossStreakCooldownMinutes int     `json:"cbLossStreakCooldownMinutes,omitempty"`
-	PortfolioMaxDrawdownPct     float64 `json:"portfolioMaxDrawdownPct,omitempty"`
-	PortfolioWarnThresholdPct   float64 `json:"portfolioWarnThresholdPct,omitempty"`
-	DiscordEnabled              bool
-	DiscordOwnerID              string
-	SpotChannelID               string
-	OptionsChannelID            string
-	ChannelMap                  map[string]string
-	TelegramEnabled             bool
-	TelegramOwnerChatID         string
-	TelegramChannelMap          map[string]string
-	AutoUpdate                  string
-	EnableManual                bool
-	ManualSymbol                string
-	ManualTimeframe             string
-	ManualCapital               float64
-	ManualDrawdown              float64
-	ManualLeverage              float64
+	OutputPath              string
+	Assets                  []string
+	EnableSpot              bool
+	EnableOptions           bool
+	EnablePerps             bool
+	OptionPlatforms         []string
+	PerpsMode               string
+	SpotStrategies          []string
+	IncludePairs            bool
+	OptStrategies           []string
+	PerpsStrategies         []string
+	SpotCapital             float64
+	OptionsCapital          float64
+	PerpsCapital            float64
+	PerpsLeverage           float64
+	PerpsSizingLeverage     float64
+	PerpsRiskPerTradePct    float64
+	HLStopLossPct           *float64
+	HLStopLossMarginPct     *float64
+	HLTrailingStopPct       *float64
+	SpotDrawdown            float64
+	OptionsDrawdown         float64
+	PerpsDrawdown           float64
+	EnableFutures           bool
+	FuturesMode             string
+	FuturesStrategies       []string
+	FuturesSymbols          []string
+	FuturesCapital          float64
+	FuturesDrawdown         float64
+	FuturesFeePerContract   float64
+	EnableLuno              bool
+	LunoStrategies          []string
+	LunoCapital             float64
+	LunoDrawdown            float64
+	EnableRobinhood         bool
+	RobinhoodMode           string
+	RobinhoodStrategies     []string
+	RobinhoodCapital        float64
+	RobinhoodDrawdown       float64
+	RobinhoodOptionsSymbols []string
+	EnableOKX               bool
+	OKXMode                 string
+	OKXSpotStrategies       []string
+	OKXPerpsStrategies      []string
+	OKXCapital              float64
+	OKXDrawdown             float64
+	CapitalPct              float64 `json:"capitalPct,omitempty"`
+	HTFFilter               bool
+	DisableCircuitBreaker   bool    `json:"disableCircuitBreaker,omitempty"`
+	ATRMethod               string  `json:"atrMethod,omitempty"`
+	CBDrawdownCooldownMinutes   int `json:"cbDrawdownCooldownMinutes,omitempty"`
+	CBLossStreakThreshold       int `json:"cbLossStreakThreshold,omitempty"`
+	CBLossStreakCooldownMinutes int `json:"cbLossStreakCooldownMinutes,omitempty"`
+	PortfolioMaxDrawdownPct   float64 `json:"portfolioMaxDrawdownPct,omitempty"`
+	PortfolioWarnThresholdPct float64 `json:"portfolioWarnThresholdPct,omitempty"`
+	DiscordEnabled            bool
+	DiscordOwnerID            string
+	SpotChannelID             string
+	OptionsChannelID          string
+	ChannelMap                map[string]string
+	TelegramEnabled           bool
+	TelegramOwnerChatID       string
+	TelegramChannelMap        map[string]string
+	AutoUpdate                string
+	EnableManual    bool
+	ManualSymbol    string
+	ManualTimeframe string
+	ManualCapital   float64
+	ManualDrawdown  float64
+	ManualLeverage  float64
 }
 
 func generateConfig(opts InitOptions) *Config {

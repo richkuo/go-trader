@@ -37,8 +37,6 @@ def _base_config(global_atr=None, strategy_atr=None):
     return cfg
 
 
-
-
 def test_backtester_rejects_unknown_atr_method():
     with pytest.raises(ValueError, match="atr_method"):
         Backtester(atr_method="rma")
@@ -57,8 +55,6 @@ def test_backtester_normalizes_atr_method(raw, want):
 
 def test_backtester_default_is_simple():
     assert Backtester().atr_method == "simple"
-
-
 
 
 def _big_ohlcv(n=80, seed=3):
@@ -89,8 +85,6 @@ def test_wilder_changes_stamped_entry_atr():
         results["simple"]["trades"] != results["wilder"]["trades"]
         or results["simple"]["metrics"] != results["wilder"]["metrics"]
     )
-
-
 
 
 def test_config_default_resolves_simple(tmp_path):

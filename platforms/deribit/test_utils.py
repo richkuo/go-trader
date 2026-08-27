@@ -20,7 +20,6 @@ get_live_quote = _mod.get_live_quote
 get_live_premium = _mod.get_live_premium
 
 
-
 class TestFormatInstrument:
     def test_btc_call(self):
         result = _format_instrument("BTC", "call", 75000, "2026-03-13")
@@ -41,7 +40,6 @@ class TestFormatInstrument:
     def test_put_suffix(self):
         result = _format_instrument("BTC", "put", 80000, "2026-06-20")
         assert result.endswith("-P")
-
 
 
 class TestFetchAvailableExpiries:
@@ -83,7 +81,6 @@ class TestFetchAvailableExpiries:
     def test_returns_empty_on_error(self):
         with patch("requests.get", side_effect=Exception("network")):
             assert fetch_available_expiries("BTC") == []
-
 
 
 class TestFindClosestExpiry:
@@ -129,7 +126,6 @@ class TestFindClosestExpiry:
             assert find_closest_expiry("BTC", target_dte=30) is None
 
 
-
 class TestFetchAvailableStrikes:
     def test_fetches_strikes_for_expiry(self):
         now = datetime.now(timezone.utc)
@@ -157,7 +153,6 @@ class TestFetchAvailableStrikes:
     def test_returns_empty_on_error(self):
         with patch("requests.get", side_effect=Exception("fail")):
             assert fetch_available_strikes("BTC", "2026-05-01", "call") == []
-
 
 
 class TestFindClosestStrike:
@@ -188,7 +183,6 @@ class TestFindClosestStrike:
 
         with patch("requests.get", return_value=mock_resp):
             assert find_closest_strike("BTC", "2026-05-01", "call", 67000) is None
-
 
 
 class TestGetLiveQuote:

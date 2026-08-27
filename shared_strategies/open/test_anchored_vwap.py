@@ -26,7 +26,6 @@ def _ohlcv(closes, highs=None, lows=None, opens=None, volume=100.0):
     )
 
 
-
 def test_empty_and_short_df_return_zero_signal():
     empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     out = anchored_vwap_core(empty)
@@ -37,7 +36,6 @@ def test_empty_and_short_df_return_zero_signal():
     out = anchored_vwap_core(short)
     assert (out["signal"] == 0).all()
     assert (out["anchor_index"] == -1).all()
-
 
 
 def test_strict_pivot_and_confirmed_anchor_index():
@@ -56,7 +54,6 @@ def test_flat_top_plateau_is_not_a_pivot():
     df = _ohlcv(closes, highs=highs, lows=np.array(closes) - 0.5)
     out = anchored_vwap_core(df, pivot_strength=2, confirm_bars=2)
     assert not np.isin(out["anchor_index"].to_numpy(), [4, 5]).any()
-
 
 
 def test_avwap_matches_hand_computed_prefix_sum():
@@ -80,7 +77,6 @@ def test_avwap_zero_volume_window_falls_back_to_typical():
     tp = (df["high"] + df["low"] + df["close"]).to_numpy() / 3.0
     for nbar in range(7, 12):
         assert abs(avwap[nbar] - tp[nbar]) < 1e-9
-
 
 
 def _long_reclaim_df():
@@ -122,7 +118,6 @@ def test_nan_atr_warmup_yields_no_signal():
     df = _long_reclaim_df()
     out = anchored_vwap_core(df, pivot_strength=2, buffer_atr_mult=0.25, confirm_bars=2, atr_period=99)
     assert (out["signal"] == 0).all()
-
 
 
 _GATE_BASE_KW = dict(pivot_strength=2, buffer_atr_mult=0.0, confirm_bars=2, atr_period=3)
@@ -245,7 +240,6 @@ def test_gated_signal_independent_of_future_bars():
             partial["signal"].to_numpy()
             == full["signal"].to_numpy()[:k + 1]
         ).all(), k
-
 
 
 def _load_registry():

@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+
 func TestTradeRegimeFieldExists(t *testing.T) {
 	trade := Trade{Regime: "trending_up"}
 	if trade.Regime != "trending_up" {
@@ -19,6 +20,7 @@ func TestTradeRegimeDefaultEmpty(t *testing.T) {
 		t.Errorf("expected empty Regime by default, got %q", trade.Regime)
 	}
 }
+
 
 func TestFormatTradeDM_IncludesRegime(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-btc-1", Platform: "hyperliquid", Type: "perps"}
@@ -79,6 +81,7 @@ func TestFormatTradeDM_EmptyRegimeOmitted(t *testing.T) {
 	}
 }
 
+
 func TestFormatTradeDMPlain_IncludesRegime(t *testing.T) {
 	sc := StrategyConfig{ID: "hl-btc-1", Platform: "hyperliquid", Type: "perps"}
 	trade := Trade{
@@ -111,6 +114,7 @@ func TestFormatTradeDMPlain_EmptyRegimeOmitted(t *testing.T) {
 		t.Errorf("empty Regime should be omitted from plain DM, got:\n%s", msg)
 	}
 }
+
 
 func TestInsertTrade_RegimePersisted(t *testing.T) {
 	db := mustOpenTestDB(t)
@@ -172,6 +176,7 @@ func TestInsertTrade_EmptyRegimeStored(t *testing.T) {
 	}
 }
 
+
 func TestRegime_LoadStateAndQueryTradeHistoryRoundTrip(t *testing.T) {
 	db := mustOpenTestDB(t)
 	defer db.Close()
@@ -223,6 +228,7 @@ func TestRegime_LoadStateAndQueryTradeHistoryRoundTrip(t *testing.T) {
 		t.Errorf("QueryTradeHistory history[1].Regime = %q; want trending_up (oldest)", got)
 	}
 }
+
 
 func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 	newState := func(platform string) *StrategyState {
@@ -328,6 +334,7 @@ func TestRegime_StampedAtProductionCallSites(t *testing.T) {
 		}
 	})
 }
+
 
 func mustOpenTestDB(t *testing.T) *StateDB {
 	t.Helper()

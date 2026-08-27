@@ -11,6 +11,7 @@ import (
 	"strings"
 )
 
+
 const (
 	diagDefaultMinTrades = 30
 	diagDefaultMinBucket = 10

@@ -32,7 +32,6 @@ STRATEGY_NAME = "delta_neutral_funding"
 DEFAULT_FEE_PCT = 0.00045
 
 
-
 def delta_drift_pct(qty_perp: float, mark_perp: float,
                     qty_spot: float, mark_spot: float) -> float:
     perp_notional = qty_perp * mark_perp
@@ -133,7 +132,6 @@ def bar_hours_from_index(index: pd.Index, default: float = 1.0) -> float:
     except (AttributeError, TypeError):
         pass
     return default
-
 
 
 @dataclass
@@ -416,7 +414,6 @@ class CarryPairBacktester:
         )
 
 
-
 def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
                   params: Optional[dict] = None,
                   capital: float = DEFAULT_CAPITAL,
@@ -484,7 +481,6 @@ def run_carry_leg(reg, symbol: str, timeframe: str, window: tuple,
     return leg
 
 
-
 def _fmt(v, width=9, prec=2):
     if v is None:
         return " " * (width - 1) + "-"
@@ -544,7 +540,6 @@ def format_summary(window_summaries: dict, verdict: str) -> str:
                  f"the hedged pair (price PnL cancels by construction in "
                  f"single-series mode)")
     return "\n".join(lines)
-
 
 
 def build_parser() -> argparse.ArgumentParser:

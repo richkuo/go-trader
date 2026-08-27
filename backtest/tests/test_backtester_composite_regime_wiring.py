@@ -48,15 +48,11 @@ def _buy_at(df: pd.DataFrame, bar: int) -> pd.DataFrame:
     return out
 
 
-
-
 def test_windows_spec_computes_composite_substates_from_ohlcv():
     labels = set(_ground_truth_labels(_mixed_regime_ohlcv()).unique())
     assert labels <= VALID_LABELS_COMPOSITE
     assert labels & VALID_LABELS_ADX == set()
     assert labels, "expected non-empty composite labels"
-
-
 
 
 def test_position_regime_is_composite_substate():
@@ -86,8 +82,6 @@ def test_default_path_stays_adx_without_windows_spec():
     assert bt._run_position_regime not in VALID_LABELS_COMPOSITE
 
 
-
-
 def test_composite_gate_allows_matching_blocks_mismatching():
     df = _mixed_regime_ohlcv()
     truth = _ground_truth_labels(df)
@@ -111,8 +105,6 @@ def test_composite_gate_allows_matching_blocks_mismatching():
     assert bt_no.run(_buy_at(df, entry), save=False)["total_trades"] == 0
 
 
-
-
 def test_composite_label_respects_lookahead_shift():
     df = _mixed_regime_ohlcv()
     truth = _ground_truth_labels(df)
@@ -132,8 +124,6 @@ def test_composite_label_respects_lookahead_shift():
     bt.run(_buy_at(df, entry), save=False)
     assert bt._run_position_regime == decision_label
     assert bt._run_position_regime != fill_label
-
-
 
 
 def test_resolve_windows_spec_none_when_disabled_or_no_windows():
@@ -175,8 +165,6 @@ def test_resolve_windows_spec_keeps_explicit_window_values():
     })
     assert spec["short"]["period"] == 7
     assert spec["short"]["adx_threshold"] == 30.0
-
-
 
 
 def _write_config(tmp_path, cfg):
@@ -333,8 +321,6 @@ def test_profile_label_series_cross_timeframe_aligns_without_lookahead(monkeypat
     assert out.tolist() == ["", "macro_row0", "macro_row0", "macro_row1"]
 
 
-
-
 def _run_main(monkeypatch, argv):
     monkeypatch.setattr(sys, "argv", ["run_backtest.py", *argv])
     return run_backtest.main()
@@ -402,8 +388,6 @@ def test_cli_by_name_threads_windows_spec_to_backtester(monkeypatch):
     assert spec is not None, "windows spec did not thread to the Backtester"
     assert spec["medium"]["classifier"] == "composite"
     assert spec["medium"]["period"] == 20
-
-
 
 
 _ADX_SPEC = {"medium": {"classifier": "adx", "period": 14}}
@@ -524,8 +508,6 @@ def test_cli_composite_label_rejected_without_spec(monkeypatch):
         ])
 
 
-
-
 def _config_with_regime(tmp_path, *, classifier, allowed_regimes=None):
     strat = {
         "id": "hl-temacb-btc", "type": "perps", "platform": "hyperliquid",
@@ -615,8 +597,6 @@ def test_config_absent_allowed_regimes_runs(monkeypatch, tmp_path):
     ])
     assert seen["allowed_regimes"] is None
     assert seen["regime_windows_spec"]["medium"]["classifier"] == "composite"
-
-
 
 
 from backtester import _regime_primary_labels
@@ -712,7 +692,6 @@ def test_validator_accepts_composite_sl_with_sl_after():
     assert bt._stop_loss_regime_block.resolve("ranging_volatile").atr == 1.5
 
 
-
 _ADX_TP_LABELS = ["trending_up", "trending_down", "ranging"]
 _COMPOSITE_TP_LABELS = list(VALID_LABELS_COMPOSITE)
 
@@ -777,7 +756,6 @@ def test_validate_regime_tiered_tp_labels_helper():
             {"atr_multiple": 2.0, "close_fraction": 0.5},
             {"atr_multiple": 3.0, "close_fraction": 1.0}]}}],
         labels=_COMPOSITE_TP_LABELS) == []
-
 
 
 def _partial_tiered_ref(labels, omit):

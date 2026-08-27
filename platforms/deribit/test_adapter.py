@@ -31,7 +31,6 @@ DeribitOptionsAdapter = _mod.DeribitOptionsAdapter
 DeribitExchangeAdapter = _mod.DeribitExchangeAdapter
 
 
-
 class TestBlackScholes:
     def test_call_price_positive(self):
         price = bs_price(100, 100, 0.5, RISK_FREE_RATE, 0.3, OptionType.CALL)
@@ -103,7 +102,6 @@ class TestImpliedVolatility:
 
     def test_zero_time(self):
         assert implied_volatility(5, 100, 100, 0, RISK_FREE_RATE, OptionType.CALL) == 0.0
-
 
 
 class TestOptionContract:
@@ -199,7 +197,6 @@ class TestGreeksDataclass:
         assert d["iv"] == 0.3
 
 
-
 class TestDeribitOptionsAdapter:
     def test_initial_state(self):
         with patch("ccxt.deribit"):
@@ -239,7 +236,6 @@ class TestDeribitOptionsAdapter:
         with patch("ccxt.deribit"):
             adapter = DeribitOptionsAdapter()
             assert adapter.close_position("nonexistent") is None
-
 
 
 class TestDeribitExchangeAdapter:

@@ -31,7 +31,6 @@ def adapter():
     return a, mock_ex
 
 
-
 class TestProperties:
     def test_name(self, adapter):
         a, _ = adapter
@@ -57,7 +56,6 @@ class TestProperties:
                 _mod.ccxt.okx = orig
             assert a.is_live is True
             assert a.mode == "live"
-
 
 
 class TestMarketData:
@@ -146,7 +144,6 @@ class TestMarketData:
         assert a.get_funding_history("BTC") == []
 
 
-
 class TestOrderExecution:
     def test_market_open_paper_raises(self, adapter):
         a, _ = adapter
@@ -216,7 +213,6 @@ class TestOrderExecution:
         assert second_call[0][1] == "buy"
         assert second_call[0][2] == 0.8
         assert result == {"id": "aaa"}
-
 
 
 class TestOptionsProtocol:
@@ -342,7 +338,6 @@ class TestOptionsProtocol:
         assert pct == 0.05
         assert usd == 0.05 * 67000
         assert greeks["delta"] == 0.45
-
 
 
 def _ledger_entry(bill_id, ts, balchg="1", ccy="USDT", btype="2", sub="",

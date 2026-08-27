@@ -6,7 +6,6 @@ import pytest
 from donchian_breakout import donchian_breakout_core
 
 
-
 def make_ohlcv(closes, volume=None, noise=0.5):
     closes = np.array(closes, dtype=float)
     n = len(closes)
@@ -22,7 +21,6 @@ def make_ohlcv(closes, volume=None, noise=0.5):
         "close": closes,
         "volume": np.array(volume, dtype=float),
     })
-
 
 
 def test_breakout_above_channel_generates_buy():

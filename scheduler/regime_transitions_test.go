@@ -35,6 +35,7 @@ func resetRegimeTransitionGlobals(t *testing.T) {
 	})
 }
 
+
 func TestRegimeTransitionConfirmed(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -165,6 +166,7 @@ func TestValidateRegimeTransitionsConfig(t *testing.T) {
 	}
 }
 
+
 func TestRegimeWindowHistoryRoundTrip(t *testing.T) {
 	db := newTransitionsTestDB(t)
 	key := transitionsTestKey()
@@ -253,6 +255,7 @@ func TestRegimeReversalSignaturePersistence(t *testing.T) {
 		t.Errorf("after clear sig = %q", sig)
 	}
 }
+
 
 func transitionsTestStore(t *testing.T, key regimeBundleKey, windows map[string]RegimeSnapshot, barTime string) *RegimeStore {
 	t.Helper()

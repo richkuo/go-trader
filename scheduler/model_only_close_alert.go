@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+
 type modelOnlyCloseAlert struct {
 	StrategyID string
 	Symbol     string

@@ -38,7 +38,6 @@ def effective_leverage(sc):
     return 1.0
 
 
-
 SCALAR_STOP_FIELDS = (
     "stop_loss_pct", "stop_loss_margin_pct", "trailing_stop_pct",
     "trailing_stop_atr_mult", "stop_loss_atr_mult",

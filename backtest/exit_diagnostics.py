@@ -31,7 +31,6 @@ CAPTURE_FRAC = 0.5
 EARLY_MFE_MAX_PCT = 0.5
 
 
-
 def trade_metrics(t: dict) -> dict:
     gross_pct = float(t.get("pnl_pct", 0.0) or 0.0)
     shares = float(t.get("shares", 0.0) or 0.0)
@@ -220,7 +219,6 @@ def diagnose_trades(trades: List[dict]) -> dict:
         "bleed_modes": classify_bleed_modes(metrics),
         "fee_churn": fee_churn_summary(metrics),
     }
-
 
 
 def run_leg_trades(reg, name: str, params: Optional[dict], symbol: str,

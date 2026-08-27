@@ -325,8 +325,8 @@ func needsV13SchemaMigration(data []byte) bool {
 }
 
 var closeStrategyOwnedKeys = map[string]map[string]struct{}{
-	"tiered_tp_atr":                     {"tp_tiers": {}, "tiers": {}},
-	"tiered_tp_atr_live":                {"tp_tiers": {}, "tiers": {}, "atr_source": {}},
+	"tiered_tp_atr":      {"tp_tiers": {}, "tiers": {}},
+	"tiered_tp_atr_live": {"tp_tiers": {}, "tiers": {}, "atr_source": {}},
 	"tiered_tp_atr_regime":              {"tp_tiers": {}, "tiers": {}, "use_defaults": {}, "sl_after": {}},
 	"tiered_tp_atr_live_regime":         {"tp_tiers": {}, "tiers": {}, "use_defaults": {}, "atr_source": {}, "sl_after": {}},
 	"tiered_tp_atr_live_regime_dynamic": {"trend_regime": {}, "atr_source": {}, "regime_confirm_cycles": {}},
@@ -334,10 +334,10 @@ var closeStrategyOwnedKeys = map[string]map[string]struct{}{
 	"trailing_tp_ratchet_regime":        {"tp_tiers": {}, "use_defaults": {}},
 	"tiered_tp_pct":                     {"tp_tiers": {}, "tiers": {}},
 	"tp_at_pct":                         {"pct": {}},
-	"time_stop":                         {"max_bars": {}},
-	"atr_stop":                          {"atr_mult": {}, "atr_source": {}},
-	"zscore_target":                     {"lookback": {}, "z_target": {}},
-	"avwap_stop":                        {"buffer_atr_mult": {}, "atr_source": {}},
+	"time_stop":     {"max_bars": {}},
+	"atr_stop":      {"atr_mult": {}, "atr_source": {}},
+	"zscore_target": {"lookback": {}, "z_target": {}},
+	"avwap_stop": {"buffer_atr_mult": {}, "atr_source": {}},
 }
 
 func migrateV14Direction(raw map[string]interface{}) {

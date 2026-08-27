@@ -68,7 +68,6 @@ def _mean_abs_drift(full, bounded):
     return float(np.mean(np.abs(full[m] - bounded[m]))) if m.any() else 0.0
 
 
-
 def test_bounded_adx_equals_full_when_lookback_spans_window():
     df = _ohlcv(250, seed=3)
     full = _full_adx(df)
@@ -94,7 +93,6 @@ def test_bounded_adx_respects_eval_start():
     out = bounded_window_adx(df, PERIOD, 60, TH["adx"], eval_start=100)
     assert np.isnan(out[:100]).all()
     assert (~np.isnan(out[150:])).any()
-
 
 
 def test_bounded_views_last_bar_matches_one_shot_live_call():
@@ -123,7 +121,6 @@ def test_full_window_views_seed_at_window_start():
     assert len(model_labels) == len(df) and len(hr_labels) == len(df)
 
 
-
 def test_adx_drift_stats_zero_when_identical():
     a = np.array([10.0, 20.0, np.nan, 30.0])
     s = adx_drift_stats(a, a.copy())
@@ -139,7 +136,6 @@ def test_label_drift_stats_counts_disagreements_on_valid_bars_only():
     assert s["disagreements"] == 1
     assert abs(s["agreement"] - 2 / 3) < 1e-9
     assert s["transitions"] == {"a->x": 1}
-
 
 
 def _scored(kw_h, transition_rate, p_value=0.005):
@@ -208,14 +204,12 @@ def test_go_no_go_zero_comparable_bars_vacuous_agreement_blocks():
     assert any("insufficient comparable bars" in r for r in v["blocking_reasons"])
 
 
-
 def test_sweep_blocked_worst_case_over_lookbacks():
     promote_row = lambda lb, ok: {"lookback": lb, "promote": ok}
     assert _sweep_blocked([promote_row(100, True), promote_row(200, True)]) is False
     assert _sweep_blocked([promote_row(100, False), promote_row(200, True)]) is True
     assert _sweep_blocked([promote_row(200, True), promote_row(400, False)]) is True
     assert _sweep_blocked([{"lookback": 200, "adx_mean_abs": 0.1}]) is False
-
 
 
 def test_align_eval_start_is_window_tail():
@@ -230,7 +224,6 @@ def test_align_eval_start_rejects_misaligned_frames():
     import pytest
     with pytest.raises(ValueError):
         _align_eval_start(df_window, df_ext)
-
 
 
 def test_validate_frames_end_to_end_small():
@@ -255,7 +248,6 @@ def test_validate_frames_handrule_only_without_model():
                           lookback=90, target="volatility", seed=0, horizons=(4,))
     assert "model" not in rep and "go_no_go" not in rep
     assert "handrule" in rep and rep["adx_drift"]["n"] > 0
-
 
 
 def test_gate_primary_horizon_tracks_gate_default():
@@ -283,7 +275,6 @@ def test_validate_frames_handrule_only_allows_horizons_without_gate_primary():
     rep = validate_frames(df_window, df_ext, eval_start, None, period=PERIOD,
                           lookback=90, horizons=(1, 12))
     assert "go_no_go" not in rep and rep["adx_drift"]["n"] > 0
-
 
 
 def test_provenance_status_flags_in_sample_and_out_of_sample():
@@ -400,7 +391,6 @@ def test_validate_frames_scores_incumbent_at_its_own_period():
     assert rep["incumbent_period"] == 48
     assert rep["model"]["period"] == 30
     assert rep["handrule"]["period"] == 48
-
 
 
 import json

@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+
 var closeDefaultsSupported = map[string]struct{}{
 	"tiered_tp_pct":              {},
 	"tiered_tp_atr":              {},

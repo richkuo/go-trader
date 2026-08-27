@@ -276,7 +276,6 @@ def test_invalid_intrabar_resolution_rejected():
         Backtester(initial_capital=1000.0, intrabar_resolution="hlc_walk")
 
 
-
 FEE = 0.001
 FULL_ENTRY_FEE = 10.0
 

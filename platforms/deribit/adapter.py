@@ -18,10 +18,8 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 
-
 RISK_FREE_RATE = 0.05
 TRADING_DAYS_PER_YEAR = 365
-
 
 
 class OptionType(str, Enum):
@@ -202,7 +200,6 @@ class OptionPosition:
         }
 
 
-
 def _norm_cdf(x: float) -> float:
     if SCIPY_AVAILABLE:
         return float(norm.cdf(x))
@@ -298,7 +295,6 @@ def implied_volatility(market_price: float, S: float, K: float, T: float,
         else:
             low = mid
     return (low + high) / 2
-
 
 
 class DeribitOptionsAdapter:
@@ -834,7 +830,6 @@ if __name__ == "__main__":
                   f"Type: {sample.option_type.value} | DTE: {sample.dte:.0f}")
     except Exception as e:
         print(f"Connection test: {e}")
-
 
 
 import sys as _sys

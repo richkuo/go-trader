@@ -50,7 +50,6 @@ def test_ohlcv_cache_env_override_fails_loudly_when_unwritable(tmp_path):
     assert str(blocker / "ohlcv.sqlite3") in proc.stderr
 
 
-
 @pytest.fixture
 def db_path(tmp_path):
     path = str(tmp_path / "test_trading.db")
@@ -91,7 +90,6 @@ def _sample_backtest_result():
     }
 
 
-
 class TestInitDb:
     def test_creates_ohlcv_table(self, db_path):
         conn = sqlite3.connect(db_path)
@@ -125,7 +123,6 @@ class TestInitDb:
         conn.close()
 
 
-
 class TestGetConnection:
     def test_returns_connection(self, db_path):
         conn = get_connection(db_path)
@@ -137,7 +134,6 @@ class TestGetConnection:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         assert mode == "wal"
         conn.close()
-
 
 
 class TestOhlcvRoundTrip:
@@ -236,7 +232,6 @@ class TestOhlcvRoundTrip:
         assert timestamps == sorted(timestamps)
 
 
-
 class TestBacktestRoundTrip:
     def test_store_and_retrieve(self, db_path):
         result = _sample_backtest_result()
@@ -327,8 +322,6 @@ class TestBacktestRoundTrip:
         df = get_backtest_results(db_path=db_path)
         assert len(df) == 3
         assert list(df["strategy_name"]) == ["strategy_2", "strategy_1", "strategy_0"]
-
-
 
 
 class TestFundingCoverage:

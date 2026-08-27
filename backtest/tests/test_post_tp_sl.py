@@ -26,8 +26,6 @@ sl = _load_post_tp_sl()
 from backtester import Backtester
 
 
-
-
 def test_parse_sl_after_rule_breakeven_string():
     rule = sl.parse_sl_after_rule("breakeven")
     assert rule.kind == "breakeven"
@@ -333,8 +331,6 @@ def test_find_highest_cleared_tier_basic():
     assert sl.find_highest_cleared_tier([0.5, 1.0], 1.0) == 1
     assert sl.find_highest_cleared_tier([0.5, 1.0], 0.5, from_idx=1) == -1
     assert sl.find_highest_cleared_tier([0.5, 1.0], 1.0, from_idx=1) == 1
-
-
 
 
 def _df_open_then_hold(opens, closes, atrs=None, open_actions=None):

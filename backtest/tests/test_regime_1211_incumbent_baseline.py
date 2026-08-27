@@ -23,7 +23,6 @@ def _load():
 M = _load()
 
 
-
 def test_epsilon_squared_known_value():
     assert M.epsilon_squared(10.0, 100, 3) == pytest.approx(8.0 / 97.0)
 
@@ -33,7 +32,6 @@ def test_epsilon_squared_clamps_and_guards_degenerate_shapes():
     assert np.isnan(M.epsilon_squared(5.0, 10, 0))
     assert M.epsilon_squared(1e9, 100, 3) == 1.0
     assert M.epsilon_squared(0.0, 100, 3) == 0.0
-
 
 
 def test_forward_vol_profile_is_median_ratio_per_state():
@@ -57,7 +55,6 @@ def test_forward_vol_profile_drops_nan_forward():
     prof = M.forward_vol_profile(labels, fwd)
     assert prof["a"] == pytest.approx(0.5)
     assert prof["b"] == pytest.approx(1.5)
-
 
 
 def test_inject_effect_lam_zero_is_identity():
@@ -95,7 +92,6 @@ def test_inject_effect_unknown_state_defaults_to_unit_ratio():
     assert out[1] == pytest.approx(5.0)
 
 
-
 def test_block_bootstrap_length_and_membership():
     rng = np.random.default_rng(0)
     src = np.arange(10.0)
@@ -109,7 +105,6 @@ def test_block_bootstrap_block_len_one_is_iid_resample():
     src = np.array([5.0, 5.0, 5.0])
     out = M.block_bootstrap(src, block_len=1, n_out=100, rng=rng)
     assert np.all(out == 5.0)
-
 
 
 def _synthetic_cell(n=600, block_len=6, seed=0):
@@ -131,7 +126,6 @@ def test_simulate_power_null_is_near_alpha_and_monotone():
     assert powers[2.0] > powers[0.0]
 
 
-
 def test_min_detectable_effect_interpolates_crossing():
     grid = (0.0, 1.0, 2.0)
     powers = {0.0: 0.1, 1.0: 0.6, 2.0: 0.9}
@@ -149,7 +143,6 @@ def test_min_detectable_effect_first_point_already_powered():
     grid = (0.0, 1.0)
     powers = {0.0: 0.95, 1.0: 0.99}
     assert M.min_detectable_effect(grid, powers, target=0.8) == 0.0
-
 
 
 def _cell(symbol, tf, window, p, *, knife_edge=False, seed_stable=True):
@@ -241,7 +234,6 @@ def test_verdict_counts_available_denominator_only():
     assert v["n_significant_cells"] == 2
 
 
-
 def _fake_df(index):
     import pandas as pd
     n = len(index)
@@ -267,7 +259,6 @@ def test_load_cell_rejects_non_monotonic_index(monkeypatch):
     cell = M.load_cell("BTC/USDT", "1h", "2023")
     assert cell["status"] == "unavailable"
     assert "cache_unstable" in cell["reason"]
-
 
 
 def test_load_cell_on_cached_data_if_available():

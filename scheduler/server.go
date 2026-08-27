@@ -43,7 +43,7 @@ type StatusServer struct {
 	confirmNonces map[string]confirmNonceEntry
 	tradeActionMu sync.Mutex
 	tradeDepsHook func(*manualCoreDeps)
-	restartFn     func() error
+	restartFn func() error
 
 	perpsErrMu              sync.Mutex
 	lastFuturesErrLoggedAt  time.Time

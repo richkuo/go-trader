@@ -4,8 +4,6 @@ import pytest
 from backtester import Backtester
 
 
-
-
 def _bt(direction=None, invert_signal=False):
     return Backtester(initial_capital=1000, direction=direction,
                       invert_signal=invert_signal)
@@ -51,8 +49,6 @@ def test_invert_runs_before_direction_gating():
     out = _bt(direction="long", invert_signal=True)._apply_direction_invert(
         pd.Series([1, -1]), uses_open_close=True)
     assert out.tolist() == [0, 1]
-
-
 
 
 def _ohlc(signal):
@@ -198,8 +194,6 @@ def test_regime_directional_policy_holds_open_position_regime_plain_path():
     res = bt.run(df, save=False)
     assert [t["side"] for t in res["trades"]] == ["short"]
     assert res["trades"][0]["exit_reason"] == "end_of_data"
-
-
 
 
 def _oc_flip_df(open_action, close_fraction, regime):

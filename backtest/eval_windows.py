@@ -47,7 +47,6 @@ PLATFORM = "binanceus"
 FEE_PLATFORM = "hyperliquid"
 
 
-
 def trade_samples_from_results(results: dict) -> List[dict]:
     out = []
     for t in results.get("trades") or []:
@@ -193,7 +192,6 @@ def parse_dataset_arg(raw: str) -> tuple:
     if not sep or not sym or not tf:
         raise ValueError(f"--datasets expects SYMBOL:TIMEFRAME, got: {raw!r}")
     return sym.strip(), tf.strip()
-
 
 
 def run_leg(reg, name: str, params: Optional[dict], symbol: str, timeframe: str,
@@ -490,7 +488,6 @@ def evaluate_window(reg, candidate: dict, datasets: List[tuple],
     return score
 
 
-
 def _fmt(v, width=8, prec=2):
     if v is None:
         return " " * (width - 1) + "-"
@@ -584,7 +581,6 @@ def format_sweep_report(sweep_rows: List[dict], window_name: str) -> str:
     lines.append("(M1 step 6: the chosen combo must sit on a broad plateau, "
                  "not a single-param spike.)")
     return "\n".join(lines)
-
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+
 func scaleInRatchetStrategy() StrategyConfig {
 	return StrategyConfig{
 		ID: "hl-scalein-eth", Type: "perps", Platform: "hyperliquid", Script: "x.py",

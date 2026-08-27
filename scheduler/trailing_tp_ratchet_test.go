@@ -489,6 +489,7 @@ func TestApplyTrailingStopUpdateResult_SideGuardSkipsMutation(t *testing.T) {
 	}
 }
 
+
 func TestDefaultTrailingRatchetTiers_InternallyValid(t *testing.T) {
 	def := defaultTrailingRatchetTiers()
 	if len(def) != 3 {

@@ -1098,9 +1098,9 @@ func TestFindHighestClearedTier_NeverArmedSkipped(t *testing.T) {
 		wantClear bool
 	}{
 		{
-			name:      "never armed tier 0, armed tier 1 still resting",
-			oids:      []int64{0, 222},
-			armed:     []bool{false, true},
+			name:  "never armed tier 0, armed tier 1 still resting",
+			oids:  []int64{0, 222},
+			armed: []bool{false, true},
 			wantClear: false,
 		},
 		{
@@ -1217,6 +1217,7 @@ func TestValidatePostTPStopLossRules_NoOpWhenAbsent(t *testing.T) {
 		t.Fatalf("expected no errors when sl_after is absent, got %v", errs)
 	}
 }
+
 
 func slAfterRegimeRaw(entries map[string]float64) map[string]interface{} {
 	tr := map[string]interface{}{}

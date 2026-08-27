@@ -16,7 +16,6 @@ CONTRACT_SPECS = _mod.CONTRACT_SPECS
 YAHOO_SYMBOL_MAP = _mod.YAHOO_SYMBOL_MAP
 
 
-
 class TestProperties:
     def test_name(self):
         adapter = TopStepExchangeAdapter(mode="paper")
@@ -33,7 +32,6 @@ class TestProperties:
                 os.environ.pop(key, None)
             with pytest.raises(RuntimeError, match="Live mode requires"):
                 TopStepExchangeAdapter(mode="live")
-
 
 
 class TestContractSpecs:
@@ -54,7 +52,6 @@ class TestContractSpecs:
         adapter = TopStepExchangeAdapter(mode="paper")
         with pytest.raises(ValueError, match="Unknown symbol"):
             adapter.get_contract_spec("UNKNOWN")
-
 
 
 class TestMarketDataPaper:
@@ -102,12 +99,10 @@ class TestMarketDataPaper:
         assert adapter.get_ohlcv("UNKNOWN") == []
 
 
-
 class TestAccountData:
     def test_get_open_positions_paper(self):
         adapter = TopStepExchangeAdapter(mode="paper")
         assert adapter.get_open_positions() == []
-
 
 
 def _live_adapter_with_session(session):
@@ -208,7 +203,6 @@ class TestCashflowJournalFeeds:
             adapter.get_account_fills()
 
 
-
 class TestOrderExecution:
     def test_market_open_paper_raises(self):
         adapter = TopStepExchangeAdapter(mode="paper")
@@ -221,13 +215,11 @@ class TestOrderExecution:
             adapter.market_close("ES")
 
 
-
 class TestMarketHours:
     def test_is_market_open_returns_bool(self):
         adapter = TopStepExchangeAdapter(mode="paper")
         result = adapter.is_market_open()
         assert isinstance(result, bool)
-
 
 
 class TestYahooSymbolMap:

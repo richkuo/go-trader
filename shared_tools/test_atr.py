@@ -112,8 +112,6 @@ def test_latest_atr_strict_positive():
     assert latest_atr(df) == 0.0
 
 
-
-
 def _make_big_ohlcv(n: int = 60, seed: int = 7) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     close = 50_000 + np.cumsum(rng.normal(0, 300, n))

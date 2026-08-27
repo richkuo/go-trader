@@ -39,7 +39,6 @@ def _load_1080():
     return mod
 
 
-
 def epsilon_squared(kruskal_h: float, n: int, k: int) -> float:
     if n <= k or k < 1:
         return float("nan")
@@ -149,7 +148,6 @@ def replication_verdict(cells: list, alpha_family: float, *,
     }
 
 
-
 def load_cell(symbol, timeframe, window, horizon=PRIMARY_HORIZON, period=DEFAULT_PERIOD):
     cell = {"symbol": symbol, "timeframe": timeframe, "window": window, "horizon": int(horizon)}
     try:
@@ -208,7 +206,6 @@ def load_cell(symbol, timeframe, window, horizon=PRIMARY_HORIZON, period=DEFAULT
 
 def _public(cell: dict) -> dict:
     return {k: v for k, v in cell.items() if k not in ("labels", "fwd")}
-
 
 
 def run_power(power_cells, *, n_sim, n_perm, alpha, lam_grid, seed, log=None):

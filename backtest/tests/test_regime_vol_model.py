@@ -392,8 +392,6 @@ def test_non_degeneracy_flags_low_transition_rate():
     assert "min_transition_rate" in " ".join(rep["reasons"])
 
 
-
-
 def test_resolve_bakeoff_n_perm_default_achieves_corrected_alpha_with_headroom():
     mod = _load_research_module("nperm_default")
     n = mod.resolve_bakeoff_n_perm(18)
@@ -492,7 +490,6 @@ def test_score_labels_default_n_perm_is_byte_identical():
     explicit = score_labels(close, labels, feats, target="volatility", n_perm=200)
     assert (json.dumps(base, default=float, sort_keys=True)
             == json.dumps(explicit, default=float, sort_keys=True))
-
 
 
 def _decoder_model(em_mean, em_var, states, *, filter_window=8):

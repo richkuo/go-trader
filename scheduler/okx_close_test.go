@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+
 func TestForceCloseOKXLive_ClosesOwnedCoinsOnly(t *testing.T) {
 	okxLive := []StrategyConfig{
 		{ID: "okx-btc", Platform: "okx", Type: "perps",
@@ -177,6 +178,7 @@ func TestOKXLiveCloseReport_SortedErrorCoins(t *testing.T) {
 		}
 	}
 }
+
 
 func TestComputeOKXCircuitCloseQty_SoleOwnerFullSzi(t *testing.T) {
 	okxLive := []StrategyConfig{

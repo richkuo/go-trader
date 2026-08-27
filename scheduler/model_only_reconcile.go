@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+
 type modelOnlyCloseCorrection struct {
 	StrategyID  string
 	Timestamp   time.Time

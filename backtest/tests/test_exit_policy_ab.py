@@ -7,7 +7,6 @@ import pytest
 import exit_policy_ab as m
 
 
-
 def test_sign_test_all_positive_is_significant():
     r = m.sign_test([0.5, 1.0, 2.0, 0.1, 0.3])
     assert r["n_pos"] == 5 and r["n_neg"] == 0 and r["n_zero"] == 0
@@ -52,7 +51,6 @@ def test_sign_test_empty():
     assert r["n"] == 0 and r["p_value"] == 1.0
 
 
-
 def test_signed_rank_all_positive_low_p():
     r = m.wilcoxon_signed_rank([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
     assert r["n"] == 8
@@ -81,7 +79,6 @@ def test_signed_rank_handles_ties():
 def test_signed_rank_empty_is_undefined():
     r = m.wilcoxon_signed_rank([])
     assert r["n"] == 0 and r["p_value"] == 1.0
-
 
 
 def test_bootstrap_point_is_mean_and_deterministic():
@@ -125,7 +122,6 @@ def test_unpaired_diff_one_empty_arm():
     r = m.unpaired_diff_ci([], [2.0, 4.0], n_resamples=10)
     assert r["point"] == pytest.approx(3.0)
     assert r["lo"] is None
-
 
 
 def _leg(entry_date="2025-01-01", side="long", pnl_pct=2.0, shares=1.0,
@@ -179,7 +175,6 @@ def test_group_and_free_arm_entries_orders_by_entry():
     assert [e["entry_date"] for e in entries] == ["2025-01-01", "2025-01-05"]
 
 
-
 def test_build_paired_rows_pairs_and_counts_unmatched():
     control = [
         {"entry_date": "d1", "side": "long", "net_pct": 1.0, "mfe_pct": 2.0,
@@ -206,7 +201,6 @@ def test_build_paired_rows_unknown_regime_label():
         control, {"d1": {"net_pct": 1.0, "mfe_pct": 1.0, "mae_pct": -1.0,
                          "bars_held": 2}}, {})
     assert rows[0]["regime"] == m.UNKNOWN_REGIME
-
 
 
 def _row(regime, ctrl, cand, mfe=2.0, mae=-1.0):
@@ -240,7 +234,6 @@ def test_per_regime_win_rate_delta():
     assert blk["delta_win_rate"] == pytest.approx(1.0)
 
 
-
 def test_arm_summary_passes_max_dd_and_computes_winrate():
     results = {
         "total_trades": 2, "total_return_pct": 5.0, "max_drawdown_pct": -3.0,
@@ -257,7 +250,6 @@ def test_arm_summary_passes_max_dd_and_computes_winrate():
 def test_arm_summary_none_results():
     s = m.arm_summary(None)
     assert s["entries"] == 0 and s["win_rate"] is None and s["max_drawdown_pct"] is None
-
 
 
 def test_replayable_true_for_rule_based_exits():
@@ -286,7 +278,6 @@ def test_replayable_false_for_per_tick_regime_variants():
         [{"name": "tiered_tp_atr_live_regime_dynamic"}])
 
 
-
 def test_paired_delta_summary_shape():
     s = m.paired_delta_summary([1.0, 2.0, -0.5, 3.0], n_resamples=200, seed=9)
     assert set(s) == {"n", "mean", "median", "sign_test", "signed_rank", "bootstrap"}
@@ -297,7 +288,6 @@ def test_paired_delta_summary_shape():
 def test_paired_delta_summary_empty():
     s = m.paired_delta_summary([])
     assert s["n"] == 0 and s["mean"] is None
-
 
 
 def _regime_args(classifier=None, windows_json=None, period=14, adx=20.0, gate_window=None):
@@ -337,7 +327,6 @@ def test_resolve_regime_explicit_adx_overrides_config_windows():
     cfg = m.resolve_regime_cfg(_regime_args(classifier="adx"),
                                {"windows": {"medium": {"classifier": "composite", "period": 14}}})
     assert cfg["classifier"] == "adx" and cfg["windows_spec"] is None
-
 
 
 def test_stops_from_kwargs_collects_all_present_and_drops_none():
@@ -413,7 +402,6 @@ def test_control_keeps_stop_regardless_of_candidate_mode():
     assert "stop_loss_atr_mult" not in drop_kw
 
 
-
 def _spec_args(extra=None):
     base = [
         "--strategy", "squeeze_momentum",
@@ -427,7 +415,6 @@ def test_resolve_spec_explicit_path_has_no_stops():
     spec = m._resolve_spec(_spec_args())
     assert spec["control_stops"] == {} and spec["candidate_stops"] == {}
     assert spec["candidate_stops_mode"] == "inherit"
-
 
 
 _MULTI_WINDOW = ('{"fast":{"classifier":"composite","period":7},'
@@ -459,7 +446,6 @@ def test_gate_window_on_single_window_spec_naming_that_window_ok():
     spec = m._resolve_spec(_spec_args(["--regime-windows-json", _SINGLE_WINDOW,
                                        "--gate-window", "slow"]))
     assert list(spec["regime_cfg"]["windows_spec"].keys()) == ["slow"]
-
 
 
 def test_reject_invert_signal_incumbent():
@@ -497,7 +483,6 @@ def test_no_reject_when_entry_shapers_absent_or_falsy():
          "profile_allocation": {}})
 
 
-
 def test_stop_candidate_stacks_under_inherited_stop():
     assert m._candidate_stacks_on_inherited_stop(
         [{"name": "atr_stop", "params": {}}], "inherit", {"stop_loss_atr_mult": 1.5})
@@ -519,7 +504,6 @@ def test_no_stack_warning_when_dropped_or_no_inherited_stop():
     assert not m._candidate_stacks_on_inherited_stop(
         [{"name": "atr_stop", "params": {}}], "inherit", {})
     assert not m._candidate_stacks_on_inherited_stop(None, "inherit", {"stop_loss_atr_mult": 1.5})
-
 
 
 def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
@@ -570,7 +554,6 @@ def test_replay_positions_anchored_on_df_signals_not_df(monkeypatch):
     assert captured["sig_pos"] == 2
     assert captured["regime_frame_len"] == 8
     assert res is not None and res["paired_diag"]["paired"] == 1
-
 
 
 def test_backtester_kwargs_carry_intrabar_resolution():

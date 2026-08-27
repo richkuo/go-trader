@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+
 func TestTradeNetPnLAndLedgerDelta(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -102,6 +103,7 @@ func TestLedgerNetByStrategy_ConventionAware(t *testing.T) {
 	}
 }
 
+
 func TestLedgerSharedWalletMemberValues_Math(t *testing.T) {
 	in := ledgerWalletInputs{
 		Members:     []string{"hl-btc", "hl-eth"},
@@ -181,6 +183,7 @@ func TestLedgerSharedWalletMemberValues_BaselineAnchorsDrift(t *testing.T) {
 		t.Errorf("new-divergence drift = %v, want -3", res.Drift)
 	}
 }
+
 
 func TestReconcileSharedWalletDisplayValues_HLLedgerPath(t *testing.T) {
 	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
@@ -331,6 +334,7 @@ func TestReconcileSharedWalletDisplayValues_HLMissingLedgerStateFallsBack(t *tes
 	}
 }
 
+
 func TestSignedPerpFlowUSD(t *testing.T) {
 	acct := "0xME"
 	cases := []struct {
@@ -369,6 +373,7 @@ func TestSignedPerpFlowUSD(t *testing.T) {
 		}
 	}
 }
+
 
 func TestIngestFundingEvent_SplitsByQtyShareAndDedups(t *testing.T) {
 	db := newLedgerTestDB(t)
@@ -598,6 +603,7 @@ func TestIngestWalletLedgerEvents_TransfersAndWatermarks(t *testing.T) {
 	}
 }
 
+
 func TestBookPerpsClose_GrossConventionAndOIDDedup(t *testing.T) {
 	s := &StrategyState{
 		ID: "hl-x", Platform: "hyperliquid", Type: "perps", Cash: 1000,
@@ -663,6 +669,7 @@ func TestBookPerpsClose_ModeledFeeStampsGrossRow(t *testing.T) {
 		t.Errorf("gross pnl = %v, want 100", tr.RealizedPnL)
 	}
 }
+
 
 func TestPlanTradeLedgerForStrategy_MigratesAndTruesUp(t *testing.T) {
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -1122,6 +1129,7 @@ func TestPlanBackfillForStrategy_SkipsGrossConventionRows(t *testing.T) {
 		t.Errorf("NewCash = %v, want 1098 (net replay of gross row)", plan.NewCash)
 	}
 }
+
 
 func TestApplyTradeLedgerPlan_RoundTrip(t *testing.T) {
 	db := newLedgerTestDB(t)

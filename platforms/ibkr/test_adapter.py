@@ -20,12 +20,10 @@ CME_SPECS = _mod.CME_SPECS
 DEFAULT_SPECS = _mod.DEFAULT_SPECS
 
 
-
 class TestProperties:
     def test_name(self):
         adapter = IBKRExchangeAdapter()
         assert adapter.name == "ibkr"
-
 
 
 class TestSpotPrice:
@@ -59,7 +57,6 @@ class TestSpotPrice:
             assert adapter.get_spot_price("BTC") == 0.0
 
 
-
 class TestVolMetrics:
     def test_get_vol_metrics(self):
         adapter = IBKRExchangeAdapter()
@@ -82,7 +79,6 @@ class TestVolMetrics:
             vol, iv_rank = adapter.get_vol_metrics("BTC")
             assert vol == 0.60
             assert iv_rank == 50.0
-
 
 
 class TestOptionsProtocol:

@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+
 func replayHoldingETH() *Position {
 	return &Position{Symbol: "ETH", Quantity: 0.5, InitialQuantity: 0.5, AvgCost: 1900, Side: "long", Multiplier: 1}
 }

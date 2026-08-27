@@ -12,11 +12,12 @@ import (
 	"time"
 )
 
+
 type WalletLedgerState struct {
 	FundingSinceMs   int64
 	TransfersSinceMs int64
-	BaselineOffset   float64
-	BaselineSet      bool
+	BaselineOffset float64
+	BaselineSet    bool
 }
 
 func (sdb *StateDB) GetWalletLedgerState(platform, account string) (WalletLedgerState, bool, error) {
@@ -103,17 +104,17 @@ func (sdb *StateDB) SumWalletTransfers(platform, account string) (float64, error
 }
 
 type hlLedgerEventDelta struct {
-	Type            string `json:"type"`
-	Coin            string `json:"coin,omitempty"`
-	USDC            string `json:"usdc,omitempty"`
-	Fee             string `json:"fee,omitempty"`
-	ToPerp          bool   `json:"toPerp,omitempty"`
-	User            string `json:"user,omitempty"`
-	Destination     string `json:"destination,omitempty"`
-	Token           string `json:"token,omitempty"`
-	Amount          string `json:"amount,omitempty"`
-	SourceDex       string `json:"sourceDex,omitempty"`
-	DestinationDex  string `json:"destinationDex,omitempty"`
+	Type        string `json:"type"`
+	Coin        string `json:"coin,omitempty"`
+	USDC        string `json:"usdc,omitempty"`
+	Fee         string `json:"fee,omitempty"`
+	ToPerp      bool   `json:"toPerp,omitempty"`
+	User        string `json:"user,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Token  string `json:"token,omitempty"`
+	Amount string `json:"amount,omitempty"`
+	SourceDex      string `json:"sourceDex,omitempty"`
+	DestinationDex string `json:"destinationDex,omitempty"`
 	NetWithdrawnUSD string `json:"netWithdrawnUsd,omitempty"`
 }
 

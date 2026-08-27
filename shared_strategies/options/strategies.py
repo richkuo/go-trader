@@ -18,7 +18,6 @@ from adapter import (
 from risk import OptionsRiskManager
 
 
-
 OPTIONS_STRATEGY_REGISTRY: Dict[str, dict] = {}
 
 
@@ -54,7 +53,6 @@ def create_options_strategy(name: str, adapter: DeribitOptionsAdapter,
     return strat["class"](adapter, risk_manager, **p)
 
 
-
 class BaseOptionsStrategy:
 
     def __init__(self, adapter: DeribitOptionsAdapter,
@@ -69,7 +67,6 @@ class BaseOptionsStrategy:
 
     def manage_positions(self, underlying: str) -> List[dict]:
         return []
-
 
 
 @register_options_strategy(
@@ -223,7 +220,6 @@ class MomentumOptionsStrategy(BaseOptionsStrategy):
         return actions
 
 
-
 @register_options_strategy(
     "vol_mean_reversion",
     "Volatility Mean Reversion — trade IV rank with straddles/strangles",
@@ -336,7 +332,6 @@ class VolMeanReversionStrategy(BaseOptionsStrategy):
         return unique
 
 
-
 @register_options_strategy(
     "protective_puts",
     "Protective Puts — hedge spot holdings with OTM puts",
@@ -416,7 +411,6 @@ class ProtectivePutsStrategy(BaseOptionsStrategy):
                 })
 
         return actions
-
 
 
 @register_options_strategy(

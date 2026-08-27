@@ -128,8 +128,6 @@ def test_build_parser_rejects_unknown_optimize_metric():
         parser.parse_args(["--optimize-metric", "alpha_decay"])
 
 
-
-
 def _spy_single(monkeypatch):
     seen = {}
 

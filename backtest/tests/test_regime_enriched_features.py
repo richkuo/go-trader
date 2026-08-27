@@ -38,7 +38,6 @@ def _synthetic_funding(idx, seed=1):
     return pd.DataFrame({"timestamp": ts, "rate": rate})
 
 
-
 def test_canonical_columns_lead_enriched_set():
     assert ref.ENRICHED_COLUMNS[:4] == ref.CANONICAL_COLUMNS
     assert ref.CANONICAL_INDICES == (0, 1, 2, 3)
@@ -75,7 +74,6 @@ def test_canonical_indices_for():
     assert ref.canonical_indices_for(cols) == (1, 2, 3, 4)
     with pytest.raises(ValueError, match="missing"):
         ref.canonical_indices_for(["return_eff", "range_eff", "adx"])
-
 
 
 def test_enriched_matrix_is_causal_future_bars_do_not_change_past_rows():
@@ -175,7 +173,6 @@ def test_hurst_extra_column_appended_after_canonical_block():
     assert "hurst" in ref.ENRICHED_EXTRA_COLUMNS
 
 
-
 def test_fit_unsupervised_enriched_schema_and_decode():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH, VALID_LABELS_COMPOSITE
     df = _synthetic_ohlcv()
@@ -238,7 +235,6 @@ def test_column_order_is_load_bearing_for_labels():
     assert list(np.asarray(correct)[valid]) != list(np.asarray(wrong)[valid])
 
 
-
 def test_naming_ignores_extra_dims_given_same_canonical_centroids():
     from regime import _DEFAULT_COMPOSITE_THRESHOLDS as TH
     mean = np.zeros(6); std = np.ones(6)
@@ -266,7 +262,6 @@ def test_map_latent_to_names_default_indices_unchanged_for_canonical_only():
     names, mapping = rvm.map_latent_to_names(em, mean, std, dict(TH))
     assert names == ["ranging_quiet", "trending_up_clean"]
     assert mapping["1"]["centroid_raw"] == [0.5, 0.5, 0.9, 40.0]
-
 
 
 def _load_research(mod_name, filename):
@@ -306,7 +301,6 @@ def test_combined_family_funds_the_tighter_alpha():
     assert m80.resolve_bakeoff_n_perm(per_subset, requested=300) == 300
     with pytest.raises(ValueError, match="cannot satisfy the Bonferroni-corrected alpha"):
         m80.resolve_bakeoff_n_perm(combined, requested=300)
-
 
 
 def test_enriched_bakeoff_smoke_if_data_available():

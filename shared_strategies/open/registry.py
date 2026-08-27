@@ -94,7 +94,6 @@ DISCOVERY_HIDDEN_STRATEGIES = frozenset({
 }) | M5_DEPRECATED_EDGE_STRATEGIES
 
 
-
 _CONSTRAINT_RE = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(<=|>=|<|>)\s*"
     r"([A-Za-z_][A-Za-z0-9_]*|[-+]?\d+(?:\.\d+)?)\s*$"
@@ -302,8 +301,6 @@ def build_registry(platform: str, *, include_hidden: bool = False) -> Dict[str, 
             "edge_status": entry.get("edge_status"),
         }
     return out
-
-
 
 
 @register(
@@ -1603,7 +1600,6 @@ def hold_strategy(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     result["signal"] = 0
     return result
-
 
 
 PLATFORM_ORDER: Dict[str, List[str]] = {

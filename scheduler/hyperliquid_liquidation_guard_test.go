@@ -15,6 +15,7 @@ var errLiqAuditStub = errors.New("simulated stop-loss subprocess failure")
 
 func approxEqLiq(a, b float64) bool { return math.Abs(a-b) < 1e-6 }
 
+
 func TestStopPastLiquidationDirections(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -169,6 +170,7 @@ func TestHLClampProtectionSLMultLeavesReachableGeometryAlone(t *testing.T) {
 	}
 }
 
+
 func TestHLLiquidationShouldNotifyThrottle(t *testing.T) {
 	base := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 
@@ -255,6 +257,7 @@ func TestClearHLPerpsPositionAlertThrottlesClearsBoth(t *testing.T) {
 	}
 	hlLiquidationAlerts.Delete(hlLiquidationAlertKey("spot-eth", "ETH"))
 }
+
 
 func TestPlanHyperliquidLiquidationAuditClassification(t *testing.T) {
 	cands := []hlLiquidationAuditCandidate{
@@ -895,6 +898,7 @@ func TestCollectHLLiquidationAuditCandidatesSkipsHedgeLegs(t *testing.T) {
 	}
 }
 
+
 func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 	live := []string{"x.py", "ETH", "1h", "--mode=live"}
 	paper := []string{"x.py", "ETH", "1h", "--mode=paper"}
@@ -993,6 +997,7 @@ func TestValidateHLStopWithinBankruptcyBound(t *testing.T) {
 		t.Errorf("empty margin_mode must be treated as isolated, got %v", errs)
 	}
 }
+
 
 func TestHLLiquidationPxForSideGatesOnNetSide(t *testing.T) {
 	liq := map[string]float64{"ETH": 2340.5}
@@ -1163,6 +1168,7 @@ func TestProtectionSyncSideMismatchNeverForcesPastLiquidationReplace(t *testing.
 		})
 	}
 }
+
 
 func TestHLStopBankruptcyBoundSkipsInertPctFieldsUnderUnifiedClose(t *testing.T) {
 	base := func(unified bool) StrategyConfig {

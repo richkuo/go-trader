@@ -52,7 +52,6 @@ def _random_mask(n, seed=7):
     return list(np.random.default_rng(seed).random(n) < 0.5)
 
 
-
 def test_doubled_tail_formula_is_the_pre_registered_one():
     assert study.doubled_tail_p(0, 999, 999) == pytest.approx(2.0 / 1000.0,
                                                               abs=1e-6)
@@ -85,7 +84,6 @@ def test_both_tails_are_counted_over_surviving_draws_not_the_request():
     assert out["n_draws"] > 0
     assert out["p"] == pytest.approx(
         study.doubled_tail_p(0, out["n_draws"], out["n_draws"]), abs=0.05)
-
 
 
 def _reversed_pool():
@@ -171,7 +169,6 @@ def test_the_cluster_null_reuses_1422s_rotation_internals():
     assert study._rotate_values is study1422._rotate_values
     assert study._admissible_offsets is study1422._admissible_offsets
     assert study.usable_cluster_rows is study1422.usable_cluster_rows
-
 
 
 _ONE_SIDED = (
@@ -260,7 +257,6 @@ def test_stage_0_is_never_called_from_the_confirmatory_path(monkeypatch):
                                          seed=study.SEED)
     study.validity_gate(mde)
     study.decide_recommendation(cfgs, mde)
-
 
 
 def _mde_inputs(n=120, seed=1426):
@@ -375,7 +371,6 @@ def test_detection_limits_report_a_row_matched_zero_injection_p():
     assert mde["two_sided"] is True
 
 
-
 def _mde(mom_limit=0.05, mom_sep=0.09, mr_limit=0.05, mr_sep=0.02, p0=0.4,
          pooled=None, **extra):
     out = {
@@ -470,7 +465,6 @@ def test_there_is_no_reversed_mode_in_a_symmetric_study():
 
 def test_the_gate_marks_itself_two_sided():
     assert study.validity_gate(_mde())["two_sided"] is True
-
 
 
 def _passing_cfg(**over):
@@ -593,7 +587,6 @@ def test_the_cohort_option_is_declared_as_data():
     assert study.CONTRACT_PATH_CLAIMED is False
     assert study.SIBLING_DEFERRAL == (1427, 1428)
     assert study.TWO_SIDED is True
-
 
 
 _FAILING_MDE = _mde(mom_limit=0.02, mom_sep=-0.005, p0=0.71,
@@ -788,7 +781,6 @@ def test_the_recommendation_only_claims_the_bound_when_the_gate_passed():
     assert "carries no bound" in failing
 
 
-
 def test_1426_does_not_default_to_the_contract_path():
     assert os.path.basename(study._DEFAULT_REPORT_OUT) == \
         "hurst_1426_two_sided_sort.md"
@@ -954,7 +946,6 @@ def test_the_registry_row_records_the_deferral_and_the_two_sidedness():
     assert "#1427" in row and "#1428" in row
 
 
-
 def test_the_estimator_is_the_1409_ssot_and_is_never_reimplemented():
     assert study.rolling_hurst is study1410.rolling_hurst
     source = open(study.__file__).read()
@@ -1001,7 +992,6 @@ def test_the_pinned_hypothesis_is_still_the_committed_1410_argmin():
 
 def test_the_seed_is_the_issue_number():
     assert study.SEED == study.ISSUE == 1426
-
 
 
 def _committed():

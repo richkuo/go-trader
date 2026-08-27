@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+
 func writeRatchetRegimeTestConfig(t *testing.T, dir, body string) string {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.json")

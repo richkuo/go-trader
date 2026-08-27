@@ -52,8 +52,6 @@ _SPEC_MULTI = {
 }
 
 
-
-
 def test_injected_payload_matches_inline_triple():
     df = _make_uptrend()
     inline = prepare_check_regime(
@@ -114,8 +112,6 @@ def test_prepare_check_regime_disabled_ignores_injection():
         None, regime_enabled=False, injected_payload_json='{"default":{"regime":"x"}}'
     )
     assert out[0] == "" and out[1] == ""
-
-
 
 
 def test_bundle_snapshots_match_compute_multi_regime():

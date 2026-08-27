@@ -55,8 +55,6 @@ def _trend_up_then_down(up_n=200, down_n=200, start=100.0, amp=3.0, period=20):
     return np.concatenate([up, down])
 
 
-
-
 def test_tema_cross_emits_buy_during_uptrend(registry):
     prices = _oscillating_uptrend(200, start=100.0)
     df = make_ohlcv(prices)
@@ -96,8 +94,6 @@ def test_tema_cross_flat_market_no_signals(registry):
     df = make_ohlcv(np.full(200, 100.0), noise=0)
     result = registry.tema_cross_strategy(df)
     assert not (result["signal"] == 1).any()
-
-
 
 
 def test_tema_cross_bd_emits_long_in_uptrend(registry):

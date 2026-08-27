@@ -7,7 +7,6 @@ import eval_windows as ew
 import gross_edge_noise as gen
 
 
-
 def test_summarize_returns_empty():
     s = gen.summarize_returns([])
     assert s["n"] == 0 and s["mean"] is None and s["median"] is None
@@ -21,7 +20,6 @@ def test_summarize_returns_mixed():
     assert s["median"] == pytest.approx(0.5)
     assert s["min"] == -2.0 and s["max"] == 3.0
     assert s["n_pos"] == 2 and s["n_neg"] == 1 and s["n_zero"] == 1
-
 
 
 def test_permutation_empty_sample_is_p_one():
@@ -56,7 +54,6 @@ def test_permutation_p_never_zero():
     assert 0.0 < r["p_value"] <= 1.0
 
 
-
 def test_bootstrap_p_le_zero_empty_is_none():
     assert gen.bootstrap_p_mean_le_zero([]) is None
 
@@ -77,7 +74,6 @@ def test_bootstrap_p_le_zero_deterministic():
     a = gen.bootstrap_p_mean_le_zero(vals, n_resamples=500, seed=1066)
     b = gen.bootstrap_p_mean_le_zero(vals, n_resamples=500, seed=1066)
     assert a == b
-
 
 
 def test_dedupe_drops_same_dataset_same_entry():
@@ -102,7 +98,6 @@ def test_dedupe_keeps_distinct_entries():
     assert dropped == 0 and len(out) == 2
 
 
-
 def test_verdict_non_positive_mean_is_no_edge():
     assert gen.noise_verdict(0.0, 0.001) == gen.VERDICT_NO_EDGE
     assert gen.noise_verdict(-0.5, 0.001) == gen.VERDICT_NO_EDGE
@@ -116,7 +111,6 @@ def test_verdict_significant_positive_is_distinguishable():
 def test_verdict_insignificant_positive_is_indistinguishable():
     assert gen.noise_verdict(0.3, 0.39) == gen.VERDICT_INDISTINGUISHABLE
     assert gen.noise_verdict(0.3, 0.05) == gen.VERDICT_INDISTINGUISHABLE
-
 
 
 def test_analyze_sample_verdict_matches_primary_test():
@@ -133,7 +127,6 @@ def test_analyze_sample_verdict_matches_primary_test():
         assert key in strong
 
 
-
 def test_entry_in_range_bare_date_bounds_vs_timestamps():
     rng = ("2025-06-10", "2025-07-01")
     assert gen._entry_in_range("2025-06-10 00:00:00", rng)
@@ -145,7 +138,6 @@ def test_entry_in_range_bare_date_bounds_vs_timestamps():
 def test_entry_in_range_open_ended():
     assert gen._entry_in_range("2099-01-01 00:00:00", ("2026-01-01", None))
     assert not gen._entry_in_range("2025-12-31 23:00:00", ("2026-01-01", None))
-
 
 
 def test_pool_exact_duplicate_still_dropped():
@@ -233,7 +225,6 @@ def test_pool_open_ended_window_claims_to_infinity():
     assert [s["pnl_pct"] for s in samples] == [1.0]
 
 
-
 def test_window_overlaps_is_2025h1():
     out = gen.window_overlaps(["is", "oos", "2023", "2024", "2025H1"])
     assert len(out) == 1
@@ -246,7 +237,6 @@ def test_window_overlaps_is_2025h1():
 def test_window_overlaps_disjoint_windows_empty():
     assert gen.window_overlaps(["2023", "2024", "oos"]) == []
     assert gen.window_overlaps(["is", "oos"]) == []
-
 
 
 def test_trade_samples_from_results_extracts_entry_and_pnl():

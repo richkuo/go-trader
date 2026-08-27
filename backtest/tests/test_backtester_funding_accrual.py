@@ -38,8 +38,6 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-
-
 def test_short_collects_positive_funding_on_flat_price():
     df = _df([-1, 0, 0, 0, 0, 0], accrual=[1e-3] * 6)
     res = _run(df, direction="short")
@@ -54,15 +52,11 @@ def test_short_pays_negative_funding():
     assert res["final_capital"] == pytest.approx(9960.0)
 
 
-
-
 def test_long_pays_positive_funding():
     df = _df([1, 0, 0, 0, 0, 0], accrual=[1e-3] * 6)
     res = _run(df, direction=None)
     assert res["total_funding_pnl"] == pytest.approx(-40.0)
     assert res["final_capital"] == pytest.approx(9960.0)
-
-
 
 
 def test_open_bar_accrues_nothing_one_interval_one_charge():

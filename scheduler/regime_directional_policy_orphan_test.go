@@ -27,11 +27,11 @@ func TestPerpsRegimeDirectionOrphanConflict_RegimeFlip(t *testing.T) {
 		Regime: "trending_up",
 		Positions: map[string]*Position{
 			"BTC": {
-				Symbol:                         "BTC",
-				Quantity:                       0.01,
-				Side:                           "short",
-				OwnerStrategyID:                sc.ID,
-				Regime:                         "trending_down",
+				Symbol:          "BTC",
+				Quantity:        0.01,
+				Side:            "short",
+				OwnerStrategyID: sc.ID,
+				Regime:          "trending_down",
 				DirectionCertifiedAtOpen:       true,
 				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong},
 			},
@@ -66,11 +66,11 @@ func TestPerpsRegimeDirectionOrphanConflict_HoldStampedNoConflict(t *testing.T) 
 		Regime: "trending_down",
 		Positions: map[string]*Position{
 			"BTC": {
-				Symbol:                         "BTC",
-				Quantity:                       0.01,
-				Side:                           "short",
-				OwnerStrategyID:                sc.ID,
-				Regime:                         "trending_down",
+				Symbol:          "BTC",
+				Quantity:        0.01,
+				Side:            "short",
+				OwnerStrategyID: sc.ID,
+				Regime:          "trending_down",
 				DirectionCertifiedAtOpen:       true,
 				DirectionCertifiedStatesAtOpen: map[string]string{"trending_up": DirectionLong, "trending_down": DirectionShort, "ranging": DirectionLong},
 			},

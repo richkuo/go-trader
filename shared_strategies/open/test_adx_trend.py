@@ -6,7 +6,6 @@ import pytest
 from adx_trend import adx_trend_core, _compute_adx_components
 
 
-
 def make_ohlcv(closes, volume=None, noise=0.5):
     closes = np.array(closes, dtype=float)
     n = len(closes)
@@ -22,7 +21,6 @@ def make_ohlcv(closes, volume=None, noise=0.5):
         "close": closes,
         "volume": np.array(volume, dtype=float),
     })
-
 
 
 def test_strong_uptrend_generates_buy():
@@ -67,8 +65,6 @@ def test_crossover_with_weak_adx_no_signal():
     df = make_ohlcv(prices, noise=0.1)
     result = adx_trend_core(df)
     assert (result["signal"] == 0).all(), "Expected no signals when ADX is weak despite DI crossovers"
-
-
 
 
 def test_compute_adx_components_returns_required_arrays():

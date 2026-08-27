@@ -38,8 +38,6 @@ def _bt(policy=None, allowed=("trending_up",)):
     return Backtester(**kwargs)
 
 
-
-
 def test_all_empty_regime_bars_admit_entry_under_default_open():
     df = _df_with_signal()
     df["regime"] = ""
@@ -103,8 +101,6 @@ def test_unknown_policy_rejected_at_construction():
         _bt("fail-closed")
 
 
-
-
 def test_regime_allows_entry_empty_label_parity_matrix():
     gate = ["trending_up"]
     assert _regime_allows_entry([], "", "open")
@@ -114,8 +110,6 @@ def test_regime_allows_entry_empty_label_parity_matrix():
     assert _regime_allows_entry(gate, "trending_up", "closed")
     assert not _regime_allows_entry(gate, "ranging", "open")
     assert _regime_allows_entry(["ranging_directional"], "ranging_directional_up", "closed")
-
-
 
 
 def _write_config(tmp_path, strategy_extra=None, regime_extra=None):

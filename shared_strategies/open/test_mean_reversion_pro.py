@@ -73,8 +73,6 @@ def test_rsi_confirmation_required():
     assert (out["signal"] == 0).all()
 
 
-
-
 def test_extra_triggers_default_off_bit_identical():
     df = make_ohlcv(make_choppy_with_extremes())
     base = mean_reversion_pro_core(df, entry_std=1.5)

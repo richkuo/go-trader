@@ -35,7 +35,6 @@ def _trade(symbol="BTC/USDT", timeframe="1h", window="2021", day=0, pnl=1.0,
     }
 
 
-
 def test_every_1410_cell_is_exploratory():
     for key, window in study.D_1410:
         symbol, timeframe = key.rsplit(" ", 1)
@@ -100,7 +99,6 @@ def test_primary_ids_match_the_committed_1410_argmin():
                         "hurst_1410_gate_calibration.json")
     assert study.resolve_primary_config_ids(path) == tuple(
         sorted(study.PRIMARY_CONFIG_IDS))
-
 
 
 def test_overlap_counter_matches_brute_force():
@@ -213,7 +211,6 @@ def test_symbol_return_correlations_omits_short_overlap():
         ("BBB/USDT", "1h"): _close_frame(returns),
     }
     assert study.symbol_return_correlations(frames) == {}
-
 
 
 def _spread_trades(symbol, n, pnl_fn, label_fn, start_day=0, step_days=3):
@@ -364,7 +361,6 @@ def test_cluster_weighted_p_is_none_when_every_dataset_is_short():
     assert res["p"] is None and res["n_scored"] == 0
 
 
-
 def test_effective_offset_is_the_identity_on_the_longest_span():
     span = 900
     for off in range(study.MIN_OFFSET_DAYS, span - study.MIN_OFFSET_DAYS + 1):
@@ -511,7 +507,6 @@ def test_cluster_p_rejects_length_mismatch():
         study.cluster_permutation_pvalue_group_diff(trades, [1.0], [True])
 
 
-
 def test_rank1_threshold_is_the_hardest_bh_bar():
     assert study._rank1_threshold(30) == pytest.approx(0.05 / 30)
     assert study._rank1_threshold(4) == pytest.approx(0.05 / 4)
@@ -581,7 +576,6 @@ def test_mde_of_a_degenerate_split_is_none():
     assert study.min_detectable_effect(trades, [1.0] * 20, [False] * 20, 4,
                                        cluster=False, n_perm=study.N_PERM_MDE,
                                        seed=1) is None
-
 
 
 def test_joint_h_bucket_routes_nan_to_its_own_bucket():
@@ -706,7 +700,6 @@ def test_joint_verdict_never_separates_on_an_unrotatable_pool():
     assert v["p_cluster"] is None and v["mde_pp"] is None
 
 
-
 def _frame(start, end, timeframe="1h"):
     idx = pd.date_range(start, end, freq=pd.Timedelta(
         minutes=study.timeframe_minutes(timeframe)), inclusive="left")
@@ -793,7 +786,6 @@ def test_open_window_catches_a_mid_window_gap_plus_an_early_end():
     assert cov["cells"]["GAPPY/USDT 4h|oos"] is False
 
 
-
 def _ohlc(n=400, seed=5):
     rng = np.random.default_rng(seed)
     close = 100 + np.cumsum(rng.normal(0, 1, n))
@@ -845,7 +837,6 @@ def test_adx_and_hurst_stamps_use_the_same_shift():
     h_stamp = study.entry_stamp_series(rolling)
     assert stamped.iloc[200] == pytest.approx(raw_adx.iloc[198], nan_ok=True)
     assert h_stamp.iloc[200] == pytest.approx(rolling.iloc[198], nan_ok=True)
-
 
 
 def _cfg(**kw):
@@ -1021,7 +1012,6 @@ def test_justification_reports_the_strongest_primary_hypothesis():
     assert "0.0610" in decision["justification"]
 
 
-
 def test_warmup_leads_use_each_dataset_s_own_earliest_scored_window():
     frames = {("SOL/USDT", "4h"): _frame("2020-09-18", "2026-01-01", "4h")}
     coverage = {"cells": {"SOL/USDT 4h|2020H2": False,
@@ -1043,7 +1033,6 @@ def test_warmup_leads_still_flag_a_genuine_shortfall():
     coverage = {"cells": {"BTC/USDT 4h|2021": True}}
     leads = study.scored_warmup_leads(frames, coverage, ["2021"])
     assert not study.warmup_audit(leads, [512])["sufficient"]
-
 
 
 def test_bh_families_never_share_a_denominator():
@@ -1071,7 +1060,6 @@ def test_bh_marks_every_config_even_with_nothing_testable():
     cfgs = [_cfg(config_id=f"u{i}", p_cluster=None) for i in range(3)]
     study.apply_bh_by_cohort(cfgs)
     assert all(c["bh_reject"] is False for c in cfgs)
-
 
 
 def test_dedup_is_independent_of_scheduling_order():
@@ -1225,7 +1213,6 @@ def test_1422_render_marks_itself_superseded():
     assert "hurst_1424_gate_resolution.py" in text
 
 
-
 def test_scoped_run_may_not_overwrite_the_committed_json():
     with pytest.raises(SystemExit) as exc:
         study.main(["--only", "momentum"])
@@ -1295,7 +1282,6 @@ def test_render_only_writes_a_non_contract_path_freely(tmp_path):
     assert study.main(["--render-only", "--json-out", str(src),
                        "--report-out", str(out)]) == 0
     assert out.read_text().startswith("# Hurst gate power study")
-
 
 
 def test_anti_signal_side_follows_the_family_sense():

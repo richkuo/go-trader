@@ -121,7 +121,6 @@ def run_verify_invocation(event_name, body, trigger_actor="someuser"):
     )
 
 
-
 def test_trusted_member_pr_comment_no_review_word_is_fix_pr():
     assert run_classify_mode(
         "issue_comment", "@claude correct the lint error", pr_url=PR_URL, pr_author_assoc="MEMBER"
@@ -242,7 +241,6 @@ def test_issue_comment_on_issue_is_implement():
     assert run_classify_mode(
         "issue_comment", "@claude implement this", pr_url="", pr_author_assoc="MEMBER"
     ) == "implement"
-
 
 
 def test_exact_one_line_self_trigger_fires():

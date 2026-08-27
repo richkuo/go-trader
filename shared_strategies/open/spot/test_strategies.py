@@ -34,7 +34,6 @@ make_flat = _conftest_mod.make_flat
 make_volatile = _conftest_mod.make_volatile
 
 
-
 class TestRegistry:
     def test_strategies_registered(self):
         names = list_strategies()
@@ -60,7 +59,6 @@ class TestRegistry:
         assert "signal" in result.columns
 
 
-
 def _run_strategy(name, closes, params=None, volume=None, index=None):
     df = make_ohlcv(closes, volume=volume, index=index)
     return apply_strategy(name, df, params)
@@ -70,7 +68,6 @@ def _assert_valid_signals(result):
     signals = result["signal"].dropna()
     assert set(signals.unique()).issubset({-1.0, 0.0, 1.0}), \
         f"Unexpected signal values: {set(signals.unique())}"
-
 
 
 class TestSMACrossover:
@@ -95,7 +92,6 @@ class TestSMACrossover:
         assert len(result) == 0
 
 
-
 class TestEMACrossover:
     def test_bullish_crossover(self):
         closes = list(np.linspace(120, 80, 50)) + list(np.linspace(80, 140, 50))
@@ -113,7 +109,6 @@ class TestEMACrossover:
         signals = result["signal"].dropna()
         real = signals[(signals == 1) | (signals == -1)]
         assert len(real) <= 1
-
 
 
 class TestRSI:
@@ -149,7 +144,6 @@ class TestRSI:
         assert (result["signal"] == 0).all()
 
 
-
 class TestBollingerBands:
     def test_buy_at_lower_band(self):
         closes = (
@@ -176,7 +170,6 @@ class TestBollingerBands:
         assert (result["signal"] == 0).all()
 
 
-
 class TestMACD:
     def test_bullish_crossover(self):
         closes = list(np.linspace(120, 80, 50)) + list(np.linspace(80, 140, 50))
@@ -198,7 +191,6 @@ class TestMACD:
         assert len(real) <= 1
 
 
-
 class TestMeanReversion:
     def test_buy_on_dip(self):
         closes = (
@@ -214,7 +206,6 @@ class TestMeanReversion:
     def test_flat_no_signal(self):
         result = _run_strategy("mean_reversion", make_flat(60))
         assert (result["signal"] == 0).all()
-
 
 
 class TestMomentum:
@@ -236,7 +227,6 @@ class TestMomentum:
         assert (result["signal"] == 0).all()
 
 
-
 class TestVolumeWeighted:
     def test_buy_with_high_volume(self):
         n = 60
@@ -255,7 +245,6 @@ class TestVolumeWeighted:
         _assert_valid_signals(result)
 
 
-
 class TestTripleEMA:
     def test_aligned_bullish(self):
         closes = make_trending_up(120, start=80, step=0.5)
@@ -269,7 +258,6 @@ class TestTripleEMA:
         closes = list(np.linspace(80, 140, 60)) + list(np.linspace(140, 70, 80))
         result = _run_strategy("triple_ema", closes)
         assert (result["signal"] == -1).any()
-
 
 
 class TestRSIMACDCombo:
@@ -317,7 +305,6 @@ class TestRSIMACDCombo:
         _assert_valid_signals(result)
 
 
-
 class TestStochRSI:
     def test_buy_in_oversold(self):
         closes = (
@@ -336,7 +323,6 @@ class TestStochRSI:
     def test_flat_data(self):
         result = _run_strategy("stoch_rsi", make_flat(80))
         assert "signal" in result.columns
-
 
 
 class TestSupertrend:
@@ -363,7 +349,6 @@ class TestSupertrend:
         assert (result["signal"] == 0).all()
 
 
-
 class TestIchimokuCloud:
     def test_output_columns(self):
         closes = make_trending_up(120)
@@ -379,7 +364,6 @@ class TestIchimokuCloud:
         closes = make_trending_up(150, start=50, step=1.0)
         result = _run_strategy("ichimoku_cloud", closes)
         _assert_valid_signals(result)
-
 
 
 class TestPairsSpread:
@@ -399,7 +383,6 @@ class TestPairsSpread:
         _assert_valid_signals(result)
 
 
-
 class TestATRBreakout:
     def test_upside_breakout(self):
         closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 130, 10))
@@ -410,7 +393,6 @@ class TestATRBreakout:
     def test_flat_no_breakout(self):
         result = _run_strategy("atr_breakout", make_flat(50))
         assert (result["signal"] == 0).all()
-
 
 
 class TestHeikinAshiEMA:
@@ -424,7 +406,6 @@ class TestHeikinAshiEMA:
         closes = make_trending_up(100, start=80, step=0.8)
         result = _run_strategy("heikin_ashi_ema", closes)
         _assert_valid_signals(result)
-
 
 
 class TestOrderBlocks:
@@ -453,7 +434,6 @@ class TestOrderBlocks:
         _assert_valid_signals(result)
 
 
-
 class TestVWAPReversion:
     def test_with_datetime_index(self):
         n = 100
@@ -472,7 +452,6 @@ class TestVWAPReversion:
             assert col not in result.columns
 
 
-
 class TestChartPattern:
     def test_returns_signal(self):
         closes = list(np.linspace(90, 110, 50)) + list(np.linspace(110, 90, 50))
@@ -481,14 +460,12 @@ class TestChartPattern:
         _assert_valid_signals(result)
 
 
-
 class TestLiquiditySweeps:
     def test_returns_signal(self):
         closes = list(np.linspace(90, 110, 50)) + list(np.linspace(110, 90, 50))
         result = _run_strategy("liquidity_sweeps", closes)
         assert "signal" in result.columns
         _assert_valid_signals(result)
-
 
 
 class TestParabolicSAR:
@@ -510,10 +487,6 @@ class TestParabolicSAR:
         assert result["sar"].isna().all()
 
 
-
-
-
-
 class TestSqueezeMomentum:
     def test_returns_signal_column(self):
         closes = make_volatile(100, amplitude=10)
@@ -526,7 +499,6 @@ class TestSqueezeMomentum:
     def test_flat_no_signal(self):
         result = _run_strategy("squeeze_momentum", make_flat(60))
         assert (result["signal"] == 0).all()
-
 
 
 class TestAMDIFVG:
@@ -550,7 +522,6 @@ class TestAMDIFVG:
         idx = pd.date_range("2024-01-01", periods=n, freq="15min")
         result = _run_strategy("amd_ifvg", make_flat(n), index=idx)
         assert "signal" in result.columns
-
 
 
 class TestRangeScalper:
@@ -600,7 +571,6 @@ class TestRangeScalper:
         signals = result[result["signal"] != 0]["signal"]
         consecutive_same = (signals == signals.shift(1)).sum()
         assert consecutive_same <= 1, f"Too many consecutive same signals ({consecutive_same}), crossover guard may be broken"
-
 
 
 class TestEdgeCases:

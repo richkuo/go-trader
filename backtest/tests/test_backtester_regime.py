@@ -12,8 +12,6 @@ from backtester import Backtester
 from regime import compute_regime, latest_regime, ensure_regime_columns
 
 
-
-
 def _uptrend_df(n: int = 100) -> pd.DataFrame:
     close = np.linspace(100.0, 200.0, n)
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
@@ -39,8 +37,6 @@ def _signal_df(df: pd.DataFrame, *, buy_at: int = 30) -> pd.DataFrame:
     out["signal"] = 0
     out.iloc[buy_at, out.columns.get_loc("signal")] = 1
     return out
-
-
 
 
 def test_ensure_regime_columns_adds_regime_column():
@@ -74,8 +70,6 @@ def test_ensure_regime_columns_composite_labels():
     assert label.startswith("trending_up")
 
 
-
-
 def test_backtester_accepts_regime_params():
     bt = Backtester(
         initial_capital=1000,
@@ -98,8 +92,6 @@ def test_backtester_regime_defaults():
     assert bt.allowed_regimes == []
 
 
-
-
 def test_regime_gate_allows_entry_when_regime_matches():
     df = _uptrend_df(n=100)
     ensure_regime_columns(df, period=14, adx_threshold=20.0)
@@ -113,8 +105,6 @@ def test_regime_gate_allows_entry_when_regime_matches():
     assert result["total_trades"] >= 1, "Expected at least one trade when regime matches"
 
 
-
-
 def test_regime_gate_blocks_entry_when_regime_mismatches():
     df = _uptrend_df(n=100)
     ensure_regime_columns(df, period=14, adx_threshold=20.0)
@@ -126,8 +116,6 @@ def test_regime_gate_blocks_entry_when_regime_mismatches():
     )
     result = bt.run(df_sig, save=False)
     assert result["total_trades"] == 0, "Expected no trades when regime gate blocks entry"
-
-
 
 
 def test_regime_gate_does_not_close_open_position():
@@ -148,8 +136,6 @@ def test_regime_gate_does_not_close_open_position():
     assert result["trades"][0]["exit_price"] > 0
 
 
-
-
 def test_regime_enabled_empty_allowed_allows_all():
     df = _uptrend_df(n=100)
     ensure_regime_columns(df, period=14, adx_threshold=20.0)
@@ -161,8 +147,6 @@ def test_regime_enabled_empty_allowed_allows_all():
     )
     result = bt.run(df_sig, save=False)
     assert result["total_trades"] >= 1
-
-
 
 
 def test_parity_latest_regime_matches_compute_regime_last_bar():
@@ -185,8 +169,6 @@ def test_parity_ranging_df():
     live = latest_regime(df, period=14, adx_threshold=20.0)
     bt_last = compute_regime(df, period=14, adx_threshold=20.0).iloc[-1]
     assert live["regime"] == bt_last["regime"]
-
-
 
 
 def test_regime_disabled_does_not_block_entries():

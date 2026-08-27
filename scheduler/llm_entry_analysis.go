@@ -1,5 +1,6 @@
 package main
 
+
 import (
 	"context"
 	"encoding/json"
@@ -12,7 +13,7 @@ import (
 )
 
 const (
-	llmEntryAnalysisScript    = "shared_scripts/llm_review.py"
+	llmEntryAnalysisScript = "shared_scripts/llm_review.py"
 	llmEntryAnalysisAPIKeyEnv = "ANTHROPIC_API_KEY"
 
 	llmEntryAnalysisDefaultModel    = "claude-sonnet-5"
@@ -28,12 +29,12 @@ const (
 )
 
 type LLMEntryAnalysisConfig struct {
-	Enabled         bool   `json:"enabled,omitempty"`
-	Model           string `json:"model,omitempty"`
-	MaxDebateRounds *int   `json:"max_debate_rounds,omitempty"`
-	TimeoutS        int    `json:"timeout_s,omitempty"`
-	NotifyDM        *bool  `json:"notify_dm,omitempty"`
-	NotifyChannel   *bool  `json:"notify_channel,omitempty"`
+	Enabled bool `json:"enabled,omitempty"`
+	Model string `json:"model,omitempty"`
+	MaxDebateRounds *int `json:"max_debate_rounds,omitempty"`
+	TimeoutS int `json:"timeout_s,omitempty"`
+	NotifyDM *bool `json:"notify_dm,omitempty"`
+	NotifyChannel *bool `json:"notify_channel,omitempty"`
 }
 
 func (sc *StrategyConfig) llmNotifyDM() bool {
@@ -58,8 +59,8 @@ type llmEntryAnalysisParams struct {
 	Model           string
 	MaxDebateRounds int
 	Timeout         time.Duration
-	NotifyDM        bool
-	NotifyChannel   bool
+	NotifyDM      bool
+	NotifyChannel bool
 }
 
 func resolveLLMEntryAnalysisParams(sc StrategyConfig) llmEntryAnalysisParams {

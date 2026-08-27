@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+
 func hlBatchStrategy(id, name, symbol, timeframe string, opts ...func(*StrategyConfig)) StrategyConfig {
 	sc := StrategyConfig{
 		ID:           id,
@@ -61,6 +62,7 @@ func resetFailureTrackers(t *testing.T) {
 		scriptFailureTracker, scriptFailureTransientTracker = origPrimary, origTransient
 	})
 }
+
 
 func TestPartitionHyperliquidBatchGroups(t *testing.T) {
 	cfg := &Config{}
@@ -209,6 +211,7 @@ func TestHyperliquidBatchArgsSupported(t *testing.T) {
 	}
 }
 
+
 func TestSlotCarriesEveryNonKeyArgument(t *testing.T) {
 	rc := &RegimeConfig{Enabled: true}
 	sc := hlBatchStrategy("hl-a", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
@@ -324,6 +327,7 @@ func TestSharedArgsCarryOnlyKeyAndSharedFlags(t *testing.T) {
 	}
 }
 
+
 func TestBatchSlotsParseThroughTheHyperliquidResultContract(t *testing.T) {
 	single := `{"strategy":"breakout","symbol":"BTC","timeframe":"1h","signal":1,"price":109000.12,
 	  "indicators":{"atr":123.4},"regime":{"default":{"regime":"trending_up"}},"mode":"live",
@@ -353,6 +357,7 @@ func TestParseBatchOutputRejectsGarbage(t *testing.T) {
 		t.Fatal("expected a parse error")
 	}
 }
+
 
 func hlBatchTwoMemberInput(t *testing.T) ([]hlBatchGroupInput, *Config) {
 	t.Helper()
@@ -616,6 +621,7 @@ func TestBatchTimeoutStaysTransient(t *testing.T) {
 	}
 }
 
+
 func TestSharedFailureFallbackAfterThreeStrikes(t *testing.T) {
 	resetBatchFallback(t)
 	key := hlBatchKey{DataPlatform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", OhlcvLimit: 200, ATRMethod: "simple"}
@@ -670,6 +676,7 @@ func TestPrePassSkipsAFallenBackGroup(t *testing.T) {
 		t.Fatalf("batch subprocess called %d times while in fallback", calls)
 	}
 }
+
 
 func TestPrePassNeverBatchesASingleMemberGroup(t *testing.T) {
 	resetBatchFallback(t)
@@ -766,6 +773,7 @@ func TestSnapshotReadsPositionsUnderTheReadLock(t *testing.T) {
 	}
 	mu.Unlock()
 }
+
 
 func TestRunHyperliquidCheckConsumesTheCachedSlot(t *testing.T) {
 	resetFailureTrackers(t)
@@ -940,6 +948,7 @@ func TestRunHyperliquidCheckRejectsAStaleCachedSlot(t *testing.T) {
 	_ = prices
 }
 
+
 func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 	resetFailureTrackers(t)
 	paper := hlBatchStrategy("hl-mirror", "breakout", "BTC", "1h", func(sc *StrategyConfig) {
@@ -1011,6 +1020,7 @@ func TestReplayChokePointsSeeIdenticalResults(t *testing.T) {
 		})
 	}
 }
+
 
 func TestBatchSharedStateAlertRendersDistinctly(t *testing.T) {
 	key := hlBatchKey{DataPlatform: "hyperliquid", Symbol: "BTC", Timeframe: "1h", OhlcvLimit: 200, ATRMethod: "simple"}

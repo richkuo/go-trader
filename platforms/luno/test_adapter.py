@@ -25,12 +25,10 @@ def mock_exchange():
     _mod._get_ccxt_exchange = original
 
 
-
 class TestProperties:
     def test_name(self):
         adapter = LunoExchangeAdapter()
         assert adapter.name == "luno"
-
 
 
 class TestSpotPrice:
@@ -55,7 +53,6 @@ class TestSpotPrice:
         adapter = LunoExchangeAdapter()
         mock_exchange.fetch_ticker.side_effect = Exception("fail")
         assert adapter.get_spot_price("BTC") == 0.0
-
 
 
 class TestVolMetrics:
@@ -95,7 +92,6 @@ class TestVolMetrics:
         ]
         vol, iv_rank = adapter.get_vol_metrics("BTC")
         assert vol > 0
-
 
 
 class TestOptionsNotSupported:

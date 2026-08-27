@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+
 var tradeDiagnosticsRecorder func(row *TradeDiagnosticsRow) error
 
 var tradeDiagnosticsEnqueue func(row TradeDiagnosticsRow)
@@ -202,8 +203,8 @@ func diagTimeframeDuration(tf string) (time.Duration, bool) {
 }
 
 const (
-	diagQueueCap         = 256
-	diagMaxFetchBars     = 1500
+	diagQueueCap = 256
+	diagMaxFetchBars = 1500
 	diagDefaultTimeframe = "1h"
 )
 

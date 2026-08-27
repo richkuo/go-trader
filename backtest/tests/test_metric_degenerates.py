@@ -15,7 +15,6 @@ import eval_windows as ew
 from backtester import Backtester, format_results
 
 
-
 def _metrics(equities, trades=None, timeframe="1d", initial_capital=1000.0):
     idx = pd.date_range("2024-01-01", periods=len(equities), freq="D")
     equity_df = pd.DataFrame({"equity": np.asarray(equities, dtype=float)},
@@ -32,7 +31,6 @@ def _trade(pnl, pnl_pct=0.0, shares=1.0, entry_price=100.0):
 
 def _ann_factor(timeframe="1d"):
     return np.sqrt(365)
-
 
 
 def test_sortino_zero_losing_bars_is_none_not_zero():
@@ -78,7 +76,6 @@ def test_sortino_uptrend_with_no_trades_still_none():
     assert m["profit_factor"] == 0
 
 
-
 def test_profit_factor_all_win_is_none():
     trades = [_trade(50.0, 0.05), _trade(30.0, 0.03)]
     m = _metrics([1000, 1050, 1080], trades=trades)
@@ -115,7 +112,6 @@ def test_format_results_tolerates_none_metrics():
     }
     text = format_results(results)
     assert "n/a" in text
-
 
 
 class _FakeRegistry:

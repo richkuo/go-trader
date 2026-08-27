@@ -28,8 +28,6 @@ def _load(name: str, relpath: str):
 hg = _load("bt_hurst_gate_under_test", "backtest/hurst_gate.py")
 
 
-
-
 def _frame(n: int = 400, seed: int = 1411) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     close = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
@@ -44,8 +42,6 @@ def _frame(n: int = 400, seed: int = 1411) -> pd.DataFrame:
         },
         index=idx,
     )
-
-
 
 
 def test_min_only_hysteresis_sequence():
@@ -89,8 +85,6 @@ def test_readings_above_one_stay_coherent():
     assert reversion.advance(2.0033) == hg.HURST_STATE_DISARMED
 
 
-
-
 def test_disabled_gate_is_completely_inert():
     gate = hg.HurstGate({"enabled": False, "min": 0.9})
     for h in (0.1, 0.9, float("nan")):
@@ -116,8 +110,6 @@ def test_known_disarmed_holds_regardless_of_position():
     gate = hg.HurstGate({"enabled": True, "min": 0.55})
     blocked, _ = gate.step(0.20, flat=False)
     assert blocked
-
-
 
 
 @pytest.mark.parametrize(
@@ -160,8 +152,6 @@ def test_gate_mode_never_scales():
         assert gate.step(h, flat=True)[1] == 1.0
 
 
-
-
 def test_rolling_hurst_warmup_is_nan_and_values_are_rounded():
     df = _frame(n=260)
     series = hg.rolling_hurst(df["close"], 200)
@@ -197,8 +187,6 @@ def test_live_frame_bars_matches_the_go_fetch_depth():
     assert hg.hurst_live_frame_bars({"medium": {"period": 20}}, 14) == 200
     assert hg.hurst_live_frame_bars({"long": {"period": 150}}, 14) == 2 * 150 - 1 + 10
     assert hg.hurst_live_frame_bars({"a": {"period": 30}, "b": {"period": 200}}, 14) == 409
-
-
 
 
 def _parity_frame_hurst(windows_spec, *, period: int = 150, n: int = 420):
@@ -265,8 +253,6 @@ def test_parity_config_carries_the_resolved_windows_spec_and_hurst_block():
     assert pdiff.ParityConfig(strategy_name="momentum").regime_windows_spec is None
 
 
-
-
 def test_validation_rejects_bad_vocabulary():
     with pytest.raises(ValueError, match="hurst_gate.mode"):
         hg.validate_hurst_gate_config({"mode": "throttle", "min": 0.55})
@@ -307,8 +293,6 @@ def test_validation_enforces_mode_scoping():
 def test_validation_runs_even_when_disabled():
     with pytest.raises(ValueError):
         hg.validate_hurst_gate_config({"enabled": False, "mode": "bogus"})
-
-
 
 
 def _write_cfg(tmp_path, strategy_extra: dict, regime: dict) -> str:
@@ -434,8 +418,6 @@ def test_backtest_absent_block_is_none(tmp_path, load_strategy_config):
     assert load_strategy_config(path, "s1")["hurst_gate"] is None
 
 
-
-
 @pytest.fixture(scope="module")
 def Backtester():
     mod = _load("bt_backtester_under_test", "backtest/backtester.py")
@@ -510,8 +492,6 @@ def test_gate_mode_fail_closed_before_warmup_blocks_early_entries(Backtester):
     assert closed["total_trades"] <= opened["total_trades"]
 
 
-
-
 def test_hurst_gate_is_in_the_config_cli_allowlist():
     source = (_ROOT / "backtest" / "run_backtest.py").read_text()
     stop_keys_start = source.index("stop_keys = (")
@@ -527,8 +507,6 @@ def test_run_single_backtest_accepts_the_hurst_gate_kwarg():
 
     rb = _load("bt_run_backtest_sig_check", "backtest/run_backtest.py")
     assert "hurst_gate" in inspect.signature(rb.run_single_backtest).parameters
-
-
 
 
 @pytest.fixture()

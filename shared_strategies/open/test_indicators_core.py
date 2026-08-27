@@ -44,8 +44,6 @@ def _ohlcv(scale=1.0, n=300, seed=7):
     )
 
 
-
-
 def _ref_standard_atr(df, period):
     high = df["high"].astype(float)
     low = df["low"].astype(float)
@@ -105,8 +103,6 @@ def _ref_wilder_rsi(close, period):
     avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
-
-
 
 
 @pytest.mark.parametrize("scale", [0.5, 1.0, 200.0])
@@ -222,8 +218,6 @@ def test_out_of_tree_consumers_delegate_to_shared_module():
     )
 
 
-
-
 def _load_registry():
     return _load_by_path("_t_registry_1281", os.path.join(_OPEN_DIR, "registry.py"))
 
@@ -293,8 +287,6 @@ def test_apply_strategy_shim_path_validates():
     out = strategies.apply_strategy("mean_reversion", _df(),
                                     {"entry_std": 2.0, "exit_std": 0.5})
     assert "signal" in out.columns
-
-
 
 
 def test_validate_params_checks_without_running_and_matches_wrapper():
@@ -407,8 +399,6 @@ def test_optimizer_treats_constraint_violation_as_skippable():
     assert ValueError in optimizer._EXPECTED_FOLD_ERRORS
 
 
-
-
 def _ref_wilder_atr(df, period):
     tr = _ref_unrounded_atr(df, 1)
     out = []
@@ -491,8 +481,6 @@ def test_standard_atr_reexport_threads_wilder():
     assert atr_mod.latest_atr(df, method="wilder") != atr_mod.latest_atr(df)
 
 
-
-
 def _ar1_log_price_series(n, phi, seed, drift=0.0, scale=100.0):
     rng = np.random.RandomState(seed)
     eps = rng.randn(n)
@@ -563,8 +551,6 @@ def test_hurst_custom_min_points():
     assert not np.isnan(hurst_exponent(close, min_points=50))
 
 
-
-
 def test_hurst_random_walk_mean_near_half_at_live_frame_size():
     values = [
         hurst_exponent(_ar1_log_price_series(201, phi=0.0, seed=100 + i))
@@ -585,8 +571,6 @@ def test_hurst_random_walk_mean_near_half_at_enriched_column_frame_size():
     assert len(values) > 150, "too many NaN draws to measure the null mean"
     mean_h = float(np.mean(values))
     assert abs(mean_h - 0.5) < 0.03, mean_h
-
-
 
 
 def test_hurst_random_walk_sd_within_caveat_at_live_frame_size():

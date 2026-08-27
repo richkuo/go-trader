@@ -43,7 +43,6 @@ SOURCE_SUFFIXES = {
     ".md",
 }
 
-
 def git_show_main(rel: str) -> bytes | None:
     try:
         return subprocess.check_output(
@@ -54,31 +53,50 @@ def git_show_main(rel: str) -> bytes | None:
     except subprocess.CalledProcessError:
         return None
 
+def collapse_blank_lines(text: str) -> str:
+    out: list[str] = []
+    blank_run = 0
+    for line in text.splitlines(keepends=True):
+        if line.strip() == "":
+            blank_run += 1
+            if blank_run >= 3:
+                continue
+            out.append(line)
+        else:
+            blank_run = 0
+            out.append(line)
+    return "".join(out)
 
 def preserve_go_comment(line: str) -> bool:
     stripped = line.lstrip()
     return stripped.startswith(("//go:", "//line "))
 
-
 def strip_go(source: str) -> str:
     out: list[str] = []
     i = 0
     n = len(source)
+    line_start_out = 0
 
     def peek(k: int = 0) -> str:
         j = i + k
         return source[j] if j < n else ""
 
+    def append(ch: str) -> None:
+        nonlocal line_start_out
+        out.append(ch)
+        if ch == "\n":
+            line_start_out = len(out)
+
     while i < n:
         ch = source[i]
         if ch == '"':
-            out.append(ch)
+            append(ch)
             i += 1
             while i < n:
                 c = source[i]
-                out.append(c)
+                append(c)
                 if c == "\\" and i + 1 < n:
-                    out.append(source[i + 1])
+                    append(source[i + 1])
                     i += 2
                     continue
                 if c == '"':
@@ -87,63 +105,69 @@ def strip_go(source: str) -> str:
                 i += 1
             continue
         if ch == "`":
-            out.append(ch)
+            append(ch)
             i += 1
             while i < n and source[i] != "`":
-                out.append(source[i])
+                append(source[i])
                 i += 1
             if i < n:
-                out.append(source[i])
+                append(source[i])
                 i += 1
             continue
         if ch == "'" and peek(1) == "'":
-            out.append("''")
+            append("''")
             i += 2
             while i + 1 < n:
                 if source[i : i + 2] == "''":
-                    out.append("''")
+                    append("''")
                     i += 2
                     break
-                out.append(source[i])
+                append(source[i])
                 i += 1
             continue
         if ch == "/" and peek(1) == "/":
-            line_start = source.rfind("\n", 0, i) + 1
-            line = source[line_start:i]
-            if preserve_go_comment(source[i:].split("\n", 1)[0]):
-                end = source.find("\n", i)
-                if end == -1:
-                    out.append(source[i:])
-                    i = n
+            comment_end = source.find("\n", i)
+            if comment_end == -1:
+                comment_end = n
+            comment_text = source[i:comment_end]
+            if preserve_go_comment(comment_text):
+                if comment_end < n:
+                    for c in source[i : comment_end + 1]:
+                        append(c)
+                    i = comment_end + 1
                 else:
-                    out.append(source[i : end + 1])
-                    i = end + 1
+                    for c in source[i:]:
+                        append(c)
+                    i = n
                 continue
-            end = source.find("\n", i)
-            if end == -1:
+            line_start = source.rfind("\n", 0, i) + 1
+            before = source[line_start:i].strip()
+            if before:
                 while out and out[-1] in " \t":
                     out.pop()
-                i = n
+                i = comment_end + 1 if comment_end < n else n
+                if comment_end < n:
+                    append("\n")
             else:
-                while out and out[-1] in " \t":
-                    out.pop()
-                if out and out[-1] != "\n" and (not out or out[-1] != "\n"):
-                    pass
-                i = end + 1
-                if not out or out[-1] != "\n":
-                    out.append("\n")
+                del out[line_start_out:]
+                i = comment_end + 1 if comment_end < n else n
             continue
         if ch == "/" and peek(1) == "*":
+            line_start = source.rfind("\n", 0, i) + 1
+            before = source[line_start:i].strip()
             end = source.find("*/", i + 2)
             if end == -1:
+                if not before:
+                    del out[line_start_out:]
                 i = n
             else:
+                if not before:
+                    del out[line_start_out:]
                 i = end + 2
             continue
-        out.append(ch)
+        append(ch)
         i += 1
-    return "".join(out)
-
+    return collapse_blank_lines("".join(out))
 
 def _docstring_line_range(node: ast.AST, lines: list[str]) -> tuple[int, int] | None:
     body = getattr(node, "body", None)
@@ -163,11 +187,9 @@ def _docstring_line_range(node: ast.AST, lines: list[str]) -> tuple[int, int] | 
         return start, end
     return None
 
-
 def _leading_indent(line: str) -> str:
     m = re.match(r"[ \t]*", line)
     return m.group(0) if m else ""
-
 
 def _docstring_only_body(node: ast.AST) -> bool:
     body = getattr(node, "body", None)
@@ -178,7 +200,6 @@ def _docstring_only_body(node: ast.AST) -> bool:
         return False
     val = first.value
     return isinstance(val, ast.Constant) and isinstance(val.value, str)
-
 
 def strip_python(source: str) -> str:
     lines = source.splitlines(keepends=True)
@@ -226,8 +247,7 @@ def strip_python(source: str) -> str:
         if stripped.startswith("#"):
             continue
         out_lines.append(_strip_python_inline_hash(line))
-    return "".join(out_lines)
-
+    return collapse_blank_lines("".join(out_lines))
 
 def _strip_python_inline_hash(line: str) -> str:
     in_single = False
@@ -286,7 +306,6 @@ def _strip_python_inline_hash(line: str) -> str:
         i += 1
     return line
 
-
 def strip_shell_or_yaml(source: str) -> str:
     out: list[str] = []
     for line in source.splitlines(keepends=True):
@@ -297,19 +316,26 @@ def strip_shell_or_yaml(source: str) -> str:
         if stripped.startswith("#"):
             continue
         out.append(line)
-    return "".join(out)
-
+    return collapse_blank_lines("".join(out))
 
 def strip_js_css_html(source: str) -> str:
     out: list[str] = []
     i = 0
     n = len(source)
+    line_start_out = 0
     in_str: str | None = None
     escape = False
+
+    def append(ch: str) -> None:
+        nonlocal line_start_out
+        out.append(ch)
+        if ch == "\n":
+            line_start_out = len(out)
+
     while i < n:
         if in_str:
             c = source[i]
-            out.append(c)
+            append(c)
             if escape:
                 escape = False
             elif c == "\\":
@@ -319,31 +345,38 @@ def strip_js_css_html(source: str) -> str:
             i += 1
             continue
         if source.startswith("/*", i):
+            line_start = source.rfind("\n", 0, i) + 1
+            before = source[line_start:i].strip()
             end = source.find("*/", i + 2)
+            if not before:
+                del out[line_start_out:]
             i = n if end == -1 else end + 2
             continue
         if source.startswith("//", i):
+            line_start = source.rfind("\n", 0, i) + 1
+            before = source[line_start:i].strip()
             end = source.find("\n", i)
             if end == -1:
+                end = n
+            if before:
                 while out and out[-1] in " \t":
                     out.pop()
-                break
-            while out and out[-1] in " \t":
-                out.pop()
-            i = end + 1
-            if not out or out[-1] != "\n":
-                out.append("\n")
+                i = end + 1 if end < n else n
+                if end < n:
+                    append("\n")
+            else:
+                del out[line_start_out:]
+                i = end + 1 if end < n else n
             continue
         c = source[i]
         if c in ("'", '"', "`"):
             in_str = c
-            out.append(c)
+            append(c)
             i += 1
             continue
-        out.append(c)
+        append(c)
         i += 1
-    return "".join(out)
-
+    return collapse_blank_lines("".join(out))
 
 def strip_file(rel: str, raw: bytes) -> bytes:
     text = raw.decode("utf-8")
@@ -364,7 +397,6 @@ def strip_file(rel: str, raw: bytes) -> bytes:
         out = text
     return out.encode("utf-8")
 
-
 def iter_source_files() -> list[str]:
     files: list[str] = []
     for dirpath, dirnames, filenames in os.walk(ROOT):
@@ -381,6 +413,117 @@ def iter_source_files() -> list[str]:
             files.append(rel)
     return files
 
+def apply_post_strip_fixes() -> int:
+    patches: list[tuple[str, str, str]] = [
+        (
+            "shared_scripts/test_regime_wiring.py",
+            """def test_1409_advisory_only_comment_was_revoked_for_gating_and_sizing():
+    source = (_SHARED_TOOLS / "regime.py").read_text()
+    assert "never read by\\n    # map_composite_label, gating, or sizing" not in source
+    assert "gating, or sizing" not in source
+    assert "#1411" in source
+    assert "map_composite_label" in source
+    label_fn_start = source.index("def map_composite_label")
+    label_fn = source[label_fn_start : source.index("\\ndef ", label_fn_start + 1)]
+    assert "hurst" not in label_fn
+
+def test_regime_label_string_is_safe_for_output_field():""",
+            """def test_hurst_label_gate_stays_separate_from_composite_label():
+    source = (_SHARED_TOOLS / "regime.py").read_text()
+    label_fn_start = source.index("def map_composite_label")
+    label_fn = source[label_fn_start : source.index("\\ndef ", label_fn_start + 1)]
+    assert "hurst" not in label_fn
+    composite_start = source.index("def latest_regime_composite")
+    composite_fn = source[composite_start : source.index("\\ndef ", composite_start + 1)]
+    assert "hurst_exponent" in composite_fn
+
+def test_regime_label_string_is_safe_for_output_field():""",
+        ),
+        (
+            "backtest/tests/test_hurst_1424_gate_resolution.py",
+            """def test_stage_0_is_scored_on_net_return_so_it_stays_comparable():
+    assert study.joint_separation_verdict.__doc__
+    assert "NET RETURN" in study.joint_separation_verdict.__doc__""",
+            """def test_stage_0_is_scored_on_net_return_so_it_stays_comparable(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(study1422, "joint_separation_verdict", lambda *a, **k: sentinel)
+    assert study.joint_separation_verdict([], 512) is sentinel""",
+        ),
+        (
+            "backtest/tests/test_hurst_1426_two_sided_sort.py",
+            """def test_stage_0_is_the_deliberately_inherited_one_sided_exception():
+    assert study.joint_separation_verdict.__doc__
+    assert "ONE-SIDED" in study.joint_separation_verdict.__doc__
+    assert "#1412" in study.joint_separation_verdict.__doc__""",
+            """def test_stage_0_is_the_deliberately_inherited_one_sided_exception(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(study1422, "joint_separation_verdict", lambda *a, **k: sentinel)
+    assert study.joint_separation_verdict([], 512) is sentinel""",
+        ),
+        (
+            "backtest/tests/test_regime_default_tables.py",
+            r'StopLoss:\s*map\[string\]RegimeATREntry\s*\{(.*?)\n\t\},\n\t// #870',
+            r"StopLoss:\s*map\[string\]RegimeATREntry\s*\{(.*?)\},\s*\n\s*Trailing:",
+        ),
+        (
+            "backtest/tests/test_options_adapter_parity.py",
+            r'underlying\.upper\(\) == "BTC":\s*\n\s*return round\(target_strike, (-?\d+)\)',
+            r'underlying\.upper\(\) == ["\']BTC["\']:\s*(?:\n\s*)?return round\(target_strike, (-?\d+)\)',
+        ),
+        (
+            "scheduler/ui_tuning_page_test.go",
+            "\t\t`Always re-read live config at render time`,\n\t\t`memoized server-side`,\n\t\t`detailReloadPending`,\n\t\t`Defer clearing until replacement content is ready`,\n",
+            "\t\t`detailReloadPending`,\n",
+        ),
+    ]
+    argparse_old = [
+        'argparse.ArgumentParser(description=__doc__.splitlines()[0])',
+        'argparse.ArgumentParser(description=__doc__.split("\\n")[0])',
+        "argparse.ArgumentParser(description=__doc__)",
+    ]
+    argparse_files = [
+        "backtest/auto_suggest.py",
+        "backtest/tune_live.py",
+        "backtest/candidates/rahtf_1054/entry_condition_split.py",
+        "backtest/research/hurst_1410_gate_calibration.py",
+        "backtest/research/hurst_1422_gate_power.py",
+        "backtest/research/hurst_1424_gate_resolution.py",
+        "backtest/research/hurst_1426_two_sided_sort.py",
+        "backtest/research/regime_1152_exit_retune.py",
+        "scripts/bench_hl_batch.py",
+    ]
+    changed = 0
+    for rel, old, new in patches:
+        path = ROOT / rel
+        text = path.read_text()
+        if old not in text:
+            continue
+        path.write_text(text.replace(old, new, 1))
+        changed += 1
+    js_comment_blocks = [
+        "// Raw empty baseline vs Go-merged live params (common args-form) is current\n// once defaults are applied to both sides — not drifted.\n",
+        "// Explicit override recorded at run start still matches merged live.\n",
+        "// Genuine post-run live edit still reports drifted.\n",
+    ]
+    tuning = ROOT / "scheduler/ui_tuning_page_test.go"
+    tuning_text = tuning.read_text()
+    tuning_new = tuning_text
+    for block in js_comment_blocks:
+        tuning_new = tuning_new.replace(block, "")
+    if tuning_new != tuning_text:
+        tuning.write_text(tuning_new)
+        changed += 1
+    for rel in argparse_files:
+        path = ROOT / rel
+        text = path.read_text()
+        new_text = text
+        for old in argparse_old:
+            new_text = new_text.replace(old, "argparse.ArgumentParser()", 1)
+        if new_text != text:
+            path.write_text(new_text)
+            changed += 1
+    return changed
+
 
 def main() -> int:
     changed = 0
@@ -394,9 +537,9 @@ def main() -> int:
             (ROOT / rel).write_bytes(stripped)
             changed += 1
             print(rel)
+    changed += apply_post_strip_fixes()
     print(f"updated {changed} files", file=sys.stderr)
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

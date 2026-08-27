@@ -1,5 +1,6 @@
 package main
 
+
 func pausedBlocksSignal(signal int, closeFraction, posQty float64, posSide string, allowsLong, allowsShort bool) bool {
 	if signal == 0 {
 		return false

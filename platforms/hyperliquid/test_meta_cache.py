@@ -70,7 +70,6 @@ def cache_path(tmp_path):
     return str(tmp_path / "hl_meta.json")
 
 
-
 def _sample_meta():
     return (
         {"universe": [{"index": 0, "name": "USDC/USDC", "tokens": [0, 0]}],
@@ -141,7 +140,6 @@ def test_save_unserializable_payload_swallows_error(adapter_mod, cache_path):
         pytest.fail("cache file should not exist after a failed save")
 
 
-
 def _make_live_adapter(adapter_mod, monkeypatch):
     monkeypatch.setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xdeadbeef")
     monkeypatch.setattr(adapter_mod, "_load_meta_cache",
@@ -201,7 +199,6 @@ def test_lookup_fill_fee_returns_real_fill_on_match(adapter_mod, monkeypatch):
     assert result["count"] == 2
     assert result["fee"] == pytest.approx(0.15)
     assert result["closed_pnl"] == pytest.approx(2.25)
-
 
 
 def test_sz_decimals_refreshes_on_missing_symbol(adapter_mod, monkeypatch):
@@ -267,8 +264,6 @@ def test_sz_decimals_returns_3_when_still_missing_after_refresh(adapter_mod, mon
     monkeypatch.setattr(a, "_build_info", lambda base_url, allow_cache: refreshed)
 
     assert a._sz_decimals("UNLISTED") == 3
-
-
 
 
 def _sdk_universe_loop(spot_meta):

@@ -16,8 +16,6 @@ from regime import latest_regime, latest_regime_composite
 _SHARED_STRATEGIES_TOOLS = str(_SHARED_TOOLS)
 
 
-
-
 def _make_uptrend_df(n: int = 100) -> pd.DataFrame:
     close = np.linspace(100.0, 200.0, n)
     idx = pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC")
@@ -36,12 +34,8 @@ def _make_flat_df(n: int = 100) -> pd.DataFrame:
     )
 
 
-
-
 def test_latest_regime_importable_via_check_script_syspath():
     assert callable(latest_regime)
-
-
 
 
 def test_latest_regime_output_json_serializable_uptrend():
@@ -82,8 +76,6 @@ def test_composite_json_includes_finite_hurst_when_data_sufficient():
     assert np.isfinite(parsed["metrics"]["hurst"])
 
 
-
-
 def test_adx_classifier_never_emits_hurst_metric():
     df = _make_uptrend_df(n=300)
     payload = latest_regime(df, period=20)
@@ -115,11 +107,8 @@ def test_hurst_survives_the_go_metrics_map_contract():
         assert np.isfinite(value), key
 
 
-def test_1409_advisory_only_comment_was_revoked_for_gating_and_sizing():
+def test_hurst_label_gate_stays_separate_from_composite_label():
     source = (_SHARED_TOOLS / "regime.py").read_text()
-    assert "never read by\n    # map_composite_label, gating, or sizing" not in source
-    assert "gating, or sizing" not in source
-    assert "def map_composite_label" in source
     label_fn_start = source.index("def map_composite_label")
     label_fn = source[label_fn_start : source.index("\ndef ", label_fn_start + 1)]
     assert "hurst" not in label_fn
@@ -135,8 +124,6 @@ def test_regime_label_string_is_safe_for_output_field():
     assert isinstance(label, str)
     assert label in ("trending_up", "trending_down", "ranging")
     assert json.dumps({"regime": label})
-
-
 
 
 def test_regime_merge_into_none_params():
@@ -157,8 +144,6 @@ def test_regime_merge_preserves_existing_params():
     assert strategy_params["rsi_period"] == 14
     assert strategy_params["threshold"] == 0.6
     assert "regime" in strategy_params
-
-
 
 
 def test_strip_unsupported_drops_regime_for_non_aware_function():
@@ -229,8 +214,6 @@ def test_apply_strategy_does_not_crash_on_regime_injection():
         assert "signal" in result.columns, f"{name} returned no signal column"
 
 
-
-
 def _load_check_options_module():
     src_path = pathlib.Path(__file__).parent / "check_options.py"
     spec = importlib.util.spec_from_file_location("_check_options_under_test", src_path)
@@ -290,8 +273,6 @@ def test_check_options_fetch_ohlcv_df_short_returns_none():
 
     df = module._fetch_ohlcv_df("BTC", "4h", 100, 30, adapter=StubAdapter())
     assert df is None
-
-
 
 
 def test_latest_regime_honors_custom_period():

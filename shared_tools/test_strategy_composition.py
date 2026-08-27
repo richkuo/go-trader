@@ -328,7 +328,6 @@ def test_evaluate_open_close_skips_avwap_when_nan_or_absent():
     assert captured == [{"mark_price": 106}, {"mark_price": 106}]
 
 
-
 _AVWAP_WARN_MARK = "avwap_stop"
 
 

@@ -12,6 +12,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+
 type regimeGatePreset struct {
 	Name           string
 	Label          string

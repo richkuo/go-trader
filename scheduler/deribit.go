@@ -264,12 +264,12 @@ type markRequest struct {
 }
 
 type markResult struct {
-	ID               string
-	DTE              float64
-	CurrentValueUSD  float64
-	Greeks           OptGreeks
-	Expired          bool
-	Fetched          bool
+	ID              string
+	DTE             float64
+	CurrentValueUSD float64
+	Greeks          OptGreeks
+	Expired         bool
+	Fetched         bool
 	Assigned         bool
 	AssignUnderlying string
 	AssignOptionType string

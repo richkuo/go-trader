@@ -256,7 +256,7 @@
       try {
         sessionStorage.removeItem(SIDEBAR_STORAGE_KEY);
       } catch (_err) {
-        
+
       }
       return;
     }
@@ -284,7 +284,7 @@
         sessionStorage.removeItem(SIDEBAR_STORAGE_KEY);
       }
     } catch (_err) {
-      
+
     }
   }
 

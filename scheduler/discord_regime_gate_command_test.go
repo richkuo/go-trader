@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+
 func TestRegimeGatePresetLookup(t *testing.T) {
 	p, ok := regimeGatePresetByName("comp_up_clean_p21")
 	if !ok {
@@ -210,6 +211,7 @@ func TestApplyRegimeGateToRoot_AlongsideExistingADXWindow(t *testing.T) {
 	}
 }
 
+
 func TestRegimeGateSideEffectStrategies_FlipActivatesOthers(t *testing.T) {
 	root := rootFromJSON(t, `{
 	  "regime": {"enabled": false, "windows": {"comp_p21": {"classifier": "composite", "period": 21}}},
@@ -294,6 +296,7 @@ func TestRegimeGateDoesNotBlockOpenPositionManagement(t *testing.T) {
 		t.Error("a newly-activated gate must not block management of an open position")
 	}
 }
+
 
 func TestRegimeGateBlastRadiusGrew_ConcurrentAddIsGrowth(t *testing.T) {
 	shown := []string{"gated-window"}

@@ -25,7 +25,6 @@ bollinger_bands = _imod.bollinger_bands
 from conftest import make_ohlcv
 
 
-
 class TestSMA:
     def test_basic_calculation(self):
         s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -52,7 +51,6 @@ class TestSMA:
         assert result.iloc[0] == pytest.approx(42.0)
 
 
-
 class TestEMA:
     def test_basic_calculation(self):
         s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -71,7 +69,6 @@ class TestEMA:
         ema_result = ema(s, 10)
         sma_result = sma(s, 10)
         assert ema_result.iloc[21] > sma_result.iloc[21]
-
 
 
 class TestSMACrossover:
@@ -111,7 +108,6 @@ class TestSMACrossover:
         assert "signal" in result.columns
 
 
-
 class TestRSI:
     def test_buy_signal_on_oversold_recovery(self):
         closes = list(np.linspace(100, 100, 20)) + list(np.linspace(100, 70, 15)) + list(np.linspace(70, 90, 30))
@@ -139,7 +135,6 @@ class TestRSI:
         df = make_ohlcv([100.0, 101.0])
         result = rsi(df, period=14)
         assert (result["signal"] == 0).all()
-
 
 
 class TestBollingerBands:

@@ -43,8 +43,6 @@ def _run(df, **kw):
                   timeframe="1d", save=False)
 
 
-
-
 def test_equal_dollar_risk_across_differing_atr_stops():
     closes = [100, 100, 100, 100, 100]
     signals = [1, 0, 0, -1, 0]
@@ -98,8 +96,6 @@ def test_risk_fraction_capped_at_full_cash():
     assert res["risk_per_trade_pct"] == pytest.approx(10.0)
 
 
-
-
 def test_no_usable_atr_skips_entry_fail_closed():
     closes = [100, 100, 100, 100, 100]
     signals = [1, 0, 1, 0, 0]
@@ -130,8 +126,6 @@ def test_close_never_blocked_by_unresolvable_atr():
     assert res["trades"][0]["exit_date"] is not None
 
 
-
-
 def test_unset_field_keeps_full_notional_sizing():
     closes = [100, 100, 110, 110, 110]
     signals = [1, 0, -1, 0, 0]
@@ -139,8 +133,6 @@ def test_unset_field_keeps_full_notional_sizing():
     assert res["trades"][0]["shares"] == pytest.approx(100.0)
     assert "risk_per_trade_pct" not in res
     assert "risk_sizing_skipped_entries" not in res
-
-
 
 
 def test_rejects_entry_fraction_column_combo():
@@ -173,8 +165,6 @@ def test_rejects_margin_pct_only_stop():
 def test_rejects_missing_stop_owner():
     with pytest.raises(ValueError, match="explicit stop owner"):
         Backtester(risk_per_trade_pct=1.0)
-
-
 
 
 def _write_config(tmp_path, strategy, extra=None):

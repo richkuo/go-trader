@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+
 func liqWalkerStrategy() StrategyConfig {
 	trail := 3.0
 	minMove := 0.5
@@ -121,6 +122,7 @@ func TestTrailingWalkerClampNeverWidens(t *testing.T) {
 		t.Fatalf("placement calls = %d, want 0 — a reachable stop must never be re-placed (and never widened)", calls)
 	}
 }
+
 
 func TestProtectionPlanClampsSLMultPastLiquidation(t *testing.T) {
 	mult := 2.5
@@ -312,6 +314,7 @@ func TestProtectionPlanClampConvergesAfterOneReplace(t *testing.T) {
 		t.Errorf("cycle 2 derives %g, want the same clamped %g (no state drift)", got2, wantTrigger)
 	}
 }
+
 
 func lastLiqAlertAction(strategyID, symbol string) hlLiquidationAlertAction {
 	v, ok := hlLiquidationAlerts.Load(hlLiquidationAlertKey(strategyID, symbol))
@@ -536,10 +539,11 @@ func TestFixedATRArmFailedMessageNamesBothFacts(t *testing.T) {
 	}
 }
 
+
 func TestProtectionSyncEchoKeepsTheRestingTrigger(t *testing.T) {
 	cases := []struct {
-		name         string
-		side         string
+		name string
+		side string
 		liqPx        float64
 		healedRestPx float64
 	}{

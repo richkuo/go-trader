@@ -20,7 +20,6 @@ def _alloc(confirm_bars=2):
     }
 
 
-
 def test_switcher_flat_switch_after_confirm():
     sw = _ProfileSwitcher(_parse_profile_allocation(_alloc(confirm_bars=2)))
     assert sw.step("up", flat=True) == "fade"
@@ -61,7 +60,6 @@ def test_parse_rejects_wrong_profile_count():
         assert False, "expected ValueError"
     except ValueError as e:
         assert "exactly 2" in str(e)
-
 
 
 def _flat_df(n=40):

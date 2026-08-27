@@ -35,7 +35,6 @@ make_flat = _conftest_mod.make_flat
 make_volatile = _conftest_mod.make_volatile
 
 
-
 class TestFuturesRegistry:
     def test_strategies_registered(self):
         names = list_strategies()
@@ -66,7 +65,6 @@ class TestFuturesRegistry:
         assert "signal" in result.columns
 
 
-
 def _run(name, closes, params=None, volume=None, index=None):
     df = make_ohlcv(closes, volume=volume, index=index)
     return apply_strategy(name, df, params)
@@ -75,7 +73,6 @@ def _run(name, closes, params=None, volume=None, index=None):
 def _valid_signals(result):
     signals = result["signal"].dropna()
     assert set(signals.unique()).issubset({-1.0, 0.0, 1.0})
-
 
 
 class TestSMACrossover:
@@ -92,7 +89,6 @@ class TestSMACrossover:
         assert (result["signal"].dropna() == 0).all()
 
 
-
 class TestEMACrossover:
     def test_buy_signal(self):
         closes = list(np.linspace(120, 80, 50)) + list(np.linspace(80, 140, 50))
@@ -105,7 +101,6 @@ class TestEMACrossover:
     def test_flat_no_signal(self):
         result = _run("ema_crossover", make_flat(80))
         assert (result["signal"].dropna() == 0).all()
-
 
 
 class TestBollingerBands:
@@ -121,7 +116,6 @@ class TestBollingerBands:
     def test_flat_no_signal(self):
         result = _run("bollinger_bands", make_flat(40))
         assert (result["signal"] == 0).all()
-
 
 
 class TestVolumeWeighted:
@@ -141,7 +135,6 @@ class TestVolumeWeighted:
         assert (result["signal"] == 0).all()
 
 
-
 class TestTripleEMA:
     def test_buy_signal(self):
         closes = make_trending_up(80)
@@ -155,7 +148,6 @@ class TestTripleEMA:
     def test_flat_no_signal(self):
         result = _run("triple_ema", make_flat(80))
         assert (result["signal"].dropna() == 0).all()
-
 
 
 class TestTripleEMABidir:
@@ -192,7 +184,6 @@ class TestTripleEMABidir:
         custom = _run("triple_ema_bidir", closes,
                       params={"short_period": 3, "mid_period": 10, "long_period": 30})
         assert not default["ema_short"].equals(custom["ema_short"])
-
 
 
 class TestRSIMACDCombo:
@@ -246,7 +237,6 @@ class TestRSIMACDCombo:
         assert (result["signal"] == 0).all()
 
 
-
 class TestMomentum:
     def test_buy_signal(self):
         closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 120, 20))
@@ -266,7 +256,6 @@ class TestMomentum:
         assert (result["signal"] == 0).all()
 
 
-
 class TestMeanReversion:
     def test_buy_on_dip(self):
         closes = (
@@ -283,7 +272,6 @@ class TestMeanReversion:
         assert (result["signal"] == 0).all()
 
 
-
 class TestRSI:
     def test_produces_rsi_column(self):
         closes = make_volatile(80, amplitude=10)
@@ -295,7 +283,6 @@ class TestRSI:
     def test_flat_no_signal(self):
         result = _run("rsi", make_flat(50))
         assert (result["signal"] == 0).all()
-
 
 
 class TestMACD:
@@ -312,7 +299,6 @@ class TestMACD:
         assert (result["signal"] == -1).any()
 
 
-
 class TestBreakout:
     def test_upside_breakout(self):
         closes = list(np.linspace(100, 105, 30)) + [120, 122, 125, 128, 130]
@@ -326,7 +312,6 @@ class TestBreakout:
         assert (result["signal"] == 0).all()
 
 
-
 class TestStochRSI:
     def test_columns(self):
         closes = make_volatile(80, amplitude=10)
@@ -338,7 +323,6 @@ class TestStochRSI:
     def test_flat_data(self):
         result = _run("stoch_rsi", make_flat(80))
         assert "signal" in result.columns
-
 
 
 class TestSupertrend:
@@ -356,7 +340,6 @@ class TestSupertrend:
         assert set(dirs.unique()).issubset({-1, 0, 1})
 
 
-
 class TestSqueezeMomentum:
     def test_columns(self):
         closes = make_volatile(100, amplitude=10)
@@ -368,7 +351,6 @@ class TestSqueezeMomentum:
     def test_flat_no_signal(self):
         result = _run("squeeze_momentum", make_flat(60))
         assert (result["signal"] == 0).all()
-
 
 
 class TestIchimokuCloud:
@@ -383,7 +365,6 @@ class TestIchimokuCloud:
         assert (result["signal"] == 0).all()
 
 
-
 class TestATRBreakout:
     def test_upside_breakout(self):
         closes = list(np.linspace(100, 100, 30)) + list(np.linspace(100, 130, 10))
@@ -395,7 +376,6 @@ class TestATRBreakout:
         assert (result["signal"] == 0).all()
 
 
-
 class TestHeikinAshiEMA:
     def test_columns(self):
         closes = make_trending_up(80)
@@ -403,7 +383,6 @@ class TestHeikinAshiEMA:
         for col in ["ha_open", "ha_close", "ha_high", "ha_low", "ha_ema"]:
             assert col in result.columns
         _valid_signals(result)
-
 
 
 class TestOrderBlocks:
@@ -417,7 +396,6 @@ class TestOrderBlocks:
         _valid_signals(result)
 
 
-
 class TestVWAPReversion:
     def test_with_datetime_index(self):
         n = 100
@@ -426,7 +404,6 @@ class TestVWAPReversion:
         result = _run("vwap_reversion", closes, index=idx)
         assert "vwap" in result.columns
         _valid_signals(result)
-
 
 
 class TestParabolicSAR:
@@ -446,7 +423,6 @@ class TestParabolicSAR:
         result = _run("parabolic_sar", [100.0])
         assert result["sar"].isna().all()
         assert (result["signal"] == 0).all()
-
 
 
 class TestDeltaNeutralFunding:
@@ -513,7 +489,6 @@ class TestDeltaNeutralFunding:
         assert set(out["signal"].unique()).issubset({-1, 0, 1})
 
 
-
 class TestChartPattern:
     def test_returns_signal(self):
         closes = list(np.linspace(90, 110, 50)) + list(np.linspace(110, 90, 50))
@@ -522,14 +497,12 @@ class TestChartPattern:
         _valid_signals(result)
 
 
-
 class TestLiquiditySweeps:
     def test_returns_signal(self):
         closes = list(np.linspace(90, 110, 50)) + list(np.linspace(110, 90, 50))
         result = _run("liquidity_sweeps", closes)
         assert "signal" in result.columns
         _valid_signals(result)
-
 
 
 class TestAMDIFVG:
@@ -553,7 +526,6 @@ class TestAMDIFVG:
         idx = pd.date_range("2024-01-01", periods=n, freq="15min")
         result = _run("amd_ifvg", make_flat(n), index=idx)
         assert "signal" in result.columns
-
 
 
 class TestEdgeCases:

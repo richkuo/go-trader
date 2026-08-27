@@ -303,7 +303,6 @@ _DEFAULT_REPORT_OUT = os.path.join(_THIS_DIR, "hurst_gate_calibration.md")
 _JSON_1410 = os.path.join(_THIS_DIR, "hurst_1410_gate_calibration.json")
 
 
-
 def qualified_symbol(exchange_id: str, symbol: str) -> str:
     return symbol if exchange_id == PLATFORM else f"{symbol}@{exchange_id}"
 
@@ -339,7 +338,6 @@ for _w in set(BITSTAMP_WINDOWS) | set(COINBASE_WINDOWS):
         raise AssertionError(
             f"new-venue window {_w!r} runs past {_PRIMARY_FLOOR.date()}, so it "
             f"is not automatically primary; re-derive cell_cohort first")
-
 
 
 def cell_cohort(exchange_id: str, symbol: str, timeframe: str,
@@ -661,7 +659,6 @@ def decide_recommendation(configs: Sequence[dict], mde: dict) -> dict:
     }
 
 
-
 def owned_windows(dataset: tuple, window_names: Sequence[str]) -> list:
     owned = DATASET_WINDOWS.get(tuple(dataset)) or ()
     return [w for w in window_names if w in owned]
@@ -776,7 +773,6 @@ def symbol_return_correlations(frames: dict) -> dict:
             if math.isfinite(rho):
                 out[(a, b)] = round(rho, 6)
     return out
-
 
 
 def trade_samples_with_side(results: dict) -> list:
@@ -971,7 +967,6 @@ def build_leg(reg, family: str, exemplar: str, dataset: tuple,
         "gated": gated,
         "trades": trades,
     }
-
 
 
 def bucket_tables(trades: Sequence[dict], hurst_window: int) -> dict:
@@ -1216,7 +1211,6 @@ def apply_bh_by_cohort(configs: Sequence[dict], alpha: float = ALPHA) -> None:
             cfg["bh_reject"] = bool(flag)
 
 
-
 def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
                              n_perm: int, seed: int) -> dict:
     out: dict = {"by_family_cluster": {}, "by_family_cluster_return": {},
@@ -1337,7 +1331,6 @@ def measure_detection_limits(pooled: dict, hurst_windows: Sequence[int],
     out["continuity_target"] = CONTINUITY_TARGET
     out["horizon_hours"] = HORIZON_HOURS
     return out
-
 
 
 def _fmt(value, digits: int = 2, suffix: str = "") -> str:
@@ -2184,7 +2177,6 @@ def render_report(payload: dict) -> str:
 
 def report_from_payload(payload: dict) -> str:
     return render_report(payload)
-
 
 
 def ensure_min_history(datasets: Sequence[tuple]) -> dict:

@@ -14,7 +14,6 @@ import eval_windows as ew
 import fee_audit as fa
 
 
-
 def test_salvage_verdict_no_trades():
     assert fa.salvage_verdict(0, None, None) == "no_trades"
     assert fa.salvage_verdict(0, 5.0, 5.0) == "no_trades"
@@ -44,7 +43,6 @@ def test_salvage_verdict_short_unmeasured_withholds_negative_calls():
     assert fa.salvage_verdict(50, 12.0, 4.0, short_unmeasured=True) == "healthy"
 
 
-
 def test_trades_per_year_basic():
     assert fa.trades_per_year(100, 365.25) == pytest.approx(100.0)
     assert fa.trades_per_year(50, 365.25 / 2) == pytest.approx(100.0)
@@ -55,7 +53,6 @@ def test_trades_per_year_zero_span_and_zero_trades_guarded():
     assert fa.trades_per_year(100, None) is None
     assert fa.trades_per_year(100, -5) is None
     assert fa.trades_per_year(0, 365.25) == pytest.approx(0.0)
-
 
 
 def _leg(trades, span, net, gross, sharpe=1.0):
@@ -143,7 +140,6 @@ def test_live_bidirectional_set_matches_go_source():
     assert set(fa.LIVE_BIDIRECTIONAL_STRATEGIES) == go_names
 
 
-
 def test_rank_rows_orders_by_drag_then_no_trades_last():
     rows = [
         {"strategy": "low", "verdict": "healthy", "fee_drag_pp": 2.0},
@@ -162,7 +158,6 @@ def test_rank_rows_no_trades_tiebreak_by_name():
     ]
     ordered = [r["strategy"] for r in fa.rank_rows(rows)]
     assert ordered == ["alpha", "zeta"]
-
 
 
 def test_render_markdown_has_table_and_sections():
@@ -205,7 +200,6 @@ def test_render_markdown_unscreened_short_section_and_dagger():
     assert "clean" in dep_section
 
 
-
 def test_enumerate_targets_both_skips_hold_and_handles_variants():
     targets = fa.enumerate_targets("both")
     names = [t[0] for t in targets]
@@ -246,7 +240,6 @@ def test_enumerate_targets_subset_filter_and_unknown_raises():
     assert {t[0] for t in targets} == {"macd", "vwap_reversion"}
     with pytest.raises(SystemExit):
         fa.enumerate_targets("spot", subset=["does_not_exist"])
-
 
 
 class _FakeRegistry:

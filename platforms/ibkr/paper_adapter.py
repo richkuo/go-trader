@@ -4,7 +4,6 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Tuple
 
 
-
 def norm_cdf(x: float) -> float:
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
@@ -57,7 +56,6 @@ def bs_greeks(spot: float, strike: float, dte_days: float, vol: float,
     }
 
 
-
 def make_crypto_option_contract(underlying: str, strike: float, expiry: str,
                                  option_type: str, exchange: str = "CME"):
     from ib_insync import FuturesOption
@@ -101,7 +99,6 @@ def make_crypto_futures_contract(underlying: str, expiry: str = "", exchange: st
     return contract
 
 
-
 class IBKRConnection:
 
     def __init__(self, host: str = "127.0.0.1", port: int = 4002, client_id: int = 1):
@@ -122,7 +119,6 @@ class IBKRConnection:
 
     def is_connected(self) -> bool:
         return self.ib is not None and self.ib.isConnected()
-
 
 
 class IBKRPaperAdapter:
@@ -216,7 +212,6 @@ class IBKRPaperAdapter:
                 expiries.append(exp_str)
 
         return sorted(expiries)
-
 
 
 def get_spot_price_ibkr(underlying: str) -> float:

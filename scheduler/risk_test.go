@@ -946,6 +946,7 @@ func TestCheckPortfolioRisk_EventLoggedOnTrigger(t *testing.T) {
 	}
 }
 
+
 func resetSchedulerStarted(t *testing.T) {
 	t.Helper()
 	schedulerStarted.Store(false)
@@ -1449,7 +1450,7 @@ func TestAutoResetConfirmedFlatKillSwitch_NoRelatchOnNextTick(t *testing.T) {
 func TestPerpsMarginDrawdownInputs_OnlyPerpsCount(t *testing.T) {
 	s := &StrategyState{
 		Positions: map[string]*Position{
-			"ETH":      {Symbol: "ETH", Quantity: 0.2, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 20},
+			"ETH": {Symbol: "ETH", Quantity: 0.2, AvgCost: 2000, Side: "long", Multiplier: 1, Leverage: 20},
 			"BTC/USDT": {Symbol: "BTC/USDT", Quantity: 0.05, AvgCost: 50000, Side: "long"},
 		},
 	}
@@ -2146,6 +2147,7 @@ func TestDetectSharedWalletPlatformsRequiresEveryRiskPathMemberLegacyPct(t *test
 	}
 }
 
+
 func TestCheckPortfolioRisk_AllPerps_MarginDrawdownWarnsWithoutLatch(t *testing.T) {
 	cfg := &PortfolioRiskConfig{MaxDrawdownPct: 25, WarnThresholdPct: 80}
 	prs := &PortfolioRiskState{PeakValue: 10000}
@@ -2710,6 +2712,7 @@ func TestCheckPortfolioRisk_MarginWarning_FieldsPopulated(t *testing.T) {
 		t.Errorf("expected CurrentMarginDrawdownPct≈10%%; got %.2f", prs.CurrentMarginDrawdownPct)
 	}
 }
+
 
 func TestRiskState_PendingCircuitClose_Marshal_EmptyReturnsBlank(t *testing.T) {
 	cases := []struct {
@@ -3497,7 +3500,7 @@ func TestManualMarkBasisPeakAdjustment(t *testing.T) {
 		wantApply                       bool
 	}{
 		{
-			name:    "underwater manual lowers the peak by exactly the delta",
+			name: "underwater manual lowers the peak by exactly the delta",
 			oldPeak: 60000, liveTotal: 56000, legacyTotal: 60000,
 			wantPeak: 56000, wantApply: true,
 		},
@@ -3507,7 +3510,7 @@ func TestManualMarkBasisPeakAdjustment(t *testing.T) {
 			wantPeak: 63000, wantApply: true,
 		},
 		{
-			name:    "real drawdown under the old basis survives the migration",
+			name: "real drawdown under the old basis survives the migration",
 			oldPeak: 60000, liveTotal: 50000, legacyTotal: 54000,
 			wantPeak: 56000, wantApply: true,
 		},
@@ -3558,6 +3561,7 @@ func TestSnapshotOpenSymbolsByStrategy(t *testing.T) {
 		t.Error("nil state should snapshot nil")
 	}
 }
+
 
 func TestMissingManualOnlyMarks_IgnoresNonManualOutage(t *testing.T) {
 	strategies := []StrategyConfig{
@@ -3631,6 +3635,7 @@ func TestMissingManualOnlyMarks_UnheldManualCoinNeverGates(t *testing.T) {
 		t.Errorf("missingManualOnlyMarks = %v, want empty — the strategy is flat, so its coin cannot move the delta", got)
 	}
 }
+
 
 func TestMarkGatedManagers_ScopedToHyperliquidPerpsAndManual(t *testing.T) {
 	cases := []struct {

@@ -18,7 +18,6 @@ def reg():
     return _load_close_registry()
 
 
-
 def test_defaults_are_noops(reg):
     pos = {"side": "long", "current_quantity": 1.0, "avg_cost": 100.0,
            "entry_atr": 2.0, "bars_held": 50}
@@ -27,7 +26,6 @@ def test_defaults_are_noops(reg):
         out = reg.evaluate(name, pos, mkt, None)
         assert out["close_fraction"] == 0.0, name
         assert out["reason"] == "noop:disabled", name
-
 
 
 def test_time_stop_fires_at_threshold(reg):
@@ -49,7 +47,6 @@ def test_time_stop_missing_context_fails_safe(reg):
     out = reg.evaluate("time_stop", pos, {"mark_price": 100.0}, {"max_bars": 3})
     assert out["close_fraction"] == 0.0
     assert out["reason"] == "noop:missing_bars_held"
-
 
 
 def test_atr_stop_long_hit_and_boundary(reg):
@@ -80,7 +77,6 @@ def test_atr_stop_missing_atr_fails_safe(reg):
     assert out["reason"] == "noop:missing_entry_atr"
     out_live = reg.evaluate("atr_stop", base, {"mark_price": 50.0}, {"atr_mult": 2.0, "atr_source": "live"})
     assert out_live["reason"] == "noop:missing_live_atr"
-
 
 
 def test_zscore_target_long_and_short(reg):

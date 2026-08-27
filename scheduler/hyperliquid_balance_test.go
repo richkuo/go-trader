@@ -14,6 +14,7 @@ import (
 	"time"
 )
 
+
 func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
 	sc := &StrategyConfig{
 		ID:       "hl-btc",
@@ -27,6 +28,7 @@ func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
 		t.Errorf("capital should not change (no-op), got %g", sc.Capital)
 	}
 }
+
 
 func TestFetchHyperliquidState(t *testing.T) {
 	resp := map[string]interface{}{
@@ -216,6 +218,7 @@ func TestFetchHyperliquidStateNoPositions(t *testing.T) {
 	}
 }
 
+
 func newTestLogger(t *testing.T) *StrategyLogger {
 	t.Helper()
 	return &StrategyLogger{stratID: "test", writer: os.Stdout}
@@ -365,6 +368,7 @@ func TestReconcileNoPositionBothSides(t *testing.T) {
 		t.Error("expected changed=false when no position on either side")
 	}
 }
+
 
 func setupHLTestServer(balance float64, positions []HLPosition) *httptest.Server {
 	resp := map[string]interface{}{
@@ -636,6 +640,7 @@ func TestFetchHyperliquidStateParsesLeverage(t *testing.T) {
 		t.Errorf("Leverage = %v, want 20", positions[0].Leverage)
 	}
 }
+
 
 func TestAccountSyncSharedCoinSkipsReconciliation(t *testing.T) {
 	ts := setupHLTestServer(50000, []HLPosition{
@@ -1144,6 +1149,7 @@ func TestReconcileSharedCoinBothShort(t *testing.T) {
 		t.Errorf("gap DeltaQty = %g, want ~0", gap.DeltaQty)
 	}
 }
+
 
 func TestReconcileSharedCoin_OwnerStopLossFired_ClosesOwnerOnly(t *testing.T) {
 	state := &AppState{
@@ -2646,6 +2652,7 @@ func TestReconciliationGapOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+
 func fakeCloser(errs map[string]error) (HyperliquidLiveCloser, *[]string) {
 	var calls []string
 	closer := func(symbol string, partialSz *float64, cancelStopLossOIDs []int64) (*HyperliquidCloseResult, error) {
@@ -3720,6 +3727,7 @@ func TestReconcileManualPositionExternalClose(t *testing.T) {
 	}
 }
 
+
 func tieredTPATRSC() StrategyConfig {
 	return StrategyConfig{
 		ID: "hl-tp",
@@ -3775,6 +3783,7 @@ func TestHyperliquidHasClearedTPTier_AllZeroFullClose(t *testing.T) {
 		}
 	}
 }
+
 
 func TestReconcilePositionSLClose_UsesFilledQtyFromLookup(t *testing.T) {
 	const (
@@ -3910,6 +3919,7 @@ func TestReconcileManualPositionSLFired(t *testing.T) {
 		t.Errorf("ClosePrice = %g, want 1800", ss.ClosedPositions[0].ClosePrice)
 	}
 }
+
 
 func TestReconcilePosition_TPFillsAttributedNotSL(t *testing.T) {
 	const (
@@ -4091,6 +4101,7 @@ func TestReconcilePosition_NoFillsFallsBackToZeroPnL(t *testing.T) {
 		t.Errorf("cash = %g, want %g (modeled fee only) on zero-PnL fallback", ss.Cash, startCash-ss.TradeHistory[0].ExchangeFee)
 	}
 }
+
 
 func TestReconcilePosition_AllTPOIDsZeroedSLNotFilled(t *testing.T) {
 	const slTriggerPx = 1800.0

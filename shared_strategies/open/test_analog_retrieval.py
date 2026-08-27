@@ -55,8 +55,6 @@ _FAST = dict(
 )
 
 
-
-
 def test_encode_features_columns_and_warmup():
     df = _sawtooth_df(120)
     feats = encode_features(df, feat_window=8, atr_period=5, vol_baseline=20)
@@ -75,16 +73,12 @@ def test_encode_features_is_prefix_stable():
     pd.testing.assert_frame_equal(full.iloc[:90], cut)
 
 
-
-
 def test_forward_returns_arithmetic_and_nan_tail():
     close = pd.Series([100.0, 110.0, 121.0, 133.1], index=_hourly_index(4))
     fwd = forward_returns(close, horizon=2)
     assert fwd.iloc[0] == pytest.approx(0.21)
     assert fwd.iloc[1] == pytest.approx(0.21)
     assert fwd.iloc[2:].isna().all()
-
-
 
 
 def test_retrieve_neighbors_orders_by_distance_and_caps_k():
@@ -101,8 +95,6 @@ def test_retrieve_neighbors_breaks_ties_by_row_order():
     index = np.array([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]])
     nbr = retrieve_neighbors(index, np.zeros(2), k=2)
     assert list(nbr) == [0, 1]
-
-
 
 
 def test_core_handles_empty_single_row_and_short_frames():
@@ -152,8 +144,6 @@ def test_core_max_index_caps_the_searched_window():
     assert (capped[capped["signal"] != 0].shape[0]) > 0
     wide = analog_retrieval_core(df, **{**_FAST, "max_index": 0})
     assert not capped["analog_mean_fwd"].equals(wide["analog_mean_fwd"])
-
-
 
 
 def test_leakage_prefix_consistency_regression():

@@ -25,8 +25,6 @@ def _bt(**kw) -> ThetaHarvestBacktester:
     return ThetaHarvestBacktester(**base)
 
 
-
-
 def test_profit_target_branch_closes_and_logs_theta_harvest():
     bt = _bt(profit_target_pct=60)
     pos = OptionPosition("call", "sell", 60_000.0, expiry_idx=2,
@@ -42,8 +40,6 @@ def test_profit_target_branch_closes_and_logs_theta_harvest():
     assert entry["action"] == "close_sell"
     assert entry["reason"].startswith("profit_target")
     assert entry["profit_pct"] >= 60
-
-
 
 
 def test_stop_loss_branch_closes_and_logs_stop_loss():
@@ -63,8 +59,6 @@ def test_stop_loss_branch_closes_and_logs_stop_loss():
     assert entry["pnl"] < 0
 
 
-
-
 def test_dte_floor_branch_closes_and_logs_dte_close():
     bt = _bt(profit_target_pct=0, stop_loss_pct=0, min_dte_close=5)
     pos = OptionPosition("call", "sell", 25_000.0, expiry_idx=2,
@@ -80,8 +74,6 @@ def test_dte_floor_branch_closes_and_logs_dte_close():
     assert entry["event"] == "dte_close"
     assert entry["reason"].startswith("dte_floor")
     assert entry["days_left"] == 2
-
-
 
 
 def test_no_branch_fires_when_within_bounds_leaves_position_open():
@@ -112,8 +104,6 @@ def test_zero_premium_position_is_skipped():
                                   hist_vol=_HIST_VOL, date=_DATE)
     assert closed is False
     assert bt.total_trades == 0
-
-
 
 
 def test_report_metrics_block_computes_expected_fields():

@@ -17,7 +17,6 @@ class PatternMatch:
     confidence: float
 
 
-
 def find_swing_points(
     highs: pd.Series,
     lows: pd.Series,
@@ -47,7 +46,6 @@ def _get_swing_indices(swing_series: pd.Series) -> list[int]:
     return np.where(swing_series.notna())[0].tolist()
 
 
-
 def volume_confirmed(
     volume: pd.Series,
     index: int,
@@ -60,7 +58,6 @@ def volume_confirmed(
     if avg_vol <= 0:
         return True
     return volume.iloc[index] > vol_multiplier * avg_vol
-
 
 
 def detect_double_top(
@@ -289,7 +286,6 @@ def detect_inverse_head_and_shoulders(
     return matches
 
 
-
 def _detect_flag(
     highs: pd.Series, lows: pd.Series, close: pd.Series, volume: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
@@ -408,7 +404,6 @@ def detect_bear_flag(
     lookback: int = 5,
 ) -> list:
     return _detect_flag(highs, lows, close, volume, swing_highs, swing_lows, direction=-1, lookback=lookback)
-
 
 
 def _fit_slope(indices: list, values: list) -> float:
@@ -545,7 +540,6 @@ def detect_symmetrical_triangle(
     return _detect_triangle(highs, lows, close, swing_highs, swing_lows, "symmetrical", tolerance, lookback=lookback)
 
 
-
 def detect_cup_and_handle(
     highs: pd.Series, lows: pd.Series, close: pd.Series,
     swing_highs: pd.Series, swing_lows: pd.Series,
@@ -604,7 +598,6 @@ def detect_cup_and_handle(
     return matches
 
 
-
 _HTF_GATE_MODES = ("veto", "align")
 
 
@@ -630,7 +623,6 @@ def _htf_gate_trend(
         .fillna(0)
         .astype(int)
     )
-
 
 
 _VOLUME_DETECTORS = {"bull_flag", "bear_flag"}

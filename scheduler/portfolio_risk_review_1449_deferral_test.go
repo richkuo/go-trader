@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+
 func TestUntrustedEquity_OverLimitLatchIsDeferredNotVetoed(t *testing.T) {
 	cfg := review1449Config()
 
