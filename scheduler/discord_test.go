@@ -2686,6 +2686,87 @@ func TestFormatTradeDM_ATRShownWithoutTiers(t *testing.T) {
 	}
 }
 
+func TestFormatTradeDM_RatchetSuppressedOnScaleIn(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		ID:            "hl-vwap-eth-60",
+		Platform:      "hyperliquid",
+		Type:          "perps",
+		CloseStrategy: &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+		TrailingStopATRRegime: &RegimeATRBlock{
+			UseDefaults: false,
+			TrendRegime: map[string]RegimeATREntry{
+				"ranging": {ATR: 2.5},
+			},
+		},
+	}
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.1,
+		Price:             2500,
+		Value:             250,
+		EntryATR:          23.64,
+		StopLossTriggerPx: 2440.90,
+		StopLossATRMult:   pf(2.5),
+		Regime:            "ranging",
+		Details:           "Scale-in long 0.100000 @ $2500.00 (add #2, new qty 0.503000, avg $2485.50, fee $0.05)",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if strings.Contains(msg, "Ratchet:") {
+		t.Errorf("scale-in trade should not render ratchet block, got:\n%s", msg)
+	}
+	for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
+		if strings.Contains(msg, notWant) {
+			t.Errorf("scale-in DM should not contain %s, got:\n%s", notWant, msg)
+		}
+	}
+	if !strings.Contains(msg, "ATR: $23.64") {
+		t.Errorf("ATR should still surface on scale-in DM, got:\n%s", msg)
+	}
+}
+
+func TestFormatTradeDM_RatchetSuppressedOnNonDefaultATRWindow(t *testing.T) {
+	pf := func(v float64) *float64 { return &v }
+	sc := StrategyConfig{
+		ID:              "hl-vwap-eth-60",
+		Platform:        "hyperliquid",
+		Type:            "perps",
+		RegimeATRWindow: "daily",
+		CloseStrategy:   &StrategyRef{Name: "trailing_tp_ratchet_regime", Params: map[string]interface{}{"use_defaults": true}},
+		TrailingStopATRRegime: &RegimeATRBlock{
+			UseDefaults: false,
+			TrendRegime: map[string]RegimeATREntry{
+				"ranging": {ATR: 2.5},
+			},
+		},
+	}
+	trade := Trade{
+		Symbol:            "ETH",
+		Side:              "buy",
+		Quantity:          0.403,
+		Price:             2479,
+		Value:             999,
+		EntryATR:          23.64,
+		StopLossTriggerPx: 2419.90,
+		StopLossATRMult:   pf(2.5),
+		Regime:            "ranging",
+		Details:           "Open long 0.403 @ $2479",
+	}
+	msg := FormatTradeDM(sc, trade, "live")
+	if strings.Contains(msg, "Ratchet:") {
+		t.Errorf("non-default regime_atr_window should suppress ratchet block, got:\n%s", msg)
+	}
+	for _, notWant := range []string{"RT1:", "RT2:", "RT3:", "Trail:"} {
+		if strings.Contains(msg, notWant) {
+			t.Errorf("non-default ATR window DM should not contain %s, got:\n%s", notWant, msg)
+		}
+	}
+	if !strings.Contains(msg, "ATR: $23.64") {
+		t.Errorf("ATR should still surface when ratchet suppressed, got:\n%s", msg)
+	}
+}
+
 // TestStampOpenTradeFromPosition verifies the backfill helper for EntryATR and
 // StopLossTriggerPx on the most-recent open trade for a symbol (#561).
 func TestStampOpenTradeFromPosition(t *testing.T) {
