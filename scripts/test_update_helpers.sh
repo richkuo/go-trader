@@ -270,6 +270,104 @@ assert_eq "$(resolve_child_unit_override go-trader-parent "" --all --restart)" \
     $'go-trader-parent\n--all\n--restart' \
     "resolve: map MISS without any parent unit token still inherits parent's service_unit"
 
+# Integration: drive the real scripts/update.sh --all coordinator with mocked
+# systemctl + mocked bash recursion. Asserts that the per-dir hit/miss
+# branch + GO_TRADER_SERVICE injection + parent-flag strip that production
+# runs matches the resolve_child_unit_override contract.
+update_test_repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -n "$update_test_repo_root" && -x "$update_test_repo_root/scripts/update.sh" ]]; then
+(
+    cd "$update_test_repo_root"
+
+    fleet=$(mktemp -d)
+    for n in go-trader-a go-trader-b go-trader-c; do
+        mkdir -p "$fleet/$n/scheduler"
+        echo '{}' > "$fleet/$n/scheduler/config.json"
+    done
+
+    # Shim: a real `systemctl` binary on PATH so update_helpers.sh's
+    # `command -v systemctl` guard resolves AND list-units/show returns
+    # our test data. Functions exported from the test driver are not
+    # visible to `command -v`, so a PATH shim is the only way to drive
+    # discover_deployment_dirs_from_systemd + discover_deployment_unit_map
+    # in the test.
+    mkdir -p "$fleet/shimbin"
+    cat > "$fleet/shimbin/systemctl" <<EOS
+#!/usr/bin/env bash
+case "\$1" in
+    list-units)
+        active_only=0
+        for a in "\$@"; do [[ "\$a" == "--state=active" ]] && active_only=1; done
+        if [[ "\$active_only" == "1" ]]; then
+            printf '%s\n' \\
+                'go-trader-x.service loaded active running x' \\
+                'go-trader-y.service loaded active running y'
+        fi
+        ;;
+    show)
+        case "\$2" in
+            go-trader-x.service) printf '%s\n' "$fleet/go-trader-a" ;;
+            go-trader-y.service) printf '%s\n' "$fleet/go-trader-b" ;;
+        esac
+        ;;
+esac
+EOS
+    chmod +x "$fleet/shimbin/systemctl"
+
+    bash() {
+        if [[ "${1:-}" == *update.sh ]]; then
+            printf '[child] cwd=%s GO_TRADER_SERVICE=%s argv=%s\n' \
+                "$(pwd)" "${GO_TRADER_SERVICE:-<unset>}" "$*" >> "${RECORD_OUT:?}"
+            return 0
+        fi
+        command bash "$@"
+    }
+    export -f bash 2>/dev/null || true
+
+    # Scenario 1: auto-resolve (default scan_root, shim systemd for a/b).
+    : > "$fleet/records"
+    RECORD_OUT="$fleet/records" \
+        PATH="$fleet/shimbin:$PATH" \
+        GO_TRADER_SERVICE=go-trader-parent \
+        command bash scripts/update.sh --all --restart --unit=go-trader-foo >/dev/null 2>&1 || true
+    r=$(grep "$fleet" "$fleet/records" || true)
+    spawn_count=$(printf '%s\n' "$r" | grep -c '\[child\] ' || true)
+    assert_eq "$spawn_count" "2" "integration auto-resolve: 2 systemd-mapped dirs spawn"
+    a_line=$(printf '%s\n' "$r" | grep "cwd=$fleet/go-trader-a" || true)
+    b_line=$(printf '%s\n' "$r" | grep "cwd=$fleet/go-trader-b" || true)
+    if [[ "$a_line" != *"GO_TRADER_SERVICE=go-trader-x.service"* || "$a_line" != *"--restart"* ]]; then
+        echo "FAIL: a record missing x.service or --restart" >&2; printf '%s\n' "$r" >&2; exit 1
+    fi
+    if [[ "$b_line" != *"GO_TRADER_SERVICE=go-trader-y.service"* || "$b_line" != *"--restart"* ]]; then
+        echo "FAIL: b record missing y.service or --restart" >&2; printf '%s\n' "$r" >&2; exit 1
+    fi
+    if printf '%s\n' "$r" | grep -v '/go-trader-c/' | grep -q -- '--unit=go-trader-foo'; then
+        echo "FAIL: parent --unit=go-trader-foo leaked into auto-resolved child argv" >&2
+        printf '%s\n' "$r" >&2
+        exit 1
+    fi
+
+    # Scenario 2: fallback (--update-all-root=$fleet, no systemd mapping).
+    # Drop the shim so the bounded-glob run treats systemd as absent; all
+    # 3 dirs must fall back to parent's service_unit.
+    rm -rf "$fleet/shimbin"
+    : > "$fleet/records"
+    RECORD_OUT="$fleet/records" \
+        GO_TRADER_SERVICE=go-trader-parent \
+        command bash scripts/update.sh --all --restart --update-all-root="$fleet" >/dev/null 2>&1 || true
+    r=$(grep "$fleet" "$fleet/records" || true)
+    spawn_count=$(printf '%s\n' "$r" | grep -c '\[child\] ' || true)
+    assert_eq "$spawn_count" "3" "integration fallback: 3 dirs spawn (a, b, c all miss)"
+    if printf '%s\n' "$r" | grep -vq 'GO_TRADER_SERVICE=go-trader-parent'; then
+        echo "FAIL: at least one fallback child did not inherit parent's service_unit" >&2
+        printf '%s\n' "$r" >&2
+        exit 1
+    fi
+
+    rm -rf "$fleet"
+)
+fi
+
 canon_tmp=$(mktemp -d)
 canon_phys=$(cd "$canon_tmp" && pwd -P)/
 ln -s "$canon_tmp" "${canon_tmp}.link"

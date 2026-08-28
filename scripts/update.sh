@@ -636,22 +636,24 @@ if [[ "$update_all" == "1" ]]; then
         fi
         update_count=$((update_count + 1))
         mapped_unit="${unit_for_dir[$d]:-}"
+        # resolve_child_unit_override is the tested helper that decides the
+        # child's effective unit + argv. Production runs must share that
+        # single decision so tests cover the real branch.
+        declare -a _rco_lines=()
+        while IFS= read -r _line || [[ -n "$_line" ]]; do
+            _rco_lines+=("$_line")
+        done < <(resolve_child_unit_override "$service_unit" "$mapped_unit" "${child_args[@]}")
+        resolved_unit="${_rco_lines[0]:-$service_unit}"
+        declare -a resolved_child_args=()
+        for ((_i = 1; _i < ${#_rco_lines[@]}; _i++)); do
+            [[ -n "${_rco_lines[$_i]}" ]] && resolved_child_args+=("${_rco_lines[$_i]}")
+        done
         if [[ -n "$mapped_unit" ]]; then
-            declare -a mapped_child_args=()
-            while IFS= read -r arg; do
-                [[ -n "$arg" ]] && mapped_child_args+=("$arg")
-            done < <(strip_unit_flags_from_argv "${child_args[@]}")
-            echo "[update] --all: $(cd "$d" && pwd) -> unit $mapped_unit (auto-resolved from systemd)"
-            if (cd "$d" && GO_TRADER_SERVICE="$mapped_unit" bash "$THIS_SCRIPT" "${mapped_child_args[@]}"); then
-                :
-            else
-                echo "[update] --all: FAILED in $d" >&2
-                fail_count=$((fail_count + 1))
-            fi
-            continue
+            echo "[update] --all: $(cd "$d" && pwd) -> unit $resolved_unit (auto-resolved from systemd)"
+        else
+            echo "[update] --all: $(cd "$d" && pwd) -> unit $resolved_unit (no active systemd unit; falling back)"
         fi
-        echo "[update] --all: $(cd "$d" && pwd) -> unit $service_unit (no active systemd unit; falling back)"
-        if (cd "$d" && bash "$THIS_SCRIPT" "${child_args[@]}"); then
+        if (cd "$d" && GO_TRADER_SERVICE="$resolved_unit" bash "$THIS_SCRIPT" "${resolved_child_args[@]}"); then
             :
         else
             echo "[update] --all: FAILED in $d" >&2
