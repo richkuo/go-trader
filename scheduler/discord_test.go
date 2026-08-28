@@ -2542,12 +2542,6 @@ func TestFormatTradeDM_CloseNoATR(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_RatchetShowsATRAndRungTargets verifies #1463: when the close
-// strategy is trailing_tp_ratchet_regime (not tiered_tp_atr*), the open-trade
-// DM must still surface (a) the ATR value, (b) the initial trail, and (c) each
-// rung's price target with its trailing-mult-after suffix. The position-summary
-// block already does this; the trade-alert path was silently dropping all
-// three for ratchet strategies.
 func TestFormatTradeDM_RatchetShowsATRAndRungTargets(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{
@@ -2562,9 +2556,6 @@ func TestFormatTradeDM_RatchetShowsATRAndRungTargets(t *testing.T) {
 			},
 		},
 	}
-	// Entry 2,479, ATR 23.64 → SL trigger at 2479 - 2.5*23.64 = 2419.90 (matches
-	// the live hl-vwap-eth-60 trade the operator posted). Use_defaults resolves
-	// ranging → ranging_quiet ladder (0.75×/1.5×/2.0× ATR).
 	trade := Trade{
 		Symbol:            "ETH",
 		Side:              "buy",
@@ -2592,8 +2583,6 @@ func TestFormatTradeDM_RatchetShowsATRAndRungTargets(t *testing.T) {
 			t.Errorf("expected %q in DM, got:\n%s", want, msg)
 		}
 	}
-	// Sanity: ratchet rung block should NOT include TP1/TP2 (those belong to
-	// tiered_tp_atr* strategies, not trailing_tp_ratchet*).
 	for _, notWant := range []string{"TP1:", "TP2:"} {
 		if strings.Contains(msg, notWant) {
 			t.Errorf("ratchet strategy DM should not include %s, got:\n%s", notWant, msg)
@@ -2601,9 +2590,6 @@ func TestFormatTradeDM_RatchetShowsATRAndRungTargets(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_RatchetScalarTrail verifies #1463 for the scalar
-// trailing_tp_ratchet variant: the initial trail comes from
-// TrailingStopATRMult (not the regime variant), rung targets still render.
 func TestFormatTradeDM_RatchetScalarTrail(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	initialTrail := 3.0
@@ -2644,10 +2630,6 @@ func TestFormatTradeDM_RatchetScalarTrail(t *testing.T) {
 	}
 }
 
-// TestFormatTradeDM_TieredTPATRStillShowsTPAndATR is the regression guard for
-// #1463: tiered_tp_atr* strategies must keep rendering TP1/TP2 (existing
-// behavior) AND the ATR line (now always shown). Together they prove the
-// ATR-decoupling change did not regress the tiered path.
 func TestFormatTradeDM_TieredTPATRStillShowsTPAndATR(t *testing.T) {
 	sc := StrategyConfig{
 		ID:            "hl-tatr-btc",
@@ -2670,15 +2652,11 @@ func TestFormatTradeDM_TieredTPATRStillShowsTPAndATR(t *testing.T) {
 			t.Errorf("expected %q in tiered_tp_atr DM, got:\n%s", want, msg)
 		}
 	}
-	// Ratchet block must stay silent when tiered_tp_atr tiers resolved.
 	if strings.Contains(msg, "Ratchet:") || strings.Contains(msg, "RT1:") {
 		t.Errorf("tiered_tp_atr DM should not include ratchet block, got:\n%s", msg)
 	}
 }
 
-// TestFormatTradeDM_ATRShownWithoutTiers verifies #1463 even when the strategy
-// has no tiered_tp_atr* tiers AND no ratchet (e.g. an SL-only trailing-stop
-// strategy). ATR must still surface so operators can sanity-check the SL math.
 func TestFormatTradeDM_ATRShownWithoutTiers(t *testing.T) {
 	pf := func(v float64) *float64 { return &v }
 	sc := StrategyConfig{

@@ -1156,20 +1156,6 @@ func FormatTradeDM(sc StrategyConfig, trade Trade, mode string) string {
 	return sb.String()
 }
 
-// tradeAlertExtras builds the extras line for trade-alert DMs (#665).
-// Order: Source (close only) → PnL (close only) → Regime → ATR → SL → TP[1..n]
-// → Ratchet (rung targets + initial trail when the close strategy is
-// trailing_tp_ratchet*). SL and each TP gain an ATR multiplier suffix `(<n>x)`
-// when EntryATR is known. Shared between FormatTradeDM (Discord) and
-// FormatTradeDMPlain (Telegram) so the two channels can never drift on extras
-// formatting.
-//
-// #1463: ATR and the rung target lines used to be gated on tiered_tp_atr*
-// tiers being present, which silently dropped both for any strategy whose
-// close evaluator is trailing_tp_ratchet* (e.g. hl-vwap-eth-60). Operators
-// reading `🟢 TRADE EXECUTED` had no way to sanity-check the resting SL/TP
-// geometry without opening the live config. Now ATR is shown whenever
-// EntryATR > 0, and ratchet rung targets mirror the position-summary block.
 func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	var extras []string
 	if isClose {
@@ -1196,9 +1182,6 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 		tiers = strategyTPTiersForRegime(sc, trade.Regime)
 		tps = tieredTPATRPricesFromTiers(tiers, direction, trade.Price, trade.EntryATR)
 	}
-	// Always surface ATR when known (#1463). Previously gated on len(tps) > 0,
-	// which dropped ATR for trailing_tp_ratchet* strategies and any other
-	// close evaluator that doesn't emit tiered_tp_atr* tiers.
 	if !isClose && trade.EntryATR > 0 {
 		extras = append(extras, fmt.Sprintf("ATR: $%s", fmtComma2(trade.EntryATR)))
 	}
@@ -1213,12 +1196,6 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	for i, tp := range tps {
 		extras = append(extras, fmt.Sprintf("TP%d: $%s (%gx)", i+1, fmtComma2(tp), tiers[i].Multiple))
 	}
-	// Ratchet rung targets mirror the position-summary block in
-	// collectPositions: when the close evaluator is trailing_tp_ratchet* AND no
-	// tiered_tp_atr* tiers resolved, surface each rung's ATR-multiple target so
-	// the operator can see where the trail will tighten (or scale out) without
-	// waiting for a rung-trigger alert. At open time no rung has cleared, so
-	// processed=0 and the displayed Trail is the configured initial trail.
 	if !isClose && len(tps) == 0 && trade.EntryATR > 0 && trade.Price > 0 {
 		if ratchetTiers := trailingRatchetTiersForRegime(sc, trade.Regime); len(ratchetTiers) > 0 {
 			if trail := tradeAlertInitialTrailMult(sc, trade); trail > 0 {
@@ -1236,14 +1213,6 @@ func tradeAlertExtras(sc StrategyConfig, trade Trade, isClose bool) []string {
 	return extras
 }
 
-// tradeAlertInitialTrailMult resolves the configured initial trailing-stop ATR
-// multiple for a trade-alert DM. Mirrors effectiveTrailingRatchetMult but
-// operates on a Trade (no PostTPTrailingATRMult, which is nil at open) and
-// resolves the per-regime variant from trade.Regime instead of pos.Regime. At
-// open time the position has not had any rung tighten the trail, so this
-// always returns the configured initial trail (scalar trailing_stop_atr_mult or
-// per-regime trailing_stop_atr_regime lookup); once a rung fires, the
-// position-summary path takes over via pos.PostTPTrailingATRMult.
 func tradeAlertInitialTrailMult(sc StrategyConfig, trade Trade) float64 {
 	if sc.TrailingStopATRMult != nil && *sc.TrailingStopATRMult > 0 {
 		return *sc.TrailingStopATRMult
